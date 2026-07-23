@@ -1,0 +1,120 @@
+name: Nightly FFT
+
+on:
+    # Allow to manually trigger the workflow
+    workflow_dispatch:
+        inputs:
+            config_file:
+                description: "Full-FT config to dispatch (e.g. configs/ci/nightly-fft/wordle.toml). Leave empty to run all."
+                required: false
+                default: ""
+
+    # Scheduled run at 3AM PST (11AM UTC) — disabled for now, enable once dry-run passes
+    # schedule:
+    #     - cron: "0 11 * * *"
+
+permissions:
+    contents: read
+    packages: read
+
+jobs:
+    discover-configs:
+        name: Discover configs
+        runs-on: ubuntu-latest
+
+        outputs:
+            matrix: ${{ steps.build-matrix.outputs.matrix }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                  submodules: false
+
+            - name: Build matrix from nightly FFT configs
+              id: build-matrix
+              run: |
+                  # Find all nightly full-finetune configs
+                  files=$(ls configs/ci/nightly-fft/*.toml)
+
+                  # Filter to specific config if provided in workflow_dispatch
+                  if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.config_file }}" ]; then
+                      filtered=$(echo "$files" | grep -F "${{ github.event.inputs.config_file }}" || true)
+                      if [ -z "$filtered" ]; then
+                          echo "Error: Config file '${{ github.event.inputs.config_file }}' not found"
+                          exit 1
+                      fi
+                      files="$filtered"
+                  fi
+
+                  echo "Discovered nightly FFT configs:"
+                  echo "$files"
+
+                  # Build JSON of the form: { "config_file": ["configs/ci/nightly-fft/foo.toml", ...] }
+                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc '{config_file: .}')
+
+                  echo "matrix=$json" >> "$GITHUB_OUTPUT"
+
+    dispatch-run:
+        name: Dispatch hosted FFT run
+        needs: discover-configs
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        strategy:
+            fail-fast: false
+            matrix: ${{ fromJSON(needs.discover-configs.outputs.matrix) }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                  submodules: false
+
+            - name: Resolve latest prime-rl image tag
+              id: image
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  # Query GHCR directly for tags whose manifests have actually
+                  # been pushed. devx_tag.yaml creates a `v*.dev*` git tag on
+                  # every main commit and dispatches build_image.yaml with that
+                  # tag, but the build takes time and can fail — the newest git
+                  # tag may not yet exist as an image. Ask GHCR, not git.
+                  tag=$(gh api --paginate \
+                      "/orgs/primeintellect-ai/packages/container/prime-rl/versions" \
+                      --jq '.[].metadata.container.tags[]' \
+                      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' \
+                      | sort -Vr | head -n1)
+                  if [ -z "$tag" ]; then
+                      echo "No v*.dev* tag published on GHCR." >&2
+                      exit 1
+                  fi
+                  echo "Latest prime-rl image tag on GHCR: $tag"
+                  echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+
+            - name: Install prime CLI (latest)
+              run: uv tool install prime
+
+            - name: Dispatch run
+              env:
+                  PRIME_API_KEY: ${{ secrets.PRIME_FFT_API_KEY }}
+                  PRIME_TEAM_ID: ${{ secrets.PRIME_FFT_TEAM_ID }}
+                  PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
+                  WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+              run: |
+                  echo "Dispatching config: ${{ matrix.config_file }}"
+                  echo "Image tag:          ${{ steps.image.outputs.tag }}"
+                  # Forward WANDB_API_KEY / HF_TOKEN into the hosted payload:
+                  # the full-FT dispatch path (`prime train`) only picks up
+                  # secrets that were explicitly collected via `-e` / `--env-file`,
+                  # not ambient env, so the workflow env: block alone is not
+                  # enough to reach the hosted trainer/orchestrator pods.
+                  prime train "${{ matrix.config_file }}" \
+                      --image-tag "${{ steps.image.outputs.tag }}" \
+                      -e WANDB_API_KEY \
+                      -e HF_TOKEN \
+                      --yes --output json
