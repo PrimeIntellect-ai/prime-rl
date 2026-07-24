@@ -98,10 +98,10 @@ EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP 
 [trainer.model]
 impl = "custom"
 ep = 8                     # explicit EP degree; must divide num_experts
-ep_comm_backend = "torch"  # or "deepep"
+ep_comm_backend = "torch"  # or "deepep", "deepep_v2", "hybridep", "minimal_async_ep"
 ```
 
-`ep_comm_backend = "deepep"` uses DeepEP's custom dispatch/combine kernels for speed, with two extra knobs (`deepep_num_sms`, `deepep_token_chunk_size`) — tune on your hardware.
+`ep_comm_backend = "deepep"` uses DeepEP v1's custom dispatch/combine kernels for speed, with two extra knobs (`deepep_num_sms`, `deepep_token_chunk_size`) — tune on your hardware. `deepep_v2` uses DeepEP v2's unified `ElasticBuffer` API (>= 2.0.0). `hybridep` targets GB200 NVLink72 systems. `minimal_async_ep` uses symmetric-memory all-to-all (requires cp=1).
 
 ### Context Parallelism
 

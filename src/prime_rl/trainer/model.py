@@ -21,7 +21,6 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.tensor.parallel import parallelize_module
-from torchtitan.distributed.expert_parallel import ExpertParallel
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -35,6 +34,7 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.trainer.distributed import DeepEPExpertParallel, MXFP8AllToAllExpertParallel
+from prime_rl.trainer.distributed.tt_expert_parallel import ExpertParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -483,7 +483,7 @@ def is_tt_moe_model(model: nn.Module) -> bool:
 
 def configure_moe_ep_backend(model: nn.Module, config: ModelConfig) -> None:
     backend = config.ep_comm_backend
-    if backend == "deepep":
+    if backend in ("deepep", "deepep_v2"):
         from prime_rl.trainer.distributed.deepep import configure_num_sms
 
         configure_num_sms(config.deepep_num_sms)
@@ -493,6 +493,11 @@ def configure_moe_ep_backend(model: nn.Module, config: ModelConfig) -> None:
             continue
         transformer_block.mlp.set_ep_comm_backend(backend)
         transformer_block.mlp.set_deepep_token_chunk_size(config.deepep_token_chunk_size)
+        if backend == "hybridep":
+            transformer_block.mlp.set_hybridep_config(
+                config.hybridep_non_blocking_capacity_factor,
+                config.hybridep_pad_multiple,
+            )
 
 
 def get_load_balance_stats(
@@ -1175,6 +1180,18 @@ def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims)
                     parallelize_plan = MXFP8AllToAllExpertParallel()
                 else:
                     parallelize_plan = ExpertParallel()
+            elif config.ep_comm_backend == "deepep_v2":
+                from prime_rl.trainer.distributed import DeepEPv2ExpertParallel
+
+                parallelize_plan = DeepEPv2ExpertParallel()
+            elif config.ep_comm_backend == "hybridep":
+                from prime_rl.trainer.distributed import HybridEPExpertParallel
+
+                parallelize_plan = HybridEPExpertParallel()
+            elif config.ep_comm_backend == "minimal_async_ep":
+                from prime_rl.trainer.distributed import MinimalAsyncEPExpertParallel
+
+                parallelize_plan = MinimalAsyncEPExpertParallel()
             else:
                 parallelize_plan = DeepEPExpertParallel()
             parallelize_module(

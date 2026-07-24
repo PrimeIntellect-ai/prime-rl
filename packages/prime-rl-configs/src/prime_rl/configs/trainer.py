@@ -20,7 +20,7 @@ from prime_rl.utils.config import BaseConfig
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
-EPCommBackend: TypeAlias = Literal["torch", "deepep"]
+EPCommBackend: TypeAlias = Literal["torch", "deepep", "deepep_v2", "hybridep", "minimal_async_ep"]
 
 
 class GCConfig(BaseConfig):
@@ -182,13 +182,19 @@ class ModelConfig(BaseModelConfig):
     """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves to ``min(fsdp_island_size, 8)`` for MoE models (where ``fsdp_island_size = world_size // dp_replicate``), and to 1 for non-MoE models. Set an explicit integer to override."""
 
     ep_comm_backend: EPCommBackend = "torch"
-    """Communication backend for expert parallelism. ``torch`` uses TorchTitan all-to-all collectives; ``deepep`` uses DeepEP custom kernels."""
+    """Communication backend for expert parallelism. ``torch`` uses TorchTitan all-to-all collectives; ``deepep`` uses DeepEP v1 custom kernels; ``deepep_v2`` uses DeepEP v2 ElasticBuffer kernels; ``hybridep`` uses HybridEP kernels for GB200 NVLink72 systems; ``minimal_async_ep`` uses symmetric-memory all-to-all (no TP/CP/PP/SP)."""
 
     deepep_num_sms: int = Field(20, ge=1)
-    """SMs allocated for DeepEP intranode dispatch/combine kernels. Also determines internode RDMA channel count (``num_channels = num_sms / 2``). Lower values leave more SMs for compute; higher values speed up dispatch/combine. The optimal value depends on EP degree and hardware. Only used when ``ep_comm_backend='deepep'``."""
+    """SMs allocated for DeepEP intranode dispatch/combine kernels. Also determines internode RDMA channel count (``num_channels = num_sms / 2``). Lower values leave more SMs for compute; higher values speed up dispatch/combine. The optimal value depends on EP degree and hardware. Only used when ``ep_comm_backend='deepep'`` or ``'deepep_v2'``."""
 
     deepep_token_chunk_size: int | None = Field(None, ge=1)
-    """Token chunk size for DeepEP MoE pipelining. When set, DeepEP dispatch for chunk i+1 is launched while experts compute chunk i. Only used when ``ep_comm_backend='deepep'``."""
+    """Token chunk size for DeepEP MoE pipelining. When set, DeepEP dispatch for chunk i+1 is launched while experts compute chunk i. Only used when ``ep_comm_backend='deepep'`` or ``'deepep_v2'``."""
+
+    hybridep_non_blocking_capacity_factor: float | None = Field(None, gt=0, le=1)
+    """Capacity factor for non-blocking HybridEP dispatch. None = blocking mode (default). A float in (0, 1] enables CPU-free non-blocking dispatch. Only used when ``ep_comm_backend='hybridep'``."""
+
+    hybridep_pad_multiple: int | None = Field(None, ge=1)
+    """Pad per-expert token groups to this multiple for HybridEP (e.g. 32 for MXFP8). Only used when ``ep_comm_backend='hybridep'``."""
 
     cp: int = 1
     """Context parallelism degree. 1 disables CP."""
@@ -298,6 +304,9 @@ class ModelConfig(BaseModelConfig):
 
         if isinstance(self.ep, int) and self.ep <= 1:
             raise ValueError(f"model.ep_comm_backend='{self.ep_comm_backend}' requires model.ep > 1.")
+
+        if self.ep_comm_backend == "minimal_async_ep" and self.cp != 1:
+            raise ValueError("model.ep_comm_backend='minimal_async_ep' requires model.cp=1.")
 
         return self
 
@@ -636,7 +645,7 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
-        if self.model.ep_comm_backend == "deepep" and self.optim.max_norm is not None:
+        if self.model.ep_comm_backend in ("deepep", "deepep_v2") and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping is not compatible with DeepEP. "
                 "Automatically setting optim.max_norm to None (disabled).",
