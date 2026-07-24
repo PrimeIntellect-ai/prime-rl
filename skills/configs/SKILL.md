@@ -44,7 +44,8 @@ Incompatible combinations (e.g. CP requires flash attention) must raise in a `mo
 [[orchestrator.train.env]]
 name = "reverse-text"
 env.taskset = { id = "reverse-text-v1" }
-env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+env.agent.harness = { id = "null" }
+env.agent.runtime = { type = "subprocess" }
 ```
 
 CLI: `--orchestrator.train.env.0.env.taskset.id reverse-text-v1`.

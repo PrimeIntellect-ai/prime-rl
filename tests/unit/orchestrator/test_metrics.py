@@ -2,6 +2,7 @@ import math
 from types import SimpleNamespace
 
 import pytest
+import verifiers.v1 as vf
 
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
 from prime_rl.orchestrator.utils import compute_pass_metrics
@@ -141,8 +142,8 @@ def test_stop_condition_breakdown():
 
 def test_nested_metrics_and_rewards():
     rollouts = [
-        mk(metrics={"acc": 1.0}, rewards={"correct": 1.0, "format": 0.0}),
-        mk(metrics={"acc": 3.0, "fmt": 5.0}, rewards={"correct": 0.0, "format": 1.0}),
+        mk(metrics={"acc": 1.0}, rewards={"correct": vf.Reward(score=1.0), "format": vf.Reward(score=0.0)}),
+        mk(metrics={"acc": 3.0, "fmt": 5.0}, rewards={"correct": vf.Reward(score=0.0), "format": vf.Reward(score=1.0)}),
     ]
     m = TrainRollouts(rollouts).metrics
     assert m.metrics["acc"].mean() == 2.0 and m.rewards["correct"].mean() == 0.5  # nested group access

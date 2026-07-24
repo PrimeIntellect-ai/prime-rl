@@ -99,7 +99,8 @@ extra_body = {chat_template_kwargs = {clear_thinking = false}}
 [[orchestrator.train.env]]
 name = "r2e"
 env.taskset = { id = "r2e-gym-v1" }
-env.agent.harness = { id = "rlm", runtime = { type = "prime", labels = ["glm5-llmd"] } }
+env.agent.harness = { id = "rlm" }
+env.agent.runtime = { type = "prime", labels = ["glm5-llmd"] }
 
 [inference]
 enable_expert_parallel = true

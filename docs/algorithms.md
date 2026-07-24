@@ -119,13 +119,15 @@ type = "grpo"
 [[orchestrator.train.env]]
 name = "math"
 taskset = { id = "math-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+harness = { id = "null" }
+runtime = { type = "subprocess" }
 # inherits the top-level grpo
 
 [[orchestrator.train.env]]
 name = "terminal"
 taskset = { id = "terminal-v1" }
-harness = { id = "bash", runtime = { type = "subprocess" } }
+harness = { id = "bash" }
+runtime = { type = "subprocess" }
 algo = { type = "echo" }   # this env runs its own algorithm
 ```
 

@@ -100,7 +100,8 @@ thinking_retention = "all"
 [[orchestrator.train.env]]
 name = "scaleswe"
 env.taskset = { id = "scaleswe-v1" }
-env.agent.harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] } }
+env.agent.harness = { id = "rlm", summarize_at_tokens = [65536, 131072] }
+env.agent.runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] }
 
 [orchestrator.prime_monitor]
 
@@ -112,7 +113,8 @@ interval = 20
 [[orchestrator.eval.env]]
 name = "swebench-verified"
 env.taskset = { id = "swebench-verified-v1" }
-env.agent.harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] } }
+env.agent.harness = { id = "rlm", summarize_at_tokens = 98304 }
+env.agent.runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] }
 env.agent.timeout = { rollout = 3600 }
 
 # --- Inference ---

@@ -37,7 +37,8 @@ max_off_policy_steps = 32
 
 [[orchestrator.train.env]]
 env.taskset = { id = "general-agent-v1", task = { tools = { colocated = true } }, min_tier = 1 }
-env.agent.harness = { id = "null", runtime = { type = "modal" } }
+env.agent.harness = { id = "null" }
+env.agent.runtime = { type = "modal" }
 
 [inference]
 gpu_memory_utilization = 0.85
