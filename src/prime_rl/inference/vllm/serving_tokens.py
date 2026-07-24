@@ -242,20 +242,23 @@ def _materialize_raw_image_ref_sync(
         payload=dict(ref.payload),
         raw_ref=raw_ref,
     )
-    adapter = get_multimodal_adapter(ref.family)
-    return adapter.materialize_for_vllm(
-        image_processor,
-        item,
-        image,
-        expected_placeholder_length,
-    )
+    try:
+        adapter = get_multimodal_adapter(ref.family)
+        return adapter.materialize_for_vllm(
+            image_processor,
+            item,
+            image,
+            expected_placeholder_length,
+        )
+    except (TypeError, ValueError) as exc:
+        raise _MMImageRefError(str(exc)) from exc
 
 
-# (mm_hash, expected_placeholder_length, processor_model_name). The hash is the
-# content identity of the raw image bytes (verified on every miss), so identical
-# keys describe byte-identical materialization work — and the key stays small
-# even though the ref string itself embeds the full inline image payload.
-_MaterializeKey = tuple[str, int, str]
+# (raw_ref_digest, feature_modality, mm_hash, expected_placeholder_length,
+# processor_model_name, trust_remote_code). The digest keeps keys small while
+# ensuring a distinct descriptor can never alias an already-validated cache
+# entry, even when its outer hash/placeholder metadata is forged or stale.
+_MaterializeKey = tuple[str, str, str, int, str, bool]
 
 _MM_MATERIALIZE_CACHE_GB_ENV = "PRIME_RL_MM_MATERIALIZE_CACHE_GB"
 _MM_MATERIALIZE_LOG_EVERY = 1000
@@ -409,7 +412,14 @@ async def _decode_raw_mm_kwargs(
     decoded = await asyncio.gather(
         *(
             cache.get_or_materialize(
-                (mm_hash, placeholder.length, processor_model_name),
+                (
+                    hashlib.sha256(raw_ref.encode("utf-8")).hexdigest(),
+                    feature_modality,
+                    mm_hash,
+                    placeholder.length,
+                    processor_model_name,
+                    trust_remote_code,
+                ),
                 lambda fm=feature_modality, r=raw_ref, h=mm_hash, p=placeholder: _materialize(fm, r, h, p),
             )
             for feature_modality, raw_ref, mm_hash, placeholder in flat
