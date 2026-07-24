@@ -17,6 +17,7 @@ This page covers the math and the configurable algorithmic components: the algor
   - [Custom Loss](#custom-loss)
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
+  - [Hierarchical Advantage (Proposer–Solver)](#hierarchical-advantage-proposersolver)
   - [Authoring an Algorithm](#authoring-an-algorithm)
   - [Reference Scoring](#reference-scoring)
 - [Filters](#filters)
@@ -67,6 +68,7 @@ type = "grpo"  # the default
 |---|---|---|---|
 | `grpo` | policy | `rl` on actions | Standard group-relative RL. |
 | `max_rl` | policy | `rl` on actions | MaxRL ([arXiv:2602.02710](https://arxiv.org/abs/2602.02710)): GRPO's centered reward normalized by the group **mean** instead of the standard deviation — the gradient is unbiased for the order-`group_size` truncation of the maximum-likelihood objective, upweighting hard examples like `1/p`. |
+| `hierarchical_grpo` | policy | `rl` on actions | Two-level GRPO for task-generating envs (proposer-solver): agents in `episode_agents` baseline within their own episode (sibling attempts at the same minted task), every other agent across the group (parallel attempts at the same source task). Needs `episode_agents`. See [Hierarchical Advantage](#hierarchical-advantage-proposersolver). |
 | `opd` | policy | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs a `teacher`. |
 | `sft` | *(the teacher)* | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs a frozen `sampling.source` (the teacher it samples from). |
 | `opsd` | policy | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. The teacher *is* the live policy (the paper's setting, no extra deployment) — no model to configure. |
@@ -140,6 +142,7 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 | `grpo` | `GRPOAlgorithm` | `score_group`: group-norm credit (optional length penalty) |
 | `echo` | `EchoAlgorithm` | `score_rollout`: weighted ce on observation tokens; `score_group`: group-norm credit (inherited) |
 | `max_rl` | `MaxRLAlgorithm` | `score_group`: mean-normalized group credit |
+| `hierarchical_grpo` | `HierarchicalGRPOAlgorithm` | `score_group`: two-level peer-set credit (per-episode / per-group) |
 | `opd` | `OPDAlgorithm` | `score_rollout`: own-context prefill under the teacher |
 | `opsd` | `OPSDAlgorithm` | `score_rollout`: demo-conditioned prefill under the live policy |
 | `sft` | `SFTDistillAlgorithm` | `score_group`: group-norm credit (feeds filters) |
@@ -176,7 +179,7 @@ $$
 \mathcal{L} = \frac{\sum \mathcal{L}_{rl}}{N_{rl}} + \frac{\sum \mathcal{L}_{ce}}{N_{ce}} + \frac{\sum \mathcal{L}_{ref\_kl}}{N_{ref\_kl}}
 $$
 
-- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the group-relative algorithms (`grpo`, `max_rl`, and `echo`'s action tokens).
+- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `hierarchical_grpo`, and `echo`'s action tokens).
 - `ce` — masked NLL. Used for frozen-model tokens (`sft`) and env-observation tokens (`echo`).
 - `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `opsd`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
@@ -278,6 +281,7 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 |---|---|---|
 | `grpo` | `rl` | Group-norm: reward minus per-group baseline, optional length penalty. |
 | `max_rl` | `rl` | Mean-normalized group credit (maximum-likelihood RL). |
+| `hierarchical_grpo` | `rl` | Two-level peer-set credit for task-generating envs: episode-scoped agents center within their episode, the rest across the group. |
 | `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-provided tokens selected by message role (each role's `alpha` is its ECHO λ), optionally narrowed by a user filter. |
 | `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`teacher`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream; `group_size` only fans out sampling. |
 | `opsd` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream. |
@@ -299,6 +303,33 @@ type = "grpo"
 type = "linear"
 ```
 
+### Hierarchical Advantage (Proposer–Solver)
+
+Task-generating envs break the flat-group assumption twice over. In `proposer-solver-v1`, one episode is a proposer trace plus the n solver traces its minted problem fanned out to, and a group is `group_size` episodes of the same source task — the proposer asked `group_size` times to invent a problem. Pooling solver rewards across episodes baselines them against attempts at *different* problems; pooling proposer and solver traces mixes reward scales across agents (the proposer earns learnability, the solvers correctness).
+
+`hierarchical_grpo` computes GRPO baselines at two levels of that episode tree. Every trainable trace is mean-centered against its *peer set*:
+
+- agents listed in `episode_agents` (the solvers) against the same-agent traces of **their own episode** — sibling attempts at the same minted task;
+- every other agent (the proposer) against its same-agent traces **across the group** — parallel attempts at the same source task, each rewarded by what its minted task did to the solvers (`proposer-solver-v1`'s learnability, `4p(1−p)`, peaks when half the solvers crack the problem).
+
+Rewards never mix across agents or across minted tasks. A peer set of one centers to zero advantage (GRPO's singleton convention; the zero-advantage filter drops it). `episode_agents` is required — which agents are episode-scoped is env truth the algorithm must not guess:
+
+```toml
+[orchestrator.algo]
+type = "hierarchical_grpo"
+episode_agents = ["solver"]
+
+[[orchestrator.train.env]]
+name = "proposer-solver"
+env.taskset = { id = "proposer-solver-v1" }
+env.n = 4  # solvers per proposed problem
+env.proposer.harness = { id = "null" }
+env.proposer.runtime = { type = "subprocess" }
+env.solver.harness = { id = "null" }
+env.solver.runtime = { type = "subprocess" }
+```
+
+Here `group_size` is the number of proposals per source task and `env.n` the solvers per proposal, so one group carries `group_size × (1 + n)` traces. To train only one side, flip the env's own switches (`env.train_proposer` / `env.train_solver`) — the untrainable side's traces never reach the advantage computation.
 
 ### Authoring an Algorithm
 

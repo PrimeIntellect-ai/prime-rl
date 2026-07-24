@@ -232,6 +232,29 @@ class MaxRLAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
 
+class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
+    type: Literal["hierarchical_grpo"] = "hierarchical_grpo"
+    """Hierarchical GRPO for task-generating envs (``proposer-solver-v1`` and
+    friends): GRPO baselines computed at two levels of the episode tree. A
+    group is ``group_size`` episodes of the same source task, and one episode
+    holds a proposer trace plus the n solver traces its minted task fanned out
+    to. Every trainable trace is mean-centered against its *peer set*: agents
+    listed in ``episode_agents`` (the solvers) against the same-agent traces of
+    their own episode — sibling attempts at the same minted task — and every
+    other agent (the proposer) against its same-agent traces across the group —
+    parallel attempts at the same source task. Rewards never mix across agents
+    or across minted tasks."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    episode_agents: list[str] = Field(min_length=1)
+    """Agents whose peer set is their own episode (``["solver"]`` for
+    ``proposer-solver-v1``): their reward compares only against sibling traces
+    of the same agent in the same episode, because each episode mints its own
+    task and rewards are not exchangeable across episodes. Required — which
+    agents are episode-scoped is env truth the algorithm must not guess."""
+
+
 class OPDAlgoConfig(BaseAlgoConfig):
     type: Literal["opd"] = "opd"
     """On-policy distillation: the per-token signal is the reverse KL to
@@ -305,7 +328,13 @@ class SFTAlgoConfig(BaseAlgoConfig):
 
 
 AlgoConfig: TypeAlias = Annotated[
-    GRPOAlgoConfig | EchoAlgoConfig | MaxRLAlgoConfig | OPDAlgoConfig | OPSDAlgoConfig | SFTAlgoConfig,
+    GRPOAlgoConfig
+    | EchoAlgoConfig
+    | MaxRLAlgoConfig
+    | HierarchicalGRPOAlgoConfig
+    | OPDAlgoConfig
+    | OPSDAlgoConfig
+    | SFTAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -314,6 +343,7 @@ its class defaults are the vetted setting.
 
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
+- ``hierarchical_grpo`` — two-level GRPO for task-generating envs: episode-scoped agents baseline within their episode, the rest across the group. Needs ``episode_agents``.
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
