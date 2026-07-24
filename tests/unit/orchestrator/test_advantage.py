@@ -7,9 +7,11 @@ from prime_rl.configs.algorithm import (
     GRPOAlgoConfig,
     LinearLengthPenaltyConfig,
     MaxRLAlgoConfig,
+    RAEAlgoConfig,
 )
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
+from prime_rl.orchestrator.algo.rae import RAEAlgorithm
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout
 
@@ -181,6 +183,59 @@ def test_max_rl_mean_normalized():
     assert _max_rl(_make_group(rewards=[0.0, 0.0])) == pytest.approx([0.0, 0.0])
     # ... and all-success groups center to zero like GRPO
     assert _max_rl(_make_group(rewards=[1.0, 1.0])) == pytest.approx([0.0, 0.0])
+
+
+# --------------------------------------------------------------------------
+# RAE: per-agent EMA-baseline credit for multi-agent self-play (SPIRAL).
+# --------------------------------------------------------------------------
+
+
+def _agent_rollout(reward: float, agent_name: str) -> Rollout:
+    """A one-turn rollout stamped as an agent's trace — what a multi-agent
+    episode's traces look like by the time ``score_group`` sees them."""
+    rollout = _build_rollout(reward, sampled_lengths=[2])
+    rollout.agent = vf.AgentInfo(config=vf.AgentConfig(), name=agent_name)
+    return rollout
+
+
+def _rae(groups: list[list[Rollout]], decay: float = 0.95) -> list[list[float]]:
+    """Drive one ``RAEAlgorithm`` instance over successive groups (baselines
+    persist across calls, as across training steps) and read back the scalars."""
+    algo = RAEAlgorithm(RAEAlgoConfig(decay=decay), policy_pool=None)
+    advantages = []
+    for group in groups:
+        asyncio.run(algo.score_group(group))
+        advantages.append([_scalar(rollout) for rollout in group])
+    return advantages
+
+
+def test_rae_first_group_scores_against_zero_baseline():
+    """Baselines start at 0, so a fresh agent's first advantage is its raw
+    reward — a zero-sum episode keeps its signal instead of centering to the
+    group mean."""
+    group = [_agent_rollout(1.0, "player0"), _agent_rollout(-1.0, "player1")]
+    assert _rae([group]) == [pytest.approx([1.0, -1.0])]
+
+
+def test_rae_baselines_are_per_agent_and_persist_across_groups():
+    """player0 always wins ±1 against player1: GRPO's group mean (0) would pay
+    both full credit forever; RAE's per-agent baselines converge toward each
+    agent's own expected reward, shrinking the advantage."""
+    groups = [
+        [_agent_rollout(1.0, "player0"), _agent_rollout(-1.0, "player1")],
+        [_agent_rollout(1.0, "player0"), _agent_rollout(-1.0, "player1")],
+    ]
+    first, second = _rae(groups, decay=0.5)
+    assert first == pytest.approx([1.0, -1.0])
+    # after the first group: baseline(player0) = 0.5·0 + 0.5·1 = 0.5, player1's is -0.5
+    assert second == pytest.approx([0.5, -0.5])
+
+
+def test_rae_scores_against_the_pre_update_baseline():
+    """Within a group, a trace is scored before its reward moves the baseline
+    (the unbiased order), so a same-agent sibling sees the updated baseline."""
+    group = [_agent_rollout(1.0, "solo"), _agent_rollout(1.0, "solo")]
+    assert _rae([group], decay=0.5) == [pytest.approx([1.0, 0.5])]
 
 
 # --------------------------------------------------------------------------
