@@ -146,6 +146,16 @@ optim_cpu_offload = true   # already the default
 
 Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_concurrent_runs > 1` (multi-tenant training) — set `optim_cpu_offload = false` for multi-run. Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
 
+The optimizer step is performed per-transformer-layer ("chunked"): each layer's optimizer states are moved to GPU, the step runs for that layer only, and the states move back to CPU before the next layer. This reduces peak GPU optimizer-state memory from the full model's states to about one layer's worth (two layers with stream overlap: the current layer being computed plus the next layer being prefetched). Set `optim_cpu_offload_chunked = true` to enable:
+
+```toml
+[trainer.model]
+optim_cpu_offload_chunked = true
+optim_cpu_offload_stream = true
+```
+
+Both default to `false`. Set `optim_cpu_offload_stream = true` to additionally overlap H2D/D2H transfers with optimizer compute on dedicated CUDA streams (up to ~3 layers resident on GPU during overlap). When chunked is enabled but stream is not, the step uses a simple sequential move→step→move loop (1 layer resident at a time).
+
 ### LM Head Chunking
 
 The vanilla LM head materializes a `[batch * seq, vocab]` logits tensor on every step — a major memory tax when the vocabulary is large (often >100K). `fused_lm_head_token_chunk_size` swaps in a custom fused linear + logprob/entropy kernel that streams through `chunk_size` tokens at a time, avoiding the materialization. It defaults to `1024` for RL training:

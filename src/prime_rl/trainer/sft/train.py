@@ -180,7 +180,12 @@ def train(config: SFTConfig):
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
     optimizer = setup_optimizer(
-        config.optim, list(model.named_parameters()), parallel_dims, cpu_offload=config.model.optim_cpu_offload
+        config.optim,
+        list(model.named_parameters()),
+        parallel_dims,
+        cpu_offload=config.model.optim_cpu_offload,
+        cpu_offload_chunked=config.model.optim_cpu_offload_chunked,
+        cpu_offload_stream=config.model.optim_cpu_offload_stream,
     )
 
     # Set up the learning rate scheduler
