@@ -23,9 +23,10 @@ class CPUOffloadOptimizer:
     memory is max(activations, opt_states) instead of sum.
 
     When ``named_params`` is provided, the step is performed per-transformer-layer
-    ("chunked") instead of all-at-once, bounding peak GPU optimizer-state memory to
-    one layer's worth. H2D/D2H transfers can optionally overlap with compute on
-    dedicated CUDA streams (``stream=True``).
+    ("chunked") instead of all-at-once, reducing peak GPU optimizer-state memory
+    from the full model's to about one layer's worth (two with stream overlap).
+    H2D/D2H transfers can optionally overlap with compute on dedicated CUDA streams
+    (``stream=True``).
     """
 
     def __init__(
