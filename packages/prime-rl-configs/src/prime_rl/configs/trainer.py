@@ -172,7 +172,7 @@ class ModelConfig(BaseModelConfig):
     """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
 
     optim_cpu_offload_chunked: bool = False
-    """When optimizer CPU offload is enabled, perform the optimizer step per-transformer-layer instead of all-at-once. Each layer's states are moved to GPU, the step runs for that layer only, and states move back to CPU before the next layer. Bounds peak GPU optimizer-state memory to one layer's worth, preventing OOM when weight + grad + all_opt_states exceeds available VRAM."""
+    """When optimizer CPU offload is enabled, perform the optimizer step per-transformer-layer instead of all-at-once. Each layer's states are moved to GPU, the step runs for that layer only, and states move back to CPU before the next layer. Reduces peak GPU optimizer-state memory from the full model's to about one layer's worth (two with stream overlap), preventing OOM when weight + grad + all_opt_states exceeds available VRAM."""
 
     optim_cpu_offload_stream: bool = False
     """When chunked optimizer CPU offload is enabled, overlap H2D (state→GPU) and D2H (state→CPU) transfers with optimizer compute using dedicated CUDA streams. Disabling simplifies the transfer logic to a sequential move→step→move loop at the cost of serializing transfers with compute."""
