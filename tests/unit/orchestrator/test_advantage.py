@@ -101,7 +101,7 @@ def _build_rollout(
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
         nodes=nodes,
         calls=calls,
-        rewards={"reward": reward},
+        rewards={"reward": vf.Reward(score=reward)},
         metrics=metrics or {},
     )
     rollout.env_name = env_name

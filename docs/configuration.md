@@ -150,19 +150,22 @@ Training environments are an array of tables — set one per env, optionally wit
 [[orchestrator.train.env]]
 name = "gsm8k"
 env.taskset = { id = "gsm8k-v1", split = "train" }
-env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+env.agent.harness = { id = "null" }
+env.agent.runtime = { type = "subprocess" }
 ratio = 3  # 75% of batches
 
 [[orchestrator.train.env]]
 name = "reverse-text"
 env.taskset = { id = "reverse-text-v1" }
-env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+env.agent.harness = { id = "null" }
+env.agent.runtime = { type = "subprocess" }
 ratio = 1  # default — 25% of batches
 
 [[orchestrator.eval.env]]
 name = "gsm8k-eval"
 env.taskset = { id = "gsm8k-v1", split = "test" }
-env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+env.agent.harness = { id = "null" }
+env.agent.runtime = { type = "subprocess" }
 ```
 
 `ratio` defaults to `1` (equal weight per env); values are relative weights normalized to probabilities across envs.

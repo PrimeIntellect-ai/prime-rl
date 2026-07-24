@@ -67,6 +67,7 @@ members = [
     "i3-science-v1",
     "ifbench-v1",
     "ifeval-v1",
+    "kuhn-poker-v1",
     "lean-v1",
     "livecodebench-v1",
     "longbenchpro-v1",
@@ -593,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "bfcl-v3-v1"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "deps/research-environments/environments/tool_use/bfcl_v3_v1" }
 dependencies = [
     { name = "bfcl-eval" },
@@ -605,7 +606,7 @@ dependencies = [
 requires-dist = [
     { name = "bfcl-eval", git = "https://github.com/mikasenghaas/gorilla.git?subdirectory=berkeley-function-call-leaderboard&rev=898763a" },
     { name = "soundfile", specifier = ">=0.13.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev21" },
 ]
 
 [[package]]
@@ -3230,6 +3231,17 @@ wheels = [
 ]
 
 [[package]]
+name = "kuhn-poker-v1"
+version = "0.1.0"
+source = { editable = "deps/verifiers/environments/kuhn_poker_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
+
+[[package]]
 name = "langdetect"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -3973,7 +3985,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "multi-swe-bench" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -4644,7 +4656,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -5325,7 +5337,7 @@ requires-dist = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.32"
+version = "0.2.33"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5335,9 +5347,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/62/fd/f57ad87b273ae1696ca620deaac2c56e28a54905d2d2791a5b9a387f443c/prime_sandboxes-0.2.32.tar.gz", hash = "sha256:ea3d6230cdfb5af2e4542814996257bad60fc9913f15f776a65ca1ef05f4f504", size = 77656, upload-time = "2026-07-17T17:41:02.296Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/15/a9/880685cefd503aa92d2b49da46b60ba807015f8839c344a83d8c5bc02f30/prime_sandboxes-0.2.33.tar.gz", hash = "sha256:4253a3c345ccf6c07b41a81790f8515763333f094d20bc405a257432461e81d8", size = 81228, upload-time = "2026-07-22T23:23:55.715Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/75/a3/c345509abf8f7707c0c3e9d6badba2e057781d1c05a88a46733ab67521e5/prime_sandboxes-0.2.32-py3-none-any.whl", hash = "sha256:4fe730622e51c489f8f86e7ad959fd8320db6d7a9fe22442ae3c680687da4c22", size = 40897, upload-time = "2026-07-17T17:41:00.935Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/1b/10b1044b8aaef561c32a34140f4a13c7310f73f92f9546337e2e8e6a5239/prime_sandboxes-0.2.33-py3-none-any.whl", hash = "sha256:92c9647557e76191ba926ac8ed01708de9ec4450142131b673cd5cf8d9d7ea56", size = 42773, upload-time = "2026-07-22T23:23:54.381Z" },
 ]
 
 [[package]]
@@ -6019,7 +6031,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -6334,7 +6346,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -6453,7 +6465,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.1" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev27" }]
 
 [[package]]
 name = "sentence-transformers"
@@ -6871,7 +6883,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.1" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev27" }]
 
 [[package]]
 name = "swebench-pro-v1"
@@ -6882,7 +6894,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.2.1" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.2.2.dev27" }]
 
 [[package]]
 name = "swebench-verified-v1"
@@ -6893,7 +6905,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.2.1" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.2.2.dev27" }]
 
 [[package]]
 name = "swelego-v1"
@@ -6907,7 +6919,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -6922,7 +6934,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -6946,7 +6958,7 @@ requires-dist = [
     { name = "datasets" },
     { name = "swebench" },
     { name = "swesmith", git = "https://github.com/SWE-bench/SWE-smith.git?rev=9b74ac0" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -7859,7 +7871,7 @@ requires-dist = [
     { name = "openai-agents", specifier = ">=0.8.2" },
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.2" },
-    { name = "prime-sandboxes", specifier = ">=0.2.31" },
+    { name = "prime-sandboxes", specifier = ">=0.2.33" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
@@ -7902,6 +7914,7 @@ examples = [
     { name = "deepwiki-v1", editable = "deps/verifiers/environments/deepwiki_v1" },
     { name = "glossary-v1", editable = "deps/verifiers/environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "deps/verifiers/environments/gsm8k_v1" },
+    { name = "kuhn-poker-v1", editable = "deps/verifiers/environments/kuhn_poker_v1" },
     { name = "openenv-wordle-v1", editable = "deps/verifiers/environments/openenv_wordle_v1" },
     { name = "proposer-solver-v1", editable = "deps/verifiers/environments/proposer_solver_v1" },
     { name = "reverse-text-v1", editable = "deps/verifiers/environments/reverse_text_v1" },
