@@ -124,6 +124,7 @@ def rl_local(config: RLConfig):
         "WANDB_SHARED_MODE": "1",
         "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex),
     }
+    inherited_env = dict(os.environ)
 
     # Validate client port matches inference server port
     if config.inference is not None and not config.orchestrator.model.client.is_elastic:
@@ -169,7 +170,7 @@ def rl_local(config: RLConfig):
                 inference_process = Popen(
                     inference_cmd,
                     env={
-                        **os.environ,
+                        **inherited_env,
                         **DEFAULT_COMMON_ENV_VARS,
                         **DEFAULT_INFERENCE_ENV_VARS,
                         **config.env_vars,
@@ -224,7 +225,7 @@ def rl_local(config: RLConfig):
                 stdout=log_file,
                 stderr=log_file,
                 env={
-                    **os.environ,
+                    **inherited_env,
                     **DEFAULT_COMMON_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
@@ -273,7 +274,7 @@ def rl_local(config: RLConfig):
             trainer_process = Popen(
                 trainer_cmd,
                 env={
-                    **os.environ,
+                    **inherited_env,
                     **DEFAULT_COMMON_ENV_VARS,
                     **DEFAULT_TRAINER_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",
@@ -371,7 +372,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
         kv_offload_device_name=offload.device_name if is_mooncake else "",
     )
-
     # Per-component env vars: launcher defaults (shared + multi-node-specific) with the
     # user's config merged on top. Runtime wiring stays in the template.
     trainer_env_vars = {

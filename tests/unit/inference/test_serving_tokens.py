@@ -11,9 +11,11 @@ deltas here:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 import numpy as np
 import pybase64
+import pytest
 from vllm.entrypoints.openai.engine.protocol import UsageInfo
 from vllm.entrypoints.serve.disagg.protocol import GenerateResponse, GenerateResponseChoice
 
@@ -267,3 +269,262 @@ def test_client_set_max_tokens_assumes_set_when_body_unreadable():
 
     # non-dict body → can't tell, don't override.
     assert asyncio.run(_client_set_max_tokens(_FakeRawRequest([1, 2, 3]))) is True
+
+
+def test_materialize_raw_image_ref_uses_generic_family_payload(monkeypatch):
+    import base64
+    from io import BytesIO
+
+    from PIL import Image
+    from renderers.mm_store import raw_mm_ref
+
+    from prime_rl.inference.vllm import serving_tokens
+
+    buf = BytesIO()
+    Image.new("RGB", (8, 6), color=(32, 64, 128)).save(buf, format="PNG")
+    raw_bytes = buf.getvalue()
+    image_data = "data:image/png;base64," + base64.b64encode(raw_bytes).decode("ascii")
+
+    mm_hash = hashlib.sha256(raw_bytes).hexdigest()[:32]
+    fingerprint = "f" * 32
+    raw_ref = raw_mm_ref(
+        family="test_family",
+        fingerprint=fingerprint,
+        modality="image",
+        mm_hash=mm_hash,
+        raw_image_data=image_data,
+        payload={"adapter_owned": [1, 2, 3]},
+    )
+    processor = object()
+    captured = {}
+
+    class _Adapter:
+        def materialize_for_vllm(self, image_processor, item, image, expected_placeholder_length):
+            captured["image_processor"] = image_processor
+            captured["item"] = item
+            captured["image_size"] = image.size
+            captured["expected_placeholder_length"] = expected_placeholder_length
+            return {"materialized": True}
+
+    def _get_adapter(family):
+        captured["family"] = family
+        return _Adapter()
+
+    monkeypatch.setattr(serving_tokens, "_load_image_processor", lambda _model, _trust: processor)
+    monkeypatch.setattr(serving_tokens, "get_multimodal_adapter", _get_adapter)
+
+    out = serving_tokens._materialize_raw_image_ref_sync(
+        raw_ref,
+        feature_modality="image",
+        mm_hash=mm_hash,
+        expected_placeholder_length=7,
+        processor_model_name="model",
+        trust_remote_code=True,
+    )
+
+    assert out == {"materialized": True}
+    assert captured["family"] == "test_family"
+    assert captured["image_processor"] is processor
+    assert captured["image_size"] == (8, 6)
+    assert captured["expected_placeholder_length"] == 7
+    item = captured["item"]
+    assert item.family == "test_family"
+    assert item.layout_fingerprint == fingerprint
+    assert item.raw_image_data == image_data
+    assert item.payload == {"adapter_owned": [1, 2, 3]}
+
+
+def test_materialize_raw_image_ref_maps_adapter_validation_error(monkeypatch):
+    from prime_rl.inference.vllm import serving_tokens
+
+    features = _mm_features()
+    raw_ref = features.kwargs_data["image"][0]
+    mm_hash = features.mm_hashes["image"][0]
+
+    class _InvalidAdapter:
+        def materialize_for_vllm(self, image_processor, item, image, expected_placeholder_length):
+            raise ValueError("image layout fingerprint mismatch")
+
+    monkeypatch.setattr(serving_tokens, "_load_image_processor", lambda _model, _trust: object())
+    monkeypatch.setattr(serving_tokens, "get_multimodal_adapter", lambda _family: _InvalidAdapter())
+
+    with pytest.raises(serving_tokens._MMImageRefError, match="image layout fingerprint mismatch") as exc_info:
+        serving_tokens._materialize_raw_image_ref_sync(
+            raw_ref,
+            feature_modality="image",
+            mm_hash=mm_hash,
+            expected_placeholder_length=7,
+            processor_model_name="model",
+            trust_remote_code=False,
+        )
+
+    assert exc_info.value.status_code == 400
+
+
+def _mm_features(*, image_seed: int = 0, placeholder_length: int = 7):
+    """A minimal ``GenerateRequest.features``-shaped object carrying one real raw ref."""
+    import base64
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    from PIL import Image
+    from renderers.mm_store import raw_mm_ref
+
+    buf = BytesIO()
+    Image.new("RGB", (8, 6), color=(image_seed % 255, 64, 128)).save(buf, format="PNG")
+    raw_bytes = buf.getvalue()
+    image_data = "data:image/png;base64," + base64.b64encode(raw_bytes).decode("ascii")
+
+    mm_hash = hashlib.sha256(raw_bytes).hexdigest()[:32]
+    raw_ref = raw_mm_ref(
+        family="test_family",
+        fingerprint="f" * 32,
+        modality="image",
+        mm_hash=mm_hash,
+        raw_image_data=image_data,
+        payload={},
+    )
+    return SimpleNamespace(
+        mm_hashes={"image": [mm_hash]},
+        kwargs_data={"image": [raw_ref]},
+        mm_placeholders={"image": [SimpleNamespace(offset=0, length=placeholder_length)]},
+    )
+
+
+def _patch_adapter(monkeypatch, calls: list, materialize=None):
+    from prime_rl.inference.vllm import serving_tokens
+
+    class _Adapter:
+        def materialize_for_vllm(self, image_processor, item, image, expected_placeholder_length):
+            calls.append(item.raw_ref)
+            if materialize is not None:
+                return materialize(item)
+            return {"materialized": item.raw_image_data}
+
+    monkeypatch.setattr(serving_tokens, "_load_image_processor", lambda _model, _trust: object())
+    monkeypatch.setattr(serving_tokens, "get_multimodal_adapter", lambda _family: _Adapter())
+
+
+def test_mm_materialize_cache_hit_skips_work(monkeypatch):
+    from prime_rl.inference.vllm import serving_tokens
+
+    calls: list = []
+    _patch_adapter(monkeypatch, calls)
+    cache = serving_tokens._MaterializedRefCache(max_bytes=1 << 20)
+    features = _mm_features()
+
+    async def _run():
+        first = await serving_tokens._decode_raw_mm_kwargs(
+            features, processor_model_name="model", trust_remote_code=False, cache=cache
+        )
+        second = await serving_tokens._decode_raw_mm_kwargs(
+            features, processor_model_name="model", trust_remote_code=False, cache=cache
+        )
+        return first, second
+
+    first, second = asyncio.run(_run())
+    assert len(calls) == 1
+    assert first["image"][0] is second["image"][0]
+    assert (cache.hits, cache.misses) == (1, 1)
+
+
+def test_mm_materialize_cache_does_not_alias_distinct_raw_refs(monkeypatch):
+    from prime_rl.inference.vllm import serving_tokens
+
+    calls: list = []
+    _patch_adapter(monkeypatch, calls)
+    cache = serving_tokens._MaterializedRefCache(max_bytes=1 << 20)
+    valid = _mm_features(image_seed=1)
+    forged = _mm_features(image_seed=2)
+    forged.mm_hashes["image"][0] = valid.mm_hashes["image"][0]
+
+    async def _run():
+        await serving_tokens._decode_raw_mm_kwargs(
+            valid, processor_model_name="model", trust_remote_code=False, cache=cache
+        )
+        await serving_tokens._decode_raw_mm_kwargs(
+            forged, processor_model_name="model", trust_remote_code=False, cache=cache
+        )
+
+    with pytest.raises(serving_tokens._MMImageRefError, match="Expected image hash"):
+        asyncio.run(_run())
+    assert len(calls) == 1
+    assert (cache.hits, cache.misses) == (0, 2)
+
+
+def test_mm_materialize_cache_byte_budget_evicts_oldest(monkeypatch):
+    from vllm.multimodal.cache import MultiModalCache
+
+    from prime_rl.inference.vllm import serving_tokens
+
+    calls: list = []
+    _patch_adapter(monkeypatch, calls)
+    monkeypatch.setattr(MultiModalCache, "get_item_size", classmethod(lambda _cls, _item: 60))
+    cache = serving_tokens._MaterializedRefCache(max_bytes=100)
+    features_a = _mm_features(image_seed=1)
+    features_b = _mm_features(image_seed=2)
+
+    async def _decode(features):
+        return await serving_tokens._decode_raw_mm_kwargs(
+            features, processor_model_name="model", trust_remote_code=False, cache=cache
+        )
+
+    asyncio.run(_decode(features_a))
+    asyncio.run(_decode(features_b))  # 60 + 60 > 100: evicts a
+    assert cache.evictions == 1
+    asyncio.run(_decode(features_a))  # miss again: re-materializes
+    assert len(calls) == 3
+    assert cache.misses == 3
+
+
+def test_mm_materialize_cache_failure_not_cached(monkeypatch):
+    import pytest
+
+    from prime_rl.inference.vllm import serving_tokens
+
+    calls: list = []
+    fail_first = {"remaining": 1}
+
+    def _materialize(item):
+        if fail_first["remaining"]:
+            fail_first["remaining"] -= 1
+            raise serving_tokens._MMImageRefError("transient failure")
+        return {"materialized": True}
+
+    _patch_adapter(monkeypatch, calls, materialize=_materialize)
+    cache = serving_tokens._MaterializedRefCache(max_bytes=1 << 20)
+    features = _mm_features()
+
+    async def _decode():
+        return await serving_tokens._decode_raw_mm_kwargs(
+            features, processor_model_name="model", trust_remote_code=False, cache=cache
+        )
+
+    with pytest.raises(serving_tokens._MMImageRefError):
+        asyncio.run(_decode())
+    out = asyncio.run(_decode())
+    assert out["image"][0] == {"materialized": True}
+    assert len(calls) == 2
+
+
+def test_mm_materialize_cache_single_flight(monkeypatch):
+    from prime_rl.inference.vllm import serving_tokens
+
+    calls: list = []
+    _patch_adapter(monkeypatch, calls)
+    cache = serving_tokens._MaterializedRefCache(max_bytes=1 << 20)
+    features = _mm_features()
+
+    async def _run():
+        return await asyncio.gather(
+            serving_tokens._decode_raw_mm_kwargs(
+                features, processor_model_name="model", trust_remote_code=False, cache=cache
+            ),
+            serving_tokens._decode_raw_mm_kwargs(
+                features, processor_model_name="model", trust_remote_code=False, cache=cache
+            ),
+        )
+
+    first, second = asyncio.run(_run())
+    assert len(calls) == 1
+    assert first["image"][0] is second["image"][0]

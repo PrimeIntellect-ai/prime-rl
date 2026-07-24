@@ -165,6 +165,30 @@ A few warnings are normal. Escalate when errors are persistent, growing, or hit 
 - **Trainer**: NCCL/CUDA errors, OOM, NaN loss or gradients.
 - **Inference**: NCCL/CUDA errors, OOM, request timeouts.
 
+### Multimodal image checks
+
+v1 multimodal RL keeps images inline: message content carries
+`data:image/...;base64` URLs end to end, and renderers emit raw descriptors
+embedding that inline source. Inference and trainer each materialize pixels
+from the inline data with their own image processor; nothing is written to a
+shared image directory.
+
+- Inference rejects bad refs with `invalid_mm_image_ref` 400s (hash mismatch,
+  fingerprint mismatch, undecodable inline data) — grep the inference log.
+- Inference caches materialized images by content hash and logs
+  `mm materialize cache: hits=X misses=Y hit_rate=Z% bytes=A/B evictions=C`
+  every 1000 lookups. Hit rate should climb after turn 1 of multi-turn
+  multimodal rollouts; a stuck-at-zero hit rate with repeat images means the
+  cache is disabled or thrashing (sized by `PRIME_RL_MM_MATERIALIZE_CACHE_GB`,
+  default 2.0, `0` disables).
+- The orchestrator raises on placeholder/token drift ("does not cover
+  image-typed tokens") before a sample ships — treat any occurrence as a bug,
+  not noise.
+- Trainer metrics: `mm/images_materialized` and `time/mm_materialize`.
+- Rollout records and traces carry the inline base64 images, so multimodal
+  runs produce large `results.jsonl` files and wire payloads that grow with
+  turn count — expected, not a leak.
+
 ### Process tree
 
 All processes use `setproctitle` so they're visible in `ps`/`htop`/`pstree`:

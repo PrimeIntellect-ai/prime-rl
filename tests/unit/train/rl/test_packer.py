@@ -1,7 +1,6 @@
 from pathlib import Path
 from typing import Generator
 
-import numpy as np
 import pytest
 import tomli_w
 import torch
@@ -13,7 +12,7 @@ from prime_rl.trainer.rl.packer import MultiPacker
 from prime_rl.trainer.runs import setup_multi_run_manager
 from prime_rl.trainer.utils import build_bin_cost
 from prime_rl.trainer.world import reset_world
-from prime_rl.transport.types import EncodedTensor, TrainingSample
+from prime_rl.transport.types import MMImageRef, MMRefs, TrainingSample
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -53,16 +52,8 @@ def make_training_sample() -> TrainingSample:
     )
 
 
-def _encoded_tensor(data, dtype) -> EncodedTensor:
-    arr = np.asarray(data, dtype=dtype)
-    return EncodedTensor(dtype=str(arr.dtype), shape=list(arr.shape), data=arr.tobytes())
-
-
-def _decode_encoded_tensor(encoded: EncodedTensor):
-    return np.frombuffer(encoded.data, dtype=np.dtype(encoded.dtype)).reshape(encoded.shape).tolist()
-
-
 def _mm_sample(value: float, env_name: str = "test-env") -> TrainingSample:
+    image_data = f"data:image/png;base64,{value}"
     return TrainingSample(
         token_ids=[1, 250, 2],
         mask=[False, True, True],
@@ -71,10 +62,23 @@ def _mm_sample(value: float, env_name: str = "test-env") -> TrainingSample:
         env_name=env_name,
         advantages=[0.0, 1.0, 1.0],
         mm_token_type_ids=[0, 1, 0],
-        mm_kwargs={
-            "pixel_values": _encoded_tensor([[value, value + 1]], np.float32),
-            "image_grid_thw": _encoded_tensor([[1, 2, 2]], np.int64),
-        },
+        mm_refs=MMRefs(
+            images=[
+                MMImageRef(
+                    item={
+                        "kind": "prime_raw_mm_item",
+                        "modality": "image",
+                        "family": "qwen_vl",
+                        "layout_fingerprint": "f" * 32,
+                        "raw_image_data": image_data,
+                        "payload": {"image_grid_thw": [[1, 1, 1]]},
+                    },
+                    hash="a" * 32,
+                    offset=1,
+                    length=1,
+                )
+            ]
+        ),
     )
 
 
@@ -177,7 +181,7 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     assert micro_batch.run_step == 1
 
 
-def test_multipacker_pack_preserves_mm_kwargs_modality_and_run_tagging(tmp_path, monkeypatch):
+def test_multipacker_pack_preserves_mm_modality_alignment_and_run_tagging(tmp_path, monkeypatch):
     """MultiPacker keeps multimodal and text microbatches aligned across ranks."""
     from prime_rl.trainer.batch import _is_multimodal_sample
 
@@ -205,7 +209,7 @@ def test_multipacker_pack_preserves_mm_kwargs_modality_and_run_tagging(tmp_path,
     assert mm_mbs, "no MM microbatches produced"
     real_run_idxs = set()
     for mb in mm_mbs:
-        assert mb.mm_kwargs is not None
+        assert mb.mm_refs is not None
         if any(mb.loss_mask):
             tagged = [i for i, n in enumerate(mb.lora_num_tokens) if n > 0]
             assert len(tagged) == 1 and mb.lora_num_tokens[tagged[0]] == len(mb.input_ids)
@@ -213,8 +217,8 @@ def test_multipacker_pack_preserves_mm_kwargs_modality_and_run_tagging(tmp_path,
     assert real_run_idxs == {a, b}, f"both runs' MM should be tagged; got {real_run_idxs}"
 
 
-def test_multipacker_packs_mm_kwargs_within_each_run(tmp_path, monkeypatch):
-    """Compatible eager multimodal samples pack within a run but never across runs."""
+def test_multipacker_packs_raw_mm_samples_within_each_run(tmp_path, monkeypatch):
+    """Same-family raw-ref samples pack within a run (offsets rebased) but never across runs."""
     from prime_rl.trainer.batch import _is_multimodal_sample
 
     manager, packer, sent = _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size=1, seq_len=12)
@@ -231,11 +235,8 @@ def test_multipacker_packs_mm_kwargs_within_each_run(tmp_path, monkeypatch):
     assert len(real_mm_mbs) == 2
     for mb in real_mm_mbs:
         assert len(mb.input_ids) == 6
-        assert mb.position_ids == [0, 1, 2, 0, 1, 2]
         assert mb.seq_lens == [3, 3]
-        assert mb.mm_kwargs is not None
-        assert mb.mm_kwargs["pixel_values"].shape == [2, 2]
-        assert mb.mm_kwargs["image_grid_thw"].shape == [2, 3]
-        assert len(_decode_encoded_tensor(mb.mm_kwargs["pixel_values"])) == 2
+        assert mb.mm_refs is not None and len(mb.mm_refs.images) == 2
+        assert [image.offset for image in mb.mm_refs.images] == [1, 4]
         tagged = [i for i, n in enumerate(mb.lora_num_tokens) if n > 0]
-        assert len(tagged) == 1
+        assert len(tagged) == 1 and mb.lora_num_tokens[tagged[0]] == 6

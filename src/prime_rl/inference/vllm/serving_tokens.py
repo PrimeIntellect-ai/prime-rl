@@ -4,7 +4,8 @@ vLLM 0.22 ships a generic tokens-in / tokens-out handler at
 ``vllm.entrypoints.serve.disagg.serving.ServingTokens`` that already covers
 prefix-cache salting, lora dispatch, multimodal features, prompt logprobs,
 priority, ``data_parallel_rank`` header routing and server-side ``max_tokens``
-defaulting. We subclass it for the bits still missing from the upstream handler:
+defaulting. We subclass it for prime-RL behavior that is still missing or
+customized:
 
 1. ``data_parallel_rank`` routing — read from the ``X-data-parallel-rank``
    header and forwarded to ``engine_client.generate``. Upstream ``ServingTokens``
@@ -15,7 +16,12 @@ defaulting. We subclass it for the bits still missing from the upstream handler:
    decisions, surface them as base64 raw-byte payloads without requiring a vLLM
    source fork.
 
-3. Server-side ``max_tokens`` defaulting — upstream ``ServingTokens`` now applies
+3. Raw image refs for multimodal rollouts — renderers send a lightweight raw
+   descriptor ref at every image slot (current and prior turns alike). This
+   handler materializes every ref through multimodal adapters before vLLM sees
+   the request.
+
+4. Server-side ``max_tokens`` defaulting — upstream ``ServingTokens`` now applies
    this itself (via ``GenerateRequest.is_sampling_param_provided`` +
    ``get_max_tokens``); we keep an equivalent guard so callers that omit
    ``max_tokens`` don't truncate at vLLM's 16-token ``SamplingParams`` default.
@@ -26,11 +32,20 @@ delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterable
-from functools import cached_property
+import asyncio
+import hashlib
+import logging
+import os
+from collections import OrderedDict
+from collections.abc import AsyncGenerator, AsyncIterable, Callable
+from dataclasses import dataclass
+from functools import cached_property, lru_cache
+from http import HTTPStatus
+from io import BytesIO
 from typing import Any
 
 from fastapi import Request
+from renderers.mm_store import decode_data_image_url
 from vllm.entrypoints.openai.engine.protocol import (
     ErrorResponse,
     PromptTokenUsageInfo,
@@ -44,10 +59,22 @@ from vllm.entrypoints.serve.disagg.protocol import (
 )
 from vllm.entrypoints.serve.disagg.serving import ServingTokens
 from vllm.entrypoints.serve.utils.api_utils import get_max_tokens
+from vllm.multimodal.cache import MultiModalCache
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
 from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
+from prime_rl.multimodal.registry import get_multimodal_adapter
+from prime_rl.multimodal.schema import RawMMItem
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _MMImageRefError(Exception):
+    message: str
+    err_type: str = "invalid_mm_image_ref"
+    status_code: HTTPStatus = HTTPStatus.BAD_REQUEST
 
 
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
@@ -147,8 +174,280 @@ async def _client_set_max_tokens(raw_request: Request | None) -> bool:
     return isinstance(sp, dict) and "max_tokens" in sp
 
 
+@lru_cache(maxsize=8)
+def _load_image_processor(model_name: str, trust_remote_code: bool):
+    from transformers import AutoProcessor
+
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+    image_processor = getattr(processor, "image_processor", None)
+    if image_processor is None:
+        raise ValueError(f"{model_name!r} does not expose an image_processor")
+    return image_processor
+
+
+def _parse_raw_image_ref(raw_ref: str, *, feature_modality: str, mm_hash: str):
+    from renderers.mm_store import split_raw_mm_ref
+
+    try:
+        ref = split_raw_mm_ref(raw_ref)
+    except ValueError as exc:
+        raise _MMImageRefError(str(exc)) from exc
+
+    if ref.modality != feature_modality:
+        raise _MMImageRefError(f"Expected feature modality {feature_modality!r}, got {ref.modality!r}")
+    if ref.mm_hash != mm_hash:
+        raise _MMImageRefError(f"Expected image hash {mm_hash}, got {ref.mm_hash}")
+    return ref
+
+
+def _read_verified_raw_image(ref) -> bytes:
+    try:
+        raw = decode_data_image_url(ref.raw_image_data)
+    except ValueError as exc:
+        raise _MMImageRefError(f"Unable to decode inline raw image data: {exc}") from exc
+
+    actual_hash = hashlib.sha256(raw).hexdigest()[:32]
+    if actual_hash != ref.mm_hash:
+        raise _MMImageRefError(f"Raw image hash mismatch: expected {ref.mm_hash}, got {actual_hash}")
+    return raw
+
+
+def _decode_raw_image(raw: bytes):
+    from PIL import Image
+
+    try:
+        return Image.open(BytesIO(raw)).convert("RGB")
+    except OSError as exc:
+        raise _MMImageRefError(f"Unable to decode inline raw image bytes: {exc}") from exc
+
+
+def _materialize_raw_image_ref_sync(
+    raw_ref: str,
+    *,
+    feature_modality: str,
+    mm_hash: str,
+    expected_placeholder_length: int,
+    processor_model_name: str,
+    trust_remote_code: bool,
+):
+    ref = _parse_raw_image_ref(raw_ref, feature_modality=feature_modality, mm_hash=mm_hash)
+    raw = _read_verified_raw_image(ref)
+    image = _decode_raw_image(raw)
+    image_processor = _load_image_processor(processor_model_name, trust_remote_code)
+    item = RawMMItem(
+        modality=ref.modality,
+        family=ref.family,
+        layout_fingerprint=ref.fingerprint,
+        raw_image_data=ref.raw_image_data,
+        payload=dict(ref.payload),
+        raw_ref=raw_ref,
+    )
+    try:
+        adapter = get_multimodal_adapter(ref.family)
+        return adapter.materialize_for_vllm(
+            image_processor,
+            item,
+            image,
+            expected_placeholder_length,
+        )
+    except (TypeError, ValueError) as exc:
+        raise _MMImageRefError(str(exc)) from exc
+
+
+# (raw_ref_digest, feature_modality, mm_hash, expected_placeholder_length,
+# processor_model_name, trust_remote_code). The digest keeps keys small while
+# ensuring a distinct descriptor can never alias an already-validated cache
+# entry, even when its outer hash/placeholder metadata is forged or stale.
+_MaterializeKey = tuple[str, str, str, int, str, bool]
+
+_MM_MATERIALIZE_CACHE_GB_ENV = "PRIME_RL_MM_MATERIALIZE_CACHE_GB"
+_MM_MATERIALIZE_LOG_EVERY = 1000
+
+
+class _MaterializedRefCache:
+    """Byte-bounded LRU of materialized raw image refs, with single-flight misses.
+
+    Every request carries a ref for every image in its prompt (prior turns included),
+    so multi-turn rollouts re-materialize the same images once per turn per rollout —
+    this cache turns those repeats into lookups. Keys are content-addressed, so
+    entries can only go cold, never stale: a post-eviction request simply misses and
+    re-materializes from the durable ``file://`` asset.
+
+    All mutation happens on the event loop thread (materialization itself runs in a
+    worker thread via ``asyncio.to_thread``, but lookup/insertion/eviction happen in
+    the async caller) — so no lock is needed. Do not touch this cache from sync code.
+
+    ``max_bytes == 0`` disables caching and single-flight entirely: every call runs
+    the materializer, byte-identical to the uncached path.
+
+    Host-RAM note: this budget is additive to vLLM's own processor cache
+    (``mm_processor_cache_gb × (api_server_count + data_parallel_size)``).
+    """
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        self._items: OrderedDict[_MaterializeKey, tuple[Any, int]] = OrderedDict()
+        self._inflight: dict[_MaterializeKey, asyncio.Future] = {}
+        self._bytes = 0
+        self.hits = 0
+        self.misses = 0
+        self.evictions = 0
+
+    async def get_or_materialize(self, key: _MaterializeKey, materialize_fn: Callable[[], Any]) -> Any:
+        if self.max_bytes == 0:
+            return await asyncio.to_thread(materialize_fn)
+        if key in self._items:
+            self._items.move_to_end(key)
+            self.hits += 1
+            self._maybe_log()
+            return self._items[key][0]
+        if (inflight := self._inflight.get(key)) is not None:
+            self.hits += 1
+            self._maybe_log()
+            return await asyncio.shield(inflight)
+        self.misses += 1
+        self._maybe_log()
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._inflight[key] = future
+
+        async def _materialize_and_resolve() -> None:
+            try:
+                item = await asyncio.to_thread(materialize_fn)
+            except BaseException as exc:
+                # Never cache a failure: the exception propagates to every awaiter
+                # and the next request for this key retries cleanly.
+                future.set_exception(exc)
+                # A never-awaited errored future logs a spurious warning at GC.
+                future.exception()
+            else:
+                future.set_result(item)
+                self._insert(key, item)
+            finally:
+                del self._inflight[key]
+
+        # The work runs as its own task and awaiters shield the shared future:
+        # a cancelled request (client disconnect) must neither poison the future
+        # for deduped awaiters nor cancel it out from under them.
+        asyncio.get_running_loop().create_task(_materialize_and_resolve())
+        return await asyncio.shield(future)
+
+    def _insert(self, key: _MaterializeKey, item: Any) -> None:
+        nbytes = MultiModalCache.get_item_size(item)
+        if nbytes > self.max_bytes:
+            # Don't churn the whole cache for one oversized entry.
+            return
+        self._items[key] = (item, nbytes)
+        self._bytes += nbytes
+        while self._bytes > self.max_bytes:
+            _, (_, evicted_bytes) = self._items.popitem(last=False)
+            self._bytes -= evicted_bytes
+            self.evictions += 1
+
+    def _maybe_log(self) -> None:
+        total = self.hits + self.misses
+        if total % _MM_MATERIALIZE_LOG_EVERY == 0:
+            logger.info(
+                "mm materialize cache: hits=%d misses=%d hit_rate=%.1f%% bytes=%d/%d evictions=%d",
+                self.hits,
+                self.misses,
+                100.0 * self.hits / total,
+                self._bytes,
+                self.max_bytes,
+                self.evictions,
+            )
+
+
+def _raw_ref_payloads_for_feature(
+    features: Any, feature_modality: str, hashes: list[str]
+) -> tuple[list[str], list[Any]]:
+    from renderers.mm_store import is_raw_mm_ref
+
+    kwargs_data = features.kwargs_data
+    if kwargs_data is None or feature_modality not in kwargs_data:
+        raise _MMImageRefError(f"v1 raw multimodal: modality {feature_modality!r} arrived with no raw refs")
+
+    raw_refs = kwargs_data[feature_modality]
+    placeholders = features.mm_placeholders.get(feature_modality)
+    if placeholders is None:
+        raise _MMImageRefError(f"v1 raw multimodal: modality {feature_modality!r} arrived with no placeholders")
+    if len(raw_refs) != len(hashes):
+        raise _MMImageRefError(
+            f"Multimodal kwargs/hash length mismatch for {feature_modality}: {len(raw_refs)} != {len(hashes)}"
+        )
+    if len(placeholders) != len(hashes):
+        raise _MMImageRefError(
+            f"Multimodal placeholder/hash length mismatch for {feature_modality}: {len(placeholders)} != {len(hashes)}"
+        )
+    if not all(is_raw_mm_ref(item) for item in raw_refs):
+        raise _MMImageRefError("v1 multimodal inference accepts raw descriptor refs only")
+    return raw_refs, placeholders
+
+
+async def _decode_raw_mm_kwargs(
+    features: Any,
+    *,
+    processor_model_name: str,
+    trust_remote_code: bool,
+    cache: _MaterializedRefCache,
+) -> dict[str, list[Any]]:
+    # Flatten across modalities so every image in the request materializes
+    # concurrently; single-flight in the cache dedupes identical refs across
+    # (and within) requests. Fresh lists per request — vLLM's cache-injection
+    # path replaces list elements in place, so never hand it cache-owned lists.
+    flat: list[tuple[str, str, str, Any]] = []
+    for feature_modality, hashes in features.mm_hashes.items():
+        raw_refs, placeholders = _raw_ref_payloads_for_feature(features, feature_modality, hashes)
+        flat.extend(zip([feature_modality] * len(hashes), raw_refs, hashes, placeholders, strict=True))
+
+    def _materialize(feature_modality: str, raw_ref: str, mm_hash: str, placeholder: Any):
+        return _materialize_raw_image_ref_sync(
+            raw_ref,
+            feature_modality=feature_modality,
+            mm_hash=mm_hash,
+            expected_placeholder_length=placeholder.length,
+            processor_model_name=processor_model_name,
+            trust_remote_code=trust_remote_code,
+        )
+
+    decoded = await asyncio.gather(
+        *(
+            cache.get_or_materialize(
+                (
+                    hashlib.sha256(raw_ref.encode("utf-8")).hexdigest(),
+                    feature_modality,
+                    mm_hash,
+                    placeholder.length,
+                    processor_model_name,
+                    trust_remote_code,
+                ),
+                lambda fm=feature_modality, r=raw_ref, h=mm_hash, p=placeholder: _materialize(fm, r, h, p),
+            )
+            for feature_modality, raw_ref, mm_hash, placeholder in flat
+        )
+    )
+
+    mm_kwargs: dict[str, list[Any]] = {feature_modality: [] for feature_modality in features.mm_hashes}
+    for (feature_modality, _, _, _), item in zip(flat, decoded, strict=True):
+        mm_kwargs[feature_modality].append(item)
+    return mm_kwargs
+
+
 class PrimeRlServingTokens(ServingTokens):
-    """ServingTokens + DP-rank routing + compact routed experts + max_tokens defaulting."""
+    """ServingTokens + DP-rank routing + routed experts + raw image refs + max_tokens defaulting."""
+
+    @cached_property
+    def _mm_materialize_cache(self) -> _MaterializedRefCache:
+        """Materialized-ref cache, sized by ``PRIME_RL_MM_MATERIALIZE_CACHE_GB``
+        (float GiB, default 2.0, ``0`` disables — the kill switch: disabled is
+        byte-identical to the uncached path).
+
+        A ``cached_property`` because ``custom_init_app_state`` grafts this
+        subclass via ``object.__new__`` + ``__dict__.update``, so ``__init__``
+        never runs (see ``_max_tokens_defaults``). One frontend process serves
+        all DP ranks of an engine, so the cache is shared across ranks.
+        """
+        gb = float(os.environ.get(_MM_MATERIALIZE_CACHE_GB_ENV, "2.0"))
+        return _MaterializedRefCache(max_bytes=int(gb * (1 << 30)))
 
     @cached_property
     def _max_tokens_defaults(self) -> tuple[dict, int | None]:
@@ -198,26 +497,29 @@ class PrimeRlServingTokens(ServingTokens):
             raw_request.state.request_metadata = request_metadata
 
         # Build the engine input — features-aware (MM) or text-only fallback.
-        # Identical to upstream so we keep tracking it.
         if features := request.features:
-            from vllm.entrypoints.serve.disagg.mm_serde import decode_mm_kwargs_item
             from vllm.inputs import mm_input
-            from vllm.multimodal.inputs import (
-                MultiModalKwargsItem,
-                PlaceholderRange,
-            )
+            from vllm.multimodal.inputs import PlaceholderRange
 
             mm_placeholders = {
                 modality: [PlaceholderRange(offset=p.offset, length=p.length) for p in ranges]
                 for modality, ranges in features.mm_placeholders.items()
             }
-            mm_kwargs: dict[str, list[MultiModalKwargsItem | None]] = {}
-            if features.kwargs_data is not None:
-                for modality, items in features.kwargs_data.items():
-                    mm_kwargs[modality] = [decode_mm_kwargs_item(item) if item is not None else None for item in items]
-            else:
-                for modality, hashes in features.mm_hashes.items():
-                    mm_kwargs[modality] = [None] * len(hashes)
+            processor_model_name = getattr(self.model_config, "model", None) or model_name
+            trust_remote_code = bool(getattr(self.model_config, "trust_remote_code", False))
+            try:
+                mm_kwargs = await _decode_raw_mm_kwargs(
+                    features,
+                    processor_model_name=processor_model_name,
+                    trust_remote_code=trust_remote_code,
+                    cache=self._mm_materialize_cache,
+                )
+            except _MMImageRefError as exc:
+                return self.create_error_response(
+                    message=exc.message,
+                    err_type=exc.err_type,
+                    status_code=exc.status_code,
+                )
             engine_input = mm_input(
                 prompt_token_ids=request.token_ids,
                 mm_kwargs=mm_kwargs,  # type: ignore[arg-type]

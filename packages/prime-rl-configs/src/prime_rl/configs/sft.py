@@ -249,6 +249,23 @@ class SFTConfig(BaseConfig):
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
     @model_validator(mode="after")
+    def renderer_emits_processed_multimodal(self):
+        """SFT consumes processed pixel tensors straight from the renderer — it has no
+        raw-ref materializer, so the renderers-library default of ``multimodal_output='raw'``
+        (built for the RL offload path) would silently ship JSON descriptors into training.
+        Default SFT renderers to ``'processed'`` and reject an explicit ``'raw'``."""
+        if "multimodal_output" in self.renderer.model_fields_set:
+            if self.renderer.multimodal_output == "raw":
+                raise ValueError(
+                    "multimodal_output='raw' is unsupported for SFT: the SFT data path materializes "
+                    "images from processed renderer output, not raw refs. Remove the override "
+                    "(SFT defaults to 'processed')."
+                )
+        else:
+            self.renderer = self.renderer.model_copy(update={"multimodal_output": "processed"})
+        return self
+
+    @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
         if self.model.ep_comm_backend == "deepep" and self.optim.max_norm is not None:
             warnings.warn(

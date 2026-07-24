@@ -98,7 +98,8 @@ VLM training requires a registered custom PrimeRL implementation.
 
 ### Limitations
 
-- **Vision encoder frozen by default.** The default LoRA targets do not match Qwen3.5 vision modules. Set `freeze_vision_encoder = false` to fine-tune the encoder; this is incompatible with LoRA because LoRA freezes all non-adapter parameters.
+- **Vision encoder frozen by default.** The default LoRA targets do not match Qwen3.5 vision modules. Set `freeze_vision_encoder = false` to fine-tune it; in that case it's FSDP-sharded per block. The combination `freeze_vision_encoder = false` + LoRA is rejected by a config validator — LoRA freezes everything non-adapter, so unfreezing the encoder under LoRA would be a silent no-op.
+- **Truncation cuts at image boundaries.** Raw multimodal samples that exceed `seq_len` are truncated before packing at the start of the first image that doesn't fit — an image placeholder span is never split, and refs for dropped images are discarded. A sample whose leading image alone exceeds `seq_len` is rejected.
 - **bfloat16 mandatory.** The trainer config validator refuses any other `optimization_dtype` / `reduce_dtype` for VLMs — vLLM serves VLMs in bfloat16 and a mismatch breaks the importance ratio.
 - **Higher KL mismatch with multi-image inputs.** Expect noisier `mismatch_kl` than text-only; this is from minor numerical differences between the trainer's and vLLM's image processing.
 - **Images aren't logged to monitors.** Sample logging captures the prompt text but not the actual images.
