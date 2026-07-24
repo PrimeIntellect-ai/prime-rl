@@ -227,6 +227,7 @@ def rl_local(config: RLConfig):
                 stdout=log_file,
                 stderr=log_file,
                 env={
+                    **inherited_env,
                     **writer_run_asset_env,
                     **DEFAULT_COMMON_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",
