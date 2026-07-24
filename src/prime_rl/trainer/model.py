@@ -32,6 +32,7 @@ from prime_rl.configs.trainer import (
     FP8Config,
     ModelConfig,
     MXFP8Config,
+    NVFP4Config,
     TokenizerConfig,
 )
 from prime_rl.trainer.distributed import DeepEPExpertParallel, MXFP8AllToAllExpertParallel
@@ -55,6 +56,7 @@ from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
+from prime_rl.trainer.models.layers.nvfp4_grouped_gemm import apply_nvfp4_moe_grouped_gemm
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -594,6 +596,7 @@ def get_model(
     # DeepGEMM FP8 grouped GEMM. MXFP8 grouped GEMM is applied by wrapping the expert
     # weights with torchao (see apply_quantization), so it leaves this flag False and
     # the experts keep calling torch._grouped_mm — which the wrapper tensor intercepts.
+    # NVFP4 is likewise selected on GroupedExperts after model construction.
     model_config.fp8 = isinstance(config.quantization, FP8Config) and config.quantization.enable_grouped_gemm
 
     if config.index_cache is not None:
@@ -1144,8 +1147,9 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
     Runs after the LM head is injected but before LoRA / EP / FSDP so the swapped
     modules and wrapped parameters are picked up by the later parallelisms. The
     FP8 grouped GEMM (DeepGEMM) is gated separately via ``model_config.fp8`` since
-    it lives inside the modeling code; here we only handle the dense-linear swap
-    and the torchao MXFP8 expert-weight wrapping.
+    it lives inside the modeling code; here we handle dense-linear swaps,
+    torchao MXFP8 expert-weight wrapping, and selection of the native NVFP4
+    grouped-expert path.
     """
     quant = config.quantization
     if quant is None:
@@ -1162,6 +1166,13 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
         if quant.enable_grouped_gemm:
             apply_mxfp8_moe_grouped_gemm(model, recipe=quant.recipe)
+    elif isinstance(quant, NVFP4Config):
+        capability = torch.cuda.get_device_capability()
+        if capability < (10, 0):
+            raise ValueError(
+                f"NVFP4 quantization requires SM100 (Blackwell) or newer, but device is SM{capability[0]}{capability[1]}."
+            )
+        apply_nvfp4_moe_grouped_gemm(model)
 
 
 def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):

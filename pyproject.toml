@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = "~=3.12.0"
 dependencies = [
     "prime-rl-configs",
+    "prime-rl-kernels",
     "prime-pydantic-config",
     "beartype>=0.21.0",
     "datasets>=4.0.0",
@@ -181,6 +182,7 @@ torchao = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
+prime-rl-kernels = { path = "packages/prime-rl-kernels", editable = true }
 # prime-rl depends on the one `verifiers` package (v0 + v1 + the legacy bridge + the built-in v1
 # harnesses/tasksets, now bundled in verifiers.v1). v0 envs resolve from
 # deps/{verifiers,research-environments}/environments; v1 tasksets (`-v1`) and the `compact`
