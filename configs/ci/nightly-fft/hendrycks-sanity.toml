@@ -36,6 +36,7 @@ group_size = 32
 
 [trainer.model]
 seq_len = 16384
+attn = "flash_attention_2"
 
 [inference.parallel]
 dp = 4
