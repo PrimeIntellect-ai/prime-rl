@@ -1,3 +1,5 @@
+image_tag = "commit-c505e07a1"
+
 max_steps = 20
 seq_len = 2048
 
