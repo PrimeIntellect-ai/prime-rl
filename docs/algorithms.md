@@ -182,7 +182,7 @@ The orchestrator stamps each sample's component membership as per-token weight s
 
 ### Default RL Loss
 
-The default RL loss is a DPPO policy-gradient term combined with a KL regularizer similar to Kimi-K2.5. For each prompt $x_j$ we sample a group of $G$ rollouts $\{y_i\}_{i=1}^G$, score them to get $s_i$, then optimize:
+The default RL loss is a DPPO policy-gradient term ([DPPO-Binary TV Loss](https://arxiv.org/abs/2602.04879)) combined with a KL regularizer similar to Kimi-K2.5 ([Kimi-K2.5 KL Loss](https://arxiv.org/abs/2602.02276)). For each prompt $x_j$ we sample a group of $G$ rollouts $\{y_i\}_{i=1}^G$, score them to get $s_i$, then optimize:
 
 $$
 \mathcal{L}(\theta) = -\,\mathcal{J}_{\text{PG}}(\theta) \;+\; \tau_{KL}\,\mathcal{L}_{KL}(\theta)
@@ -194,7 +194,17 @@ $$
 \mathcal{J}_{\text{PG}}(\theta)
 = \frac{1}{\sum_{j,i} |y_i^{(j)}|}
 \sum_{j,i,t}
-\min\!\left(\frac{\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}{\mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}, \delta\right) \hat{A}^{(j)}_{i,t}
+m_{i,t}^{(j)} \, \frac{\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}{\mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})} \, \hat{A}^{(j)}_{i,t}
+$$
+
+with the per-token indicator
+
+$$
+m_{i,t}^{(j)} =
+\begin{cases}
+\mathbb{1}\!\left[\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)}) - \mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)}) \le \texttt{dppo\_mask\_high}\right] & \hat{A}^{(j)}_{i,t} > 0 \\[4pt]
+\mathbb{1}\!\left[\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)}) - \mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)}) \ge -\texttt{dppo\_mask\_low}\right] & \hat{A}^{(j)}_{i,t} < 0
+\end{cases}
 $$
 
 and the KL regularizer penalizes drift between trainer and inference policies via the squared log importance ratio:
@@ -204,7 +214,7 @@ $$
 \sum_{j,i,t} \log^2\!\left(\frac{\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}{\mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}\right).
 $$
 
-$\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), $\hat{A}_{i,t}$ is the token-level advantage, $\delta$ is the importance-sampling clipping ratio, and $\tau_{KL}$ is the KL temperature. The `min` clamps the importance ratio from above so a stale rollout assigning very low probability to a high-reward token doesn't produce a runaway gradient.
+$\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), and $\hat{A}_{i,t}$ is the token-level advantage. Rather than clamping the importance ratio, the trust region is enforced by **excluding** tokens from the policy-gradient term: the mask is conditioned on the advantage sign, thresholding the *probability-space* gap $\pi - \mu$ (not the ratio) against `dppo_mask_high` / `dppo_mask_low`. For positive-advantage tokens, an upweight violation (probability increased by more than `dppo_mask_high`) is masked out; for negative-advantage tokens, a downweight violation (probability decreased by more than `dppo_mask_low`) is masked out. Kept tokens contribute the raw, unclamped importance ratio $\pi/\mu$. $\tau_{KL}$ is the KL temperature.
 
 The knobs (under `[trainer.loss]` with `type = "default"`):
 
