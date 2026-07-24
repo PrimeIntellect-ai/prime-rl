@@ -15,8 +15,6 @@ import wandb_workspaces.workspaces as ws
 from transformers.tokenization_utils import PreTrainedTokenizer
 from wandb.errors import CommError
 from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
-from wandb_gql import gql
-
 from prime_rl.configs.shared import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
@@ -381,16 +379,14 @@ def build_sections(train_envs: Sequence[str] = (), eval_envs: Sequence[str] = ()
 
 def list_views(entity: str, project: str) -> list[tuple[str, str]]:
     """``(display_name, internal_name)`` for every saved view in the project."""
-    query = gql(
-        """
+    query = """
         query Views($entity: String!, $project: String!) {
           project(name: $project, entityName: $entity) {
             allViews(viewType: "project-view") { edges { node { name displayName } } }
           }
         }
-        """
-    )
-    res = wandb.Api().client.execute(query, variable_values={"entity": entity, "project": project})
+    """
+    res = wandb.Api()._service_api.execute_graphql(query, {"entity": entity, "project": project})
     edges = ((res.get("project") or {}).get("allViews") or {}).get("edges") or []
     return [(e["node"]["displayName"], e["node"]["name"]) for e in edges if e.get("node")]
 
