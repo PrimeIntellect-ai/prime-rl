@@ -316,14 +316,15 @@ class Orchestrator:
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
             )
         elif config.weight_broadcast.type == "nixl":
-            await init_nixl_broadcast(
-                self.policy_inference.admin_clients,
-                config.weight_broadcast.host,
-                config.weight_broadcast.port,
-                config.weight_broadcast.timeout,
-                config.weight_broadcast.inference_world_size,
-                config.weight_broadcast.session_id,
-            )
+            if config.weight_broadcast.router_url is None:
+                await init_nixl_broadcast(
+                    self.policy_inference.admin_clients,
+                    config.weight_broadcast.host,
+                    config.weight_broadcast.port,
+                    config.weight_broadcast.timeout,
+                    config.weight_broadcast.inference_world_size,
+                    config.weight_broadcast.session_id,
+                )
             self.model_express = ModelExpressSession(
                 client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
                 role="orchestrator",
@@ -364,6 +365,14 @@ class Orchestrator:
                 )
             if self.model_express is not None:
                 await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
+                if config.weight_broadcast.type == "nixl" and config.weight_broadcast.router_url is not None:
+                    await asyncio.to_thread(
+                        self.model_express.wait_for,
+                        "trainer",
+                        count=1,
+                        status=p2p_pb2.SOURCE_STATUS_READY,
+                        timeout=config.weight_broadcast.timeout,
+                    )
             await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
             if self.model_express is not None:
                 await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)

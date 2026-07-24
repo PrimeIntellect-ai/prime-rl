@@ -147,6 +147,9 @@ class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     session_id: str = "default"
     """ModelExpress session ID."""
 
+    router_url: str | None = None
+    """Inference router URL used to discover NIXL transfer workers."""
+
 
 class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
@@ -404,7 +407,10 @@ class RLConfig(BaseConfig):
                 trainer_config_type = TrainerNCCLWeightBroadcastConfig
                 orchestrator_config_type = OrchestratorNCCLWeightBroadcastConfig
             else:
-                transport_config = dict(session_id=self.weight_broadcast.session_id)
+                transport_config = dict(
+                    session_id=self.weight_broadcast.session_id,
+                    router_url=self.weight_broadcast.router_url,
+                )
                 trainer_config_type = TrainerNIXLWeightBroadcastConfig
                 orchestrator_config_type = OrchestratorNIXLWeightBroadcastConfig
             self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
