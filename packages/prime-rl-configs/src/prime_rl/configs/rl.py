@@ -529,7 +529,7 @@ class RLConfig(BaseConfig):
         (after InferenceConfig's own validators, which therefore miss it).
         """
         if self.inference is not None and self.inference.enable_return_routed_experts:
-            router = getattr(self.inference.deployment, "router", None)
+            router = self.inference.router
             if router is not None and router.type == "llm-d":
                 raise ValueError(
                     "The llm-d router backend does not support routed-expert return "
@@ -537,6 +537,12 @@ class RLConfig(BaseConfig):
                     "breaks P/D and is unverified for multi-node. Use router type 'vllm-router' "
                     "for router-replay runs."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_multi_node_requires_router(self):
+        if self.deployment.type == "multi_node" and self.inference is not None and self.inference.router is None:
+            raise ValueError("Multi-node deployments require inference.router to front the per-rank engines.")
         return self
 
     @model_validator(mode="after")
@@ -728,6 +734,15 @@ class RLConfig(BaseConfig):
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
             client.base_url = [f"http://{host}:{port}/v1"]
+        if (
+            self.deployment.type == "single_node"
+            and self.inference.router is not None
+            and "admin_base_url" not in client.model_fields_set
+        ):
+            # Admin ops (pause/update_weights/resume) must bypass the router and hit
+            # the engine directly; multi-node runs get ADMIN_URLS from the sbatch.
+            host = self.inference.server.host or "localhost"
+            client.admin_base_url = [f"http://{host}:{self.inference.backend_port}/v1"]
         return self
 
     @model_validator(mode="after")

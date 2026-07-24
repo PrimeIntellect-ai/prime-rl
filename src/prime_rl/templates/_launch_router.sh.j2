@@ -1,21 +1,23 @@
-{# Shared router launch helper, included once per template and called by the
-   replica-head rank. The router backend (vllm-router vs llm-d EPP+Envoy) is
-   chosen here via router.type, so the call sites stay router-agnostic.
-   node_base/node_count locate this replica's nodes in HOSTNAMES for llm-d
-   endpoint discovery (disagg uses NUM_PREFILL_NODES/NUM_DECODE_NODES). #}
-# launch_router <mode:pd|regular> <worker_args> <port> <policy> <log> <replica_idx> <node_base> [node_count]
+{# Shared launch helper for the single global router, included once per template
+   and called by inference node 0. The router backend (vllm-router vs llm-d
+   EPP+Envoy) is chosen here via router.type, so the call sites stay
+   router-agnostic. llm-d endpoint discovery enumerates every inference node:
+   all nodes for regular mode; for disaggregated mode all prefill nodes across
+   replicas, then all decode nodes (matching the logical node order in
+   endpoints.yaml). #}
+# launch_router <mode:pd|regular> <worker_args> <port> <policy> <log>
 launch_router() {
-    local mode="$1" worker_args="$2" port="$3" policy="$4" log="$5" replica="${6:-0}" node_base="${7:-0}" node_count="${8:-0}"
+    local mode="$1" worker_args="$2" port="$3" policy="$4" log="$5"
 {%- if router.type == "llm-d" %}
-    echo "Starting llm-d router (EPP+Envoy) on $LOCAL_IP:$port for replica $replica" | tee "$log"
+    echo "Starting llm-d router (EPP+Envoy) on $LOCAL_IP:$port" | tee "$log"
     export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
-    local LLMD_DIR="$OUTPUT_DIR/logs/inference/llmd_${replica}"
+    local LLMD_DIR="$OUTPUT_DIR/logs/inference/llmd"
     mkdir -p "$LLMD_DIR"
     read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
 {%- if is_disaggregated %}
 {%- set ep_disaggregated = true %}
-{%- set ep_num_prefill = num_prefill_nodes %}
-{%- set ep_num_decode = num_decode_nodes %}
+{%- set ep_num_prefill = num_prefill_nodes * (num_infer_replicas | default(1)) %}
+{%- set ep_num_decode = num_decode_nodes * (num_infer_replicas | default(1)) %}
 {%- set ep_dp = dp_per_node %}
 {%- set ep_prefill_port = prefill_port %}
 {%- set ep_sidecar_port = router.decode_sidecar_port %}
@@ -25,12 +27,22 @@ LLMD_EOF
     cat > "$LLMD_DIR/endpoints.yaml" <<LLMD_EOF
 {% include 'llmd/endpoints.yaml.j2' %}
 LLMD_EOF
-    local node=0 ip
-    for ((p=0; p<NUM_PREFILL_NODES; p++)); do ip=$(getent hosts "${HOSTNAMES[$((node_base + p))]}" | awk "{print \$1}"); sed -i "s|__LLMD_ADDR_${node}__|${ip}|g" "$LLMD_DIR/endpoints.yaml"; node=$((node + 1)); done
-    for ((d=0; d<NUM_DECODE_NODES; d++)); do ip=$(getent hosts "${HOSTNAMES[$((node_base + NUM_PREFILL_NODES + d))]}" | awk "{print \$1}"); sed -i "s|__LLMD_ADDR_${node}__|${ip}|g" "$LLMD_DIR/endpoints.yaml"; node=$((node + 1)); done
+    local node=0 ip reps=${NUM_INFER_REPLICAS:-1} span=${NODES_PER_INFER_REPLICA:-$((NUM_PREFILL_NODES + NUM_DECODE_NODES))}
+    for ((rr=0; rr<reps; rr++)); do
+        for ((p=0; p<NUM_PREFILL_NODES; p++)); do
+            ip=$(getent hosts "${HOSTNAMES[$((rr * span + p))]}" | awk "{print \$1}")
+            sed -i "s|__LLMD_ADDR_${node}__|${ip}|g" "$LLMD_DIR/endpoints.yaml"; node=$((node + 1))
+        done
+    done
+    for ((rr=0; rr<reps; rr++)); do
+        for ((d=0; d<NUM_DECODE_NODES; d++)); do
+            ip=$(getent hosts "${HOSTNAMES[$((rr * span + NUM_PREFILL_NODES + d))]}" | awk "{print \$1}")
+            sed -i "s|__LLMD_ADDR_${node}__|${ip}|g" "$LLMD_DIR/endpoints.yaml"; node=$((node + 1))
+        done
+    done
 {%- else %}
 {%- set ep_disaggregated = false %}
-{%- set ep_num_nodes = infer_nodes_per_replica %}
+{%- set ep_num_nodes = num_infer_nodes | default(num_nodes) %}
 {%- set ep_dp = dp_per_node %}
 {%- set ep_backend_port = backend_port %}
     cat > "$LLMD_DIR/epp.yaml" <<LLMD_EOF
@@ -40,13 +52,16 @@ LLMD_EOF
 {% include 'llmd/endpoints.yaml.j2' %}
 LLMD_EOF
     local ip
-    for ((n=0; n<node_count; n++)); do ip=$(getent hosts "${HOSTNAMES[$((node_base + n))]}" | awk "{print \$1}"); sed -i "s|__LLMD_ADDR_${n}__|${ip}|g" "$LLMD_DIR/endpoints.yaml"; done
+    for ((n=0; n<{{ ep_num_nodes }}; n++)); do
+        ip=$(getent hosts "${HOSTNAMES[$n]}" | awk "{print \$1}")
+        sed -i "s|__LLMD_ADDR_${n}__|${ip}|g" "$LLMD_DIR/endpoints.yaml"
+    done
 {%- endif %}
     cat > "$LLMD_DIR/envoy.yaml" <<LLMD_EOF
 {% include 'llmd/envoy.yaml.j2' %}
 LLMD_EOF
     # grpc-health-port avoids 9003: mooncake_master runs its metrics server on 9003 and
-    # shares the replica-head node with the EPP, so 9003 would fail to bind and kill the EPP.
+    # shares node 0 with the EPP, so 9003 would fail to bind and kill the EPP.
     epp --pool-name prime-rl --pool-namespace slurm \
         --config-file "$LLMD_DIR/epp.yaml" \
         --grpc-port 9002 --grpc-health-port 9013 --metrics-port 9090 \
@@ -55,7 +70,7 @@ LLMD_EOF
     envoy -c "$LLMD_DIR/envoy.yaml" >> "$log" 2>&1 &
 {%- else %}
     local tag="vllm-router"; [ "$mode" = pd ] && tag="vllm-router (PD)"
-    echo "Starting $tag on $LOCAL_IP:$port${replica:+ for replica $replica}" | tee "$log"
+    echo "Starting $tag on $LOCAL_IP:$port" | tee "$log"
     local -a cmd=(vllm-router --policy "$policy" --host 0.0.0.0 --port "$port"
         --request-id-headers x-session-id
         --worker-startup-timeout-secs 4200 --log-level debug)

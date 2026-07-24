@@ -57,7 +57,7 @@ Verify: `uv run python -c 'import deep_ep; print(deep_ep.__file__)'`.
 
 ### llm-d router backend
 
-Multi-node / disaggregated deployments can route through the upstream llm-d Endpoint Picker instead of `vllm-router` (set `[...deployment.router] type = "llm-d"`). It needs three native binaries — install once:
+Multi-node / disaggregated deployments can route through the upstream llm-d Endpoint Picker instead of `vllm-router` (set `[inference.router] type = "llm-d"`). It needs three native binaries — install once:
 
 ```bash
 bash scripts/install_llmd.sh   # builds epp + pd-sidecar from a pinned llm-d-router commit (vendored Go), fetches envoy
