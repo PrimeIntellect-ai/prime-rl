@@ -33,7 +33,7 @@ class CPUOffloadOptimizer:
         optimizer: Optimizer,
         named_params: list[tuple[str, nn.Parameter]] | None = None,
         pin_memory: bool = True,
-        stream: bool = True,
+        stream: bool = False,
     ):
         self.optimizer = optimizer
         self.pin_memory = pin_memory
@@ -87,7 +87,12 @@ class CPUOffloadOptimizer:
                     state[k] = self._move_tensor(v, device)
 
     def _move_chunk_states(self, chunk_idx: int, device: str, stream: torch.cuda.Stream | None = None):
-        """Move optimizer states for a single chunk to/from *device*."""
+        """Move optimizer states for a single chunk to/from *device*.
+
+        When *stream* is provided the transfers are issued on that stream. For D2H
+        (device == "cpu"), the old GPU tensor is recorded on the stream so the
+        caching allocator won't reuse its storage until the async copy finishes.
+        """
         chunk_ids = {id(p) for p in self._chunks[chunk_idx]}
         ctx = torch.cuda.stream(stream) if stream is not None else torch.cuda.default_stream()
         with ctx:
@@ -96,11 +101,15 @@ class CPUOffloadOptimizer:
                     continue
                 for k, v in state.items():
                     if isinstance(v, DTensor):
+                        if device == "cpu" and stream is not None and v._local_tensor.is_cuda:
+                            v._local_tensor.record_stream(stream)
                         new_local = self._move_tensor(v._local_tensor, device)
                         new_dtensor = copy.copy(v)
                         new_dtensor._local_tensor = new_local
                         state[k] = new_dtensor
                     elif isinstance(v, torch.Tensor):
+                        if device == "cpu" and stream is not None and v.is_cuda:
+                            v.record_stream(stream)
                         state[k] = self._move_tensor(v, device)
 
     def _step_chunk(self, chunk_idx: int, closure=None):
