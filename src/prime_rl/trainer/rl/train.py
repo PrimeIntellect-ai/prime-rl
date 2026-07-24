@@ -251,6 +251,9 @@ def train(config: TrainerConfig):
             config.model.cp,
             build_bin_cost(model.config),
             config.rollout_transport,
+            config.model.name,
+            config.model.trust_remote_code,
+            missing_mm_image_policy=config.missing_mm_image_policy,
         )
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
@@ -365,12 +368,10 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
-            # Multimodal kwargs are an opaque per-model dict (e.g.
-            # {"pixel_values": ..., "image_grid_thw": ...} for Qwen3-VL,
-            # just {"pixel_values": ...} for Gemma3-VL) — we move every
-            # tensor to CUDA and let the model's forward sort them.
+            # Multimodal kwargs are materialized by the trainer model processor.
             mm_kwargs_raw = micro_batch.get("mm_kwargs")
             mm_kwargs = {k: v.to("cuda") for k, v in mm_kwargs_raw.items()} if mm_kwargs_raw else None
+            mm_forward_policy = micro_batch.get("mm_forward_policy")
             if mm_kwargs is not None and config.model.vlm is None:
                 raise ValueError(
                     "Received multimodal samples but [model.vlm] is not set. "
@@ -433,6 +434,7 @@ def train(config: TrainerConfig):
                     labels=labels,
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
+                    mm_forward_policy=mm_forward_policy,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
@@ -717,9 +719,12 @@ def train(config: TrainerConfig):
             "time/step": step_time,
             "time/wait_for_batch": wait_for_batch_time,
             "time/load_data": load_data_time,
+            "time/mm_materialize": dataloader.last_mm_materialize_time,
             "time/broadcast_weights": broadcast_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,
+            "mm/images_materialized": dataloader.last_mm_images_materialized,
+            "mm/images_placeholdered": dataloader.last_mm_images_placeholdered,
             "step": progress.step,
         }
         monitor.log(time_metrics, step=progress.step)

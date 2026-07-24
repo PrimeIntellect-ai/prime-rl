@@ -1,3 +1,4 @@
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TypedDict
@@ -6,7 +7,8 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
-from prime_rl.configs.trainer import FakeDataLoaderConfig
+from prime_rl.configs.trainer import FakeDataLoaderConfig, MissingMMImagePolicy
+from prime_rl.multimodal.adapters.base import ForwardPolicy, MaterializedMM
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
@@ -16,6 +18,9 @@ from prime_rl.transport import (
     TransportConfig,
     setup_micro_batch_receiver,
 )
+from prime_rl.transport.types import MMRefs
+from prime_rl.utils.logger import get_logger
+from prime_rl.utils.mm import RawImageMaterializer, missing_file_uris
 
 
 class TensorMicroBatch(TypedDict):
@@ -39,12 +44,9 @@ class TensorMicroBatch(TypedDict):
     # MoE router replay
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
 
-    # Generic multimodal kwargs — flat dict matching the model's forward
-    # signature (e.g. ``{"pixel_values": ..., "image_grid_thw": ...}`` for
-    # Qwen3-VL; ``{"pixel_values": ...}`` for Gemma3-VL). The trainer
-    # ``**`` -unpacks this into the forward call, so any HF VLM whose
-    # processor and forward agree on kwarg names works out of the box.
+    # Generic multimodal kwargs materialized by the trainer's model processor.
     mm_kwargs: dict[str, Tensor] | None
+    mm_forward_policy: ForwardPolicy | None
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -57,6 +59,9 @@ class TensorMicroBatch(TypedDict):
     # Packer-derived metadata used for run-local debug exports.
     run_id: str | None
     run_step: int | None
+
+
+MaterializedMMParts = tuple[dict[str, Tensor] | None, ForwardPolicy | None]
 
 
 class FakeDataLoader:
@@ -72,6 +77,9 @@ class FakeDataLoader:
         self.generate_samples = config.generate_samples
         self.batch_counter = 0
         self.multi_run_manager = get_multi_run_manager()
+        self.last_mm_materialize_time = 0.0
+        self.last_mm_images_materialized = 0
+        self.last_mm_images_placeholdered = 0
 
     def wait_for_batch(self) -> None:
         return
@@ -133,6 +141,7 @@ class FakeDataLoader:
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "mm_kwargs": None,
+            "mm_forward_policy": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
             "ce_weights": None,
@@ -166,6 +175,7 @@ class FakeDataLoader:
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "mm_kwargs": None,
+            "mm_forward_policy": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
             "ce_weights": None,
@@ -187,6 +197,9 @@ class DataLoader:
         pad_to_multiple_of: int,
         bin_cost: Callable[[Sequence[int]], int],
         config: TransportConfig,
+        model_name: str,
+        model_trust_remote_code: bool,
+        missing_mm_image_policy: MissingMMImagePolicy = "placeholder_zero_loss",
     ):
         self.world = get_world()
 
@@ -205,6 +218,9 @@ class DataLoader:
         self.multi_run_manager = get_multi_run_manager()
 
         self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, dp_rank, start_step, config)
+        self.mm_materializer = RawImageMaterializer(model_name, trust_remote_code=model_trust_remote_code)
+        self.missing_mm_image_policy = missing_mm_image_policy
+        self._reset_mm_stats()
 
     def wait_for_batch(self) -> None:
         if self.world.is_master:
@@ -218,7 +234,58 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
+        self._reset_mm_stats()
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+
+    def _reset_mm_stats(self) -> None:
+        self.last_mm_materialize_time = 0.0
+        self.last_mm_images_materialized = 0
+        self.last_mm_images_placeholdered = 0
+
+    @staticmethod
+    def _materialized_mm_parts(materialized: MaterializedMM | None) -> MaterializedMMParts:
+        if materialized is None:
+            return None, None
+        return materialized.kwargs, materialized.forward_policy
+
+    @staticmethod
+    def _mm_run_context(micro_batch: MicroBatch) -> str:
+        run_idx = next((i for i, n in enumerate(micro_batch.lora_num_tokens or []) if n > 0), None)
+        return f"run_idx={run_idx}, run_id={micro_batch.run_id}, run_step={micro_batch.run_step}"
+
+    def _materialize_mm_refs(self, micro_batch: MicroBatch, refs: MMRefs) -> MaterializedMMParts:
+        materialize_start = time.perf_counter()
+        try:
+            materialized = self.mm_materializer.materialize(refs)
+        except FileNotFoundError as exc:
+            self.last_mm_materialize_time += time.perf_counter() - materialize_start
+            if self.missing_mm_image_policy == "error":
+                get_logger().error(
+                    f"raw image materialization failed ({self._mm_run_context(micro_batch)}, uris={refs.uris}): {exc!r}"
+                )
+                raise
+            return self._synthesize_missing_mm_placeholder(micro_batch, refs)
+
+        self.last_mm_materialize_time += time.perf_counter() - materialize_start
+        self.last_mm_images_materialized += len(refs.uris)
+        return self._materialized_mm_parts(materialized)
+
+    def _synthesize_missing_mm_placeholder(self, micro_batch: MicroBatch, refs: MMRefs) -> MaterializedMMParts:
+        placeholder_start = time.perf_counter()
+        materialized = self.mm_materializer.synthesize_placeholder(refs)
+        self.last_mm_materialize_time += time.perf_counter() - placeholder_start
+        self.last_mm_images_placeholdered += len(refs.uris)
+        micro_batch.loss_mask = [False] * len(micro_batch.loss_mask)
+        micro_batch.advantages = [0.0] * len(micro_batch.advantages)
+
+        missing_uris = missing_file_uris(refs.uris)
+        get_logger().warning(
+            "raw image materialization missing image(s); using zero-loss placeholder "
+            f"({self._mm_run_context(micro_batch)}, "
+            f"missing_uris={missing_uris or ['<unknown: disappeared during read>']}, "
+            f"uris={refs.uris})"
+        )
+        return self._materialized_mm_parts(materialized)
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
@@ -226,14 +293,11 @@ class DataLoader:
             micro_batch.lora_num_tokens = [0] * self.multi_run_manager.max_runs
             micro_batch.lora_num_tokens[0] = len(micro_batch.input_ids)
         mm_kwargs: dict[str, Tensor] | None = None
-        if micro_batch.mm_kwargs:
-            # Each value is an EncodedTensor (dtype, shape, raw bytes).
-            # No batch dim — the orchestrator concatenates per-image along
-            # dim=0 generically, matching what each HF VLM's forward expects.
-            mm_kwargs = {
-                key: torch.frombuffer(bytearray(payload.data), dtype=_torch_dtype(payload.dtype)).reshape(payload.shape)
-                for key, payload in micro_batch.mm_kwargs.items()
-            }
+        mm_forward_policy: ForwardPolicy | None = None
+        if micro_batch.mm_kwargs is not None:
+            raise ValueError("Processed multimodal mm_kwargs are unsupported in v1; use raw mm_refs")
+        if micro_batch.mm_refs is not None:
+            mm_kwargs, mm_forward_policy = self._materialize_mm_refs(micro_batch, micro_batch.mm_refs)
         routed_experts = None
         packed_routed_experts = micro_batch.routed_experts
         if packed_routed_experts is not None:
@@ -261,6 +325,7 @@ class DataLoader:
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_kwargs=mm_kwargs,
+            mm_forward_policy=mm_forward_policy,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
             if micro_batch.mm_token_type_ids is not None
             else None,

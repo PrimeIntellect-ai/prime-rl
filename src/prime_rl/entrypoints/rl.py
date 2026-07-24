@@ -35,6 +35,7 @@ from prime_rl.utils.process import (
     monitor_process,
     set_proc_title,
 )
+from prime_rl.utils.run_assets import build_run_asset_env
 
 RL_TOML = "rl.toml"
 RL_SBATCH = "rl.sbatch"
@@ -124,6 +125,8 @@ def rl_local(config: RLConfig):
         "WANDB_SHARED_MODE": "1",
         "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex),
     }
+    inherited_env = dict(os.environ)
+    writer_run_asset_env = build_run_asset_env(config.orchestrator.output_dir, multimodal=config.multimodal)
 
     # Validate client port matches inference server port
     if config.inference is not None and not config.orchestrator.model.client.is_elastic:
@@ -169,7 +172,7 @@ def rl_local(config: RLConfig):
                 inference_process = Popen(
                     inference_cmd,
                     env={
-                        **os.environ,
+                        **inherited_env,
                         **DEFAULT_COMMON_ENV_VARS,
                         **DEFAULT_INFERENCE_ENV_VARS,
                         **config.env_vars,
@@ -224,7 +227,7 @@ def rl_local(config: RLConfig):
                 stdout=log_file,
                 stderr=log_file,
                 env={
-                    **os.environ,
+                    **writer_run_asset_env,
                     **DEFAULT_COMMON_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",
                     "WANDB_PROGRAM": "uv run rl",
@@ -273,7 +276,7 @@ def rl_local(config: RLConfig):
             trainer_process = Popen(
                 trainer_cmd,
                 env={
-                    **os.environ,
+                    **inherited_env,
                     **DEFAULT_COMMON_ENV_VARS,
                     **DEFAULT_TRAINER_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",
@@ -371,6 +374,9 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
         kv_offload_device_name=offload.device_name if is_mooncake else "",
     )
+    image_offload_dir = (
+        os.path.expanduser(str(config.multimodal.offload_dir)) if config.multimodal.offload_dir is not None else ""
+    )
 
     # Per-component env vars: launcher defaults (shared + multi-node-specific) with the
     # user's config merged on top. Runtime wiring stays in the template.
@@ -392,6 +398,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             **config.slurm.template_vars,
             config_path=config_dir / RL_TOML,
             output_dir=config.output_dir,
+            image_offload_dir=image_offload_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
     elif config.inference is not None and config.inference.deployment.type == "disaggregated":
@@ -403,6 +410,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             config_dir=config_dir,
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
+            image_offload_dir=image_offload_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
             nodes_per_infer_replica=infer_deploy.num_nodes,
@@ -440,6 +448,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             output_dir=config.output_dir,
             orchestrator_output_dir=config.orchestrator.output_dir,
+            image_offload_dir=image_offload_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes,
             nodes_per_infer_replica=config.deployment.infer_nodes_per_replica,

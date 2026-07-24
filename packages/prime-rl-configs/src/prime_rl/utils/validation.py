@@ -129,6 +129,7 @@ def propagate_shared_fields(data: Any) -> Any:
     # Top-level scalars.
     propagate("max_steps", "trainer.max_steps", "orchestrator.max_steps")
     propagate("seq_len", "trainer.model.seq_len", "orchestrator.seq_len")
+    propagate("multimodal", "trainer.multimodal", "orchestrator.multimodal", "inference.multimodal")
 
     # [slurm] → inference: a multi-node RL run drives its inference deployment under
     # the same SLURM allocation, so the nested inference inherits [slurm]. This is

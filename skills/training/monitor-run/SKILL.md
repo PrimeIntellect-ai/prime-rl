@@ -165,6 +165,38 @@ A few warnings are normal. Escalate when errors are persistent, growing, or hit 
 - **Trainer**: NCCL/CUDA errors, OOM, NaN loss or gradients.
 - **Inference**: NCCL/CUDA errors, OOM, request timeouts.
 
+### Multimodal image offload checks
+
+v1 multimodal RL offloads images exactly once, at verifiers ingress: every image
+content part is rewritten to a `file://` asset under the run image directory
+before rendering, and renderers/inference/trainer all work from those refs. A
+`data:` URL reaching a renderer ("requires offloaded file:// image assets")
+means ingress was bypassed.
+
+- The image directory comes from `[multimodal].offload_dir` in the resolved
+  config; unset, it defaults to a run-scoped path (`{output_dir}/assets/images`
+  or the hosted `RUN_ID` path). The launcher exports it to the orchestrator as
+  `VF_RENDERER_IMAGE_OFFLOAD_DIR` (protected — not settable via `env_vars`).
+- While multimodal rollouts are in flight, image files should accumulate under
+  that directory. Zero files means the offload path isn't being exercised or
+  image preparation failed before request submission.
+- Inference rejects bad refs with `invalid_mm_image_ref` 400s (hash mismatch,
+  fingerprint mismatch, unreadable asset) — grep the inference log.
+- Inference caches materialized refs and logs
+  `mm materialize cache: hits=X misses=Y hit_rate=Z% bytes=A/B evictions=C`
+  every 1000 lookups. Hit rate should climb after turn 1 of multi-turn
+  multimodal rollouts; a stuck-at-zero hit rate with repeat images means the
+  cache is disabled or thrashing (sized by `PRIME_RL_MM_MATERIALIZE_CACHE_GB`,
+  default 2.0, `0` disables).
+- The orchestrator raises on placeholder/token drift ("does not cover
+  image-typed tokens") before a sample ships — treat any occurrence as a bug,
+  not noise.
+- Trainer metrics: `mm/images_materialized`, `time/mm_materialize`, and
+  `mm/images_placeholdered`. A nonzero placeholder count means image files
+  disappeared before materialization (the batch trains with zero-loss
+  placeholders and logs "raw image materialization missing image(s)") — check
+  whether something cleaned the offload directory mid-run.
+
 ### Process tree
 
 All processes use `setproctitle` so they're visible in `ps`/`htop`/`pstree`:

@@ -67,6 +67,7 @@ members = [
     "i3-science-v1",
     "ifbench-v1",
     "ifeval-v1",
+    "kuhn-poker-v1",
     "lean-v1",
     "livecodebench-v1",
     "longbenchpro-v1",
@@ -3230,6 +3231,17 @@ wheels = [
 ]
 
 [[package]]
+name = "kuhn-poker-v1"
+version = "0.1.0"
+source = { editable = "deps/verifiers/environments/kuhn_poker_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
+
+[[package]]
 name = "langdetect"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -6130,10 +6142,14 @@ requires-dist = [
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-harmony", specifier = ">=0.0.4" },
+    { name = "pillow", marker = "extra == 'vision'", specifier = ">=12.2.0" },
     { name = "prime-pydantic-config", specifier = ">=0.3.0.dev83" },
     { name = "tiktoken" },
+    { name = "torch", marker = "extra == 'vision'", specifier = ">=2.11.0" },
+    { name = "torchvision", marker = "extra == 'vision'", specifier = ">=0.26.0" },
     { name = "transformers", specifier = ">=4.50.0" },
 ]
+provides-extras = ["vision"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -7902,6 +7918,7 @@ examples = [
     { name = "deepwiki-v1", editable = "deps/verifiers/environments/deepwiki_v1" },
     { name = "glossary-v1", editable = "deps/verifiers/environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "deps/verifiers/environments/gsm8k_v1" },
+    { name = "kuhn-poker-v1", editable = "deps/verifiers/environments/kuhn_poker_v1" },
     { name = "openenv-wordle-v1", editable = "deps/verifiers/environments/openenv_wordle_v1" },
     { name = "proposer-solver-v1", editable = "deps/verifiers/environments/proposer_solver_v1" },
     { name = "reverse-text-v1", editable = "deps/verifiers/environments/reverse_text_v1" },
