@@ -113,42 +113,12 @@ jobs:
                       exit 0
                   fi
 
-                  # The GHCR versions API can list a tag before its manifest is
-                  # actually pullable (build in-flight, or manifest step didn't
-                  # finish). So: pull the top N candidate tags, then verify each
-                  # with a manifest HEAD via the anonymous registry token flow;
-                  # take the newest one that resolves.
-                  candidates=$(gh api --paginate \
-                      "/orgs/primeintellect-ai/packages/container/prime-rl/versions" \
-                      --jq '.[].metadata.container.tags[]' \
-                      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' \
-                      | sort -Vru | head -n 10)
-                  if [ -z "$candidates" ]; then
-                      echo "No v*.dev* tag listed on GHCR." >&2
-                      exit 1
-                  fi
-                  registry_token=$(curl -fsSL \
-                      "https://ghcr.io/token?scope=repository:primeintellect-ai/prime-rl:pull" \
-                      | jq -r .token)
-                  tag=""
-                  for cand in $candidates; do
-                      code=$(curl -sS -o /dev/null -w '%{http_code}' \
-                          -H "Authorization: Bearer $registry_token" \
-                          -H 'Accept: application/vnd.oci.image.index.v1+json' \
-                          -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
-                          "https://ghcr.io/v2/primeintellect-ai/prime-rl/manifests/$cand")
-                      if [ "$code" = "200" ]; then
-                          tag="$cand"
-                          break
-                      fi
-                      echo "Skip $cand — manifest HEAD returned $code"
-                  done
-                  if [ -z "$tag" ]; then
-                      echo "None of the top v*.dev* tags have a published manifest." >&2
-                      exit 1
-                  fi
-                  echo "Latest published prime-rl image tag on GHCR: $tag"
-                  echo "tag=$tag" >> "$GITHUB_OUTPUT"
+                  # No dispatch input: let the config's top-level
+                  # `image_tag = "..."` win. Emitting an empty tag causes the
+                  # dispatch step to omit `--image-tag`, so prime-cli falls
+                  # back to the value in the toml.
+                  echo "No image_tag input; deferring to the config's own image_tag."
+                  echo "tag=" >> "$GITHUB_OUTPUT"
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -177,13 +147,21 @@ jobs:
                   printf 'name = "%s"\n\n' "$run_name" > "$dispatch_cfg"
                   cat "${{ matrix.config_file }}" >> "$dispatch_cfg"
                   echo "Dispatched run name: $run_name"
+                  # Only pass --image-tag when we resolved one (either from the
+                  # dispatch input, or a future auto-resolver). Otherwise omit
+                  # it so `prime train` falls back to the top-level `image_tag`
+                  # baked into the checked-in toml.
+                  image_tag_flag=""
+                  if [ -n "${{ steps.image.outputs.tag }}" ]; then
+                      image_tag_flag="--image-tag ${{ steps.image.outputs.tag }}"
+                  fi
                   # Forward WANDB_API_KEY / HF_TOKEN into the hosted payload:
                   # the full-FT dispatch path (`prime train`) only picks up
                   # secrets that were explicitly collected via `-e` / `--env-file`,
                   # not ambient env, so the workflow env: block alone is not
                   # enough to reach the hosted trainer/orchestrator pods.
                   prime train "$dispatch_cfg" \
-                      --image-tag "${{ steps.image.outputs.tag }}" \
+                      $image_tag_flag \
                       -e WANDB_API_KEY \
                       -e HF_TOKEN \
                       --yes --output json
