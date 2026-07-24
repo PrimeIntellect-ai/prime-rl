@@ -46,7 +46,7 @@ enable_router_replay = true
 [trainer.model]
 impl = "custom"
 attn = "flash_attention_3"
-cp = 8
+cp = 4
 cp_style = "ulysses"
 fused_lm_head_token_chunk_size = 1024
 optim_cpu_offload = true
