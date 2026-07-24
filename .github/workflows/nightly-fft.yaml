@@ -8,6 +8,10 @@ on:
                 description: "Full-FT config to dispatch (e.g. configs/ci/nightly-fft/wordle.toml). Leave empty to run all."
                 required: false
                 default: ""
+            image_tag:
+                description: "prime-rl image tag to pin (e.g. v0.7.1.dev58). Leave empty to auto-resolve the newest v*.dev* with a published manifest."
+                required: false
+                default: ""
 
     # Scheduled run at 3AM PST (11AM UTC) — disabled for now, enable once dry-run passes
     # schedule:
@@ -70,11 +74,45 @@ jobs:
               with:
                   submodules: false
 
-            - name: Resolve latest prime-rl image tag
+            - name: Resolve prime-rl image tag
               id: image
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  # Pass the dispatch input through env so a malicious value
+                  # cannot break out of shell context via $(...) or embedded
+                  # quotes — the GitHub expression is substituted before Bash
+                  # parses the script.
+                  REQUESTED_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
               run: |
+                  # If workflow_dispatch passed an explicit image_tag, validate
+                  # it as a Docker/OCI tag, verify its manifest is pullable,
+                  # and use it as-is (skip resolution).
+                  requested="$REQUESTED_IMAGE_TAG"
+                  if [ -n "$requested" ]; then
+                      # OCI/Docker tag charset: [A-Za-z0-9._-], max 128, no
+                      # leading '.' or '-'. Reject anything else before it
+                      # reaches curl or GITHUB_OUTPUT.
+                      if ! printf '%s' "$requested" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$'; then
+                          echo "Invalid image_tag: only [A-Za-z0-9._-] allowed, max 128 chars, no leading '.' or '-'." >&2
+                          exit 1
+                      fi
+                      registry_token=$(curl -fsSL \
+                          "https://ghcr.io/token?scope=repository:primeintellect-ai/prime-rl:pull" \
+                          | jq -r .token)
+                      code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                          -H "Authorization: Bearer $registry_token" \
+                          -H 'Accept: application/vnd.oci.image.index.v1+json' \
+                          -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+                          "https://ghcr.io/v2/primeintellect-ai/prime-rl/manifests/$requested")
+                      if [ "$code" != "200" ]; then
+                          echo "Requested image_tag '$requested' has no published manifest (HTTP $code)." >&2
+                          exit 1
+                      fi
+                      echo "Using pinned prime-rl image tag: $requested"
+                      echo "tag=$requested" >> "$GITHUB_OUTPUT"
+                      exit 0
+                  fi
+
                   # The GHCR versions API can list a tag before its manifest is
                   # actually pullable (build in-flight, or manifest step didn't
                   # finish). So: pull the top N candidate tags, then verify each
