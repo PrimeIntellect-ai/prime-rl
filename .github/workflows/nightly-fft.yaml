@@ -120,11 +120,17 @@ jobs:
                   # manifest step didn't finish), so pull the top N candidates
                   # and verify each with a manifest HEAD via the anonymous
                   # registry token flow; take the newest one that resolves.
+                  # Disable pipefail locally: `grep` may exit 1 on no matches
+                  # (empty tag list) and `head` may SIGPIPE `sort` after
+                  # reading its 10 lines. Both would abort the step before the
+                  # explicit no-candidates guard below runs.
+                  set +o pipefail
                   candidates=$(gh api --paginate \
                       "/orgs/primeintellect-ai/packages/container/prime-rl/versions" \
                       --jq '.[].metadata.container.tags[]' \
                       | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' \
                       | sort -Vru | head -n 10)
+                  set -o pipefail
                   if [ -z "$candidates" ]; then
                       echo "No v*.dev* tag listed on GHCR." >&2
                       exit 1
