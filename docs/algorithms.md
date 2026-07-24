@@ -285,6 +285,8 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 
 The default advantage is per-group reward minus per-group baseline (DR-GRPO without std normalization). For each prompt's group of `group_size` rollouts, every token in rollout $i$ receives advantage $s_i - \bar{s}$ where $\bar{s}$ is the group mean.
 
+The group-relative algorithms (`grpo`, `max_rl`, `echo`) require the group's trainable traces to come from **one** agent — the baseline assumes exchangeable attempts by a single agent. Multi-agent envs work as long as exactly one agent is trainable (e.g. a trainable solver rewarded by a frozen agentic judge); a group spanning several trainable agent names is refused at scoring time. Credit assignment across multiple trainable agents is not something prime-rl prescribes — implement your own algorithm for it (see [Authoring an Algorithm](#authoring-an-algorithm)).
+
 This is intentionally simple — it does the right thing for most envs. Write a named algorithm class when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …) — see [Authoring an Algorithm](#authoring-an-algorithm).
 
 A **length penalty** (`length_penalty` on the `grpo`-family algorithms) can be layered on top to discourage rambling. The `linear` penalty subtracts a single `pass_rate`-scaled penalty from each reward before the GRPO baseline, combining output tokens (`num_output_tokens_weight`), input / context tokens (`num_input_tokens_weight`), and turns (`num_turns_weight`) — each normalized by the group's own max for that quantity, with `num_input_tokens_weight` and `num_turns_weight` defaulting to `0.1`.

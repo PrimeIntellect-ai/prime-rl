@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.base import Algorithm, assert_single_trainable_agent
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
@@ -24,6 +24,7 @@ class MaxRLAlgorithm(Algorithm):
     drops it, matching the paper's no-success convention)."""
 
     async def score_group(self, group: list[Rollout]) -> None:
+        assert_single_trainable_agent(group)
         rewards = torch.tensor([rollout.reward for rollout in group], dtype=torch.float32)
         mean = rewards.mean()
         advantages = torch.zeros_like(rewards) if mean <= 0 else (rewards - mean) / mean
