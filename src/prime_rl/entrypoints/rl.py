@@ -38,6 +38,7 @@ from prime_rl.utils.process import (
 
 RL_TOML = "rl.toml"
 RL_SBATCH = "rl.sbatch"
+FULL_CONFIG_JSON = "full_config.json"
 
 TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
@@ -75,6 +76,13 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
         with open(output_dir / INFERENCE_TOML, "wb") as f:
             tomli_w.dump(to_toml_dict(config.inference, exclude=exclude_inference), f)
+
+
+def write_full_config_json(config: RLConfig, output_dir: Path) -> None:
+    """Write the full resolved RLConfig as JSON for wandb logging."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(output_dir / FULL_CONFIG_JSON, "w") as f:
+        json.dump(config.model_dump(mode="json"), f, indent=2)
 
 
 def rl_local(config: RLConfig):
@@ -557,6 +565,13 @@ def rl(config: RLConfig):
         from prime_rl.trainer.model import pre_download_model
 
         pre_download_model(config.trainer.model.name)
+
+    # Write the full resolved config as JSON so the WandbMonitor can log it to W&B.
+    # Set the path in os.environ so all locally-launched subprocesses inherit it;
+    # the multi-node SLURM template exports it separately (srun doesn't inherit os.environ).
+    config_dir = config.output_dir / "configs"
+    write_full_config_json(config, config_dir)
+    os.environ["WANDB_FULL_CONFIG_PATH"] = str(config_dir / FULL_CONFIG_JSON)
 
     if config.slurm is not None:
         rl_slurm(config)

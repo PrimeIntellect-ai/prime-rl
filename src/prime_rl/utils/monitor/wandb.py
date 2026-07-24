@@ -99,6 +99,18 @@ class WandbMonitor(Monitor):
 
         retryable_errors = (CommError, ServerResponseError) if shared_mode else (CommError,)
 
+        # Prefer the full RLConfig (written by the launcher) over the per-component
+        # subconfig, so the W&B run captures the entire resolved configuration.
+        wandb_config = run_config.model_dump() if run_config else None
+        full_config_path = os.environ.get("WANDB_FULL_CONFIG_PATH")
+        if full_config_path and Path(full_config_path).exists():
+            try:
+                with open(full_config_path) as f:
+                    wandb_config = json.load(f)
+                self.logger.info(f"Using full config from {full_config_path} for W&B")
+            except Exception as e:
+                self.logger.warning(f"Failed to read full config from {full_config_path}: {e}")
+
         def init_wandb(max_retries: int):
             for attempt in range(max_retries):
                 try:
@@ -111,7 +123,7 @@ class WandbMonitor(Monitor):
                         group=config.group,
                         tags=config.tags,
                         dir=output_dir,
-                        config=run_config.model_dump() if run_config else None,
+                        config=wandb_config,
                         settings=settings,
                     )
                 except retryable_errors as e:
@@ -136,6 +148,13 @@ class WandbMonitor(Monitor):
         max_retries = 30 if shared_mode and not primary else 5
         self.wandb = init_wandb(max_retries)
         self.run_id = self.wandb.id
+
+        # Upload config files to the W&B run so they're downloadable from the UI.
+        config_dir = Path(full_config_path).parent if full_config_path else None
+        if config_dir and config_dir.is_dir():
+            for config_file in config_dir.iterdir():
+                if config_file.is_file():
+                    wandb.save(str(config_file), policy="now")
 
         wandb.define_metric("*", step_metric="step")
 
