@@ -161,6 +161,7 @@ The binary batches consumed by the trainer still live at `{output_dir}/rollouts/
 A few warnings are normal. Escalate when errors are persistent, growing, or hit a large fraction of rollouts.
 
 - **Env workers**: exceptions in env code, timeouts, sandbox errors, OOM kills (most common source — runs user code).
+- **Env server death**: an env server that dies is reported, not waited on. At startup the orchestrator raises `Env server <name> died on startup with exit code N` with the tail of `logs/envs/{train,eval}/<name>.log` quoted inline; mid-run it raises `Env server <name> exited with code N`. A worker inside a live server dying instead shows up as errored rollouts (`env server worker died (exit code N)`) plus `EnvServerPool worker N died` in the env log — the pool replaces it up to 3 times, then every rollout for that env fails with `no live workers`.
 - **Orchestrator**: empty/errored rollout spikes, weight-broadcast failures, checkpoint errors.
 - **Trainer**: NCCL/CUDA errors, OOM, NaN loss or gradients.
 - **Inference**: NCCL/CUDA errors, OOM, request timeouts.

@@ -23,16 +23,16 @@ import asyncio
 import atexit
 import multiprocessing as mp
 import os
-import queue
 import sys
 from collections.abc import Iterator, Sequence
 from itertools import islice
+from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
-from verifiers.v1.serve import EnvClient, env_config_data
+from verifiers.v1.serve import EnvClient, env_config_data, wait_for_address
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
@@ -45,8 +45,10 @@ from prime_rl.utils.logger import get_logger
 # task.idx + task.model_dump).
 ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 
-# Max wait for a spawned env server to bind and report its address. A legacy
-# child loads its dataset before reporting, so this is generous.
+# Max wait for a spawned env server to load its env and report its address. A legacy
+# child loads its dataset before reporting, so this is generous. A server that *dies*
+# is caught immediately (``wait_for_address`` polls its exit code), so this bounds only
+# a genuinely slow start.
 ENV_SERVER_SPAWN_TIMEOUT = 600.0
 
 
@@ -61,7 +63,8 @@ def _run_env_server(
     """Spawned-process entry point: redirect this process's output to ``log_file`` (the
     server's logging + any subprocess-runtime output), then serve via ``serve_env``. The
     worker-pool sizing arrives in ``kwargs`` (``max_workers`` / ``multiplex`` / ``elastic``
-    from the env's ``pool``). ``serve_env`` applies ``log_setup`` here and in every spawned
+    from the env's ``pool``), as does the ``death_pipe`` that ties this server's lifetime to
+    the orchestrator's. ``serve_env`` applies ``log_setup`` here and in every spawned
     worker; a worker inherits this process's redirected stdout/stderr, so its per-rollout
     logs reach ``log_file`` too. Top-level so it stays picklable for the ``spawn`` start
     method. ``legacy`` picks the v0 bridge."""
@@ -98,6 +101,9 @@ class Env:
         Consumed once — by ``TrainSource`` (train) or ``EvalEnv.start`` (eval)."""
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
+        self._death_pipe: Connection | None = None
+        """Our end of the server's death pipe — closing it (even on our SIGKILL) tells the
+        server to terminate, so an env server never outlives the orchestrator."""
 
     @property
     def name(self) -> str:
@@ -140,9 +146,11 @@ class Env:
     async def _spawn(self, log_dir: Path, log_level: str, json_logging: bool) -> str:
         """Spawn a v1 EnvServer child process (it runs the agents; the tasks come from
         us). The server binds an OS-assigned port (``:0``) and reports the concrete
-        address back over a queue — no free-port guess, no TOCTOU race. Its output
-        goes to ``<log_dir>/<name>.log`` (``log_dir`` is already the train/eval-split
-        ``.../logs/envs/{train,eval}`` the orchestrator passes in)."""
+        address back over a queue once its env is loaded — no free-port guess, no TOCTOU
+        race, and no waiting on a server that already died (``wait_for_address`` watches
+        its exit code and quotes its log). Its output goes to ``<log_dir>/<name>.log``
+        (``log_dir`` is already the train/eval-split ``.../logs/envs/{train,eval}`` the
+        orchestrator passes in)."""
         ctx = mp.get_context("spawn")
         address_queue: mp.Queue = ctx.Queue()
         log_file = log_dir / f"{self.name}.log"
@@ -159,6 +167,9 @@ class Env:
             # Picklable dict — the narrowed config class doesn't survive the spawn.
             else dict(legacy=False, config_data=env_config_data(self.config.env))
         )
+        # Death pipe: the server self-terminates if we die abruptly. We hold the parent
+        # end for the process's lifetime — its close (even on our SIGKILL) is the signal.
+        parent_conn, child_conn = ctx.Pipe()
         process = ctx.Process(
             target=_run_env_server,
             kwargs=dict(
@@ -168,16 +179,23 @@ class Env:
                 **vf.pool_serve_kwargs(self.config.pool),
                 address="tcp://127.0.0.1:0",
                 address_queue=address_queue,
+                death_pipe=child_conn,
                 **server_kwargs,
             ),
             daemon=False,
         )
         process.start()
+        child_conn.close()  # the child holds its end; ours signals death when it closes
         self._env_server_process = process
+        self._death_pipe = parent_conn
         try:
-            address = await asyncio.to_thread(address_queue.get, timeout=ENV_SERVER_SPAWN_TIMEOUT)
-        except queue.Empty:
-            raise RuntimeError(f"Env server {self.name} did not report its address within {ENV_SERVER_SPAWN_TIMEOUT}s")
+            address = await wait_for_address(
+                process,
+                address_queue,
+                name=f"Env server {self.name}",
+                timeout=ENV_SERVER_SPAWN_TIMEOUT,
+                log_file=log_file,
+            )
         finally:
             address_queue.close()
             address_queue.join_thread()
@@ -238,11 +256,11 @@ class Env:
         )
         return [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in wires]
 
-    def shutdown(self) -> None:
-        if self._env_server_process is None:
-            return
-        self._env_server_process.terminate()
-        self._env_server_process = None
+    @property
+    def exitcode(self) -> int | None:
+        """The spawned server's exit code, or ``None`` while it runs (also ``None`` for an
+        external server, which isn't ours to supervise)."""
+        return self._env_server_process.exitcode if self._env_server_process is not None else None
 
 
 class TrainEnv(Env):
@@ -304,10 +322,26 @@ class Envs(Generic[EnvT]):
 
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         """Spawn env servers (where needed) and connect, one at a time. Each server
-        binds an OS-assigned port and reports it back, so there's no port race."""
+        binds an OS-assigned port and reports it back, so there's no port race.
+
+        Registered for shutdown *before* the first spawn: if a later env fails to start,
+        the servers already up are still ours to terminate. They are non-daemonic, so
+        leaking one would wedge interpreter exit on an implicit join."""
+        atexit.register(self.shutdown)
         for env in self:
             await env.start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
-        atexit.register(self.shutdown)
+
+    def check_alive(self) -> None:
+        """Raise if a spawned env server has exited. Its in-flight requests die with it and
+        the dispatcher awaits rollout replies untimed, so an unnoticed death is a silent
+        stall — fail the run loudly instead."""
+        for env in self:
+            exitcode = env.exitcode
+            if exitcode is not None:
+                raise RuntimeError(
+                    f"Env server {env.name} exited with code {exitcode} — see its log in "
+                    f"logs/envs/. Rollouts for this env cannot complete."
+                )
 
     def shutdown(self) -> None:
         """Terminate all spawned env server processes."""
@@ -326,6 +360,9 @@ class Envs(Generic[EnvT]):
                 p.join(timeout=5)
         for env in self:
             env._env_server_process = None
+            if env._death_pipe is not None:
+                env._death_pipe.close()
+                env._death_pipe = None
 
 
 class TrainEnvs(Envs[TrainEnv]):

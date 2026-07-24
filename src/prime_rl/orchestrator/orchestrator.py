@@ -514,6 +514,12 @@ class Orchestrator:
                 self.stopped.set()
                 break
 
+            # An env server that dies mid-run takes its in-flight rollouts with it and
+            # would otherwise go unnoticed — the pipeline would just quietly stop filling.
+            self.train_envs.check_alive()
+            if self.eval_envs is not None:
+                self.eval_envs.check_alive()
+
             try:
                 episode: list[Rollout] = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
