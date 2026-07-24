@@ -125,8 +125,10 @@ class CPUOffloadOptimizer:
             new_group["params"] = filtered
             chunk_groups.append(new_group)
         self.optimizer.param_groups = chunk_groups
-        result = self.optimizer.step(closure)
-        self.optimizer.param_groups = self._original_param_groups
+        try:
+            result = self.optimizer.step(closure)
+        finally:
+            self.optimizer.param_groups = self._original_param_groups
         return result
 
     def _sync_step_counters(self, original_steps: list):
