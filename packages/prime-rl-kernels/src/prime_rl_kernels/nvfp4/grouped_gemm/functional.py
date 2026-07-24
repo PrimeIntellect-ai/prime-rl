@@ -7,10 +7,13 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
+from prime_rl_kernels.nvfp4.grouped_gemm._extension import _grouped_mm as _grouped_mm_kernel
+
 _FP4_MAX = 6.0
 _FP8_MAX = 448.0
 _GLOBAL_SCALE_DENOMINATOR = _FP4_MAX * _FP8_MAX
 _NVFP4_BLOCK_SIZE = 16
+_NVFP4_GEMM_ALIGNMENT = 32
 _SCALE_ROW_TILE = 128
 _SCALE_COL_TILE = 4
 _QUANT_BLOCK_K = 256
@@ -19,7 +22,7 @@ _METADATA_BLOCK_M = 256
 
 
 @dataclass(frozen=True)
-class NVFP4GroupedTensor:
+class _NVFP4GroupedTensor:
     """Packed NVFP4 values and their two levels of decode scales."""
 
     data: torch.Tensor
@@ -30,7 +33,6 @@ class NVFP4GroupedTensor:
 @triton.jit
 def _build_activation_metadata_kernel(
     offsets_ptr,
-    row_groups_ptr,
     scale_rows_ptr,
     ROWS: tl.constexpr,
     GROUP_COUNT: tl.constexpr,
@@ -39,7 +41,6 @@ def _build_activation_metadata_kernel(
     rows = tl.program_id(axis=0) * BLOCK_M + tl.arange(0, BLOCK_M)
     valid_rows = rows < ROWS
 
-    selected_group = tl.zeros((BLOCK_M,), dtype=tl.int32)
     selected_start = tl.zeros((BLOCK_M,), dtype=tl.int32)
     selected_padded_start = tl.zeros((BLOCK_M,), dtype=tl.int32)
     group_start = 0
@@ -47,7 +48,6 @@ def _build_activation_metadata_kernel(
     for group_index in range(GROUP_COUNT):
         group_end = tl.load(offsets_ptr + group_index)
         belongs_to_or_follows_group = rows >= group_start
-        selected_group = tl.where(belongs_to_or_follows_group, group_index, selected_group)
         selected_start = tl.where(belongs_to_or_follows_group, group_start, selected_start)
         selected_padded_start = tl.where(
             belongs_to_or_follows_group,
@@ -58,7 +58,6 @@ def _build_activation_metadata_kernel(
         padded_start += tl.where(group_size > 0, (group_size + 127) // 128 * 128, 0)
         group_start = group_end
 
-    tl.store(row_groups_ptr + rows, selected_group, mask=valid_rows)
     tl.store(
         scale_rows_ptr + rows,
         rows - selected_start + selected_padded_start,
@@ -74,12 +73,12 @@ def _check_blackwell() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("NVFP4 grouped GEMM requires CUDA")
     capability = torch.cuda.get_device_capability()
-    if capability < (10, 0):
+    if capability != (10, 0):
         raise RuntimeError(
-            f"NVFP4 grouped GEMM requires SM100 or newer, but the current device is SM{capability[0]}{capability[1]}"
+            f"NVFP4 grouped GEMM currently requires SM100, but the current device is SM{capability[0]}{capability[1]}"
         )
-    if not hasattr(torch, "float4_e2m1fn_x2") or not hasattr(F, "scaled_grouped_mm"):
-        raise RuntimeError("NVFP4 grouped GEMM requires PyTorch 2.11 or newer with scaled_grouped_mm support")
+    if not hasattr(torch, "float4_e2m1fn_x2"):
+        raise RuntimeError("NVFP4 grouped GEMM requires PyTorch with float4_e2m1fn_x2 support")
 
 
 def _check_matrix(matrix: torch.Tensor, name: str) -> None:
@@ -87,8 +86,8 @@ def _check_matrix(matrix: torch.Tensor, name: str) -> None:
         raise ValueError(f"{name} must be a CUDA tensor")
     if matrix.dtype != torch.bfloat16:
         raise ValueError(f"{name} must have dtype torch.bfloat16")
-    if matrix.shape[-1] % _NVFP4_BLOCK_SIZE != 0:
-        raise ValueError(f"{name}'s contraction dimension must be divisible by {_NVFP4_BLOCK_SIZE}")
+    if matrix.shape[-1] % _NVFP4_GEMM_ALIGNMENT != 0:
+        raise ValueError(f"{name}'s contraction dimension must be divisible by {_NVFP4_GEMM_ALIGNMENT}")
 
 
 @triton.jit
@@ -265,8 +264,8 @@ def _quantize_rows(
     return packed.view(torch.float4_e2m1fn_x2), scales
 
 
-def quantize_nvfp4_activations(matrix: torch.Tensor, offsets: torch.Tensor) -> NVFP4GroupedTensor:
-    """Quantize a 2D activation matrix independently for each expert group."""
+def _quantize_activations(matrix: torch.Tensor, offsets: torch.Tensor) -> _NVFP4GroupedTensor:
+    """Quantize a 2D activation matrix with one global scale per token."""
 
     _check_blackwell()
     if matrix.ndim != 2:
@@ -280,21 +279,21 @@ def quantize_nvfp4_activations(matrix: torch.Tensor, offsets: torch.Tensor) -> N
     group_count = offsets.numel()
     if group_count == 0:
         raise ValueError("offsets must contain at least one group")
-    row_groups = torch.empty(matrix.shape[0], device=matrix.device, dtype=torch.int32)
-    scale_rows = torch.empty_like(row_groups)
-    _build_activation_metadata_kernel[(triton.cdiv(matrix.shape[0], _METADATA_BLOCK_M),)](
-        offsets,
-        row_groups,
-        scale_rows,
-        ROWS=matrix.shape[0],
-        GROUP_COUNT=group_count,
-        BLOCK_M=_METADATA_BLOCK_M,
-        num_warps=4,
-    )
+    scale_rows = torch.empty(matrix.shape[0], device=matrix.device, dtype=torch.int32)
+    if matrix.shape[0] > 0:
+        _build_activation_metadata_kernel[(triton.cdiv(matrix.shape[0], _METADATA_BLOCK_M),)](
+            offsets,
+            scale_rows,
+            ROWS=matrix.shape[0],
+            GROUP_COUNT=group_count,
+            BLOCK_M=_METADATA_BLOCK_M,
+            num_warps=4,
+        )
+    scale_groups = torch.arange(matrix.shape[0], device=matrix.device, dtype=torch.int32)
     global_scales = _compute_global_scales(
         matrix,
-        row_groups,
-        group_count,
+        scale_groups,
+        matrix.shape[0],
         active_rows=offsets[-1:],
     )
 
@@ -306,18 +305,18 @@ def quantize_nvfp4_activations(matrix: torch.Tensor, offsets: torch.Tensor) -> N
     packed, block_scales = _quantize_rows(
         matrix,
         global_scales,
-        row_groups,
+        scale_groups,
         scale_rows,
         padded_scale_rows,
     )
-    return NVFP4GroupedTensor(
+    return _NVFP4GroupedTensor(
         data=packed,
         block_scales=block_scales,
         global_scales=global_scales,
     )
 
 
-def quantize_nvfp4_weights(weight: torch.Tensor) -> NVFP4GroupedTensor:
+def _quantize_weights(weight: torch.Tensor) -> _NVFP4GroupedTensor:
     """Quantize grouped right-hand weights with logical shape ``[G, K, N]``."""
 
     _check_blackwell()
@@ -327,8 +326,10 @@ def quantize_nvfp4_weights(weight: torch.Tensor) -> NVFP4GroupedTensor:
         raise ValueError("weight must be a CUDA bfloat16 tensor")
 
     groups, contraction_size, output_size = weight.shape
-    if contraction_size % _NVFP4_BLOCK_SIZE != 0:
-        raise ValueError(f"weight's contraction dimension must be divisible by {_NVFP4_BLOCK_SIZE}")
+    if contraction_size % _NVFP4_GEMM_ALIGNMENT != 0:
+        raise ValueError(f"weight's contraction dimension must be divisible by {_NVFP4_GEMM_ALIGNMENT}")
+    if output_size % 8 != 0:
+        raise ValueError("weight's output dimension must be divisible by 8")
 
     weight_rows = weight.transpose(-2, -1).contiguous()
     flat_row_count = groups * output_size
@@ -348,42 +349,43 @@ def quantize_nvfp4_weights(weight: torch.Tensor) -> NVFP4GroupedTensor:
         scale_rows,
         groups * padded_output_size,
     )
-    return NVFP4GroupedTensor(
+    return _NVFP4GroupedTensor(
         data=packed.view(groups, output_size, contraction_size // 2),
         block_scales=block_scales.view(groups, -1),
         global_scales=global_scales,
     )
 
 
-def grouped_nvfp4_mm_quantized(
-    activations: NVFP4GroupedTensor,
-    weight: NVFP4GroupedTensor,
+def _grouped_mm_quantized(
+    activations: _NVFP4GroupedTensor,
+    weight: _NVFP4GroupedTensor,
     offsets: torch.Tensor,
 ) -> torch.Tensor:
-    """Run native grouped NVFP4 GEMM on already-packed inputs."""
+    """Dispatch quantized operands to the owned SM100 grouped GEMM."""
 
-    return F.scaled_grouped_mm(
+    if activations.global_scales.numel() != activations.data.shape[0]:
+        raise ValueError("activation global scales must contain one value per token row")
+    if weight.global_scales.numel() != offsets.numel():
+        raise ValueError("weight global scales must contain one value per expert")
+    return _grouped_mm_kernel(
         activations.data,
         weight.data.transpose(-2, -1),
-        [activations.block_scales, activations.global_scales],
-        [F.ScalingType.BlockWise1x16, F.ScalingType.TensorWise],
-        [weight.block_scales, weight.global_scales],
-        [F.ScalingType.BlockWise1x16, F.ScalingType.TensorWise],
-        swizzle_a=F.SwizzleType.SWIZZLE_32_4_4,
-        swizzle_b=F.SwizzleType.SWIZZLE_32_4_4,
-        offs=offsets,
-        output_dtype=torch.bfloat16,
+        activations.block_scales,
+        weight.block_scales,
+        offsets,
+        activations.global_scales,
+        weight.global_scales,
     )
 
 
-def _grouped_nvfp4_mm_forward(
+def _forward(
     matrix: torch.Tensor,
     weight: torch.Tensor,
     offsets: torch.Tensor,
 ) -> torch.Tensor:
-    activations_nvfp4 = quantize_nvfp4_activations(matrix, offsets)
-    weight_nvfp4 = quantize_nvfp4_weights(weight)
-    return grouped_nvfp4_mm_quantized(activations_nvfp4, weight_nvfp4, offsets)
+    activations_nvfp4 = _quantize_activations(matrix, offsets)
+    weight_nvfp4 = _quantize_weights(weight)
+    return _grouped_mm_quantized(activations_nvfp4, weight_nvfp4, offsets)
 
 
 class _GroupedNVFP4MM(torch.autograd.Function):
@@ -394,7 +396,7 @@ class _GroupedNVFP4MM(torch.autograd.Function):
         weight: torch.Tensor,
         offsets: torch.Tensor,
     ) -> torch.Tensor:
-        output = _grouped_nvfp4_mm_forward(matrix, weight, offsets)
+        output = _forward(matrix, weight, offsets)
         ctx.save_for_backward(matrix, weight, offsets)
         return output
 
@@ -422,7 +424,7 @@ class _GroupedNVFP4MM(torch.autograd.Function):
 
 
 @torch.compiler.disable
-def grouped_nvfp4_mm(
+def grouped_gemm(
     matrix: torch.Tensor,
     weight: torch.Tensor,
     offsets: torch.Tensor,

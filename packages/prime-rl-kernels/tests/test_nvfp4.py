@@ -1,19 +1,13 @@
 import pytest
 import torch
-from prime_rl_kernels import (
-    grouped_nvfp4_mm,
-    grouped_nvfp4_mm_quantized,
-    quantize_nvfp4_activations,
-    quantize_nvfp4_weights,
-)
+from prime_rl_kernels import grouped_gemm
 
 
 def _blackwell_nvfp4_available() -> bool:
     return (
         torch.cuda.is_available()
-        and torch.cuda.get_device_capability() >= (10, 0)
+        and torch.cuda.get_device_capability() == (10, 0)
         and hasattr(torch, "float4_e2m1fn_x2")
-        and hasattr(torch.nn.functional, "scaled_grouped_mm")
     )
 
 
@@ -42,7 +36,7 @@ def test_grouped_nvfp4_forward_and_backward() -> None:
         * 0.02
     ).requires_grad_()
 
-    output = grouped_nvfp4_mm(matrix, weight, offsets)
+    output = grouped_gemm(matrix, weight, offsets)
     reference = torch._grouped_mm(
         matrix.detach(),
         weight.detach(),
@@ -50,13 +44,6 @@ def test_grouped_nvfp4_forward_and_backward() -> None:
         out_dtype=torch.bfloat16,
     )
     torch.testing.assert_close(output, reference, atol=0.08, rtol=0.08)
-
-    quantized_output = grouped_nvfp4_mm_quantized(
-        quantize_nvfp4_activations(matrix.detach(), offsets),
-        quantize_nvfp4_weights(weight.detach()),
-        offsets,
-    )
-    torch.testing.assert_close(quantized_output, output.detach(), atol=0, rtol=0)
 
     grad_output = torch.randn_like(output)
     output.backward(grad_output)
@@ -104,8 +91,8 @@ def test_grouped_nvfp4_ignores_physical_tail_rows() -> None:
         * 0.02
     )
 
-    padded_output = grouped_nvfp4_mm(matrix, weight, offsets)
-    logical_output = grouped_nvfp4_mm(matrix[:logical_rows].contiguous(), weight, offsets)
+    padded_output = grouped_gemm(matrix, weight, offsets)
+    logical_output = grouped_gemm(matrix[:logical_rows].contiguous(), weight, offsets)
     torch.testing.assert_close(
         padded_output[:logical_rows],
         logical_output,

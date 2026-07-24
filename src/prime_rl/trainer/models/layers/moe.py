@@ -183,11 +183,11 @@ def _run_experts_grouped_mm_impl(
         raise ValueError("FP8 and NVFP4 grouped GEMM cannot both be enabled")
 
     if nvfp4:
-        from prime_rl_kernels import grouped_nvfp4_mm
+        from prime_rl_kernels.nvfp4.grouped_gemm import grouped_gemm
 
-        h = F.silu(grouped_nvfp4_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
-        h = h * grouped_nvfp4_mm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offsets)
-        out = grouped_nvfp4_mm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
+        h = F.silu(grouped_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
+        h = h * grouped_gemm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offsets)
+        out = grouped_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
     elif fp8:
         from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 

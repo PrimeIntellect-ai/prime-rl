@@ -5,12 +5,7 @@ from collections.abc import Callable
 
 import torch
 import torch.nn.functional as F
-from prime_rl_kernels import (
-    grouped_nvfp4_mm,
-    grouped_nvfp4_mm_quantized,
-    quantize_nvfp4_activations,
-    quantize_nvfp4_weights,
-)
+from prime_rl_kernels import grouped_gemm
 from triton.testing import do_bench
 
 
@@ -48,8 +43,6 @@ def main() -> None:
     weight = weight_storage.transpose(-2, -1)
     offsets = torch.arange(1, args.groups + 1, device="cuda", dtype=torch.int32) * args.tokens_per_group
 
-    activations_nvfp4 = quantize_nvfp4_activations(matrix, offsets)
-    weight_nvfp4 = quantize_nvfp4_weights(weight)
     operations = {
         "bf16": lambda: F.grouped_mm(
             matrix,
@@ -57,19 +50,7 @@ def main() -> None:
             offs=offsets,
             out_dtype=torch.bfloat16,
         ),
-        "activation_quantize": lambda: quantize_nvfp4_activations(matrix, offsets),
-        "weight_quantize": lambda: quantize_nvfp4_weights(weight),
-        "nvfp4_prepacked": lambda: grouped_nvfp4_mm_quantized(
-            activations_nvfp4,
-            weight_nvfp4,
-            offsets,
-        ),
-        "nvfp4_cached_weight": lambda: grouped_nvfp4_mm_quantized(
-            quantize_nvfp4_activations(matrix, offsets),
-            weight_nvfp4,
-            offsets,
-        ),
-        "nvfp4_repack_both": lambda: grouped_nvfp4_mm(matrix, weight, offsets),
+        "nvfp4": lambda: grouped_gemm(matrix, weight, offsets),
     }
 
     flop = 2 * rows * args.in_features * args.out_features
@@ -83,9 +64,8 @@ def main() -> None:
             warmup=args.warmup,
             repetitions=args.repetitions,
         )
-        tflops = flop / (milliseconds * 1e9) if name in {"bf16", "nvfp4_prepacked"} else None
-        suffix = "" if tflops is None else f", {tflops:.1f} TFLOP/s"
-        print(f"{name:>21}: {milliseconds:.4f} ms{suffix}")
+        tflops = flop / (milliseconds * 1e9)
+        print(f"{name:>21}: {milliseconds:.4f} ms, {tflops:.1f} TFLOP/s")
 
 
 if __name__ == "__main__":

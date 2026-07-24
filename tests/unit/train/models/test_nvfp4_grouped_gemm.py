@@ -2,6 +2,7 @@ import copy
 
 import pytest
 import torch
+from torch.utils.checkpoint import checkpoint
 
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 from prime_rl.trainer.models.layers.nvfp4_grouped_gemm import apply_nvfp4_moe_grouped_gemm
@@ -9,8 +10,8 @@ from prime_rl.trainer.models.layers.nvfp4_grouped_gemm import apply_nvfp4_moe_gr
 pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(
-        not torch.cuda.is_available() or torch.cuda.get_device_capability() < (10, 0),
-        reason="NVFP4 grouped GEMM requires Blackwell",
+        not torch.cuda.is_available() or torch.cuda.get_device_capability() != (10, 0),
+        reason="NVFP4 grouped GEMM currently requires SM100",
     ),
 ]
 
@@ -37,7 +38,7 @@ def test_nvfp4_grouped_experts_forward_and_backward():
     matrix_nvfp4 = matrix.detach().clone().requires_grad_()
 
     output_reference = reference(matrix_reference, counts)
-    output_nvfp4 = nvfp4(matrix_nvfp4, counts)
+    output_nvfp4 = checkpoint(nvfp4, matrix_nvfp4, counts, use_reentrant=False)
     torch.testing.assert_close(output_nvfp4, output_reference, atol=0.08, rtol=0.2)
 
     grad_output = torch.randn_like(output_reference)
