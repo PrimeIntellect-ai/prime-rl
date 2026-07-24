@@ -242,13 +242,16 @@ def _materialize_raw_image_ref_sync(
         payload=dict(ref.payload),
         raw_ref=raw_ref,
     )
-    adapter = get_multimodal_adapter(ref.family)
-    return adapter.materialize_for_vllm(
-        image_processor,
-        item,
-        image,
-        expected_placeholder_length,
-    )
+    try:
+        adapter = get_multimodal_adapter(ref.family)
+        return adapter.materialize_for_vllm(
+            image_processor,
+            item,
+            image,
+            expected_placeholder_length,
+        )
+    except (TypeError, ValueError) as exc:
+        raise _MMImageRefError(str(exc)) from exc
 
 
 # (raw_ref, expected_placeholder_length, processor_model_name). The ref string is

@@ -218,8 +218,8 @@ def test_multipacker_pack_preserves_mm_modality_alignment_and_run_tagging(tmp_pa
     assert real_run_idxs == {a, b}, f"both runs' MM should be tagged; got {real_run_idxs}"
 
 
-def test_multipacker_keeps_raw_mm_samples_unpacked_within_a_run(tmp_path, monkeypatch):
-    """Raw-ref multimodal samples never pack, even within one run — one micro batch each."""
+def test_multipacker_packs_raw_mm_samples_within_each_run(tmp_path, monkeypatch):
+    """Same-family raw-ref samples pack within a run (offsets rebased) but never across runs."""
     from prime_rl.trainer.batch import _is_multimodal_sample
 
     manager, packer, sent = _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size=1, seq_len=12)
@@ -233,10 +233,11 @@ def test_multipacker_keeps_raw_mm_samples_unpacked_within_a_run(tmp_path, monkey
     grid = sent[-1]
     real_mm_mbs = [mb for rank in grid for mb in rank if _is_multimodal_sample(mb) and any(mb.loss_mask)]
 
-    assert len(real_mm_mbs) == 4
+    assert len(real_mm_mbs) == 2
     for mb in real_mm_mbs:
-        assert len(mb.input_ids) == 3
-        assert mb.seq_lens == [3]
-        assert mb.mm_refs is not None and len(mb.mm_refs.images) == 1
+        assert len(mb.input_ids) == 6
+        assert mb.seq_lens == [3, 3]
+        assert mb.mm_refs is not None and len(mb.mm_refs.images) == 2
+        assert [image.offset for image in mb.mm_refs.images] == [1, 4]
         tagged = [i for i, n in enumerate(mb.lora_num_tokens) if n > 0]
-        assert len(tagged) == 1
+        assert len(tagged) == 1 and mb.lora_num_tokens[tagged[0]] == 6

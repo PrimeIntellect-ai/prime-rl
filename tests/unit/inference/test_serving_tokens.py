@@ -330,6 +330,35 @@ def test_materialize_raw_image_ref_uses_generic_family_payload(tmp_path, monkeyp
     assert item.payload == {"adapter_owned": [1, 2, 3]}
 
 
+def test_materialize_raw_image_ref_maps_adapter_validation_error(tmp_path, monkeypatch):
+    import pytest
+
+    from prime_rl.inference.vllm import serving_tokens
+
+    features = _mm_features(tmp_path)
+    raw_ref = features.kwargs_data["image"][0]
+    mm_hash = features.mm_hashes["image"][0]
+
+    class _InvalidAdapter:
+        def materialize_for_vllm(self, image_processor, item, image, expected_placeholder_length):
+            raise ValueError("image layout fingerprint mismatch")
+
+    monkeypatch.setattr(serving_tokens, "_load_image_processor", lambda _model, _trust: object())
+    monkeypatch.setattr(serving_tokens, "get_multimodal_adapter", lambda _family: _InvalidAdapter())
+
+    with pytest.raises(serving_tokens._MMImageRefError, match="image layout fingerprint mismatch") as exc_info:
+        serving_tokens._materialize_raw_image_ref_sync(
+            raw_ref,
+            feature_modality="image",
+            mm_hash=mm_hash,
+            expected_placeholder_length=7,
+            processor_model_name="model",
+            trust_remote_code=False,
+        )
+
+    assert exc_info.value.status_code == 400
+
+
 def _mm_features(tmp_path, *, image_name: str = "image.png", placeholder_length: int = 7):
     """A minimal ``GenerateRequest.features``-shaped object carrying one real raw ref."""
     from types import SimpleNamespace

@@ -455,10 +455,14 @@ def test_prepare_sample_truncates_raw_mm_refs_at_image_boundary():
     assert micro_batch.mm_refs is None
 
 
-def test_prepare_batch_keeps_raw_mm_samples_unpacked():
-    """Raw-ref multimodal samples never pack — not with text, not with each other."""
+def test_prepare_batch_packs_raw_mm_samples_with_rebased_offsets():
+    """Same-family raw-ref samples pack with each other and with text from the same
+    run/LoRA; merged image ref offsets are rebased to the packed token stream. A
+    different adapter family never joins the bin."""
 
-    def mm_sample(uri: str) -> TrainingSample:
+    def mm_sample(uri: str, family: str = "qwen_vl") -> TrainingSample:
+        ref = _image_ref(uri, offset=1, length=1)
+        ref.item["family"] = family
         return TrainingSample(
             token_ids=[10, 11, 12],
             mask=[False, True, True],
@@ -467,7 +471,7 @@ def test_prepare_batch_keeps_raw_mm_samples_unpacked():
             advantages=[0.0, 1.0, 1.0],
             env_name="mm-env",
             mm_token_type_ids=[0, 1, 0],
-            mm_refs=MMRefs(images=[_image_ref(uri, offset=1, length=1)]),
+            mm_refs=MMRefs(images=[ref]),
         )
 
     text_sample = TrainingSample(
@@ -480,21 +484,33 @@ def test_prepare_batch_keeps_raw_mm_samples_unpacked():
     )
 
     batches_per_gpu = prepare_batch(
-        rollouts=[mm_sample("file:///tmp/image-0.png"), mm_sample("file:///tmp/image-1.png"), text_sample],
+        rollouts=[
+            mm_sample("file:///tmp/image-0.png"),
+            mm_sample("file:///tmp/image-1.png"),
+            mm_sample("file:///tmp/image-2.png", family="kimi_k25"),
+            text_sample,
+        ],
         seq_len=16,
         num_train_workers=2,
-        idxs=[0, 0, 0],
+        idxs=[0, 0, 0, 0],
         num_loras=1,
         bin_cost=build_bin_cost(None),
     )
 
     real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
-    assert len(real_batches) == 3
     mm_batches = [batch for batch in real_batches if batch.mm_refs is not None]
     assert len(mm_batches) == 2
-    for batch in mm_batches:
-        assert batch.env_names == ["mm-env"] * 3
-        assert len(batch.mm_refs.images) == 1
+    packed = max(mm_batches, key=lambda batch: len(batch.mm_refs.images))
+    assert len(packed.mm_refs.images) == 2
+    assert packed.seq_lens[:2] == [3, 3]
+    # Sample-relative offset 1, rebased by each sample's start in the packed stream.
+    assert [image.offset for image in packed.mm_refs.images] == [1, 4]
+    assert packed.mm_token_type_ids[:6] == [0, 1, 0, 0, 1, 0]
+    assert packed.env_names[:6] == ["mm-env"] * 6
+    # The kimi-family sample stayed out of the qwen bin.
+    (other,) = [batch for batch in mm_batches if batch is not packed]
+    assert len(other.mm_refs.images) == 1
+    assert other.mm_refs.images[0].item["family"] == "kimi_k25"
 
 
 def test_prepare_sample_none_routed_experts():

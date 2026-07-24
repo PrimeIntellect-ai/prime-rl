@@ -2,10 +2,11 @@ import copy
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+import msgspec
 import numpy as np
 
 from prime_rl.trainer.utils import balanced_partition
-from prime_rl.transport.types import MicroBatch, MMRefs, RoutedExperts, TrainingSample
+from prime_rl.transport.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -198,6 +199,15 @@ def _is_multimodal_sample(sample: MicroBatch) -> bool:
     return sample.mm_refs is not None or sample.mm_kwargs is not None
 
 
+def _mm_refs_family(mm_refs: MMRefs) -> str | None:
+    """The adapter family of a sample's raw image refs.
+
+    ``build_mm_refs`` validates every descriptor and the materializer enforces
+    exactly one family per micro batch, so the first image's family stands for
+    the sample."""
+    return mm_refs.images[0].item.get("family") if mm_refs.images else None
+
+
 @dataclass
 class _MicroBatchBin:
     samples: list[tuple[int, MicroBatch]]
@@ -234,17 +244,17 @@ class _MicroBatchBin:
 
         sample_is_mm = _is_multimodal_sample(sample)
         existing_mm_sample = self.first_multimodal_sample
-        # Raw image refs (this codebase's multimodal representation) never pack — with
-        # text or with each other: their placeholder offsets are relative to the sample's
-        # own token stream and ``_materialize_bin`` carries only the first sample's refs,
-        # so any packing would silently drop or misalign images.
-        if sample.mm_refs is not None or (existing_mm_sample is not None and existing_mm_sample.mm_refs is not None):
-            return False
         if existing_mm_sample is None and not sample_is_mm:
             return True
         if self.first_lora_idx != lora_idx:
             return False
         if existing_mm_sample is not None and sample_is_mm:
+            if (existing_mm_sample.mm_refs is None) != (sample.mm_refs is None):
+                return False
+            if sample.mm_refs is not None:
+                # Raw refs materialize downstream through exactly one adapter family
+                # per micro batch; within a family, grids and image sizes vary freely.
+                return _mm_refs_family(existing_mm_sample.mm_refs) == _mm_refs_family(sample.mm_refs)
             dst = existing_mm_sample.mm_kwargs
             src = sample.mm_kwargs
             assert dst is not None and src is not None, "multimodal samples must carry mm_kwargs"
@@ -304,10 +314,12 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
+    mm_ref_images: list[MMImageRef] = []
     lora_num_tokens = [0] * num_loras
 
     for lora_idx, sample in bin_content.samples:
         sample_len = len(sample.input_ids)
+        sample_start = len(input_ids)
         input_ids.extend(sample.input_ids)
         loss_mask.extend(sample.loss_mask)
         advantages.extend(sample.advantages)
@@ -341,6 +353,11 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
                 for key in mm_kwargs:
                     mm_kwargs[key].data += sample.mm_kwargs[key].data
                     mm_kwargs[key].shape[0] += sample.mm_kwargs[key].shape[0]
+        if sample.mm_refs is not None:
+            # Placeholder offsets are sample-relative; rebase them to the packed stream.
+            mm_ref_images.extend(
+                msgspec.structs.replace(image, offset=image.offset + sample_start) for image in sample.mm_refs.images
+            )
         seq_lens.extend(sample.seq_lens)
         lora_num_tokens[lora_idx] += sample_len
 
@@ -361,7 +378,7 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
-        mm_refs=bin_content.first_sample.mm_refs if _is_multimodal_sample(bin_content.first_sample) else None,
+        mm_refs=MMRefs(images=mm_ref_images) if mm_ref_images else None,
         mm_kwargs=mm_kwargs,
         rl_weights=streams["rl_weights"],
         ce_weights=streams["ce_weights"],
@@ -399,11 +416,10 @@ def packed_samples_into_micro_bs(
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
-    NOTE: Multimodal samples never pack with anything (including each other) in this
-    codebase's raw-ref representation (``mm_refs``) — each becomes its own micro batch.
-    Eager ``mm_kwargs`` sidecars (a separate, tensor-based multimodal path) do support
-    packing with compatible same-run/LoRA samples; packed batches preserve sample
-    boundaries in ``seq_lens`` either way.
+    Multimodal samples pack with text spans from the same run/LoRA and with
+    same-family raw-ref samples (image ref offsets are rebased to the packed
+    stream in ``_materialize_bin``). Packed batches preserve sample boundaries
+    in ``seq_lens``.
     """
     # Sort by (lora_idx, -length) for packing efficiency
     samples.sort(key=lambda x: (x[0], -len(x[1].input_ids)))
