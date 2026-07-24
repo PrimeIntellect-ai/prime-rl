@@ -254,10 +254,11 @@ def _materialize_raw_image_ref_sync(
         raise _MMImageRefError(str(exc)) from exc
 
 
-# (raw_ref, expected_placeholder_length, processor_model_name). The ref string is
-# content-addressed (it embeds the image hash, layout fingerprint, family, and URI),
-# so identical keys describe byte-identical materialization work.
-_MaterializeKey = tuple[str, int, str]
+# (raw_ref_digest, feature_modality, mm_hash, expected_placeholder_length,
+# processor_model_name, trust_remote_code). The digest keeps keys small while
+# ensuring a distinct descriptor can never alias an already-validated cache
+# entry, even when its outer hash/placeholder metadata is forged or stale.
+_MaterializeKey = tuple[str, str, str, int, str, bool]
 
 _MM_MATERIALIZE_CACHE_GB_ENV = "PRIME_RL_MM_MATERIALIZE_CACHE_GB"
 _MM_MATERIALIZE_LOG_EVERY = 1000
@@ -411,7 +412,14 @@ async def _decode_raw_mm_kwargs(
     decoded = await asyncio.gather(
         *(
             cache.get_or_materialize(
-                (raw_ref, placeholder.length, processor_model_name),
+                (
+                    hashlib.sha256(raw_ref.encode("utf-8")).hexdigest(),
+                    feature_modality,
+                    mm_hash,
+                    placeholder.length,
+                    processor_model_name,
+                    trust_remote_code,
+                ),
                 lambda fm=feature_modality, r=raw_ref, h=mm_hash, p=placeholder: _materialize(fm, r, h, p),
             )
             for feature_modality, raw_ref, mm_hash, placeholder in flat

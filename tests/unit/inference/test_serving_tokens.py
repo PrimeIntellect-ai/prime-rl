@@ -359,7 +359,7 @@ def test_materialize_raw_image_ref_maps_adapter_validation_error(tmp_path, monke
     assert exc_info.value.status_code == 400
 
 
-def _mm_features(tmp_path, *, image_name: str = "image.png", placeholder_length: int = 7):
+def _mm_features(tmp_path, *, image_seed: int = 0, placeholder_length: int = 7):
     """A minimal ``GenerateRequest.features``-shaped object carrying one real raw ref."""
     from types import SimpleNamespace
 
@@ -368,8 +368,8 @@ def _mm_features(tmp_path, *, image_name: str = "image.png", placeholder_length:
 
     image_dir = tmp_path / "assets" / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
-    image_path = image_dir / image_name
-    Image.new("RGB", (8, 6), color=(len(image_name) % 255, 64, 128)).save(image_path)
+    image_path = image_dir / f"image-{image_seed}.png"
+    Image.new("RGB", (8, 6), color=(image_seed % 255, 64, 128)).save(image_path)
 
     mm_hash = hashlib.sha256(image_path.read_bytes()).hexdigest()[:32]
     raw_ref = raw_mm_ref(
@@ -424,6 +424,32 @@ def test_mm_materialize_cache_hit_skips_work(tmp_path, monkeypatch):
     assert (cache.hits, cache.misses) == (1, 1)
 
 
+def test_mm_materialize_cache_does_not_alias_distinct_raw_refs(tmp_path, monkeypatch):
+    import pytest
+
+    from prime_rl.inference.vllm import serving_tokens
+
+    calls: list = []
+    _patch_adapter(monkeypatch, calls)
+    cache = serving_tokens._MaterializedRefCache(max_bytes=1 << 20)
+    valid = _mm_features(tmp_path, image_seed=1)
+    forged = _mm_features(tmp_path, image_seed=2)
+    forged.mm_hashes["image"][0] = valid.mm_hashes["image"][0]
+
+    async def _run():
+        await serving_tokens._decode_raw_mm_kwargs(
+            valid, processor_model_name="model", trust_remote_code=False, cache=cache
+        )
+        await serving_tokens._decode_raw_mm_kwargs(
+            forged, processor_model_name="model", trust_remote_code=False, cache=cache
+        )
+
+    with pytest.raises(serving_tokens._MMImageRefError, match="Expected image hash"):
+        asyncio.run(_run())
+    assert len(calls) == 1
+    assert (cache.hits, cache.misses) == (0, 2)
+
+
 def test_mm_materialize_cache_byte_budget_evicts_oldest(tmp_path, monkeypatch):
     from vllm.multimodal.cache import MultiModalCache
 
@@ -433,8 +459,8 @@ def test_mm_materialize_cache_byte_budget_evicts_oldest(tmp_path, monkeypatch):
     _patch_adapter(monkeypatch, calls)
     monkeypatch.setattr(MultiModalCache, "get_item_size", classmethod(lambda _cls, _item: 60))
     cache = serving_tokens._MaterializedRefCache(max_bytes=100)
-    features_a = _mm_features(tmp_path, image_name="a.png")
-    features_b = _mm_features(tmp_path, image_name="b.png")
+    features_a = _mm_features(tmp_path, image_seed=1)
+    features_b = _mm_features(tmp_path, image_seed=2)
 
     async def _decode(features):
         return await serving_tokens._decode_raw_mm_kwargs(
