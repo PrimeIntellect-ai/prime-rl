@@ -22,7 +22,7 @@ class MoEArgs:
     num_shared_experts: int = 1
 
     # router
-    score_func: Literal["softmax", "sigmoid"] = "sigmoid"
+    score_func: Literal["softmax", "sigmoid", "topk_softmax"] = "sigmoid"
     route_norm: bool = False
     route_scale: float = 1.0
     score_before_experts: bool = True
@@ -322,38 +322,88 @@ def _selected_probability_mass_sum(
 
 
 class TokenChoiceTopKRouter(nn.Module):
-    """This class implements token-choice routing. In token-choice top-K routing, each token is
-        routed to top K experts based on the router scores.
+    """Route each token to its top-k experts.
 
     Args:
         dim (int): Dimension of input tokens.
         num_experts (int): Number of experts in each moe layer.
         top_k (int): Number of experts each token will be routed to in token-choice routing.
-        score_func (Literal["softmax", "sigmoid"]): Whether to use sigmoid or softmax for router scores.
+        score_func (Literal["softmax", "sigmoid", "topk_softmax"]): Score transform. ``topk_softmax``
+            selects experts from the logits and normalizes only the selected logits.
         route_norm (bool): Whether to normalize the routing scores when using sigmoid.
         route_scale (float): Scaling factor applied to the routing scores.
+        gate_bias (bool): Whether the gate has a trainable logit bias.
+        weight_state_dict_name (str): Checkpoint/state-dict name for the gate weight.
+        bias_state_dict_name (str): Checkpoint/state-dict name for the gate bias.
+        selection_bias_state_dict_name (str | None): Checkpoint/state-dict name for a persistent
+            selection-only bias. When set, the bias affects expert selection but not routing weights.
     """
+
+    @staticmethod
+    def export_parameters_to_state_dict(
+        module: "TokenChoiceTopKRouter",
+        state_dict: dict[str, Any],
+        prefix: str,
+        _local_metadata: dict[str, Any],
+    ) -> None:
+        for runtime_name, state_dict_name in module.runtime_to_state_dict_names.items():
+            state_dict[prefix + state_dict_name] = state_dict.pop(prefix + runtime_name)
+
+    @staticmethod
+    def import_parameters_from_state_dict(
+        module: "TokenChoiceTopKRouter",
+        state_dict: dict[str, Any],
+        prefix: str,
+        _local_metadata: dict[str, Any],
+        _strict: bool,
+        _missing_keys: list[str],
+        _unexpected_keys: list[str],
+        _error_msgs: list[str],
+    ) -> None:
+        for runtime_name, state_dict_name in module.runtime_to_state_dict_names.items():
+            state_dict[prefix + runtime_name] = state_dict.pop(prefix + state_dict_name)
+
+    def _fqn_modifiers(self) -> dict[str, str]:
+        modifiers = {}
+        for runtime_name, state_dict_name in self.runtime_to_state_dict_names.items():
+            runtime_parent, runtime_attribute = runtime_name.rsplit(".", 1)
+            if state_dict_name == runtime_attribute:
+                modifiers[state_dict_name] = runtime_parent
+        return modifiers
 
     def __init__(
         self,
         dim: int,
         num_experts: int,
         top_k: int,
-        score_func: Literal["softmax", "sigmoid"],
+        score_func: Literal["softmax", "sigmoid", "topk_softmax"],
         route_norm: bool,
         route_scale: float,
+        *,
+        gate_bias: bool = False,
+        weight_state_dict_name: str = "gate.weight",
+        bias_state_dict_name: str = "gate.bias",
+        selection_bias_state_dict_name: str | None = None,
     ):
         super().__init__()
-        self.gate = nn.Linear(dim, num_experts, bias=False)
+        self.gate = nn.Linear(dim, num_experts, bias=gate_bias)
+        self.selection_bias_state_dict_name = selection_bias_state_dict_name
+        if selection_bias_state_dict_name is not None:
+            self.register_buffer(selection_bias_state_dict_name, torch.zeros(num_experts))
         self.num_experts = num_experts
         self.top_k = top_k
         self.score_func = score_func
         self.route_norm = route_norm
         self.route_scale = route_scale
+        self.runtime_to_state_dict_names = {"gate.weight": weight_state_dict_name}
+        if gate_bias:
+            self.runtime_to_state_dict_names["gate.bias"] = bias_state_dict_name
         self.force_balanced = False
         # Set via model.moe_router_dtype='float32': the gate weight is kept in fp32
         # (exempt from FSDP bf16 casting) and the gate GEMM runs in fp32.
         self.fp32_gate = False
+        self.register_state_dict_post_hook(self.export_parameters_to_state_dict)
+        self.register_load_state_dict_pre_hook(self.import_parameters_from_state_dict)
 
     def forward(
         self, x: torch.Tensor, expert_bias: torch.Tensor | None = None, routed_experts: torch.Tensor | None = None
@@ -380,19 +430,25 @@ class TokenChoiceTopKRouter(nn.Module):
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
             f"routed_experts shape: {routed_experts.shape}, top_k: {self.top_k}"
         )
-        scores = self.gate(x.to(torch.float32)) if self.fp32_gate else self.gate(x)
+        if self.fp32_gate:
+            gate_bias = self.gate.bias.float() if self.gate.bias is not None else None
+            logits = F.linear(x.float(), self.gate.weight.float(), gate_bias)
+        else:
+            logits = self.gate(x)
 
         # By default, sigmoid or softmax is performed in float32 to avoid loss explosion
         if self.score_func == "sigmoid":
-            scores = torch.sigmoid(scores.to(torch.float32))
+            scores = torch.sigmoid(logits.float())
         elif self.score_func == "softmax":
-            scores = F.softmax(scores.to(torch.float32), dim=1)
+            scores = F.softmax(logits.float(), dim=1)
+        elif self.score_func == "topk_softmax":
+            scores = logits
         else:
             raise NotImplementedError(f"Unknown score function {self.score_func}")
 
         # top scores shape (bs*slen, top_k)
-        # NOTE: The expert_bias is only used for routing. The gating value
-        #       top_scores is still derived from the original scores.
+        # NOTE: selection biases are only used for routing. The gating value
+        #       top_scores is still derived from the original scores/logits.
 
         if routed_experts is not None:
             top_scores = scores.gather(dim=1, index=routed_experts)
@@ -402,13 +458,21 @@ class TokenChoiceTopKRouter(nn.Module):
             arange = torch.arange(num_tokens * self.top_k, device=scores.device)
             selected_experts_indices = (arange % self.num_experts).view(num_tokens, self.top_k)
             top_scores = scores.gather(dim=1, index=selected_experts_indices)
-        elif expert_bias is not None:
-            _, selected_experts_indices = torch.topk(scores + expert_bias, k=self.top_k, dim=1)
-            top_scores = scores.gather(dim=1, index=selected_experts_indices)
         else:
-            top_scores, selected_experts_indices = torch.topk(scores, k=self.top_k, dim=1)
+            selection_scores = scores
+            if self.selection_bias_state_dict_name is not None:
+                selection_scores = selection_scores + self.get_buffer(self.selection_bias_state_dict_name)
+            if expert_bias is not None:
+                selection_scores = selection_scores + expert_bias
+            _, selected_experts_indices = torch.topk(selection_scores, k=self.top_k, dim=1)
+            top_scores = scores.gather(dim=1, index=selected_experts_indices)
 
-        routing_confidence_sum = _selected_probability_mass_sum(scores, top_scores, self.score_func)
+        if self.score_func == "topk_softmax":
+            top_scores = F.softmax(top_scores, dim=-1, dtype=top_scores.dtype)
+            with torch.no_grad():
+                routing_confidence_sum = top_scores.sum()
+        else:
+            routing_confidence_sum = _selected_probability_mass_sum(scores, top_scores, self.score_func)
 
         if self.route_norm:
             denominator = top_scores.sum(dim=-1, keepdim=True) + 1e-20
@@ -427,6 +491,8 @@ class TokenChoiceTopKRouter(nn.Module):
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
+        if self.gate.bias is not None:
+            nn.init.zeros_(self.gate.bias)
 
 
 # NOTE: the reason we make this a stateless module is to support
@@ -729,90 +795,6 @@ class MoE(nn.Module):
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
 
 
-class NemotronHRouter(nn.Module):
-    """Sigmoid router with group-based expert selection and e_score_correction_bias.
-
-    Follows the DeepseekV3 routing pattern: sigmoid scoring, group-based top-k selection,
-    and bias correction for load balancing.
-    """
-
-    def __init__(
-        self,
-        dim: int,
-        num_experts: int,
-        top_k: int,
-        n_group: int,
-        topk_group: int,
-        norm_topk_prob: bool,
-    ):
-        super().__init__()
-        self.gate = nn.Parameter(torch.empty(num_experts, dim))
-        self.register_buffer("e_score_correction_bias", torch.zeros(num_experts))
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.n_group = n_group
-        self.topk_group = topk_group
-        self.norm_topk_prob = norm_topk_prob
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        expert_bias: torch.Tensor | None = None,
-        routed_experts: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        scores = F.linear(x.float(), self.gate.float()).sigmoid()
-
-        if routed_experts is not None:
-            # Router replay: reuse the inference engine's expert selection and
-            # only recompute the gating weights from the trainer's scores. The
-            # correction/load-balancing biases only affect selection, so they
-            # are intentionally skipped here.
-            selected_experts_indices = routed_experts
-        else:
-            scores_for_choice = scores + self.e_score_correction_bias
-
-            if expert_bias is not None:
-                scores_for_choice = scores_for_choice + expert_bias
-
-            # Group-based routing
-            if self.n_group > 1:
-                group_scores = (
-                    scores_for_choice.view(-1, self.n_group, self.num_experts // self.n_group)
-                    .topk(2, dim=-1)[0]
-                    .sum(dim=-1)
-                )
-                group_idx = torch.topk(group_scores, k=self.topk_group, dim=-1, sorted=False)[1]
-                group_mask = torch.zeros_like(group_scores)
-                group_mask.scatter_(1, group_idx, 1)
-                score_mask = (
-                    group_mask.unsqueeze(-1)
-                    .expand(-1, self.n_group, self.num_experts // self.n_group)
-                    .reshape(-1, self.num_experts)
-                )
-                scores_for_choice = scores_for_choice.masked_fill(~score_mask.bool(), 0.0)
-
-            selected_experts_indices = torch.topk(scores_for_choice, k=self.top_k, dim=-1, sorted=False)[1]
-
-        top_scores = scores.gather(1, selected_experts_indices)
-        routing_confidence_sum = _selected_probability_mass_sum(scores, top_scores, "sigmoid")
-
-        if self.norm_topk_prob:
-            denominator = top_scores.sum(dim=-1, keepdim=True) + 1e-20
-            top_scores = top_scores / denominator
-
-        num_tokens_per_expert = torch.histc(
-            selected_experts_indices.reshape(-1).float(),
-            bins=self.num_experts,
-            min=0,
-            max=self.num_experts,
-        )
-
-        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
-
-    def init_weights(self, init_std: float):
-        nn.init.trunc_normal_(self.gate, mean=0.0, std=init_std)
-
-
 class LatentMoE(nn.Module):
     """NemotronH-style Mixture of Experts with latent projections.
 
@@ -828,8 +810,6 @@ class LatentMoE(nn.Module):
         shared_expert_intermediate_size: int,
         num_experts: int,
         top_k: int,
-        n_group: int,
-        topk_group: int,
         norm_topk_prob: bool,
         routed_scaling_factor: float,
         load_balance_coeff: float | None,
@@ -838,14 +818,17 @@ class LatentMoE(nn.Module):
         super().__init__()
         effective_latent_dim = latent_dim if latent_dim is not None else dim
 
-        self.router = NemotronHRouter(
+        self.router = TokenChoiceTopKRouter(
             dim=dim,
             num_experts=num_experts,
             top_k=top_k,
-            n_group=n_group,
-            topk_group=topk_group,
-            norm_topk_prob=norm_topk_prob,
+            score_func="sigmoid",
+            route_norm=norm_topk_prob,
+            route_scale=routed_scaling_factor,
+            weight_state_dict_name="gate",
+            selection_bias_state_dict_name="e_score_correction_bias",
         )
+        self.router.fp32_gate = True
         grouped_mm_fn = torch._grouped_mm
         if fp8:
             from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
@@ -878,7 +861,6 @@ class LatentMoE(nn.Module):
             self.fc1_latent_proj = nn.Identity()
             self.fc2_latent_proj = nn.Identity()
 
-        self.routed_scaling_factor = routed_scaling_factor
         self.load_balance_coeff = load_balance_coeff
         if self.load_balance_coeff is not None:
             assert self.load_balance_coeff > 0.0
@@ -925,7 +907,6 @@ class LatentMoE(nn.Module):
         routed_output = self.experts(routed_input, num_tokens_per_expert)
 
         routed_output = (routed_output.float() * top_scores_experts_sorted.reshape(-1, 1)).to(routed_output.dtype)
-        routed_output = routed_output * self.routed_scaling_factor
 
         routed_output = self.fc2_latent_proj(routed_output)
         return routed_output
@@ -981,7 +962,6 @@ class LatentMoE(nn.Module):
         shared_output = self.shared_expert(x)
         sync_combine()
         routed_output = routed_outputs[0] if len(routed_outputs) == 1 else torch.cat(routed_outputs, dim=0)
-        routed_output = routed_output * self.routed_scaling_factor
         routed_output = self.fc2_latent_proj(routed_output)
         return shared_output + routed_output
 

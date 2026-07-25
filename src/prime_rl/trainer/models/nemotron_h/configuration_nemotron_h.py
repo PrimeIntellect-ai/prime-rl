@@ -46,8 +46,6 @@ class NemotronHConfig(PretrainedConfig):
         moe_latent_size: Latent projection size (None means use hidden_size).
         num_experts_per_tok: Top-k routing parameter.
         routed_scaling_factor: Scaling factor for routed expert outputs.
-        n_group: Number of groups for expert routing.
-        topk_group: Top-k group parameter.
         norm_topk_prob: Whether to normalize top-k probabilities.
         use_bias: Global bias setting.
         initializer_range: Standard deviation for weight initialization.
@@ -109,8 +107,6 @@ class NemotronHConfig(PretrainedConfig):
         moe_latent_size=None,
         num_experts_per_tok=2,
         routed_scaling_factor=1.0,
-        n_group=1,
-        topk_group=1,
         norm_topk_prob=True,
         # General training
         use_bias=False,
@@ -191,8 +187,6 @@ class NemotronHConfig(PretrainedConfig):
         self.moe_latent_size = moe_latent_size
         self.num_experts_per_tok = num_experts_per_tok
         self.routed_scaling_factor = routed_scaling_factor
-        self.n_group = n_group
-        self.topk_group = topk_group
         self.norm_topk_prob = norm_topk_prob
 
         # General training config

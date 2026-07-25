@@ -21,7 +21,7 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.cp_mamba import mamba_cp_forward
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.moe import GroupedExperts, LatentMoE, NemotronHRouter
+from prime_rl.trainer.models.layers.moe import GroupedExperts, LatentMoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
@@ -256,8 +256,6 @@ class NemotronHMoELayer(GradientCheckpointingLayer):
             shared_expert_intermediate_size=config.moe_shared_expert_intermediate_size,
             num_experts=config.n_routed_experts,
             top_k=config.num_experts_per_tok,
-            n_group=config.n_group,
-            topk_group=config.topk_group,
             norm_topk_prob=config.norm_topk_prob,
             routed_scaling_factor=config.routed_scaling_factor,
             load_balance_coeff=config.load_balance_coeff,
@@ -357,7 +355,7 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
-        elif isinstance(module, (GroupedExperts, NemotronHRouter)):
+        elif isinstance(module, (GroupedExperts, TokenChoiceTopKRouter)):
             module.init_weights(std)
 
     @classmethod

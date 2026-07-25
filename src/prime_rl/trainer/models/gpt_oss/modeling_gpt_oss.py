@@ -4,7 +4,6 @@
 from typing import Union
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor, nn
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
@@ -27,45 +26,11 @@ from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
     is_prime_state_dict,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.moe import GroupedExperts, interleaved_clamped_swiglu
-
-
-class GptOssTopKRouter(nn.Module):
-    """Token-choice top-k router matching HF's GptOssTopKRouter parameter naming.
-
-    Stores `weight` (num_experts, hidden_size) and `bias` (num_experts) as raw nn.Parameters
-    so the unsloth BF16 checkpoint loads with no key conversion. Returns the same outputs as
-    `TokenChoiceTopKRouter` so the surrounding MoE plumbing matches the rest of the repo.
-    """
-
-    def __init__(self, config: GptOssConfig):
-        super().__init__()
-        self.num_experts = config.num_local_experts
-        self.top_k = config.num_experts_per_tok
-        self.hidden_size = config.hidden_size
-        self.weight = nn.Parameter(torch.empty(self.num_experts, self.hidden_size))
-        self.bias = nn.Parameter(torch.empty(self.num_experts))
-
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """x: (T, hidden). Returns (top_scores, top_indices, num_tokens_per_expert).
-
-        Matches HF's softmax-after-topk semantics: we softmax the top-k logits only,
-        not the full distribution.
-        """
-        logits = F.linear(x, self.weight, self.bias)  # (T, num_experts)
-        top_logits, top_indices = torch.topk(logits, self.top_k, dim=-1)
-        top_scores = F.softmax(top_logits, dim=-1, dtype=top_logits.dtype)
-        num_tokens_per_expert = torch.histc(
-            top_indices.reshape(-1),
-            bins=self.num_experts,
-            min=0,
-            max=self.num_experts,
-        )
-        return top_scores, top_indices, num_tokens_per_expert
-
-    def init_weights(self, init_std: float):
-        nn.init.trunc_normal_(self.weight, mean=0.0, std=init_std)
-        nn.init.zeros_(self.bias)
+from prime_rl.trainer.models.layers.moe import (
+    GroupedExperts,
+    TokenChoiceTopKRouter,
+    interleaved_clamped_swiglu,
+)
 
 
 class GptOssMoE(nn.Module):
@@ -79,7 +44,17 @@ class GptOssMoE(nn.Module):
         super().__init__()
         self.num_experts = config.num_local_experts
         self.top_k = config.num_experts_per_tok
-        self.router = GptOssTopKRouter(config)
+        self.router = TokenChoiceTopKRouter(
+            dim=config.hidden_size,
+            num_experts=self.num_experts,
+            top_k=self.top_k,
+            score_func="topk_softmax",
+            route_norm=False,
+            route_scale=1.0,
+            gate_bias=True,
+            weight_state_dict_name="weight",
+            bias_state_dict_name="bias",
+        )
         grouped_mm_fn = torch._grouped_mm
         if getattr(config, "fp8", False):
             from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
@@ -103,7 +78,7 @@ class GptOssMoE(nn.Module):
         bs, slen, dim = hidden_states.shape
         x = hidden_states.reshape(-1, dim)  # (T, dim)
 
-        top_scores, top_indices, num_tokens_per_expert = self.router(x)
+        top_scores, top_indices, num_tokens_per_expert, _ = self.router(x)
         # top_scores, top_indices: (T, top_k)
 
         # Sort tokens by expert. Each token contributes top_k entries (one per chosen expert).

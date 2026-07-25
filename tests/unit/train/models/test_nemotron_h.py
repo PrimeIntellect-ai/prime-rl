@@ -40,8 +40,6 @@ _BASE = dict(
     moe_shared_expert_intermediate_size=256,
     moe_latent_size=128,
     num_experts_per_tok=2,
-    n_group=1,
-    topk_group=1,
     norm_topk_prob=True,
     routed_scaling_factor=1.0,
 )
