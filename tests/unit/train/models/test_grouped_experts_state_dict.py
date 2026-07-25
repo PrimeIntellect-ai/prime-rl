@@ -2,7 +2,14 @@ import torch
 from torch import nn
 from torch.distributed.checkpoint.state_dict import _get_fqns
 
-from prime_rl.trainer.models.layers.moe import GroupedExperts, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import (
+    FeedForward,
+    GroupedExperts,
+    MoE,
+    TokenChoiceTopKRouter,
+    interleaved_clamped_swiglu,
+    relu2,
+)
 
 
 def test_grouped_experts_only_fuses_gate_up_at_runtime():
@@ -116,3 +123,91 @@ def test_router_runtime_is_independent_of_checkpoint_names():
     gpt_oss_model = nn.Sequential(gpt_oss_router)
     assert _get_fqns(gpt_oss_model, "0.weight") == {"0.weight"}
     assert _get_fqns(gpt_oss_model, "0.bias") == {"0.bias"}
+
+
+def test_moe_composition_preserves_model_checkpoint_names():
+    nemotron_router = TokenChoiceTopKRouter(
+        dim=8,
+        num_experts=4,
+        top_k=2,
+        score_func="sigmoid",
+        route_norm=True,
+        route_scale=1.0,
+        weight_state_dict_name="gate",
+        selection_bias_state_dict_name="e_score_correction_bias",
+    )
+    nemotron_moe = MoE(
+        router=nemotron_router,
+        experts=GroupedExperts(
+            dim=4,
+            hidden_dim=6,
+            num_experts=4,
+            input_weight_names=("w1",),
+            activation_fn=relu2,
+        ),
+        shared_expert=FeedForward(
+            dim=8,
+            hidden_dim=6,
+            input_projection_names=("up_proj",),
+            output_projection_name="down_proj",
+            activation_fn=relu2,
+        ),
+        score_before_experts=False,
+        load_balance_coeff=None,
+        routed_input_projection=("fc1_latent_proj", nn.Linear(8, 4, bias=False)),
+        routed_output_projection=("fc2_latent_proj", nn.Linear(4, 8, bias=False)),
+    )
+    expected_nemotron_keys = {
+        "router.gate",
+        "router.e_score_correction_bias",
+        "experts.w1",
+        "experts.w2",
+        "shared_expert.up_proj.weight",
+        "shared_expert.down_proj.weight",
+        "fc1_latent_proj.weight",
+        "fc2_latent_proj.weight",
+    }
+    assert set(nemotron_moe.state_dict()) == expected_nemotron_keys
+
+    gpt_oss_moe = MoE(
+        router=TokenChoiceTopKRouter(
+            dim=8,
+            num_experts=4,
+            top_k=2,
+            score_func="topk_softmax",
+            route_norm=False,
+            route_scale=1.0,
+            gate_bias=True,
+            weight_state_dict_name="weight",
+            bias_state_dict_name="bias",
+        ),
+        experts=GroupedExperts(
+            dim=8,
+            hidden_dim=6,
+            num_experts=4,
+            input_weight_names=("gate_up_proj",),
+            input_weight_sizes=(12,),
+            output_weight_name="down_proj",
+            input_bias_name="gate_up_proj_bias",
+            output_bias_name="down_proj_bias",
+            transpose_weights_for_state_dict=True,
+            activation_fn=interleaved_clamped_swiglu,
+        ),
+        shared_expert=None,
+        score_before_experts=False,
+        load_balance_coeff=None,
+    )
+    expected_gpt_oss_keys = {
+        "router.weight",
+        "router.bias",
+        "experts.gate_up_proj",
+        "experts.down_proj",
+        "experts.gate_up_proj_bias",
+        "experts.down_proj_bias",
+    }
+    assert set(gpt_oss_moe.state_dict()) == expected_gpt_oss_keys
+
+    for name in expected_nemotron_keys:
+        assert _get_fqns(nemotron_moe, name) == {name}
+    for name in expected_gpt_oss_keys:
+        assert _get_fqns(gpt_oss_moe, name) == {name}

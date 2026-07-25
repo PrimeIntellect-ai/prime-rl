@@ -28,26 +28,26 @@ from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
+    MoE,
     TokenChoiceTopKRouter,
     interleaved_clamped_swiglu,
 )
 
 
-class GptOssMoE(nn.Module):
-    """GPT-OSS sparse MLP: top-k router + grouped experts with biases.
-
-    Routing weights are applied after the expert computation, matching HuggingFace's
-    `routing_weights[token_idx, top_k_pos]` index_add.
-    """
-
-    def __init__(self, config: GptOssConfig):
+class GptOssDecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config: GptOssConfig, layer_idx: int):
         super().__init__()
-        self.num_experts = config.num_local_experts
-        self.top_k = config.num_experts_per_tok
-        self.router = TokenChoiceTopKRouter(
+        self.hidden_size = config.hidden_size
+        self.self_attn = GptOssAttention(config=config, layer_idx=layer_idx)
+        grouped_mm_fn = torch._grouped_mm
+        if getattr(config, "fp8", False):
+            from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
+
+            grouped_mm_fn = grouped_fp8_gemm
+        router = TokenChoiceTopKRouter(
             dim=config.hidden_size,
-            num_experts=self.num_experts,
-            top_k=self.top_k,
+            num_experts=config.num_local_experts,
+            top_k=config.num_experts_per_tok,
             score_func="topk_softmax",
             route_norm=False,
             route_scale=1.0,
@@ -55,15 +55,10 @@ class GptOssMoE(nn.Module):
             weight_state_dict_name="weight",
             bias_state_dict_name="bias",
         )
-        grouped_mm_fn = torch._grouped_mm
-        if getattr(config, "fp8", False):
-            from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
-
-            grouped_mm_fn = grouped_fp8_gemm
-        self.experts = GroupedExperts(
+        experts = GroupedExperts(
             dim=config.hidden_size,
             hidden_dim=config.intermediate_size,
-            num_experts=self.num_experts,
+            num_experts=config.num_local_experts,
             input_weight_names=("gate_up_proj",),
             input_weight_sizes=(2 * config.intermediate_size,),
             output_weight_name="down_proj",
@@ -73,46 +68,13 @@ class GptOssMoE(nn.Module):
             activation_fn=interleaved_clamped_swiglu,
             grouped_mm_fn=grouped_mm_fn,
         )
-
-    def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        bs, slen, dim = hidden_states.shape
-        x = hidden_states.reshape(-1, dim)  # (T, dim)
-
-        top_scores, top_indices, num_tokens_per_expert, _ = self.router(x)
-        # top_scores, top_indices: (T, top_k)
-
-        # Sort tokens by expert. Each token contributes top_k entries (one per chosen expert).
-        flat_expert_indices = top_indices.reshape(-1)  # (T*top_k,)
-        sorted_perm = torch.argsort(flat_expert_indices, stable=True)  # (T*top_k,)
-        # token id of each (token, k) entry, in expert-sorted order
-        token_indices_experts_sorted = sorted_perm // self.top_k
-        # routing weight for each (token, k) entry, in expert-sorted order
-        top_scores_experts_sorted = top_scores.reshape(-1)[sorted_perm]
-
-        # Gather inputs for each expert in expert-sorted order
-        gather_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
-        routed_input = torch.gather(x, dim=0, index=gather_indices)  # (T*top_k, dim)
-
-        routed_output = self.experts(routed_input, num_tokens_per_expert)  # (T*top_k, dim)
-
-        # Apply routing weights post-experts (HF: weighted_output = out * routing_weights)
-        routed_output = (routed_output.float() * top_scores_experts_sorted.reshape(-1, 1)).to(routed_output.dtype)
-
-        # Scatter-add back to original token positions
-        out = torch.zeros_like(x)
-        scatter_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
-        out = out.scatter_add(dim=0, index=scatter_indices, src=routed_output)
-
-        out = out.reshape(bs, slen, dim)
-        return out, top_scores  # router_scores returned only for compatibility; trainer ignores
-
-
-class GptOssDecoderLayer(GradientCheckpointingLayer):
-    def __init__(self, config: GptOssConfig, layer_idx: int):
-        super().__init__()
-        self.hidden_size = config.hidden_size
-        self.self_attn = GptOssAttention(config=config, layer_idx=layer_idx)
-        self.mlp = GptOssMoE(config)
+        self.mlp = MoE(
+            router=router,
+            experts=experts,
+            shared_expert=None,
+            score_before_experts=False,
+            load_balance_coeff=None,
+        )
         self.input_layernorm = GptOssRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = GptOssRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -124,6 +86,7 @@ class GptOssDecoderLayer(GradientCheckpointingLayer):
         past_key_values: Cache | None = None,
         use_cache: bool | None = False,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        routed_experts: torch.LongTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
         residual = hidden_states
@@ -141,7 +104,7 @@ class GptOssDecoderLayer(GradientCheckpointingLayer):
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states, _ = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
         hidden_states = residual + hidden_states
         return hidden_states
 
@@ -203,8 +166,13 @@ class GptOssModel(GptOssPreTrainedModel):
         past_key_values: Cache | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         use_cache: bool | None = None,
+        routed_experts: torch.LongTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> MoeModelOutputWithPast:
+        """
+        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+            Routed experts for each token and layer, used for router replay.
+        """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -231,6 +199,7 @@ class GptOssModel(GptOssPreTrainedModel):
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         for i, decoder_layer in enumerate(self.layers):
+            routed_experts_layer = routed_experts[:, :, i, :] if routed_experts is not None else None
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask_mapping[self.config.layer_types[i]],
@@ -238,6 +207,7 @@ class GptOssModel(GptOssPreTrainedModel):
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
+                routed_experts=routed_experts_layer,
                 **kwargs,
             )
         hidden_states = self.norm(hidden_states)
@@ -279,6 +249,7 @@ class GptOssForCausalLM(GptOssPreTrainedModel, GenerationMixin):
         use_cache: bool | None = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: torch.Tensor | None = None,
+        routed_experts: torch.LongTensor | None = None,
         # Document boundaries derive from position_ids (HF packed-sequence masks);
         # seq_lens is accepted to satisfy the trainer's universal contract.
         *,
@@ -293,6 +264,8 @@ class GptOssForCausalLM(GptOssPreTrainedModel, GenerationMixin):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are provided.
+        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+            Routed experts for each token and layer, used for router replay.
         """
         assert use_cache is None or not use_cache, "use_cache is not supported for custom GPT-OSS"
         assert past_key_values is None, "past_key_values is not supported for custom GPT-OSS"
@@ -304,6 +277,7 @@ class GptOssForCausalLM(GptOssPreTrainedModel, GenerationMixin):
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
+            routed_experts=routed_experts,
             **kwargs,
         )
 

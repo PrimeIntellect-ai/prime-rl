@@ -31,7 +31,7 @@ from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import conversion_chai
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
-from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
+from prime_rl.trainer.models.layers.moe import MoE, SwiGLuMoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -53,7 +53,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         )
         self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
 
-        moe_args = MoEArgs(
+        moe_args = SwiGLuMoEArgs(
             num_experts=config.n_routed_experts,
             num_shared_experts=config.n_shared_experts,
             score_func="sigmoid",
@@ -72,7 +72,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         )
 
         if layer_idx >= config.first_k_dense_replace:
-            self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            self.mlp = MoE.from_swiglu(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
         else:
             self.mlp = MLP(mlp_config)
 

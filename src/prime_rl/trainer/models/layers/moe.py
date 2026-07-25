@@ -17,7 +17,7 @@ from prime_rl.trainer.distributed.expert_parallel import expert_parallel
 
 
 @dataclass
-class MoEArgs:
+class SwiGLuMoEArgs:
     num_experts: int = 8
     num_shared_experts: int = 1
 
@@ -265,6 +265,24 @@ class GroupedExperts(nn.Module):
     def w3(self) -> torch.Tensor:
         index = self.input_weight_names.index("w3")
         return self.input_weight.split(self.input_weight_sizes, dim=1)[index]
+
+    @property
+    def gate_up_proj(self) -> torch.Tensor:
+        index = self.input_weight_names.index("gate_up_proj")
+        weight = self.input_weight.split(self.input_weight_sizes, dim=1)[index]
+        return weight.transpose(-2, -1) if self.transpose_weights_for_state_dict else weight
+
+    @property
+    def down_proj(self) -> torch.Tensor:
+        return self.w2.transpose(-2, -1) if self.transpose_weights_for_state_dict else self.w2
+
+    @property
+    def gate_up_proj_bias(self) -> torch.Tensor | None:
+        return self.input_bias
+
+    @property
+    def down_proj_bias(self) -> torch.Tensor | None:
+        return self.output_bias
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
@@ -556,53 +574,87 @@ class TokenReorderer(nn.Module):
 
 
 class MoE(nn.Module):
-    def __init__(self, moe_args: MoEArgs, dim: int, hidden_dim: int):
-        super().__init__()
+    """Token-choice MoE runtime composed from a router, grouped experts, and optional projections."""
 
-        num_experts = moe_args.num_experts
+    @classmethod
+    def from_swiglu(cls, args: SwiGLuMoEArgs, dim: int, hidden_dim: int) -> "MoE":
         grouped_mm_fn = torch._grouped_mm
-        if moe_args.fp8:
+        if args.fp8:
             from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
             grouped_mm_fn = grouped_fp8_gemm
-        self.experts = GroupedExperts(
+
+        experts = GroupedExperts(
             dim=dim,
             hidden_dim=hidden_dim,
-            num_experts=num_experts,
+            num_experts=args.num_experts,
             grouped_mm_fn=grouped_mm_fn,
         )
-        self.ep_comm_backend: EPCommBackend = "torch"
-        self.experts.set_ep_comm_backend(self.ep_comm_backend)
-        self.router = TokenChoiceTopKRouter(
+        router = TokenChoiceTopKRouter(
             dim=dim,
-            num_experts=num_experts,
-            top_k=moe_args.top_k,
-            score_func=moe_args.score_func,
-            route_norm=moe_args.route_norm,
-            route_scale=moe_args.route_scale,
+            num_experts=args.num_experts,
+            top_k=args.top_k,
+            score_func=args.score_func,
+            route_norm=args.route_norm,
+            route_scale=args.route_scale,
         )
-        self.reorderer = TokenReorderer(num_experts=num_experts, top_k=moe_args.top_k)
-        self.shared_expert = (
-            FeedForward(dim=dim, hidden_dim=hidden_dim * moe_args.num_shared_experts)
-            if moe_args.num_shared_experts > 0
+        shared_expert = (
+            FeedForward(dim=dim, hidden_dim=hidden_dim * args.num_shared_experts)
+            if args.num_shared_experts > 0
             else None
         )
-        if self.shared_expert is not None:
-            self.shared_expert.register_state_dict_post_hook(FeedForward.remove_weight_suffix_for_state_dict)
-            self.shared_expert.register_load_state_dict_pre_hook(FeedForward.restore_weight_suffix_from_state_dict)
-        self.score_before_experts = moe_args.score_before_experts
+        if shared_expert is not None:
+            shared_expert.register_state_dict_post_hook(FeedForward.remove_weight_suffix_for_state_dict)
+            shared_expert.register_load_state_dict_pre_hook(FeedForward.restore_weight_suffix_from_state_dict)
+
+        return cls(
+            router=router,
+            experts=experts,
+            shared_expert=shared_expert,
+            score_before_experts=args.score_before_experts,
+            load_balance_coeff=args.load_balance_coeff,
+        )
+
+    def __init__(
+        self,
+        *,
+        router: TokenChoiceTopKRouter,
+        experts: GroupedExperts,
+        shared_expert: FeedForward | None,
+        score_before_experts: bool,
+        load_balance_coeff: float | None,
+        routed_input_projection: tuple[str, nn.Module] | None = None,
+        routed_output_projection: tuple[str, nn.Module] | None = None,
+    ) -> None:
+        super().__init__()
+        self.router = router
+        self.experts = experts
+        self.shared_expert = shared_expert
+        self.score_before_experts = score_before_experts
+        self.routed_input_projection_name = None
+        if routed_input_projection is not None:
+            self.routed_input_projection_name, projection = routed_input_projection
+            self.add_module(self.routed_input_projection_name, projection)
+        self.routed_output_projection_name = None
+        if routed_output_projection is not None:
+            self.routed_output_projection_name, projection = routed_output_projection
+            self.add_module(self.routed_output_projection_name, projection)
+
+        self.ep_comm_backend: EPCommBackend = "torch"
+        self.experts.set_ep_comm_backend(self.ep_comm_backend)
+        self.reorderer = TokenReorderer(num_experts=experts.num_experts, top_k=router.top_k)
         self.deepep_token_chunk_size: int | None = None
 
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert is accumulated in the model forward pass.
         #       expert_bias is updated outside the model in an optimizer step pre hook
         #       to work with gradient accumulation.
-        self.load_balance_coeff = moe_args.load_balance_coeff
+        self.load_balance_coeff = load_balance_coeff
         if self.load_balance_coeff is not None:
             assert self.load_balance_coeff > 0.0
             self.register_buffer(
                 "expert_bias",
-                torch.zeros(num_experts, dtype=torch.float32),
+                torch.zeros(experts.num_experts, dtype=torch.float32),
                 persistent=True,
             )
         else:
@@ -610,7 +662,7 @@ class MoE(nn.Module):
         # tokens_per_expert will be used to track expert usage and to update the expert bias for load balancing
         self.register_buffer(
             "tokens_per_expert",
-            torch.zeros(num_experts, dtype=torch.float32),
+            torch.zeros(experts.num_experts, dtype=torch.float32),
             persistent=False,
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
@@ -640,6 +692,9 @@ class MoE(nn.Module):
         routed_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
         routed_input = torch.gather(x, dim=0, index=routed_indices)
 
+        if self.routed_input_projection_name is not None:
+            routed_input = getattr(self, self.routed_input_projection_name)(routed_input)
+
         if self.score_before_experts:
             routed_input = (routed_input.to(torch.float32) * top_scores_experts_sorted.reshape(-1, 1)).to(x.dtype)
 
@@ -647,6 +702,9 @@ class MoE(nn.Module):
 
         if not self.score_before_experts:
             routed_output = (routed_output.to(torch.float32) * top_scores_experts_sorted.reshape(-1, 1)).to(x.dtype)
+
+        if self.routed_output_projection_name is not None:
+            routed_output = getattr(self, self.routed_output_projection_name)(routed_output)
 
         return routed_output
 
@@ -669,11 +727,14 @@ class MoE(nn.Module):
             return x.new_zeros(x.shape) if shared_output is None else shared_output
 
         group = get_ep_group(self.experts)
-        chunk_size = min(self.deepep_token_chunk_size or x.shape[0], x.shape[0])
+        routed_input = x
+        if self.routed_input_projection_name is not None:
+            routed_input = getattr(self, self.routed_input_projection_name)(routed_input)
+        chunk_size = min(self.deepep_token_chunk_size or routed_input.shape[0], routed_input.shape[0])
 
         def dispatch_chunk(start: int, end: int):
             return dispatch_tokens_async(
-                x[start:end],
+                routed_input[start:end],
                 selected_experts_indices[start:end],
                 top_scores[start:end],
                 num_experts=self.experts.num_experts,
@@ -691,8 +752,8 @@ class MoE(nn.Module):
         pending_state = dispatch_chunk(0, chunk_size)
         routed_outputs: list[torch.Tensor] = []
 
-        for chunk_start in range(chunk_size, x.shape[0], chunk_size):
-            chunk_end = min(chunk_start + chunk_size, x.shape[0])
+        for chunk_start in range(chunk_size, routed_input.shape[0], chunk_size):
+            chunk_end = min(chunk_start + chunk_size, routed_input.shape[0])
             next_pending_state = dispatch_chunk(chunk_start, chunk_end)
             routed_outputs.append(run_pending_chunk(pending_state))
             pending_state = next_pending_state
@@ -702,6 +763,8 @@ class MoE(nn.Module):
         shared_output = self.shared_expert(x) if self.shared_expert is not None else None
         sync_combine()
         routed_output = routed_outputs[0] if len(routed_outputs) == 1 else torch.cat(routed_outputs, dim=0)
+        if self.routed_output_projection_name is not None:
+            routed_output = getattr(self, self.routed_output_projection_name)(routed_output)
         return routed_output if shared_output is None else shared_output + routed_output
 
     def forward(
@@ -787,228 +850,6 @@ class MoE(nn.Module):
         self.router.init_weights(init_std)
         if self.shared_expert is not None:
             self.shared_expert.init_weights(init_std)
-
-        with torch.device(buffer_device):
-            self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
-            self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
-            if self.load_balance_coeff is not None:
-                self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
-
-
-class LatentMoE(nn.Module):
-    """NemotronH-style Mixture of Experts with latent projections.
-
-    The input is projected to a latent space before expert computation,
-    and the output is projected back. Experts use relu2 activation without gating.
-    """
-
-    def __init__(
-        self,
-        dim: int,
-        latent_dim: int | None,
-        moe_intermediate_size: int,
-        shared_expert_intermediate_size: int,
-        num_experts: int,
-        top_k: int,
-        norm_topk_prob: bool,
-        routed_scaling_factor: float,
-        load_balance_coeff: float | None,
-        fp8: bool = False,
-    ):
-        super().__init__()
-        effective_latent_dim = latent_dim if latent_dim is not None else dim
-
-        self.router = TokenChoiceTopKRouter(
-            dim=dim,
-            num_experts=num_experts,
-            top_k=top_k,
-            score_func="sigmoid",
-            route_norm=norm_topk_prob,
-            route_scale=routed_scaling_factor,
-            weight_state_dict_name="gate",
-            selection_bias_state_dict_name="e_score_correction_bias",
-        )
-        self.router.fp32_gate = True
-        grouped_mm_fn = torch._grouped_mm
-        if fp8:
-            from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
-
-            grouped_mm_fn = grouped_fp8_gemm
-        self.experts = GroupedExperts(
-            dim=effective_latent_dim,
-            hidden_dim=moe_intermediate_size,
-            num_experts=num_experts,
-            input_weight_names=("w1",),
-            activation_fn=relu2,
-            grouped_mm_fn=grouped_mm_fn,
-        )
-        self.ep_comm_backend: EPCommBackend = "torch"
-        self.experts.set_ep_comm_backend(self.ep_comm_backend)
-        self.reorderer = TokenReorderer(num_experts=num_experts, top_k=top_k)
-        self.shared_expert = FeedForward(
-            dim=dim,
-            hidden_dim=shared_expert_intermediate_size,
-            input_projection_names=("up_proj",),
-            output_projection_name="down_proj",
-            activation_fn=relu2,
-        )
-        self.deepep_token_chunk_size: int | None = None
-
-        if latent_dim is not None:
-            self.fc1_latent_proj = nn.Linear(dim, latent_dim, bias=False)
-            self.fc2_latent_proj = nn.Linear(latent_dim, dim, bias=False)
-        else:
-            self.fc1_latent_proj = nn.Identity()
-            self.fc2_latent_proj = nn.Identity()
-
-        self.load_balance_coeff = load_balance_coeff
-        if self.load_balance_coeff is not None:
-            assert self.load_balance_coeff > 0.0
-            self.register_buffer(
-                "expert_bias",
-                torch.zeros(num_experts, dtype=torch.float32),
-                persistent=True,
-            )
-        else:
-            self.expert_bias = None
-        self.register_buffer(
-            "tokens_per_expert",
-            torch.zeros(num_experts, dtype=torch.float32),
-            persistent=False,
-        )
-        self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
-
-    def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
-        self.ep_comm_backend = backend
-        self.experts.set_ep_comm_backend(backend)
-
-    def set_deepep_token_chunk_size(self, chunk_size: int | None) -> None:
-        self.deepep_token_chunk_size = chunk_size
-
-    def _run_local_routed_experts(
-        self,
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.experts(x, num_tokens_per_expert)
-
-    def _run_routed_experts(
-        self,
-        x: torch.Tensor,
-        token_indices_experts_sorted: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-        top_scores_experts_sorted: torch.Tensor,
-    ) -> torch.Tensor:
-        dim = x.shape[-1]
-        token_indices_expanded = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
-        routed_input = torch.gather(x, dim=0, index=token_indices_expanded)
-
-        routed_input = self.fc1_latent_proj(routed_input)
-        routed_output = self.experts(routed_input, num_tokens_per_expert)
-
-        routed_output = (routed_output.float() * top_scores_experts_sorted.reshape(-1, 1)).to(routed_output.dtype)
-
-        routed_output = self.fc2_latent_proj(routed_output)
-        return routed_output
-
-    def _run_deepep_routed_experts(
-        self,
-        x: torch.Tensor,
-        selected_experts_indices: torch.Tensor,
-        top_scores: torch.Tensor,
-    ) -> torch.Tensor:
-        from prime_rl.trainer.distributed.deepep import (
-            combine_tokens,
-            dispatch_tokens_async,
-            finalize_dispatch_tokens,
-            sync_combine,
-        )
-        from prime_rl.trainer.distributed.expert_parallel import get_ep_group
-
-        if x.shape[0] == 0:
-            return self.shared_expert(x)
-
-        group = get_ep_group(self.experts)
-        # Project before dispatch so DeepEP communicates the smaller latent activations.
-        latent_x = self.fc1_latent_proj(x)
-        chunk_size = min(self.deepep_token_chunk_size or latent_x.shape[0], latent_x.shape[0])
-
-        def dispatch_chunk(start: int, end: int):
-            return dispatch_tokens_async(
-                latent_x[start:end],
-                selected_experts_indices[start:end],
-                top_scores[start:end],
-                num_experts=self.experts.num_experts,
-                group=group,
-                score_before_experts=False,
-            )
-
-        def run_pending_chunk(pending_state):
-            hidden_states, num_tokens_per_expert, dispatch_state = finalize_dispatch_tokens(pending_state)
-            routed_output = self._run_local_routed_experts(hidden_states, num_tokens_per_expert)
-            return combine_tokens(routed_output, dispatch_state)
-
-        pending_state = dispatch_chunk(0, chunk_size)
-        routed_outputs: list[torch.Tensor] = []
-
-        for chunk_start in range(chunk_size, latent_x.shape[0], chunk_size):
-            chunk_end = min(chunk_start + chunk_size, latent_x.shape[0])
-            next_pending_state = dispatch_chunk(chunk_start, chunk_end)
-            routed_outputs.append(run_pending_chunk(pending_state))
-            pending_state = next_pending_state
-
-        routed_outputs.append(run_pending_chunk(pending_state))
-
-        shared_output = self.shared_expert(x)
-        sync_combine()
-        routed_output = routed_outputs[0] if len(routed_outputs) == 1 else torch.cat(routed_outputs, dim=0)
-        routed_output = self.fc2_latent_proj(routed_output)
-        return shared_output + routed_output
-
-    def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
-        bs, slen, dim = x.shape
-        x_flat = x.view(-1, dim)
-
-        if routed_experts is not None:
-            # Flatten to (bs * slen, top_k); reshape (not view) since the slice is non-contiguous.
-            _, _, top_k = routed_experts.shape
-            routed_experts = routed_experts.reshape(-1, top_k)
-
-        top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum = self.router(
-            x_flat, self.expert_bias, routed_experts=routed_experts
-        )
-
-        with torch.no_grad():
-            self.tokens_per_expert.add_(num_tokens_per_expert)
-            self.routing_confidence_sum.add_(routing_confidence_sum)
-
-        if self.ep_comm_backend == "deepep":
-            routed_output = self._run_deepep_routed_experts(x_flat, selected_experts_indices, top_scores)
-            return routed_output.reshape(bs, slen, dim)
-
-        (
-            top_scores_experts_sorted,
-            token_indices_experts_sorted,
-            num_tokens_per_expert,
-        ) = self.reorderer(top_scores, selected_experts_indices)
-
-        routed_output = self._run_routed_experts(
-            x_flat,
-            token_indices_experts_sorted,
-            num_tokens_per_expert,
-            top_scores_experts_sorted,
-        )
-
-        out = self.shared_expert(x_flat)
-
-        token_indices_full = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
-        out = out.scatter_add(dim=0, index=token_indices_full, src=routed_output)
-        out = out.reshape(bs, slen, dim)
-        return out
-
-    def init_weights(self, init_std: float, buffer_device: torch.device):
-        self.experts.init_weights(init_std)
-        self.router.init_weights(init_std)
 
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
