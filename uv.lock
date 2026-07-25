@@ -5348,14 +5348,12 @@ source = { editable = "packages/prime-rl-kernels" }
 dependencies = [
     { name = "nvidia-cutlass" },
     { name = "torch" },
-    { name = "triton" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "nvidia-cutlass", specifier = "==4.2.0.0" },
     { name = "torch", specifier = ">=2.11.0" },
-    { name = "triton", specifier = ">=3.6.0" },
 ]
 
 [[package]]

@@ -112,6 +112,7 @@ class DebugModelConfig(BaseConfig):
 
 
 MXFP8Recipe: TypeAlias = Literal["mxfp8_rceil", "mxfp8_rceil_wgrad_with_hp"]
+NVFP4Backward: TypeAlias = Literal["bf16", "bf16_dequantized"]
 
 _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "lm_head",
@@ -147,6 +148,9 @@ class MXFP8Config(BaseConfig):
 class NVFP4Config(BaseConfig):
     type: Literal["nvfp4"] = "nvfp4"
     """Use experimental NVFP4 for routed-expert grouped GEMMs on Blackwell."""
+
+    backward: NVFP4Backward = "bf16_dequantized"
+    """Backward recipe. ``bf16`` retains the original operands; ``bf16_dequantized`` reconstructs BF16 operands from the forward's saved NVFP4 tensors."""
 
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config | NVFP4Config, Field(discriminator="type")]

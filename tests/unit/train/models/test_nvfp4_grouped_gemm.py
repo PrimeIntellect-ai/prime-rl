@@ -16,7 +16,8 @@ pytestmark = [
 ]
 
 
-def test_nvfp4_grouped_experts_forward_and_backward():
+@pytest.mark.parametrize("backward", ["bf16", "bf16_dequantized"])
+def test_nvfp4_grouped_experts_forward_and_backward(backward):
     torch.manual_seed(42)
     reference = (
         GroupedExperts(
@@ -30,7 +31,7 @@ def test_nvfp4_grouped_experts_forward_and_backward():
     )
     reference.init_weights(0.02)
     nvfp4 = copy.deepcopy(reference)
-    apply_nvfp4_moe_grouped_gemm(nvfp4)
+    apply_nvfp4_moe_grouped_gemm(nvfp4, backward=backward)
 
     counts = torch.tensor([7, 33, 0, 88], device="cuda", dtype=torch.int32)
     matrix = torch.randn(int(counts.sum().item()), 256, device="cuda", dtype=torch.bfloat16) * 0.1

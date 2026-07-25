@@ -44,7 +44,7 @@ Set `[trainer.model.quantization]` to train dense linears and MoE expert GEMMs i
 
 - `type = "fp8"` — DeepGEMM FP8 blockwise (requires SM90+ / Hopper). Options: `enable_grouped_gemm` (FP8 MoE expert GEMM). Both default on.
 - `type = "mxfp8"` — torchao MXFP8 microscaling (requires SM100+ / Blackwell). Options: `enable_grouped_gemm`, `enable_a2a` (MXFP8 expert-parallel all-to-all), and `recipe` (`mxfp8_rceil` default or `mxfp8_rceil_wgrad_with_hp`).
-- `type = "nvfp4"` — experimental NVFP4 grouped GEMM for gated MoE experts (requires SM100+ / Blackwell). Forward uses E2M1 values with E4M3 1-by-16 block scales and one current FP32 scale per expert; backward remains BF16. Dense linears and stored weights remain BF16.
+- `type = "nvfp4"` — experimental NVFP4 grouped GEMM for gated MoE experts (requires SM100+ / Blackwell). Forward uses E2M1 values with E4M3 1-by-16 block scales, a current FP32 scale per token for activations, and a current FP32 scale per expert for weights. `backward` accepts `bf16_dequantized` (default; reconstruct BF16 operands from the forward's saved NVFP4 tensors) or `bf16` (retain the original BF16 operands). Dense linears and stored weights remain BF16.
 
 ```toml
 [trainer.model.quantization]

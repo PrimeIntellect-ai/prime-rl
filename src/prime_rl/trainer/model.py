@@ -1169,7 +1169,7 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
             raise ValueError(
                 f"NVFP4 quantization requires SM100 (Blackwell) or newer, but device is SM{capability[0]}{capability[1]}."
             )
-        apply_nvfp4_moe_grouped_gemm(model)
+        apply_nvfp4_moe_grouped_gemm(model, backward=quant.backward)
 
 
 def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):

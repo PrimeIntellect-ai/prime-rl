@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch import nn
 from torchtitan.distributed.expert_parallel import expert_parallel
 
-from prime_rl.configs.trainer import EPCommBackend
+from prime_rl.configs.trainer import EPCommBackend, NVFP4Backward
 
 
 @dataclass
@@ -163,7 +163,34 @@ def _run_experts_nvfp4_grouped_mm(
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
 ) -> torch.Tensor:
-    return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert, nvfp4=True)
+    return _run_experts_grouped_mm_impl(
+        w1,
+        w2,
+        w3,
+        x,
+        num_tokens_per_expert,
+        nvfp4=True,
+        nvfp4_backward="bf16_dequantized",
+    )
+
+
+@expert_parallel
+def _run_experts_nvfp4_bf16_grouped_mm(
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+) -> torch.Tensor:
+    return _run_experts_grouped_mm_impl(
+        w1,
+        w2,
+        w3,
+        x,
+        num_tokens_per_expert,
+        nvfp4=True,
+        nvfp4_backward="bf16",
+    )
 
 
 def _run_experts_grouped_mm_impl(
@@ -174,6 +201,7 @@ def _run_experts_grouped_mm_impl(
     num_tokens_per_expert: torch.Tensor,
     fp8: bool = False,
     nvfp4: bool = False,
+    nvfp4_backward: NVFP4Backward = "bf16_dequantized",
 ) -> torch.Tensor:
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
     # grouped mm between a 2D tensor and a 3D tensor
@@ -185,9 +213,26 @@ def _run_experts_grouped_mm_impl(
     if nvfp4:
         from prime_rl_kernels.nvfp4.grouped_gemm import grouped_gemm
 
-        h = F.silu(grouped_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
-        h = h * grouped_gemm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offsets)
-        out = grouped_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
+        h = F.silu(
+            grouped_gemm(
+                x.bfloat16(),
+                w1.bfloat16().transpose(-2, -1),
+                offsets,
+                backward=nvfp4_backward,
+            )
+        )
+        h = h * grouped_gemm(
+            x.bfloat16(),
+            w3.bfloat16().transpose(-2, -1),
+            offsets,
+            backward=nvfp4_backward,
+        )
+        out = grouped_gemm(
+            h,
+            w2.bfloat16().transpose(-2, -1),
+            offsets,
+            backward=nvfp4_backward,
+        ).type_as(x)
     elif fp8:
         from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
@@ -219,6 +264,7 @@ class GroupedExperts(nn.Module):
         self.use_grouped_mm = use_grouped_mm
         self.fp8 = fp8
         self.nvfp4 = False
+        self.nvfp4_backward: NVFP4Backward = "bf16_dequantized"
         self.ep_comm_backend: EPCommBackend = "torch"
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
@@ -237,6 +283,7 @@ class GroupedExperts(nn.Module):
                 num_tokens_per_expert,
                 fp8=self.fp8,
                 nvfp4=self.nvfp4,
+                nvfp4_backward=self.nvfp4_backward,
             )
         return _run_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
 
@@ -250,6 +297,14 @@ class GroupedExperts(nn.Module):
 
         if self.use_grouped_mm:
             if self.nvfp4:
+                if self.nvfp4_backward == "bf16":
+                    return _run_experts_nvfp4_bf16_grouped_mm(
+                        self.w1,
+                        self.w2,
+                        self.w3,
+                        x,
+                        num_tokens_per_expert,
+                    )
                 return _run_experts_nvfp4_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
             if self.fp8:
                 return _run_experts_fp8_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)

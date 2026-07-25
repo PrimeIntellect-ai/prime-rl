@@ -6,13 +6,20 @@ from collections.abc import Callable
 import torch
 import torch.nn.functional as F
 from prime_rl_kernels import grouped_gemm
-from triton.testing import do_bench
 
 
 def _benchmark(operation: Callable[[], object], *, warmup: int, repetitions: int) -> float:
-    operation()
+    for _ in range(warmup):
+        operation()
     torch.cuda.synchronize()
-    return float(do_bench(operation, warmup=warmup, rep=repetitions))
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(repetitions):
+        operation()
+    end.record()
+    end.synchronize()
+    return start.elapsed_time(end) / repetitions
 
 
 def main() -> None:

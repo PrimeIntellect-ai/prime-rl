@@ -1,6 +1,7 @@
 import pytest
 import torch
 from prime_rl_kernels import grouped_gemm
+from prime_rl_kernels.nvfp4.quantize import quantize_activations, quantize_weights
 
 
 def _blackwell_nvfp4_available() -> bool:
@@ -12,7 +13,8 @@ def _blackwell_nvfp4_available() -> bool:
 
 
 @pytest.mark.skipif(not _blackwell_nvfp4_available(), reason="NVFP4 grouped GEMM requires Blackwell")
-def test_grouped_nvfp4_forward_and_backward() -> None:
+@pytest.mark.parametrize("backward", ["bf16", "bf16_dequantized"])
+def test_grouped_nvfp4_forward_and_backward(backward: str) -> None:
     torch.manual_seed(42)
     sizes = [7, 33, 0, 88]
     groups = len(sizes)
@@ -36,25 +38,32 @@ def test_grouped_nvfp4_forward_and_backward() -> None:
         * 0.02
     ).requires_grad_()
 
-    output = grouped_gemm(matrix, weight, offsets)
+    quantized_matrix = quantize_activations(matrix.detach(), offsets)
+    quantized_weight = quantize_weights(weight.detach())
+    dequantized_matrix = quantized_matrix.dequantize()
+    dequantized_weight = quantized_weight.dequantize()
+
+    output = grouped_gemm(matrix, weight, offsets, backward=backward)
     reference = torch._grouped_mm(
-        matrix.detach(),
-        weight.detach(),
+        dequantized_matrix,
+        dequantized_weight,
         offs=offsets,
         out_dtype=torch.bfloat16,
     )
-    torch.testing.assert_close(output, reference, atol=0.08, rtol=0.08)
+    torch.testing.assert_close(output, reference, atol=0.01, rtol=0.01)
 
     grad_output = torch.randn_like(output)
     output.backward(grad_output)
+    backward_matrix = matrix.detach() if backward == "bf16" else dequantized_matrix
+    backward_weight = weight.detach() if backward == "bf16" else dequantized_weight
     reference_grad_matrix = torch._grouped_mm(
         grad_output,
-        weight.detach().transpose(-2, -1),
+        backward_weight.transpose(-2, -1),
         offs=offsets,
         out_dtype=torch.bfloat16,
     )
     reference_grad_weight = torch._grouped_mm(
-        matrix.detach().transpose(0, 1),
+        backward_matrix.transpose(0, 1),
         grad_output,
         offs=offsets,
         out_dtype=torch.bfloat16,

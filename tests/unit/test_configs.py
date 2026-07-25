@@ -159,6 +159,11 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_nvfp4_quantization_config():
     config = TrainerModelConfig.model_validate({"quantization": {"type": "nvfp4"}})
     assert isinstance(config.quantization, NVFP4Config)
+    assert config.quantization.backward == "bf16_dequantized"
+
+    config = TrainerModelConfig.model_validate({"quantization": {"type": "nvfp4", "backward": "bf16"}})
+    assert isinstance(config.quantization, NVFP4Config)
+    assert config.quantization.backward == "bf16"
 
     with pytest.raises(ValidationError, match="moe_use_grouped_mm"):
         TrainerModelConfig.model_validate(
