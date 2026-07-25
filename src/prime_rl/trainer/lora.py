@@ -7,11 +7,11 @@ import torch.nn as nn
 from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.trainer.models.layers.lora import MultiLoRALinear, MultiLoRAModule
 from prime_rl.trainer.models.layers.lora.multi_moe import (
-    MultiLoRAGptOssGroupedExperts,
     MultiLoRAGroupedExperts,
+    MultiLoRAInterleavedGroupedExperts,
     MultiLoRAReLU2GroupedExperts,
 )
-from prime_rl.trainer.models.layers.moe import GptOssGroupedExperts, GroupedExperts
+from prime_rl.trainer.models.layers.moe import GroupedExperts
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.utils.logger import get_logger
 
@@ -78,8 +78,8 @@ def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[s
     target_modules = []
 
     for name, module in model.named_modules():
-        # Check if module is Linear or one of the supported expert classes
-        if not isinstance(module, (nn.Linear, GroupedExperts, GptOssGroupedExperts)):
+        # Check if module is Linear or a supported expert class
+        if not isinstance(module, (nn.Linear, GroupedExperts)):
             continue
 
         for pattern in target_patterns:
@@ -178,19 +178,13 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             )
         # Handle GroupedExperts (MoE)
         elif isinstance(base_module, GroupedExperts):
-            lora_cls = (
-                MultiLoRAReLU2GroupedExperts if base_module.input_weight_names == ("w1",) else MultiLoRAGroupedExperts
-            )
+            if base_module.input_weight_names == ("gate_up_proj",):
+                lora_cls = MultiLoRAInterleavedGroupedExperts
+            elif base_module.input_weight_names == ("w1",):
+                lora_cls = MultiLoRAReLU2GroupedExperts
+            else:
+                lora_cls = MultiLoRAGroupedExperts
             lora_module = lora_cls(
-                base_layer=base_module,
-                rank=config.rank,
-                n_adapters=n_loras,
-                alpha=config.alpha,
-                dropout=config.dropout,
-            )
-        # Handle GptOssGroupedExperts (gpt-oss fused gate_up + biases)
-        elif isinstance(base_module, GptOssGroupedExperts):
-            lora_module = MultiLoRAGptOssGroupedExperts(
                 base_layer=base_module,
                 rank=config.rank,
                 n_adapters=n_loras,
@@ -200,7 +194,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         else:
             logger.warning(
                 f"Module {module_name} is type {type(base_module).__name__}, "
-                f"expected nn.Linear, GroupedExperts, or GptOssGroupedExperts. Skipping."
+                "expected nn.Linear or GroupedExperts. Skipping."
             )
             continue
 

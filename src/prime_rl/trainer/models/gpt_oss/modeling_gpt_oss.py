@@ -1,9 +1,5 @@
-# GPT-OSS model with PrimeRL custom MoE.
-#
-# This file mirrors HuggingFace's modeling_gpt_oss.py but swaps the experts module for
-# `GptOssGroupedExperts` so the LoRA detection logic in `prime_rl/trainer/lora.py` can
-# find and adapt the expert weights. Attention, rotary embedding, and RMSNorm are reused
-# from HF as-is - they correctly handle attention sinks and gpt-oss's split-rotate RoPE.
+# GPT-OSS model with PrimeRL grouped experts. Attention, rotary embedding, and
+# RMSNorm are reused from HuggingFace.
 
 from typing import Union
 
@@ -31,7 +27,7 @@ from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
     is_prime_state_dict,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.moe import GptOssGroupedExperts
+from prime_rl.trainer.models.layers.moe import GroupedExperts, interleaved_clamped_swiglu
 
 
 class GptOssTopKRouter(nn.Module):
@@ -75,9 +71,8 @@ class GptOssTopKRouter(nn.Module):
 class GptOssMoE(nn.Module):
     """GPT-OSS sparse MLP: top-k router + grouped experts with biases.
 
-    Wraps `GptOssGroupedExperts` (which expects pre-permuted tokens + num_tokens_per_expert)
-    with the standard MoE permute/unpermute pipeline. Routing weights are applied AFTER
-    the expert computation, matching HF's `routing_weights[token_idx, top_k_pos]` index_add.
+    Routing weights are applied after the expert computation, matching HuggingFace's
+    `routing_weights[token_idx, top_k_pos]` index_add.
     """
 
     def __init__(self, config: GptOssConfig):
@@ -90,10 +85,17 @@ class GptOssMoE(nn.Module):
             from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
             grouped_mm_fn = grouped_fp8_gemm
-        self.experts = GptOssGroupedExperts(
-            hidden_size=config.hidden_size,
-            intermediate_size=config.intermediate_size,
+        self.experts = GroupedExperts(
+            dim=config.hidden_size,
+            hidden_dim=config.intermediate_size,
             num_experts=self.num_experts,
+            input_weight_names=("gate_up_proj",),
+            input_weight_sizes=(2 * config.intermediate_size,),
+            output_weight_name="down_proj",
+            input_bias_name="gate_up_proj_bias",
+            output_bias_name="down_proj_bias",
+            transpose_weights_for_state_dict=True,
+            activation_fn=interleaved_clamped_swiglu,
             grouped_mm_fn=grouped_mm_fn,
         )
 
