@@ -85,11 +85,16 @@ class GptOssMoE(nn.Module):
         self.num_experts = config.num_local_experts
         self.top_k = config.num_experts_per_tok
         self.router = GptOssTopKRouter(config)
+        grouped_mm_fn = torch._grouped_mm
+        if getattr(config, "fp8", False):
+            from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
+
+            grouped_mm_fn = grouped_fp8_gemm
         self.experts = GptOssGroupedExperts(
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
             num_experts=self.num_experts,
-            fp8=getattr(config, "fp8", False),
+            grouped_mm_fn=grouped_mm_fn,
         )
 
     def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
