@@ -94,7 +94,7 @@ class LoRAConfig(BaseConfig):
         "fc1_latent_proj",
         "fc2_latent_proj",
     ]
-    """Module names or regex patterns to apply LoRA to. Simple names (e.g. ``q_proj``) match any component in the module path; regex patterns match anywhere in the name. Names unknown to the current model are silently ignored, so defaults cover multiple architectures. NemotronH note: ``experts`` matches NonGatedGroupedExperts inside LatentMoE; ``fc1_latent_proj``/``fc2_latent_proj`` adapt the latent up/down projections. Add ``in_proj``/``out_proj`` to also LoRA Mamba."""
+    """Module names or regex patterns to apply LoRA to. Simple names (e.g. ``q_proj``) match any component in the module path; regex patterns match anywhere in the name. Names unknown to the current model are silently ignored, so defaults cover multiple architectures. NemotronH note: ``experts`` matches the ReLU² GroupedExperts inside LatentMoE; ``fc1_latent_proj``/``fc2_latent_proj`` adapt the latent up/down projections. Add ``in_proj``/``out_proj`` to also LoRA Mamba."""
 
     modules_to_save: list[str] = []
     """Module names or regex patterns to keep fully trainable (not freeze). Same matching rules as ``target_modules``."""

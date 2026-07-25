@@ -12,7 +12,7 @@ from torchtitan.experiments.kernels.moe import indices as tt_indices
 
 from prime_rl.configs.trainer import MXFP8Recipe
 from prime_rl.trainer.distributed.expert_parallel import set_token_group_alignment_size_m
-from prime_rl.trainer.models.layers.moe import GroupedExperts, NonGatedGroupedExperts
+from prime_rl.trainer.models.layers.moe import GroupedExperts
 from prime_rl.utils.logger import get_logger
 
 _MXFP8_TOKEN_GROUP_ALIGN: int = 32
@@ -79,7 +79,7 @@ def apply_mxfp8_moe_grouped_gemm(model: nn.Module, recipe: MXFP8Recipe) -> None:
     op_config = MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe(recipe))
 
     def filter_fn(module: nn.Module, fqn: str) -> bool:
-        return isinstance(module, (GroupedExperts, NonGatedGroupedExperts))
+        return isinstance(module, GroupedExperts)
 
     quantize_(model, config=op_config, filter_fn=filter_fn)
     get_logger().info(

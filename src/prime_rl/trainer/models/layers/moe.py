@@ -33,56 +33,83 @@ class MoEArgs:
     fp8: bool = False  # use FP8 grouped GEMM via DeepGEMM (requires SM90)
 
 
-# can be used as dense FFN layer or shared experts in MoE layers
-class FeedForward(nn.Module):
-    """
-    Args:
-        dim (int): Input dimension.
-        hidden_dim (int): Hidden dimension of the feedforward layer.
+def swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+    return F.silu(gate) * up
 
-    Attributes:
-        w1 (Linear): Linear transformation for the first layer.
-        w2 (Linear): Linear transformation for the second layer.
-        w3 (Linear): Linear transformation for the third layer.
-    """
+
+def fused_swiglu(gate_up: torch.Tensor) -> torch.Tensor:
+    gate, up = gate_up.chunk(2, dim=-1)
+    return swiglu(gate, up)
+
+
+def interleaved_clamped_swiglu(gate_up: torch.Tensor) -> torch.Tensor:
+    gate, up = gate_up[..., ::2], gate_up[..., 1::2]
+    gate = gate.clamp(max=7.0)
+    up = up.clamp(min=-7.0, max=7.0)
+    return (up + 1) * gate * torch.sigmoid(gate * 1.702)
+
+
+@torch.compile(dynamic=True)
+def relu2(x: torch.Tensor) -> torch.Tensor:
+    return F.relu(x).square()
+
+
+class FeedForward(nn.Module):
+    """Dense feed-forward layer with named input and output projections."""
 
     def __init__(
         self,
         dim: int,
         hidden_dim: int,
+        *,
+        input_projection_names: tuple[str, ...] = ("w1", "w3"),
+        output_projection_name: str = "w2",
+        activation_fn: Callable[..., torch.Tensor] = swiglu,
     ) -> None:
         super().__init__()
-        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+        self.input_projection_names = input_projection_names
+        self.output_projection_name = output_projection_name
+        self.activation_fn = activation_fn
+        for name in input_projection_names:
+            self.add_module(name, nn.Linear(dim, hidden_dim, bias=False))
+        self.add_module(output_projection_name, nn.Linear(hidden_dim, dim, bias=False))
+
+    @staticmethod
+    def remove_weight_suffix_for_state_dict(
+        module: "FeedForward",
+        state_dict: dict[str, Any],
+        prefix: str,
+        _local_metadata: dict[str, Any],
+    ) -> None:
+        names = (*module.input_projection_names, module.output_projection_name)
+        for name in names:
+            state_dict[prefix + name] = state_dict.pop(prefix + name + ".weight")
+
+    @staticmethod
+    def restore_weight_suffix_from_state_dict(
+        module: "FeedForward",
+        state_dict: dict[str, Any],
+        prefix: str,
+        _local_metadata: dict[str, Any],
+        _strict: bool,
+        _missing_keys: list[str],
+        _unexpected_keys: list[str],
+        _error_msgs: list[str],
+    ) -> None:
+        names = (*module.input_projection_names, module.output_projection_name)
+        for name in names:
+            state_dict[prefix + name + ".weight"] = state_dict.pop(prefix + name)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        projected = [getattr(self, name)(x) for name in self.input_projection_names]
+        return getattr(self, self.output_projection_name)(self.activation_fn(*projected))
 
     def init_weights(self, init_std: float = 0.02):
-        nn.init.trunc_normal_(self.w1.weight, mean=0.0, std=0.02)
-        for linear in (self.w2, self.w3):
+        input_projections = [getattr(self, name) for name in self.input_projection_names]
+        nn.init.trunc_normal_(input_projections[0].weight, mean=0.0, std=0.02)
+        output_projection = getattr(self, self.output_projection_name)
+        for linear in (*input_projections[1:], output_projection):
             nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
-
-
-class BCFeedForward(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        hidden_dim: int,
-    ) -> None:
-        super().__init__()
-        self.w1 = nn.Parameter(torch.empty(hidden_dim, dim))
-        self.w2 = nn.Parameter(torch.empty(dim, hidden_dim))
-        self.w3 = nn.Parameter(torch.empty(hidden_dim, dim))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.matmul(F.silu(torch.matmul(x, self.w1.T)) * torch.matmul(x, self.w3.T), self.w2.T)
-
-    def init_weights(self, init_std: float):
-        nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
-        nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
-        nn.init.trunc_normal_(self.w3, mean=0.0, std=init_std)
 
 
 def broadcast_expert_bias(
@@ -98,57 +125,51 @@ def broadcast_expert_bias(
 
 @expert_parallel
 def _run_experts_grouped_mm(
-    gate_up_weight: torch.Tensor,
-    down_weight: torch.Tensor,
+    input_weight: torch.Tensor,
+    output_weight: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     *,
     grouped_mm_fn: Callable[..., torch.Tensor],
+    activation_fn: Callable[[torch.Tensor], torch.Tensor],
     gate_up_bias: torch.Tensor | None = None,
     down_bias: torch.Tensor | None = None,
-    use_interleaved_clamped_swiglu: bool = False,
 ) -> torch.Tensor:
     return _run_experts_grouped_mm_impl(
-        gate_up_weight,
-        down_weight,
+        input_weight,
+        output_weight,
         x,
         num_tokens_per_expert,
         grouped_mm_fn=grouped_mm_fn,
+        activation_fn=activation_fn,
         gate_up_bias=gate_up_bias,
         down_bias=down_bias,
-        use_interleaved_clamped_swiglu=use_interleaved_clamped_swiglu,
     )
 
 
 def _run_experts_grouped_mm_impl(
-    gate_up_weight: torch.Tensor,
-    down_weight: torch.Tensor,
+    input_weight: torch.Tensor,
+    output_weight: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     *,
     grouped_mm_fn: Callable[..., torch.Tensor],
+    activation_fn: Callable[[torch.Tensor], torch.Tensor],
     gate_up_bias: torch.Tensor | None = None,
     down_bias: torch.Tensor | None = None,
-    use_interleaved_clamped_swiglu: bool = False,
 ) -> torch.Tensor:
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
     assert x.dim() == 2
 
-    gate_up = grouped_mm_fn(x.bfloat16(), gate_up_weight.bfloat16(), offs=offsets)
+    projected = grouped_mm_fn(x.bfloat16(), input_weight.bfloat16(), offs=offsets)
 
     if gate_up_bias is not None:
-        gate_up = gate_up + broadcast_expert_bias(gate_up_bias, num_tokens_per_expert, gate_up.shape[0]).bfloat16()
+        projected = (
+            projected + broadcast_expert_bias(gate_up_bias, num_tokens_per_expert, projected.shape[0]).bfloat16()
+        )
 
-    if use_interleaved_clamped_swiglu:
-        gate, up = gate_up[..., ::2], gate_up[..., 1::2]
-        gate = gate.clamp(max=7.0)
-        up = up.clamp(min=-7.0, max=7.0)
-        h = (up + 1) * gate * torch.sigmoid(gate * 1.702)
-    else:
-        gate, up = gate_up.chunk(2, dim=-1)
-        h = F.silu(gate) * up
-
-    out = grouped_mm_fn(h, down_weight.bfloat16(), offs=offsets)
+    hidden = activation_fn(projected)
+    out = grouped_mm_fn(hidden, output_weight.bfloat16(), offs=offsets)
 
     if down_bias is not None:
         out = out + broadcast_expert_bias(down_bias, num_tokens_per_expert, out.shape[0]).bfloat16()
@@ -157,19 +178,19 @@ def _run_experts_grouped_mm_impl(
 
 class GroupedExperts(nn.Module):
     @staticmethod
-    def split_gate_up_for_state_dict(
+    def split_input_weight_for_state_dict(
         module: "GroupedExperts",
         state_dict: dict[str, Any],
         prefix: str,
         _local_metadata: dict[str, Any],
     ) -> None:
-        w1, w3 = state_dict.pop(prefix + "w13").split(module.hidden_dim, dim=1)
-        state_dict[prefix + "w1"] = w1
-        state_dict[prefix + "w3"] = w3
+        input_weights = state_dict.pop(prefix + "input_weight").split(module.hidden_dim, dim=1)
+        for name, weight in zip(module.input_weight_names, input_weights, strict=True):
+            state_dict[prefix + name] = weight
 
     @staticmethod
-    def fuse_gate_up_from_state_dict(
-        _module: "GroupedExperts",
+    def fuse_input_weight_from_state_dict(
+        module: "GroupedExperts",
         state_dict: dict[str, Any],
         prefix: str,
         _local_metadata: dict[str, Any],
@@ -178,45 +199,52 @@ class GroupedExperts(nn.Module):
         _unexpected_keys: list[str],
         _error_msgs: list[str],
     ) -> None:
-        w1 = state_dict.pop(prefix + "w1")
-        w3 = state_dict.pop(prefix + "w3")
-        state_dict[prefix + "w13"] = torch.cat((w1, w3), dim=1)
+        input_weights = [state_dict.pop(prefix + name) for name in module.input_weight_names]
+        state_dict[prefix + "input_weight"] = torch.cat(input_weights, dim=1)
 
     def __init__(
         self,
         dim: int,
         hidden_dim: int,
         num_experts: int,
+        *,
+        input_weight_names: tuple[str, ...] = ("w1", "w3"),
+        activation_fn: Callable[[torch.Tensor], torch.Tensor] = fused_swiglu,
         grouped_mm_fn: Callable[..., torch.Tensor] = torch._grouped_mm,
     ):
         super().__init__()
         self.num_experts = num_experts
         self.hidden_dim = hidden_dim
-        self.w13 = nn.Parameter(torch.empty(num_experts, 2 * hidden_dim, dim))
+        self.input_weight_names = input_weight_names
+        self.input_weight = nn.Parameter(torch.empty(num_experts, len(input_weight_names) * hidden_dim, dim))
         self.w2 = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
+        self._activation_fn = activation_fn
         self._grouped_mm_fn = grouped_mm_fn
         self.ep_comm_backend: EPCommBackend = "torch"
-        self.register_state_dict_post_hook(self.split_gate_up_for_state_dict)
-        self.register_load_state_dict_pre_hook(self.fuse_gate_up_from_state_dict)
+        self.register_state_dict_post_hook(self.split_input_weight_for_state_dict)
+        self.register_load_state_dict_pre_hook(self.fuse_input_weight_from_state_dict)
 
     @property
     def w1(self) -> torch.Tensor:
-        return self.w13.split(self.hidden_dim, dim=1)[0]
+        index = self.input_weight_names.index("w1")
+        return self.input_weight.split(self.hidden_dim, dim=1)[index]
 
     @property
     def w3(self) -> torch.Tensor:
-        return self.w13.split(self.hidden_dim, dim=1)[1]
+        index = self.input_weight_names.index("w3")
+        return self.input_weight.split(self.hidden_dim, dim=1)[index]
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
 
     def _forward_deepep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         return _run_experts_grouped_mm_impl(
-            self.w13.to_local().transpose(-2, -1),
+            self.input_weight.to_local().transpose(-2, -1),
             self.w2.to_local().transpose(-2, -1),
             x,
             num_tokens_per_expert,
             grouped_mm_fn=self._grouped_mm_fn,
+            activation_fn=self._activation_fn,
         )
 
     def forward(
@@ -228,17 +256,19 @@ class GroupedExperts(nn.Module):
             return self._forward_deepep(x, num_tokens_per_expert)
 
         return _run_experts_grouped_mm(
-            self.w13.transpose(-2, -1),
+            self.input_weight.transpose(-2, -1),
             self.w2.transpose(-2, -1),
             x,
             num_tokens_per_expert,
             grouped_mm_fn=self._grouped_mm_fn,
+            activation_fn=self._activation_fn,
         )
 
     def init_weights(self, init_std: float):
-        nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
-        nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
-        nn.init.trunc_normal_(self.w3, mean=0.0, std=init_std)
+        input_weights = self.input_weight.split(self.hidden_dim, dim=1)
+        nn.init.trunc_normal_(input_weights[0], mean=0.0, std=0.02)
+        for weight in (*input_weights[1:], self.w2):
+            nn.init.trunc_normal_(weight, mean=0.0, std=init_std)
 
 
 class GptOssGroupedExperts(nn.Module):
@@ -278,9 +308,9 @@ class GptOssGroupedExperts(nn.Module):
             x,
             num_tokens_per_expert,
             grouped_mm_fn=self._grouped_mm_fn,
+            activation_fn=interleaved_clamped_swiglu,
             gate_up_bias=self.gate_up_proj_bias.to_local(),
             down_bias=self.down_proj_bias.to_local(),
-            use_interleaved_clamped_swiglu=True,
         )
 
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
@@ -293,9 +323,9 @@ class GptOssGroupedExperts(nn.Module):
             x,
             num_tokens_per_expert,
             grouped_mm_fn=self._grouped_mm_fn,
+            activation_fn=interleaved_clamped_swiglu,
             gate_up_bias=self.gate_up_proj_bias,
             down_bias=self.down_proj_bias,
-            use_interleaved_clamped_swiglu=True,
         )
 
     def init_weights(self, init_std: float):
@@ -510,12 +540,14 @@ class MoE(nn.Module):
             route_scale=moe_args.route_scale,
         )
         self.reorderer = TokenReorderer(num_experts=num_experts, top_k=moe_args.top_k)
-        # TODO: Add the s back and use FF when the weights support it
         self.shared_expert = (
-            BCFeedForward(dim=dim, hidden_dim=hidden_dim * moe_args.num_shared_experts)
+            FeedForward(dim=dim, hidden_dim=hidden_dim * moe_args.num_shared_experts)
             if moe_args.num_shared_experts > 0
             else None
         )
+        if self.shared_expert is not None:
+            self.shared_expert.register_state_dict_post_hook(FeedForward.remove_weight_suffix_for_state_dict)
+            self.shared_expert.register_load_state_dict_pre_hook(FeedForward.restore_weight_suffix_from_state_dict)
         self.score_before_experts = moe_args.score_before_experts
         self.deepep_token_chunk_size: int | None = None
 
@@ -721,145 +753,6 @@ class MoE(nn.Module):
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
 
 
-@torch.compile(dynamic=True)
-def relu2(x: torch.Tensor) -> torch.Tensor:
-    return F.relu(x).square()
-
-
-def _run_nongated_experts_for_loop_impl(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    _w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    num_tokens_per_expert = num_tokens_per_expert.tolist()
-    num_padding = x.shape[0] - sum(num_tokens_per_expert)
-
-    x = torch.split(
-        x[: sum(num_tokens_per_expert)],
-        split_size_or_sections=num_tokens_per_expert,
-        dim=0,
-    )
-    out_experts_splits = []
-    for expert_idx, x_expert in enumerate(x):
-        h = relu2(torch.matmul(x_expert, w1[expert_idx].transpose(-2, -1)))
-        h = torch.matmul(h, w2[expert_idx].transpose(-2, -1))
-        out_experts_splits.append(h)
-    out = torch.cat(out_experts_splits, dim=0)
-    out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
-    return out
-
-
-@expert_parallel
-def _run_nongated_experts_for_loop(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    _w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    return _run_nongated_experts_for_loop_impl(w1, w2, _w3, x, num_tokens_per_expert)
-
-
-def _run_nongated_experts_grouped_mm_impl(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    _w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-    *,
-    grouped_mm_fn: Callable[..., torch.Tensor],
-) -> torch.Tensor:
-    offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
-    assert x.dim() == 2
-
-    h = relu2(grouped_mm_fn(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
-    out = grouped_mm_fn(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
-    return out
-
-
-@expert_parallel
-def _run_nongated_experts_grouped_mm(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    _w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-    *,
-    grouped_mm_fn: Callable[..., torch.Tensor],
-) -> torch.Tensor:
-    return _run_nongated_experts_grouped_mm_impl(
-        w1,
-        w2,
-        _w3,
-        x,
-        num_tokens_per_expert,
-        grouped_mm_fn=grouped_mm_fn,
-    )
-
-
-class NonGatedGroupedExperts(nn.Module):
-    def __init__(
-        self,
-        input_dim: int,
-        intermediate_dim: int,
-        num_experts: int,
-        use_grouped_mm: bool,
-        grouped_mm_fn: Callable[..., torch.Tensor] = torch._grouped_mm,
-    ):
-        super().__init__()
-        self.num_experts = num_experts
-        self.w1 = nn.Parameter(torch.empty(num_experts, intermediate_dim, input_dim))
-        self.w2 = nn.Parameter(torch.empty(num_experts, input_dim, intermediate_dim))
-        # Dummy w3 for @expert_parallel decorator compatibility (expects w1, w2, w3 signature)
-        self.w3 = nn.Parameter(torch.empty(0))
-        self.use_grouped_mm = use_grouped_mm
-        self._grouped_mm_fn = grouped_mm_fn
-        self.ep_comm_backend: EPCommBackend = "torch"
-
-    def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
-        self.ep_comm_backend = backend
-
-    def _forward_deepep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
-        w1 = self.w1.to_local()
-        w2 = self.w2.to_local()
-        w3 = self.w3.to_local()
-        if self.use_grouped_mm:
-            return _run_nongated_experts_grouped_mm_impl(
-                w1,
-                w2,
-                w3,
-                x,
-                num_tokens_per_expert,
-                grouped_mm_fn=self._grouped_mm_fn,
-            )
-        return _run_nongated_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-    ) -> torch.Tensor:
-        if self.ep_comm_backend == "deepep":
-            return self._forward_deepep(x, num_tokens_per_expert)
-        if self.use_grouped_mm:
-            return _run_nongated_experts_grouped_mm(
-                self.w1,
-                self.w2,
-                self.w3,
-                x,
-                num_tokens_per_expert,
-                grouped_mm_fn=self._grouped_mm_fn,
-            )
-        else:
-            return _run_nongated_experts_for_loop(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
-
-    def init_weights(self, init_std: float):
-        nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
-        nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
-
-
 class NemotronHRouter(nn.Module):
     """Sigmoid router with group-based expert selection and e_score_correction_bias.
 
@@ -944,21 +837,6 @@ class NemotronHRouter(nn.Module):
         nn.init.trunc_normal_(self.gate, mean=0.0, std=init_std)
 
 
-class BCNonGatedFeedForward(nn.Module):
-    """Non-gated feed-forward network used as the shared expert in NemotronH.
-
-    Uses relu2 activation: down_proj(relu2(up_proj(x))).
-    """
-
-    def __init__(self, dim: int, hidden_dim: int):
-        super().__init__()
-        self.up_proj = nn.Linear(dim, hidden_dim, bias=False)
-        self.down_proj = nn.Linear(hidden_dim, dim, bias=False)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(relu2(self.up_proj(x)))
-
-
 class LatentMoE(nn.Module):
     """NemotronH-style Mixture of Experts with latent projections.
 
@@ -978,7 +856,6 @@ class LatentMoE(nn.Module):
         topk_group: int,
         norm_topk_prob: bool,
         routed_scaling_factor: float,
-        use_grouped_mm: bool,
         load_balance_coeff: float | None,
         fp8: bool = False,
     ):
@@ -998,17 +875,24 @@ class LatentMoE(nn.Module):
             from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
             grouped_mm_fn = grouped_fp8_gemm
-        self.experts = NonGatedGroupedExperts(
-            input_dim=effective_latent_dim,
-            intermediate_dim=moe_intermediate_size,
+        self.experts = GroupedExperts(
+            dim=effective_latent_dim,
+            hidden_dim=moe_intermediate_size,
             num_experts=num_experts,
-            use_grouped_mm=use_grouped_mm,
+            input_weight_names=("w1",),
+            activation_fn=relu2,
             grouped_mm_fn=grouped_mm_fn,
         )
         self.ep_comm_backend: EPCommBackend = "torch"
         self.experts.set_ep_comm_backend(self.ep_comm_backend)
         self.reorderer = TokenReorderer(num_experts=num_experts, top_k=top_k)
-        self.shared_expert = BCNonGatedFeedForward(dim=dim, hidden_dim=shared_expert_intermediate_size)
+        self.shared_expert = FeedForward(
+            dim=dim,
+            hidden_dim=shared_expert_intermediate_size,
+            input_projection_names=("up_proj",),
+            output_projection_name="down_proj",
+            activation_fn=relu2,
+        )
         self.deepep_token_chunk_size: int | None = None
 
         if latent_dim is not None:
