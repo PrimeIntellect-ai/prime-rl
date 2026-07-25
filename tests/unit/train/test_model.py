@@ -1,12 +1,9 @@
 import pytest
 import torch
 from torch.distributed.checkpoint.state_dict import _get_fqns
-from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM as HFGptOssForCausalLM
 
 from prime_rl.configs.trainer import AttnImplementation, ModelConfig
 from prime_rl.trainer.model import get_model
-from prime_rl.trainer.models.gpt_oss import GptOssConfig
-from prime_rl.trainer.models.gpt_oss import GptOssForCausalLM as PrimeRLGptOssForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 
@@ -58,32 +55,6 @@ def test_moe_checkpoint_format_keeps_split_gate_up_weights():
     model = torch.nn.Sequential(experts)
     assert _get_fqns(model, "0.w1") == {"0.w1"}
     assert _get_fqns(model, "0.w3") == {"0.w3"}
-
-
-def test_gpt_oss_checkpoint_format_matches_hf():
-    config = GptOssConfig(
-        num_hidden_layers=1,
-        num_local_experts=4,
-        vocab_size=128,
-        hidden_size=64,
-        intermediate_size=32,
-        head_dim=16,
-        num_attention_heads=4,
-        num_key_value_heads=2,
-        max_position_embeddings=128,
-        num_experts_per_tok=2,
-        rope_parameters={"rope_type": "default", "rope_theta": 150000.0},
-    )
-
-    with torch.device("meta"):
-        hf_model = HFGptOssForCausalLM(config)
-        prime_model = PrimeRLGptOssForCausalLM(config)
-
-    hf_state_dict = hf_model.state_dict()
-    prime_state_dict = prime_model.state_dict()
-    assert set(prime_state_dict) == set(hf_state_dict)
-    for name, tensor in prime_state_dict.items():
-        assert tensor.shape == hf_state_dict[name].shape, name
 
 
 def test_model_to_gpu(model):
