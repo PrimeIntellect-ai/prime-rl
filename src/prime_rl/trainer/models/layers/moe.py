@@ -17,7 +17,7 @@ from prime_rl.trainer.distributed.expert_parallel import expert_parallel
 
 
 @dataclass
-class SwiGLuMoEArgs:
+class MoEArgs:
     num_experts: int = 8
     num_shared_experts: int = 1
 
@@ -577,7 +577,7 @@ class MoE(nn.Module):
     """Token-choice MoE runtime composed from a router, grouped experts, and optional projections."""
 
     @classmethod
-    def from_swiglu(cls, args: SwiGLuMoEArgs, dim: int, hidden_dim: int) -> "MoE":
+    def from_args(cls, args: MoEArgs, dim: int, hidden_dim: int) -> "MoE":
         grouped_mm_fn = torch._grouped_mm
         if args.fp8:
             from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm

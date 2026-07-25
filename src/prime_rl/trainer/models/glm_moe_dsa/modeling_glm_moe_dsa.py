@@ -21,7 +21,7 @@ from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
-from prime_rl.trainer.models.layers.moe import MoE, SwiGLuMoEArgs
+from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 
@@ -54,7 +54,7 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         self.hidden_size = config.hidden_size
         self.self_attn = GlmMoeDsaAttention(_sparse_mla_attention_args(config, layer_idx))
 
-        moe_args = SwiGLuMoEArgs(
+        moe_args = MoEArgs(
             num_experts=config.n_routed_experts,
             num_shared_experts=config.n_shared_experts,
             score_func="sigmoid",
@@ -73,7 +73,7 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         )
 
         if layer_idx >= config.first_k_dense_replace:
-            self.mlp = MoE.from_swiglu(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            self.mlp = MoE.from_args(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
         else:
             self.mlp = MLP(mlp_config)
 

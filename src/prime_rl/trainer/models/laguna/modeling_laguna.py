@@ -19,7 +19,7 @@ from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
-from prime_rl.trainer.models.layers.moe import FeedForward, MoE, SwiGLuMoEArgs
+from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -155,7 +155,7 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
         self.self_attn = _get_laguna_attention(config, layer_idx)
 
         if self.mlp_layer_type == "sparse":
-            moe_args = SwiGLuMoEArgs(
+            moe_args = MoEArgs(
                 num_experts=config.num_experts,
                 num_shared_experts=0,
                 score_func="sigmoid",
@@ -168,7 +168,7 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
             )
             if config.moe_router_logit_softcapping:
                 raise NotImplementedError("Laguna router logit softcapping is not supported by PrimeRL MoE yet.")
-            self.mlp = MoE.from_swiglu(
+            self.mlp = MoE.from_args(
                 moe_args,
                 dim=config.hidden_size,
                 hidden_dim=config.moe_intermediate_size,
