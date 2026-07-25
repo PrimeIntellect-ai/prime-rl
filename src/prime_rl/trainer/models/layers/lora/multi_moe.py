@@ -11,7 +11,6 @@ from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
     NonGatedGroupedExperts,
     _broadcast_expert_bias,
-    _gpt_oss_apply_gate,
     relu2,
 )
 
@@ -353,8 +352,9 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             w3_lora_b = w3_lora_b.to_local()
 
             if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
                 from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+
+                from prime_rl.trainer.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
 
                 experts_per_ep_rank = base_w1.shape[0]
                 num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
@@ -662,8 +662,9 @@ class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
             w2_lora_b = w2_lora_b.to_local()
 
             if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
                 from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+
+                from prime_rl.trainer.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
 
                 experts_per_ep_rank = base_w1.shape[0]
                 num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
@@ -956,8 +957,9 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             d_b = d_b.to_local()
 
             if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
                 from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+
+                from prime_rl.trainer.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
 
                 experts_per_ep_rank = base_gu.shape[0]
                 num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
@@ -987,7 +989,10 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             gate_up_lora = _run_lora_grouped_mm(lora_x, gu_a, gu_b, offsets)
             gate_up = gate_up_base + scaling * gate_up_lora.bfloat16()
 
-            h = _gpt_oss_apply_gate(gate_up)
+            gate, up = gate_up[..., ::2], gate_up[..., 1::2]
+            gate = gate.clamp(max=7.0)
+            up = up.clamp(min=-7.0, max=7.0)
+            h = (up + 1) * gate * torch.sigmoid(gate * 1.702)
             lora_h = self.lora_dropout(h)
 
             out_base = torch._grouped_mm(h, base_d.bfloat16(), offs=offsets)
@@ -1052,7 +1057,10 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             gate_up_lora = gate_up_lora_tmp @ gu_b[e].transpose(-2, -1)
             gate_up = gate_up_base + scaling * gate_up_lora
 
-            h = _gpt_oss_apply_gate(gate_up)
+            gate, up = gate_up[..., ::2], gate_up[..., 1::2]
+            gate = gate.clamp(max=7.0)
+            up = up.clamp(min=-7.0, max=7.0)
+            h = (up + 1) * gate * torch.sigmoid(gate * 1.702)
             h_lora = self.lora_dropout(h)
 
             out_base = h @ base_d[e] + base_d_bias[e]

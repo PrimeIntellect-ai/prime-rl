@@ -7,15 +7,15 @@
 import importlib.util
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.distributed.tensor import DTensor
-from torchtitan.distributed.expert_parallel import expert_parallel
 
 from prime_rl.configs.trainer import EPCommBackend
+from prime_rl.trainer.distributed.expert_parallel import expert_parallel
 
 
 @dataclass
@@ -31,7 +31,6 @@ class MoEArgs:
 
     # token-choice
     top_k: int = 1
-    use_grouped_mm: bool = True  # grouped mm or for-loop for the experts computation
     load_balance_coeff: float | None = 1e-3
     fp8: bool = False  # use FP8 grouped GEMM via DeepGEMM (requires SM90)
 
@@ -88,100 +87,123 @@ class BCFeedForward(nn.Module):
         nn.init.trunc_normal_(self.w3, mean=0.0, std=init_std)
 
 
-# TODO: keeping this for-loop implementation for comparison
-#       and readability, may remove later
-def _run_experts_for_loop_impl(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    # NOTE: this would incur a synchronization between device and host
-    num_tokens_per_expert = num_tokens_per_expert.tolist()
-
-    # side-effect code due to the usage of generate_permute_indices
-    num_padding = x.shape[0] - sum(num_tokens_per_expert)
-
-    # a tuple of tensors indexed by experts
-    # each with shape (tokens_per_expert(varying), dim)
-    x = torch.split(
-        x[: sum(num_tokens_per_expert)],
-        split_size_or_sections=num_tokens_per_expert,
-        dim=0,
-    )
-    out_experts_splits = []
-    for expert_idx, x_expert in enumerate(x):
-        h = F.silu(torch.matmul(x_expert, w1[expert_idx].transpose(-2, -1)))
-        h = h * torch.matmul(x_expert, w3[expert_idx].transpose(-2, -1))
-        h = torch.matmul(h, w2[expert_idx].transpose(-2, -1))
-        # h shape (tokens_per_expert(varying), dim)
-        out_experts_splits.append(h)
-    out = torch.cat(out_experts_splits, dim=0)
-
-    # side-effect code due to the usage of generate_permute_indices
-    out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
-
-    return out
-
-
-@expert_parallel
-def _run_experts_for_loop(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    return _run_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
+def _broadcast_expert_bias(bias: torch.Tensor, num_tokens_per_expert: torch.Tensor, target_rows: int) -> torch.Tensor:
+    """Repeat per-expert bias to per-token, padding to target_rows if EP added padding rows."""
+    # repeat_interleave on CUDA requires integer counts.
+    bias_per_token = torch.repeat_interleave(bias, num_tokens_per_expert.to(torch.int64), dim=0)
+    if bias_per_token.shape[0] < target_rows:
+        pad_rows = target_rows - bias_per_token.shape[0]
+        bias_per_token = F.pad(bias_per_token, (0, 0, 0, pad_rows))
+    return bias_per_token
 
 
 @expert_parallel
 def _run_experts_grouped_mm(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    w3: torch.Tensor,
+    gate_up_weight: torch.Tensor,
+    down_weight: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
+    *,
+    fp8: bool = False,
+    gate_up_bias: torch.Tensor | None = None,
+    down_bias: torch.Tensor | None = None,
+    use_interleaved_clamped_swiglu: bool = False,
 ) -> torch.Tensor:
-    return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert)
-
-
-@expert_parallel
-def _run_experts_fp8_grouped_mm(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert, fp8=True)
+    return _run_experts_grouped_mm_impl(
+        gate_up_weight,
+        down_weight,
+        x,
+        num_tokens_per_expert,
+        fp8=fp8,
+        gate_up_bias=gate_up_bias,
+        down_bias=down_bias,
+        use_interleaved_clamped_swiglu=use_interleaved_clamped_swiglu,
+    )
 
 
 def _run_experts_grouped_mm_impl(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    w3: torch.Tensor,
+    gate_up_weight: torch.Tensor,
+    down_weight: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
+    *,
     fp8: bool = False,
+    gate_up_bias: torch.Tensor | None = None,
+    down_bias: torch.Tensor | None = None,
+    use_interleaved_clamped_swiglu: bool = False,
 ) -> torch.Tensor:
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
-    # grouped mm between a 2D tensor and a 3D tensor
     assert x.dim() == 2
 
     if fp8:
         from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
-        h = F.silu(grouped_fp8_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
-        h = h * grouped_fp8_gemm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offsets)
-        out = grouped_fp8_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
+        gate_up = grouped_fp8_gemm(x.bfloat16(), gate_up_weight.bfloat16(), offsets)
     else:
-        h = F.silu(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
-        h = h * torch._grouped_mm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offs=offsets)
-        out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
+        gate_up = torch._grouped_mm(x.bfloat16(), gate_up_weight.bfloat16(), offs=offsets)
 
-    return out
+    if gate_up_bias is not None:
+        gate_up = gate_up + _broadcast_expert_bias(gate_up_bias, num_tokens_per_expert, gate_up.shape[0]).bfloat16()
+
+    if use_interleaved_clamped_swiglu:
+        gate, up = gate_up[..., ::2], gate_up[..., 1::2]
+        gate = gate.clamp(max=7.0)
+        up = up.clamp(min=-7.0, max=7.0)
+        h = (up + 1) * gate * torch.sigmoid(gate * 1.702)
+    else:
+        gate, up = gate_up.chunk(2, dim=-1)
+        h = F.silu(gate) * up
+
+    if fp8:
+        out = grouped_fp8_gemm(h, down_weight.bfloat16(), offsets)
+    else:
+        out = torch._grouped_mm(h, down_weight.bfloat16(), offs=offsets)
+
+    if down_bias is not None:
+        out = out + _broadcast_expert_bias(down_bias, num_tokens_per_expert, out.shape[0]).bfloat16()
+    return out.type_as(x)
+
+
+def _split_gate_up_for_state_dict(
+    module: nn.Module,
+    state_dict: dict[str, Any],
+    prefix: str,
+    _local_metadata: dict[str, Any],
+) -> None:
+    assert isinstance(module, GroupedExperts)
+    w13_key = prefix + "w13"
+    if w13_key not in state_dict:
+        return
+
+    w1, w3 = state_dict.pop(w13_key).split(module.hidden_dim, dim=1)
+    state_dict[prefix + "w1"] = w1
+    state_dict[prefix + "w3"] = w3
+
+
+def _fuse_gate_up_from_state_dict(
+    module: nn.Module,
+    state_dict: dict[str, Any],
+    prefix: str,
+    _local_metadata: dict[str, Any],
+    _strict: bool,
+    _missing_keys: list[str],
+    _unexpected_keys: list[str],
+    error_msgs: list[str],
+) -> None:
+    assert isinstance(module, GroupedExperts)
+    w1_key = prefix + "w1"
+    w3_key = prefix + "w3"
+    w13_key = prefix + "w13"
+
+    if w1_key not in state_dict or w3_key not in state_dict:
+        return
+    if w13_key in state_dict:
+        error_msgs.append(f"state dict contains both {w13_key!r} and the legacy {w1_key!r}/{w3_key!r} weights")
+        return
+
+    w1 = state_dict.pop(w1_key)
+    w3 = state_dict.pop(w3_key)
+    state_dict[w13_key] = torch.cat((w1, w3), dim=1)
 
 
 _fused_moe = None
@@ -434,28 +456,37 @@ class GroupedExperts(nn.Module):
         dim: int,
         hidden_dim: int,
         num_experts: int,
-        use_grouped_mm: bool,
         fp8: bool = False,
     ):
         super().__init__()
         self.num_experts = num_experts
-        self.w1 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
+        self.hidden_dim = hidden_dim
+        self.w13 = nn.Parameter(torch.empty(num_experts, 2 * hidden_dim, dim))
         self.w2 = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
-        self.w3 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
-        self.use_grouped_mm = use_grouped_mm
         self.fp8 = fp8
         self.ep_comm_backend: EPCommBackend = "torch"
+        self.register_state_dict_post_hook(_split_gate_up_for_state_dict)
+        self.register_load_state_dict_pre_hook(_fuse_gate_up_from_state_dict)
+
+    @property
+    def w1(self) -> torch.Tensor:
+        return self.w13.split(self.hidden_dim, dim=1)[0]
+
+    @property
+    def w3(self) -> torch.Tensor:
+        return self.w13.split(self.hidden_dim, dim=1)[1]
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
 
     def _forward_deepep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
-        w1 = self.w1.to_local()
-        w2 = self.w2.to_local()
-        w3 = self.w3.to_local()
-        if self.use_grouped_mm:
-            return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert, fp8=self.fp8)
-        return _run_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
+        return _run_experts_grouped_mm_impl(
+            self.w13.to_local().transpose(-2, -1),
+            self.w2.to_local().transpose(-2, -1),
+            x,
+            num_tokens_per_expert,
+            fp8=self.fp8,
+        )
 
     def forward(
         self,
@@ -465,108 +496,18 @@ class GroupedExperts(nn.Module):
         if self.ep_comm_backend == "deepep":
             return self._forward_deepep(x, num_tokens_per_expert)
 
-        if self.use_grouped_mm:
-            if self.fp8:
-                return _run_experts_fp8_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
-            return _run_experts_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
-        else:
-            return _run_experts_for_loop(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
+        return _run_experts_grouped_mm(
+            self.w13.transpose(-2, -1),
+            self.w2.transpose(-2, -1),
+            x,
+            num_tokens_per_expert,
+            fp8=self.fp8,
+        )
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
         nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
         nn.init.trunc_normal_(self.w3, mean=0.0, std=init_std)
-
-
-# GPT-OSS activation constants. Both clamping limit and the sigmoid alpha live here
-# rather than as instance attrs so the function is JIT/compile-friendly.
-GPT_OSS_LIMIT = 7.0
-GPT_OSS_ALPHA = 1.702
-
-
-def _gpt_oss_apply_gate(gate_up: torch.Tensor) -> torch.Tensor:
-    """GPT-OSS expert activation: clamped sigmoid-glu over interleaved gate/up channels."""
-    gate, up = gate_up[..., ::2], gate_up[..., 1::2]
-    gate = gate.clamp(min=None, max=GPT_OSS_LIMIT)
-    up = up.clamp(min=-GPT_OSS_LIMIT, max=GPT_OSS_LIMIT)
-    glu = gate * torch.sigmoid(gate * GPT_OSS_ALPHA)
-    return (up + 1) * glu
-
-
-def _broadcast_expert_bias(bias: torch.Tensor, num_tokens_per_expert: torch.Tensor, target_rows: int) -> torch.Tensor:
-    bias_per_token = torch.repeat_interleave(bias, num_tokens_per_expert.to(torch.int64), dim=0)
-    if bias_per_token.shape[0] < target_rows:
-        pad_rows = target_rows - bias_per_token.shape[0]
-        bias_per_token = F.pad(bias_per_token, (0, 0, 0, pad_rows))
-    return bias_per_token
-
-
-def _run_gpt_oss_experts_for_loop_impl(
-    gate_up_proj: torch.Tensor,
-    gate_up_proj_bias: torch.Tensor,
-    down_proj: torch.Tensor,
-    down_proj_bias: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    n = num_tokens_per_expert.tolist()
-    num_padding = x.shape[0] - sum(n)
-    x_split = torch.split(x[: sum(n)], split_size_or_sections=n, dim=0)
-    out_splits = []
-    for e, x_e in enumerate(x_split):
-        gate_up = x_e @ gate_up_proj[e] + gate_up_proj_bias[e]
-        h = _gpt_oss_apply_gate(gate_up)
-        out = h @ down_proj[e] + down_proj_bias[e]
-        out_splits.append(out)
-    out = torch.cat(out_splits, dim=0)
-    return torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
-
-
-@expert_parallel
-def _run_gpt_oss_experts_for_loop(
-    gate_up_proj: torch.Tensor,
-    gate_up_proj_bias: torch.Tensor,
-    down_proj: torch.Tensor,
-    down_proj_bias: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    return _run_gpt_oss_experts_for_loop_impl(
-        gate_up_proj, gate_up_proj_bias, down_proj, down_proj_bias, x, num_tokens_per_expert
-    )
-
-
-def _run_gpt_oss_experts_grouped_mm_impl(
-    gate_up_proj: torch.Tensor,
-    gate_up_proj_bias: torch.Tensor,
-    down_proj: torch.Tensor,
-    down_proj_bias: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
-    assert x.dim() == 2
-
-    gate_up = torch._grouped_mm(x.bfloat16(), gate_up_proj.bfloat16(), offs=offsets)
-    gate_up = gate_up + _broadcast_expert_bias(gate_up_proj_bias, num_tokens_per_expert, gate_up.shape[0]).bfloat16()
-    h = _gpt_oss_apply_gate(gate_up)
-    out = torch._grouped_mm(h, down_proj.bfloat16(), offs=offsets)
-    out = out + _broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, out.shape[0]).bfloat16()
-    return out.type_as(x)
-
-
-@expert_parallel
-def _run_gpt_oss_experts_grouped_mm(
-    gate_up_proj: torch.Tensor,
-    gate_up_proj_bias: torch.Tensor,
-    down_proj: torch.Tensor,
-    down_proj_bias: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    return _run_gpt_oss_experts_grouped_mm_impl(
-        gate_up_proj, gate_up_proj_bias, down_proj, down_proj_bias, x, num_tokens_per_expert
-    )
 
 
 class GptOssGroupedExperts(nn.Module):
@@ -583,7 +524,7 @@ class GptOssGroupedExperts(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         num_experts: int,
-        use_grouped_mm: bool,
+        fp8: bool = False,
     ):
         super().__init__()
         self.num_experts = num_experts
@@ -593,35 +534,37 @@ class GptOssGroupedExperts(nn.Module):
         self.gate_up_proj_bias = nn.Parameter(torch.empty(num_experts, 2 * intermediate_size))
         self.down_proj = nn.Parameter(torch.empty(num_experts, intermediate_size, hidden_size))
         self.down_proj_bias = nn.Parameter(torch.empty(num_experts, hidden_size))
-        self.use_grouped_mm = use_grouped_mm
+        self.fp8 = fp8
         self.ep_comm_backend: EPCommBackend = "torch"
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
 
     def _forward_deepep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
-        gate_up_proj = self.gate_up_proj.to_local()
-        gate_up_proj_bias = self.gate_up_proj_bias.to_local()
-        down_proj = self.down_proj.to_local()
-        down_proj_bias = self.down_proj_bias.to_local()
-        if self.use_grouped_mm:
-            return _run_gpt_oss_experts_grouped_mm_impl(
-                gate_up_proj, gate_up_proj_bias, down_proj, down_proj_bias, x, num_tokens_per_expert
-            )
-        return _run_gpt_oss_experts_for_loop_impl(
-            gate_up_proj, gate_up_proj_bias, down_proj, down_proj_bias, x, num_tokens_per_expert
+        return _run_experts_grouped_mm_impl(
+            self.gate_up_proj.to_local(),
+            self.down_proj.to_local(),
+            x,
+            num_tokens_per_expert,
+            fp8=self.fp8,
+            gate_up_bias=self.gate_up_proj_bias.to_local(),
+            down_bias=self.down_proj_bias.to_local(),
+            use_interleaved_clamped_swiglu=True,
         )
 
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         if self.ep_comm_backend == "deepep":
             return self._forward_deepep(x, num_tokens_per_expert)
 
-        if self.use_grouped_mm:
-            return _run_gpt_oss_experts_grouped_mm(
-                self.gate_up_proj, self.gate_up_proj_bias, self.down_proj, self.down_proj_bias, x, num_tokens_per_expert
-            )
-        return _run_gpt_oss_experts_for_loop(
-            self.gate_up_proj, self.gate_up_proj_bias, self.down_proj, self.down_proj_bias, x, num_tokens_per_expert
+        return _run_experts_grouped_mm(
+            self.gate_up_proj,
+            self.down_proj,
+            x,
+            num_tokens_per_expert,
+            fp8=self.fp8,
+            gate_up_bias=self.gate_up_proj_bias,
+            down_bias=self.down_proj_bias,
+            use_interleaved_clamped_swiglu=True,
         )
 
     def init_weights(self, init_std: float):
@@ -818,7 +761,6 @@ class MoE(nn.Module):
             dim=dim,
             hidden_dim=hidden_dim,
             num_experts=num_experts,
-            use_grouped_mm=moe_args.use_grouped_mm,
             fp8=moe_args.fp8,
         )
         self.ep_comm_backend: EPCommBackend = "torch"
