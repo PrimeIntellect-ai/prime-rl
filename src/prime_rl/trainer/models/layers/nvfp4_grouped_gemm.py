@@ -19,6 +19,9 @@ def apply_nvfp4_moe_grouped_gemm(
     if backward not in ("bf16", "bf16_dequantized"):
         raise ValueError("backward must be 'bf16' or 'bf16_dequantized'")
 
+    from prime_rl_kernels.nvfp4 import prepare_for_compile
+
+    prepare_for_compile()
     set_token_group_alignment_size_m(_NVFP4_TOKEN_GROUP_ALIGN)
     replaced = 0
     for module in model.modules():

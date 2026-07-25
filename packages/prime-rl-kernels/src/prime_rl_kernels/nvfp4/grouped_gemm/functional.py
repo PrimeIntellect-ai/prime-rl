@@ -148,7 +148,6 @@ class _GroupedNVFP4MM(torch.autograd.Function):
         return grad_matrix, grad_weight, None, None
 
 
-@torch.compiler.disable
 def grouped_gemm(
     matrix: torch.Tensor,
     weight: torch.Tensor,

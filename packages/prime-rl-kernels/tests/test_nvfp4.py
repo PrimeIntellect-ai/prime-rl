@@ -108,3 +108,39 @@ def test_grouped_nvfp4_ignores_physical_tail_rows() -> None:
         atol=0,
         rtol=0,
     )
+
+
+@pytest.mark.skipif(not _blackwell_nvfp4_available(), reason="NVFP4 grouped GEMM requires Blackwell")
+def test_nvfp4_quantization_writes_complete_swizzled_scale_tiles() -> None:
+    """Every scale is written when a CTA covers more vectors than threads."""
+
+    contraction_size = 2048
+    rows = 128
+    groups = 2
+    output_size = 128
+    offsets = torch.tensor([rows], device="cuda", dtype=torch.int32)
+    matrix = torch.ones(rows, contraction_size, device="cuda", dtype=torch.bfloat16)
+    weight = torch.ones(
+        groups,
+        contraction_size,
+        output_size,
+        device="cuda",
+        dtype=torch.bfloat16,
+    )
+
+    activation_scales = quantize_activations(matrix, offsets).block_scales.float()
+    weight_scales = quantize_weights(weight).block_scales.float()
+    valid_activation_scales = activation_scales.flatten()[: rows * (contraction_size // 16)]
+
+    torch.testing.assert_close(
+        valid_activation_scales,
+        torch.full_like(valid_activation_scales, 448),
+        atol=0,
+        rtol=0,
+    )
+    torch.testing.assert_close(
+        weight_scales,
+        torch.full_like(weight_scales, 448),
+        atol=0,
+        rtol=0,
+    )

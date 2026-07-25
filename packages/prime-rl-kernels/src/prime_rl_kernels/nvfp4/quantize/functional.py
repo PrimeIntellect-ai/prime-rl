@@ -58,7 +58,6 @@ def _check_bf16_cuda(tensor: torch.Tensor, name: str) -> None:
         raise ValueError(f"{name} must be a CUDA bfloat16 tensor")
 
 
-@torch.compiler.disable
 def quantize_activations(matrix: torch.Tensor, offsets: torch.Tensor) -> _NVFP4Tensor:
     """Quantize ``[M, K]`` activations with one FP32 decode scale per token."""
 
@@ -87,7 +86,6 @@ def quantize_activations(matrix: torch.Tensor, offsets: torch.Tensor) -> _NVFP4T
     )
 
 
-@torch.compiler.disable
 def quantize_weights(weight: torch.Tensor) -> _NVFP4Tensor:
     """Quantize logical ``[G, K, N]`` weights with one FP32 decode scale per expert."""
 

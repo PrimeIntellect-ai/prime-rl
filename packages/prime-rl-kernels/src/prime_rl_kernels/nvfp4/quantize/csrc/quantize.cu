@@ -421,15 +421,18 @@ __global__ void quantize_activations_tiled_kernel(
       min(
           kQuantScaleTilesPerCta,
           scale_column_tiles - first_scale_tile);
-  if (threadIdx.x <
+  const int scale_vectors =
       valid_scale_tiles * kScaleRowTile * kScaleColTile /
-          static_cast<int>(sizeof(uint4))) {
+      static_cast<int>(sizeof(uint4));
+  for (int vector = threadIdx.x;
+       vector < scale_vectors;
+       vector += blockDim.x) {
     const int64_t tile_offset =
         (static_cast<int64_t>(blockIdx.x) * scale_column_tiles +
          first_scale_tile) *
         (kScaleRowTile * kScaleColTile);
-    reinterpret_cast<uint4*>(block_scales + tile_offset)[threadIdx.x] =
-        reinterpret_cast<const uint4*>(scale_tile)[threadIdx.x];
+    reinterpret_cast<uint4*>(block_scales + tile_offset)[vector] =
+        reinterpret_cast<const uint4*>(scale_tile)[vector];
   }
 }
 
@@ -485,15 +488,18 @@ __global__ void quantize_weights_tiled_kernel(
       min(
           kQuantScaleTilesPerCta,
           scale_column_tiles - first_scale_tile);
-  if (threadIdx.x <
+  const int scale_vectors =
       valid_scale_tiles * kScaleRowTile * kScaleColTile /
-          static_cast<int>(sizeof(uint4))) {
+      static_cast<int>(sizeof(uint4));
+  for (int vector = threadIdx.x;
+       vector < scale_vectors;
+       vector += blockDim.x) {
     const int64_t tile_offset =
         (static_cast<int64_t>(blockIdx.x) * scale_column_tiles +
          first_scale_tile) *
         (kScaleRowTile * kScaleColTile);
-    reinterpret_cast<uint4*>(block_scales + tile_offset)[threadIdx.x] =
-        reinterpret_cast<const uint4*>(scale_tile)[threadIdx.x];
+    reinterpret_cast<uint4*>(block_scales + tile_offset)[vector] =
+        reinterpret_cast<const uint4*>(scale_tile)[vector];
   }
 }
 
