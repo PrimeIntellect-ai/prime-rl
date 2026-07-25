@@ -1,9 +1,7 @@
 """State-dict conversion for GPT-OSS.
 
-The custom prime-rl GPT-OSS implementation mirrors HuggingFace's parameter naming
-exactly (gate_up_proj/gate_up_proj_bias/down_proj/down_proj_bias plus router.weight
-and router.bias as nn.Parameters). So loading the unsloth BF16 checkpoint requires
-no key conversion - HF and prime formats are identical for this model.
+The prime-rl GPT-OSS state-dict surface mirrors HuggingFace's parameter names and
+layouts, so loading the BF16 checkpoint requires no key conversion.
 """
 
 from torch import Tensor

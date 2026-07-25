@@ -135,8 +135,8 @@ def _run_experts_grouped_mm(
     *,
     grouped_mm_fn: Callable[..., torch.Tensor],
     activation_fn: Callable[[torch.Tensor], torch.Tensor],
-    gate_up_bias: torch.Tensor | None = None,
-    down_bias: torch.Tensor | None = None,
+    input_bias: torch.Tensor | None = None,
+    output_bias: torch.Tensor | None = None,
 ) -> torch.Tensor:
     return _run_experts_grouped_mm_impl(
         input_weight,
@@ -145,8 +145,8 @@ def _run_experts_grouped_mm(
         num_tokens_per_expert,
         grouped_mm_fn=grouped_mm_fn,
         activation_fn=activation_fn,
-        gate_up_bias=gate_up_bias,
-        down_bias=down_bias,
+        input_bias=input_bias,
+        output_bias=output_bias,
     )
 
 
@@ -158,24 +158,22 @@ def _run_experts_grouped_mm_impl(
     *,
     grouped_mm_fn: Callable[..., torch.Tensor],
     activation_fn: Callable[[torch.Tensor], torch.Tensor],
-    gate_up_bias: torch.Tensor | None = None,
-    down_bias: torch.Tensor | None = None,
+    input_bias: torch.Tensor | None = None,
+    output_bias: torch.Tensor | None = None,
 ) -> torch.Tensor:
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
     assert x.dim() == 2
 
     projected = grouped_mm_fn(x.bfloat16(), input_weight.bfloat16(), offs=offsets)
 
-    if gate_up_bias is not None:
-        projected = (
-            projected + broadcast_expert_bias(gate_up_bias, num_tokens_per_expert, projected.shape[0]).bfloat16()
-        )
+    if input_bias is not None:
+        projected = projected + broadcast_expert_bias(input_bias, num_tokens_per_expert, projected.shape[0]).bfloat16()
 
     hidden = activation_fn(projected)
     out = grouped_mm_fn(hidden, output_weight.bfloat16(), offs=offsets)
 
-    if down_bias is not None:
-        out = out + broadcast_expert_bias(down_bias, num_tokens_per_expert, out.shape[0]).bfloat16()
+    if output_bias is not None:
+        out = out + broadcast_expert_bias(output_bias, num_tokens_per_expert, out.shape[0]).bfloat16()
     return out.type_as(x)
 
 
@@ -424,18 +422,27 @@ class _FusedMoE(torch.autograd.Function):
 
 class GroupedExperts(nn.Module):
     @staticmethod
-    def split_input_weight_for_state_dict(
+    def export_weights_to_state_dict(
         module: "GroupedExperts",
         state_dict: dict[str, Any],
         prefix: str,
         _local_metadata: dict[str, Any],
     ) -> None:
-        input_weights = state_dict.pop(prefix + "input_weight").split(module.hidden_dim, dim=1)
+        input_weights = state_dict.pop(prefix + "input_weight").split(module.input_weight_sizes, dim=1)
+        output_weight = state_dict.pop(prefix + "w2")
+        if module.transpose_weights_for_state_dict:
+            input_weights = tuple(weight.transpose(-2, -1) for weight in input_weights)
+            output_weight = output_weight.transpose(-2, -1)
         for name, weight in zip(module.input_weight_names, input_weights, strict=True):
             state_dict[prefix + name] = weight
+        state_dict[prefix + module.output_weight_name] = output_weight
+        if module.input_bias_name is not None:
+            state_dict[prefix + module.input_bias_name] = state_dict.pop(prefix + "input_bias")
+        if module.output_bias_name is not None:
+            state_dict[prefix + module.output_bias_name] = state_dict.pop(prefix + "output_bias")
 
     @staticmethod
-    def fuse_input_weight_from_state_dict(
+    def import_weights_from_state_dict(
         module: "GroupedExperts",
         state_dict: dict[str, Any],
         prefix: str,
@@ -446,7 +453,16 @@ class GroupedExperts(nn.Module):
         _error_msgs: list[str],
     ) -> None:
         input_weights = [state_dict.pop(prefix + name) for name in module.input_weight_names]
+        output_weight = state_dict.pop(prefix + module.output_weight_name)
+        if module.transpose_weights_for_state_dict:
+            input_weights = [weight.transpose(-2, -1) for weight in input_weights]
+            output_weight = output_weight.transpose(-2, -1)
         state_dict[prefix + "input_weight"] = torch.cat(input_weights, dim=1)
+        state_dict[prefix + "w2"] = output_weight
+        if module.input_bias_name is not None:
+            state_dict[prefix + "input_bias"] = state_dict.pop(prefix + module.input_bias_name)
+        if module.output_bias_name is not None:
+            state_dict[prefix + "output_bias"] = state_dict.pop(prefix + module.output_bias_name)
 
     def __init__(
         self,
@@ -455,6 +471,11 @@ class GroupedExperts(nn.Module):
         num_experts: int,
         *,
         input_weight_names: tuple[str, ...] = ("w1", "w3"),
+        input_weight_sizes: tuple[int, ...] | None = None,
+        output_weight_name: str = "w2",
+        input_bias_name: str | None = None,
+        output_bias_name: str | None = None,
+        transpose_weights_for_state_dict: bool = False,
         activation_fn: Callable[[torch.Tensor], torch.Tensor] = fused_swiglu,
         grouped_mm_fn: Callable[..., torch.Tensor] = torch._grouped_mm,
     ):
@@ -462,23 +483,34 @@ class GroupedExperts(nn.Module):
         self.num_experts = num_experts
         self.hidden_dim = hidden_dim
         self.input_weight_names = input_weight_names
-        self.input_weight = nn.Parameter(torch.empty(num_experts, len(input_weight_names) * hidden_dim, dim))
+        self.input_weight_sizes = input_weight_sizes or (hidden_dim,) * len(input_weight_names)
+        self.output_weight_name = output_weight_name
+        self.input_bias_name = input_bias_name
+        self.output_bias_name = output_bias_name
+        self.transpose_weights_for_state_dict = transpose_weights_for_state_dict
+        self.input_weight = nn.Parameter(torch.empty(num_experts, sum(self.input_weight_sizes), dim))
         self.w2 = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
+        self.input_bias = (
+            nn.Parameter(torch.empty(num_experts, sum(self.input_weight_sizes)))
+            if input_bias_name is not None
+            else None
+        )
+        self.output_bias = nn.Parameter(torch.empty(num_experts, dim)) if output_bias_name is not None else None
         self._activation_fn = activation_fn
         self._grouped_mm_fn = grouped_mm_fn
         self.ep_comm_backend: EPCommBackend = "torch"
-        self.register_state_dict_post_hook(self.split_input_weight_for_state_dict)
-        self.register_load_state_dict_pre_hook(self.fuse_input_weight_from_state_dict)
+        self.register_state_dict_post_hook(self.export_weights_to_state_dict)
+        self.register_load_state_dict_pre_hook(self.import_weights_from_state_dict)
 
     @property
     def w1(self) -> torch.Tensor:
         index = self.input_weight_names.index("w1")
-        return self.input_weight.split(self.hidden_dim, dim=1)[index]
+        return self.input_weight.split(self.input_weight_sizes, dim=1)[index]
 
     @property
     def w3(self) -> torch.Tensor:
         index = self.input_weight_names.index("w3")
-        return self.input_weight.split(self.hidden_dim, dim=1)[index]
+        return self.input_weight.split(self.input_weight_sizes, dim=1)[index]
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
@@ -491,6 +523,8 @@ class GroupedExperts(nn.Module):
             num_tokens_per_expert,
             grouped_mm_fn=self._grouped_mm_fn,
             activation_fn=self._activation_fn,
+            input_bias=self.input_bias.to_local() if self.input_bias is not None else None,
+            output_bias=self.output_bias.to_local() if self.output_bias is not None else None,
         )
 
     def forward(
@@ -508,77 +542,19 @@ class GroupedExperts(nn.Module):
             num_tokens_per_expert,
             grouped_mm_fn=self._grouped_mm_fn,
             activation_fn=self._activation_fn,
+            input_bias=self.input_bias,
+            output_bias=self.output_bias,
         )
 
     def init_weights(self, init_std: float):
-        input_weights = self.input_weight.split(self.hidden_dim, dim=1)
+        input_weights = self.input_weight.split(self.input_weight_sizes, dim=1)
         nn.init.trunc_normal_(input_weights[0], mean=0.0, std=0.02)
         for weight in (*input_weights[1:], self.w2):
             nn.init.trunc_normal_(weight, mean=0.0, std=init_std)
-
-
-class GptOssGroupedExperts(nn.Module):
-    """GPT-OSS-style grouped experts.
-
-    Mirrors HF's `GptOssExperts` parameter naming (gate_up_proj/down_proj plus per-expert
-    biases, fused interleaved gate/up channels) so the unsloth BF16 checkpoint loads with
-    no key conversion. Forward signature matches `GroupedExperts` (`x`, `num_tokens_per_expert`)
-    so the surrounding MoE plumbing and LoRA wrapper follow the same convention.
-    """
-
-    def __init__(
-        self,
-        hidden_size: int,
-        intermediate_size: int,
-        num_experts: int,
-        grouped_mm_fn: Callable[..., torch.Tensor] = torch._grouped_mm,
-    ):
-        super().__init__()
-        self.num_experts = num_experts
-        self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size
-        self.gate_up_proj = nn.Parameter(torch.empty(num_experts, hidden_size, 2 * intermediate_size))
-        self.gate_up_proj_bias = nn.Parameter(torch.empty(num_experts, 2 * intermediate_size))
-        self.down_proj = nn.Parameter(torch.empty(num_experts, intermediate_size, hidden_size))
-        self.down_proj_bias = nn.Parameter(torch.empty(num_experts, hidden_size))
-        self._grouped_mm_fn = grouped_mm_fn
-        self.ep_comm_backend: EPCommBackend = "torch"
-
-    def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
-        self.ep_comm_backend = backend
-
-    def _forward_deepep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
-        return _run_experts_grouped_mm_impl(
-            self.gate_up_proj.to_local(),
-            self.down_proj.to_local(),
-            x,
-            num_tokens_per_expert,
-            grouped_mm_fn=self._grouped_mm_fn,
-            activation_fn=interleaved_clamped_swiglu,
-            gate_up_bias=self.gate_up_proj_bias.to_local(),
-            down_bias=self.down_proj_bias.to_local(),
-        )
-
-    def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
-        if self.ep_comm_backend == "deepep":
-            return self._forward_deepep(x, num_tokens_per_expert)
-
-        return _run_experts_grouped_mm(
-            self.gate_up_proj,
-            self.down_proj,
-            x,
-            num_tokens_per_expert,
-            grouped_mm_fn=self._grouped_mm_fn,
-            activation_fn=interleaved_clamped_swiglu,
-            gate_up_bias=self.gate_up_proj_bias,
-            down_bias=self.down_proj_bias,
-        )
-
-    def init_weights(self, init_std: float):
-        nn.init.trunc_normal_(self.gate_up_proj, mean=0.0, std=0.02)
-        nn.init.zeros_(self.gate_up_proj_bias)
-        nn.init.trunc_normal_(self.down_proj, mean=0.0, std=init_std)
-        nn.init.zeros_(self.down_proj_bias)
+        if self.input_bias is not None:
+            nn.init.zeros_(self.input_bias)
+        if self.output_bias is not None:
+            nn.init.zeros_(self.output_bias)
 
 
 def _selected_probability_mass_sum(
