@@ -30,7 +30,6 @@ def get_model_pairs():
         linear_value_head_dim=32,
         linear_num_key_heads=4,
         linear_num_value_heads=8,
-        use_grouped_mm=False,
     )
     config._attn_implementation = "flash_attention_2"
     with torch.device("cuda"), default_dtype(torch.bfloat16):
@@ -168,7 +167,6 @@ def test_qwen3_5_moe_context_parallel_setup_hook():
         linear_value_head_dim=8,
         linear_num_key_heads=4,
         linear_num_value_heads=8,
-        use_grouped_mm=False,
     )
     config._attn_implementation = "flash_attention_2"
     with torch.device("meta"):

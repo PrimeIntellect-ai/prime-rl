@@ -125,9 +125,7 @@ def test_model_with_sequence_packing(model, correct_position_ids):
 
 
 def test_moe_custom_impl():
-    config = ModelConfig(
-        name="PrimeIntellect/GLM-0.5B", attn="flash_attention_2", impl="custom", moe_use_grouped_mm=False
-    )
+    config = ModelConfig(name="PrimeIntellect/GLM-0.5B", attn="flash_attention_2", impl="custom")
     model = get_model(config)
     model = model.to("cuda")
     # we need to wrap the lm head as custom forward only works with it, this is done in setup_model

@@ -53,7 +53,6 @@ class NemotronHConfig(PretrainedConfig):
         residual_in_fp32: Whether to keep residuals in fp32.
         rescale_prenorm_residual: Whether to rescale pre-norm residuals.
         load_balance_coeff: Auxiliary-loss-free load balancing coefficient.
-        use_grouped_mm: Whether to use grouped MM for experts.
     """
 
     model_type = "nemotron_h"
@@ -116,7 +115,6 @@ class NemotronHConfig(PretrainedConfig):
         rescale_prenorm_residual=True,
         # PrimeRL training features
         load_balance_coeff=None,
-        use_grouped_mm=True,
         # RoPE
         rope_theta=10000.0,
         rope_scaling=None,
@@ -198,7 +196,6 @@ class NemotronHConfig(PretrainedConfig):
 
         # PrimeRL training features
         self.load_balance_coeff = load_balance_coeff
-        self.use_grouped_mm = use_grouped_mm
 
         super().__init__(
             pad_token_id=pad_token_id,

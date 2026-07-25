@@ -51,7 +51,6 @@ def _make_model(device="cuda"):
     config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     config._attn_implementation = "flash_attention_2"
     with torch.device(device), default_dtype(torch.bfloat16):
@@ -186,7 +185,6 @@ def test_kl_with_fused_lm_head():
     config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     config._attn_implementation = "flash_attention_2"
 
