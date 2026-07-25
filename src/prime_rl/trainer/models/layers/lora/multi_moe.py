@@ -10,7 +10,7 @@ from prime_rl.trainer.models.layers.moe import (
     GptOssGroupedExperts,
     GroupedExperts,
     NonGatedGroupedExperts,
-    _broadcast_expert_bias,
+    broadcast_expert_bias,
     relu2,
 )
 
@@ -984,7 +984,7 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             gate_up_base = torch._grouped_mm(x.bfloat16(), base_gu.bfloat16(), offs=offsets)
             gate_up_base = (
                 gate_up_base
-                + _broadcast_expert_bias(base_gu_bias, num_tokens_per_expert, gate_up_base.shape[0]).bfloat16()
+                + broadcast_expert_bias(base_gu_bias, num_tokens_per_expert, gate_up_base.shape[0]).bfloat16()
             )
             gate_up_lora = _run_lora_grouped_mm(lora_x, gu_a, gu_b, offsets)
             gate_up = gate_up_base + scaling * gate_up_lora.bfloat16()
@@ -997,7 +997,7 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
 
             out_base = torch._grouped_mm(h, base_d.bfloat16(), offs=offsets)
             out_base = (
-                out_base + _broadcast_expert_bias(base_d_bias, num_tokens_per_expert, out_base.shape[0]).bfloat16()
+                out_base + broadcast_expert_bias(base_d_bias, num_tokens_per_expert, out_base.shape[0]).bfloat16()
             )
             out_lora = _run_lora_grouped_mm(lora_h, d_a, d_b, offsets)
             out = out_base + scaling * out_lora.bfloat16()
