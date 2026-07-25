@@ -16,9 +16,9 @@ from prime_rl.trainer.models.layers.lora import (
 from prime_rl.trainer.models.layers.lora.multi_moe import (
     MultiLoRAGptOssGroupedExperts,
     MultiLoRAGroupedExperts,
-    MultiLoRANonGatedGroupedExperts,
+    MultiLoRAReLU2GroupedExperts,
 )
-from prime_rl.trainer.models.layers.moe import GptOssGroupedExperts, GroupedExperts, NonGatedGroupedExperts
+from prime_rl.trainer.models.layers.moe import GptOssGroupedExperts, GroupedExperts
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -157,7 +157,7 @@ def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[s
 
     for name, module in model.named_modules():
         # Check if module is Linear or one of the supported expert classes
-        if not isinstance(module, (nn.Linear, GroupedExperts, NonGatedGroupedExperts, GptOssGroupedExperts)):
+        if not isinstance(module, (nn.Linear, GroupedExperts, GptOssGroupedExperts)):
             continue
 
         for pattern in target_patterns:
@@ -256,16 +256,10 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             )
         # Handle GroupedExperts (MoE)
         elif isinstance(base_module, GroupedExperts):
-            lora_module = MultiLoRAGroupedExperts(
-                base_layer=base_module,
-                rank=config.rank,
-                n_adapters=1,
-                alpha=config.alpha,
-                dropout=config.dropout,
+            lora_cls = (
+                MultiLoRAReLU2GroupedExperts if base_module.input_weight_names == ("w1",) else MultiLoRAGroupedExperts
             )
-        # Handle NonGatedGroupedExperts (relu2 experts used by NemotronH's LatentMoE)
-        elif isinstance(base_module, NonGatedGroupedExperts):
-            lora_module = MultiLoRANonGatedGroupedExperts(
+            lora_module = lora_cls(
                 base_layer=base_module,
                 rank=config.rank,
                 n_adapters=1,
@@ -284,7 +278,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         else:
             logger.warning(
                 f"Module {module_name} is type {type(base_module).__name__}, "
-                f"expected nn.Linear, GroupedExperts, NonGatedGroupedExperts, or GptOssGroupedExperts. Skipping."
+                f"expected nn.Linear, GroupedExperts, or GptOssGroupedExperts. Skipping."
             )
             continue
 

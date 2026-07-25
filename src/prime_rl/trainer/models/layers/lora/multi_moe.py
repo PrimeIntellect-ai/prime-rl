@@ -9,7 +9,6 @@ from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule, get_lora_n
 from prime_rl.trainer.models.layers.moe import (
     GptOssGroupedExperts,
     GroupedExperts,
-    NonGatedGroupedExperts,
     broadcast_expert_bias,
     relu2,
 )
@@ -492,15 +491,14 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         )
 
 
-class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
+class MultiLoRAReLU2GroupedExperts(MultiLoRAModule):
     """
-    NonGatedGroupedExperts + multi-LoRA with grouped GEMM.
-    Adapts the two projections (w1: up, w2: down) of NemotronH-style relu2 experts.
+    Multi-LoRA for GroupedExperts configured with NemotronH-style ReLU² projections.
     """
 
     def __init__(
         self,
-        base_layer: NonGatedGroupedExperts,
+        base_layer: GroupedExperts,
         rank: int,
         n_adapters: int,
         alpha: float = 32.0,
