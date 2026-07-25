@@ -164,48 +164,6 @@ def _run_experts_grouped_mm_impl(
     return out.type_as(x)
 
 
-def _split_gate_up_for_state_dict(
-    module: nn.Module,
-    state_dict: dict[str, Any],
-    prefix: str,
-    _local_metadata: dict[str, Any],
-) -> None:
-    assert isinstance(module, GroupedExperts)
-    w13_key = prefix + "w13"
-    if w13_key not in state_dict:
-        return
-
-    w1, w3 = state_dict.pop(w13_key).split(module.hidden_dim, dim=1)
-    state_dict[prefix + "w1"] = w1
-    state_dict[prefix + "w3"] = w3
-
-
-def _fuse_gate_up_from_state_dict(
-    module: nn.Module,
-    state_dict: dict[str, Any],
-    prefix: str,
-    _local_metadata: dict[str, Any],
-    _strict: bool,
-    _missing_keys: list[str],
-    _unexpected_keys: list[str],
-    error_msgs: list[str],
-) -> None:
-    assert isinstance(module, GroupedExperts)
-    w1_key = prefix + "w1"
-    w3_key = prefix + "w3"
-    w13_key = prefix + "w13"
-
-    if w1_key not in state_dict or w3_key not in state_dict:
-        return
-    if w13_key in state_dict:
-        error_msgs.append(f"state dict contains both {w13_key!r} and the legacy {w1_key!r}/{w3_key!r} weights")
-        return
-
-    w1 = state_dict.pop(w1_key)
-    w3 = state_dict.pop(w3_key)
-    state_dict[w13_key] = torch.cat((w1, w3), dim=1)
-
-
 _fused_moe = None
 _GROUPED_MM_ALIGN_M = 16  # torch._grouped_mm, used by the hand-written backward, needs 16-aligned group extents
 
@@ -449,8 +407,33 @@ class _FusedMoE(torch.autograd.Function):
         grads = {p: (next(computed) if leaf.requires_grad else None) for leaf, p in zip(leaves, grad_poses)}
         return grads[0], grads[1], grads[2], grads[3], None, grads[5], None, None
 
-
 class GroupedExperts(nn.Module):
+    @staticmethod
+    def split_gate_up_for_state_dict(
+        module: "GroupedExperts",
+        state_dict: dict[str, Any],
+        prefix: str,
+        _local_metadata: dict[str, Any],
+    ) -> None:
+        w1, w3 = state_dict.pop(prefix + "w13").split(module.hidden_dim, dim=1)
+        state_dict[prefix + "w1"] = w1
+        state_dict[prefix + "w3"] = w3
+
+    @staticmethod
+    def fuse_gate_up_from_state_dict(
+        _module: "GroupedExperts",
+        state_dict: dict[str, Any],
+        prefix: str,
+        _local_metadata: dict[str, Any],
+        _strict: bool,
+        _missing_keys: list[str],
+        _unexpected_keys: list[str],
+        _error_msgs: list[str],
+    ) -> None:
+        w1 = state_dict.pop(prefix + "w1")
+        w3 = state_dict.pop(prefix + "w3")
+        state_dict[prefix + "w13"] = torch.cat((w1, w3), dim=1)
+
     def __init__(
         self,
         dim: int,
@@ -465,8 +448,8 @@ class GroupedExperts(nn.Module):
         self.w2 = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
         self.fp8 = fp8
         self.ep_comm_backend: EPCommBackend = "torch"
-        self.register_state_dict_post_hook(_split_gate_up_for_state_dict)
-        self.register_load_state_dict_pre_hook(_fuse_gate_up_from_state_dict)
+        self.register_state_dict_post_hook(self.split_gate_up_for_state_dict)
+        self.register_load_state_dict_pre_hook(self.fuse_gate_up_from_state_dict)
 
     @property
     def w1(self) -> torch.Tensor:
