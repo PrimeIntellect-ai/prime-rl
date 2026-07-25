@@ -1,6 +1,6 @@
 ---
 name: start-run
-description: How to launch prime-rl training runs — the `rl`, `sft`, and `inference` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint.
+description: How to launch prime-rl training runs — the `rl`, `sft`, `reward-model`, and `inference` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint.
 ---
 
 # Start a run
@@ -55,6 +55,19 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 - Entrypoint: `src/prime_rl/entrypoints/sft.py`
 - SLURM: single- and multi-node
 
+## `reward-model` — Bradley–Terry reward-model training
+
+Trains a text-only Hugging Face sequence-classification model with one scalar reward using `prompt`, `chosen`, and `rejected` preference rows.
+
+```bash
+uv run reward-model @ examples/reward_model/capitalization/reward_model.toml
+```
+
+- Config: `RewardModelConfig` (`packages/prime-rl-configs/src/prime_rl/configs/reward_model.py`)
+- Entrypoint: `src/prime_rl/entrypoints/reward_model.py`
+- Objective: `-log sigmoid(reward_chosen - reward_rejected)`
+- Current scope: text-only HF models, no CP or LoRA
+
 ## `inference` — vLLM server
 
 OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly.
@@ -84,6 +97,7 @@ curl http://localhost:8000/v1/chat/completions \
 |---------|---------|-------------|
 | `rl` | Full RL pipeline | Production RL training |
 | `sft` | Supervised fine-tuning | SFT and hard-distill |
+| `reward-model` | Pairwise preference training | Bradley–Terry reward models |
 | `inference` | vLLM server | Standalone serving / debugging |
 
 ## Key paths

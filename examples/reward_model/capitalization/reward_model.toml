@@ -1,0 +1,59 @@
+output_dir = "/home/outputs/qwen3-0.6b-capitalization-rm"
+clean_output_dir = true
+max_steps = 30
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+impl = "hf"
+attn = "flash_attention_2"
+optimization_dtype = "float32"
+reduce_dtype = "float32"
+optim_cpu_offload = false
+
+[tokenizer]
+name = "Qwen/Qwen3-0.6B"
+
+[renderer]
+name = "qwen3"
+
+[data]
+type = "preference"
+name = "examples/reward_model/capitalization/train.jsonl"
+seq_len = 96
+batch_size = 16
+micro_batch_size = 4
+shuffle = true
+seed = 42
+
+[val]
+interval = 5
+eval_on_start = true
+
+[val.data]
+type = "preference"
+name = "examples/reward_model/capitalization/validation.jsonl"
+seq_len = 96
+batch_size = 16
+micro_batch_size = 8
+shuffle = false
+
+[optim]
+type = "adamw"
+lr = 2e-5
+weight_decay = 0.0
+max_norm = 1.0
+
+[scheduler]
+type = "constant"
+
+[deployment]
+type = "single_node"
+num_gpus = 1
+
+[ckpt]
+weights_only = true
+keep_last = 1
+
+[ckpt.weights]
+save_sharded = false
+save_format = "safetensors"
