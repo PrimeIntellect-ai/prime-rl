@@ -26,7 +26,7 @@ from prime_rl.trainer.models.layers.attn import (
     flash_attn_varlen_func,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.moe import FeedForward, MoE, SwiGLuMoEArgs
+from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -434,7 +434,7 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
             self.self_attn = _get_gated_attention(config)
 
         # MoE: routed experts via shared MoE class (no shared experts in MoE itself)
-        moe_args = SwiGLuMoEArgs(
+        moe_args = MoEArgs(
             num_experts=config.num_experts,
             num_shared_experts=0,
             score_func="softmax",
@@ -445,7 +445,7 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
             load_balance_coeff=config.load_balance_coeff,
             fp8=getattr(config, "fp8", False),
         )
-        self.mlp = MoE.from_swiglu(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+        self.mlp = MoE.from_args(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
 
         # Separate gated shared expert
         self.shared_expert = FeedForward(dim=config.hidden_size, hidden_dim=config.shared_expert_intermediate_size)
