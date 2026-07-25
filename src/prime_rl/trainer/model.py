@@ -647,7 +647,6 @@ def get_model(
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
-    model_config.use_grouped_mm = config.moe_use_grouped_mm
     # MoEArgs.fp8 (read via getattr(config, "fp8") in the modeling files) gates the
     # DeepGEMM FP8 grouped GEMM. MXFP8 grouped GEMM is applied by wrapping the expert
     # weights with torchao (see apply_quantization), so it leaves this flag False and
