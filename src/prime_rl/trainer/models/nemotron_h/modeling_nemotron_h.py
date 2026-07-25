@@ -2,7 +2,7 @@
 
 Hybrid Mamba-Transformer-MoE architecture with three distinct layer types:
 - Mamba-2 layers (using NemotronHMamba2Mixer from HF transformers)
-- LatentMoE layers (non-gated experts with latent projections)
+- MoE layers with non-gated experts and latent projections
 - Attention layers (using shared FlashAttention/SDPA from prime-rl)
 """
 
@@ -23,7 +23,13 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.cp_mamba import mamba_cp_forward
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.moe import GroupedExperts, LatentMoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import (
+    FeedForward,
+    GroupedExperts,
+    MoE,
+    TokenChoiceTopKRouter,
+    relu2,
+)
 from prime_rl.trainer.models.layers.rms_norm import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
@@ -234,22 +240,62 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
 
 
 class NemotronHMoELayer(GradientCheckpointingLayer):
-    """MoE layer: norm -> LatentMoE -> residual."""
+    """MoE layer with latent routed experts."""
 
     def __init__(self, config: NemotronHConfig):
         super().__init__()
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.layer_norm_epsilon))
-        self.mlp = LatentMoE(
+        effective_latent_dim = config.moe_latent_size if config.moe_latent_size is not None else config.hidden_size
+        grouped_mm_fn = torch._grouped_mm
+        if getattr(config, "fp8", False):
+            from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
+
+            grouped_mm_fn = grouped_fp8_gemm
+
+        router = TokenChoiceTopKRouter(
             dim=config.hidden_size,
-            latent_dim=config.moe_latent_size,
-            moe_intermediate_size=config.moe_intermediate_size,
-            shared_expert_intermediate_size=config.moe_shared_expert_intermediate_size,
             num_experts=config.n_routed_experts,
             top_k=config.num_experts_per_tok,
-            norm_topk_prob=config.norm_topk_prob,
-            routed_scaling_factor=config.routed_scaling_factor,
+            score_func="sigmoid",
+            route_norm=config.norm_topk_prob,
+            route_scale=config.routed_scaling_factor,
+            weight_state_dict_name="gate",
+            selection_bias_state_dict_name="e_score_correction_bias",
+        )
+        router.fp32_gate = True
+        experts = GroupedExperts(
+            dim=effective_latent_dim,
+            hidden_dim=config.moe_intermediate_size,
+            num_experts=config.n_routed_experts,
+            input_weight_names=("w1",),
+            activation_fn=relu2,
+            grouped_mm_fn=grouped_mm_fn,
+        )
+        shared_expert = FeedForward(
+            dim=config.hidden_size,
+            hidden_dim=config.moe_shared_expert_intermediate_size,
+            input_projection_names=("up_proj",),
+            output_projection_name="down_proj",
+            activation_fn=relu2,
+        )
+        input_projection = (
+            nn.Linear(config.hidden_size, config.moe_latent_size, bias=False)
+            if config.moe_latent_size is not None
+            else nn.Identity()
+        )
+        output_projection = (
+            nn.Linear(config.moe_latent_size, config.hidden_size, bias=False)
+            if config.moe_latent_size is not None
+            else nn.Identity()
+        )
+        self.mlp = MoE(
+            router=router,
+            experts=experts,
+            shared_expert=shared_expert,
+            score_before_experts=False,
             load_balance_coeff=config.load_balance_coeff,
-            fp8=getattr(config, "fp8", False),
+            routed_input_projection=("fc1_latent_proj", input_projection),
+            routed_output_projection=("fc2_latent_proj", output_projection),
         )
 
     def forward(

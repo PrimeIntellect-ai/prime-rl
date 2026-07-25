@@ -6,7 +6,7 @@ class NemotronHConfig(PretrainedConfig):
 
     The model architecture is defined by `layers_block_type`, a list where each element is
     one of "mamba", "attention", or "moe". The 120B model uses a pattern like MEMEMEM*EMEMEMEM*...
-    (M=Mamba-2, E=LatentMoE, *=Attention) repeated across 88 layers.
+    (M=Mamba-2, E=MoE with latent projections, *=Attention) repeated across 88 layers.
 
     Args:
         vocab_size: Vocabulary size.

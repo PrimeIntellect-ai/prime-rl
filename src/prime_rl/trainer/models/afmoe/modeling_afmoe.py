@@ -21,7 +21,7 @@ from prime_rl.trainer.models.layers.attn import (
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
-from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
+from prime_rl.trainer.models.layers.moe import MoE, SwiGLuMoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import (
     RotaryEmbedding,
@@ -248,7 +248,7 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
             gate_act=config.hidden_act,
             bias=False,
         )
-        moe_args = MoEArgs(
+        moe_args = SwiGLuMoEArgs(
             num_experts=config.num_experts,
             num_shared_experts=config.num_shared_experts,
             score_func=config.score_func,
@@ -260,7 +260,7 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
             fp8=getattr(config, "fp8", False),
         )
         if self.moe_enabled:
-            self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            self.mlp = MoE.from_swiglu(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
         else:
             self.mlp = MLP(mlp_config)
 
