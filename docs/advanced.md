@@ -40,10 +40,11 @@ The custom path enables EP, CP, selective activation checkpointing, low-precisio
 
 ### Low-precision training
 
-Set `[trainer.model.quantization]` to train dense linears and MoE expert GEMMs in low precision. Two backends are available via the `type` discriminator:
+Set `[trainer.model.quantization]` to train dense linears and/or MoE expert GEMMs in low precision. Three backends are available via the `type` discriminator:
 
 - `type = "fp8"` — DeepGEMM FP8 blockwise (requires SM90+ / Hopper). Options: `enable_grouped_gemm` (FP8 MoE expert GEMM). Both default on.
 - `type = "mxfp8"` — torchao MXFP8 microscaling (requires SM100+ / Blackwell). Options: `enable_grouped_gemm`, `enable_a2a` (MXFP8 expert-parallel all-to-all), and `recipe` (`mxfp8_rceil` default or `mxfp8_rceil_wgrad_with_hp`).
+- `type = "nvfp4"` — native NVFP4 grouped GEMM for routed experts on SM100. BF16 weights are quantized on every forward with one FP32 decode scale per expert; fused gate-up weights therefore share a scale. Activations use one FP32 decode scale per token. `backward` selects `dequant_bf16` (default, reconstruct the packed forward operands) or `bf16` (retain the original BF16 operands). Dense linears, master parameters, checkpoints, and weight transfer remain unchanged.
 
 ```toml
 [trainer.model.quantization]

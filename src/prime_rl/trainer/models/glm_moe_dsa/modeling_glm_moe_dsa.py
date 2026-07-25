@@ -63,7 +63,7 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
             load_balance_coeff=1e-3,
-            fp8=getattr(config, "fp8", False),
+            quantization=getattr(config, "moe_quantization", None),
         )
         mlp_config = MLPConfig(
             hidden_size=config.hidden_size,

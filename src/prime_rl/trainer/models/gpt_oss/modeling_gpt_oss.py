@@ -39,11 +39,6 @@ class GptOssDecoderLayer(GradientCheckpointingLayer):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.self_attn = GptOssAttention(config=config, layer_idx=layer_idx)
-        grouped_mm_fn = torch._grouped_mm
-        if getattr(config, "fp8", False):
-            from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
-
-            grouped_mm_fn = grouped_fp8_gemm
         router = TokenChoiceTopKRouter(
             dim=config.hidden_size,
             num_experts=config.num_local_experts,
@@ -66,7 +61,7 @@ class GptOssDecoderLayer(GradientCheckpointingLayer):
             output_bias_name="down_proj_bias",
             transpose_weights_for_state_dict=True,
             activation_fn=interleaved_clamped_swiglu,
-            grouped_mm_fn=grouped_mm_fn,
+            quantization=getattr(config, "moe_quantization", None),
         )
         self.mlp = MoE(
             router=router,
