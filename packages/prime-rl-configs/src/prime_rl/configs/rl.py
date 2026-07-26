@@ -158,6 +158,9 @@ class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
 class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    inference_world_size: int | None = Field(None, ge=1)
+    """Expected inference ranks when inference is managed externally (e.g. Dynamo LoRA over filesystem)."""
+
 
 SharedWeightBroadcastConfig: TypeAlias = Annotated[
     SharedFileSystemWeightBroadcastConfig | SharedNCCLWeightBroadcastConfig | SharedNIXLWeightBroadcastConfig,
@@ -434,8 +437,9 @@ class RLConfig(BaseConfig):
                 host=self.weight_broadcast.host,
                 port=self.weight_broadcast.port,
                 timeout=self.weight_broadcast.timeout,
-                inference_world_size=inference_world_size,
             )
+            if inference_world_size is not None:
+                common_config["inference_world_size"] = inference_world_size
             if self.weight_broadcast.type == "nccl":
                 transport_config = dict(
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
