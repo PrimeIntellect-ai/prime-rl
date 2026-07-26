@@ -311,11 +311,10 @@ class Orchestrator:
 
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
-            await init_nccl_broadcast(
-                self.policy_inference.admin_clients,
-                config.weight_broadcast.host,
-                config.weight_broadcast.port,
-                config.weight_broadcast.timeout,
+            await self.policy_inference.init_nccl_broadcast(
+                host=config.weight_broadcast.host,
+                port=config.weight_broadcast.port,
+                timeout=config.weight_broadcast.timeout,
                 inference_world_size=config.weight_broadcast.inference_world_size,
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
             )

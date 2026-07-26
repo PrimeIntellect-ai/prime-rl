@@ -132,11 +132,17 @@ class SharedInMemoryWeightBroadcastConfig(BaseConfig):
 class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     type: Literal["nccl"] = "nccl"
 
+    host: str = "localhost"
+    """Host advertised to inference workers for NCCL rendezvous."""
+
     port: int = 29501
     """Port for NCCL weight broadcast."""
 
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
+
+    inference_world_size: int | None = Field(None, ge=1)
+    """Expected inference ranks when inference is managed externally."""
 
 
 class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
@@ -323,14 +329,25 @@ class RLConfig(BaseConfig):
                 )
         return self
 
+    def _check_enough_devices_for_nccl(self) -> None:
+        if self.deployment.type != "single_node" or self.trainer.weight_broadcast.type != "nccl":
+            return
+
+        local_inference_gpus = self.deployment.num_infer_gpus if self.inference is not None else 0
+        local_world_size = self.deployment.num_train_gpus + local_inference_gpus
+        has_external_inference = (
+            self.inference is None
+            and self.weight_broadcast is not None
+            and self.weight_broadcast.inference_world_size is not None
+        )
+        if local_world_size < 2 and not has_external_inference:
+            raise ValueError(
+                "NCCL weight broadcast requires at least 2 local GPUs or an explicit external inference_world_size."
+            )
+
     @model_validator(mode="after")
-    def validate_enough_devices_for_nccl(self):
-        if self.deployment.type == "single_node":
-            if self.trainer.weight_broadcast.type == "nccl":
-                if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
-                    raise ValueError(
-                        "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
-                    )
+    def validate_requested_enough_devices_for_nccl(self):
+        self._check_enough_devices_for_nccl()
         return self
 
     @model_validator(mode="after")
@@ -387,13 +404,32 @@ class RLConfig(BaseConfig):
                 self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
+        if (
+            self.inference is None
+            and self.orchestrator.model.client.is_dynamo
+            and self.weight_broadcast.inference_world_size is None
+        ):
+            raise ValueError("Dynamo inference requires weight_broadcast.inference_world_size")
         if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
                 "LoRA training is not yet supported with in-memory weight broadcast. "
                 "Set weight_broadcast.type = 'filesystem'."
             )
+        if (
+            self.orchestrator.model.client.is_dynamo
+            and self.weight_broadcast.type == "filesystem"
+            and self.trainer.model.lora is None
+        ):
+            raise ValueError(
+                "Dynamo full-weight training requires NCCL weight broadcast; "
+                "filesystem broadcast is supported only for LoRA."
+            )
         if self.weight_broadcast.type in ("nccl", "nixl"):
-            inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
+            inference_world_size = (
+                self.inference.parallel.dp * self.inference.parallel.tp
+                if self.inference
+                else self.weight_broadcast.inference_world_size
+            )
             common_config = dict(
                 host=self.weight_broadcast.host,
                 port=self.weight_broadcast.port,
@@ -414,7 +450,9 @@ class RLConfig(BaseConfig):
             self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
         elif self.weight_broadcast.type == "filesystem":
             self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
-            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
+            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
+                inference_world_size=self.weight_broadcast.inference_world_size
+            )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
@@ -442,6 +480,10 @@ class RLConfig(BaseConfig):
             )
         if self.rollout_transport is None:
             self.rollout_transport = self.trainer.rollout_transport
+
+    @model_validator(mode="after")
+    def validate_resolved_enough_devices_for_nccl(self):
+        self._check_enough_devices_for_nccl()
         return self
 
     @model_validator(mode="after")
