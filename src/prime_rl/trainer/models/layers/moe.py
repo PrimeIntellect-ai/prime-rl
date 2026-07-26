@@ -117,7 +117,7 @@ def broadcast_expert_bias(
     num_tokens_per_expert: torch.Tensor,
     target_rows: int,
 ) -> torch.Tensor:
-    bias = torch.repeat_interleave(bias, num_tokens_per_expert, dim=0)
+    bias = torch.repeat_interleave(bias, num_tokens_per_expert.to(torch.int64), dim=0)
     if bias.shape[0] < target_rows:
         bias = F.pad(bias, (0, 0, 0, target_rows - bias.shape[0]))
     return bias
