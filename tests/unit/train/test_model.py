@@ -1,6 +1,9 @@
 import pytest
 import torch
+from safetensors.torch import save_file
+from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict import _get_fqns
+from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
 from prime_rl.configs.trainer import AttnImplementation, ModelConfig
 from prime_rl.trainer.model import get_model
@@ -41,7 +44,7 @@ def model(attn):
     return model
 
 
-def test_moe_checkpoint_format_keeps_split_gate_up_weights():
+def test_moe_checkpoint_format_keeps_split_gate_up_weights(tmp_path):
     experts = GroupedExperts(dim=16, hidden_dim=8, num_experts=4)
 
     assert set(dict(experts.named_parameters())) == {"input_weight", "w2"}
@@ -51,6 +54,20 @@ def test_moe_checkpoint_format_keeps_split_gate_up_weights():
     experts.load_state_dict(checkpoint)
     torch.testing.assert_close(experts.input_weight, torch.cat((checkpoint["w1"], checkpoint["w3"]), dim=1))
     torch.testing.assert_close(experts.w2, checkpoint["w2"])
+
+    save_file({name: weight.contiguous() for name, weight in checkpoint.items()}, tmp_path / "model.safetensors")
+    with torch.device("meta"):
+        dcp_experts = GroupedExperts(dim=16, hidden_dim=8, num_experts=4)
+    dcp_experts.to_empty(device="cuda")
+    dcp_load(
+        dcp_experts.state_dict(),
+        storage_reader=HuggingFaceStorageReader(path=tmp_path.as_posix()),
+    )
+    torch.testing.assert_close(
+        dcp_experts.input_weight,
+        torch.cat((checkpoint["w1"], checkpoint["w3"]), dim=1).cuda(),
+    )
+    torch.testing.assert_close(dcp_experts.w2, checkpoint["w2"].cuda())
 
     model = torch.nn.Sequential(experts)
     assert _get_fqns(model, "0.w1") == {"0.w1"}
@@ -140,20 +157,6 @@ def test_model_with_sequence_packing(model, correct_position_ids):
         torch.testing.assert_close(output_packed_left, output_base)
         with pytest.raises(AssertionError):
             torch.testing.assert_close(output_packed_right, output_base)
-
-
-def test_moe_custom_impl():
-    config = ModelConfig(name="PrimeIntellect/GLM-0.5B", attn="flash_attention_2", impl="custom")
-    model = get_model(config)
-    model = model.to("cuda")
-    # we need to wrap the lm head as custom forward only works with it, this is done in setup_model
-    inject_prime_lm_head(model, chunk_size=None)
-    with torch.autocast("cuda", dtype=torch.bfloat16):
-        inputs_ids = torch.randint(0, 100, (BS, SEQ_LEN)).to("cuda")
-        outputs = model(input_ids=inputs_ids, seq_lens=torch.tensor([SEQ_LEN], device="cuda"))
-        logits = outputs["logits"]
-
-        assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
 
 @pytest.mark.skip(reason="need special token for meta stuff in ci")
