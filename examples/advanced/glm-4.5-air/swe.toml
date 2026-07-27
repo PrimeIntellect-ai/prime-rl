@@ -7,7 +7,7 @@
 # term is pass_rate-scaled and normalized by the group's own max before the GRPO baseline
 # subtraction.
 #
-# 2 train + 4 infer nodes. Trainer uses cp=8 (ulysses) plus
+# 2 train + 4 infer nodes. Trainer uses cp=4 (ulysses) plus
 # the memory improvements from the GLM-5.1 prod run (research-prod rlm5/prod.toml): LM-head token
 # chunking, activation checkpointing (freq=1) + activation offloading (max_inflight=1), optimizer
 # CPU offload, and skip-gather / skip-optimizer checkpointing.
@@ -57,7 +57,7 @@ enable_router_replay = true
 [trainer.model]
 impl = "custom"
 attn = "flash_attention_3"
-cp = 8
+cp = 4
 cp_style = "ulysses"
 fused_lm_head_token_chunk_size = 1024
 optim_cpu_offload = true

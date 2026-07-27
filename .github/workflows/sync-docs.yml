@@ -1,11 +1,9 @@
 name: Sync Docs to Public Docs
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'docs/**'
+  release:
+    types:
+      - published
   workflow_dispatch:
 
 jobs:

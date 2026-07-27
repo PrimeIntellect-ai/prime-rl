@@ -14,6 +14,7 @@ from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
     EnvVars,
+    FileMonitorConfig,
     FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
@@ -492,6 +493,9 @@ class OrchestratorConfig(BaseConfig):
     wandb: WandbWithExtrasConfig | None = None
 
     prime_monitor: PrimeMonitorConfig | None = None
+
+    file_monitor: FileMonitorConfig | None = None
+    """Local JSONL metric sink. If set, orchestrator metrics are appended to ``<output_dir>/metrics.jsonl``."""
 
     collect_inference_metrics: bool = True
     """Collect inference-server metrics (requires wandb)."""

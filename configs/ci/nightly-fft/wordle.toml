@@ -1,0 +1,35 @@
+max_steps = 200
+seq_len = 8192
+
+[deployment]
+num_train_gpus = 2
+num_infer_gpus = 6
+
+[wandb]
+project = "wordle"
+name = "wordle"
+
+[ckpt]
+
+[model]
+name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
+
+[orchestrator]
+batch_size = 512
+group_size = 16
+
+[[orchestrator.train.env]]
+name = "wordle"
+env.taskset = { id = "wordle-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.train.sampling]
+max_completion_tokens = 1024
+
+[trainer]
+
+[inference.parallel]
+dp = 6
+
+[orchestrator.renderer]
+name = "prime-qwen3"

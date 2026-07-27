@@ -92,9 +92,10 @@ def is_view_of(value: torch.Tensor, root: torch.Tensor) -> bool:
 def plan_tensor_replay(shape: tuple[int, ...], dtype: torch.dtype, ops: OperationChain) -> TensorReplayPlan:
     """Resolve a directly transferable source view and local replay suffix.
 
-    The prefix must remain a same-dtype view of the trainer root and can
-    therefore be addressed by RDMA. The first materializing or dtype-changing
-    operation and everything after it is replayed on the receive arena.
+    The prefix must remain a contiguous, same-dtype view of the trainer root
+    and can therefore be transferred in large RDMA runs. The first strided,
+    materializing, or dtype-changing operation and everything after it is
+    replayed on the receive arena.
     """
     root = torch.empty(shape, dtype=dtype, device="meta")
     prefix_len = 0
@@ -105,7 +106,7 @@ def plan_tensor_replay(shape: tuple[int, ...], dtype: torch.dtype, ops: Operatio
         if candidate_len < len(ops) and ops[candidate_len].name == "tuple_getitem":
             continue
         candidate = apply_chain(root, ops[:candidate_len])
-        if candidate.dtype != dtype or not is_view_of(candidate, root):
+        if candidate.dtype != dtype or not is_view_of(candidate, root) or not candidate.is_contiguous():
             break
         prefix_len = candidate_len
         source_view = candidate

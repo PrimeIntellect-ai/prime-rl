@@ -1,0 +1,34 @@
+max_steps = 20
+seq_len = 2048
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[wandb]
+project = "reverse-text"
+name = "reverse-text"
+
+[ckpt]
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[orchestrator]
+batch_size = 128
+group_size = 16
+
+[[orchestrator.train.env]]
+name = "reverse-text"
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[trainer]
+
+[inference]
+
+[orchestrator.renderer]
+name = "prime-qwen3"
