@@ -154,6 +154,9 @@ class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     session_id: str = "default"
     """ModelExpress session ID."""
 
+    inference_world_size: int | None = Field(None, ge=1)
+    """Expected inference ranks when inference is managed externally."""
+
 
 class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
