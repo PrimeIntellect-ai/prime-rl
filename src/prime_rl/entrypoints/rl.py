@@ -430,6 +430,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             dp_per_node=config.deployment.gpus_per_node // config.inference.parallel.tp,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
+            use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
         )
@@ -454,6 +455,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             dp_per_node=(config.deployment.gpus_per_node // config.inference.parallel.tp) if config.inference else 1,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
+            use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             trainer_env_vars=trainer_env_vars,

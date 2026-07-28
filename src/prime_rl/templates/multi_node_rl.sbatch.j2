@@ -407,7 +407,8 @@ else
         --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.rl.train \
         @ $CONFIG_DIR/trainer.toml \
-        2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log &
+        {% if use_zmq_transport %}--rollout_transport.host $MASTER_ADDR \
+        {% endif %}2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log &
 {% if num_infer_nodes > 0 %}    fi{% endif %}
 {% if num_infer_nodes > 0 %}
 # Launch the orchestrator on one node. Default is trainer rank 0 (SLURM_PROCID ==
@@ -426,6 +427,7 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
 {%- endfor %}
 {%- endif %}
     {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
+    {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $MASTER_ADDR"
     {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
         2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
 fi
