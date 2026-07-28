@@ -397,10 +397,6 @@ def list_views(entity: str, project: str) -> list[tuple[str, str]]:
 
 
 def view_signature(sections: Sequence[ws.Section]) -> tuple:
-    """The ``(train, eval)`` env set a view was built for, plus the x-axes its panels plot against.
-    Comparing sections (rather than the env lists) means a change to the axes also versions a new
-    view instead of silently reusing a stale one. Parsed views return ``Metric`` objects for ``x``
-    where freshly built ones hold plain strings."""
     train = sorted(s.name[len("train/") :] for s in sections if s.name.startswith("train/") and s.name != "train/agg")
     evals = sorted(s.name[len("eval/") :] for s in sections if s.name.startswith("eval/"))
     axes = {getattr(p.x, "name", p.x) for s in sections for p in s.panels if isinstance(p, wr.LinePlot)}
