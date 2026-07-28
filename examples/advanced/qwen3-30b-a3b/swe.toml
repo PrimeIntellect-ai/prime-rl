@@ -46,7 +46,7 @@ batch_size = 512
 oversampling_factor = 2
 max_off_policy_steps = 16
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "swe"
 env.taskset = { id = "r2e-gym-v1" }
 env.agent.harness = { id = "bash" }

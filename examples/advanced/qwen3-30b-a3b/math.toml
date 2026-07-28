@@ -48,7 +48,7 @@ max_off_policy_steps = 8
 [orchestrator.train.sampling]
 max_completion_tokens = 32768
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "math"
 env.taskset = { id = "i3_math_v1" }
 env.agent.harness = { id = "null" }

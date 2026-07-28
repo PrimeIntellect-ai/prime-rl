@@ -23,7 +23,7 @@ oversampling_factor = 2.0
 type = "zero_advantage"
 enforce = true
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "wiki-search"
 env.taskset = { id = "wiki-search-v1" }
 env.agent.harness = { id = "null" }

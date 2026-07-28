@@ -17,7 +17,7 @@ Every `prime-rl` entrypoint uses [`pydantic-config`](https://github.com/PrimeInt
   - [Optional Sub-Configs](#optional-sub-configs)
   - [None](#none)
   - [Discriminated Unions](#discriminated-unions)
-  - [Environments](#environments-orchestratortrainenv)
+  - [Training sources](#training-sources-orchestratortrainsource)
   - [Environment Variables](#environment-variables)
 - [Examples](#examples)
 
@@ -93,19 +93,19 @@ uv run rl @ rl.toml --trainer.model.lora.target-modules '["q_proj", "k_proj", "v
 target_modules = ["q_proj", "k_proj", "v_proj"]
 ```
 
-Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. For arrays of tables (e.g. environments), see [Environments](#environments-orchestratortrainenv).
+Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. For arrays of tables, see [Training sources](#training-sources-orchestratortrainsource).
 
 ### Dicts
 
 CLI takes a JSON literal. TOML uses a table or inline-table. CLI dicts deep-merge with TOML dicts — CLI keys win on conflict but don't wipe the file's keys:
 
 ```bash
-uv run rl @ rl.toml --orchestrator.train.env.0.args \
+uv run rl @ rl.toml --orchestrator.train.source.0.args \
   '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}'
 ```
 
 ```toml
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
 ```
 
@@ -142,19 +142,19 @@ mu = 0.95
 
 Omit `type` to keep the default variant.
 
-### Environments (`[[orchestrator.train.env]]`)
+### Training sources (`[[orchestrator.train.source]]`)
 
-Training environments are an array of tables — set one per env, optionally with sampling weights:
+Training sources are an array of tables — set one per environment, optionally with sampling weights:
 
 ```toml
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "gsm8k"
 env.taskset = { id = "gsm8k-v1", split = "train" }
 env.agent.harness = { id = "null" }
 env.agent.runtime = { type = "subprocess" }
 ratio = 3  # 75% of batches
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "reverse-text"
 env.taskset = { id = "reverse-text-v1" }
 env.agent.harness = { id = "null" }

@@ -21,7 +21,7 @@ name = "prime-qwen3"
 [orchestrator.train.sampling]
 max_completion_tokens = 512
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "kuhn-poker"
 env.taskset = { id = "kuhn-poker-v1" }
 env.player0.harness = { id = "null" }

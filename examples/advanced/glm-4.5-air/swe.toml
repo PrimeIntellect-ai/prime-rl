@@ -97,7 +97,7 @@ num_turns_weight = 0.1
 name = "glm-4.5"
 thinking_retention = "all"
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "scaleswe"
 env.taskset = { id = "scaleswe-v1" }
 env.agent.harness = { id = "rlm", summarize_at_tokens = [65536, 131072] }

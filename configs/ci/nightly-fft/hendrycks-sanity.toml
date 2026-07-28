@@ -18,7 +18,7 @@ batch_size = 512
 group_size = 8
 seq_len = 8192
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "hendrycks-math"
 env.taskset = { id = "math-env-v1", dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
 env.agent.harness = { id = "null" }

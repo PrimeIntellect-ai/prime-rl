@@ -35,7 +35,7 @@ batch_size = 512
 group_size = 16
 max_off_policy_steps = 32
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 env.taskset = { id = "general-agent-v1", task = { tools = { colocated = true } }, min_tier = 1 }
 env.agent.harness = { id = "null" }
 env.agent.runtime = { type = "modal" }

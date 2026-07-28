@@ -206,7 +206,7 @@ class EnvConfig(vf.EnvServerConfig):
         return self
 
 
-class TrainEnvConfig(EnvConfig):
+class TrainSourceConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
@@ -235,8 +235,8 @@ class EvalEnvConfig(EnvConfig):
 
 
 class TrainConfig(BaseConfig):
-    env: list[TrainEnvConfig] = Field(default_factory=list)
-    """Training environments."""
+    source: list[TrainSourceConfig] = Field(default_factory=list)
+    """Training sources."""
 
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
@@ -246,7 +246,7 @@ class TrainConfig(BaseConfig):
         """Resolve per-env overrides: inherit group-level sampling (the worker ``pool``
         is configured per env, defaulting to elastic)."""
         group_sampling = self.sampling.model_dump()
-        for env in self.env:
+        for env in self.source:
             if "sampling" not in env.model_fields_set:
                 env.sampling = TrainSamplingConfig(**group_sampling)
             else:
@@ -256,7 +256,7 @@ class TrainConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_unique_env_names(self):
-        env_names = [env.resolved_name for env in self.env]
+        env_names = [env.resolved_name for env in self.source]
         duplicates = [n for n in env_names if env_names.count(n) > 1]
         if duplicates:
             raise ValueError(
@@ -437,7 +437,7 @@ class OrchestratorConfig(BaseConfig):
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm: sampling plus the per-token training signal (credit
     assignment and loss routing, fused — its ``type`` names the algorithm).
-    Defaults to ``grpo``. Override per env via ``[[orchestrator.train.env]]``'s
+    Defaults to ``grpo``. Override per source via ``[[orchestrator.train.source]]``'s
     ``algo``."""
 
     model: ModelConfig = ModelConfig()
@@ -554,29 +554,20 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def _env_to_train(cls, data: Any) -> Any:
-        """Allow [[env]] and [sampling] as shorthand for [train] with [[train.env]] and [train.sampling]."""
+    def _sampling_to_train(cls, data: Any) -> Any:
+        """Allow [sampling] as shorthand for [train.sampling]."""
         if not isinstance(data, dict):
             return data
-        if "env" in data or "sampling" in data:
+        if "sampling" in data:
             train = data.setdefault("train", {})
             if isinstance(train, dict):
-                if "env" in data:
-                    warnings.warn(
-                        "'[[orchestrator.env]]' is deprecated, use '[[orchestrator.train.env]]' instead. "
-                        "Auto-translating for now, but this will be removed in a future release.",
-                        FutureWarning,
-                        stacklevel=2,
-                    )
-                    train.setdefault("env", data.pop("env"))
-                if "sampling" in data:
-                    warnings.warn(
-                        "'[orchestrator.sampling]' is deprecated, use '[orchestrator.train.sampling]' instead. "
-                        "Auto-translating for now, but this will be removed in a future release.",
-                        FutureWarning,
-                        stacklevel=2,
-                    )
-                    train.setdefault("sampling", data.pop("sampling"))
+                warnings.warn(
+                    "'[orchestrator.sampling]' is deprecated, use '[orchestrator.train.sampling]' instead. "
+                    "Auto-translating for now, but this will be removed in a future release.",
+                    FutureWarning,
+                    stacklevel=2,
+                )
+                train.setdefault("sampling", data.pop("sampling"))
         return data
 
     @model_validator(mode="after")
@@ -617,7 +608,7 @@ class OrchestratorConfig(BaseConfig):
     def inherit_env_algorithms(self):
         """Envs without their own algorithm inherit the top-level one.
         Declared before any validator that reads ``algo``."""
-        for env_cfg in self.train.env:
+        for env_cfg in self.train.source:
             if env_cfg.algo is None:
                 env_cfg.algo = self.algo.model_copy(deep=True)
         return self
@@ -625,7 +616,7 @@ class OrchestratorConfig(BaseConfig):
     @property
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
-        return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.env)
+        return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.source)
 
     @model_validator(mode="after")
     def validate_pool_size(self):
@@ -713,7 +704,7 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
 
         # Propagate the top-level ``group_size`` into each train env that didn't set its own.
-        for env_cfg in self.train.env:
+        for env_cfg in self.train.source:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
 
@@ -736,7 +727,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_env_config(self):
         """Set vLLM sampling defaults + legacy env kwargs on each train env from top-level fields."""
-        for env in self.train.env:
+        for env in self.train.source:
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
             assert env.algo is not None

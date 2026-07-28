@@ -156,7 +156,7 @@ class Orchestrator:
         # Route the in-process v1 library logging through our handler. The
         # env server runs in a child process, so its logging is separate.
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
-        algorithms = sorted({env.algo.type for env in config.train.env if env.algo is not None})
+        algorithms = sorted({env.algo.type for env in config.train.source if env.algo is not None})
         get_logger().info(f"Starting orchestrator (algorithm: {', '.join(algorithms)})")
 
         if config.bench:
@@ -238,7 +238,7 @@ class Orchestrator:
             tokenizer=self.tokenizer,
             run_config=config,
             keep_full_history=config.bench,
-            train_env_names=[env.resolved_name for env in config.train.env],
+            train_env_names=[env.resolved_name for env in config.train.source],
             eval_env_names=[env.resolved_name for env in config.eval.env] if config.eval is not None else [],
         )
 
@@ -256,7 +256,7 @@ class Orchestrator:
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
-            config.train.env, policy_pool=self.policy_inference, renderer_config=config.renderer
+            config.train.source, policy_pool=self.policy_inference, renderer_config=config.renderer
         )
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"

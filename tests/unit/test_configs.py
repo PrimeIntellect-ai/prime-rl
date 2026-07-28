@@ -177,10 +177,10 @@ def test_env_algo_overrides_top_level():
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
             "algo": {"type": "echo"},
-            "train": {"env": [{"id": "a", "algo": {"type": "grpo"}}, {"id": "b"}]},
+            "train": {"source": [{"id": "a", "algo": {"type": "grpo"}}, {"id": "b"}]},
         }
     )
-    env_a, env_b = config.train.env
+    env_a, env_b = config.train.source
     # Env a sets its own algorithm; only env b inherits the top-level echo algorithm.
     assert env_a.algo is not None and env_a.algo.type == "grpo"
     assert env_b.algo is not None and env_b.algo.type == "echo"
@@ -188,7 +188,15 @@ def test_env_algo_overrides_top_level():
     # Resolved configs round-trip.
     dumped = config.model_dump(exclude_none=True)
     reloaded = OrchestratorConfig.model_validate(dumped)
-    assert reloaded.train.env[0].algo is not None and reloaded.train.env[0].algo.type == "grpo"
+    assert reloaded.train.source[0].algo is not None and reloaded.train.source[0].algo.type == "grpo"
+
+    with pytest.raises(ValidationError, match="env"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "train": {"env": [{"id": "removed"}]},
+            }
+        )
 
 
 def test_trainer_enable_token_export_cli_flag():

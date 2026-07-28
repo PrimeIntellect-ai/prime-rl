@@ -81,7 +81,7 @@ num_turns_weight = 0.1
 name = "nemotron-3"
 truncate_history_thinking = false
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "scaleswe"
 env.taskset = { id = "scaleswe-v1" }
 env.agent.harness = { id = "rlm", summarize_at_tokens = [65536, 131072] }

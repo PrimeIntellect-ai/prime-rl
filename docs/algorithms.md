@@ -118,18 +118,18 @@ Both components resolve per environment. Each env inherits `[orchestrator.algo]`
 [orchestrator.algo]
 type = "grpo"
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "math"
-taskset = { id = "math-v1" }
-harness = { id = "null" }
-runtime = { type = "subprocess" }
+env.taskset = { id = "math-v1" }
+env.agent.harness = { id = "null" }
+env.agent.runtime = { type = "subprocess" }
 # inherits the top-level grpo
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "terminal"
-taskset = { id = "terminal-v1" }
-harness = { id = "bash" }
-runtime = { type = "subprocess" }
+env.taskset = { id = "terminal-v1" }
+env.agent.harness = { id = "bash" }
+env.agent.runtime = { type = "subprocess" }
 algo = { type = "echo" }   # this env runs its own algorithm
 ```
 
@@ -314,7 +314,7 @@ Group-relative baselines assume the group is exchangeable attempts by one agent.
 type = "rae"
 decay = 0.95
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "kuhn-poker"
 env.taskset = { id = "kuhn-poker-v1" }
 env.player0.harness = { id = "null" }

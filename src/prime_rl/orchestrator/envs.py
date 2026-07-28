@@ -34,7 +34,7 @@ from typing import Generic, TypeVar
 import verifiers.v1 as vf
 from verifiers.v1.serve import EnvClient, env_config_data
 
-from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
+from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.sampler import Sampler
 from prime_rl.orchestrator.types import Rollout
@@ -246,9 +246,9 @@ class Env:
 
 
 class TrainEnv(Env):
-    config: TrainEnvConfig
+    config: TrainSourceConfig
 
-    def __init__(self, config: TrainEnvConfig, sampler: Sampler, algorithm: Algorithm):
+    def __init__(self, config: TrainSourceConfig, sampler: Sampler, algorithm: Algorithm):
         super().__init__(config)
         self.sampler = sampler
         self.algorithm = algorithm
@@ -333,10 +333,10 @@ class TrainEnvs(Envs[TrainEnv]):
     :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
     resolved algorithm config."""
 
-    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer_config=None):
+    def __init__(self, configs: Sequence[TrainSourceConfig], *, policy_pool, renderer_config=None):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
-            assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
+            assert config.algo is not None, "TrainSourceConfig.algo must be resolved before env construction"
             env = TrainEnv(
                 config,
                 Sampler(config.algo.sampling, policy_pool, renderer_config),
