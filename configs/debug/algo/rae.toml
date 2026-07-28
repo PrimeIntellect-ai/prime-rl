@@ -1,0 +1,53 @@
+max_steps = 20
+seq_len = 4096
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[wandb]
+project = "algorithms-debug"
+name = "debug-rae"
+
+[orchestrator]
+batch_size = 32
+group_size = 1
+
+[orchestrator.algo]
+type = "rae"
+
+[orchestrator.renderer]
+name = "prime-qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+
+[[orchestrator.train.env]]
+name = "kuhn-poker"
+env.taskset = { id = "kuhn-poker-v1" }
+env.player0.harness = { id = "null" }
+env.player0.runtime = { type = "subprocess" }
+env.player1.harness = { id = "null" }
+env.player1.runtime = { type = "subprocess" }
+
+[orchestrator.eval]
+interval = 1
+num_examples = 16
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 512
+
+[[orchestrator.eval.env]]
+name = "kuhn-poker"
+env.taskset = { id = "kuhn-poker-v1" }
+env.player0.harness = { id = "null" }
+env.player0.runtime = { type = "subprocess" }
+env.player1.harness = { id = "null" }
+env.player1.runtime = { type = "subprocess" }
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
+
+[inference]
+gpu_memory_utilization = 0.5
