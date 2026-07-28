@@ -17,7 +17,8 @@ max_completion_tokens = 128
 [[train.env]]
 name = "reverse-text"
 env.taskset = { id = "reverse-text-v1" }
-env.agent.harness = { id = "null", runtime = { type = "subprocess" } }
+env.agent.harness = { id = "null" }
+env.agent.runtime = { type = "subprocess" }
 
 [ckpt]
 interval = 10

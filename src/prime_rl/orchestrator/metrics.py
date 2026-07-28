@@ -12,7 +12,7 @@ is flat over the rollout list except the solve rates, which group by ``group_id`
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterator, Literal
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
 
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
@@ -134,16 +134,20 @@ class TimingMetrics(StatGroup):
 
 class CustomMetrics(StatGroup):
     """Per-key ``Stat``s over a dynamic per-rollout dict attribute (env ``@metric``s or reward
-    components), each averaged over the rollouts that report the key."""
+    components), each averaged over the rollouts that report the key. ``value`` extracts the
+    float from each entry (rewards are ``vf.Reward`` records; metrics are plain floats)."""
 
-    def __init__(self, rollouts: list[Rollout], attr: str) -> None:
+    def __init__(self, rollouts: list[Rollout], attr: str, value: Callable[[Any], float] = float) -> None:
         super().__init__(rollouts)
         self.attr = attr
+        self.value = value
 
     def stats(self) -> dict[str, Stat]:
         names = sorted({name for r in self.rollouts for name in getattr(r, self.attr)})
         return {
-            name: Stat([getattr(r, self.attr)[name] for r in self.rollouts if name in getattr(r, self.attr)])
+            name: Stat(
+                [self.value(getattr(r, self.attr)[name]) for r in self.rollouts if name in getattr(r, self.attr)]
+            )
             for name in names
         }
 
@@ -188,8 +192,9 @@ class RolloutMetrics:
 
     @property
     def rewards(self) -> CustomMetrics:
-        """Per-component reward breakdown, keyed by name (summed into the scalar ``reward``)."""
-        return CustomMetrics(self.rollouts, "rewards")
+        """Per-component reward breakdown, keyed by name (each entry's weighted ``value``,
+        summed into the scalar ``reward``)."""
+        return CustomMetrics(self.rollouts, "rewards", value=lambda reward: reward.value)
 
     # Boolean rate metrics (0/1 distributions — ``.mean()`` is the rate)
     @property
