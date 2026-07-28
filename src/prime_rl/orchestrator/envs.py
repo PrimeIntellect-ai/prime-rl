@@ -260,7 +260,10 @@ class Env:
     def exitcode(self) -> int | None:
         """The spawned server's exit code, or ``None`` while it runs (also ``None`` for an
         external server, which isn't ours to supervise)."""
-        return self._env_server_process.exitcode if self._env_server_process is not None else None
+        process = self._env_server_process
+        if process is None or process.is_alive():
+            return None
+        return process.exitcode
 
 
 class TrainEnv(Env):
