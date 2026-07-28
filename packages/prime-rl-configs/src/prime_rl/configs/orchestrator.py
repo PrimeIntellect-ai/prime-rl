@@ -525,10 +525,12 @@ class OrchestratorConfig(BaseConfig):
     """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
 
     oversampling_factor: float | None = Field(None, gt=0)
-    """Rollout-mode batching only. Multiplier used to derive ``max_inflight_rollouts`` from ``batch_size`` when ``max_inflight_rollouts`` is unset. Values below 1.0 intentionally cap in-flight rollout capacity below ``batch_size``."""
+    """Rollout-mode batching only. Multiplier used to derive ``max_inflight_episodes`` from ``batch_size`` when ``max_inflight_episodes`` is unset. Values below 1.0 intentionally cap in-flight episode capacity below ``batch_size``."""
 
-    max_inflight_rollouts: int | None = Field(None, ge=1)
-    """Maximum number of rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
+    max_inflight_episodes: int | None = Field(
+        None, ge=1, validation_alias=AliasChoices("max_inflight_episodes", "max_inflight_rollouts")
+    )
+    """Maximum number of episodes kept in-flight — one episode is one agent run at a time, whatever the env's agents are. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Output sequences returned per example during training."""
@@ -682,26 +684,26 @@ class OrchestratorConfig(BaseConfig):
         if has_token_batch:
             if self.oversampling_factor is not None:
                 raise ValueError("oversampling_factor can only be set when batch_size is set")
-            if self.max_inflight_rollouts is None:
-                raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
+            if self.max_inflight_episodes is None:
+                raise ValueError("max_inflight_episodes must be set when token_batch_size is set")
         else:
             assert self.batch_size is not None
             if self.batch_size % self.group_size != 0:
                 raise ValueError("Batch size must be divisible by the number of samples per problem")
             oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
-            resolved_max_inflight_rollouts = max(
+            resolved_max_inflight_episodes = max(
                 self.group_size,
                 int(self.batch_size * oversampling_factor),
             )
-            if self.max_inflight_rollouts is not None and self.oversampling_factor is not None:
-                expected_max_inflight_rollouts = resolved_max_inflight_rollouts
-                if self.max_inflight_rollouts != expected_max_inflight_rollouts:
-                    raise ValueError("max_inflight_rollouts conflicts with oversampling_factor * batch_size")
-            if self.max_inflight_rollouts is None:
-                self.max_inflight_rollouts = resolved_max_inflight_rollouts
+            if self.max_inflight_episodes is not None and self.oversampling_factor is not None:
+                expected_max_inflight_episodes = resolved_max_inflight_episodes
+                if self.max_inflight_episodes != expected_max_inflight_episodes:
+                    raise ValueError("max_inflight_episodes conflicts with oversampling_factor * batch_size")
+            if self.max_inflight_episodes is None:
+                self.max_inflight_episodes = resolved_max_inflight_episodes
 
-        if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.group_size:
-            raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
+        if self.max_inflight_episodes is not None and self.max_inflight_episodes < self.group_size:
+            raise ValueError("max_inflight_episodes must be at least the number of rollouts per example")
 
         # Propagate the top-level ``group_size`` into each train env that didn't set its own.
         for env_cfg in self.train.source:

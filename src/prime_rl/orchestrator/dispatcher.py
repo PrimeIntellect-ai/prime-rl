@@ -1,7 +1,9 @@
 """RolloutDispatcher: schedules rollouts under a shared permit counter.
 
-- Capacity (``max_inflight_rollouts``) is shared across train + eval.
-  A group-scoring task that runs N rollouts in one call reserves N permits.
+- Capacity (``max_inflight_episodes``) is shared across train + eval. One permit is
+  one episode: for a v1 env one ``run`` request, and a group-scoring task that runs
+  N rollouts in one call reserves N permits (each bridged v0 rollout is its own
+  single-agent episode).
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched env-rollout eventually reaches
   ``out_q`` exactly once, as one episode (a ``list[Rollout]``). Failures
@@ -129,7 +131,7 @@ class RolloutDispatcher:
         eval_source: EvalSource | None,
         policy_pool: InferencePool,
         policy: Policy,
-        max_inflight_rollouts: int,
+        max_inflight_episodes: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
     ) -> None:
@@ -143,7 +145,7 @@ class RolloutDispatcher:
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
 
-        self.max_inflight = max_inflight_rollouts
+        self.max_inflight = max_inflight_episodes
         self.inflight_permits = 0
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None

@@ -391,7 +391,7 @@ class Orchestrator:
             else None
         )
 
-        assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
+        assert config.max_inflight_episodes is not None, "max_inflight_episodes must be resolved before dispatcher init"
         log_interval = config.log.interval
         wandb_enabled = config.wandb is not None
         self.dispatcher = RolloutDispatcher(
@@ -401,7 +401,7 @@ class Orchestrator:
             eval_source=self.eval_source,
             policy_pool=self.policy_inference,
             policy=self.policy,
-            max_inflight_rollouts=config.max_inflight_rollouts,
+            max_inflight_episodes=config.max_inflight_episodes,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
         )
