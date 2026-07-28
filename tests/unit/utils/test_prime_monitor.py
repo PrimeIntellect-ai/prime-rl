@@ -38,7 +38,7 @@ def _build_rollout(*, example_id: int, reward: float, task: str) -> Rollout:
     rollout = Rollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=example_id, prompt=f"prompt-{example_id}")),
         nodes=nodes,
-        rewards={"reward": reward},
+        rewards={"reward": vf.Reward(score=reward)},
     )
     rollout.env_name = task
     # Per-token advantage stream (full-length-N): 0.0 on the 3 prompt tokens,
