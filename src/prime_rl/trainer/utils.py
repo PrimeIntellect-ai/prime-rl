@@ -298,6 +298,30 @@ def _to_local_tensor(tensor: Tensor | DTensor) -> Tensor:
     return tensor
 
 
+def raise_if_nonfinite_gradients(parameters: Iterable[nn.Parameter]) -> None:
+    """Abort every rank when any local gradient shard is non-finite."""
+    parameters = list(parameters)
+    if parameters:
+        device = _to_local_tensor(parameters[0].detach()).device
+    else:
+        device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
+
+    gradients_are_finite = torch.ones((), device=device, dtype=torch.int32)
+    for param in parameters:
+        if param.grad is None:
+            continue
+        local_grad = _to_local_tensor(param.grad.detach())
+        local_grad_is_finite = torch.isfinite(local_grad).all().to(device=device, dtype=torch.int32)
+        gradients_are_finite = torch.minimum(gradients_are_finite, local_grad_is_finite)
+
+    if dist.is_initialized():
+        dist.all_reduce(gradients_are_finite, op=dist.ReduceOp.MIN)
+    if not bool(gradients_are_finite.item()):
+        raise RuntimeError(
+            "Non-finite gradients detected before optimizer.step(); aborting to avoid corrupting weights."
+        )
+
+
 def count_zero_gradient_elements(parameters: Iterable[nn.Parameter]) -> tuple[Tensor, Tensor]:
     """Count zero-gradient parameter elements on the local distributed shards.
 
@@ -603,10 +627,12 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
         "is_masked_high/",
         "masked_advantage_positive/",
         "masked_advantage_negative/",
+        "importance_ratio_clipped/",
         "mismatch_kl/",
         "masked_mismatch_kl/",
         "unmasked_mismatch_kl/",
         "ref_kl/is_masked/",
+        "ref_kl/importance_ratio_clipped/",
         "ref_kl/masked_mismatch_kl/",
         "ref_kl/unmasked_mismatch_kl/",
     )
