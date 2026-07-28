@@ -328,10 +328,11 @@ ROWS = 6
 
 
 def line_panels(metrics: Sequence[str], regexes: Sequence[str]) -> list[wr.LinePlot]:
-    # inference/* is logged against wall time (step_metric="_timestamp") → "WallTime" (== W&B's
-    # "_timestamp"); everything else on "step" (prime-rl's logged training step, not internal "Step").
+    # inference/* is logged against time (step_metric="_timestamp"), plotted on "RelativeTime(Wall)"
+    # (== W&B's "_absolute_runtime", seconds since run start) so runs started at different times
+    # overlay; everything else on "step" (prime-rl's logged training step, not internal "Step").
     # x is set per-panel because LinePlot defaults it to "Step", which overrides the workspace x_axis.
-    return [wr.LinePlot(x="WallTime" if m.startswith("inference/") else "step", y=[m]) for m in metrics] + [
+    return [wr.LinePlot(x="RelativeTime(Wall)" if m.startswith("inference/") else "step", y=[m]) for m in metrics] + [
         wr.LinePlot(x="step", metric_regex=r) for r in regexes
     ]
 
@@ -395,15 +396,15 @@ def list_views(entity: str, project: str) -> list[tuple[str, str]]:
     return [(e["node"]["displayName"], e["node"]["name"]) for e in edges if e.get("node")]
 
 
-def env_signature(train_envs: Sequence[str], eval_envs: Sequence[str]) -> tuple:
-    return (tuple(sorted(train_envs)), tuple(sorted(eval_envs)))
-
-
-def view_env_signature(sections: Sequence[ws.Section]) -> tuple:
-    """Reconstruct the ``(train, eval)`` env set a view was built for from its section names."""
+def view_signature(sections: Sequence[ws.Section]) -> tuple:
+    """The ``(train, eval)`` env set a view was built for, plus the x-axes its panels plot against.
+    Comparing sections (rather than the env lists) means a change to the axes also versions a new
+    view instead of silently reusing a stale one. Parsed views return ``Metric`` objects for ``x``
+    where freshly built ones hold plain strings."""
     train = sorted(s.name[len("train/") :] for s in sections if s.name.startswith("train/") and s.name != "train/agg")
     evals = sorted(s.name[len("eval/") :] for s in sections if s.name.startswith("eval/"))
-    return (tuple(train), tuple(evals))
+    axes = {getattr(p.x, "name", p.x) for s in sections for p in s.panels if isinstance(p, wr.LinePlot)}
+    return (tuple(train), tuple(evals), tuple(sorted(axes)))
 
 
 def next_overview_name(base: str, existing: Sequence[str]) -> str:
@@ -424,13 +425,14 @@ def ensure_overview_view(
     """Ensure an overview saved view exists for this run's env set. Reuses an existing overview built
     for the same envs; when the env set is new, creates a fresh versioned view (``overview`` →
     ``overview-v2`` → …). Returns the URL of a newly created view, else None."""
-    target = env_signature(train_envs, eval_envs)
+    sections = build_sections(train_envs, eval_envs)
+    target = view_signature(sections)
     overviews = [(dn, iname) for dn, iname in list_views(entity, project) if dn == name or dn.startswith(f"{name}-v")]
     for _, internal_name in overviews:
         slug = internal_name.removeprefix("nw-").removesuffix("-v")
         try:
             existing = ws.Workspace.from_url(f"https://wandb.ai/{entity}/{project}?nw={slug}")
-            matches = view_env_signature(existing.sections) == target
+            matches = view_signature(existing.sections) == target
         except Exception as e:
             # A single unreadable view must not abort reuse detection / versioning for the rest.
             get_logger().warning(f"Could not inspect overview view {internal_name} - {e}")
@@ -441,7 +443,7 @@ def ensure_overview_view(
         entity=entity,
         project=project,
         name=next_overview_name(name, [dn for dn, _ in overviews]),
-        sections=build_sections(train_envs, eval_envs),
+        sections=sections,
         auto_generate_panels=False,
         settings=ws.WorkspaceSettings(x_axis="step"),
     )
