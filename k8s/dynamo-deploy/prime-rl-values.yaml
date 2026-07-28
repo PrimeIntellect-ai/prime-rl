@@ -1,0 +1,114 @@
+# Example Helm values for prime-rl when Dynamo serves inference.
+#
+#   helm install prime-rl k8s/prime-rl -f k8s/dynamo-deploy/prime-rl-values.yaml -n <your-namespace>
+#
+# Dynamo serves inference, so prime-rl's own inference component is disabled.
+# Orchestrator and trainer point at the Dynamo frontend (deploy with dynamo-dgd.yaml).
+#
+# Replace the following placeholders for your environment:
+#   - namespace
+#   - image.repository / image.tag (your prime-rl image)
+#   - storage.storageClassName (your cluster's RWX storage class)
+#   - orchestrator/trainer.imagePullSecrets[*].name
+#   - secrets.name (HF token / W&B key)
+
+namespace: <your-namespace>
+
+image:
+  repository: <your-registry>/prime-rl
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+storage:
+  enabled: true
+  storageClassName: <your-rwx-storageclass>
+  accessModes:
+    - ReadWriteMany
+  size: 100Gi
+  mountPath: /data
+
+config:
+  example: "prime-rl-dynamo"
+  secrets:
+    enabled: true
+    name: hf-token-secret
+
+# Orchestrator: CPU only, talks to Dynamo for inference
+orchestrator:
+  enabled: true
+  replicas: 1
+  autoStart: true
+  command: >-
+    BENCH_API_KEY=EMPTY
+    uv run orchestrator
+    @ /configs/orch.toml
+    --output-dir /data/outputs/run_default
+    --max-concurrent 16
+    ; echo "orchestrator exited: $?" ; sleep infinity
+  resources:
+    requests:
+      memory: "8Gi"
+      cpu: "4"
+  env:
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: hf-token-secret
+          key: HF_TOKEN
+          optional: true
+    - name: WANDB_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: wandb-secret
+          key: WANDB_API_KEY
+  configMap: prime-rl-configs
+  imagePullSecrets:
+    - name: <your-image-pull-secret>
+  nodeSelector: {}
+
+# Inference: DISABLED (Dynamo DGD replaces this)
+inference:
+  enabled: false
+
+# Trainer: 1 GPU is sufficient for small models (e.g. Qwen3-4B GRPO)
+trainer:
+  enabled: true
+  replicas: 1
+  autoStart: true
+  command: >-
+    uv run torchrun
+    --nproc-per-node=1
+    --rdzv-endpoint=localhost:29510
+    --rdzv-id=smoke_$(date +%s)
+    -m prime_rl.trainer.rl.train
+    @ /configs/train.toml
+    --output-dir /data/outputs
+    ; echo "trainer exited: $?" ; sleep infinity
+  pytorchCudaAllocConf: "expandable_segments:True"
+  gpu:
+    enabled: true
+    count: 1
+  resources:
+    requests:
+      memory: "32Gi"
+      cpu: "8"
+  env:
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: hf-token-secret
+          key: HF_TOKEN
+          optional: true
+    - name: WANDB_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: wandb-secret
+          key: WANDB_API_KEY
+  configMap: prime-rl-configs
+  runtimeClassName: nvidia
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  imagePullSecrets:
+    - name: <your-image-pull-secret>
