@@ -157,7 +157,7 @@ class EnvConfig(BaseConfig):
     runs, ``serve`` — how it's hosted, ``legacy`` — a classic v0 env instead) plus this
     orchestrator's own per-env knobs."""
 
-    env: SerializeAsAny[vf.EnvConfig] = vf.env_field()
+    env: SerializeAsAny[vf.EnvConfig] = Field(default_factory=vf.single_agent_env_config)
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
     serve: vf.ServingConfig = vf.ServingConfig()
