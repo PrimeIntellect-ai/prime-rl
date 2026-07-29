@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 from verifiers.v1.configs.legacy import is_legacy, refuse_mixed_run, run_env_id
 
@@ -157,7 +157,7 @@ class EnvConfig(BaseConfig):
     runs, ``serve`` — how it's hosted, ``legacy`` — a classic v0 env instead) plus this
     orchestrator's own per-env knobs."""
 
-    env: vf.EnvField = vf.env_field()
+    env: SerializeAsAny[vf.EnvConfig] = vf.env_field()
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
     serve: vf.ServingConfig = vf.ServingConfig()
