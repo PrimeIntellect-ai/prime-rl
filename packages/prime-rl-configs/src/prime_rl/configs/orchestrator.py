@@ -622,6 +622,17 @@ class OrchestratorConfig(BaseConfig):
                 env_cfg.algo = self.algo.model_copy(deep=True)
         return self
 
+    @model_validator(mode="after")
+    def validate_env_algorithms(self):
+        """Let each env's resolved algorithm reject the env it was pointed at —
+        the algorithms whose credit assignment encodes an env's episode structure
+        (hierarchical_grpo) only make sense on that env, and a flat env would
+        silently train on collapsed peer sets."""
+        for env_cfg in self.train.env:
+            assert env_cfg.algo is not None  # resolved by inherit_env_algorithms
+            env_cfg.algo.validate_env(env_cfg.env)
+        return self
+
     @property
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""

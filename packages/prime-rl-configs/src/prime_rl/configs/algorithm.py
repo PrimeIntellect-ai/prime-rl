@@ -35,6 +35,7 @@ executes them.
 
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
+import verifiers.v1 as vf
 from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
@@ -188,6 +189,13 @@ class BaseAlgoConfig(BaseConfig):
             )
         return self
 
+    def validate_env(self, env_config: vf.EnvConfig) -> None:
+        """Raise if this algorithm cannot run on the env it is configured for,
+        given that env's resolved config. Most algorithms read only the rollouts
+        and their rewards, so they run on any env and the base does nothing;
+        override where the credit assignment encodes an env's episode structure.
+        Called once per train env after algorithm inheritance resolves."""
+
 
 class GRPOAlgoConfig(BaseAlgoConfig):
     type: Literal["grpo"] = "grpo"
@@ -264,7 +272,8 @@ class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
     their own episode — sibling attempts at the same minted task — and every
     other agent (the proposer) against its same-agent traces across the group —
     parallel attempts at the same source task. Rewards never mix across agents
-    or across minted tasks."""
+    or across minted tasks. Only a proposer-solver env may train under it — the
+    peer sets are that env's episode tree (see ``validate_env``)."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
@@ -274,6 +283,28 @@ class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
     of the same agent in the same episode, because each episode mints its own
     task and rewards are not exchangeable across episodes. Required — which
     agents are episode-scoped is env truth the algorithm must not guess."""
+
+    def validate_env(self, env_config: vf.EnvConfig) -> None:
+        """Only a proposer-solver env may train under hierarchical GRPO. The
+        two-level peer sets *are* that env's episode tree — one proposer trace
+        per episode plus the solver traces its minted task fanned out to — so on
+        a flat env the levels collapse and every trace silently lands in a peer
+        set of one (zero advantage, whole group filtered). Nothing in a rollout
+        reveals the tree, so the env's own config class is the check."""
+        try:
+            from proposer_solver_v1 import ProposerSolverEnvConfig
+        except ImportError as e:
+            raise ValueError(
+                "algorithm 'hierarchical_grpo' requires a proposer-solver env, but the "
+                "proposer-solver-v1 package is not installed (`uv sync --all-packages`)."
+            ) from e
+        if not isinstance(env_config, ProposerSolverEnvConfig):
+            raise ValueError(
+                f"algorithm 'hierarchical_grpo' needs a proposer-solver env, but this env resolved to "
+                f"{type(env_config).__name__} — its two-level baselines read an episode tree "
+                "(a proposer trace plus the solver traces its minted task fanned out to) that a flat "
+                "env does not have. Use 'grpo' (or 'rae' for multi-agent self-play)."
+            )
 
 
 class OPDAlgoConfig(BaseAlgoConfig):

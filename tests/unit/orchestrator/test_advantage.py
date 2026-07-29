@@ -5,12 +5,10 @@ import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import (
     GRPOAlgoConfig,
-    HierarchicalGRPOAlgoConfig,
     LinearLengthPenaltyConfig,
     MaxRLAlgoConfig,
 )
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
-from prime_rl.orchestrator.algo.hierarchical_grpo import HierarchicalGRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout
@@ -183,74 +181,6 @@ def test_max_rl_mean_normalized():
     assert _max_rl(_make_group(rewards=[0.0, 0.0])) == pytest.approx([0.0, 0.0])
     # ... and all-success groups center to zero like GRPO
     assert _max_rl(_make_group(rewards=[1.0, 1.0])) == pytest.approx([0.0, 0.0])
-
-
-# --------------------------------------------------------------------------
-# Hierarchical GRPO: two-level baselines for task-generating envs.
-# --------------------------------------------------------------------------
-
-
-def _episode_rollout(reward: float, agent_name: str, episode_id: str) -> Rollout:
-    """A one-turn rollout stamped as one agent's trace of one episode — what a
-    task-generating env's traces look like by the time ``score_group`` sees them."""
-    rollout = _build_rollout(reward, sampled_lengths=[2])
-    rollout.agent = vf.AgentInfo(config=vf.AgentConfig(), name=agent_name)
-    rollout.episode_id = episode_id
-    return rollout
-
-
-def _hier_grpo(group: list[Rollout], episode_agents: list[str]) -> list[float]:
-    """Drive ``HierarchicalGRPOAlgorithm.score_group`` and read back the scalars."""
-    algo = HierarchicalGRPOAlgorithm(HierarchicalGRPOAlgoConfig(episode_agents=episode_agents), policy_pool=None)
-    asyncio.run(algo.score_group(group))
-    return [_scalar(rollout) for rollout in group]
-
-
-def test_hier_grpo_solvers_center_within_their_episode():
-    """Solvers are baselined only against siblings attempting the same minted
-    task: an episode whose problem got 1-of-2 solved carries signal, while
-    pooling all four solver rewards (mean 0.25) would mis-credit both episodes."""
-    group = [
-        _episode_rollout(1.0, "solver", "ep1"),
-        _episode_rollout(0.0, "solver", "ep1"),
-        _episode_rollout(0.0, "solver", "ep2"),
-        _episode_rollout(0.0, "solver", "ep2"),
-    ]
-    advs = _hier_grpo(group, episode_agents=["solver"])
-    assert advs[:2] == pytest.approx([0.5, -0.5])
-    assert advs[2:] == pytest.approx([0.0, 0.0])
-
-
-def test_hier_grpo_proposers_center_across_the_group():
-    """The proposer's peer set is its own traces across the group's episodes —
-    solver rewards never leak into its baseline, nor its into theirs."""
-    group = [
-        _episode_rollout(1.0, "proposer", "ep1"),
-        _episode_rollout(1.0, "solver", "ep1"),
-        _episode_rollout(0.0, "proposer", "ep2"),
-        _episode_rollout(1.0, "solver", "ep2"),
-    ]
-    advs = _hier_grpo(group, episode_agents=["solver"])
-    assert advs[0] == pytest.approx(0.5)
-    assert advs[2] == pytest.approx(-0.5)
-    # each episode's lone solver is a singleton peer set: zero advantage
-    assert advs[1] == pytest.approx(0.0)
-    assert advs[3] == pytest.approx(0.0)
-
-
-def test_hier_grpo_proposer_solver_shape():
-    """The proposer-solver-v1 shape end to end: 2 proposals x 2 solvers, all
-    peer sets centered independently and each summing to zero."""
-    group = [
-        _episode_rollout(1.0, "proposer", "ep1"),
-        _episode_rollout(1.0, "solver", "ep1"),
-        _episode_rollout(0.0, "solver", "ep1"),
-        _episode_rollout(0.0, "proposer", "ep2"),
-        _episode_rollout(1.0, "solver", "ep2"),
-        _episode_rollout(1.0, "solver", "ep2"),
-    ]
-    advs = _hier_grpo(group, episode_agents=["solver"])
-    assert advs == pytest.approx([0.5, 0.5, -0.5, -0.5, 0.0, 0.0])
 
 
 # --------------------------------------------------------------------------

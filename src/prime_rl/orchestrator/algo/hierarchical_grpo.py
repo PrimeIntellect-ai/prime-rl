@@ -31,7 +31,10 @@ class HierarchicalGRPOAlgorithm(Algorithm):
       their minted tasks did to the solvers (e.g. learnability).
 
     A peer set of one centers to zero advantage (GRPO's singleton convention;
-    the zero-advantage filter drops it)."""
+    the zero-advantage filter drops it). Nothing in a rollout reveals the tree,
+    so the env itself is gated at config validation
+    (:meth:`HierarchicalGRPOAlgoConfig.validate_env`) rather than here: on a flat
+    env every peer set would be a singleton and every group train on zeros."""
 
     def __init__(self, config: HierarchicalGRPOAlgoConfig, policy_pool: InferencePool):
         super().__init__(config, policy_pool)

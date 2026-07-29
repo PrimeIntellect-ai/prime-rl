@@ -316,7 +316,7 @@ Task-generating envs break the flat-group assumption twice over. In `proposer-so
 - agents listed in `episode_agents` (the solvers) against the same-agent traces of **their own episode** — sibling attempts at the same minted task;
 - every other agent (the proposer) against its same-agent traces **across the group** — parallel attempts at the same source task, each rewarded by what its minted task did to the solvers (`proposer-solver-v1`'s learnability, `4p(1−p)`, peaks when half the solvers crack the problem).
 
-Rewards never mix across agents or across minted tasks. A peer set of one centers to zero advantage (GRPO's singleton convention; the zero-advantage filter drops it). `episode_agents` is required — which agents are episode-scoped is env truth the algorithm must not guess:
+Rewards never mix across agents or across minted tasks. A peer set of one centers to zero advantage (GRPO's singleton convention; the zero-advantage filter drops it). Config validation rejects any env that isn't a proposer-solver env — the two-level peer sets *are* that episode tree, and on a flat env they collapse to one trace each, so every group would train on nothing but zeros. `episode_agents` is required — which agents are episode-scoped is env truth the algorithm must not guess:
 
 ```toml
 [orchestrator.algo]
