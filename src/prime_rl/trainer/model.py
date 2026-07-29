@@ -32,6 +32,7 @@ from prime_rl.configs.trainer import (
     FP8Config,
     ModelConfig,
     MXFP8Config,
+    NVFP4Config,
     TokenizerConfig,
 )
 from prime_rl.trainer.distributed import DeepEPExpertParallel, MXFP8AllToAllExpertParallel
@@ -52,9 +53,16 @@ from prime_rl.trainer.models.layers.checkpointing import (
 )
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import (
+    FP8MoEQuantizationConfig,
+    MoE,
+    MXFP8MoEQuantizationConfig,
+    NVFP4MoEQuantizationConfig,
+    TokenChoiceTopKRouter,
+)
 from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
+from prime_rl.trainer.models.layers.nvfp4_grouped_gemm import prepare_nvfp4_grouped_gemm
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -585,15 +593,21 @@ def get_model(
             vision_config._attn_implementation = "sdpa"
             if hasattr(vision_config, "_attn_implementation_internal"):
                 vision_config._attn_implementation_internal = "sdpa"
+    moe_quantization = None
+    if isinstance(config.quantization, FP8Config) and config.quantization.enable_grouped_gemm:
+        moe_quantization = FP8MoEQuantizationConfig()
+    elif isinstance(config.quantization, MXFP8Config) and config.quantization.enable_grouped_gemm:
+        moe_quantization = MXFP8MoEQuantizationConfig()
+    elif isinstance(config.quantization, NVFP4Config):
+        moe_quantization = NVFP4MoEQuantizationConfig(backward=config.quantization.backward)
+    model_config.moe_quantization = moe_quantization
+
     for subconfig_key in getattr(model_config, "sub_configs", {}):
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
-    # MoEArgs.fp8 (read via getattr(config, "fp8") in the modeling files) gates the
-    # DeepGEMM FP8 grouped GEMM. MXFP8 grouped GEMM is applied by wrapping the expert
-    # weights with torchao (see apply_quantization), so it leaves this flag False and
-    # the experts keep calling torch._grouped_mm — which the wrapper tensor intercepts.
-    model_config.fp8 = isinstance(config.quantization, FP8Config) and config.quantization.enable_grouped_gemm
+        if subconfig is not None:
+            subconfig.moe_quantization = moe_quantization
 
     if config.index_cache is not None:
         model_config.use_index_cache = True
@@ -1141,10 +1155,7 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
     """Swap dense linears and MoE expert GEMMs to the configured low-precision path.
 
     Runs after the LM head is injected but before LoRA / EP / FSDP so the swapped
-    modules and wrapped parameters are picked up by the later parallelisms. The
-    FP8 grouped GEMM (DeepGEMM) is gated separately via ``model_config.fp8`` since
-    it lives inside the modeling code; here we only handle the dense-linear swap
-    and the torchao MXFP8 expert-weight wrapping.
+    modules and wrapped parameters are picked up by the later parallelisms.
     """
     quant = config.quantization
     if quant is None:
@@ -1161,6 +1172,13 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
         if quant.enable_grouped_gemm:
             apply_mxfp8_moe_grouped_gemm(model, recipe=quant.recipe)
+    elif isinstance(quant, NVFP4Config):
+        capability = torch.cuda.get_device_capability()
+        if capability != (10, 0):
+            raise ValueError(
+                f"NVFP4 quantization requires SM100 (Blackwell), but device is SM{capability[0]}{capability[1]}."
+            )
+        prepare_nvfp4_grouped_gemm()
 
 
 def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):

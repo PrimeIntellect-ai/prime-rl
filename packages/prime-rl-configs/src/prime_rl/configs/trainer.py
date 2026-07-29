@@ -144,7 +144,12 @@ class MXFP8Config(BaseConfig):
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
 
 
-QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
+class NVFP4Config(BaseConfig):
+    type: Literal["nvfp4"] = "nvfp4"
+    backward: Literal["dequant_bf16", "bf16"] = "dequant_bf16"
+
+
+QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config | NVFP4Config, Field(discriminator="type")]
 
 
 class ModelConfig(BaseModelConfig):

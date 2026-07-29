@@ -4,8 +4,10 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Literal
 
 import torch
@@ -14,6 +16,42 @@ from torch import nn
 
 from prime_rl.configs.trainer import EPCommBackend
 from prime_rl.trainer.distributed.expert_parallel import expert_parallel
+
+NVFP4Backward = Literal["dequant_bf16", "bf16"]
+
+
+class MoEQuantizationConfig(ABC):
+    @property
+    @abstractmethod
+    def grouped_mm(self) -> Callable[..., torch.Tensor]:
+        pass
+
+
+@dataclass(frozen=True)
+class FP8MoEQuantizationConfig(MoEQuantizationConfig):
+    @property
+    def grouped_mm(self) -> Callable[..., torch.Tensor]:
+        from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
+
+        return grouped_fp8_gemm
+
+
+@dataclass(frozen=True)
+class MXFP8MoEQuantizationConfig(MoEQuantizationConfig):
+    @property
+    def grouped_mm(self) -> Callable[..., torch.Tensor]:
+        return torch._grouped_mm
+
+
+@dataclass(frozen=True)
+class NVFP4MoEQuantizationConfig(MoEQuantizationConfig):
+    backward: NVFP4Backward = "dequant_bf16"
+
+    @property
+    def grouped_mm(self) -> Callable[..., torch.Tensor]:
+        from prime_rl_kernels.nvfp4 import grouped_gemm
+
+        return partial(grouped_gemm, backward=self.backward)
 
 
 @dataclass
@@ -30,7 +68,7 @@ class MoEArgs:
     # token-choice
     top_k: int = 1
     load_balance_coeff: float | None = 1e-3
-    fp8: bool = False  # use FP8 grouped GEMM via DeepGEMM (requires SM90)
+    quantization: MoEQuantizationConfig | None = None
 
 
 def swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
@@ -231,7 +269,7 @@ class GroupedExperts(nn.Module):
         output_bias_name: str | None = None,
         transpose_weights_for_state_dict: bool = False,
         activation_fn: Callable[[torch.Tensor], torch.Tensor] = fused_swiglu,
-        grouped_mm_fn: Callable[..., torch.Tensor] = torch._grouped_mm,
+        quantization: MoEQuantizationConfig | None = None,
     ):
         super().__init__()
         self.num_experts = num_experts
@@ -251,7 +289,8 @@ class GroupedExperts(nn.Module):
         )
         self.output_bias = nn.Parameter(torch.empty(num_experts, dim)) if output_bias_name is not None else None
         self._activation_fn = activation_fn
-        self._grouped_mm_fn = grouped_mm_fn
+        self.quantization = quantization
+        self.grouped_mm = torch._grouped_mm if quantization is None else quantization.grouped_mm
         self.ep_comm_backend: EPCommBackend = "torch"
         self.register_state_dict_post_hook(self.export_weights_to_state_dict)
         self.register_load_state_dict_pre_hook(self.import_weights_from_state_dict)
@@ -293,7 +332,7 @@ class GroupedExperts(nn.Module):
             self.w2.to_local().transpose(-2, -1),
             x,
             num_tokens_per_expert,
-            grouped_mm_fn=self._grouped_mm_fn,
+            grouped_mm_fn=self.grouped_mm,
             activation_fn=self._activation_fn,
             input_bias=self.input_bias.to_local() if self.input_bias is not None else None,
             output_bias=self.output_bias.to_local() if self.output_bias is not None else None,
@@ -312,7 +351,7 @@ class GroupedExperts(nn.Module):
             self.w2.transpose(-2, -1),
             x,
             num_tokens_per_expert,
-            grouped_mm_fn=self._grouped_mm_fn,
+            grouped_mm_fn=self.grouped_mm,
             activation_fn=self._activation_fn,
             input_bias=self.input_bias,
             output_bias=self.output_bias,
@@ -578,17 +617,11 @@ class MoE(nn.Module):
 
     @classmethod
     def from_args(cls, args: MoEArgs, dim: int, hidden_dim: int) -> "MoE":
-        grouped_mm_fn = torch._grouped_mm
-        if args.fp8:
-            from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
-
-            grouped_mm_fn = grouped_fp8_gemm
-
         experts = GroupedExperts(
             dim=dim,
             hidden_dim=hidden_dim,
             num_experts=args.num_experts,
-            grouped_mm_fn=grouped_mm_fn,
+            quantization=args.quantization,
         )
         router = TokenChoiceTopKRouter(
             dim=dim,

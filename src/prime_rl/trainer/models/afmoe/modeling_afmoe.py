@@ -257,7 +257,7 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
             score_before_experts=getattr(config, "score_before_experts", False),
             top_k=config.num_experts_per_tok,
             load_balance_coeff=config.load_balance_coeff,
-            fp8=getattr(config, "fp8", False),
+            quantization=getattr(config, "moe_quantization", None),
         )
         if self.moe_enabled:
             self.mlp = MoE.from_args(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
