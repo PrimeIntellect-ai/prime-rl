@@ -397,7 +397,7 @@ its class defaults are the vetted setting.
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``rae`` — reward minus a per-agent EMA baseline (SPIRAL), for multi-agent self-play envs.
-- ``hierarchical_grpo`` — two-level GRPO for task-generating envs: episode-scoped agents baseline within their episode, the rest across the group. Needs ``episode_agents``.
+- ``hierarchical_grpo`` — two-level GRPO for proposer-solver envs: each solver is baselined against the siblings attempting its own minted task, the proposer across the group's proposals. Needs ``episode_agents``.
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.

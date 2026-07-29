@@ -145,7 +145,7 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 | `echo` | `EchoAlgorithm` | `score_rollout`: weighted ce on observation tokens; `score_group`: group-norm credit (inherited) |
 | `max_rl` | `MaxRLAlgorithm` | `score_group`: mean-normalized group credit |
 | `rae` | `RAEAlgorithm` | `score_group`: per-agent EMA-baseline credit |
-| `hierarchical_grpo` | `HierarchicalGRPOAlgorithm` | `score_group`: two-level peer-set credit (per-episode / per-group) |
+| `hierarchical_grpo` | `HierarchicalGRPOAlgorithm` | `score_group`: GRPO baseline per episode for solvers, per group for the proposer |
 | `opd` | `OPDAlgorithm` | `score_rollout`: own-context prefill under the teacher |
 | `opsd` | `OPSDAlgorithm` | `score_rollout`: demo-conditioned prefill under the live policy |
 | `sft` | `SFTDistillAlgorithm` | `score_group`: group-norm credit (feeds filters) |
@@ -285,7 +285,7 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 | `grpo` | `rl` | Group-norm: reward minus per-group baseline, optional length penalty. |
 | `max_rl` | `rl` | Mean-normalized group credit (maximum-likelihood RL). |
 | `rae` | `rl` | Reward minus a per-agent EMA baseline (SPIRAL's role-conditioned advantage estimation) — for multi-agent self-play envs. |
-| `hierarchical_grpo` | `rl` | Two-level peer-set credit for task-generating envs: episode-scoped agents center within their episode, the rest across the group. |
+| `hierarchical_grpo` | `rl` | Reward minus a GRPO baseline taken at two levels of the episode tree: each solver against the siblings attempting its own minted task, the proposer across the group's proposals — proposer-solver envs only. |
 | `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-provided tokens selected by message role (each role's `alpha` is its ECHO λ), optionally narrowed by a user filter. |
 | `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`teacher`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream; `group_size` only fans out sampling. |
 | `opsd` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream. |

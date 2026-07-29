@@ -90,7 +90,7 @@ The RL entrypoint supports several training algorithms, switched via `[orchestra
 | `grpo` (default) | None | Standard group-relative RL |
 | `max_rl` | None | [MaxRL](https://arxiv.org/abs/2602.02710): GRPO with mean-normalized advantages (maximum-likelihood RL) |
 | `rae` | None | [SPIRAL](https://arxiv.org/abs/2506.24119)'s role-conditioned advantage estimation: reward minus a per-agent EMA baseline, for multi-agent self-play envs (e.g. `kuhn-poker-v1`) |
-| `hierarchical_grpo` | None | Two-level GRPO for task-generating envs (e.g. `proposer-solver-v1`): episode-scoped agents baseline within their episode, the rest across the group |
+| `hierarchical_grpo` | None | Two-level GRPO for proposer-solver envs: each solver is baselined against the siblings attempting its own minted task, the proposer across the group's proposals |
 | `opd` | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): the policy generates rollouts, the trainer minimizes per-token reverse KL to a reference model |
 | `sft` | Required, any OpenAI-compatible endpoint | Hard-distill: a frozen model generates rollouts, the policy trains on its tokens |
 | `opsd` | None — the live policy is its own reference (no deployment) | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own reference conditioned on expert demonstrations |
