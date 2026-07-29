@@ -16,12 +16,12 @@ from prime_rl.configs.shared import (
     ClientConfig,
     EnvVars,
     FileMonitorConfig,
+    FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
     TransportConfig,
     WandbWithExtrasConfig,
-    ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig
@@ -510,8 +510,10 @@ class OrchestratorConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to receive updated weights from the trainer."""
 
-    rollout_transport: TransportConfig = ZMQTransportConfig()
-    """Transport used to ship rollouts from orchestrator to trainer."""
+    rollout_transport: TransportConfig = FileSystemTransportConfig()
+    """Transport used to ship rollouts from orchestrator to trainer. Defaults to the
+    filesystem because a standalone orchestrator does not know where the trainer runs —
+    ZMQ needs an explicit ``host``, which only the single-launcher RL entrypoint can inject."""
 
     output_dir: Path = Path("outputs/run_default")
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""

@@ -154,7 +154,7 @@ jq '.rewards' {output_dir}/rollouts/step_42/train/effective/traces.jsonl
 jq 'select(.ok | not) | {id, env: .info.env_name, runtime}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
-The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{output_dir}/rollouts/step_N/train_rollouts.bin`, next to the trace subtrees.
+The batches consumed by the trainer are shipped over the filesystem by default and land at `{output_dir}/rollouts/step_N/train_rollouts.bin`, next to the trace subtrees. With `rollout_transport.type = "zmq"` they stay in memory and nothing binary is written.
 
 ### Common failure modes
 
