@@ -232,6 +232,27 @@ class MaxRLAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
 
+class RAEAlgoConfig(BaseAlgoConfig):
+    type: Literal["rae"] = "rae"
+    """RAE — role-conditioned advantage estimation (SPIRAL,
+    https://arxiv.org/abs/2506.24119): scalar advantage = reward minus a
+    per-agent EMA baseline of that agent's own rewards, consumed by the ``rl``
+    loss component. The advantage estimator for multi-agent self-play envs
+    (``kuhn-poker-v1`` and friends): in a zero-sum game the group mean is ~0
+    whatever the policy does, so a group-relative baseline mixes the agents'
+    opposite reward scales — a structural first-mover edge would read as
+    permanent credit. Per-agent baselines measure each agent against its own
+    expected reward instead. Works with any ``group_size`` (including 1)."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    decay: float = Field(0.95, ge=0.0, lt=1.0)
+    """EMA decay of the per-agent baselines (SPIRAL's α): after a trace is
+    scored, its agent's baseline moves as ``baseline ← decay · baseline +
+    (1 − decay) · reward``. Baselines start at 0 and live in orchestrator
+    memory — a restart re-warms them over ~1/(1 − decay) traces per agent."""
+
+
 class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
     type: Literal["hierarchical_grpo"] = "hierarchical_grpo"
     """Hierarchical GRPO for task-generating envs (``proposer-solver-v1`` and
@@ -331,6 +352,7 @@ AlgoConfig: TypeAlias = Annotated[
     GRPOAlgoConfig
     | EchoAlgoConfig
     | MaxRLAlgoConfig
+    | RAEAlgoConfig
     | HierarchicalGRPOAlgoConfig
     | OPDAlgoConfig
     | OPSDAlgoConfig
@@ -343,6 +365,7 @@ its class defaults are the vetted setting.
 
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
+- ``rae`` — reward minus a per-agent EMA baseline (SPIRAL), for multi-agent self-play envs.
 - ``hierarchical_grpo`` — two-level GRPO for task-generating envs: episode-scoped agents baseline within their episode, the rest across the group. Needs ``episode_agents``.
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).

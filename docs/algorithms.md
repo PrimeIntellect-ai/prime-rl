@@ -18,6 +18,7 @@ This page covers the math and the configurable algorithmic components: the algor
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
   - [Hierarchical Advantage (Proposer–Solver)](#hierarchical-advantage-proposersolver)
+  - [Self-Play Advantage (RAE)](#self-play-advantage-rae)
   - [Authoring an Algorithm](#authoring-an-algorithm)
   - [Reference Scoring](#reference-scoring)
 - [Filters](#filters)
@@ -68,6 +69,7 @@ type = "grpo"  # the default
 |---|---|---|---|
 | `grpo` | policy | `rl` on actions | Standard group-relative RL. |
 | `max_rl` | policy | `rl` on actions | MaxRL ([arXiv:2602.02710](https://arxiv.org/abs/2602.02710)): GRPO's centered reward normalized by the group **mean** instead of the standard deviation — the gradient is unbiased for the order-`group_size` truncation of the maximum-likelihood objective, upweighting hard examples like `1/p`. |
+| `rae` | policy | `rl` on actions | RAE (SPIRAL, [arXiv:2506.24119](https://arxiv.org/abs/2506.24119)): reward minus a per-agent EMA baseline of that agent's own rewards — the estimator for multi-agent self-play envs, where the group mean would mix the agents' opposite reward scales. See [Self-Play Advantage](#self-play-advantage-rae). |
 | `hierarchical_grpo` | policy | `rl` on actions | Two-level GRPO for task-generating envs (proposer-solver): agents in `episode_agents` baseline within their own episode (sibling attempts at the same minted task), every other agent across the group (parallel attempts at the same source task). Needs `episode_agents`. See [Hierarchical Advantage](#hierarchical-advantage-proposersolver). |
 | `opd` | policy | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs a `teacher`. |
 | `sft` | *(the teacher)* | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs a frozen `sampling.source` (the teacher it samples from). |
@@ -142,6 +144,7 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 | `grpo` | `GRPOAlgorithm` | `score_group`: group-norm credit (optional length penalty) |
 | `echo` | `EchoAlgorithm` | `score_rollout`: weighted ce on observation tokens; `score_group`: group-norm credit (inherited) |
 | `max_rl` | `MaxRLAlgorithm` | `score_group`: mean-normalized group credit |
+| `rae` | `RAEAlgorithm` | `score_group`: per-agent EMA-baseline credit |
 | `hierarchical_grpo` | `HierarchicalGRPOAlgorithm` | `score_group`: two-level peer-set credit (per-episode / per-group) |
 | `opd` | `OPDAlgorithm` | `score_rollout`: own-context prefill under the teacher |
 | `opsd` | `OPSDAlgorithm` | `score_rollout`: demo-conditioned prefill under the live policy |
@@ -179,7 +182,7 @@ $$
 \mathcal{L} = \frac{\sum \mathcal{L}_{rl}}{N_{rl}} + \frac{\sum \mathcal{L}_{ce}}{N_{ce}} + \frac{\sum \mathcal{L}_{ref\_kl}}{N_{ref\_kl}}
 $$
 
-- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `hierarchical_grpo`, and `echo`'s action tokens).
+- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the advantage-assigning algorithms (`grpo`, `max_rl`, `rae`, `hierarchical_grpo`, and `echo`'s action tokens).
 - `ce` — masked NLL. Used for frozen-model tokens (`sft`) and env-observation tokens (`echo`).
 - `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `opsd`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
@@ -281,6 +284,7 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 |---|---|---|
 | `grpo` | `rl` | Group-norm: reward minus per-group baseline, optional length penalty. |
 | `max_rl` | `rl` | Mean-normalized group credit (maximum-likelihood RL). |
+| `rae` | `rl` | Reward minus a per-agent EMA baseline (SPIRAL's role-conditioned advantage estimation) — for multi-agent self-play envs. |
 | `hierarchical_grpo` | `rl` | Two-level peer-set credit for task-generating envs: episode-scoped agents center within their episode, the rest across the group. |
 | `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-provided tokens selected by message role (each role's `alpha` is its ECHO λ), optionally narrowed by a user filter. |
 | `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`teacher`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream; `group_size` only fans out sampling. |
@@ -330,6 +334,28 @@ env.solver.runtime = { type = "subprocess" }
 ```
 
 Here `group_size` is the number of proposals per source task and `env.n` the solvers per proposal, so one group carries `group_size × (1 + n)` traces. To train only one side, flip the env's own switches (`env.train_proposer` / `env.train_solver`) — the untrainable side's traces never reach the advantage computation.
+
+### Self-Play Advantage (RAE)
+
+Group-relative baselines assume the group is exchangeable attempts by one agent. A multi-agent self-play env breaks that: one episode yields one trace per agent, all trainable, and in a zero-sum game the rewards sum to ~0 whatever the policy does — the group mean carries no information, and centering against it converts any structural asymmetry (a first-mover edge) into permanent credit for one agent.
+
+`rae` implements SPIRAL's role-conditioned advantage estimation ([arXiv:2506.24119](https://arxiv.org/abs/2506.24119)): each agent keeps an exponential-moving-average baseline of its own rewards, and every trace's advantage is its reward minus its agent's baseline — measured against the *pre-update* baseline (the unbiased order), then folded in at `decay` (SPIRAL's α, default 0.95). The algorithm instance is per-env, so baselines are keyed per (env, agent) — the paper's per (game, role). Advantages are not normalized, and `group_size` is free (RAE needs no sibling rollouts; `group_size = 1` is fine). Baselines live in orchestrator memory and re-warm from 0 over ~`1/(1 − decay)` traces per agent after a restart.
+
+```toml
+[orchestrator.algo]
+type = "rae"
+decay = 0.95
+
+[[orchestrator.train.env]]
+name = "kuhn-poker"
+env.taskset = { id = "kuhn-poker-v1" }
+env.player0.harness = { id = "null" }
+env.player0.runtime = { type = "subprocess" }
+env.player1.harness = { id = "null" }
+env.player1.runtime = { type = "subprocess" }
+```
+
+Both of `kuhn-poker-v1`'s agents late-bind to the run's own model — shared-policy self-play against a continuously improving opponent. Pin one agent to a frozen endpoint (`env.player1.model = ...`) for asymmetric play; its traces are marked untrainable by the env and never reach the advantage computation. A single-agent env under `rae` degrades to REINFORCE with an EMA baseline.
 
 ### Authoring an Algorithm
 

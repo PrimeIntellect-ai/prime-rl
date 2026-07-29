@@ -22,6 +22,7 @@ from prime_rl.configs.shared import (
     EnvVars,
     FileMonitorConfig,
     SlurmConfig,
+    TransportConfig,
     VLMConfig,
 )
 from prime_rl.configs.trainer import (
@@ -260,6 +261,8 @@ class RLConfig(BaseConfig):
 
     weight_broadcast: SharedWeightBroadcastConfig | None = None
 
+    rollout_transport: TransportConfig | None = None
+
     bench: bool = False
     """Benchmark mode. Sets trainer and orchestrator to benchmark mode and, when set, suffixes the W&B project with ``-bench``."""
 
@@ -420,6 +423,28 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_rollout_transport(self):
+        """Resolve the shared ``rollout_transport`` from the sub-configs so the launcher can
+        gate multi-node ZMQ host injection on it (mirrors ``auto_setup_weight_broadcast``).
+
+        ``rollout_transport`` may be set either as the shared block (propagated down to both
+        sub-configs by ``propagate_shared_fields``) or directly on
+        ``trainer.rollout_transport`` / ``orchestrator.rollout_transport`` (the documented
+        fallback). Either way the shared field must reflect the resolved per-component
+        transport, otherwise the launcher would leave ZMQ trainers connecting to localhost.
+        """
+        if self.trainer.rollout_transport.type != self.orchestrator.rollout_transport.type:
+            raise ValueError(
+                "trainer.rollout_transport.type "
+                f"({self.trainer.rollout_transport.type!r}) != orchestrator.rollout_transport.type "
+                f"({self.orchestrator.rollout_transport.type!r}); set the shared [rollout_transport] "
+                "block or make both sub-configs the same type."
+            )
+        if self.rollout_transport is None:
+            self.rollout_transport = self.trainer.rollout_transport
+        return self
+
+    @model_validator(mode="after")
     def validate_eplb_requires_quantized_weight_transfer(self):
         if self.inference is None or not self.inference.enable_eplb:
             return self
@@ -529,7 +554,7 @@ class RLConfig(BaseConfig):
         (after InferenceConfig's own validators, which therefore miss it).
         """
         if self.inference is not None and self.inference.enable_return_routed_experts:
-            router = getattr(self.inference.deployment, "router", None)
+            router = self.inference.router
             if router is not None and router.type == "llm-d":
                 raise ValueError(
                     "The llm-d router backend does not support routed-expert return "
@@ -537,6 +562,12 @@ class RLConfig(BaseConfig):
                     "breaks P/D and is unverified for multi-node. Use router type 'vllm-router' "
                     "for router-replay runs."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_multi_node_requires_router(self):
+        if self.deployment.type == "multi_node" and self.inference is not None and self.inference.router is None:
+            raise ValueError("Multi-node deployments require inference.router to front the per-rank engines.")
         return self
 
     @model_validator(mode="after")
@@ -707,27 +738,27 @@ class RLConfig(BaseConfig):
     def auto_setup_inference_client(self):
         """Auto-configure the orchestrator policy client from the inference server config.
 
-        Direct single-node runs expose all local DP ranks behind one base URL,
-        so pin logical clients with ``X-data-parallel-rank``. Multi-node SLURM
-        runs expose a vllm-router URL instead; the router balances across
-        per-rank backend URLs and forwards request headers, so the orchestrator
-        must not inject a DP-rank header there. When no train env samples from
-        the policy (e.g. sft_distill), also set base_url — policy-sourced
-        algorithms rely on the ClientConfig default (``["http://localhost:8000/v1"]``)
-        which already matches the auto-launched policy vLLM at inference.server.port = 8000.
+        When no train env samples from the policy (e.g. sft_distill), set
+        base_url. Policy-sourced algorithms rely on the ClientConfig default
+        (``["http://localhost:8000/v1"]``), which already matches the
+        auto-launched policy router at inference.server.port = 8000.
         """
         if self.inference is None:
             return self
         client = self.orchestrator.model.client
-        if "dp_rank_count" not in client.model_fields_set:
-            if self.deployment.type == "multi_node":
-                client.dp_rank_count = 1
-            else:
-                client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
         if not self.orchestrator.any_policy_sourced and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
             client.base_url = [f"http://{host}:{port}/v1"]
+        if (
+            self.deployment.type == "single_node"
+            and self.inference.router is not None
+            and "admin_base_url" not in client.model_fields_set
+        ):
+            # Admin ops (pause/update_weights/resume) must bypass the router and hit
+            # the engine directly; multi-node runs get ADMIN_URLS from the sbatch.
+            host = self.inference.server.host or "localhost"
+            client.admin_base_url = [f"http://{host}:{self.inference.backend_port}/v1"]
         return self
 
     @model_validator(mode="after")
