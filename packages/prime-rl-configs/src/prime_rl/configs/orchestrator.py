@@ -15,12 +15,12 @@ from prime_rl.configs.shared import (
     ClientConfig,
     EnvVars,
     FileMonitorConfig,
-    FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
     TransportConfig,
     WandbWithExtrasConfig,
+    ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig
@@ -545,7 +545,7 @@ class OrchestratorConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to receive updated weights from the trainer."""
 
-    rollout_transport: TransportConfig = FileSystemTransportConfig()
+    rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
     output_dir: Path = Path("outputs/run_default")

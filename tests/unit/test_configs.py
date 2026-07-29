@@ -212,12 +212,12 @@ def test_trainer_enable_token_export_cli_flag():
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
 
 
-def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
+def test_single_node_auto_inference_ports_follow_server_port():
     config = RLConfig.model_validate(
         {
             "trainer": {},
             "orchestrator": {},
-            "inference": {"parallel": {"tp": 1}},
+            "inference": {"server": {"port": 8001}, "parallel": {"tp": 1}},
             "deployment": {
                 "type": "single_node",
                 "gpus_per_node": 4,
@@ -229,10 +229,11 @@ def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
 
     assert config.inference is not None
     assert config.inference.parallel.dp == 2
-    assert config.orchestrator.model.client.dp_rank_count == 2
+    assert config.inference.backend_port == 8101
+    assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
 
-def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
+def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
         {
             "trainer": {},
@@ -251,7 +252,6 @@ def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
     assert config.inference is not None
     assert config.inference.data_parallel_size_local == 2
     assert config.inference.parallel.dp == 2
-    assert config.orchestrator.model.client.dp_rank_count == 1
 
 
 def test_orchestrator_vlm_requires_renderer():
