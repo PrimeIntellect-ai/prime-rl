@@ -32,10 +32,10 @@ class RAEAlgorithm(Algorithm):
     def __init__(self, config: RAEAlgoConfig, policy_pool: InferencePool):
         super().__init__(config, policy_pool)
         self.decay = config.decay
-        self.baselines: dict[str | None, float] = defaultdict(float)
+        self.baselines: dict[str, float] = defaultdict(float)
 
     async def score_group(self, group: list[Rollout]) -> None:
         for rollout in group:
-            baseline = self.baselines[rollout.agent_name]
+            baseline = self.baselines[rollout.agent.name]
             rollout.assign_advantages(rollout.reward - baseline)
-            self.baselines[rollout.agent_name] = self.decay * baseline + (1.0 - self.decay) * rollout.reward
+            self.baselines[rollout.agent.name] = self.decay * baseline + (1.0 - self.decay) * rollout.reward

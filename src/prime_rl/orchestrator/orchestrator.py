@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import uuid
 from typing import TYPE_CHECKING
 
 import tomli_w
@@ -241,6 +242,9 @@ class Orchestrator:
             train_env_names=[env.resolved_name for env in config.train.source],
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
+        # ``RunInfo.id`` is required on the trace: fall back to a run-local uuid
+        # when no external monitor identity (W&B) exists.
+        self.run_id = self.monitor.run_id or uuid.uuid4().hex
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat.url)
@@ -527,12 +531,12 @@ class Orchestrator:
             step = episode[0].eval_step if kind == "eval" else self.progress.step
             assert step is not None
             run: vf.RunInfo = (
-                vf.EvalRunInfo(id=self.monitor.run_id, step=step)
+                vf.EvalRunInfo(id=self.run_id, step=step)
                 if kind == "eval"
-                else vf.TrainRunInfo(id=self.monitor.run_id, step=step)
+                else vf.TrainRunInfo(id=self.run_id, step=step)
             )
             for rollout in episode:
-                rollout.stamp(
+                rollout.record_run(
                     run,
                     env_name=rollout.env_name,
                     group_id=str(rollout.group_id),
