@@ -177,7 +177,7 @@ def test_env_algo_overrides_top_level():
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
             "algo": {"type": "echo"},
-            "train": {"source": [{"id": "a", "algo": {"type": "grpo"}}, {"id": "b"}]},
+            "train": {"source": [{"legacy": {"id": "a"}, "algo": {"type": "grpo"}}, {"legacy": {"id": "b"}}]},
         }
     )
     env_a, env_b = config.train.source
@@ -194,7 +194,7 @@ def test_env_algo_overrides_top_level():
         OrchestratorConfig.model_validate(
             {
                 "renderer": {"name": "qwen3"},
-                "train": {"env": [{"id": "removed"}]},
+                "train": {"env": [{"legacy": {"id": "removed"}}]},
             }
         )
 
@@ -202,7 +202,7 @@ def test_env_algo_overrides_top_level():
         OrchestratorConfig.model_validate(
             {
                 "renderer": {"name": "qwen3"},
-                "eval": {"env": [{"id": "removed"}]},
+                "eval": {"env": [{"legacy": {"id": "removed"}}]},
             }
         )
 

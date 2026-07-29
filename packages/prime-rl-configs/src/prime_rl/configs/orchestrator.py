@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
+from verifiers.v1.configs.legacy import is_legacy, refuse_mixed_run, run_env_id
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
@@ -151,27 +152,49 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
-class EnvConfig(vf.EnvServerConfig):
+class EnvConfig(BaseConfig):
+    """One environment a run pulls from: the verifiers blocks it composes (``env`` — what
+    runs, ``serve`` — how it's hosted, ``legacy`` — a classic v0 env instead) plus this
+    orchestrator's own per-env knobs."""
+
+    env: vf.EnvField = vf.env_field()
+    """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
+
+    serve: vf.ServingConfig = vf.ServingConfig()
+    """How the env server is run: ``serve.pool`` sizes the spawned server, ``serve.address`` points at an external one instead, and ``serve.max_concurrent`` bounds one worker's episodes in flight (unset = unbounded; the dispatcher's ``max_inflight_episodes`` is the run's bound)."""
+
+    legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()
+    """A classic (v0) environment to run through the bridge instead of ``env``."""
+
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
-
-    address: str | None = None
-    """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically. The ``pool`` sizes the spawned server."""
 
     ratio: float = Field(1.0, gt=0)
     """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_num_workers(cls, data):
-        """Back-compat: the removed ``num_workers`` maps onto ``pool`` — an int becomes a
-        fixed ``static`` pool, ``"auto"`` falls through to the default ``elastic`` pool. An
-        explicit ``pool`` always wins."""
-        if isinstance(data, dict) and "num_workers" in data:
-            num_workers = data.pop("num_workers")
-            if "pool" not in data and num_workers != "auto":
-                data["pool"] = {"type": "static", "num_workers": num_workers}
-        return data
+    def _resolve_env(cls, data):
+        """Narrow ``env`` to the selected env's config class, and point the keys that moved
+        into the blocks at their new home."""
+        if isinstance(data, dict):
+            for key, pointer in {
+                "num_workers": "serve.pool (num_workers under a static pool)",
+                "pool": "serve.pool",
+                "address": "serve.address",
+            }.items():
+                if key in data:
+                    raise ValueError(f"{key} is serving config now: set {pointer} instead")
+        return vf.resolve_env_field(data, vf.narrowed_env_annotation(cls))
+
+    @property
+    def is_legacy(self) -> bool:
+        """A classic (v0) env run through the bridge: a legacy id and no v1 taskset."""
+        return is_legacy(self.env, self.legacy)
+
+    @property
+    def env_id(self) -> str:
+        return run_env_id(self.env, self.legacy)
 
     @property
     def resolved_name(self) -> str:
@@ -179,9 +202,10 @@ class EnvConfig(vf.EnvServerConfig):
 
     @model_validator(mode="after")
     def validate_env(self):
+        refuse_mixed_run(self.env, self.legacy)
         if not self.env_id:
             raise ValueError(
-                'no env configured — set env = { taskset = { id = "<id>" } } (v1) or id = "<id>" (v0/legacy)'
+                'no env configured — set env = { taskset = { id = "<id>" } } (v1) or legacy = { id = "<id>" } (v0)'
             )
         if self.resolved_name == "agg":
             raise ValueError(
@@ -192,17 +216,17 @@ class EnvConfig(vf.EnvServerConfig):
     @model_validator(mode="after")
     def resolve_legacy_env_kwargs(self):
         """For a v0/legacy env, surface the v1 knobs the legacy bridge applies via
-        ``extra_env_kwargs`` (``env.set_kwargs(...)``): the per-rollout wall-clock timeout and
-        the multi-turn completion-token budget, read off ``env.agent``. (``max_seq_len`` is
-        added per train run in ``OrchestratorConfig.resolve_env_config``, which knows
-        ``seq_len``.)"""
+        ``legacy.extra_env_kwargs`` (``env.set_kwargs(...)``): the per-rollout wall-clock
+        timeout and the multi-turn completion-token budget, read off ``env.agent``.
+        (``max_seq_len`` is added per train run in ``OrchestratorConfig.resolve_env_config``,
+        which knows ``seq_len``.)"""
         if self.is_legacy:
             agent = getattr(self.env, "agent", None)
             if agent is not None:
                 if agent.timeout.rollout is not None:
-                    self.extra_env_kwargs["timeout_seconds"] = agent.timeout.rollout
+                    self.legacy.extra_env_kwargs["timeout_seconds"] = agent.timeout.rollout
                 if agent.max_output_tokens is not None:
-                    self.extra_env_kwargs["max_total_completion_tokens"] = agent.max_output_tokens
+                    self.legacy.extra_env_kwargs["max_total_completion_tokens"] = agent.max_output_tokens
         return self
 
 
@@ -739,6 +763,6 @@ class OrchestratorConfig(BaseConfig):
                 env.sampling.extra_body.setdefault("return_token_ids", True)
             if env.is_legacy:
                 # v0 env: cap per-turn response tokens to the training budget (the legacy
-                # bridge applies extra_env_kwargs via env.set_kwargs).
-                env.extra_env_kwargs["max_seq_len"] = self.seq_len
+                # bridge applies legacy.extra_env_kwargs via env.set_kwargs).
+                env.legacy.extra_env_kwargs["max_seq_len"] = self.seq_len
         return self
