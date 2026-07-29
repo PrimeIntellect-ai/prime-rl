@@ -188,6 +188,13 @@ class EnvConfig(BaseConfig):
         return self.env.env_id or self.legacy.id or ""
 
     @property
+    def external_address(self) -> str | None:
+        """An external env server to connect to, else None — spawn one on a free port.
+        Only an explicit pin counts: ``serve.address`` carries verifiers' own bind
+        default (``tcp://127.0.0.1:5000``), which says nothing about who runs it."""
+        return self.serve.address if "address" in self.serve.model_fields_set else None
+
+    @property
     def resolved_name(self) -> str:
         return self.name or self.env_id
 

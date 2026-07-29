@@ -1,7 +1,7 @@
 """Env wrappers over a v1 env server.
 
 Each ``Env`` owns a v1 ``EnvServer`` (spawned as a child process, or an
-external one given by ``config.serve.address``) and an ``EnvClient`` to drive it. The
+external one pinned by ``config.serve.address``) and an ``EnvClient`` to drive it. The
 orchestrator never *runs* an environment — the agents and their runtimes live only
 in the server — but it does own the *taskset*: a v1 env's tasks are loaded here,
 once, and each dispatched env-rollout ships its task's data on the request
@@ -112,8 +112,8 @@ class Env:
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         """Spawn the env server (if needed), connect, and load the taskset client-side
         (legacy instead asks the server for ``info`` — its dataset is server-side)."""
-        external = self.config.serve.address is not None
-        address = self.config.serve.address or await self._spawn(log_dir, log_level or "INFO", json_logging)
+        external = self.config.external_address is not None
+        address = self.config.external_address or await self._spawn(log_dir, log_level or "INFO", json_logging)
         get_logger().debug(f"Connecting {self.name} to env server {address}")
         self._env_client = EnvClient(address=address)
         # A spawned server already reported its address *after* binding, so it's up. An
