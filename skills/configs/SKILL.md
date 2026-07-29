@@ -46,9 +46,15 @@ name = "reverse-text"
 env.taskset = { id = "reverse-text-v1" }
 env.agent.harness = { id = "null" }
 env.agent.runtime = { type = "subprocess" }
+
+[[orchestrator.eval.source]]
+name = "reverse-text-eval"
+env.taskset = { id = "reverse-text-v1", split = "test" }
+env.agent.harness = { id = "null" }
+env.agent.runtime = { type = "subprocess" }
 ```
 
-CLI: `--orchestrator.train.source.0.env.taskset.id reverse-text-v1`.
+CLI: `--orchestrator.train.source.0.env.taskset.id reverse-text-v1` or `--orchestrator.eval.source.0.env.taskset.id reverse-text-v1`.
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--vllm-extra '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `algo`) reject JSON strings; use dotted keys (`--orchestrator.algo.type max_rl`) or a TOML overlay file.
 

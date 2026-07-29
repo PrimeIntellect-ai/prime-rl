@@ -89,13 +89,13 @@ enforce = true
 [orchestrator.eval]
 interval = 25
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "swe-bench-verified"
 env.taskset = { id = "swebench-verified-v1" }
 env.agent.harness = { id = "bash" }
 env.agent.runtime = { type = "prime", labels = ["intellect-3.1", "swe-bench-verified"] }
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "aime2025"
 env.taskset = { id = "aime25-v1" }
 env.agent.harness = { id = "null" }

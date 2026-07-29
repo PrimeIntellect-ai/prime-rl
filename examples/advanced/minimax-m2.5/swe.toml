@@ -58,7 +58,7 @@ env.agent.runtime = { type = "prime", labels = ["minimax-swe", "swe"] }
 [orchestrator.eval]
 interval = 25
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "swe-bench-verified"
 env.taskset = { id = "swebench-verified-v1" }
 env.agent.harness = { id = "bash" }

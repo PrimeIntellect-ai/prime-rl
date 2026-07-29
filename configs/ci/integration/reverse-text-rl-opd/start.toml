@@ -50,7 +50,7 @@ num_examples = 16
 [orchestrator.eval.sampling]
 max_completion_tokens = 128
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "reverse-text"
 env.taskset = { id = "reverse-text-v1" }
 env.agent.harness = { id = "null" }

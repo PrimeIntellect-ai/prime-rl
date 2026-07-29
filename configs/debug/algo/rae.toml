@@ -36,7 +36,7 @@ num_examples = 16
 [orchestrator.eval.sampling]
 max_completion_tokens = 512
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "kuhn-poker"
 env.taskset = { id = "kuhn-poker-v1" }
 env.player0.harness = { id = "null" }

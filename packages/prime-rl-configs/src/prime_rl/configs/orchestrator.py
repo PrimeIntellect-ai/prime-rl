@@ -220,7 +220,7 @@ class TrainSourceConfig(EnvConfig):
     this env its own algorithm."""
 
 
-class EvalEnvConfig(EnvConfig):
+class EvalSourceConfig(EnvConfig):
     sampling: EvalSamplingConfig = EvalSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level eval sampling config."""
 
@@ -266,8 +266,8 @@ class TrainConfig(BaseConfig):
 
 
 class EvalConfig(BaseConfig):
-    env: list[EvalEnvConfig] = Field(default_factory=list)
-    """Evaluation environments."""
+    source: list[EvalSourceConfig] = Field(default_factory=list)
+    """Evaluation sources."""
 
     sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
     """Shared eval sampling configuration; can differ from training sampling."""
@@ -290,33 +290,33 @@ class EvalConfig(BaseConfig):
         """Resolve per-env overrides: inherit group-level sampling, num_examples,
         group_size, and interval (the worker ``pool`` is configured per env, default elastic)."""
         group_sampling = self.sampling.model_dump()
-        for env in self.env:
-            if "sampling" not in env.model_fields_set:
-                env.sampling = EvalSamplingConfig(**group_sampling)
+        for source in self.source:
+            if "sampling" not in source.model_fields_set:
+                source.sampling = EvalSamplingConfig(**group_sampling)
             else:
-                merged = group_sampling | env.sampling.model_dump(exclude_unset=True)
-                env.sampling = EvalSamplingConfig(**merged)
-            if "num_examples" not in env.model_fields_set:
-                env.num_examples = self.num_examples
-            if "group_size" not in env.model_fields_set:
-                env.group_size = self.group_size
-            if "interval" not in env.model_fields_set:
-                env.interval = self.interval
+                merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
+                source.sampling = EvalSamplingConfig(**merged)
+            if "num_examples" not in source.model_fields_set:
+                source.num_examples = self.num_examples
+            if "group_size" not in source.model_fields_set:
+                source.group_size = self.group_size
+            if "interval" not in source.model_fields_set:
+                source.interval = self.interval
         return self
 
     @model_validator(mode="after")
-    def validate_non_empty_envs(self):
-        if not self.env:
+    def validate_non_empty_sources(self):
+        if not self.source:
             raise ValueError(
-                "EvalConfig must define at least one env. Either drop the "
+                "EvalConfig must define at least one source. Either drop the "
                 "[orchestrator.eval] block entirely (to disable eval) or "
-                "add a [[orchestrator.eval.env]] block."
+                "add a [[orchestrator.eval.source]] block."
             )
         return self
 
     @model_validator(mode="after")
     def validate_unique_env_names(self):
-        env_names = [env.resolved_name for env in self.env]
+        env_names = [source.resolved_name for source in self.source]
         duplicates = [n for n in env_names if env_names.count(n) > 1]
         if duplicates:
             raise ValueError(

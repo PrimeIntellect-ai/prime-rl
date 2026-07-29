@@ -17,7 +17,7 @@ Every `prime-rl` entrypoint uses [`pydantic-config`](https://github.com/PrimeInt
   - [Optional Sub-Configs](#optional-sub-configs)
   - [None](#none)
   - [Discriminated Unions](#discriminated-unions)
-  - [Training sources](#training-sources-orchestratortrainsource)
+  - [Environments](#environments)
   - [Environment Variables](#environment-variables)
 - [Examples](#examples)
 
@@ -93,7 +93,7 @@ uv run rl @ rl.toml --trainer.model.lora.target-modules '["q_proj", "k_proj", "v
 target_modules = ["q_proj", "k_proj", "v_proj"]
 ```
 
-Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. For arrays of tables, see [Training sources](#training-sources-orchestratortrainsource).
+Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. For arrays of tables, see [Environments](#environments).
 
 ### Dicts
 
@@ -142,9 +142,9 @@ mu = 0.95
 
 Omit `type` to keep the default variant.
 
-### Training sources (`[[orchestrator.train.source]]`)
+### Environments
 
-Training sources are an array of tables — set one per environment, optionally with sampling weights:
+Training and evaluation sources are arrays of tables. Set one source per environment; training sources can optionally carry sampling weights:
 
 ```toml
 [[orchestrator.train.source]]
@@ -161,7 +161,7 @@ env.agent.harness = { id = "null" }
 env.agent.runtime = { type = "subprocess" }
 ratio = 1  # default — 25% of batches
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "gsm8k-eval"
 env.taskset = { id = "gsm8k-v1", split = "test" }
 env.agent.harness = { id = "null" }

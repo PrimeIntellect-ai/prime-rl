@@ -198,6 +198,14 @@ def test_env_algo_overrides_top_level():
             }
         )
 
+    with pytest.raises(ValidationError, match="env"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "eval": {"env": [{"id": "removed"}]},
+            }
+        )
+
 
 def test_trainer_enable_token_export_cli_flag():
     assert not cli(TrainerConfig, args=[]).enable_token_export

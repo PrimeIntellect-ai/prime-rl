@@ -34,7 +34,7 @@ from typing import Generic, TypeVar
 import verifiers.v1 as vf
 from verifiers.v1.serve import EnvClient, env_config_data
 
-from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainSourceConfig
+from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.sampler import Sampler
 from prime_rl.orchestrator.types import Rollout
@@ -256,9 +256,9 @@ class TrainEnv(Env):
 
 
 class EvalEnv(Env):
-    config: EvalEnvConfig
+    config: EvalSourceConfig
 
-    def __init__(self, config: EvalEnvConfig):
+    def __init__(self, config: EvalSourceConfig):
         super().__init__(config)
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples: list[dict] = []
@@ -348,7 +348,7 @@ class TrainEnvs(Envs[TrainEnv]):
 class EvalEnvs(Envs[EvalEnv]):
     """Collection of evaluation environments."""
 
-    def __init__(self, configs: Sequence[EvalEnvConfig]):
+    def __init__(self, configs: Sequence[EvalSourceConfig]):
         self._envs: dict[str, EvalEnv] = {}
         for config in configs:
             env = EvalEnv(config)

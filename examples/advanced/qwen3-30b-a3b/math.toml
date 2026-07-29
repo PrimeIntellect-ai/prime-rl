@@ -57,7 +57,7 @@ env.agent.runtime = { type = "subprocess" }
 [orchestrator.eval]
 interval = 25
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "aime2025"
 env.taskset = { id = "aime25-v1" }
 env.agent.harness = { id = "null" }

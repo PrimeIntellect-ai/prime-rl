@@ -239,7 +239,7 @@ class Orchestrator:
             run_config=config,
             keep_full_history=config.bench,
             train_env_names=[env.resolved_name for env in config.train.source],
-            eval_env_names=[env.resolved_name for env in config.eval.env] if config.eval is not None else [],
+            eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
 
         if config.heartbeat is not None:
@@ -270,7 +270,7 @@ class Orchestrator:
 
         if config.eval is not None:
             get_logger().info("Loading eval environment(s)")
-            self.eval_envs = EvalEnvs(config.eval.env)
+            self.eval_envs = EvalEnvs(config.eval.source)
             get_logger().debug(f"Loaded {len(self.eval_envs)} eval environment(s) ({', '.join(self.eval_envs.names)})")
             await self.eval_envs.start(
                 log_dir=get_log_dir(config.output_dir.parent) / "envs" / "eval",
