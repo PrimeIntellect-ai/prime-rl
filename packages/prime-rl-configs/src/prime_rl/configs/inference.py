@@ -323,7 +323,7 @@ class InferenceConfig(BaseConfig):
     """Router fronting the engine(s). Every deployment runs a single global router as the client-facing endpoint on ``server.port``, with the engines listening on ``backend_port``. Set to ``None`` to run a bare engine on ``server.port`` without a router (the SLURM launchers do this for per-rank engine processes; the sbatch script starts the router)."""
 
     backend_port: int = 8100
-    """Port for the vLLM engine(s) behind the router. Multi-node deployments start one engine per local DP rank at ``backend_port + rank``."""
+    """Port for the vLLM engine(s) behind the router. Defaults to ``server.port + 100``. Multi-node deployments start one engine per local DP rank at ``backend_port + rank``."""
 
     model: ModelConfig = Field(default_factory=ModelConfig)
 
@@ -447,6 +447,12 @@ class InferenceConfig(BaseConfig):
             raise ValueError("The llm-d router backend requires a multi-node or disaggregated SLURM deployment.")
         if self.router is None and self.deployment.type in ("multi_node", "disaggregated"):
             raise ValueError("Multi-node / disaggregated deployments require a router fronting the per-rank engines.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_backend_port(self):
+        if self.router is not None and "backend_port" not in self.model_fields_set:
+            self.backend_port = self.server.port + 100
         return self
 
     @model_validator(mode="after")

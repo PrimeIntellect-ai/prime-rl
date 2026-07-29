@@ -713,23 +713,14 @@ class RLConfig(BaseConfig):
     def auto_setup_inference_client(self):
         """Auto-configure the orchestrator policy client from the inference server config.
 
-        Direct single-node runs expose all local DP ranks behind one base URL,
-        so pin logical clients with ``X-data-parallel-rank``. Multi-node SLURM
-        runs expose a vllm-router URL instead; the router balances across
-        per-rank backend URLs and forwards request headers, so the orchestrator
-        must not inject a DP-rank header there. When no train env samples from
-        the policy (e.g. sft_distill), also set base_url — policy-sourced
-        algorithms rely on the ClientConfig default (``["http://localhost:8000/v1"]``)
-        which already matches the auto-launched policy vLLM at inference.server.port = 8000.
+        When no train env samples from the policy (e.g. sft_distill), set
+        base_url. Policy-sourced algorithms rely on the ClientConfig default
+        (``["http://localhost:8000/v1"]``), which already matches the
+        auto-launched policy router at inference.server.port = 8000.
         """
         if self.inference is None:
             return self
         client = self.orchestrator.model.client
-        if "dp_rank_count" not in client.model_fields_set:
-            if self.deployment.type == "multi_node":
-                client.dp_rank_count = 1
-            else:
-                client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
         if not self.orchestrator.any_policy_sourced and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port

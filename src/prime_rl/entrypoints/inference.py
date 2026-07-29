@@ -169,10 +169,14 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         str(config.server.port),
         "--worker-urls",
         f"http://{worker_host}:{config.backend_port}",
+        "--intra-node-data-parallel-size",
+        str(config.data_parallel_size_local or config.parallel.dp),
         "--request-id-headers",
         "x-session-id",
         "--worker-startup-timeout-secs",
         "4200",
+        "--prometheus-port",
+        str(config.server.port + 21000),
     ]
     return subprocess.Popen(cmd)
 
