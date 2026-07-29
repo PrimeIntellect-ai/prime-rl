@@ -7899,7 +7899,7 @@ requires-dist = [
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'", specifier = ">=0.1.8" },
-    { name = "renderers", specifier = ">=0.1.8" },
+    { name = "renderers", specifier = ">=0.1.9.dev9" },
     { name = "requests" },
     { name = "rich", specifier = ">=11.0.0" },
     { name = "setproctitle", specifier = ">=1.3.0" },

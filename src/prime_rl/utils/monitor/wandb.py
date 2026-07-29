@@ -298,15 +298,17 @@ class WandbMonitor(Monitor):
 
 OVERVIEW_NAME = "overview"
 
-# Per-rollout metrics (under "<scope>/all/") shown for BOTH train and eval. Only the reward metrics
-# differ — train uses "reward/mean", eval uses "avg@k", each shown for the all and effective
-# subsets — and each section builder prepends its own.
+# Per-rollout metrics (as "<subset>/<metric>" under "<scope>/") shown for BOTH train and eval.
+# Quality metrics read the effective subset — the all subset includes errored rollouts, whose
+# zero values skew the distributions. has_error only exists on all (effective drops errors by
+# construction). Only the reward metrics differ — train uses "reward/mean", eval uses "avg@k",
+# each shown for the all and effective subsets — and each section builder prepends its own.
 COMMON_METRICS = [
-    "has_error/mean",
-    "is_truncated/mean",
-    "num_total_tokens/mean",
-    "num_turns/mean",
-    "num_branches/mean",
+    "all/has_error/mean",
+    "effective/is_truncated/mean",
+    "effective/num_total_tokens/mean",
+    "effective/num_turns/mean",
+    "effective/num_branches/mean",
 ]
 
 STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"]
@@ -351,7 +353,7 @@ def train_section(name: str, scope: str) -> ws.Section:
     return section(
         name,
         metrics=[f"{scope}/all/reward/mean", f"{scope}/effective/reward/mean"]
-        + [f"{scope}/all/{m}" for m in COMMON_METRICS],
+        + [f"{scope}/{m}" for m in COMMON_METRICS],
     )
 
 
@@ -361,7 +363,7 @@ def eval_section(name: str, env_pattern: str) -> ws.Section:
     return section(
         name,
         regexes=[f"eval/{env_pattern}/all/avg@.*", f"eval/{env_pattern}/effective/avg@.*"]
-        + [f"eval/{env_pattern}/all/{m}" for m in COMMON_METRICS],
+        + [f"eval/{env_pattern}/{m}" for m in COMMON_METRICS],
     )
 
 

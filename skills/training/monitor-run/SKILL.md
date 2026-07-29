@@ -93,13 +93,13 @@ All metrics print to the console log (and W&B when configured).
 
 | Metric | Description |
 |--------|-------------|
-| `train/agg/all/reward/mean` | mean training reward (per env: `train/<env>/all/reward/mean`) |
-| `train/agg/all/num_total_tokens/mean` | avg tokens per rollout (also `num_input_tokens`, `num_output_tokens`) |
-| `train/agg/all/num_turns/mean` | avg turns per rollout (multi-turn only) |
-| `train/agg/all/is_truncated/mean` | fraction truncated |
+| `train/agg/effective/reward/mean` | mean training reward (per env: `train/<env>/effective/reward/mean`) |
+| `train/agg/effective/num_total_tokens/mean` | avg tokens per rollout (also `num_input_tokens`, `num_output_tokens`) |
+| `train/agg/effective/num_turns/mean` | avg turns per rollout (multi-turn only) |
+| `train/agg/effective/is_truncated/mean` | fraction truncated |
 | `train/agg/all/has_error/mean` | fraction errored (per-type under `train/agg/all/error/<type>`; also `dispatcher/errored/{train,eval}`) |
-| `train/<env>/all/metrics/<name>/mean` | env-specific metrics (e.g. pass rate) |
-| `eval/<env>/all/{avg@k,pass@k}` | eval scores when configured |
+| `train/<env>/effective/metrics/<name>/mean` | env-specific metrics (e.g. pass rate) |
+| `eval/<env>/effective/{avg@k,pass@k}` | eval scores when configured |
 
 **Stability** — trainer log:
 

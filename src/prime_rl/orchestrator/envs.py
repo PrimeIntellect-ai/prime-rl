@@ -112,8 +112,8 @@ class Env:
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         """Spawn the env server (if needed), connect, and load the taskset client-side
         (legacy instead asks the server for ``info`` — its dataset is server-side)."""
-        external = self.config.external_address is not None
-        address = self.config.external_address or await self._spawn(log_dir, log_level or "INFO", json_logging)
+        external = self.config.serve.address is not None
+        address = self.config.serve.address or await self._spawn(log_dir, log_level or "INFO", json_logging)
         get_logger().debug(f"Connecting {self.name} to env server {address}")
         self._env_client = EnvClient(address=address)
         # A spawned server already reported its address *after* binding, so it's up. An
