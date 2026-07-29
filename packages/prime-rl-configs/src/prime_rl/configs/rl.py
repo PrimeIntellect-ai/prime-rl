@@ -22,6 +22,7 @@ from prime_rl.configs.shared import (
     EnvVars,
     FileMonitorConfig,
     SlurmConfig,
+    TransportConfig,
     VLMConfig,
 )
 from prime_rl.configs.trainer import (
@@ -260,6 +261,8 @@ class RLConfig(BaseConfig):
 
     weight_broadcast: SharedWeightBroadcastConfig | None = None
 
+    rollout_transport: TransportConfig | None = None
+
     bench: bool = False
     """Benchmark mode. Sets trainer and orchestrator to benchmark mode and, when set, suffixes the W&B project with ``-bench``."""
 
@@ -417,6 +420,28 @@ class RLConfig(BaseConfig):
 
         validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
 
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_rollout_transport(self):
+        """Resolve the shared ``rollout_transport`` from the sub-configs so the launcher can
+        gate multi-node ZMQ host injection on it (mirrors ``auto_setup_weight_broadcast``).
+
+        ``rollout_transport`` may be set either as the shared block (propagated down to both
+        sub-configs by ``propagate_shared_fields``) or directly on
+        ``trainer.rollout_transport`` / ``orchestrator.rollout_transport`` (the documented
+        fallback). Either way the shared field must reflect the resolved per-component
+        transport, otherwise the launcher would leave ZMQ trainers connecting to localhost.
+        """
+        if self.trainer.rollout_transport.type != self.orchestrator.rollout_transport.type:
+            raise ValueError(
+                "trainer.rollout_transport.type "
+                f"({self.trainer.rollout_transport.type!r}) != orchestrator.rollout_transport.type "
+                f"({self.orchestrator.rollout_transport.type!r}); set the shared [rollout_transport] "
+                "block or make both sub-configs the same type."
+            )
+        if self.rollout_transport is None:
+            self.rollout_transport = self.trainer.rollout_transport
         return self
 
     @model_validator(mode="after")
