@@ -174,16 +174,7 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_env(cls, data):
-        """Narrow ``env`` to the selected env's config class, and point the keys that moved
-        into the blocks at their new home."""
-        if isinstance(data, dict):
-            for key, pointer in {
-                "num_workers": "serve.pool (num_workers under a static pool)",
-                "pool": "serve.pool",
-                "address": "serve.address",
-            }.items():
-                if key in data:
-                    raise ValueError(f"{key} is serving config now: set {pointer} instead")
+        """Narrow ``env`` to the selected env's config class."""
         return vf.resolve_env_field(data, vf.narrowed_env_annotation(cls))
 
     @property
