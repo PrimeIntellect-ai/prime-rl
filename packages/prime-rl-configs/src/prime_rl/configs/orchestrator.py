@@ -1,9 +1,8 @@
-import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
+from pydantic import Field, SerializeAsAny, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
@@ -54,9 +53,7 @@ class TrainSamplingConfig(BaseConfig):
     temperature: float = Field(1.0, ge=0, le=2.0)
     """Sampling temperature."""
 
-    max_completion_tokens: int | None = Field(
-        None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
-    )
+    max_completion_tokens: int | None = None
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
 
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
@@ -79,18 +76,6 @@ class TrainSamplingConfig(BaseConfig):
 
         return args
 
-    @model_validator(mode="before")
-    @classmethod
-    def _deprecate_max_tokens(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "max_tokens" in data and "max_completion_tokens" not in data:
-            warnings.warn(
-                "'max_tokens' is deprecated, use 'max_completion_tokens' instead. "
-                "Auto-translating for now, but this will be removed in a future release.",
-                FutureWarning,
-                stacklevel=2,
-            )
-        return data
-
 
 class EvalSamplingConfig(BaseConfig):
     temperature: float | None = Field(None, ge=0, le=2.0)
@@ -105,9 +90,7 @@ class EvalSamplingConfig(BaseConfig):
     min_p: float | None = Field(None, ge=0)
     """Min-p sampling threshold. None defers to the inference server default."""
 
-    max_completion_tokens: int | None = Field(
-        None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
-    )
+    max_completion_tokens: int | None = None
     """Maximum output tokens per turn. None defers to the inference server default."""
 
     reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
@@ -137,18 +120,6 @@ class EvalSamplingConfig(BaseConfig):
             args["extra_body"] = extra_body
 
         return args
-
-    @model_validator(mode="before")
-    @classmethod
-    def _deprecate_max_tokens(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "max_tokens" in data and "max_completion_tokens" not in data:
-            warnings.warn(
-                "'max_tokens' is deprecated, use 'max_completion_tokens' instead. "
-                "Auto-translating for now, but this will be removed in a future release.",
-                FutureWarning,
-                stacklevel=2,
-            )
-        return data
 
 
 class ServingConfig(vf.ServingConfig):
@@ -250,7 +221,7 @@ class TrainSourceConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
-    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    group_size: int = Field(1, ge=1)
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
 
@@ -267,7 +238,7 @@ class EvalSourceConfig(EnvConfig):
     num_examples: int = -1
     """Eval examples to sample from the dataset. ``-1`` uses all available examples."""
 
-    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
     interval: int = Field(100, ge=1)
@@ -315,7 +286,7 @@ class EvalConfig(BaseConfig):
     num_examples: int = -1
     """Default eval examples per environment. ``-1`` uses all. Can be overridden per env."""
 
-    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    group_size: int = Field(1, ge=1)
     """Default rollouts per example. Can be overridden per env."""
 
     interval: int = Field(100, ge=1)
@@ -567,12 +538,10 @@ class OrchestratorConfig(BaseConfig):
     oversampling_factor: float | None = Field(None, gt=0)
     """Rollout-mode batching only. Multiplier used to derive ``max_inflight_episodes`` from ``batch_size`` when ``max_inflight_episodes`` is unset. Values below 1.0 intentionally cap in-flight episode capacity below ``batch_size``."""
 
-    max_inflight_episodes: int | None = Field(
-        None, ge=1, validation_alias=AliasChoices("max_inflight_episodes", "max_inflight_rollouts")
-    )
+    max_inflight_episodes: int | None = Field(None, ge=1)
     """Maximum number of episodes kept in-flight — one episode is one agent run at a time, whatever the env's agents are. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
 
-    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    group_size: int = Field(1, ge=1)
     """Output sequences returned per example during training."""
 
     seq_len: int = 2048
@@ -593,24 +562,6 @@ class OrchestratorConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _sampling_to_train(cls, data: Any) -> Any:
-        """Allow [sampling] as shorthand for [train.sampling]."""
-        if not isinstance(data, dict):
-            return data
-        if "sampling" in data:
-            train = data.setdefault("train", {})
-            if isinstance(train, dict):
-                warnings.warn(
-                    "'[orchestrator.sampling]' is deprecated, use '[orchestrator.train.sampling]' instead. "
-                    "Auto-translating for now, but this will be removed in a future release.",
-                    FutureWarning,
-                    stacklevel=2,
-                )
-                train.setdefault("sampling", data.pop("sampling"))
-        return data
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):

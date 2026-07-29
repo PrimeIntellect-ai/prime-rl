@@ -55,7 +55,7 @@ CLI flags mirror the TOML tree using dots:
 
 > Field names are snake_case in TOML (`max_model_len`) and kebab-case on the CLI (`--max-model-len`).
 
-> Renamed fields keep their old name as a validation alias — e.g. `rollouts_per_example` is still accepted in TOML and CLI after being renamed to `group_size`. Mixing the two names across sources is safe.
+> A renamed field keeps no alias for its old name: the old spelling fails as an unknown key rather than being silently translated.
 
 ## Inspecting and Validating
 
