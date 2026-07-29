@@ -549,6 +549,17 @@ class Orchestrator:
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(episode)
                 if eval_batch is not None:
+                    # A newer epoch finishing first means the older ones are
+                    # straggling — cancel their tail and log them as-is, before
+                    # the newer epoch, so metrics stay monotone in ``step``.
+                    for stale_batch in self.eval_sink.flush_before(eval_batch.env_name, eval_batch.step):
+                        cancelled = await self.dispatcher.cancel_eval_step(stale_batch.env_name, stale_batch.step)
+                        get_logger().warning(
+                            f"Eval {eval_batch.env_name} @ step={eval_batch.step} finished before "
+                            f"step={stale_batch.step} - cancelled its {cancelled} remaining rollouts and logging "
+                            f"step {stale_batch.step} as-is ({len(stale_batch.rollouts)} rollouts)"
+                        )
+                        await self.finalize_eval_batch(stale_batch)
                     await self.finalize_eval_batch(eval_batch)
                 continue
 

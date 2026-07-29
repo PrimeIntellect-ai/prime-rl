@@ -657,6 +657,27 @@ class RolloutDispatcher:
             await safe_cancel_all(tasks_to_cancel)
         return cancelled
 
+    async def cancel_eval_step(self, env_name: str, eval_step: int) -> int:
+        """Cancel all in-flight rollouts of one eval epoch and drop its group
+        state. No markers are emitted — the sink has already closed the
+        epoch's bucket, so late arrivals are dropped rather than counted."""
+        for group_id, group in list(self.groups.items()):
+            if group.kind == "eval" and group.env_name == env_name and group.eval_step == eval_step:
+                self.groups.pop(group_id, None)
+        tasks: list[asyncio.Task] = []
+        cancelled = 0
+        for task, meta in list(self.inflight.items()):
+            if meta.kind == "eval" and meta.env_name == env_name and meta.eval_step == eval_step:
+                del self.inflight[task]
+                self.release(meta.rollout_count)
+                cancelled += meta.rollout_count
+                tasks.append(task)
+        if cancelled:
+            self.metrics.record_cancellation(kind="eval", env_name=env_name, n=cancelled)
+        if tasks:
+            await safe_cancel_all(tasks)
+        return cancelled
+
     async def cancel_inflight_rollouts(self) -> None:
         """Cancel all in-flight rollouts. Used on shutdown — doesn't emit
         markers since the sinks are being torn down anyway."""

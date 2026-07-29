@@ -33,12 +33,20 @@ class EvalSink:
         self.pending_group_episodes: dict[uuid.UUID, int] = defaultdict(int)
         self.pending_batches: dict[tuple[str, int], list[Rollout]] = defaultdict(list)
         self.pending_batch_episodes: dict[tuple[str, int], int] = defaultdict(int)
+        # Epochs force-finalized by ``flush_before`` — straggler episodes
+        # arriving for them are dropped instead of re-opening the bucket.
+        self.closed_batches: set[tuple[str, int]] = set()
 
     def add(self, episode: list[Rollout]) -> EvalBatch | None:
         """Process one episode arrival; finalize the group on the ``group_size``-th
         episode and the per-env epoch on the ``num_examples × group_size``-th."""
         env_name = episode[0].env_name
         group_id = episode[0].group_id
+        if (env_name, episode[0].eval_step) in self.closed_batches:
+            get_logger().debug(
+                f"Dropping straggler eval episode for closed epoch | env={env_name} eval_step={episode[0].eval_step}"
+            )
+            return None
         for rollout in episode:
             self.process_rollout(rollout)
         bkey = (env_name, episode[0].eval_step)
@@ -116,6 +124,29 @@ class EvalSink:
             f"Finished group | env={env_name} task_idx={task_idx} eval_step={eval_step} | "
             f"rollouts={len(group)} (errored={num_errored}) | reward={avg_reward:.4f}"
         )
+
+    def flush_before(self, env_name: str, step: int) -> list[EvalBatch]:
+        """Force-finalize every pending epoch of ``env_name`` older than ``step``:
+        move partial groups into their batch bucket, pop the (incomplete) batches
+        in ascending step order, and mark the epochs closed so stragglers arriving
+        later are dropped. Called when a newer epoch of the same env completes
+        first — the stale epochs are logged as-is instead of waiting."""
+        stale_group_ids: dict[int, list[uuid.UUID]] = defaultdict(list)
+        for group_id, rollouts in self.pending_groups.items():
+            if not rollouts:
+                continue
+            eval_step = rollouts[0].eval_step
+            assert eval_step is not None
+            if rollouts[0].env_name == env_name and eval_step < step:
+                stale_group_ids[eval_step].append(group_id)
+        stale_steps = {s for (env, s) in self.pending_batches if env == env_name and s < step} | set(stale_group_ids)
+        batches: list[EvalBatch] = []
+        for stale_step in sorted(stale_steps):
+            for group_id in stale_group_ids.get(stale_step, []):
+                self.process_group(group_id)
+            batches.append(self.process_batch((env_name, stale_step)))
+            self.closed_batches.add((env_name, stale_step))
+        return batches
 
     def process_batch(self, key: tuple[str, int]) -> EvalBatch:
         """Pop the finished ``(env, eval_step)`` epoch and return the ``EvalBatch`` with its full
