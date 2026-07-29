@@ -10,8 +10,6 @@ dependencies = [
     "renderers>=0.1.8",
     "tomli>=2.2.1",
     "tomli-w>=1.2.0",
-    # The composed env/serve/legacy config blocks (verifiers#2157) landed in dev43;
-    # a pre-release floor is what lets a pip-only install resolve it.
     "verifiers>=0.2.2.dev43",
 ]
 
