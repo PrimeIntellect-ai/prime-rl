@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.legacy import migrate_legacy_orchestrator_config
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
@@ -623,3 +624,79 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.model.tool_call_parser == "hermes"
+
+
+@pytest.mark.parametrize(
+    ("training_mode", "algo_type", "teacher_path"),
+    [("opd", "opd", "teacher"), ("sft", "sft", "sampling")],
+)
+def test_legacy_training_mode_and_teacher_become_algo(training_mode: str, algo_type: str, teacher_path: str):
+    """The pre-``algo`` shape maps onto ``[algo]``: OPD scores the policy with the teacher,
+    SFT samples from it."""
+    data = migrate_legacy_orchestrator_config(
+        {
+            "training_mode": training_mode,
+            "teacher": {
+                "model": {"name": "some-org/teacher"},
+                "client": {"base_url": ["https://teacher/v1"], "api_key_var": "TEACHER_API_KEY"},
+            },
+        }
+    )
+
+    assert "training_mode" not in data and "teacher" not in data
+    assert data["algo"]["type"] == algo_type
+    frozen_model = data["algo"]["teacher"] if teacher_path == "teacher" else data["algo"]["sampling"]["source"]
+    assert frozen_model == {
+        "name": "some-org/teacher",
+        "base_url": ["https://teacher/v1"],
+        "api_key_var": "TEACHER_API_KEY",
+    }
+
+
+def test_legacy_client_renests_under_model():
+    """The policy client moved from ``[client]`` to ``[model.client]``; an explicitly set
+    canonical key is not clobbered."""
+    data = migrate_legacy_orchestrator_config(
+        {
+            "client": {"router_url": "http://router:8000", "api_key_var": "LEGACY"},
+            "model": {"name": "Qwen/Qwen3-0.6B", "client": {"api_key_var": "CANONICAL"}},
+        }
+    )
+
+    assert "client" not in data
+    assert data["model"]["client"] == {"api_key_var": "CANONICAL", "router_url": "http://router:8000"}
+
+
+def test_legacy_env_keys_are_rehomed():
+    """Per-env ``advantage`` becomes ``algo``, the dead ``max_retries`` is dropped, and
+    ``multiplex`` moves to the interception pool that owns rollouts-per-server."""
+    data = migrate_legacy_orchestrator_config(
+        {
+            "train": {"env": [{"id": "reverse-text", "advantage": {"type": "default"}, "multiplex": 8}]},
+            "eval": {"env": [{"id": "gsm8k", "max_retries": 3}]},
+        }
+    )
+
+    train_env = data["train"]["env"][0]
+    assert train_env["algo"] == {"type": "grpo"} and "advantage" not in train_env
+    assert train_env["interception"] == {"type": "elastic", "multiplex": 8}
+    assert "max_retries" not in data["eval"]["env"][0]
+
+
+@pytest.mark.parametrize(
+    ("data", "match"),
+    [
+        ({"train": {"env": [{"advantage": {"length_penalty": {"coef": 0.1}}}]}}, "length_penalty was redefined"),
+        ({"train": {"env": [{"advantage": {"length_weighted_baseline": True}}]}}, "length_weighted_baseline"),
+        ({"train": {"env": [{"advantage": {"type": "custom", "import_path": "m.f"}}]}}, "no algorithm equivalent"),
+        ({"teacher": {"model": {"name": "t"}}}, "requires 'training_mode'"),
+        ({"training_mode": "sft", "algo": {"type": "sft"}}, "would be ambiguous"),
+        ({"training_mode": "opd"}, "requires a 'teacher'"),
+        ({"training_mode": "dpo"}, "unknown training_mode"),
+    ],
+)
+def test_legacy_keys_without_a_faithful_translation_are_rejected(data: dict, match: str):
+    """Knobs that were redefined or removed rather than renamed must fail loudly — silently
+    translating them would change training dynamics."""
+    with pytest.raises(ValueError, match=match):
+        migrate_legacy_orchestrator_config(data)

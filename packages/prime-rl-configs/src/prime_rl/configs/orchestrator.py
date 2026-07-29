@@ -10,6 +10,7 @@ from prime_rl.configs.algorithm import (
     AlgoConfig,
     GRPOAlgoConfig,
 )
+from prime_rl.configs.legacy import migrate_legacy_orchestrator_config
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
@@ -536,6 +537,12 @@ class OrchestratorConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_keys(cls, data: Any) -> Any:
+        """Translate the pre-``algo`` config shape still emitted by hosted training's control plane."""
+        return migrate_legacy_orchestrator_config(data)
 
     @model_validator(mode="before")
     @classmethod
