@@ -256,12 +256,11 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
             route_scale=config.route_scale,
             score_before_experts=getattr(config, "score_before_experts", False),
             top_k=config.num_experts_per_tok,
-            use_grouped_mm=getattr(config, "use_grouped_mm", True),
             load_balance_coeff=config.load_balance_coeff,
             fp8=getattr(config, "fp8", False),
         )
         if self.moe_enabled:
-            self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            self.mlp = MoE.from_args(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
         else:
             self.mlp = MLP(mlp_config)
 
