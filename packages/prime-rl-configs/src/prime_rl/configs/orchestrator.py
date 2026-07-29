@@ -5,7 +5,6 @@ from typing import Annotated, Any, Literal, TypeAlias
 import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from renderers import AutoRendererConfig, RendererConfig
-from verifiers.v1.configs.legacy import is_legacy, refuse_mixed_run, run_env_id
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
@@ -157,7 +156,7 @@ class EnvConfig(BaseConfig):
     runs, ``serve`` — how it's hosted, ``legacy`` — a classic v0 env instead) plus this
     orchestrator's own per-env knobs."""
 
-    env: SerializeAsAny[vf.EnvConfig] = Field(default_factory=vf.single_agent_env_config)
+    env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
     serve: vf.ServingConfig = vf.ServingConfig()
@@ -190,11 +189,12 @@ class EnvConfig(BaseConfig):
     @property
     def is_legacy(self) -> bool:
         """A classic (v0) env run through the bridge: a legacy id and no v1 taskset."""
-        return is_legacy(self.env, self.legacy)
+        return self.legacy.id is not None and not self.env.taskset.id
 
     @property
     def env_id(self) -> str:
-        return run_env_id(self.env, self.legacy)
+        """The env's identifier: the v1 env's, else the v0 env id."""
+        return self.env.env_id or self.legacy.id or ""
 
     @property
     def resolved_name(self) -> str:
@@ -202,7 +202,21 @@ class EnvConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_env(self):
-        refuse_mixed_run(self.env, self.legacy)
+        # A v0 id next to any v1 env identity leaves one of the two going nowhere, and
+        # which one depends on `is_legacy`: a taskset makes it False, so the v0 env never
+        # loads; a bare `env.id` leaves it True, so the v0 env runs under the v1 name.
+        if self.legacy.id is not None and self.env.env_id:
+            if self.env.taskset.id:
+                raise ValueError(
+                    f"legacy.id {self.legacy.id!r} is a classic (v0) env and can't combine with "
+                    f"the v1 taskset {self.env.taskset.id!r}. Pairing a reusable env with a taskset "
+                    f"is env.id = {self.legacy.id!r}; to run the v0 env instead, drop the taskset."
+                )
+            raise ValueError(
+                f"legacy.id {self.legacy.id!r} is a classic (v0) env and can't combine with the "
+                f"v1 env.id {self.env.id!r}: the v0 env is what would run, stamped with the v1 "
+                "env's name. Keep whichever one you meant to run."
+            )
         if not self.env_id:
             raise ValueError(
                 'no env configured — set env = { taskset = { id = "<id>" } } (v1) or legacy = { id = "<id>" } (v0)'
