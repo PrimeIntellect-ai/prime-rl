@@ -597,9 +597,6 @@ class Orchestrator:
                 )
             return
         self.consecutive_empty_batches = 0
-        # The clean, trained-on subset — the only pool where "carries a gradient" is meaningful.
-        # Errored, filtered and payload-less rollouts never reach the trainer, so counting them
-        # would make the rate track error/filter volume instead of task difficulty.
         effective = batch.rollouts.effective
         n_trainable = sum(1 for r in effective if r.is_trainable)
         if effective and n_trainable / len(effective) <= 0.1:
