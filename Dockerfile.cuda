@@ -128,11 +128,6 @@ RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
         && rm -rf /tmp/nixl /app/deps/nixl_cu12-*.whl; \
     fi
 
-# arm64: build flash-attn from source, fix namespace conflicts, apply workarounds
-ARG TARGETARCH
-COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
-RUN if [ "$TARGETARCH" = "arm64" ]; then /app/scripts/docker-arm64-post-install.sh; fi
-
 # Trim the CUDA toolkit to the nvcc-JIT essentials in a separate stage, so the runtime
 # COPY ships only the trimmed result (~1.5 GB) instead of the full ~6.6 GB. Drops the math
 # runtime libs (cublas/cusparse/cufft/cusolver/curand/npp/nvjpeg) and big static .a
