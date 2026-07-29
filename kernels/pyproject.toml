@@ -1,0 +1,13 @@
+[project]
+name = "prime-kernels"
+# The release build appends a `+cu<toolkit>torch<version>` local version, because torch C++
+# extensions are bound to the torch and CUDA they were compiled against.
+version = "0.1.0"
+description = "CUDA kernels vendored into prime-rl"
+readme = "README.md"
+requires-python = "~=3.12.0"
+dependencies = ["torch>=2.9.0"]
+
+[build-system]
+requires = ["setuptools>=77", "wheel", "ninja", "torch>=2.9.0"]
+build-backend = "setuptools.build_meta"
