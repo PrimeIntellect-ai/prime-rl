@@ -146,7 +146,7 @@ class TrainBatch:
     finalized in that span (errored + filtered included; rollouts of still-incomplete groups wait
     for a later window). Its ``.effective`` / ``.metrics`` views drive logging. ``samples`` is the
     trainer-bound payload (the shipped cohort's post-filter survivors) — an empty list means nothing
-    ships, which would stall the trainer. Trainable counts derive from ``rollouts``
+    ships, which would stall the trainer. Trainable counts derive from ``rollouts.effective``
     (``r.is_trainable``) and token totals from ``samples``, so neither is carried as a field."""
 
     rollouts: TrainRollouts
