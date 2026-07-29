@@ -298,8 +298,9 @@ class WandbMonitor(Monitor):
 
 OVERVIEW_NAME = "overview"
 
-# Per-rollout metrics (under "<scope>/all/") shown for BOTH train and eval. Only the reward metric
-# differs — train uses "reward/mean", eval uses "avg@k" — and each section builder prepends its own.
+# Per-rollout metrics (under "<scope>/all/") shown for BOTH train and eval. Only the reward metrics
+# differ — train uses "reward/mean", eval uses "avg@k", each shown for the all and effective
+# subsets — and each section builder prepends its own.
 COMMON_METRICS = [
     "has_error/mean",
     "is_truncated/mean",
@@ -347,15 +348,20 @@ def section(name: str, metrics: Sequence[str] = (), regexes: Sequence[str] = ())
 
 
 def train_section(name: str, scope: str) -> ws.Section:
-    return section(name, metrics=[f"{scope}/all/reward/mean"] + [f"{scope}/all/{m}" for m in COMMON_METRICS])
+    return section(
+        name,
+        metrics=[f"{scope}/all/reward/mean", f"{scope}/effective/reward/mean"]
+        + [f"{scope}/all/{m}" for m in COMMON_METRICS],
+    )
 
 
 def eval_section(name: str, env_pattern: str) -> ws.Section:
     # Same metrics as train, but eval's reward is "avg@k" (dynamic k → regex). Everything is a regex so
-    # one section can also serve any env (env_pattern=".*"). Only the "all" subset, like train.
+    # one section can also serve any env (env_pattern=".*").
     return section(
         name,
-        regexes=[f"eval/{env_pattern}/all/avg@.*"] + [f"eval/{env_pattern}/all/{m}" for m in COMMON_METRICS],
+        regexes=[f"eval/{env_pattern}/all/avg@.*", f"eval/{env_pattern}/effective/avg@.*"]
+        + [f"eval/{env_pattern}/all/{m}" for m in COMMON_METRICS],
     )
 
 
@@ -399,8 +405,13 @@ def list_views(entity: str, project: str) -> list[tuple[str, str]]:
 def view_signature(sections: Sequence[ws.Section]) -> tuple:
     train = sorted(s.name[len("train/") :] for s in sections if s.name.startswith("train/") and s.name != "train/agg")
     evals = sorted(s.name[len("eval/") :] for s in sections if s.name.startswith("eval/"))
-    axes = {getattr(p.x, "name", p.x) for s in sections for p in s.panels if isinstance(p, wr.LinePlot)}
-    return (tuple(train), tuple(evals), tuple(sorted(axes)))
+    panels = {
+        (getattr(p.x, "name", p.x), tuple(getattr(m, "name", m) for m in p.y or ()), p.metric_regex)
+        for s in sections
+        for p in s.panels
+        if isinstance(p, wr.LinePlot)
+    }
+    return (tuple(train), tuple(evals), tuple(sorted(panels, key=str)))
 
 
 def next_overview_name(base: str, existing: Sequence[str]) -> str:
