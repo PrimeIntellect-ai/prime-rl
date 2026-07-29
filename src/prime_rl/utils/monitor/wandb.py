@@ -299,8 +299,8 @@ class WandbMonitor(Monitor):
 OVERVIEW_NAME = "overview"
 
 # Per-rollout metrics (as "<subset>/<metric>" under "<scope>/") shown for BOTH train and eval.
-# Quality metrics read the effective subset — on the all subset, errored rollouts contribute
-# zeros that skew the distributions. has_error only exists on all (effective drops errors by
+# Quality metrics read the effective subset — the all subset includes errored rollouts, whose
+# zero values skew the distributions. has_error only exists on all (effective drops errors by
 # construction). Only the reward metrics differ — train uses "reward/mean", eval uses "avg@k",
 # each shown for the all and effective subsets — and each section builder prepends its own.
 COMMON_METRICS = [
