@@ -15,8 +15,9 @@ max_completion_tokens = 128
 
 [[train.source]]
 name = "reverse-text"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "reverse-text-v1" }
+env.agent.harness = { id = "null" }
+env.agent.runtime = { type = "subprocess" }
 
 [renderer]
 name = "prime-qwen3"

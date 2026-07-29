@@ -25,11 +25,14 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`."""
+    """Any TOML file inside `configs/`, `examples/` or `k8s/`."""
     config_files = list(Path("configs").rglob("*.toml"))
     example_files = list(Path("examples").rglob("*.toml"))
+    # The k8s example configs are mounted into the chart's containers verbatim, so a
+    # stale key there breaks a deploy with nothing else to catch it.
+    k8s_files = list(Path("k8s").rglob("*.toml"))
 
-    return config_files + example_files
+    return config_files + example_files + k8s_files
 
 
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())

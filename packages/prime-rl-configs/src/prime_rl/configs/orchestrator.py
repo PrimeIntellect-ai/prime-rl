@@ -151,6 +151,17 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
+class ServingConfig(vf.ServingConfig):
+    """Verifiers' serving block with ``address`` back to optional. Verifiers defaults it
+    to the address its own ``serve`` CLI binds; here the question is whether to spawn a
+    server or connect to one already running, and that answer has to survive the
+    resolved config being written to a file and read back — so it must be a *value*
+    (``None``), not field-set metadata, which a round-trip drops."""
+
+    address: str | None = None
+    """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to that server instead of spawning one; when None, it spawns a subprocess env server on a free port. ``pool`` sizes the spawned server."""
+
+
 class EnvConfig(BaseConfig):
     """One environment a run pulls from: the verifiers blocks it composes (``env`` — what
     runs, ``serve`` — how it's hosted, ``legacy`` — a classic v0 env instead) plus this
@@ -159,7 +170,7 @@ class EnvConfig(BaseConfig):
     env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
-    serve: vf.ServingConfig = vf.ServingConfig()
+    serve: ServingConfig = ServingConfig()
     """How the env server is run: ``serve.pool`` sizes the spawned server, ``serve.address`` points at an external one instead, and ``serve.max_concurrent`` bounds one worker's episodes in flight (unset = unbounded; the dispatcher's ``max_inflight_episodes`` is the run's bound)."""
 
     legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()
@@ -186,13 +197,6 @@ class EnvConfig(BaseConfig):
     def env_id(self) -> str:
         """The env's identifier: the v1 env's, else the v0 env id."""
         return self.env.env_id or self.legacy.id or ""
-
-    @property
-    def external_address(self) -> str | None:
-        """An external env server to connect to, else None — spawn one on a free port.
-        Only an explicit pin counts: ``serve.address`` carries verifiers' own bind
-        default (``tcp://127.0.0.1:5000``), which says nothing about who runs it."""
-        return self.serve.address if "address" in self.serve.model_fields_set else None
 
     @property
     def resolved_name(self) -> str:
