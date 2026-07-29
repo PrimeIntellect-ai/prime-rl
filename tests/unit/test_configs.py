@@ -6,8 +6,9 @@ import tomli_w
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 
+from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.configs.legacy import migrate_legacy_orchestrator_config
+from prime_rl.configs.legacy import migrate_legacy_orchestrator_config, migrate_legacy_train_env_config
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
@@ -667,36 +668,63 @@ def test_legacy_client_renests_under_model():
     assert data["model"]["client"] == {"api_key_var": "CANONICAL", "router_url": "http://router:8000"}
 
 
-def test_legacy_env_keys_are_rehomed():
-    """Per-env ``advantage`` becomes ``algo``, the dead ``max_retries`` is dropped, and
-    ``multiplex`` moves to the interception pool that owns rollouts-per-server."""
-    data = migrate_legacy_orchestrator_config(
+def test_legacy_train_env_advantage_becomes_algo():
+    """Per-env ``advantage`` becomes ``algo`` on the train env that owns one."""
+    config = OrchestratorConfig.model_validate(
         {
-            "train": {"env": [{"id": "reverse-text", "advantage": {"type": "default"}, "multiplex": 8}]},
-            "eval": {"env": [{"id": "gsm8k", "max_retries": 3}]},
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "renderer": {"name": "default"},
+            "train": {"env": [{"id": "reverse-text", "advantage": {"type": "default"}}]},
         }
     )
 
-    train_env = data["train"]["env"][0]
-    assert train_env["algo"] == {"type": "grpo"} and "advantage" not in train_env
-    assert train_env["interception"] == {"type": "elastic", "multiplex": 8}
-    assert "max_retries" not in data["eval"]["env"][0]
+    assert config.train.env[0].algo is not None
+    assert config.train.env[0].algo.type == "grpo"
+
+
+@pytest.mark.parametrize("root", ["orchestrator", "env_server"])
+def test_legacy_env_keys_are_rehomed_on_every_root(root: str):
+    """``multiplex`` moves to the interception pool and the dead ``max_retries`` is dropped —
+    on the orchestrator's env entries *and* on the standalone env server, which validates the
+    same ``EnvConfig`` through a different root. Migrating only the orchestrator would leave
+    the env server crash-looping on a config the orchestrator accepted."""
+    env = {"id": "reverse-text", "multiplex": 8, "max_retries": 3}
+    if root == "orchestrator":
+        config = OrchestratorConfig.model_validate(
+            {"model": {"name": "Qwen/Qwen3-0.6B"}, "renderer": {"name": "default"}, "train": {"env": [env]}}
+        )
+        resolved = config.train.env[0]
+    else:
+        resolved = EnvServerConfig.model_validate({"env": env}).env
+
+    assert resolved.interception.type == "elastic"
+    assert resolved.interception.multiplex == 8
 
 
 @pytest.mark.parametrize(
     ("data", "match"),
     [
-        ({"train": {"env": [{"advantage": {"length_penalty": {"coef": 0.1}}}]}}, "length_penalty was redefined"),
-        ({"train": {"env": [{"advantage": {"length_weighted_baseline": True}}]}}, "length_weighted_baseline"),
-        ({"train": {"env": [{"advantage": {"type": "custom", "import_path": "m.f"}}]}}, "no algorithm equivalent"),
         ({"teacher": {"model": {"name": "t"}}}, "requires 'training_mode'"),
         ({"training_mode": "sft", "algo": {"type": "sft"}}, "would be ambiguous"),
         ({"training_mode": "opd"}, "requires a 'teacher'"),
         ({"training_mode": "dpo"}, "unknown training_mode"),
     ],
 )
-def test_legacy_keys_without_a_faithful_translation_are_rejected(data: dict, match: str):
+def test_legacy_run_keys_without_a_faithful_translation_are_rejected(data: dict, match: str):
+    with pytest.raises(ValueError, match=match):
+        migrate_legacy_orchestrator_config(data)
+
+
+@pytest.mark.parametrize(
+    ("advantage", "match"),
+    [
+        ({"length_penalty": {"coef": 0.1}}, "length_penalty was redefined"),
+        ({"length_weighted_baseline": True}, "length_weighted_baseline"),
+        ({"type": "custom", "import_path": "m.f"}, "no algorithm equivalent"),
+    ],
+)
+def test_legacy_advantage_knobs_without_a_faithful_translation_are_rejected(advantage: dict, match: str):
     """Knobs that were redefined or removed rather than renamed must fail loudly — silently
     translating them would change training dynamics."""
     with pytest.raises(ValueError, match=match):
-        migrate_legacy_orchestrator_config(data)
+        migrate_legacy_train_env_config({"advantage": advantage})

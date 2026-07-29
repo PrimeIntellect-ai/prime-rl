@@ -10,7 +10,11 @@ from prime_rl.configs.algorithm import (
     AlgoConfig,
     GRPOAlgoConfig,
 )
-from prime_rl.configs.legacy import migrate_legacy_orchestrator_config
+from prime_rl.configs.legacy import (
+    migrate_legacy_env_config,
+    migrate_legacy_orchestrator_config,
+    migrate_legacy_train_env_config,
+)
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
@@ -163,6 +167,12 @@ class EnvConfig(vf.EnvServerConfig):
 
     @model_validator(mode="before")
     @classmethod
+    def _migrate_legacy_keys(cls, data):
+        """Translate the legacy env keys still emitted by hosted training's control plane."""
+        return migrate_legacy_env_config(data)
+
+    @model_validator(mode="before")
+    @classmethod
     def _migrate_num_workers(cls, data):
         """Back-compat: the removed ``num_workers`` maps onto ``pool`` — an int becomes a
         fixed ``static`` pool, ``"auto"`` falls through to the default ``elastic`` pool. An
@@ -223,6 +233,12 @@ class TrainEnvConfig(EnvConfig):
     """Training algorithm for this env. Inherits from the top-level
     ``orchestrator.algo`` when unset; set ``type`` (and its params) to give
     this env its own algorithm."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_advantage(cls, data):
+        """Translate the legacy per-env ``advantage`` into ``algo``."""
+        return migrate_legacy_train_env_config(data)
 
 
 class EvalEnvConfig(EnvConfig):

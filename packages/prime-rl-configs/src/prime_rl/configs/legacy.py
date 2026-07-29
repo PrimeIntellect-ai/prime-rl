@@ -1,13 +1,22 @@
-"""Translation of pre-``algo`` orchestrator config keys into the current shape.
+"""Translation of pre-``algo`` config keys into the current shape.
 
-Hosted training's control plane emits the orchestrator config that predates the
-algorithm abstraction: a top-level ``training_mode`` with a sibling ``[teacher]``
-block, per-env ``advantage``, and the policy client at ``[client]``. This module
-maps that shape onto ``[algo]`` and ``[model.client]`` at validation time so a
-control plane that hasn't been updated yet keeps working against a current image.
+Hosted training's control plane emits the config that predates the algorithm
+abstraction: a top-level ``training_mode`` with a sibling ``[teacher]`` block,
+per-env ``advantage``, the policy client at ``[client]``, and the env-server
+knobs that moved (``multiplex``, ``max_retries``). This module maps that shape
+onto ``[algo]``, ``[model.client]`` and ``[interception]`` at validation time so
+a control plane that hasn't been updated yet keeps working against a current
+image.
 
-Temporary. Delete this module and its ``OrchestratorConfig`` validator once every
-caller emits ``algo`` directly.
+Split by scope, because an env block is validated through two different roots:
+the orchestrator's ``[[train.env]]`` / ``[[eval.env]]`` entries *and* the
+standalone env server's ``[env]`` (``EnvServerConfig.env``). Env-scoped keys are
+migrated on ``EnvConfig`` itself so both roots get them; hanging them off
+``OrchestratorConfig`` would translate them for the orchestrator and leave the
+env server crashing on the same input.
+
+Temporary. Delete this module and its validators once every caller emits the
+current shape directly.
 """
 
 import warnings
@@ -90,7 +99,7 @@ def _migrate_advantage(env: dict[str, Any]) -> None:
     if not isinstance(advantage, dict):
         raise ValueError(f"'advantage' must be a table, got {type(advantage).__name__}")
 
-    _deprecated("train.env.advantage", "train.env.algo")
+    _deprecated("advantage", "algo")
     advantage = dict(advantage)
     advantage_type = advantage.pop("type", "default")
     if advantage_type not in _ADVANTAGE_TYPE_TO_ALGO_TYPE:
@@ -113,7 +122,7 @@ def _migrate_advantage(env: dict[str, Any]) -> None:
     env["algo"] = {"type": _ADVANTAGE_TYPE_TO_ALGO_TYPE[advantage_type], **advantage}
 
 
-def _migrate_multiplex(env: dict[str, Any], path: str) -> None:
+def _migrate_multiplex(env: dict[str, Any]) -> None:
     """An env's ``multiplex`` -> ``interception.multiplex``, which owns rollouts-per-server now.
 
     Not the identically named ``pool.multiplex``, which sizes env-server workers instead.
@@ -122,14 +131,14 @@ def _migrate_multiplex(env: dict[str, Any], path: str) -> None:
     if multiplex is None:
         return
 
-    _deprecated(f"{path}.multiplex", f"{path}.interception.multiplex")
+    _deprecated("multiplex", "interception.multiplex")
     interception = env.setdefault("interception", {})
     if not isinstance(interception, dict):
-        raise ValueError(f"'{path}.interception' must be a table, got {type(interception).__name__}")
+        raise ValueError(f"'interception' must be a table, got {type(interception).__name__}")
     if interception.setdefault("type", "elastic") != "elastic":
         raise ValueError(
-            f"'{path}.multiplex' only applies to the elastic interception pool, but "
-            f"'{path}.interception.type' is {interception['type']!r}"
+            "'multiplex' only applies to the elastic interception pool, but "
+            f"'interception.type' is {interception['type']!r}"
         )
     interception.setdefault("multiplex", multiplex)
 
@@ -142,24 +151,6 @@ def _drop_max_retries(scope: dict[str, Any], path: str) -> None:
             FutureWarning,
             stacklevel=2,
         )
-
-
-def _migrate_envs(data: dict[str, Any]) -> None:
-    for scope, path in (("train", "train"), ("eval", "eval")):
-        group = data.get(scope)
-        if not isinstance(group, dict):
-            continue
-        _drop_max_retries(group, path)
-        envs = group.get("env")
-        if not isinstance(envs, list):
-            continue
-        for index, env in enumerate(envs):
-            if not isinstance(env, dict):
-                continue
-            _drop_max_retries(env, f"{path}.env[{index}]")
-            _migrate_multiplex(env, f"{path}.env[{index}]")
-            if scope == "train":
-                _migrate_advantage(env)
 
 
 def _migrate_client(data: dict[str, Any]) -> None:
@@ -182,22 +173,47 @@ def _migrate_client(data: dict[str, Any]) -> None:
 
 
 def migrate_legacy_orchestrator_config(data: Any) -> Any:
-    """Translate the pre-``algo`` orchestrator config keys in ``data``, in place.
+    """Translate the run-scoped legacy keys in an orchestrator config, in place.
 
     Runs as an ``OrchestratorConfig`` ``mode="before"`` validator, so it sees the
     merged TOML and CLI payload and covers ``model_validate`` callers (the hosted
-    config validator) too. Legacy envs may still arrive under the deprecated
-    top-level ``[[env]]``, so both env locations are migrated here rather than
-    depending on validator ordering.
+    config validator) too. Env-scoped keys are handled by the env configs' own
+    validators, which also reach the standalone env server.
     """
     if not isinstance(data, dict):
         return data
     _migrate_algo(data)
     _migrate_client(data)
-    _migrate_envs(data)
-    for index, env in enumerate(data.get("env") or []):
-        if isinstance(env, dict):
-            _drop_max_retries(env, f"env[{index}]")
-            _migrate_multiplex(env, f"env[{index}]")
-            _migrate_advantage(env)
+    for scope in ("train", "eval"):
+        group = data.get(scope)
+        if isinstance(group, dict):
+            _drop_max_retries(group, scope)
+    return data
+
+
+def migrate_legacy_env_config(data: Any) -> Any:
+    """Translate the legacy keys on a single env block, in place.
+
+    Runs as an ``EnvConfig`` ``mode="before"`` validator, so it covers every root
+    that owns an env block: the orchestrator's ``[[train.env]]`` / ``[[eval.env]]``
+    entries (including the deprecated top-level ``[[env]]``, which is re-nested
+    before the entries are built) and the standalone env server's ``[env]``.
+    """
+    if not isinstance(data, dict):
+        return data
+    _drop_max_retries(data, "env")
+    _migrate_multiplex(data)
+    return data
+
+
+def migrate_legacy_train_env_config(data: Any) -> Any:
+    """Translate a train env's ``advantage``, in place.
+
+    Separate from ``migrate_legacy_env_config`` because ``algo`` only exists on
+    train envs — translating an ``advantage`` on an eval env or on the env server
+    would just trade one rejected key for another.
+    """
+    if not isinstance(data, dict):
+        return data
+    _migrate_advantage(data)
     return data
