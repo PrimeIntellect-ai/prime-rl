@@ -64,7 +64,7 @@ class CheckpointManager:
                 if hasattr(progress, key):
                     setattr(progress, key, value)
             train_source.load_state_dict(state["train_source"])
-            for name, position in state["train_source"].items():
+            for name, position in state["train_source"]["envs"].items():
                 if name not in train_source.base_rows:
                     continue
                 rows = train_source.base_rows[name]
