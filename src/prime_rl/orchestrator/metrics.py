@@ -158,7 +158,7 @@ class CustomMetrics(StatGroup):
         }
 
 
-class AgentMetrics(StatGroup):
+class TraceMetrics(StatGroup):
     """Trace-level metrics for one agent, one value per episode: a fan-out (n same-agent traces
     in one episode, e.g. n solvers) collapses to its within-episode mean first, so
     ``<agent>/num_turns/mean`` is the mean over episodes of the agent's mean turns."""
@@ -187,7 +187,7 @@ class AgentMetrics(StatGroup):
         return out
 
 
-class RolloutMetrics:
+class EpisodeMetrics:
     """Metrics shared by train and eval over a rollout list. Distributional metrics are ``Stat``s
     (mean/max/min); boolean metrics are ``Stat``s of 0/1 (use ``.mean()`` for the rate). The count
     metrics (tokens/turns/branches) are episode-level — one value per episode, summing its traces —
@@ -205,7 +205,7 @@ class RolloutMetrics:
             grouped.setdefault(r.episode_id or r.id, []).append(r)
         return list(grouped.values())
 
-    def by_agent(self) -> dict[str, AgentMetrics]:
+    def by_agent(self) -> dict[str, TraceMetrics]:
         """Per-agent metric views (``vf.Episode.by_agent`` over the subset's rollouts): each
         episode contributes the agent's traces in it."""
         per_agent: dict[str, list[list[Rollout]]] = {}
@@ -215,7 +215,7 @@ class RolloutMetrics:
                 traces.setdefault(r.agent.name, []).append(r)
             for name, agent_traces in traces.items():
                 per_agent.setdefault(name, []).append(agent_traces)
-        return {name: AgentMetrics(episodes) for name, episodes in sorted(per_agent.items())}
+        return {name: TraceMetrics(episodes) for name, episodes in sorted(per_agent.items())}
 
     # Episode-level count metrics: one value per episode, summing its traces — the same
     # aggregation as ``vf.Episode.num_turns`` / ``num_*_tokens``.
@@ -331,7 +331,7 @@ class RolloutMetrics:
         return out
 
 
-class TrainMetrics(RolloutMetrics):
+class TrainMetrics(EpisodeMetrics):
     """Common metrics plus the reward distribution and filter-pipeline rates."""
 
     @property
@@ -365,7 +365,7 @@ class TrainMetrics(RolloutMetrics):
         return out
 
 
-class EvalMetrics(RolloutMetrics):
+class EvalMetrics(EpisodeMetrics):
     """Common metrics plus the ``avg@<group_size>`` score and (on the effective subset, for
     binary-reward tasks) pass@k / pass^k. ``group_size`` (the ``avg@k`` k) is supplied by the
     container so the ``all`` and ``effective`` subsets share one stable key."""
