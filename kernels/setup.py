@@ -37,9 +37,7 @@ def _skip_reason(kernel, cuda: tuple[int, int] | None) -> str | None:
     missing = [source for source in kernel.sources if not source.exists()]
     if missing:
         relative = ", ".join(str(source.relative_to(kernel.path)) for source in missing)
-        return (
-            f"sources missing ({relative}) — run `git submodule update --init kernels/{kernel.path.relative_to(ROOT)}`"
-        )
+        return f"sources missing ({relative}) — kernels.toml and kernels/{kernel.path.relative_to(ROOT)} disagree"
     if cuda is None:
         return "no CUDA toolkit found (set CUDA_HOME)"
     if cuda < kernel.min_cuda:
@@ -94,8 +92,8 @@ if require and skipped:
 print(f"prime-kernels: building {', '.join(ext.name for ext in extensions) or '<nothing>'}", file=sys.stderr)
 
 setuptools.setup(
-    # Listed explicitly: vendored checkouts sit inside the kernel folders, and nothing in
-    # them should ever be packaged.
+    # Listed explicitly: the kernel folders carry C++/CUDA sources next to their Python, and
+    # only the Python surface plus the compiled extension belongs in the wheel.
     packages=["prime_kernels", *(f"prime_kernels.{name}" for name in kernels)],
     package_data={"prime_kernels": ["kernels.toml"]},
     ext_modules=extensions,

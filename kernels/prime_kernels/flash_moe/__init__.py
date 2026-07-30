@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import torch
 
-from . import _C
-from .mxfp8 import pack_scales_blocked, quantize_activation_mxfp8, quantize_weight_mxfp8
+from . import _C  # noqa: F401  # imported for its side effect: registers the prime_moe ops
+from .mxfp8 import pack_scales_blocked
 
 __all__ = [
     "fused_moe_bf16",
     "fused_moe_mxfp8",
     "moe_align",
     "pack_scales_blocked",
-    "quantize_activation_mxfp8",
-    "quantize_weight_mxfp8",
 ]
 
 
@@ -93,6 +91,12 @@ def fused_moe_bf16(
     stages: int = 4,
     bpc: int = 1,
 ) -> torch.Tensor:
+    """Fused bf16 MoE. Writes into `out` in place and returns it.
+
+    `w` is the gate/up projection as plain contiguous `(E, N, K)`, gate in the first half of
+    N and up in the second. The kernel interleaves the two halves through its tensor map, so
+    do not pre-interleave them on the host.
+    """
     torch.ops.prime_moe.fused_moe_bf16(
         x,
         w,
@@ -131,6 +135,12 @@ def fused_moe_mxfp8(
     stages: int = 4,
     bpc: int = 1,
 ) -> torch.Tensor:
+    """Fused mxfp8 MoE. Writes into `out` in place and returns it.
+
+    `w` follows the same plain `(E, N, K)` layout as `fused_moe_bf16`. `w_scales` and
+    `w2_scales` must be in the blocked layout `pack_scales_blocked` produces; `x_scales`
+    stays row major `(M, K // 32)`.
+    """
     torch.ops.prime_moe.fused_moe_mxfp8(
         x,
         x_scales,

@@ -25,24 +25,17 @@ KERNELS: tuple[str, ...] = tuple(_SPECS)
 
 
 def spec(name: str) -> KernelSpec:
-    """The manifest of kernel `name`."""
     if name not in _SPECS:
         raise KeyError(f"unknown kernel {name!r}, have {', '.join(KERNELS) or '<none>'}")
     return _SPECS[name]
 
 
 def is_built(name: str) -> bool:
-    """Whether the kernel's compiled extension shipped with this install.
-
-    Looks for the file rather than importing: importing the kernel package is exactly what
-    fails when it is missing, and that failure is what callers want reported, not raised.
-    """
     directory = spec(name).path
     return any((directory / f"_C{suffix}").exists() for suffix in EXTENSION_SUFFIXES)
 
 
 def unavailable_reason(name: str, device: int | None = None) -> str | None:
-    """Why kernel `name` cannot run on `device`, or None if it can."""
     import torch
 
     kernel = spec(name)
@@ -57,15 +50,10 @@ def unavailable_reason(name: str, device: int | None = None) -> str | None:
 
 
 def is_available(name: str, device: int | None = None) -> bool:
-    """Whether kernel `name` is built and can run on `device`."""
     return unavailable_reason(name, device) is None
 
 
 def load(name: str, device: int | None = None) -> ModuleType:
-    """Import kernel `name`, registering its `torch.ops` namespace.
-
-    Raises RuntimeError when the kernel is not built or the device cannot run it.
-    """
     reason = unavailable_reason(name, device)
     if reason is not None:
         raise RuntimeError(reason)
@@ -73,5 +61,4 @@ def load(name: str, device: int | None = None) -> ModuleType:
 
 
 def status(device: int | None = None) -> dict[str, str]:
-    """Every kernel mapped to 'available' or the reason it is not."""
     return {name: unavailable_reason(name, device) or "available" for name in KERNELS}

@@ -9,7 +9,8 @@ Releases are driven by [`.github/workflows/tag-and-release.yaml`](../../.github/
 
 1. You create a **draft GitHub Release** with the notes inline (`gh release create --draft`).
 2. You open a **draft PR** that bumps `version` in `pyproject.toml`.
-3. Maintainer merges. The workflow tags the commit and promotes the draft.
+3. Maintainer merges. The workflow tags the commit, builds the `prime-kernels` wheels and
+   attaches them to the draft, then promotes it.
 
 Release notes live on the GitHub Release, not in the repo. Prime-rl is **not** on PyPI. `.dev` tags are handled separately by `devx_tag.yaml`; `tag-and-release.yaml` ignores them.
 
@@ -64,6 +65,19 @@ gh pr create --draft --title "chore: release $NEW" --body "Bumps version to ${NE
 
 Stop. Do not tag, push tags, or flip the draft to published — the workflow does that on merge.
 
+## 5. After it publishes: move the kernel pin
+
+The release now carries `prime_kernels-*.whl` for x86_64 and aarch64. Point installs at them
+so nobody compiles CUDA, in a follow-up PR:
+
+```bash
+gh release view "$NEW" --json assets --jq '.assets[].name'   # exact filenames, ABI and all
+```
+
+Update the `prime-kernels` URLs under `[tool.uv.sources]` in `pyproject.toml` to `$NEW`, then
+`uv sync --all-extras` to relock. The pin always trails one release — `$NEW`'s wheels do not
+exist until `$NEW` is built. See the `kernels` skill.
+
 ## Recovery
 
-If the workflow tagged the commit but failed to promote the draft, the next main push (or `workflow_dispatch` with `tag: v{new}`) re-promotes it.
+If the workflow tagged the commit but failed to promote the draft, the next main push (or `workflow_dispatch` with `tag: v{new}`) re-promotes it. A rerun rebuilds and re-uploads the kernel wheels (`--clobber`), which is harmless.
