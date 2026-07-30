@@ -13,7 +13,6 @@ from prime_rl.utils.utils import clean_exit
 @clean_exit
 def run_server(config: EnvServerConfig):
     env = config.env
-    address = env.serve.address or "tcp://127.0.0.1:5000"
     # The env's ``serve.pool`` (static or elastic) sizes the server; a v0/legacy env runs through
     # the bridge, a v1 env is a native env block — both speak the same serve protocol,
     # so the orchestrator is agnostic. serve_env applies the logging setup in this process
@@ -26,7 +25,7 @@ def run_server(config: EnvServerConfig):
     serve_env(
         **pool_serve_kwargs(env.serve.pool),
         legacy=env.is_legacy,
-        address=address,
+        address=config.address,
         log_setup=partial(setup_env_server_logging, config.log.level, config.log.json_logging),
         **server_kwargs,
     )

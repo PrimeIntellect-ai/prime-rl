@@ -48,16 +48,13 @@ INFERENCE_TOML = "inference.toml"
 ENVS_DIR = "envs"
 
 
-def local_env_servers(config: RLConfig) -> list[tuple[str, EnvConfig]]:
-    """The ``(split, source)`` pairs the launcher runs an env server for: every train/eval
-    source whose ``serve.address`` is a loopback address (user-pinned or assigned
-    deterministically at config validation). A non-loopback address means an externally
-    managed server — the orchestrator connects to it, nobody here runs it."""
-    sources = [("train", source) for source in config.orchestrator.train.source]
-    if config.orchestrator.eval is not None:
-        sources += [("eval", source) for source in config.orchestrator.eval.source]
-    loopback = ("127.0.0.1", "localhost", "::1")
-    return [(split, source) for split, source in sources if urlparse(source.serve.address).hostname in loopback]
+def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig, str]]:
+    """``(split, source, address)`` for every train/eval source. The launcher runs one
+    env server per source at its deterministic address; the orchestrator connects there."""
+    addresses = config.orchestrator.env_server_addresses
+    return [
+        (split, source, addresses[(split, source.resolved_name)]) for split, source in config.orchestrator.env_sources
+    ]
 
 
 def get_physical_gpu_ids() -> list[int]:
@@ -96,9 +93,9 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         with open(output_dir / INFERENCE_TOML, "wb") as f:
             tomli_w.dump(inference_dict, f)
 
-    # One EnvServerConfig TOML per launcher-managed source: `env-server @ <path>` binds
-    # at the source's serve.address, where the orchestrator connects.
-    for split, source in local_env_servers(config):
+    # One EnvServerConfig TOML per source: `env-server @ <path>` binds at the source's
+    # deterministic address, where the orchestrator connects.
+    for split, source, address in env_servers(config):
         env_dir = output_dir / ENVS_DIR / split
         env_dir.mkdir(parents=True, exist_ok=True)
         # Only the EnvConfig fields — the source's train/eval knobs (sampling, algo, ...)
@@ -106,6 +103,7 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         exclude_env = set(type(source).model_fields) - set(EnvConfig.model_fields)
         env_server_dict = {
             "env": to_toml_dict(source, exclude=exclude_env),
+            "address": address,
             "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
         }
         with open(env_dir / f"{source.resolved_name}.toml", "wb") as f:
@@ -249,12 +247,12 @@ def rl_local(config: RLConfig):
             )
 
         # Start env server processes. The orchestrator never runs env servers — it connects
-        # to each source's serve.address, polling until the server is up, so the servers
-        # and the orchestrator can start in parallel.
-        for split, source in local_env_servers(config):
+        # to each source's deterministic address, polling until the server is up, so the
+        # servers and the orchestrator can start in parallel.
+        for split, source, address in env_servers(config):
             name = source.resolved_name
             env_server_cmd = ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.toml").as_posix()]
-            logger.info(f"Starting {split} env server {name} at {source.serve.address}")
+            logger.info(f"Starting {split} env server {name} at {address}")
             logger.debug(f"Env server start command: {' '.join(env_server_cmd)}")
             env_server_log = log_dir / ENVS_DIR / split / f"{name}.log"
             env_server_log.parent.mkdir(parents=True, exist_ok=True)
@@ -455,10 +453,10 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         else {}
     )
 
-    # Env servers launch next to the orchestrator (loopback-addressed sources only).
-    env_servers = local_env_servers(config)
-    local_train_env_names = [source.resolved_name for split, source in env_servers if split == "train"]
-    local_eval_env_names = [source.resolved_name for split, source in env_servers if split == "eval"]
+    # Env servers launch next to the orchestrator, one per train/eval source.
+    sources = config.orchestrator.env_sources
+    local_train_env_names = [source.resolved_name for split, source in sources if split == "train"]
+    local_eval_env_names = [source.resolved_name for split, source in sources if split == "eval"]
 
     if config.deployment.type == "single_node":
         script = template.render(

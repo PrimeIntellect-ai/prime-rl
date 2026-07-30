@@ -412,8 +412,8 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
 {%- if local_train_env_names or local_eval_env_names %}
 
     # Launch the env servers next to the orchestrator. It never runs them — it connects
-    # to each source's serve.address (loopback, so this node), polling until they are up,
-    # so the servers and the orchestrator start in parallel.
+    # to each source's deterministic loopback address (so this node), polling until they
+    # are up, so the servers and the orchestrator start in parallel.
 {%- for name in local_train_env_names %}
     mkdir -p $OUTPUT_DIR/logs/envs/train
     uv run env-server @ $CONFIG_DIR/envs/train/{{ name }}.toml \

@@ -1,8 +1,9 @@
 """Env wrappers over a v1 env server.
 
-Each ``Env`` is an ``EnvClient`` onto the env server at ``config.serve.address`` —
-the orchestrator never runs env servers, it only connects (the launcher spawns local
-servers at the deterministically assigned addresses). The
+Each ``Env`` is an ``EnvClient`` onto its source's env server — the orchestrator
+never runs env servers, it only connects. Each server's address is derived from the
+source's position in the config (``OrchestratorConfig.env_server_addresses``); the
+launcher spawns the servers at exactly those addresses. The
 orchestrator never *runs* an environment — the agents and their runtimes live only
 in the server — but it does own the *taskset*: a v1 env's tasks are loaded here,
 once, and each dispatched env-rollout ships its task's data on the request
@@ -49,8 +50,9 @@ class Env:
     """Client onto a v1 env server. The orchestrator owns the taskset (loaded once,
     client-side); the server owns agent/harness execution."""
 
-    def __init__(self, config: EnvConfig):
+    def __init__(self, config: EnvConfig, address: str):
         self.config = config
+        self.address = address
         self.sampling_args: dict = {}
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the taskset is infinite."""
@@ -75,10 +77,8 @@ class Env:
     async def start(self) -> None:
         """Connect to the env server and load the taskset client-side (legacy instead
         asks the server for ``info`` — its dataset is server-side)."""
-        address = self.config.serve.address
-        assert address is not None, "serve.address is assigned at config validation"
-        get_logger().debug(f"Connecting {self.name} to env server {address}")
-        self._env_client = EnvClient(address=address)
+        get_logger().debug(f"Connecting {self.name} to env server {self.address}")
+        self._env_client = EnvClient(address=self.address)
         # The server may still be coming up (the launcher spawns it concurrently with
         # the orchestrator), so poll until it answers.
         await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
@@ -157,8 +157,8 @@ class Env:
 class TrainEnv(Env):
     config: TrainSourceConfig
 
-    def __init__(self, config: TrainSourceConfig, sampler: Sampler, algorithm: Algorithm):
-        super().__init__(config)
+    def __init__(self, config: TrainSourceConfig, address: str, sampler: Sampler, algorithm: Algorithm):
+        super().__init__(config, address)
         self.sampler = sampler
         self.algorithm = algorithm
         self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
@@ -167,8 +167,8 @@ class TrainEnv(Env):
 class EvalEnv(Env):
     config: EvalSourceConfig
 
-    def __init__(self, config: EvalSourceConfig):
-        super().__init__(config)
+    def __init__(self, config: EvalSourceConfig, address: str):
+        super().__init__(config, address)
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples: list[dict] = []
 
@@ -222,12 +222,20 @@ class TrainEnvs(Envs[TrainEnv]):
     :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
     resolved algorithm config."""
 
-    def __init__(self, configs: Sequence[TrainSourceConfig], *, policy_pool, renderer_config=None):
+    def __init__(
+        self,
+        configs: Sequence[TrainSourceConfig],
+        addresses: dict[tuple[str, str], str],
+        *,
+        policy_pool,
+        renderer_config=None,
+    ):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainSourceConfig.algo must be resolved before env construction"
             env = TrainEnv(
                 config,
+                addresses[("train", config.resolved_name)],
                 Sampler(config.algo.sampling, policy_pool, renderer_config),
                 build_algorithm(config.algo, policy_pool),
             )
@@ -237,8 +245,8 @@ class TrainEnvs(Envs[TrainEnv]):
 class EvalEnvs(Envs[EvalEnv]):
     """Collection of evaluation environments."""
 
-    def __init__(self, configs: Sequence[EvalSourceConfig]):
+    def __init__(self, configs: Sequence[EvalSourceConfig], addresses: dict[tuple[str, str], str]):
         self._envs: dict[str, EvalEnv] = {}
         for config in configs:
-            env = EvalEnv(config)
+            env = EvalEnv(config, addresses[("eval", config.resolved_name)])
             self._envs[env.name] = env
