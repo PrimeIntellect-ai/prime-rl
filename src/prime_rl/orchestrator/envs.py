@@ -46,7 +46,7 @@ ENV_SERVER_STARTUP_TIMEOUT = 600.0
 
 
 class Env:
-    """Wraps a v1 env server + client. The orchestrator owns the taskset (loaded once,
+    """Client onto a v1 env server. The orchestrator owns the taskset (loaded once,
     client-side); the server owns agent/harness execution."""
 
     def __init__(self, config: EnvConfig):
