@@ -27,10 +27,9 @@ import time
 from typing import TYPE_CHECKING
 
 import tomli_w
+import verifiers.v1 as vf
 from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
-
-import verifiers.v1 as vf
 
 if TYPE_CHECKING:
     from renderers.base import Renderer

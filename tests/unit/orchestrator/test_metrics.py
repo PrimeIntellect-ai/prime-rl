@@ -3,8 +3,8 @@ from itertools import count
 from types import SimpleNamespace
 
 import pytest
-
 import verifiers.v1 as vf
+
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts, agent_metrics
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
