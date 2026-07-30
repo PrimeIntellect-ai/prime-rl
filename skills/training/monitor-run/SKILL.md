@@ -95,7 +95,7 @@ All metrics print to the console log (and W&B when configured).
 |--------|-------------|
 | `train/agg/effective/reward/mean` | mean training reward (per env: `train/<env>/effective/reward/mean`) |
 | `train/agg/effective/num_total_tokens/mean` | avg tokens per episode (also `num_input_tokens`, `num_output_tokens`) |
-| `train/agg/effective/num_turns/mean` | avg turns per episode (multi-turn only) |
+| `train/agg/effective/num_turns/mean` | avg turns per episode |
 | `train/<env>/effective/<agent>/num_turns/mean` | per-agent avg turns (also `reward`, token counts, `is_truncated`) |
 | `train/agg/effective/is_truncated/mean` | fraction truncated |
 | `train/agg/all/has_error/mean` | fraction errored (per-type under `train/agg/all/error/<type>`; also `dispatcher/errored/{train,eval}`) |
