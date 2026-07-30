@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
+from urllib.parse import urlparse
 
 import verifiers.v1 as vf
 from pydantic import Field, SerializeAsAny, model_validator
@@ -122,15 +123,22 @@ class EvalSamplingConfig(BaseConfig):
         return args
 
 
+ENV_SERVER_BASE_PORT = 5000
+"""First port of the deterministic local env-server port range. Sources without an
+explicit ``serve.address`` are assigned ``tcp://127.0.0.1:<port>`` in config order
+(train, then eval), so the launcher and the orchestrator independently agree on
+where each env server lives."""
+
+
 class ServingConfig(vf.ServingConfig):
     """Verifiers' serving block with ``address`` back to optional. Verifiers defaults it
-    to the address its own ``serve`` CLI binds; here the question is whether to spawn a
-    server or connect to one already running, and that answer has to survive the
-    resolved config being written to a file and read back — so it must be a *value*
-    (``None``), not field-set metadata, which a round-trip drops."""
+    to the address its own ``serve`` CLI binds; here an unset address means "assign the
+    next deterministic local port", and that assignment has to survive the resolved
+    config being written to a file and read back — so it must be a *value* (``None``),
+    not field-set metadata, which a round-trip drops."""
 
     address: str | None = None
-    """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to that server instead of spawning one; when None, it spawns a subprocess env server on a free port. ``pool`` sizes the spawned server."""
+    """ZMQ address of the env server (e.g. ``tcp://host:5000``). The orchestrator never runs env servers — it always connects to this address (the launcher spawns local servers at the assigned addresses). When None, a deterministic local address is assigned across all train + eval sources, starting at ``tcp://127.0.0.1:5000``."""
 
 
 class EnvConfig(BaseConfig):
@@ -142,7 +150,7 @@ class EnvConfig(BaseConfig):
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
     serve: ServingConfig = ServingConfig()
-    """How the env server is run: ``serve.pool`` sizes the spawned server, ``serve.address`` points at an external one instead, and ``serve.max_concurrent`` bounds one worker's episodes in flight (unset = unbounded; the dispatcher's ``max_inflight_episodes`` is the run's bound)."""
+    """How the env server is run: ``serve.address`` is where it lives (assigned deterministically when unset), ``serve.pool`` sizes it, and ``serve.max_concurrent`` bounds one worker's episodes in flight (unset = unbounded; the dispatcher's ``max_inflight_episodes`` is the run's bound)."""
 
     legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()
     """A classic (v0) environment to run through the bridge instead of ``env``."""
@@ -732,4 +740,25 @@ class OrchestratorConfig(BaseConfig):
                 # v0 env: cap per-turn response tokens to the training budget (the legacy
                 # bridge applies legacy.extra_env_kwargs via env.set_kwargs).
                 env.legacy.extra_env_kwargs["max_seq_len"] = self.seq_len
+        return self
+
+    @model_validator(mode="after")
+    def resolve_serve_addresses(self):
+        """Assign each source without an explicit ``serve.address`` a deterministic local
+        address (``tcp://127.0.0.1:<port>``, ports from ``ENV_SERVER_BASE_PORT`` in config
+        order, train then eval). The launcher binds env servers at exactly these addresses
+        and the orchestrator connects to them, so both sides derive the same answer from
+        the config alone. Idempotent: assigned addresses survive a config round-trip as
+        explicit values. Ports pinned by explicit local addresses are skipped."""
+        sources: list[EnvConfig] = [*self.train.source, *(self.eval.source if self.eval is not None else [])]
+        explicit = [env.serve.address for env in sources if env.serve.address is not None]
+        pinned = {port for address in explicit if (port := urlparse(address).port) is not None}
+        port = ENV_SERVER_BASE_PORT
+        for env in sources:
+            if env.serve.address is not None:
+                continue
+            while port in pinned:
+                port += 1
+            env.serve.address = f"tcp://127.0.0.1:{port}"
+            port += 1
         return self

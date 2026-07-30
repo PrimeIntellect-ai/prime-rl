@@ -107,6 +107,20 @@ INFERENCE_PORTS = [8000, 8001]
 INFERENCE_BASE_URLS = [f"http://localhost:{port}/v1" for port in INFERENCE_PORTS]
 
 
+def start_env_server(log_dir: Path) -> subprocess.Popen:
+    """Start the one env server all orchestrators share. Each orchestrator resolves the
+    reverse-text source to the deterministic tcp://127.0.0.1:5000 and connects, polling
+    until the server is up — no readiness wait needed here."""
+    env_server_log = log_dir / "env_server.log"
+    with open(env_server_log, "w") as f:
+        return subprocess.Popen(
+            ["uv", "run", "env-server", "@", "configs/ci/integration/reverse-text-multi-run/env.toml"],
+            stdout=f,
+            stderr=f,
+            env={**os.environ},
+        )
+
+
 def start_inference_and_trainer(
     log_dir: Path, output_dir: Path, wandb_project: str, wandb_name: str
 ) -> tuple[subprocess.Popen, list[subprocess.Popen]]:
@@ -248,6 +262,9 @@ def multi_run_result(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     processes: list[subprocess.Popen] = []
+
+    env_server_proc = start_env_server(log_dir)
+    processes.append(env_server_proc)
 
     trainer_proc, inference_procs = start_inference_and_trainer(log_dir, output_dir, wandb_project, wandb_name)
     processes.append(trainer_proc)
