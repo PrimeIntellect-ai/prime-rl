@@ -7,6 +7,7 @@ import contextlib
 import os
 import tempfile
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import torch
@@ -57,9 +58,7 @@ class CheckpointManager:
             with open(state_file, "rb") as f:
                 state = torch.load(f, weights_only=False)
             saved: Progress = state["progress"]
-            # vars() instead of asdict(): a checkpoint pickled before a field
-            # existed simply omits it, keeping the in-memory default
-            for key, value in vars(saved).items():
+            for key, value in asdict(saved).items():
                 if hasattr(progress, key):
                     setattr(progress, key, value)
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
