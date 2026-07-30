@@ -123,9 +123,8 @@ class EvalSink:
         downstream via ``EvalBatch.rollouts.metrics`` over the all/effective subsets, so the sink
         does no aggregation.
 
-        The epoch's ``group_size`` (the ``avg@k`` k) is the env's configured one, passed in rather
-        than derived: the sink is what scheduled the episodes, so it knows the intended k even for
-        an epoch that lost rollouts to errors."""
+        The epoch carries the env's configured ``group_size`` (the ``avg@k`` k): the sink scheduled
+        the episodes, so it knows the intended k even for an epoch that lost rollouts to errors."""
         env_name, step = key
         rollouts = self.pending_batches.pop(key, [])
         self.pending_batch_episodes.pop(key, None)

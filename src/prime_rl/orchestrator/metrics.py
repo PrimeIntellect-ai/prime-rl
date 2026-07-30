@@ -13,7 +13,7 @@ is flat over the rollout list except the solve rates and pass@k, which group by
 
 Reward-derived metrics (the reward distribution, its per-component breakdown, the solve rates,
 pass@k, ``avg@k``) read the *policy view* of their pool — see :func:`_scored`. Cost, shape and
-error metrics still cover every rollout: an untrainable agent's tokens and failures are real.
+error metrics cover every rollout: an untrainable agent's tokens and failures are real.
 """
 
 from __future__ import annotations
@@ -33,23 +33,19 @@ DEFAULT_AGENT_NAME = "agent"
 
 
 def _scored(rollouts: list[Rollout]) -> list[Rollout]:
-    """The policy view of a blended pool: its trainable rollouts, else all of them.
+    """The policy view of a pool: its trainable rollouts, or all of them when none is trainable.
 
-    Untrainable agents (a frozen judge, a pinned user sim) are not the policy, so their rewards
-    don't belong in a reward metric — and they usually carry none at all, which would drag every
-    mean toward a structural zero. Falling back to the full list keeps an all-untrainable pool
-    (a frozen-model eval) reporting its own rewards instead of nothing. Same rule verifiers
-    applies in ``v1/push.py`` and the eval dashboard.
-
-    A no-op on the ``effective`` subset, which is already trainable-only."""
+    A reward metric is about the policy, and an untrainable agent (a frozen judge, a pinned user
+    sim) isn't it — usually carrying no rewards at all, so its traces score a structural zero. The
+    fallback keeps an all-frozen pool reporting its own rewards rather than nothing. Same rule
+    verifiers applies in ``v1/push.py`` and the eval dashboard."""
     return [r for r in rollouts if r.trainable] or rollouts
 
 
 def _by_group_and_agent(rollouts: list[Rollout]) -> dict[tuple, list[Rollout]]:
-    """Group rollouts into the units a solve rate / pass@k is defined over: one example as seen
-    by one agent. Keying on ``group_id`` alone would pool agents whose rewards aren't comparable
-    — in a zero-sum game the pooled group sums to 0 no matter how the policy plays, which reads
-    as "nobody scored". Identical to keying on ``group_id`` for a single-agent env."""
+    """Group rollouts into the unit a solve rate / pass@k is defined over: one example as attempted
+    by one agent. Agents' rewards aren't comparable — a zero-sum pair sums to 0 whatever the policy
+    does — so each gets its own group. One group per ``group_id`` for a single-agent env."""
     groups: dict[tuple, list[Rollout]] = {}
     for r in rollouts:
         groups.setdefault((r.group_id, r.agent_name), []).append(r)
@@ -432,14 +428,12 @@ class EvalRollouts:
 
     @property
     def group_size(self) -> int:
-        """The ``avg@k`` k. ``EvalSink`` supplies the env's configured group size, and a subview
-        carries its parent's value, so ``k`` is stable across subsets and across epochs that lost
-        rollouts to errors.
+        """The ``avg@k`` k. ``EvalSink`` supplies the env's configured group size and a subview
+        carries its parent's, so ``k`` holds across subsets and across epochs that lost rollouts.
 
-        Derived only when nothing was supplied: the largest number of *episodes* one example was
-        rolled out for. Episodes, not traces — a multi-agent episode is one attempt at the example
-        however many agents it takes, so a two-agent env at ``group_size=4`` reports ``avg@4``
-        rather than ``avg@8``."""
+        Derived when nothing was supplied: the most *episodes* one example was rolled out for.
+        Episodes, not traces — one attempt at an example is one episode however many agents it
+        takes, so a two-agent env at ``group_size=4`` stays ``avg@4``."""
         if self._group_size is not None:
             return self._group_size
         episodes: dict = {}
@@ -465,14 +459,13 @@ class EvalRollouts:
 
 
 def agent_metrics(pool: TrainRollouts | EvalRollouts, *, prefix: str, subset: Subset) -> dict[str, float]:
-    """The ``{prefix}/agent/{name}/{subset}/...`` slices for one pool — the per-agent view that the
-    ``{agg,<env>}`` axes average away (a two-agent zero-sum env reports reward 0.0 whatever each
-    agent is doing).
+    """The ``{prefix}/agent/{name}/{subset}/...`` slices for one pool: the per-agent breakdown the
+    ``{agg,<env>}`` axes average over. A two-agent zero-sum env reports reward 0.0 at env level
+    whatever each agent is doing, so for those envs this is the signal.
 
-    ``{}`` unless the pool holds more than one agent, so single-agent runs (nearly all of them)
-    gain no keys and the slices never just restate the env's own. That also means the ``effective``
-    subset of a frozen-judge env emits nothing here: dropping the untrainable agent leaves one, and
-    the env's own ``effective`` keys already are it."""
+    ``{}`` unless the pool holds more than one agent — a single-agent slice would only restate the
+    env's own keys. So a frozen-judge env emits slices on ``all`` but not on ``effective``, where
+    dropping the untrainable agent leaves one."""
     pools = pool.by_agent()
     if len(pools) < 2:
         return {}

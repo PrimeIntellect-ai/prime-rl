@@ -108,7 +108,7 @@ zero-sum self-play env (`kuhn-poker-v1`) they cancel, so `train/<env>/*/reward/m
 however each agent is actually doing. Reward-derived metrics (`reward`, `rewards/<name>`,
 `solved_*`, `avg@k`, `pass@k`) cover the run's *trainable* agents only, so a frozen judge or a
 pinned user sim can't drag them toward its structural zero; token, turn, timing and error metrics
-still cover every agent.
+cover every agent.
 
 **Stability** — trainer log:
 
