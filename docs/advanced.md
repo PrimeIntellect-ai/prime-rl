@@ -59,8 +59,10 @@ GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset 
 `model.ep_comm_backend` picks the all-to-all kernel used for EP dispatch/combine:
 
 - **`torch`** (default): TorchTitan's all-to-all collective. Works everywhere, no extra install.
-- **`deepep`**: Utilizes DeepEP's custom all-to-all collectives. This provides better performance if EP dimension spans multiple nodes. We provide pre-built binaries for H100/H200 with cuda runtime 12.9 installed, you can install them by running `uv sync --all-extras`.
-DeepEP requires some careful tuning to achieve optimal performance, tuning parameters are `deepep_num_sms` and `deepep_token_chunk_size`.
+- **`deepep`**: DeepEP v1 custom all-to-all collectives. Better performance when the EP dimension spans multiple nodes. Pre-built binaries for H100/H200 with CUDA 12.9 are installed via `uv sync --all-extras`. Tuning parameters: `deepep_num_sms` and `deepep_token_chunk_size`.
+- **`deepep_v2`**: DeepEP v2 `ElasticBuffer` kernels — unified high-throughput/low-latency dispatch/combine with autograd support. Same tuning parameters as `deepep`. Requires DeepEP v2 (>= 2.0.0). Imported from torchtitan.
+- **`hybridep`**: HybridEP kernels optimized for GB200 NVLink72 systems. Supports blocking (default) and non-blocking dispatch via `hybridep_non_blocking_capacity_factor`. Optional per-expert padding via `hybridep_pad_multiple` (e.g. 32 for MXFP8). Vendored with handle_id pattern for torch compatibility.
+- **`minimal_async_ep`**: Symmetric-memory all-to-all using custom Triton kernels. Intended for the constrained launch shape where EP = DP and CP is disabled (`cp=1`). No external EP library dependency beyond Triton. Imported from torchtitan.
 
 With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is set to `None` automatically.)
 
