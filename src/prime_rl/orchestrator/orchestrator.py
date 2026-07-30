@@ -385,6 +385,16 @@ class Orchestrator:
             self.policy.version = sync_version
 
         self.train_source = TrainSource(self.train_envs, seed=42)
+        if self.progress.data_positions:
+            self.train_source.load_state(self.progress.data_positions)
+            for name, position in self.progress.data_positions.items():
+                rows = self.train_source.base_rows.get(name)
+                if rows is None:
+                    continue
+                get_logger().info(
+                    f"Resumed data position for env {name} - epoch={position['epoch']}, "
+                    f"cursor={position['cursor']}/{len(rows)}"
+                )
         self.eval_source: EvalSource | None = (
             EvalSource(
                 self.eval_envs,
@@ -499,6 +509,7 @@ class Orchestrator:
             # first ship).
             if self.ckpt_manager is not None and self.progress.step > 1:
                 self.progress.step -= 1
+                self.progress.data_positions = self.train_source.get_state()
                 get_logger().info("Writing final checkpoint")
                 self.ckpt_manager.save(self.progress, step=self.progress.step)
             await self.stop()
@@ -904,6 +915,8 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
+        # Snapshot on the event loop so the dispatcher can't advance cursors mid-save
+        self.progress.data_positions = self.train_source.get_state()
         await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
         return time.perf_counter() - t
 
