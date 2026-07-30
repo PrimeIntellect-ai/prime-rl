@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, Literal, Protocol
 
 import verifiers.v1 as vf
@@ -27,15 +27,12 @@ class Policy:
 
 @dataclass
 class Progress:
-    """Persistent counters; ``step`` is the trainer-aligned step (1-indexed).
-    ``data_positions`` is the ``TrainSource`` per-env ``{epoch, cursor}``
-    snapshot, keyed by env name."""
+    """Persistent counters; ``step`` is the trainer-aligned step (1-indexed)."""
 
     step: int = 1
     total_tokens: int = 0
     total_samples: int = 0
     total_problems: int = 0
-    data_positions: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 RolloutKind = Literal["train", "eval"]

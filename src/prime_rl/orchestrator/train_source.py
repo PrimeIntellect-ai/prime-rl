@@ -14,11 +14,12 @@ import random
 from collections.abc import Iterator
 
 import verifiers.v1 as vf
+from torch.distributed.checkpoint.stateful import Stateful
 
 from prime_rl.orchestrator.envs import TrainEnvs
 
 
-class TrainSource:
+class TrainSource(Stateful):
     """``next_example(available_permits)`` picks a weighted-RR env and
     returns its next example (or ``None`` when the env's per-call permit
     cost doesn't fit — the dispatch loop retries when permits free up).
@@ -26,7 +27,7 @@ class TrainSource:
     whose data is shipped to the env server at dispatch).
 
     An env's data position is ``{epoch, cursor}``, round-tripped through a
-    checkpoint via ``get_state()`` / ``load_state()``. For a finite env,
+    checkpoint via ``state_dict()`` / ``load_state_dict()``. For a finite env,
     epochs are 1-indexed and seed that epoch's shuffle; for an infinite env
     the epoch stays 1 and the cursor counts generator pulls, replayed on
     restore by fast-forwarding the generator (exact iff it's deterministic).
@@ -78,12 +79,12 @@ class TrainSource:
         random.Random(self.epochs[env_name]).shuffle(rows)
         return rows
 
-    def get_state(self) -> dict[str, dict[str, int]]:
+    def state_dict(self) -> dict[str, dict[str, int]]:
         """Per-env data position ``{epoch, cursor}``."""
         return {name: {"epoch": self.epochs[name], "cursor": self.cursors[name]} for name in self.epochs}
 
-    def load_state(self, state: dict[str, dict[str, int]]) -> None:
-        for name, position in state.items():
+    def load_state_dict(self, state_dict: dict[str, dict[str, int]]) -> None:
+        for name, position in state_dict.items():
             if name not in self.base_rows:
                 continue
             self.epochs[name] = position["epoch"]

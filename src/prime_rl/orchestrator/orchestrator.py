@@ -343,13 +343,23 @@ class Orchestrator:
 
         self.lora_name = config.model.lora.name if config.model.lora else None
 
+        self.train_source = TrainSource(self.train_envs, seed=42)
+
         if self.resume_step is not None and self.ckpt_manager is not None:
-            self.ckpt_manager.load(self.progress, step=self.resume_step)
+            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step)
             # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
             # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
             # trainer even when ``ckpt.skip_progress`` left the counter unrestored.
             self.progress.step = self.resume_step + 1
             get_logger().info(f"Resuming orchestrator from checkpoint step {self.resume_step}")
+            if not config.ckpt.skip_progress:
+                for name, position in self.train_source.state_dict().items():
+                    rows = self.train_source.base_rows[name]
+                    num_tasks = len(rows) if rows is not None else "infinite"
+                    get_logger().info(
+                        f"Resumed data position for env {name} - epoch={position['epoch']}, "
+                        f"cursor={position['cursor']}/{num_tasks}"
+                    )
         else:
             get_logger().info("Training from scratch")
 
@@ -384,18 +394,6 @@ class Orchestrator:
                 self.policy.model_name = self.lora_name
             self.policy.version = sync_version
 
-        self.train_source = TrainSource(self.train_envs, seed=42)
-        if self.progress.data_positions:
-            self.train_source.load_state(self.progress.data_positions)
-            for name, position in self.progress.data_positions.items():
-                if name not in self.train_source.base_rows:
-                    continue
-                rows = self.train_source.base_rows[name]
-                num_tasks = len(rows) if rows is not None else "infinite"
-                get_logger().info(
-                    f"Resumed data position for env {name} - epoch={position['epoch']}, "
-                    f"cursor={position['cursor']}/{num_tasks}"
-                )
         self.eval_source: EvalSource | None = (
             EvalSource(
                 self.eval_envs,
@@ -510,9 +508,8 @@ class Orchestrator:
             # first ship).
             if self.ckpt_manager is not None and self.progress.step > 1:
                 self.progress.step -= 1
-                self.progress.data_positions = self.train_source.get_state()
                 get_logger().info("Writing final checkpoint")
-                self.ckpt_manager.save(self.progress, step=self.progress.step)
+                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
             await self.stop()
             if clean_exit:
                 get_logger().success("Orchestrator finished.")
@@ -916,9 +913,7 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
-        # Snapshot on the event loop so the dispatcher can't advance cursors mid-save
-        self.progress.data_positions = self.train_source.get_state()
-        await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
+        await asyncio.to_thread(self.ckpt_manager.save, self.progress, self.train_source, step)
         return time.perf_counter() - t
 
     def update_dispatch_gate(self) -> None:
