@@ -50,18 +50,30 @@ max_completion_tokens = 32768
 
 [[orchestrator.train.source]]
 name = "math"
-env.taskset = { id = "i3_math_v1" }
-env.agent.harness = { id = "null" }
-env.agent.runtime = { type = "subprocess" }
+
+[orchestrator.train.source.env.taskset]
+id = "i3_math_v1"
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
 
 [orchestrator.eval]
 interval = 25
 
 [[orchestrator.eval.source]]
 name = "aime2025"
-env.taskset = { id = "aime25-v1" }
-env.agent.harness = { id = "null" }
-env.agent.runtime = { type = "subprocess" }
+
+[orchestrator.eval.source.env.taskset]
+id = "aime25-v1"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "null"
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "subprocess"
 
 [inference.parallel]
 tp = 8

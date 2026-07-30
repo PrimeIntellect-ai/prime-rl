@@ -34,6 +34,8 @@ Incompatible combinations (e.g. CP requires flash attention) must raise in a `mo
 
 ## Special syntax
 
+**No inline tables** — checked-in configs use `[section]` headers, never `key = { ... }`. Expand `env.taskset = { id = "..." }` to a full-path header (`[orchestrator.train.source.env.taskset]` — subtable headers after a `[[...]]` entry attach to that entry).
+
 **Booleans** — CLI `--flag` / `--no-flag`; TOML must be explicit (`enforce_eager = true`).
 
 **None** — TOML has no null, use the string `"None"` (`max_model_len = "None"`); CLI: `--model.max-model-len None`.
@@ -43,15 +45,28 @@ Incompatible combinations (e.g. CP requires flash attention) must raise in a `mo
 ```toml
 [[orchestrator.train.source]]
 name = "reverse-text"
-env.taskset = { id = "reverse-text-v1" }
-env.agent.harness = { id = "null" }
-env.agent.runtime = { type = "subprocess" }
+
+[orchestrator.train.source.env.taskset]
+id = "reverse-text-v1"
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
 
 [[orchestrator.eval.source]]
 name = "reverse-text-eval"
-env.taskset = { id = "reverse-text-v1", split = "test" }
-env.agent.harness = { id = "null" }
-env.agent.runtime = { type = "subprocess" }
+
+[orchestrator.eval.source.env.taskset]
+id = "reverse-text-v1"
+split = "test"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "null"
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "subprocess"
 ```
 
 CLI: `--orchestrator.train.source.0.env.taskset.id reverse-text-v1` or `--orchestrator.eval.source.0.env.taskset.id reverse-text-v1`.

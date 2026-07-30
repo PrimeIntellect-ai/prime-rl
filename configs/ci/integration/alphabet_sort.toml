@@ -24,9 +24,23 @@ max_completion_tokens = 384
 
 [[orchestrator.train.source]]
 name = "alphabet-sort"
-env.taskset = { id = "alphabet-sort-v1", min_turns = 2, max_turns = 2, min_names_per_turn = 1, max_names_per_turn = 3, task = { similarity_power = 4, power_per_turn = false } }
-env.agent.harness = { id = "null" }
-env.agent.runtime = { type = "subprocess" }
+
+[orchestrator.train.source.env.taskset]
+id = "alphabet-sort-v1"
+min_turns = 2
+max_turns = 2
+min_names_per_turn = 1
+max_names_per_turn = 3
+
+[orchestrator.train.source.env.taskset.task]
+similarity_power = 4
+power_per_turn = false
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
 
 [inference]
 
