@@ -14,12 +14,11 @@ import random
 from collections.abc import Iterator
 
 import verifiers.v1 as vf
-from torch.distributed.checkpoint.stateful import Stateful
 
 from prime_rl.orchestrator.envs import TrainEnvs
 
 
-class TrainSource(Stateful):
+class TrainSource:
     """``next_example(available_permits)`` picks a weighted-RR env and
     returns its next example (or ``None`` when the env's per-call permit
     cost doesn't fit — the dispatch loop retries when permits free up).
@@ -34,8 +33,10 @@ class TrainSource(Stateful):
     The cursor advances at dispatch time (ahead of shipped batches), so a
     resume skips the tasks that were in flight at checkpoint time."""
 
-    def __init__(self, train_envs: TrainEnvs, *, seed: int | None) -> None:
-        self.rng = random.Random(seed)
+    def __init__(self, train_envs: TrainEnvs) -> None:
+        # Env-choice RNG; not checkpointed (i.i.d. sampling, restarting the
+        # stream re-randomizes the interleave without repeating data)
+        self.rng = random.Random(42)
         self.envs = list(train_envs)
         if not self.envs:
             raise ValueError("TrainSource needs at least one train env")
@@ -62,13 +63,13 @@ class TrainSource(Stateful):
             self.base_rows[env.name] = rows
             self.epochs[env.name] = 1
             self.cursors[env.name] = 0
-            self.examples[env.name] = self._shuffled(env.name)
+            self.examples[env.name] = self._shuffle(env.name)
             self.env_costs[env.name] = env.config.group_size if env.requires_group_scoring else 1
 
         self.env_names = [e.name for e in self.envs]
         self.weights: list[float] = [float(e.config.ratio) for e in self.envs]
 
-    def _shuffled(self, env_name: str) -> list[dict] | None:
+    def _shuffle(self, env_name: str) -> list[dict] | None:
         """The env's example table shuffled for its current epoch — a pure
         function of (canonical order, epoch), so a restored position replays
         the exact epoch permutation."""
@@ -93,7 +94,7 @@ class TrainSource(Stateful):
                 for _ in range(position["cursor"]):
                     next(self.iters[name])
             else:
-                self.examples[name] = self._shuffled(name)
+                self.examples[name] = self._shuffle(name)
 
     def next_example(self, available_permits: int) -> dict | None:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
@@ -107,7 +108,7 @@ class TrainSource(Stateful):
             return {"task_idx": task.data.idx, "task": task, "env_name": env_name}
         if cursor >= len(rows):
             self.epochs[env_name] += 1
-            rows = self._shuffled(env_name)
+            rows = self._shuffle(env_name)
             self.examples[env_name] = rows
             cursor = 0
         example = rows[cursor]

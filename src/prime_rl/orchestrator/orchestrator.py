@@ -343,7 +343,7 @@ class Orchestrator:
 
         self.lora_name = config.model.lora.name if config.model.lora else None
 
-        self.train_source = TrainSource(self.train_envs, seed=42)
+        self.train_source = TrainSource(self.train_envs)
 
         if self.resume_step is not None and self.ckpt_manager is not None:
             self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step)
@@ -352,14 +352,6 @@ class Orchestrator:
             # trainer even when ``ckpt.skip_progress`` left the counter unrestored.
             self.progress.step = self.resume_step + 1
             get_logger().info(f"Resuming orchestrator from checkpoint step {self.resume_step}")
-            if not config.ckpt.skip_progress:
-                for name, position in self.train_source.state_dict().items():
-                    rows = self.train_source.base_rows[name]
-                    num_tasks = len(rows) if rows is not None else "infinite"
-                    get_logger().info(
-                        f"Resumed data position for env {name} - epoch={position['epoch']}, "
-                        f"cursor={position['cursor']}/{num_tasks}"
-                    )
         else:
             get_logger().info("Training from scratch")
 

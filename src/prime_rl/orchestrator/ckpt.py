@@ -64,6 +64,15 @@ class CheckpointManager:
                 if hasattr(progress, key):
                     setattr(progress, key, value)
             train_source.load_state_dict(state["train_source"])
+            for name, position in state["train_source"].items():
+                if name not in train_source.base_rows:
+                    continue
+                rows = train_source.base_rows[name]
+                num_tasks = len(rows) if rows is not None else "infinite"
+                get_logger().info(
+                    f"Resumed data position for env {name} - epoch={position['epoch']}, "
+                    f"cursor={position['cursor']}/{num_tasks}"
+                )
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
 
 
