@@ -6,8 +6,14 @@ A rollout container (``TrainRollouts`` / ``EvalRollouts``) owns the rollout list
 ``rollouts.metrics.num_input_tokens.mean()`` works — and assembles the full
 ``{prefix}/{subset}/<metric>/<stat>`` wandb dict via ``.to_wandb(...)``.
 
-No I/O, no pandas — plain Python over the ``vf.Trace`` properties each rollout exposes. Aggregation
-is flat over the rollout list except the solve rates, which group by ``group_id``.
+The wandb layout mirrors the episode/trace hierarchy: ``{prefix}/{subset}/<metric>/<stat>`` reads at
+the episode level (the count metrics sum an episode's traces, matching ``vf.Episode``'s aggregates)
+and ``{prefix}/{subset}/<agent>/<metric>/<stat>`` at the trace level, grouped by agent name
+(``vf.Episode.by_agent``). A single-agent env has one trace per episode, so both levels coincide.
+
+No I/O, no pandas — plain Python over the ``vf.Trace`` properties each rollout exposes. The count
+metrics group by ``episode_id`` and the solve rates by ``group_id``; everything else is flat over
+the rollout list.
 """
 
 from __future__ import annotations
@@ -152,34 +158,86 @@ class CustomMetrics(StatGroup):
         }
 
 
+class AgentMetrics(StatGroup):
+    """Trace-level metrics for one agent, one value per episode: a fan-out (n same-agent traces
+    in one episode, e.g. n solvers) collapses to its within-episode mean first, so
+    ``<agent>/num_turns/mean`` is the mean over episodes of the agent's mean turns."""
+
+    DISTRIBUTIONS = ("reward", "num_total_tokens", "num_input_tokens", "num_output_tokens", "num_turns", "num_branches")
+    RATES = ("is_truncated", "is_completed")
+
+    def __init__(self, episodes: list[list[Rollout]]) -> None:
+        super().__init__([r for episode in episodes for r in episode])
+        self.episodes = episodes
+
+    def stats(self) -> dict[str, Stat]:
+        return {
+            name: Stat([sum(float(getattr(r, name)) for r in episode) / len(episode) for episode in self.episodes])
+            for name in (*self.DISTRIBUTIONS, *self.RATES)
+        }
+
+    def to_dict(self, prefix: str) -> dict[str, float]:
+        """Full ``<stat>`` fan-out for the distributions; ``/mean`` only for the 0/1 rates."""
+        stats = self.stats()
+        out: dict[str, float] = {}
+        for name in self.DISTRIBUTIONS:
+            out |= stats[name].to_dict(f"{prefix}/{name}")
+        for name in self.RATES:
+            out[f"{prefix}/{name}/mean"] = stats[name].mean()
+        return out
+
+
 class RolloutMetrics:
     """Metrics shared by train and eval over a rollout list. Distributional metrics are ``Stat``s
-    (mean/max/min); boolean metrics are ``Stat``s of 0/1 (use ``.mean()`` for the rate). ``to_wandb``
-    assembles the full ``{prefix}/{subset}/...`` dict; ``TrainMetrics`` / ``EvalMetrics`` extend it."""
+    (mean/max/min); boolean metrics are ``Stat``s of 0/1 (use ``.mean()`` for the rate). The count
+    metrics (tokens/turns/branches) are episode-level — one value per episode, summing its traces —
+    with the per-agent trace-level view under ``by_agent()``. ``to_wandb`` assembles the full
+    ``{prefix}/{subset}/...`` dict; ``TrainMetrics`` / ``EvalMetrics`` extend it."""
 
     def __init__(self, rollouts: list[Rollout]) -> None:
         self.rollouts = rollouts
 
-    # Distributional metrics
+    def episodes(self) -> list[list[Rollout]]:
+        """The subset's rollouts grouped into their episodes. A rollout without an
+        ``episode_id`` (legacy envs, synthesized error markers) is its own episode."""
+        grouped: dict[str, list[Rollout]] = {}
+        for r in self.rollouts:
+            grouped.setdefault(r.episode_id or r.id, []).append(r)
+        return list(grouped.values())
+
+    def by_agent(self) -> dict[str, AgentMetrics]:
+        """Per-agent metric views (``vf.Episode.by_agent`` over the subset's rollouts): each
+        episode contributes the agent's traces in it."""
+        per_agent: dict[str, list[list[Rollout]]] = {}
+        for episode in self.episodes():
+            traces: dict[str, list[Rollout]] = {}
+            for r in episode:
+                traces.setdefault(r.agent.name, []).append(r)
+            for name, agent_traces in traces.items():
+                per_agent.setdefault(name, []).append(agent_traces)
+        return {name: AgentMetrics(episodes) for name, episodes in sorted(per_agent.items())}
+
+    # Episode-level count metrics: one value per episode, summing its traces — the same
+    # aggregation as ``vf.Episode.num_turns`` / ``num_*_tokens``.
     @property
     def num_total_tokens(self) -> Stat:
-        return Stat([float(r.num_total_tokens) for r in self.rollouts])
+        return Stat([float(sum(r.num_total_tokens for r in episode)) for episode in self.episodes()])
 
     @property
     def num_input_tokens(self) -> Stat:
-        return Stat([float(r.num_input_tokens) for r in self.rollouts])
+        return Stat([float(sum(r.num_input_tokens for r in episode)) for episode in self.episodes()])
 
     @property
     def num_output_tokens(self) -> Stat:
-        return Stat([float(r.num_output_tokens) for r in self.rollouts])
+        return Stat([float(sum(r.num_output_tokens for r in episode)) for episode in self.episodes()])
 
     @property
     def num_turns(self) -> Stat:
-        return Stat([float(r.num_turns) for r in self.rollouts])
+        return Stat([float(sum(r.num_turns for r in episode)) for episode in self.episodes()])
 
     @property
     def num_branches(self) -> Stat:
-        return Stat([float(r.num_branches) for r in self.rollouts])
+        return Stat([float(sum(r.num_branches for r in episode)) for episode in self.episodes()])
 
     @property
     def timing(self) -> TimingMetrics:
@@ -259,6 +317,8 @@ class RolloutMetrics:
         out |= self.timing.to_dict(f"{p}/timing")
         out |= self.metrics.to_dict(f"{p}/metrics")
         out |= self.rewards.to_dict(f"{p}/rewards")
+        for agent, agent_metrics in self.by_agent().items():
+            out |= agent_metrics.to_dict(f"{p}/{agent}")
         out[f"{p}/is_truncated/mean"] = self.is_truncated.mean()
         out[f"{p}/is_completed/mean"] = self.is_completed.mean()
         # errors live only on the `all` subset (effective drops them), so emit the rate + the

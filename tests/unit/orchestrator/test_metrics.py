@@ -1,4 +1,5 @@
 import math
+from itertools import count
 from types import SimpleNamespace
 
 import pytest
@@ -7,10 +8,14 @@ import verifiers.v1 as vf
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
+_ids = count()
+
 
 def mk(
     reward: float = 0.0,
     *,
+    episode_id: str = "",
+    agent_name: str = "agent",
     num_total_tokens: int = 10,
     num_input_tokens: int = 4,
     num_output_tokens: int = 6,
@@ -36,8 +41,12 @@ def mk(
     finalize: float = 0.0,
     scoring: float = 0.0,
 ):
-    """Duck-typed stand-in for ``Rollout``, exposing only the Trace properties the metrics read."""
+    """Duck-typed stand-in for ``Rollout``, exposing only the Trace properties the metrics read.
+    Without an ``episode_id`` each rollout is its own single-trace episode (the unique ``id``
+    is the grouping fallback)."""
     return SimpleNamespace(
+        id=f"t{next(_ids)}",
+        episode_id=episode_id,
         reward=reward,
         rewards=rewards or {},
         num_total_tokens=num_total_tokens,
@@ -53,7 +62,7 @@ def mk(
         metrics=metrics or {},
         env_name=env_name,
         group_id=group_id,
-        agent=SimpleNamespace(trainable=trainable),
+        agent=SimpleNamespace(trainable=trainable, name=agent_name),
         is_trainable=is_trainable,
         is_filtered=is_filtered,
         filter_results=filter_results or {},
@@ -107,9 +116,33 @@ def test_to_wandb_distributions():
     out = m.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/reward/mean"] == 0.5
     assert out["train/agg/all/num_total_tokens/mean"] == 15.0
-    assert out["train/agg/all/num_total_tokens/max"] == 20.0  # flat over rollouts, not per-group
+    assert out["train/agg/all/num_total_tokens/max"] == 20.0  # single-trace episodes: one value per rollout
     assert out["train/agg/all/num_input_tokens/mean"] == 5.0
     assert out["train/agg/all/num_output_tokens/mean"] == 6.0
+
+
+def test_episode_and_agent_levels():
+    # Two proposer-solver episodes: one proposer + two solvers each (the solver fan-out).
+    rollouts = [
+        mk(reward=1.0, num_turns=1, agent_name="proposer", episode_id="e1"),
+        mk(reward=0.0, num_turns=2, agent_name="solver", episode_id="e1"),
+        mk(reward=1.0, num_turns=4, agent_name="solver", episode_id="e1"),
+        mk(reward=0.0, num_turns=3, agent_name="proposer", episode_id="e2"),
+        mk(reward=1.0, num_turns=6, agent_name="solver", episode_id="e2"),
+        mk(reward=0.0, num_turns=8, agent_name="solver", episode_id="e2"),
+    ]
+    m = TrainRollouts(rollouts).metrics
+    assert m.num_turns.mean() == 12.0  # episode-level sums: 1+2+4 and 3+6+8
+    assert m.num_total_tokens.values == [30.0, 30.0]  # summed across the episode's traces
+    out = m.to_wandb(prefix="train/agg", subset="all")
+    assert out["train/agg/all/num_turns/mean"] == 12.0
+    assert out["train/agg/all/proposer/num_turns/mean"] == 2.0  # one trace per episode: (1 + 3) / 2
+    assert out["train/agg/all/solver/num_turns/mean"] == 5.0  # mean of per-episode fan-out means (3, 7)
+    assert out["train/agg/all/solver/num_turns/max"] == 7.0
+    assert out["train/agg/all/solver/reward/mean"] == 0.5
+    assert out["train/agg/all/proposer/is_truncated/mean"] == 0.0
+    assert "train/agg/all/proposer/is_truncated/p90" not in out  # rates emit /mean only
+    assert out["train/agg/all/reward/mean"] == 0.5  # trace-level metrics stay flat over rollouts
 
 
 def test_boolean_rates_and_error_breakdown_all_only():

@@ -89,13 +89,14 @@ grep -E "WARNING|ERROR" {output_dir}/logs/envs/{train,eval}/*.log
 
 All metrics print to the console log (and W&B when configured).
 
-**Progress** — orchestrator log. Rollout metrics are keyed `{scope}/{subset}/<metric>/<stat>`: `scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (post-filter).
+**Progress** — orchestrator log. Rollout metrics are keyed `{scope}/{subset}/<metric>/<stat>` (episode-level: the token/turn/branch counts sum an episode's traces) and `{scope}/{subset}/<agent>/<metric>/<stat>` (trace-level, per agent name — an in-episode fan-out like n solvers averages within the episode first): `scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (post-filter). Single-agent envs have one trace per episode, so both levels agree.
 
 | Metric | Description |
 |--------|-------------|
 | `train/agg/effective/reward/mean` | mean training reward (per env: `train/<env>/effective/reward/mean`) |
-| `train/agg/effective/num_total_tokens/mean` | avg tokens per rollout (also `num_input_tokens`, `num_output_tokens`) |
-| `train/agg/effective/num_turns/mean` | avg turns per rollout (multi-turn only) |
+| `train/agg/effective/num_total_tokens/mean` | avg tokens per episode (also `num_input_tokens`, `num_output_tokens`) |
+| `train/agg/effective/num_turns/mean` | avg turns per episode (multi-turn only) |
+| `train/<env>/effective/<agent>/num_turns/mean` | per-agent avg turns (also `reward`, token counts, `is_truncated`) |
 | `train/agg/effective/is_truncated/mean` | fraction truncated |
 | `train/agg/all/has_error/mean` | fraction errored (per-type under `train/agg/all/error/<type>`; also `dispatcher/errored/{train,eval}`) |
 | `train/<env>/effective/metrics/<name>/mean` | env-specific metrics (e.g. pass rate) |
