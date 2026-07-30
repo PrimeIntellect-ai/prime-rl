@@ -298,17 +298,21 @@ class WandbMonitor(Monitor):
 
 OVERVIEW_NAME = "overview"
 
-# Per-rollout metrics (as "<subset>/<metric>" under "<scope>/") shown for BOTH train and eval.
-# Quality metrics read the effective subset — the all subset includes errored rollouts, whose
-# zero values skew the distributions. has_error only exists on all (effective drops errors by
-# construction). Only the reward metrics differ — train uses "reward/mean", eval uses "avg@k",
-# each shown for the all and effective subsets — and each section builder prepends its own.
+# Rollout metrics (under "<scope>/") shown for BOTH train and eval. Quality metrics read the
+# effective subset — the all subset includes errored rollouts, whose zero values skew the
+# distributions. has_error only exists on all (effective drops errors by construction). The count
+# metrics are episode-level exact keys; the trace-level metrics (reward, truncation, errors) live
+# under the per-agent subtree, whose names are data-dependent — matched by regex, one panel per
+# agent. Only the reward metrics differ — train uses the per-agent "reward/mean", eval uses the
+# env-level "avg@k" — and each section builder prepends its own.
 COMMON_METRICS = [
-    "all/has_error/mean",
-    "effective/is_truncated/mean",
     "effective/num_total_tokens/mean",
     "effective/num_turns/mean",
     "effective/num_branches/mean",
+]
+COMMON_REGEXES = [
+    "all/[^/]+/has_error/mean",
+    "effective/[^/]+/is_truncated/mean",
 ]
 
 STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"]
@@ -350,10 +354,14 @@ def section(name: str, metrics: Sequence[str] = (), regexes: Sequence[str] = ())
 
 
 def train_section(name: str, scope: str) -> ws.Section:
+    # Env names may carry regex metacharacters (e.g. "+"), so the scope is escaped in the
+    # regex-matched per-agent panels.
+    pattern = re.escape(scope)
     return section(
         name,
-        metrics=[f"{scope}/all/reward/mean", f"{scope}/effective/reward/mean"]
-        + [f"{scope}/{m}" for m in COMMON_METRICS],
+        metrics=[f"{scope}/{m}" for m in COMMON_METRICS],
+        regexes=[f"{pattern}/all/[^/]+/reward/mean", f"{pattern}/effective/[^/]+/reward/mean"]
+        + [f"{pattern}/{r}" for r in COMMON_REGEXES],
     )
 
 
@@ -363,7 +371,8 @@ def eval_section(name: str, env_pattern: str) -> ws.Section:
     return section(
         name,
         regexes=[f"eval/{env_pattern}/all/avg@.*", f"eval/{env_pattern}/effective/avg@.*"]
-        + [f"eval/{env_pattern}/{m}" for m in COMMON_METRICS],
+        + [f"eval/{env_pattern}/{m}" for m in COMMON_METRICS]
+        + [f"eval/{env_pattern}/{r}" for r in COMMON_REGEXES],
     )
 
 

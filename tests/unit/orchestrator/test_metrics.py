@@ -35,9 +35,9 @@ def mk(
     is_filtered: bool = False,
     filter_results: dict | None = None,
     setup: float = 0.0,
-    generation: float = 0.0,
-    generation_model: float = 0.0,
-    generation_harness: float = 0.0,
+    agent_time: float = 0.0,
+    agent_model: float = 0.0,
+    agent_harness: float = 0.0,
     finalize: float = 0.0,
     scoring: float = 0.0,
 ):
@@ -68,10 +68,10 @@ def mk(
         filter_results=filter_results or {},
         timing=SimpleNamespace(
             setup=SimpleNamespace(duration=setup),
-            generation=SimpleNamespace(
-                duration=generation,
-                model=SimpleNamespace(duration=generation_model),
-                harness=SimpleNamespace(duration=generation_harness),
+            agent=SimpleNamespace(
+                duration=agent_time,
+                model=SimpleNamespace(duration=agent_model),
+                harness=SimpleNamespace(duration=agent_harness),
             ),
             finalize=SimpleNamespace(duration=finalize),
             scoring=SimpleNamespace(duration=scoring),
@@ -114,7 +114,8 @@ def test_to_wandb_distributions():
     ).metrics
     assert m.num_input_tokens.mean() == 5.0  # fluent Stat access
     out = m.to_wandb(prefix="train/agg", subset="all")
-    assert out["train/agg/all/reward/mean"] == 0.5
+    assert out["train/agg/all/agent/reward/mean"] == 0.5
+    assert "train/agg/all/reward/mean" not in out  # trace-level metrics are agent-only
     assert out["train/agg/all/num_total_tokens/mean"] == 15.0
     assert out["train/agg/all/num_total_tokens/max"] == 20.0  # single-trace episodes: one value per rollout
     assert out["train/agg/all/num_input_tokens/mean"] == 5.0
@@ -142,16 +143,16 @@ def test_episode_and_agent_levels():
     assert out["train/agg/all/solver/reward/mean"] == 0.5
     assert out["train/agg/all/proposer/is_truncated/mean"] == 0.0
     assert "train/agg/all/proposer/is_truncated/p90" not in out  # rates emit /mean only
-    assert out["train/agg/all/reward/mean"] == 0.5  # trace-level metrics stay flat over rollouts
+    assert "train/agg/all/reward/mean" not in out  # reward never pools across agents
 
 
 def test_boolean_rates_and_error_breakdown_all_only():
     rc = TrainRollouts([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_filtered=True)])
     out = rc.metrics.to_wandb(prefix="train/agg", subset="all")
-    assert out["train/agg/all/is_truncated/mean"] == 1 / 3
-    assert out["train/agg/all/is_completed/mean"] == 1.0
-    assert out["train/agg/all/has_error/mean"] == 1 / 3
-    assert out["train/agg/all/error/ProviderError"] == 1  # error-type breakdown by count
+    assert out["train/agg/all/agent/is_truncated/mean"] == 1 / 3
+    assert out["train/agg/all/agent/is_completed/mean"] == 1.0
+    assert out["train/agg/all/agent/has_error/mean"] == 1 / 3
+    assert out["train/agg/all/agent/error/ProviderError"] == 1  # error-type breakdown by count
     assert not any("no_response" in k for k in out)  # removed metric
     # has_error + the error-type counts are structurally empty on effective, so emitted on `all` only
     eff = rc.effective.metrics.to_wandb(prefix="train/agg", subset="effective")
@@ -161,16 +162,20 @@ def test_boolean_rates_and_error_breakdown_all_only():
 def test_solve_rates():
     groups = {"A": [1.0, 1.0], "B": [0.0, 0.0], "C": [1.0, 0.0], "D": [1.0, 0.0]}  # all / none / some / some
     out = train_wandb([mk(reward=r, group_id=g) for g, rs in groups.items() for r in rs])
-    rates = (out["train/agg/all/solved_all"], out["train/agg/all/solved_none"], out["train/agg/all/solved_some"])
+    rates = (
+        out["train/agg/all/agent/solved_all"],
+        out["train/agg/all/agent/solved_none"],
+        out["train/agg/all/agent/solved_some"],
+    )
     assert rates == (0.25, 0.25, 0.5)
 
 
 def test_stop_condition_breakdown():
     truncated = [mk(is_truncated=True, stop_condition=c) for c in ("length", "max_turns", "prompt_too_long")]
     out = train_wandb(truncated + [mk(stop_condition=None)])
-    assert out["train/agg/all/stop_condition/generation_truncated"] == 0.5  # truncated & not prompt_too_long, over all
-    assert out["train/agg/all/stop_condition/length"] == 1 / 3  # over the 3 recorded conditions
-    assert out["train/agg/all/stop_condition/prompt_too_long"] == 1 / 3
+    assert out["train/agg/all/agent/stop_condition/generation_truncated"] == 0.5  # truncated & not prompt_too_long
+    assert out["train/agg/all/agent/stop_condition/length"] == 1 / 3  # over the 3 recorded conditions
+    assert out["train/agg/all/agent/stop_condition/prompt_too_long"] == 1 / 3
 
 
 def test_nested_metrics_and_rewards():
@@ -179,24 +184,26 @@ def test_nested_metrics_and_rewards():
         mk(metrics={"acc": 3.0, "fmt": 5.0}, rewards={"correct": vf.Reward(score=0.0), "format": vf.Reward(score=1.0)}),
     ]
     m = TrainRollouts(rollouts).metrics
-    assert m.metrics["acc"].mean() == 2.0 and m.rewards["correct"].mean() == 0.5  # nested group access
+    agent = m.by_agent()["agent"]
+    assert agent.metrics["acc"].mean() == 2.0 and agent.rewards["correct"].mean() == 0.5  # nested group access
     out = m.to_wandb(prefix="train/agg", subset="all")
-    assert out["train/agg/all/metrics/acc/mean"] == 2.0  # averaged over reporters
-    assert out["train/agg/all/metrics/fmt/mean"] == 5.0  # single reporter
-    assert out["train/agg/all/rewards/format/mean"] == 0.5
+    assert out["train/agg/all/agent/metrics/acc/mean"] == 2.0  # averaged over reporters
+    assert out["train/agg/all/agent/metrics/fmt/mean"] == 5.0  # single reporter
+    assert out["train/agg/all/agent/rewards/format/mean"] == 0.5
 
 
 def test_nested_timing():
     m = TrainRollouts(
-        [mk(setup=1.0, generation=2.0, generation_model=1.5, generation_harness=0.5, finalize=0.5, scoring=0.5)]
+        [mk(setup=1.0, agent_time=2.0, agent_model=1.5, agent_harness=0.5, finalize=0.5, scoring=0.5)]
     ).metrics
-    assert m.timing.setup.mean() == 1.0 and m.timing.total.mean() == 4.0  # total sums all four phases
-    assert m.timing.generation_model.mean() == 1.5 and m.timing.generation_harness.mean() == 0.5
+    timing = m.by_agent()["agent"].timing
+    assert timing.setup.mean() == 1.0 and timing.total.mean() == 4.0  # total sums all four phases
+    assert timing.agent_model.mean() == 1.5 and timing.agent_harness.mean() == 0.5
     out = m.to_wandb(prefix="train/agg", subset="all")
-    assert out["train/agg/all/timing/setup/mean"] == 1.0
-    assert out["train/agg/all/timing/total/mean"] == 4.0
-    assert out["train/agg/all/timing/generation/model/mean"] == 1.5
-    assert out["train/agg/all/timing/generation/harness/mean"] == 0.5
+    assert out["train/agg/all/agent/timing/setup/mean"] == 1.0
+    assert out["train/agg/all/agent/timing/total/mean"] == 4.0
+    assert out["train/agg/all/agent/timing/agent/model/mean"] == 1.5
+    assert out["train/agg/all/agent/timing/agent/harness/mean"] == 0.5
 
 
 def test_train_only_metrics_absent_from_eval():

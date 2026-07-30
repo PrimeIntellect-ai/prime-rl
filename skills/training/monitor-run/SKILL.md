@@ -89,17 +89,18 @@ grep -E "WARNING|ERROR" {output_dir}/logs/envs/{train,eval}/*.log
 
 All metrics print to the console log (and W&B when configured).
 
-**Progress** — orchestrator log. Rollout metrics are keyed `{scope}/{subset}/<metric>/<stat>` (episode-level: the token/turn/branch counts sum an episode's traces) and `{scope}/{subset}/<agent>/<metric>/<stat>` (trace-level, per agent name — an in-episode fan-out like n solvers averages within the episode first): `scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (post-filter). Single-agent envs have one trace per episode, so both levels agree.
+**Progress** — orchestrator log. Rollout metrics mirror the episode/trace hierarchy: `{scope}/{subset}/<metric>/<stat>` carries episode-level facts only (token/turn/branch counts summed over an episode's traces, plus train pipeline rates and eval scores); every trace-level metric (reward, truncation, errors, timing, env metrics) lives under `{scope}/{subset}/<agent>/<metric>/<stat>`, per agent name — an in-episode fan-out like n solvers averages within the episode first. `scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (post-filter). Single-agent envs have one agent (usually `agent`) and one trace per episode.
 
 | Metric | Description |
 |--------|-------------|
-| `train/agg/effective/reward/mean` | mean training reward (per env: `train/<env>/effective/reward/mean`) |
+| `train/agg/effective/<agent>/reward/mean` | mean training reward (per env: `train/<env>/effective/<agent>/reward/mean`) |
 | `train/agg/effective/num_total_tokens/mean` | avg tokens per episode (also `num_input_tokens`, `num_output_tokens`) |
 | `train/agg/effective/num_turns/mean` | avg turns per episode |
-| `train/<env>/effective/<agent>/num_turns/mean` | per-agent avg turns (also `reward`, token counts, `is_truncated`) |
-| `train/agg/effective/is_truncated/mean` | fraction truncated |
-| `train/agg/all/has_error/mean` | fraction errored (per-type under `train/agg/all/error/<type>`; also `dispatcher/errored/{train,eval}`) |
-| `train/<env>/effective/metrics/<name>/mean` | env-specific metrics (e.g. pass rate) |
+| `train/<env>/effective/<agent>/num_turns/mean` | per-agent avg turns (also token counts, `num_branches`) |
+| `train/agg/effective/<agent>/is_truncated/mean` | fraction truncated |
+| `train/agg/all/<agent>/has_error/mean` | fraction errored (per-type under `train/agg/all/<agent>/error/<type>`; also `dispatcher/errored/{train,eval}`) |
+| `train/<env>/effective/<agent>/metrics/<name>/mean` | env-specific metrics (e.g. pass rate) |
+| `train/<env>/effective/<agent>/timing/agent/model/mean` | model vs harness share of the agent phase |
 | `eval/<env>/effective/{avg@k,pass@k}` | eval scores when configured |
 
 **Stability** — trainer log:
