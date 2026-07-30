@@ -14,7 +14,7 @@ lr = 3e-5
 [train.sampling]
 max_completion_tokens = 128
 
-[[train.env]]
+[[train.source]]
 name = "reverse-text"
 env.taskset = { id = "reverse-text-v1" }
 env.agent.harness = { id = "null" }

@@ -10,7 +10,7 @@ dependencies = [
     "renderers>=0.1.8",
     "tomli>=2.2.1",
     "tomli-w>=1.2.0",
-    "verifiers>=0.2.1",
+    "verifiers>=0.2.2.dev43",
 ]
 
 [build-system]

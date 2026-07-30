@@ -17,7 +17,7 @@ This page covers the math and the configurable algorithmic components: the algor
   - [Custom Loss](#custom-loss)
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
-  - [Hierarchical Advantage (Proposer–Solver)](#hierarchical-advantage-proposersolver)
+  - [Hierarchical GRPO](#hierarchical-grpo)
   - [Self-Play Advantage (RAE)](#self-play-advantage-rae)
   - [Authoring an Algorithm](#authoring-an-algorithm)
   - [Reference Scoring](#reference-scoring)
@@ -70,7 +70,7 @@ type = "grpo"  # the default
 | `grpo` | policy | `rl` on actions | Standard group-relative RL. |
 | `max_rl` | policy | `rl` on actions | MaxRL ([arXiv:2602.02710](https://arxiv.org/abs/2602.02710)): GRPO's centered reward normalized by the group **mean** instead of the standard deviation — the gradient is unbiased for the order-`group_size` truncation of the maximum-likelihood objective, upweighting hard examples like `1/p`. |
 | `rae` | policy | `rl` on actions | RAE (SPIRAL, [arXiv:2506.24119](https://arxiv.org/abs/2506.24119)): reward minus a per-agent EMA baseline of that agent's own rewards — the estimator for multi-agent self-play envs, where the group mean would mix the agents' opposite reward scales. See [Self-Play Advantage](#self-play-advantage-rae). |
-| `hierarchical_grpo` | policy | `rl` on actions | For Proposer-Solver type envs. Needs `episode_agents`. See [Hierarchical Advantage](#hierarchical-advantage-proposersolver). |
+| `hierarchical_grpo` | policy | `rl` on actions | GRPO for proposer-solver envs. Solvers are compared only with attempts on the same proposed problem; proposers are compared with the other proposals in the group. Requires `episode_agents`. See [Hierarchical GRPO](#hierarchical-grpo). |
 | `opd` | policy | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs a `teacher`. |
 | `sft` | *(the teacher)* | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs a frozen `sampling.source` (the teacher it samples from). |
 | `opsd` | policy | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. The teacher *is* the live policy (the paper's setting, no extra deployment) — no model to configure. |
@@ -120,18 +120,18 @@ Both components resolve per environment. Each env inherits `[orchestrator.algo]`
 [orchestrator.algo]
 type = "grpo"
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "math"
-taskset = { id = "math-v1" }
-harness = { id = "null" }
-runtime = { type = "subprocess" }
+env.taskset = { id = "math-v1" }
+env.agent.harness = { id = "null" }
+env.agent.runtime = { type = "subprocess" }
 # inherits the top-level grpo
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "terminal"
-taskset = { id = "terminal-v1" }
-harness = { id = "bash" }
-runtime = { type = "subprocess" }
+env.taskset = { id = "terminal-v1" }
+env.agent.harness = { id = "bash" }
+env.agent.runtime = { type = "subprocess" }
 algo = { type = "echo" }   # this env runs its own algorithm
 ```
 
@@ -285,7 +285,7 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 | `grpo` | `rl` | Group-norm: reward minus per-group baseline, optional length penalty. |
 | `max_rl` | `rl` | Mean-normalized group credit (maximum-likelihood RL). |
 | `rae` | `rl` | Reward minus a per-agent EMA baseline (SPIRAL's role-conditioned advantage estimation) — for multi-agent self-play envs. |
-| `hierarchical_grpo` | `rl` | Reward minus a GRPO baseline taken at two levels of the episode tree: each solver against the siblings attempting its own minted task, the proposer across the group's proposals — proposer-solver envs only. |
+| `hierarchical_grpo` | `rl` | GRPO for proposer-solver envs: solvers are compared within one proposed problem, while proposers are compared across proposals. |
 | `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-provided tokens selected by message role (each role's `alpha` is its ECHO λ), optionally narrowed by a user filter. |
 | `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`teacher`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream; `group_size` only fans out sampling. |
 | `opsd` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream. |
@@ -307,33 +307,56 @@ type = "grpo"
 type = "linear"
 ```
 
-### Hierarchical Advantage (Proposer–Solver)
+### Hierarchical GRPO
 
-Task-generating envs break the flat-group assumption twice over. In `proposer-solver-v1`, one episode is a proposer trace plus the n solver traces its minted problem fanned out to, and a group is `group_size` episodes of the same source task — the proposer asked `group_size` times to invent a problem. Pooling solver rewards across episodes baselines them against attempts at *different* problems; pooling proposer and solver traces mixes reward scales across agents (the proposer earns learnability, the solvers correctness).
+GRPO gives each rollout its reward minus the average reward of comparable rollouts. In an ordinary single-agent group, every rollout answers the same task, so one group average is enough.
 
-`hierarchical_grpo` computes GRPO baselines at two levels of that episode tree. Every trainable trace is mean-centered against its *peer set*:
+A proposer-solver env is different. Starting from one source task, it produces several proposed problems, then runs several solver attempts on each problem:
 
-- agents listed in `episode_agents` (the solvers) against the same-agent traces of **their own episode** — sibling attempts at the same minted task;
-- every other agent (the proposer) against its same-agent traces **across the group** — parallel attempts at the same source task, each rewarded by what its minted task did to the solvers (`proposer-solver-v1`'s learnability, `4p(1−p)`, peaks when half the solvers crack the problem).
+```text
+one source task
+├── proposed problem A
+│   ├── proposer trace
+│   ├── solver attempt 1
+│   └── solver attempt 2
+└── proposed problem B
+    ├── proposer trace
+    ├── solver attempt 1
+    └── solver attempt 2
+```
 
-Rewards never mix across agents or across minted tasks. A peer set of one centers to zero advantage (GRPO's singleton convention; the zero-advantage filter drops it). Config validation rejects any env that isn't a proposer-solver env — the two-level peer sets *are* that episode tree, and on a flat env they collapse to one trace each, so every group would train on nothing but zeros. `episode_agents` is required — which agents are episode-scoped is env truth the algorithm must not guess:
+The solver attempts for A should not be compared with the solver attempts for B: the two problems may have very different difficulty. Proposer and solver rewards should not be compared either: they measure different jobs.
+
+`hierarchical_grpo` therefore chooses the average separately for each role:
+
+| Trace | Compared with | Why |
+|---|---|---|
+| Solver | Other solver attempts on the same proposed problem | They attempted the same problem. |
+| Proposer | Other proposer traces in the group | They started from the same source task and proposed alternatives. |
+
+For example, if three solvers receive rewards `[1, 1, 0]` on one proposed problem, their average is `2/3` and their advantages are `[1/3, 1/3, -2/3]`. Solver rewards from other proposed problems do not affect those values. The proposers are scored separately according to how useful their problems were for the solvers, then compared with the other proposers in the group.
+
+Configure which roles are compared within a single proposed problem with `episode_agents`. For `proposer-solver-v1`, that role is `solver`:
 
 ```toml
 [orchestrator.algo]
 type = "hierarchical_grpo"
 episode_agents = ["solver"]
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "proposer-solver"
+group_size = 4  # proposed problems per source task
 env.taskset = { id = "proposer-solver-v1" }
-env.n = 4  # solvers per proposed problem
+env.n = 4  # solver attempts per proposed problem
 env.proposer.harness = { id = "null" }
 env.proposer.runtime = { type = "subprocess" }
 env.solver.harness = { id = "null" }
 env.solver.runtime = { type = "subprocess" }
 ```
 
-Here `group_size` is the number of proposals per source task and `env.n` the solvers per proposal, so one group carries `group_size × (1 + n)` traces. To train only one side, flip the env's own switches (`env.train_proposer` / `env.train_solver`) — the untrainable side's traces never reach the advantage computation.
+`group_size` controls how many problems are proposed from each source task. `env.n` controls how many solvers attempt each proposed problem. If a comparison contains only one trace—for example, a solver when `env.n = 1`—its advantage is zero and the zero-advantage filter removes it.
+
+This algorithm is accepted only for proposer-solver envs. Use the env's `train_proposer` and `train_solver` settings if you want to train only one role.
 
 ### Self-Play Advantage (RAE)
 
@@ -346,7 +369,7 @@ Group-relative baselines assume the group is exchangeable attempts by one agent.
 type = "rae"
 decay = 0.95
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "kuhn-poker"
 env.taskset = { id = "kuhn-poker-v1" }
 env.player0.harness = { id = "null" }

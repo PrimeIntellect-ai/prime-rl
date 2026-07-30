@@ -17,7 +17,7 @@ Every `prime-rl` entrypoint uses [`pydantic-config`](https://github.com/PrimeInt
   - [Optional Sub-Configs](#optional-sub-configs)
   - [None](#none)
   - [Discriminated Unions](#discriminated-unions)
-  - [Environments](#environments-orchestratortrainenv)
+  - [Environments](#environments)
   - [Environment Variables](#environment-variables)
 - [Examples](#examples)
 
@@ -55,7 +55,7 @@ CLI flags mirror the TOML tree using dots:
 
 > Field names are snake_case in TOML (`max_model_len`) and kebab-case on the CLI (`--max-model-len`).
 
-> Renamed fields keep their old name as a validation alias — e.g. `rollouts_per_example` is still accepted in TOML and CLI after being renamed to `group_size`. Mixing the two names across sources is safe.
+> A renamed field keeps no alias for its old name: the old spelling fails as an unknown key rather than being silently translated.
 
 ## Inspecting and Validating
 
@@ -93,19 +93,19 @@ uv run rl @ rl.toml --trainer.model.lora.target-modules '["q_proj", "k_proj", "v
 target_modules = ["q_proj", "k_proj", "v_proj"]
 ```
 
-Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. For arrays of tables (e.g. environments), see [Environments](#environments-orchestratortrainenv).
+Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. For arrays of tables, see [Environments](#environments).
 
 ### Dicts
 
 CLI takes a JSON literal. TOML uses a table or inline-table. CLI dicts deep-merge with TOML dicts — CLI keys win on conflict but don't wipe the file's keys:
 
 ```bash
-uv run rl @ rl.toml --orchestrator.train.env.0.args \
+uv run rl @ rl.toml --orchestrator.train.source.0.args \
   '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}'
 ```
 
 ```toml
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
 ```
 
@@ -142,26 +142,26 @@ mu = 0.95
 
 Omit `type` to keep the default variant.
 
-### Environments (`[[orchestrator.train.env]]`)
+### Environments
 
-Training environments are an array of tables — set one per env, optionally with sampling weights:
+Training and evaluation sources are arrays of tables. Set one source per environment; training sources can optionally carry sampling weights:
 
 ```toml
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "gsm8k"
 env.taskset = { id = "gsm8k-v1", split = "train" }
 env.agent.harness = { id = "null" }
 env.agent.runtime = { type = "subprocess" }
 ratio = 3  # 75% of batches
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "reverse-text"
 env.taskset = { id = "reverse-text-v1" }
 env.agent.harness = { id = "null" }
 env.agent.runtime = { type = "subprocess" }
 ratio = 1  # default — 25% of batches
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "gsm8k-eval"
 env.taskset = { id = "gsm8k-v1", split = "test" }
 env.agent.harness = { id = "null" }

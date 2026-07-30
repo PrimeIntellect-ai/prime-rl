@@ -32,8 +32,7 @@ def create_run_with_config(output_dir: Path, run_name: str) -> Path:
         "model": {"name": "test-model"},
         "batch_size": 2,
         "group_size": 1,
-        "env": [{"id": "test-env"}],
-        "sampling": {"temperature": 1.0},
+        "train": {"source": [{"legacy": {"id": "test-env"}}], "sampling": {"temperature": 1.0}},
         # test-model isn't in MODEL_RENDERER_MAP; use the explicit default renderer.
         "renderer": {"name": "default"},
     }

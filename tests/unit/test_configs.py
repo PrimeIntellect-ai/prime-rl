@@ -25,11 +25,14 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`."""
+    """Any TOML file inside `configs/`, `examples/` or `k8s/`."""
     config_files = list(Path("configs").rglob("*.toml"))
     example_files = list(Path("examples").rglob("*.toml"))
+    # The k8s example configs are mounted into the chart's containers verbatim, so a
+    # stale key there breaks a deploy with nothing else to catch it.
+    k8s_files = list(Path("k8s").rglob("*.toml"))
 
-    return config_files + example_files
+    return config_files + example_files + k8s_files
 
 
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
@@ -177,10 +180,10 @@ def test_env_algo_overrides_top_level():
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
             "algo": {"type": "echo"},
-            "train": {"env": [{"id": "a", "algo": {"type": "grpo"}}, {"id": "b"}]},
+            "train": {"source": [{"legacy": {"id": "a"}, "algo": {"type": "grpo"}}, {"legacy": {"id": "b"}}]},
         }
     )
-    env_a, env_b = config.train.env
+    env_a, env_b = config.train.source
     # Env a sets its own algorithm; only env b inherits the top-level echo algorithm.
     assert env_a.algo is not None and env_a.algo.type == "grpo"
     assert env_b.algo is not None and env_b.algo.type == "echo"
@@ -188,7 +191,23 @@ def test_env_algo_overrides_top_level():
     # Resolved configs round-trip.
     dumped = config.model_dump(exclude_none=True)
     reloaded = OrchestratorConfig.model_validate(dumped)
-    assert reloaded.train.env[0].algo is not None and reloaded.train.env[0].algo.type == "grpo"
+    assert reloaded.train.source[0].algo is not None and reloaded.train.source[0].algo.type == "grpo"
+
+    with pytest.raises(ValidationError, match="env"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "train": {"env": [{"legacy": {"id": "removed"}}]},
+            }
+        )
+
+    with pytest.raises(ValidationError, match="env"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "eval": {"env": [{"legacy": {"id": "removed"}}]},
+            }
+        )
 
 
 def test_trainer_enable_token_export_cli_flag():

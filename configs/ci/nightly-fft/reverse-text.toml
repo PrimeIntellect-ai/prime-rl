@@ -18,7 +18,7 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 batch_size = 128
 group_size = 16
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "reverse-text"
 env.taskset = { id = "reverse-text-v1" }
 env.agent.harness = { id = "null" }

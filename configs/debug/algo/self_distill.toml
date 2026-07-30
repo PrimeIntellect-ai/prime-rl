@@ -29,7 +29,7 @@ name = "prime-qwen3"
 [orchestrator.train.sampling]
 max_completion_tokens = 128
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "reverse-text"
 env.taskset = { id = "reverse-text-v1" }
 env.agent.harness = { id = "null" }
@@ -42,7 +42,7 @@ num_examples = 128
 [orchestrator.eval.sampling]
 max_completion_tokens = 128
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "reverse-text"
 env.taskset = { id = "reverse-text-v1" }
 env.agent.harness = { id = "null" }

@@ -263,34 +263,21 @@ class RAEAlgoConfig(BaseAlgoConfig):
 
 class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
     type: Literal["hierarchical_grpo"] = "hierarchical_grpo"
-    """Hierarchical GRPO for task-generating envs (``proposer-solver-v1`` and
-    friends): GRPO baselines computed at two levels of the episode tree. A
-    group is ``group_size`` episodes of the same source task, and one episode
-    holds a proposer trace plus the n solver traces its minted task fanned out
-    to. Every trainable trace is mean-centered against its *peer set*: agents
-    listed in ``episode_agents`` (the solvers) against the same-agent traces of
-    their own episode — sibling attempts at the same minted task — and every
-    other agent (the proposer) against its same-agent traces across the group —
-    parallel attempts at the same source task. Rewards never mix across agents
-    or across minted tasks. Only a proposer-solver env may train under it — the
-    peer sets are that env's episode tree (see ``validate_env``)."""
+    """GRPO for proposer-solver envs.
+
+    Agents in ``episode_agents`` are compared with same-role attempts on the
+    same proposed problem. Other agents are compared with the same role across
+    proposals generated from one source task. This keeps rewards from different
+    problems and different roles out of the same average."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     episode_agents: list[str] = Field(min_length=1)
-    """Agents whose peer set is their own episode (``["solver"]`` for
-    ``proposer-solver-v1``): their reward compares only against sibling traces
-    of the same agent in the same episode, because each episode mints its own
-    task and rewards are not exchangeable across episodes. Required — which
-    agents are episode-scoped is env truth the algorithm must not guess."""
+    """Roles compared within one proposed problem. Use ``["solver"]`` for
+    ``proposer-solver-v1``."""
 
     def validate_env(self, env_config: vf.EnvConfig) -> None:
-        """Only a proposer-solver env may train under hierarchical GRPO. The
-        two-level peer sets *are* that env's episode tree — one proposer trace
-        per episode plus the solver traces its minted task fanned out to — so on
-        a flat env the levels collapse and every trace silently lands in a peer
-        set of one (zero advantage, whole group filtered). Nothing in a rollout
-        reveals the tree, so the env's own config class is the check."""
+        """Require the proposer-solver structure used by the comparisons."""
         try:
             from proposer_solver_v1 import ProposerSolverEnvConfig
         except ImportError as e:
@@ -301,9 +288,9 @@ class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
         if not isinstance(env_config, ProposerSolverEnvConfig):
             raise ValueError(
                 f"algorithm 'hierarchical_grpo' needs a proposer-solver env, but this env resolved to "
-                f"{type(env_config).__name__} — its two-level baselines read an episode tree "
-                "(a proposer trace plus the solver traces its minted task fanned out to) that a flat "
-                "env does not have. Use 'grpo' (or 'rae' for multi-agent self-play)."
+                f"{type(env_config).__name__}. It compares solver attempts on the same proposed "
+                "problem and proposers across proposals. Use 'grpo' for a flat env or 'rae' for "
+                "multi-agent self-play."
             )
 
 
@@ -397,7 +384,7 @@ its class defaults are the vetted setting.
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``rae`` — reward minus a per-agent EMA baseline (SPIRAL), for multi-agent self-play envs.
-- ``hierarchical_grpo`` — two-level GRPO for proposer-solver envs: each solver is baselined against the siblings attempting its own minted task, the proposer across the group's proposals. Needs ``episode_agents``.
+- ``hierarchical_grpo`` — GRPO for proposer-solver envs: solvers are compared within one proposed problem and proposers across proposals. Needs ``episode_agents``.
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.

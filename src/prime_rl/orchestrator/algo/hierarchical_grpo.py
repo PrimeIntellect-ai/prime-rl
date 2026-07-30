@@ -12,29 +12,17 @@ if TYPE_CHECKING:
 
 
 class HierarchicalGRPOAlgorithm(Algorithm):
-    """Hierarchical GRPO for task-generating envs (proposer-solver-v1 and
-    friends): GRPO baselines computed at two levels of the episode tree.
+    """GRPO for proposer-solver envs.
 
-    A group is ``group_size`` episodes of the same source task — the proposer
-    asked ``group_size`` times to invent a problem — and each episode holds the
-    proposer's trace plus the n solver traces its minted task fanned out to.
-    Neither level is safe under plain GRPO: pooling solver rewards across
-    episodes baselines them against attempts at *different* problems, and
-    pooling proposer and solver traces mixes reward scales across agents.
+    Solver rewards are compared only with other attempts on the same proposed
+    problem. Proposer rewards are compared with the other proposals generated
+    from the same source task. Keeping those comparisons separate avoids
+    treating different problem difficulties or different agent roles as
+    interchangeable.
 
-    Every trainable trace is instead mean-centered against its peer set:
-
-    - agents in ``episode_agents`` (the solvers) against the same-agent traces
-      of their own episode — sibling attempts at the same minted task;
-    - every other agent (the proposer) against its same-agent traces across
-      the group — parallel attempts at the same source task, rewarded by what
-      their minted tasks did to the solvers (e.g. learnability).
-
-    A peer set of one centers to zero advantage (GRPO's singleton convention;
-    the zero-advantage filter drops it). Nothing in a rollout reveals the tree,
-    so the env itself is gated at config validation
-    (:meth:`HierarchicalGRPOAlgoConfig.validate_env`) rather than here: on a flat
-    env every peer set would be a singleton and every group train on zeros."""
+    ``episode_agents`` lists the roles, normally ``solver``, that are compared
+    within one episode. Other roles are compared across the full rollout group.
+    A comparison group with one trace produces zero advantage."""
 
     def __init__(self, config: HierarchicalGRPOAlgoConfig, policy_pool: InferencePool):
         super().__init__(config, policy_pool)

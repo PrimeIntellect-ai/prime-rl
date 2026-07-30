@@ -156,7 +156,7 @@ class Orchestrator:
         # Route the in-process v1 library logging through our handler. The
         # env server runs in a child process, so its logging is separate.
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
-        algorithms = sorted({env.algo.type for env in config.train.env if env.algo is not None})
+        algorithms = sorted({env.algo.type for env in config.train.source if env.algo is not None})
         get_logger().info(f"Starting orchestrator (algorithm: {', '.join(algorithms)})")
 
         if config.bench:
@@ -238,8 +238,8 @@ class Orchestrator:
             tokenizer=self.tokenizer,
             run_config=config,
             keep_full_history=config.bench,
-            train_env_names=[env.resolved_name for env in config.train.env],
-            eval_env_names=[env.resolved_name for env in config.eval.env] if config.eval is not None else [],
+            train_env_names=[env.resolved_name for env in config.train.source],
+            eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
 
         if config.heartbeat is not None:
@@ -256,7 +256,7 @@ class Orchestrator:
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
-            config.train.env, policy_pool=self.policy_inference, renderer_config=config.renderer
+            config.train.source, policy_pool=self.policy_inference, renderer_config=config.renderer
         )
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
@@ -270,7 +270,7 @@ class Orchestrator:
 
         if config.eval is not None:
             get_logger().info("Loading eval environment(s)")
-            self.eval_envs = EvalEnvs(config.eval.env)
+            self.eval_envs = EvalEnvs(config.eval.source)
             get_logger().debug(f"Loaded {len(self.eval_envs)} eval environment(s) ({', '.join(self.eval_envs.names)})")
             await self.eval_envs.start(
                 log_dir=get_log_dir(config.output_dir.parent) / "envs" / "eval",
@@ -391,7 +391,7 @@ class Orchestrator:
             else None
         )
 
-        assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
+        assert config.max_inflight_episodes is not None, "max_inflight_episodes must be resolved before dispatcher init"
         log_interval = config.log.interval
         wandb_enabled = config.wandb is not None
         self.dispatcher = RolloutDispatcher(
@@ -401,7 +401,7 @@ class Orchestrator:
             eval_source=self.eval_source,
             policy_pool=self.policy_inference,
             policy=self.policy,
-            max_inflight_rollouts=config.max_inflight_rollouts,
+            max_inflight_episodes=config.max_inflight_episodes,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
         )
@@ -875,15 +875,15 @@ class Orchestrator:
         metrics["step"] = float(batch.step)
         self.monitor.log(metrics, step=batch.step)
 
-        # Success line — reward / turns / truncation over the effective set, error rate + branches
-        # over the full returned cohort. ``Stat.mean()`` is 0.0 for an empty set.
+        # Success line — quality metrics over the effective set, error rate over the full returned
+        # cohort. ``Stat.mean()`` is 0.0 for an empty set.
         eff, full = effective.metrics, rollouts.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
-            f"Turns {eff.num_turns.mean():.1f} | Branches {full.num_branches.mean():.1f} | "
+            f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
         )
 

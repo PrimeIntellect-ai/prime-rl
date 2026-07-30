@@ -1,9 +1,8 @@
-import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import Field, SerializeAsAny, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
@@ -54,9 +53,7 @@ class TrainSamplingConfig(BaseConfig):
     temperature: float = Field(1.0, ge=0, le=2.0)
     """Sampling temperature."""
 
-    max_completion_tokens: int | None = Field(
-        None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
-    )
+    max_completion_tokens: int | None = None
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
 
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
@@ -79,18 +76,6 @@ class TrainSamplingConfig(BaseConfig):
 
         return args
 
-    @model_validator(mode="before")
-    @classmethod
-    def _deprecate_max_tokens(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "max_tokens" in data and "max_completion_tokens" not in data:
-            warnings.warn(
-                "'max_tokens' is deprecated, use 'max_completion_tokens' instead. "
-                "Auto-translating for now, but this will be removed in a future release.",
-                FutureWarning,
-                stacklevel=2,
-            )
-        return data
-
 
 class EvalSamplingConfig(BaseConfig):
     temperature: float | None = Field(None, ge=0, le=2.0)
@@ -105,9 +90,7 @@ class EvalSamplingConfig(BaseConfig):
     min_p: float | None = Field(None, ge=0)
     """Min-p sampling threshold. None defers to the inference server default."""
 
-    max_completion_tokens: int | None = Field(
-        None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
-    )
+    max_completion_tokens: int | None = None
     """Maximum output tokens per turn. None defers to the inference server default."""
 
     reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
@@ -138,40 +121,53 @@ class EvalSamplingConfig(BaseConfig):
 
         return args
 
-    @model_validator(mode="before")
-    @classmethod
-    def _deprecate_max_tokens(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "max_tokens" in data and "max_completion_tokens" not in data:
-            warnings.warn(
-                "'max_tokens' is deprecated, use 'max_completion_tokens' instead. "
-                "Auto-translating for now, but this will be removed in a future release.",
-                FutureWarning,
-                stacklevel=2,
-            )
-        return data
 
-
-class EnvConfig(vf.EnvServerConfig):
-    name: str | None = None
-    """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
+class ServingConfig(vf.ServingConfig):
+    """Verifiers' serving block with ``address`` back to optional. Verifiers defaults it
+    to the address its own ``serve`` CLI binds; here the question is whether to spawn a
+    server or connect to one already running, and that answer has to survive the
+    resolved config being written to a file and read back — so it must be a *value*
+    (``None``), not field-set metadata, which a round-trip drops."""
 
     address: str | None = None
-    """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically. The ``pool`` sizes the spawned server."""
+    """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to that server instead of spawning one; when None, it spawns a subprocess env server on a free port. ``pool`` sizes the spawned server."""
+
+
+class EnvConfig(BaseConfig):
+    """One environment a run pulls from: the verifiers blocks it composes (``env`` — what
+    runs, ``serve`` — how it's hosted, ``legacy`` — a classic v0 env instead) plus this
+    orchestrator's own per-env knobs."""
+
+    env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
+    """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
+
+    serve: ServingConfig = ServingConfig()
+    """How the env server is run: ``serve.pool`` sizes the spawned server, ``serve.address`` points at an external one instead, and ``serve.max_concurrent`` bounds one worker's episodes in flight (unset = unbounded; the dispatcher's ``max_inflight_episodes`` is the run's bound)."""
+
+    legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()
+    """A classic (v0) environment to run through the bridge instead of ``env``."""
+
+    name: str | None = None
+    """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
     ratio: float = Field(1.0, gt=0)
     """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_num_workers(cls, data):
-        """Back-compat: the removed ``num_workers`` maps onto ``pool`` — an int becomes a
-        fixed ``static`` pool, ``"auto"`` falls through to the default ``elastic`` pool. An
-        explicit ``pool`` always wins."""
-        if isinstance(data, dict) and "num_workers" in data:
-            num_workers = data.pop("num_workers")
-            if "pool" not in data and num_workers != "auto":
-                data["pool"] = {"type": "static", "num_workers": num_workers}
-        return data
+    def _resolve_env(cls, data):
+        """Narrow ``env`` to the selected env's config class."""
+        return vf.resolve_env_field(data, vf.narrowed_env_annotation(cls))
+
+    @property
+    def is_legacy(self) -> bool:
+        """A classic (v0) env run through the bridge: a legacy id and no v1 taskset."""
+        return self.legacy.id is not None and not self.env.taskset.id
+
+    @property
+    def env_id(self) -> str:
+        """The env's identifier: the v1 env's, else the v0 env id."""
+        return self.env.env_id or self.legacy.id or ""
 
     @property
     def resolved_name(self) -> str:
@@ -179,9 +175,24 @@ class EnvConfig(vf.EnvServerConfig):
 
     @model_validator(mode="after")
     def validate_env(self):
+        # A v0 id next to any v1 env identity leaves one of the two going nowhere, and
+        # which one depends on `is_legacy`: a taskset makes it False, so the v0 env never
+        # loads; a bare `env.id` leaves it True, so the v0 env runs under the v1 name.
+        if self.legacy.id is not None and self.env.env_id:
+            if self.env.taskset.id:
+                raise ValueError(
+                    f"legacy.id {self.legacy.id!r} is a classic (v0) env and can't combine with "
+                    f"the v1 taskset {self.env.taskset.id!r}. Pairing a reusable env with a taskset "
+                    f"is env.id = {self.legacy.id!r}; to run the v0 env instead, drop the taskset."
+                )
+            raise ValueError(
+                f"legacy.id {self.legacy.id!r} is a classic (v0) env and can't combine with the "
+                f"v1 env.id {self.env.id!r}: the v0 env is what would run, stamped with the v1 "
+                "env's name. Keep whichever one you meant to run."
+            )
         if not self.env_id:
             raise ValueError(
-                'no env configured — set env = { taskset = { id = "<id>" } } (v1) or id = "<id>" (v0/legacy)'
+                'no env configured — set env = { taskset = { id = "<id>" } } (v1) or legacy = { id = "<id>" } (v0)'
             )
         if self.resolved_name == "agg":
             raise ValueError(
@@ -192,25 +203,25 @@ class EnvConfig(vf.EnvServerConfig):
     @model_validator(mode="after")
     def resolve_legacy_env_kwargs(self):
         """For a v0/legacy env, surface the v1 knobs the legacy bridge applies via
-        ``extra_env_kwargs`` (``env.set_kwargs(...)``): the per-rollout wall-clock timeout and
-        the multi-turn completion-token budget, read off ``env.agent``. (``max_seq_len`` is
-        added per train run in ``OrchestratorConfig.resolve_env_config``, which knows
-        ``seq_len``.)"""
+        ``legacy.extra_env_kwargs`` (``env.set_kwargs(...)``): the per-rollout wall-clock
+        timeout and the multi-turn completion-token budget, read off ``env.agent``.
+        (``max_seq_len`` is added per train run in ``OrchestratorConfig.resolve_env_config``,
+        which knows ``seq_len``.)"""
         if self.is_legacy:
             agent = getattr(self.env, "agent", None)
             if agent is not None:
                 if agent.timeout.rollout is not None:
-                    self.extra_env_kwargs["timeout_seconds"] = agent.timeout.rollout
+                    self.legacy.extra_env_kwargs["timeout_seconds"] = agent.timeout.rollout
                 if agent.max_output_tokens is not None:
-                    self.extra_env_kwargs["max_total_completion_tokens"] = agent.max_output_tokens
+                    self.legacy.extra_env_kwargs["max_total_completion_tokens"] = agent.max_output_tokens
         return self
 
 
-class TrainEnvConfig(EnvConfig):
+class TrainSourceConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
-    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    group_size: int = Field(1, ge=1)
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
 
@@ -220,14 +231,14 @@ class TrainEnvConfig(EnvConfig):
     this env its own algorithm."""
 
 
-class EvalEnvConfig(EnvConfig):
+class EvalSourceConfig(EnvConfig):
     sampling: EvalSamplingConfig = EvalSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level eval sampling config."""
 
     num_examples: int = -1
     """Eval examples to sample from the dataset. ``-1`` uses all available examples."""
 
-    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
     interval: int = Field(100, ge=1)
@@ -235,8 +246,8 @@ class EvalEnvConfig(EnvConfig):
 
 
 class TrainConfig(BaseConfig):
-    env: list[TrainEnvConfig] = Field(default_factory=list)
-    """Training environments."""
+    source: list[TrainSourceConfig] = Field(default_factory=list)
+    """Training sources."""
 
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
@@ -246,7 +257,7 @@ class TrainConfig(BaseConfig):
         """Resolve per-env overrides: inherit group-level sampling (the worker ``pool``
         is configured per env, defaulting to elastic)."""
         group_sampling = self.sampling.model_dump()
-        for env in self.env:
+        for env in self.source:
             if "sampling" not in env.model_fields_set:
                 env.sampling = TrainSamplingConfig(**group_sampling)
             else:
@@ -256,7 +267,7 @@ class TrainConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_unique_env_names(self):
-        env_names = [env.resolved_name for env in self.env]
+        env_names = [env.resolved_name for env in self.source]
         duplicates = [n for n in env_names if env_names.count(n) > 1]
         if duplicates:
             raise ValueError(
@@ -266,8 +277,8 @@ class TrainConfig(BaseConfig):
 
 
 class EvalConfig(BaseConfig):
-    env: list[EvalEnvConfig] = Field(default_factory=list)
-    """Evaluation environments."""
+    source: list[EvalSourceConfig] = Field(default_factory=list)
+    """Evaluation sources."""
 
     sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
     """Shared eval sampling configuration; can differ from training sampling."""
@@ -275,7 +286,7 @@ class EvalConfig(BaseConfig):
     num_examples: int = -1
     """Default eval examples per environment. ``-1`` uses all. Can be overridden per env."""
 
-    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    group_size: int = Field(1, ge=1)
     """Default rollouts per example. Can be overridden per env."""
 
     interval: int = Field(100, ge=1)
@@ -290,33 +301,33 @@ class EvalConfig(BaseConfig):
         """Resolve per-env overrides: inherit group-level sampling, num_examples,
         group_size, and interval (the worker ``pool`` is configured per env, default elastic)."""
         group_sampling = self.sampling.model_dump()
-        for env in self.env:
-            if "sampling" not in env.model_fields_set:
-                env.sampling = EvalSamplingConfig(**group_sampling)
+        for source in self.source:
+            if "sampling" not in source.model_fields_set:
+                source.sampling = EvalSamplingConfig(**group_sampling)
             else:
-                merged = group_sampling | env.sampling.model_dump(exclude_unset=True)
-                env.sampling = EvalSamplingConfig(**merged)
-            if "num_examples" not in env.model_fields_set:
-                env.num_examples = self.num_examples
-            if "group_size" not in env.model_fields_set:
-                env.group_size = self.group_size
-            if "interval" not in env.model_fields_set:
-                env.interval = self.interval
+                merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
+                source.sampling = EvalSamplingConfig(**merged)
+            if "num_examples" not in source.model_fields_set:
+                source.num_examples = self.num_examples
+            if "group_size" not in source.model_fields_set:
+                source.group_size = self.group_size
+            if "interval" not in source.model_fields_set:
+                source.interval = self.interval
         return self
 
     @model_validator(mode="after")
-    def validate_non_empty_envs(self):
-        if not self.env:
+    def validate_non_empty_sources(self):
+        if not self.source:
             raise ValueError(
-                "EvalConfig must define at least one env. Either drop the "
+                "EvalConfig must define at least one source. Either drop the "
                 "[orchestrator.eval] block entirely (to disable eval) or "
-                "add a [[orchestrator.eval.env]] block."
+                "add a [[orchestrator.eval.source]] block."
             )
         return self
 
     @model_validator(mode="after")
     def validate_unique_env_names(self):
-        env_names = [env.resolved_name for env in self.env]
+        env_names = [source.resolved_name for source in self.source]
         duplicates = [n for n in env_names if env_names.count(n) > 1]
         if duplicates:
             raise ValueError(
@@ -437,7 +448,7 @@ class OrchestratorConfig(BaseConfig):
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm: sampling plus the per-token training signal (credit
     assignment and loss routing, fused — its ``type`` names the algorithm).
-    Defaults to ``grpo``. Override per env via ``[[orchestrator.train.env]]``'s
+    Defaults to ``grpo``. Override per source via ``[[orchestrator.train.source]]``'s
     ``algo``."""
 
     model: ModelConfig = ModelConfig()
@@ -525,12 +536,12 @@ class OrchestratorConfig(BaseConfig):
     """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
 
     oversampling_factor: float | None = Field(None, gt=0)
-    """Rollout-mode batching only. Multiplier used to derive ``max_inflight_rollouts`` from ``batch_size`` when ``max_inflight_rollouts`` is unset. Values below 1.0 intentionally cap in-flight rollout capacity below ``batch_size``."""
+    """Rollout-mode batching only. Multiplier used to derive ``max_inflight_episodes`` from ``batch_size`` when ``max_inflight_episodes`` is unset. Values below 1.0 intentionally cap in-flight episode capacity below ``batch_size``."""
 
-    max_inflight_rollouts: int | None = Field(None, ge=1)
-    """Maximum number of rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
+    max_inflight_episodes: int | None = Field(None, ge=1)
+    """Maximum number of episodes kept in-flight — one episode is one agent run at a time, whatever the env's agents are. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
 
-    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    group_size: int = Field(1, ge=1)
     """Output sequences returned per example during training."""
 
     seq_len: int = 2048
@@ -551,33 +562,6 @@ class OrchestratorConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _env_to_train(cls, data: Any) -> Any:
-        """Allow [[env]] and [sampling] as shorthand for [train] with [[train.env]] and [train.sampling]."""
-        if not isinstance(data, dict):
-            return data
-        if "env" in data or "sampling" in data:
-            train = data.setdefault("train", {})
-            if isinstance(train, dict):
-                if "env" in data:
-                    warnings.warn(
-                        "'[[orchestrator.env]]' is deprecated, use '[[orchestrator.train.env]]' instead. "
-                        "Auto-translating for now, but this will be removed in a future release.",
-                        FutureWarning,
-                        stacklevel=2,
-                    )
-                    train.setdefault("env", data.pop("env"))
-                if "sampling" in data:
-                    warnings.warn(
-                        "'[orchestrator.sampling]' is deprecated, use '[orchestrator.train.sampling]' instead. "
-                        "Auto-translating for now, but this will be removed in a future release.",
-                        FutureWarning,
-                        stacklevel=2,
-                    )
-                    train.setdefault("sampling", data.pop("sampling"))
-        return data
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
@@ -617,18 +601,15 @@ class OrchestratorConfig(BaseConfig):
     def inherit_env_algorithms(self):
         """Envs without their own algorithm inherit the top-level one.
         Declared before any validator that reads ``algo``."""
-        for env_cfg in self.train.env:
+        for env_cfg in self.train.source:
             if env_cfg.algo is None:
                 env_cfg.algo = self.algo.model_copy(deep=True)
         return self
 
     @model_validator(mode="after")
     def validate_env_algorithms(self):
-        """Let each env's resolved algorithm reject the env it was pointed at —
-        the algorithms whose credit assignment encodes an env's episode structure
-        (hierarchical_grpo) only make sense on that env, and a flat env would
-        silently train on collapsed peer sets."""
-        for env_cfg in self.train.env:
+        """Let each algorithm reject environments it cannot score correctly."""
+        for env_cfg in self.train.source:
             assert env_cfg.algo is not None  # resolved by inherit_env_algorithms
             env_cfg.algo.validate_env(env_cfg.env)
         return self
@@ -636,7 +617,7 @@ class OrchestratorConfig(BaseConfig):
     @property
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
-        return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.env)
+        return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.source)
 
     @model_validator(mode="after")
     def validate_pool_size(self):
@@ -702,29 +683,29 @@ class OrchestratorConfig(BaseConfig):
         if has_token_batch:
             if self.oversampling_factor is not None:
                 raise ValueError("oversampling_factor can only be set when batch_size is set")
-            if self.max_inflight_rollouts is None:
-                raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
+            if self.max_inflight_episodes is None:
+                raise ValueError("max_inflight_episodes must be set when token_batch_size is set")
         else:
             assert self.batch_size is not None
             if self.batch_size % self.group_size != 0:
                 raise ValueError("Batch size must be divisible by the number of samples per problem")
             oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
-            resolved_max_inflight_rollouts = max(
+            resolved_max_inflight_episodes = max(
                 self.group_size,
                 int(self.batch_size * oversampling_factor),
             )
-            if self.max_inflight_rollouts is not None and self.oversampling_factor is not None:
-                expected_max_inflight_rollouts = resolved_max_inflight_rollouts
-                if self.max_inflight_rollouts != expected_max_inflight_rollouts:
-                    raise ValueError("max_inflight_rollouts conflicts with oversampling_factor * batch_size")
-            if self.max_inflight_rollouts is None:
-                self.max_inflight_rollouts = resolved_max_inflight_rollouts
+            if self.max_inflight_episodes is not None and self.oversampling_factor is not None:
+                expected_max_inflight_episodes = resolved_max_inflight_episodes
+                if self.max_inflight_episodes != expected_max_inflight_episodes:
+                    raise ValueError("max_inflight_episodes conflicts with oversampling_factor * batch_size")
+            if self.max_inflight_episodes is None:
+                self.max_inflight_episodes = resolved_max_inflight_episodes
 
-        if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.group_size:
-            raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
+        if self.max_inflight_episodes is not None and self.max_inflight_episodes < self.group_size:
+            raise ValueError("max_inflight_episodes must be at least the number of rollouts per example")
 
         # Propagate the top-level ``group_size`` into each train env that didn't set its own.
-        for env_cfg in self.train.env:
+        for env_cfg in self.train.source:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
 
@@ -747,7 +728,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_env_config(self):
         """Set vLLM sampling defaults + legacy env kwargs on each train env from top-level fields."""
-        for env in self.train.env:
+        for env in self.train.source:
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
             assert env.algo is not None
@@ -757,6 +738,6 @@ class OrchestratorConfig(BaseConfig):
                 env.sampling.extra_body.setdefault("return_token_ids", True)
             if env.is_legacy:
                 # v0 env: cap per-turn response tokens to the training budget (the legacy
-                # bridge applies extra_env_kwargs via env.set_kwargs).
-                env.extra_env_kwargs["max_seq_len"] = self.seq_len
+                # bridge applies legacy.extra_env_kwargs via env.set_kwargs).
+                env.legacy.extra_env_kwargs["max_seq_len"] = self.seq_len
         return self

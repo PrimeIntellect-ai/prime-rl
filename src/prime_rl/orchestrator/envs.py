@@ -1,7 +1,7 @@
 """Env wrappers over a v1 env server.
 
 Each ``Env`` owns a v1 ``EnvServer`` (spawned as a child process, or an
-external one given by ``config.address``) and an ``EnvClient`` to drive it. The
+external one pinned by ``config.serve.address``) and an ``EnvClient`` to drive it. The
 orchestrator never *runs* an environment — the agents and their runtimes live only
 in the server — but it does own the *taskset*: a v1 env's tasks are loaded here,
 once, and each dispatched env-rollout ships its task's data on the request
@@ -34,7 +34,7 @@ from typing import Generic, TypeVar
 import verifiers.v1 as vf
 from verifiers.v1.serve import EnvClient, env_config_data
 
-from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
+from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.sampler import Sampler
 from prime_rl.orchestrator.types import Rollout
@@ -112,8 +112,8 @@ class Env:
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         """Spawn the env server (if needed), connect, and load the taskset client-side
         (legacy instead asks the server for ``info`` — its dataset is server-side)."""
-        external = self.config.address is not None
-        address = self.config.address or await self._spawn(log_dir, log_level or "INFO", json_logging)
+        external = self.config.serve.address is not None
+        address = self.config.serve.address or await self._spawn(log_dir, log_level or "INFO", json_logging)
         get_logger().debug(f"Connecting {self.name} to env server {address}")
         self._env_client = EnvClient(address=address)
         # A spawned server already reported its address *after* binding, so it's up. An
@@ -152,12 +152,18 @@ class Env:
             dict(
                 legacy=True,
                 env_id=self.config.env_id,
-                env_args=self.config.args,
-                extra_env_kwargs=self.config.extra_env_kwargs,
+                env_args=self.config.legacy.args,
+                extra_env_kwargs=self.config.legacy.extra_env_kwargs,
             )
             if self.config.is_legacy
             # Picklable dict — the narrowed config class doesn't survive the spawn.
-            else dict(legacy=False, config_data=env_config_data(self.config.env))
+            # ``max_concurrent`` bounds this worker's episodes in flight — usually unset,
+            # since the dispatcher's ``max_inflight_episodes`` is the run's bound.
+            else dict(
+                legacy=False,
+                config_data=env_config_data(self.config.env),
+                max_concurrent=self.config.serve.max_concurrent,
+            )
         )
         process = ctx.Process(
             target=_run_env_server,
@@ -165,7 +171,7 @@ class Env:
                 log_file=str(log_file),
                 log_level=log_level,
                 json_logging=json_logging,
-                **vf.pool_serve_kwargs(self.config.pool),
+                **vf.pool_serve_kwargs(self.config.serve.pool),
                 address="tcp://127.0.0.1:0",
                 address_queue=address_queue,
                 **server_kwargs,
@@ -246,9 +252,9 @@ class Env:
 
 
 class TrainEnv(Env):
-    config: TrainEnvConfig
+    config: TrainSourceConfig
 
-    def __init__(self, config: TrainEnvConfig, sampler: Sampler, algorithm: Algorithm):
+    def __init__(self, config: TrainSourceConfig, sampler: Sampler, algorithm: Algorithm):
         super().__init__(config)
         self.sampler = sampler
         self.algorithm = algorithm
@@ -256,9 +262,9 @@ class TrainEnv(Env):
 
 
 class EvalEnv(Env):
-    config: EvalEnvConfig
+    config: EvalSourceConfig
 
-    def __init__(self, config: EvalEnvConfig):
+    def __init__(self, config: EvalSourceConfig):
         super().__init__(config)
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples: list[dict] = []
@@ -333,10 +339,10 @@ class TrainEnvs(Envs[TrainEnv]):
     :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
     resolved algorithm config."""
 
-    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer_config=None):
+    def __init__(self, configs: Sequence[TrainSourceConfig], *, policy_pool, renderer_config=None):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
-            assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
+            assert config.algo is not None, "TrainSourceConfig.algo must be resolved before env construction"
             env = TrainEnv(
                 config,
                 Sampler(config.algo.sampling, policy_pool, renderer_config),
@@ -348,7 +354,7 @@ class TrainEnvs(Envs[TrainEnv]):
 class EvalEnvs(Envs[EvalEnv]):
     """Collection of evaluation environments."""
 
-    def __init__(self, configs: Sequence[EvalEnvConfig]):
+    def __init__(self, configs: Sequence[EvalSourceConfig]):
         self._envs: dict[str, EvalEnv] = {}
         for config in configs:
             env = EvalEnv(config)
