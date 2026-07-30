@@ -94,16 +94,16 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             tomli_w.dump(inference_dict, f)
 
     # One EnvServerConfig TOML per source: `env-server @ <path>` binds at the source's
-    # deterministic address, where the orchestrator connects.
+    # deterministic address, where the orchestrator connects. The source's env/serve/legacy
+    # blocks carry over; its other knobs (sampling, algo, name, ...) are orchestrator-side.
     for split, source, address in env_servers(config):
         env_dir = output_dir / ENVS_DIR / split
         env_dir.mkdir(parents=True, exist_ok=True)
-        # Only the EnvConfig fields — the source's train/eval knobs (sampling, algo, ...)
-        # are orchestrator-side.
-        exclude_env = set(type(source).model_fields) - set(EnvConfig.model_fields)
+        source_dict = to_toml_dict(source)
         env_server_dict = {
-            "env": to_toml_dict(source, exclude=exclude_env),
-            "address": address,
+            "env": source_dict["env"],
+            "serve": {**source_dict.get("serve", {}), "address": address},
+            "legacy": source_dict.get("legacy", {}),
             "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
         }
         with open(env_dir / f"{source.resolved_name}.toml", "wb") as f:
@@ -246,9 +246,9 @@ def rl_local(config: RLConfig):
                 "otherwise rollouts will hang."
             )
 
-        # Start env server processes. The orchestrator never runs env servers — it connects
-        # to each source's deterministic address, polling until the server is up, so the
-        # servers and the orchestrator can start in parallel.
+        # Start one env server per source. The orchestrator connects to each source's
+        # deterministic address, polling until the server is up, so the servers and the
+        # orchestrator start in parallel.
         for split, source, address in env_servers(config):
             name = source.resolved_name
             env_server_cmd = ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.toml").as_posix()]
@@ -455,8 +455,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
 
     # Env servers launch next to the orchestrator, one per train/eval source.
     sources = config.orchestrator.env_sources
-    local_train_env_names = [source.resolved_name for split, source in sources if split == "train"]
-    local_eval_env_names = [source.resolved_name for split, source in sources if split == "eval"]
+    train_env_names = [source.resolved_name for split, source in sources if split == "train"]
+    eval_env_names = [source.resolved_name for split, source in sources if split == "eval"]
 
     if config.deployment.type == "single_node":
         script = template.render(
@@ -505,8 +505,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
-            local_train_env_names=local_train_env_names,
-            local_eval_env_names=local_eval_env_names,
+            train_env_names=train_env_names,
+            eval_env_names=eval_env_names,
         )
     else:
         script = template.render(
@@ -536,8 +536,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             trainer_env_vars=trainer_env_vars,
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
-            local_train_env_names=local_train_env_names,
-            local_eval_env_names=local_eval_env_names,
+            train_env_names=train_env_names,
+            eval_env_names=eval_env_names,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)

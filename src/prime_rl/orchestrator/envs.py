@@ -1,9 +1,9 @@
 """Env wrappers over a v1 env server.
 
-Each ``Env`` is an ``EnvClient`` onto its source's env server — the orchestrator
-never runs env servers, it only connects. Each server's address is derived from the
-source's position in the config (``OrchestratorConfig.env_server_addresses``); the
-launcher spawns the servers at exactly those addresses. The
+Each ``Env`` is an ``EnvClient`` onto its source's env server. Each server's address
+is derived from the source's position in the config
+(``OrchestratorConfig.env_server_addresses``); the launcher runs the servers at
+exactly those addresses, and the orchestrator connects. The
 orchestrator never *runs* an environment — the agents and their runtimes live only
 in the server — but it does own the *taskset*: a v1 env's tasks are loaded here,
 once, and each dispatched env-rollout ships its task's data on the request

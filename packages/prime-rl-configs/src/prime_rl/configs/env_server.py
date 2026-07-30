@@ -1,17 +1,44 @@
 from pathlib import Path
 
-from prime_rl.configs.orchestrator import EnvConfig
+import verifiers.v1 as vf
+from pydantic import SerializeAsAny, model_validator
+
 from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import BaseConfig
 
 
 class EnvServerConfig(BaseConfig):
-    env: EnvConfig
+    """``uv run env-server``: what to serve (``[env]``, or ``[legacy]`` for a classic v0
+    env) and how it's hosted (``[serve]``) — the same blocks as verifiers' ``serve`` CLI.
+    The ``rl`` launcher writes one of these per train/eval source, with ``serve.address``
+    set to the source's derived address."""
 
-    address: str
-    """ZMQ address the server binds and clients connect to (e.g. ``tcp://127.0.0.1:5000``). Required — the ``rl`` launcher writes each source's deterministic address here; pass it explicitly when running standalone."""
+    env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
+    """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
+
+    serve: vf.ServingConfig = vf.ServingConfig()
+    """How it's served: the worker pool, the bind address, each worker's episode bound."""
+
+    legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()
+    """A classic (v0) environment to serve through the bridge instead of ``env``."""
 
     log: LogConfig = LogConfig()
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — logs and any generated artifacts are written as subdirectories."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_env(cls, data):
+        """Narrow ``env`` to the selected env's config class."""
+        return vf.resolve_env_field(data, vf.narrowed_env_annotation(cls))
+
+    @property
+    def is_legacy(self) -> bool:
+        """Whether this serves the v0 bridge: a legacy id and no v1 taskset."""
+        return self.legacy.id is not None and not self.env.taskset.id
+
+    @property
+    def env_id(self) -> str:
+        """The served env's identifier: the v1 env's, else the v0 env id."""
+        return self.env.env_id or self.legacy.id or ""

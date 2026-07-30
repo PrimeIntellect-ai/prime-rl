@@ -123,17 +123,11 @@ class EvalSamplingConfig(BaseConfig):
         return args
 
 
-ENV_SERVER_BASE_PORT = 5000
-"""First port of the deterministic local env-server port range. Each source's server
-lives at ``tcp://127.0.0.1:<base + index>`` in config order (train, then eval), so the
-launcher and the orchestrator independently agree on where each env server lives —
-addresses are derived, never configured (see ``OrchestratorConfig.env_server_addresses``)."""
-
-
 class ServingConfig(BaseConfig):
-    """How a source's env server is sized. Where it lives is not configurable — the
-    orchestrator derives each server's address from the source's position in the config
-    (``OrchestratorConfig.env_server_addresses``) and the launcher binds servers there."""
+    """The subset of verifiers' serving block a source configures — the worker pool and
+    the per-worker bound. The launcher materializes it into the env server's full
+    ``[serve]`` block, filling in the source's derived address
+    (``OrchestratorConfig.env_server_addresses``)."""
 
     pool: PoolConfig = Field(default_factory=vf.ElasticPoolConfig)
     """Worker-pool sizing. ``elastic`` (default) starts at one worker and scales up on
@@ -153,7 +147,7 @@ class EnvConfig(BaseConfig):
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
     serve: ServingConfig = ServingConfig()
-    """How the env server is sized: ``serve.pool`` sizes it, ``serve.max_concurrent`` bounds one worker's episodes in flight. Its address is derived from the source's position in the config, never configured."""
+    """How this source's env server is sized. Consumed by the launcher (which writes each source's env-server config), not by the orchestrator — the orchestrator only connects."""
 
     legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()
     """A classic (v0) environment to run through the bridge instead of ``env``."""
@@ -540,6 +534,9 @@ class OrchestratorConfig(BaseConfig):
     tasks_per_minute: int | None = Field(None, ge=1)
     """Rate limit per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. With multiple workers, the effective total rate is ``workers × this value``. None disables rate limiting."""
 
+    env_server_base_port: int = Field(5000, ge=1, le=65535)
+    """First port of the env-server port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
+
     batch_size: int | None = Field(None, ge=1)
     """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
 
@@ -757,11 +754,11 @@ class OrchestratorConfig(BaseConfig):
     @property
     def env_server_addresses(self) -> dict[tuple[str, str], str]:
         """Where each source's env server lives, keyed by ``(split, resolved_name)``:
-        ``tcp://127.0.0.1:<port>`` with ports from ``ENV_SERVER_BASE_PORT`` in
-        ``env_sources`` order. Derived, not configured — the launcher binds env servers
-        at exactly these addresses and the orchestrator connects to them, so both sides
-        agree from the config alone."""
+        ``tcp://127.0.0.1:<port>`` with ports from ``env_server_base_port`` in
+        ``env_sources`` order. The launcher binds env servers at exactly these addresses
+        and the orchestrator connects to them, so both sides agree from the config
+        alone."""
         return {
-            (split, source.resolved_name): f"tcp://127.0.0.1:{ENV_SERVER_BASE_PORT + index}"
+            (split, source.resolved_name): f"tcp://127.0.0.1:{self.env_server_base_port + index}"
             for index, (split, source) in enumerate(self.env_sources)
         }

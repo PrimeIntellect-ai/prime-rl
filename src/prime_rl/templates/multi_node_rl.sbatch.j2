@@ -409,17 +409,17 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     export {{ key }}="{{ value }}"
 {%- endfor %}
 {%- endif %}
-{%- if local_train_env_names or local_eval_env_names %}
+{%- if train_env_names or eval_env_names %}
 
-    # Launch the env servers next to the orchestrator. It never runs them — it connects
-    # to each source's deterministic loopback address (so this node), polling until they
-    # are up, so the servers and the orchestrator start in parallel.
-{%- for name in local_train_env_names %}
+    # Launch one env server per source next to the orchestrator, which connects to each
+    # source's deterministic loopback address (so this node), polling until they are up —
+    # the servers and the orchestrator start in parallel.
+{%- for name in train_env_names %}
     mkdir -p $OUTPUT_DIR/logs/envs/train
     uv run env-server @ $CONFIG_DIR/envs/train/{{ name }}.toml \
         > $OUTPUT_DIR/logs/envs/train/{{ name }}.log 2>&1 &
 {%- endfor %}
-{%- for name in local_eval_env_names %}
+{%- for name in eval_env_names %}
     mkdir -p $OUTPUT_DIR/logs/envs/eval
     uv run env-server @ $CONFIG_DIR/envs/eval/{{ name }}.toml \
         > $OUTPUT_DIR/logs/envs/eval/{{ name }}.log 2>&1 &
