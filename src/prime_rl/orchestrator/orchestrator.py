@@ -388,12 +388,13 @@ class Orchestrator:
         if self.progress.data_positions:
             self.train_source.load_state(self.progress.data_positions)
             for name, position in self.progress.data_positions.items():
-                rows = self.train_source.base_rows.get(name)
-                if rows is None:
+                if name not in self.train_source.base_rows:
                     continue
+                rows = self.train_source.base_rows[name]
+                num_tasks = len(rows) if rows is not None else "infinite"
                 get_logger().info(
                     f"Resumed data position for env {name} - epoch={position['epoch']}, "
-                    f"cursor={position['cursor']}/{len(rows)}"
+                    f"cursor={position['cursor']}/{num_tasks}"
                 )
         self.eval_source: EvalSource | None = (
             EvalSource(

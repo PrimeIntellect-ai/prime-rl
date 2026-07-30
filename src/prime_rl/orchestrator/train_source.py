@@ -25,11 +25,13 @@ class TrainSource:
     Returned dicts carry ``env_name`` + ``task_idx`` (+ ``task`` for v1 envs,
     whose data is shipped to the env server at dispatch).
 
-    A finite env's data position is ``{epoch, cursor}``: epochs are 1-indexed
-    and seed that epoch's shuffle, so ``get_state()`` / ``load_state()`` can
-    round-trip the position through a checkpoint. The cursor advances at
-    dispatch time (ahead of shipped batches), so a resume skips the tasks
-    that were in flight at checkpoint time."""
+    An env's data position is ``{epoch, cursor}``, round-tripped through a
+    checkpoint via ``get_state()`` / ``load_state()``. For a finite env,
+    epochs are 1-indexed and seed that epoch's shuffle; for an infinite env
+    the epoch stays 1 and the cursor counts generator pulls, replayed on
+    restore by fast-forwarding the generator (exact iff it's deterministic).
+    The cursor advances at dispatch time (ahead of shipped batches), so a
+    resume skips the tasks that were in flight at checkpoint time."""
 
     def __init__(self, train_envs: TrainEnvs, *, seed: int | None) -> None:
         self.rng = random.Random(seed)
@@ -77,21 +79,20 @@ class TrainSource:
         return rows
 
     def get_state(self) -> dict[str, dict[str, int]]:
-        """Per-env data position for finite envs (an infinite env's generator
-        has no restorable position)."""
-        return {
-            name: {"epoch": self.epochs[name], "cursor": self.cursors[name]}
-            for name in self.epochs
-            if self.base_rows[name] is not None
-        }
+        """Per-env data position ``{epoch, cursor}``."""
+        return {name: {"epoch": self.epochs[name], "cursor": self.cursors[name]} for name in self.epochs}
 
     def load_state(self, state: dict[str, dict[str, int]]) -> None:
         for name, position in state.items():
-            if self.base_rows.get(name) is None:
+            if name not in self.base_rows:
                 continue
             self.epochs[name] = position["epoch"]
             self.cursors[name] = position["cursor"]
-            self.examples[name] = self._shuffled(name)
+            if self.base_rows[name] is None:
+                for _ in range(position["cursor"]):
+                    next(self.iters[name])
+            else:
+                self.examples[name] = self._shuffled(name)
 
     def next_example(self, available_permits: int) -> dict | None:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
@@ -101,6 +102,7 @@ class TrainSource:
         cursor = self.cursors[env_name]
         if rows is None:  # infinite env: pull the next generated task
             task = next(self.iters[env_name])
+            self.cursors[env_name] = cursor + 1
             return {"task_idx": task.data.idx, "task": task, "env_name": env_name}
         if cursor >= len(rows):
             self.epochs[env_name] += 1
