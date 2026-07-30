@@ -1,11 +1,14 @@
 import math
+from itertools import count
 from types import SimpleNamespace
 
 import pytest
-import verifiers.v1 as vf
 
-from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
+import verifiers.v1 as vf
+from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts, agent_metrics
 from prime_rl.orchestrator.utils import compute_pass_metrics
+
+_episodes = count()
 
 
 def mk(
@@ -25,6 +28,8 @@ def mk(
     rewards: dict | None = None,
     env_name: str = "env",
     group_id: str = "g0",
+    agent_name: str | None = "agent",
+    episode_id: str | None = None,
     trainable: bool = True,
     is_trainable: bool = True,
     is_filtered: bool = False,
@@ -53,6 +58,10 @@ def mk(
         metrics=metrics or {},
         env_name=env_name,
         group_id=group_id,
+        agent_name=agent_name,
+        # Distinct per rollout unless pinned: one episode per rollout is the single-agent shape,
+        # and ``EvalRollouts.group_size`` counts episodes.
+        episode_id=episode_id if episode_id is not None else f"e{next(_episodes)}",
         trainable=trainable,
         is_trainable=is_trainable,
         is_filtered=is_filtered,
@@ -132,6 +141,26 @@ def test_solve_rates():
     assert rates == (0.25, 0.25, 0.5)
 
 
+def test_solve_rates_split_per_agent_not_pooled_across_them():
+    # One group, two agents, each solving one of its two rollouts: per agent that's solved_some.
+    # Pooling them under group_id alone would collapse it to a single mixed group.
+    rollouts = [mk(reward=r, group_id="g0", agent_name=a) for a in ("player0", "player1") for r in (1.0, 0.0)]
+    out = train_wandb(rollouts)
+    assert out["train/agg/all/solved_some"] == 1.0  # 2 (example, agent) groups, both mixed
+    assert out["train/agg/all/solved_all"] == 0.0 and out["train/agg/all/solved_none"] == 0.0
+
+
+def test_solve_rates_zero_sum_group_is_not_reported_as_unsolved():
+    # A zero-sum pair sums to 0 for every group, which used to trip `solved_none` on every group
+    # and read as "no GRPO signal" when both agents in fact have spread.
+    rollouts = [mk(reward=r, group_id="g0", agent_name="player0") for r in (1.0, 0.0)] + [
+        mk(reward=-r, group_id="g0", agent_name="player1") for r in (1.0, 0.0)
+    ]
+    out = train_wandb(rollouts)
+    assert out["train/agg/all/solved_none"] == 0.0
+    assert out["train/agg/all/solved_some"] == 1.0
+
+
 def test_stop_condition_breakdown():
     truncated = [mk(is_truncated=True, stop_condition=c) for c in ("length", "max_turns", "prompt_too_long")]
     out = train_wandb(truncated + [mk(stop_condition=None)])
@@ -190,6 +219,67 @@ def test_eval_avg_at_k_and_pass_k():
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
     non_binary = EvalRollouts([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
+
+
+def test_reward_metrics_read_the_policy_view_of_a_blended_pool():
+    # A frozen judge carries no reward; on `all` its structural zero used to halve the mean.
+    rollouts = [
+        mk(reward=1.0, rewards={"correct": vf.Reward(score=1.0)}, agent_name="solver"),
+        mk(reward=0.0, agent_name="judge", trainable=False),
+    ]
+    out = train_wandb(rollouts)
+    assert out["train/agg/all/reward/mean"] == 1.0  # the solver's reward, not (1.0 + 0.0) / 2
+    assert out["train/agg/all/rewards/correct/mean"] == 1.0
+    assert out["train/agg/all/num_total_tokens/mean"] == 10.0  # cost still covers both agents
+    assert out["train/agg/all/is_completed/mean"] == 1.0
+
+
+def test_reward_metrics_fall_back_when_no_rollout_is_trainable():
+    out = train_wandb([mk(reward=1.0, trainable=False), mk(reward=0.0, trainable=False)])
+    assert out["train/agg/all/reward/mean"] == 0.5  # an all-frozen pool reports its own rewards
+
+
+def test_by_agent_slices_emitted_only_for_multi_agent_pools():
+    kuhn = TrainRollouts(
+        [mk(reward=1.0, group_id="g0", agent_name="player0"), mk(reward=-1.0, group_id="g0", agent_name="player1")]
+    )
+    assert set(kuhn.by_agent()) == {"player0", "player1"}
+    assert isinstance(kuhn.by_agent()["player0"], TrainRollouts)
+    out = agent_metrics(kuhn, prefix="train/kuhn", subset="all")
+    # the env-level mean is 0.0 by construction; the slices are where the signal lives
+    assert kuhn.metrics.to_wandb(prefix="train/kuhn", subset="all")["train/kuhn/all/reward/mean"] == 0.0
+    assert out["train/kuhn/agent/player0/all/reward/mean"] == 1.0
+    assert out["train/kuhn/agent/player1/all/reward/mean"] == -1.0
+    # single-agent pools gain nothing — the slice would restate the env's own keys
+    assert agent_metrics(TrainRollouts([mk(), mk()]), prefix="train/x", subset="all") == {}
+
+
+def test_by_agent_slices_on_eval_carry_the_parent_group_size():
+    pool = EvalRollouts(
+        [
+            mk(reward=r, group_id="g0", episode_id=e, agent_name=a)
+            for e in ("e0", "e1")
+            for a, r in (("player0", 1.0), ("player1", 0.0))
+        ]
+    )
+    assert pool.group_size == 2  # two episodes, not the four traces they produced
+    out = agent_metrics(pool, prefix="eval/kuhn", subset="all")
+    assert out["eval/kuhn/agent/player0/all/avg@2"] == 1.0
+    assert out["eval/kuhn/agent/player1/all/avg@2"] == 0.0
+
+
+def test_eval_group_size_counts_episodes_not_traces():
+    # Same example rolled out twice, each episode producing one trace per agent: k is 2, not 4.
+    multi = EvalRollouts(
+        [
+            mk(reward=1.0, group_id="g0", episode_id=e, agent_name=a)
+            for e in ("e0", "e1")
+            for a in ("player0", "player1")
+        ]
+    )
+    assert multi.group_size == 2
+    assert "eval/x/all/avg@2" in multi.metrics.to_wandb(prefix="eval/x", subset="all")
+    assert multi.effective.group_size == 2  # subview carries the parent's k
 
 
 def test_compute_pass_metrics_matches_closed_form():

@@ -1,13 +1,19 @@
 """Train and eval rollout metrics.
 
 A rollout container (``TrainRollouts`` / ``EvalRollouts``) owns the rollout list and exposes
-``.effective`` (the clean subset, as the same container type) and ``.metrics`` (``TrainMetrics`` /
-``EvalMetrics``). The metrics object exposes each distributional / rate metric as a ``Stat`` — so
+``.effective`` (the clean subset, as the same container type), ``.by_env()`` / ``.by_agent()``
+(slices of the same type) and ``.metrics`` (``TrainMetrics`` / ``EvalMetrics``). The metrics object
+exposes each distributional / rate metric as a ``Stat`` — so
 ``rollouts.metrics.num_input_tokens.mean()`` works — and assembles the full
 ``{prefix}/{subset}/<metric>/<stat>`` wandb dict via ``.to_wandb(...)``.
 
 No I/O, no pandas — plain Python over the ``vf.Trace`` properties each rollout exposes. Aggregation
-is flat over the rollout list except the solve rates, which group by ``group_id``.
+is flat over the rollout list except the solve rates and pass@k, which group by
+``(group_id, agent_name)``.
+
+Reward-derived metrics (the reward distribution, its per-component breakdown, the solve rates,
+pass@k, ``avg@k``) read the *policy view* of their pool — see :func:`_scored`. Cost, shape and
+error metrics still cover every rollout: an untrainable agent's tokens and failures are real.
 """
 
 from __future__ import annotations
@@ -20,6 +26,34 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
 
 Subset = Literal["all", "effective"]
+
+DEFAULT_AGENT_NAME = "agent"
+"""Slice key for a rollout with no agent info (the legacy v0 bridge); matches
+``vf.AgentInfo.name``'s own default."""
+
+
+def _scored(rollouts: list[Rollout]) -> list[Rollout]:
+    """The policy view of a blended pool: its trainable rollouts, else all of them.
+
+    Untrainable agents (a frozen judge, a pinned user sim) are not the policy, so their rewards
+    don't belong in a reward metric — and they usually carry none at all, which would drag every
+    mean toward a structural zero. Falling back to the full list keeps an all-untrainable pool
+    (a frozen-model eval) reporting its own rewards instead of nothing. Same rule verifiers
+    applies in ``v1/push.py`` and the eval dashboard.
+
+    A no-op on the ``effective`` subset, which is already trainable-only."""
+    return [r for r in rollouts if r.trainable] or rollouts
+
+
+def _by_group_and_agent(rollouts: list[Rollout]) -> dict[tuple, list[Rollout]]:
+    """Group rollouts into the units a solve rate / pass@k is defined over: one example as seen
+    by one agent. Keying on ``group_id`` alone would pool agents whose rewards aren't comparable
+    — in a zero-sum game the pooled group sums to 0 no matter how the policy plays, which reads
+    as "nobody scored". Identical to keying on ``group_id`` for a single-agent env."""
+    groups: dict[tuple, list[Rollout]] = {}
+    for r in rollouts:
+        groups.setdefault((r.group_id, r.agent_name), []).append(r)
+    return groups
 
 
 class Stat:
@@ -192,9 +226,9 @@ class RolloutMetrics:
 
     @property
     def rewards(self) -> CustomMetrics:
-        """Per-component reward breakdown, keyed by name (each entry's weighted ``value``,
-        summed into the scalar ``reward``)."""
-        return CustomMetrics(self.rollouts, "rewards", value=lambda reward: reward.value)
+        """Per-component reward breakdown over the policy view, keyed by name (each entry's
+        weighted ``value``, summed into the scalar ``reward``)."""
+        return CustomMetrics(_scored(self.rollouts), "rewards", value=lambda reward: reward.value)
 
     # Boolean rate metrics (0/1 distributions — ``.mean()`` is the rate)
     @property
@@ -230,12 +264,11 @@ class RolloutMetrics:
         return {t: types.count(t) for t in sorted(set(types))}
 
     def solve_rates(self) -> dict[str, float]:
-        """Per-group solve rates, assuming binary 0/1 rewards (unspecified for other reward ranges):
-        ``solved_none`` (the group earned no reward), ``solved_all`` (every rollout scored 1.0), and
-        ``solved_some`` (the mixed remainder — the GRPO-signal groups)."""
-        groups: dict = {}
-        for r in self.rollouts:
-            groups.setdefault(r.group_id, []).append(r)
+        """Per-(example, agent) solve rates over the policy view, assuming binary 0/1 rewards
+        (unspecified for other reward ranges): ``solved_none`` (the group earned no reward),
+        ``solved_all`` (every rollout scored 1.0), and ``solved_some`` (the mixed remainder — the
+        GRPO-signal groups)."""
+        groups = _by_group_and_agent(_scored(self.rollouts))
         n_groups = len(groups)
         solved_none = sum(1 for g in groups.values() if sum(r.reward for r in g) == 0)
         solved_all = sum(1 for g in groups.values() if all(r.reward == 1.0 for r in g))
@@ -276,7 +309,8 @@ class TrainMetrics(RolloutMetrics):
 
     @property
     def reward(self) -> Stat:
-        return Stat([float(r.reward) for r in self.rollouts])
+        """The policy's reward distribution (untrainable agents excluded — see :func:`_scored`)."""
+        return Stat([float(r.reward) for r in _scored(self.rollouts)])
 
     @property
     def is_trainable(self) -> Stat:
@@ -316,17 +350,16 @@ class EvalMetrics(RolloutMetrics):
 
     @property
     def reward(self) -> Stat:
-        return Stat([float(r.reward) for r in self.rollouts])
+        """The policy's reward distribution (untrainable agents excluded — see :func:`_scored`)."""
+        return Stat([float(r.reward) for r in _scored(self.rollouts)])
 
     def pass_at_k(self) -> dict[str, float]:
-        """pass@k / pass^k averaged over examples; ``{}`` for non-binary rewards."""
-        rewards = [r.reward for r in self.rollouts]
-        if not set(rewards).issubset({0.0, 1.0}):
+        """pass@k / pass^k averaged over (example, agent) over the policy view; ``{}`` for
+        non-binary rewards."""
+        scored = _scored(self.rollouts)
+        if not {r.reward for r in scored}.issubset({0.0, 1.0}):
             return {}
-        by_example: dict = {}
-        for r in self.rollouts:
-            by_example.setdefault(r.group_id, []).append(r.reward)
-        per_example = [compute_pass_metrics(rs) for rs in by_example.values()]
+        per_example = [compute_pass_metrics([r.reward for r in g]) for g in _by_group_and_agent(scored).values()]
         keys = sorted({k for d in per_example for k in d})
         return {k: sum(d[k] for d in per_example if k in d) / sum(1 for d in per_example if k in d) for k in keys}
 
@@ -368,6 +401,14 @@ class TrainRollouts:
             grouped.setdefault(r.env_name, []).append(r)
         return {env: TrainRollouts(rs) for env, rs in grouped.items()}
 
+    def by_agent(self) -> dict[str, TrainRollouts]:
+        """Per-agent slices, keyed by ``agent_name``. One key for a single-agent env; callers
+        emit the slices only when there are several (see ``Orchestrator``)."""
+        grouped: dict[str, list[Rollout]] = {}
+        for r in self.rollouts:
+            grouped.setdefault(r.agent_name or DEFAULT_AGENT_NAME, []).append(r)
+        return {name: TrainRollouts(rs) for name, rs in grouped.items()}
+
     @property
     def metrics(self) -> TrainMetrics:
         return TrainMetrics(self.rollouts)
@@ -391,22 +432,51 @@ class EvalRollouts:
 
     @property
     def group_size(self) -> int:
-        """The largest group in trainable (policy) traces — equals the configured group size
-        whenever one example kept all its rollouts; untrainable traces don't count, so a
-        multi-agent episode doesn't inflate ``k``. A subview carries its parent's value so
-        ``avg@k`` doesn't drift across subsets."""
+        """The ``avg@k`` k. ``EvalSink`` supplies the env's configured group size, and a subview
+        carries its parent's value, so ``k`` is stable across subsets and across epochs that lost
+        rollouts to errors.
+
+        Derived only when nothing was supplied: the largest number of *episodes* one example was
+        rolled out for. Episodes, not traces — a multi-agent episode is one attempt at the example
+        however many agents it takes, so a two-agent env at ``group_size=4`` reports ``avg@4``
+        rather than ``avg@8``."""
         if self._group_size is not None:
             return self._group_size
-        counts: dict = {}
+        episodes: dict = {}
         for r in self.rollouts:
-            if r.trainable:
-                counts[r.group_id] = counts.get(r.group_id, 0) + 1
-        return max(counts.values(), default=0)
+            episodes.setdefault(r.group_id, set()).add(r.episode_id)
+        return max((len(e) for e in episodes.values()), default=0)
 
     @property
     def effective(self) -> EvalRollouts:
         return EvalRollouts([r for r in self.rollouts if not r.has_error and r.trainable], group_size=self.group_size)
 
+    def by_agent(self) -> dict[str, EvalRollouts]:
+        """Per-agent slices, keyed by ``agent_name``, each carrying this pool's ``group_size`` so
+        ``avg@k`` stays comparable across slices."""
+        grouped: dict[str, list[Rollout]] = {}
+        for r in self.rollouts:
+            grouped.setdefault(r.agent_name or DEFAULT_AGENT_NAME, []).append(r)
+        return {name: EvalRollouts(rs, group_size=self.group_size) for name, rs in grouped.items()}
+
     @property
     def metrics(self) -> EvalMetrics:
         return EvalMetrics(self.rollouts, self.group_size)
+
+
+def agent_metrics(pool: TrainRollouts | EvalRollouts, *, prefix: str, subset: Subset) -> dict[str, float]:
+    """The ``{prefix}/agent/{name}/{subset}/...`` slices for one pool — the per-agent view that the
+    ``{agg,<env>}`` axes average away (a two-agent zero-sum env reports reward 0.0 whatever each
+    agent is doing).
+
+    ``{}`` unless the pool holds more than one agent, so single-agent runs (nearly all of them)
+    gain no keys and the slices never just restate the env's own. That also means the ``effective``
+    subset of a frozen-judge env emits nothing here: dropping the untrainable agent leaves one, and
+    the env's own ``effective`` keys already are it."""
+    pools = pool.by_agent()
+    if len(pools) < 2:
+        return {}
+    out: dict[str, float] = {}
+    for name, agent_pool in sorted(pools.items()):
+        out |= agent_pool.metrics.to_wandb(prefix=f"{prefix}/agent/{name}", subset=subset)
+    return out

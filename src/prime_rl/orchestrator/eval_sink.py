@@ -121,8 +121,13 @@ class EvalSink:
         """Pop the finished ``(env, eval_step)`` epoch and return the ``EvalBatch`` with its full
         returned cohort (errored rollouts included — the ``all`` set). Metrics are computed
         downstream via ``EvalBatch.rollouts.metrics`` over the all/effective subsets, so the sink
-        does no aggregation."""
+        does no aggregation.
+
+        The epoch's ``group_size`` (the ``avg@k`` k) is the env's configured one, passed in rather
+        than derived: the sink is what scheduled the episodes, so it knows the intended k even for
+        an epoch that lost rollouts to errors."""
         env_name, step = key
         rollouts = self.pending_batches.pop(key, [])
         self.pending_batch_episodes.pop(key, None)
-        return EvalBatch(env_name=env_name, step=step, rollouts=EvalRollouts(rollouts))
+        cohort = EvalRollouts(rollouts, group_size=self.group_size_for(env_name))
+        return EvalBatch(env_name=env_name, step=step, rollouts=cohort)

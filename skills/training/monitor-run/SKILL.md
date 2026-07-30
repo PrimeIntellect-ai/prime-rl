@@ -89,7 +89,7 @@ grep -E "WARNING|ERROR" {output_dir}/logs/envs/{train,eval}/*.log
 
 All metrics print to the console log (and W&B when configured).
 
-**Progress** — orchestrator log. Rollout metrics are keyed `{scope}/{subset}/<metric>/<stat>`: `scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (post-filter).
+**Progress** — orchestrator log. Rollout metrics are keyed `{scope}/{subset}/<metric>/<stat>`: `scope` is `train/agg` (all train envs), `train/<env>`, or `train/<env>/agent/<name>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (post-filter).
 
 | Metric | Description |
 |--------|-------------|
@@ -99,7 +99,16 @@ All metrics print to the console log (and W&B when configured).
 | `train/agg/effective/is_truncated/mean` | fraction truncated |
 | `train/agg/all/has_error/mean` | fraction errored (per-type under `train/agg/all/error/<type>`; also `dispatcher/errored/{train,eval}`) |
 | `train/<env>/effective/metrics/<name>/mean` | env-specific metrics (e.g. pass rate) |
+| `train/<env>/agent/<name>/effective/reward/mean` | per-agent reward, multi-agent envs only (see below) |
 | `eval/<env>/effective/{avg@k,pass@k}` | eval scores when configured |
+
+**Multi-agent envs**: the `agent/<name>` scope appears only when an env ran more than one agent, and
+it's the one to watch. The env-level reward averages agents whose rewards aren't comparable — for a
+zero-sum self-play env (`kuhn-poker-v1`) they cancel, so `train/<env>/*/reward/mean` sits at ~0.0
+however each agent is actually doing. Reward-derived metrics (`reward`, `rewards/<name>`,
+`solved_*`, `avg@k`, `pass@k`) cover the run's *trainable* agents only, so a frozen judge or a
+pinned user sim can't drag them toward its structural zero; token, turn, timing and error metrics
+still cover every agent.
 
 **Stability** — trainer log:
 
