@@ -11,6 +11,9 @@ name = "reverse-text-agentic-judge"
 [orchestrator]
 batch_size = 128
 group_size = 16
+# Each in-flight episode holds a docker box (solver + judge share it); unbounded
+# in-flight stacks hundreds of writable layers and can fill the disk.
+max_inflight_episodes = 64
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128
@@ -30,9 +33,11 @@ env.judge.client = { type = "eval" }
 # The run's sampling caps completions at the solver's 128 tokens — the judge
 # reasons before writing its verdict, so it gets its own budget.
 env.judge.sampling = { max_tokens = 4096 }
-# The judge explores the trace record step by step before writing its verdict —
-# 10 turns is routinely not enough.
-env.judge.max_turns = 25
+env.judge.max_turns = 8
+# Debug grading policy: mirror reverse-text's deterministic check in two tool
+# calls, instead of the default open-ended trace investigation. The path is
+# relative to the repo root — run from there.
+env.task.prompt = "configs/debug/envs/judge_policy.md"
 env.score = { task_weight = 1.0 }
 
 [orchestrator.renderer]
