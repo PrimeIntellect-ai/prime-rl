@@ -1,0 +1,46 @@
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "reverse-text"
+name = "reverse-text-agentic-judge"
+
+[orchestrator]
+batch_size = 128
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+# The agentic judge over reverse-text: the solver plays the task in a docker box,
+# a frozen judge then grades the work in the same box and its verdict composes
+# with the taskset's own reward on the solver's trace.
+[[orchestrator.train.source]]
+name = "reverse-text-judge"
+env.id = "agentic-judge"
+env.taskset = { id = "reverse-text-v1" }
+env.solver.harness = { id = "null" }
+env.solver.runtime = { type = "docker" }
+env.judge.harness = { id = "bash" }
+env.judge.model = "deepseek/deepseek-v4-flash"
+env.judge.client = { type = "eval" }
+# The run's sampling caps completions at the solver's 128 tokens — the judge
+# reasons before writing its verdict, so it gets its own budget.
+env.judge.sampling = { max_tokens = 4096 }
+# The judge explores the trace record step by step before writing its verdict —
+# 10 turns is routinely not enough.
+env.judge.max_turns = 25
+env.score = { task_weight = 1.0 }
+
+[orchestrator.renderer]
+name = "prime-qwen3"
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
+
+[inference]
