@@ -77,8 +77,8 @@ disagg = [
 gpt-oss = [
     "kernels",
 ]
-# CUDA kernels vendored under `kernels/` (see kernels/README.md). Built from source, so it
-# needs nvcc and the vendored submodules; kept out of `all` for that reason.
+# CUDA kernels under `kernels/` (see kernels/README.md). Built from source, so it needs
+# nvcc; kept out of `all` for that reason.
 kernels = [
     "prime-kernels",
 ]
@@ -143,8 +143,8 @@ exclude = [
     "deps/research-environments/environments/tool_use/tau3_bench_v1",
 ]
 
-# Declared statically so `uv lock` never has to build the kernels (which needs nvcc and the
-# vendored submodules) just to read their metadata. Keep in sync with kernels/pyproject.toml.
+# Declared statically so `uv lock` never has to build the kernels (which needs nvcc) just to
+# read their metadata. Keep in sync with kernels/pyproject.toml.
 [[tool.uv.dependency-metadata]]
 name = "prime-kernels"
 version = "0.1.0"
@@ -193,6 +193,10 @@ torchao = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
+# Builds from source: no release carries `prime_kernels-*.whl` yet. Every release attaches
+# them from now on (tag-and-release.yaml) — once one has, replace this with the per
+# `platform_machine` release-asset URLs the other prebuilt wheels below use, so that
+# `uv sync --extra kernels` downloads instead of needing nvcc. See the `kernels` skill.
 prime-kernels = { path = "kernels" }
 # prime-rl depends on the one `verifiers` package (v0 + v1 + the legacy bridge + the built-in v1
 # harnesses/tasksets, now bundled in verifiers.v1). v0 envs resolve from
@@ -261,7 +265,7 @@ known-first-party = ["prime_rl"]
 
 [tool.ruff]
 line-length = 120
-extend-exclude = ["deps", "kernels/prime_kernels/*/upstream"]
+extend-exclude = ["deps"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"

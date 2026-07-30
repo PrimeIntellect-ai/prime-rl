@@ -113,8 +113,21 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
-  release-from-auto-tag:
+  # Wheels are attached while the release is still a draft, so it is never published without
+  # them — `[tool.uv.sources]` pins prime-kernels at a release asset, and an install that
+  # resolves to a wheel-less release would fall back to compiling CUDA from source.
+  kernels-from-auto-tag:
     needs: auto-tag-on-main
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.auto-tag-on-main.outputs.created == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build_kernels.yaml
+    with:
+      release_tag: ${{ needs.auto-tag-on-main.outputs.tag }}
+      ref: ${{ needs.auto-tag-on-main.outputs.tag }}
+
+  release-from-auto-tag:
+    needs: [auto-tag-on-main, kernels-from-auto-tag]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.auto-tag-on-main.outputs.created == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -127,11 +140,12 @@ jobs:
         run: |
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
 
-  tag-and-release:
+  resolve-release:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - name: Checkout tagged release (dispatch)
         if: github.event_name == 'workflow_dispatch'
@@ -194,10 +208,25 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+  kernels-from-tag:
+    needs: resolve-release
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build_kernels.yaml
+    with:
+      release_tag: ${{ needs.resolve-release.outputs.tag }}
+      ref: ${{ needs.resolve-release.outputs.tag }}
+
+  publish-release:
+    needs: [resolve-release, kernels-from-tag]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: Publish draft release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
+          TAG: ${{ needs.resolve-release.outputs.tag }}
         run: |
           STATE=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || echo "missing")
           if [ "$STATE" = "missing" ]; then

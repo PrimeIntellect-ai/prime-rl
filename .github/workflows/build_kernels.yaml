@@ -1,8 +1,12 @@
 name: Build Kernels
 
 # Builds the `prime-kernels` wheel (kernels/) for x86_64 and aarch64. Runs on any change
-# under kernels/ to catch build breakage, and on demand with `release_tag` to attach the
-# wheels to a GitHub release — which is how they are consumed (see kernels/README.md).
+# under kernels/ to catch build breakage, and with `release_tag` to attach the wheels to a
+# GitHub release — which is how they are consumed (see kernels/README.md).
+#
+# `tag-and-release.yaml` calls this for every release, before it promotes the draft, so a
+# published release always carries the wheels its `[tool.uv.sources]` pin can point at.
+# `workflow_dispatch` does the same by hand, for backfilling an already published release.
 #
 # No GPU is needed: nvcc cross compiles for the architectures kernels.toml declares.
 
@@ -20,6 +24,20 @@ on:
     inputs:
       release_tag:
         description: "Existing release tag to attach the wheels to (e.g. v0.7.0). Empty = artifacts only."
+        required: false
+        type: string
+      ref:
+        description: "Ref to build the kernels from. Empty = the ref the workflow was started on."
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      release_tag:
+        description: "Release tag to attach the wheels to. The release may still be a draft."
+        required: false
+        type: string
+      ref:
+        description: "Ref to build the kernels from. Empty = the caller's ref."
         required: false
         type: string
 
@@ -47,36 +65,32 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends git curl ca-certificates build-essential
 
+      # Kernel sources live in this repo, so the checkout is all the build needs.
       - name: Checkout
         uses: actions/checkout@v5
         with:
           submodules: false
-
-      # Kernel submodules are private, so the public https rewrite the other workflows use
-      # is not enough. KERNELS_SUBMODULE_TOKEN needs read access to the kernel repos.
-      - name: Init kernel submodules
-        env:
-          TOKEN: ${{ secrets.KERNELS_SUBMODULE_TOKEN }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "KERNELS_SUBMODULE_TOKEN is not set; cannot fetch private kernel sources." >&2
-            exit 1
-          fi
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "git@github.com:"
-          git submodule update --init -- kernels
+          ref: ${{ inputs.ref }}
 
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR=/usr/local/bin sh
           uv --version
 
+      # The wheel only imports under the exact torch it was compiled against, so build
+      # against the torch prime-rl resolves rather than whatever is newest today.
       - name: Create build environment
         env:
           UV_TORCH_BACKEND: ${{ env.CUDA_TAG }}
         run: |
+          TORCH_PIN=$(grep -A1 '^name = "torch"$' uv.lock | sed -n 's/^version = "\([^"+]*\).*"$/\1/p' | head -n1)
+          if [ -z "$TORCH_PIN" ]; then
+            echo "Could not read torch's version from uv.lock" >&2
+            exit 1
+          fi
+          echo "Building against torch==$TORCH_PIN"
           uv venv --python 3.12 /tmp/build-env
-          VIRTUAL_ENV=/tmp/build-env uv pip install "torch>=2.9.0" setuptools wheel ninja
+          VIRTUAL_ENV=/tmp/build-env uv pip install "torch==$TORCH_PIN" setuptools wheel ninja
 
       # torch C++ extensions are bound to the torch and CUDA they were compiled against, so
       # the wheel carries both in its local version.
@@ -117,4 +131,10 @@ jobs:
         if: inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ inputs.release_tag }}" dist/*.whl --clobber
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release upload "$TAG" dist/*.whl --clobber
+          # The `[tool.uv.sources]` pin has to name the wheel exactly, ABI suffix and all.
+          WHEEL=$(basename dist/*.whl)
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${WHEEL}"
+          echo "\`{ url = \"$URL\", marker = \"platform_machine == '${{ matrix.arch }}'\" },\`" >> "$GITHUB_STEP_SUMMARY"

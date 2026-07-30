@@ -35,15 +35,15 @@ When bumping a package past the workspace-wide `exclude-newer = "7 days"` window
 
 ## Optional extras
 
-### Vendored CUDA kernels
+### CUDA kernels
 
 ```bash
-git submodule update --init kernels   # kernel sources; private repos, needs SSH access
 uv sync --extra kernels
 ```
 
-Builds the `prime-kernels` wheel from `kernels/` — needs `nvcc` whose CUDA major matches
-torch's. Kept out of `--all-extras` for that reason. See the `kernels` skill.
+Builds the `prime-kernels` wheel from `kernels/` — sources are in the repo, but it needs
+`nvcc` whose CUDA major matches torch's. Kept out of `--all-extras` for that reason. See the
+`kernels` skill.
 
 ### NemotronH (Mamba SSD kernels)
 

@@ -55,7 +55,7 @@ class KernelSpec:
     path: Path  # the prime_kernels/<name> folder the paths below are relative to
     description: str
     ops: str  # torch.ops namespace the compiled extension registers into
-    upstream: str | None
+    upstream: str | None  # where the sources were originally developed; provenance only
     sources: tuple[Path, ...]
     include_dirs: tuple[Path, ...]
     archs: tuple[Arch, ...]

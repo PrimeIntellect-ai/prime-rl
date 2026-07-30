@@ -5,10 +5,15 @@ description: How prime-rl vendors, builds, and ships CUDA kernels (the `kernels/
 
 # CUDA kernels
 
-CUDA kernels live in `kernels/` and ship as one wheel, `prime-kernels`. One folder per
-kernel under `kernels/prime_kernels/`, holding its Python surface and its sources (a pinned
-submodule at `<kernel>/upstream/`); everything is declared in the single manifest
+CUDA kernels live in `kernels/` and ship as one wheel, `prime-kernels`. `kernels/` is the
+wheel root (`setup.py`, `pyproject.toml`); `kernels/prime_kernels/` inside it is the
+importable package. One folder per kernel under it, holding the kernel's Python surface and
+its C++/CUDA sources at `<kernel>/csrc/`; everything is declared in the single manifest
 `kernels/prime_kernels/kernels.toml`. See [`kernels/README.md`](../../kernels/README.md).
+
+Sources are committed here, not submoduled — a kernel is prime-rl code, so a clone builds it
+and a change lands as one commit. Kernels developed in their own repo are copied in, with
+that repo recorded as `upstream` in the manifest for provenance only.
 
 `prime-rl` itself stays a pure-Python wheel — never add compiled extensions to it.
 
@@ -30,7 +35,6 @@ it once at startup rather than failing a run halfway through.
 ## Building locally
 
 ```bash
-git submodule update --init kernels   # sources (private repos, SSH)
 uv sync --extra kernels               # or, while iterating:
 uv pip install --no-build-isolation -e kernels
 ```
@@ -38,14 +42,13 @@ uv pip install --no-build-isolation -e kernels
 Requirements: `nvcc` on `CUDA_HOME` with the **same CUDA major as torch** (torch refuses to
 build extensions otherwise), and new enough for the kernel's `min-cuda`.
 
-Kernels whose sources or toolkit are missing are skipped with a message and reported
-unavailable at runtime — the build still succeeds. `PRIME_KERNELS=a,b` builds a subset;
+Kernels whose toolkit is unsuitable are skipped with a message and reported unavailable at
+runtime — the build still succeeds. `PRIME_KERNELS=a,b` builds a subset;
 `PRIME_KERNELS_REQUIRE=1` turns any skip into an error.
 
 ## Adding a kernel
 
-1. `git submodule add git@github.com:PrimeIntellect-ai/<repo>.git kernels/prime_kernels/<name>/upstream`
-   (or commit sources straight into `kernels/prime_kernels/<name>/`).
+1. Commit the sources into `kernels/prime_kernels/<name>/csrc/`.
 2. Add a `[<name>]` table to `kernels/prime_kernels/kernels.toml` — sources, `arch`,
    `min-cuda`, `cxx-std`; paths are relative to the kernel folder.
 3. `kernels/prime_kernels/<name>/__init__.py` — `from . import _C`, one wrapper and one
@@ -58,44 +61,69 @@ Rules the build assumes:
   `PYBIND11_MODULE(_C, m)` and registers ops with `TORCH_LIBRARY*`.
 - `arch` matches the device **exactly** at runtime (`10.0a` runs only on sm_100a); no PTX is
   shipped to JIT from.
-- Two packages registering the same `torch.ops` namespace collide. If a kernel's upstream
-  package is also installed standalone (e.g. `prime_moe`), uninstall it.
-- Vendored Python is ignored on purpose — copy what you need into the kernel's package so
-  every kernel looks the same and upstream repos without Python work unchanged.
+- Two packages registering the same `torch.ops` namespace collide. If a kernel's sources are
+  also installed as a standalone package (e.g. `prime_moe`), uninstall it.
+- Only the Python surface and the compiled `_C` ship in the wheel; `csrc/` is build input.
 
-## Bumping a vendored kernel
+## Pulling in changes from an upstream repo
+
+For a kernel whose `upstream` is a separate repo, copy the sources over and diff:
 
 ```bash
-git -C kernels/prime_kernels/<name>/upstream fetch
-git -C kernels/prime_kernels/<name>/upstream checkout <sha>
-git add kernels/prime_kernels/<name>/upstream
+git clone <upstream> /tmp/<name> && git -C /tmp/<name> log --oneline -5
+cp -r /tmp/<name>/<path>/csrc/. kernels/prime_kernels/<name>/csrc/
+git diff --stat kernels/prime_kernels/<name>/csrc
 ```
 
-Rebuild and re-run whatever exercises the kernel — the ABI is not checked for you.
+Then, in order:
+
+- Check `kernels.toml` still lists every source file, and bump the `@ <sha>` comment under
+  `upstream` — without a submodule that comment is the only record of what was copied.
+- Read the upstream diff for **host-side contract changes**, not just kernel internals. A
+  change to what the caller must pass (weight layout, scale packing, argument order) is
+  silently wrong numbers, not a build error, and the Python surface here has to absorb it.
+- Rebuild and re-run whatever exercises the kernel — the ABI is not checked for you.
+
+Changes made here are the source of truth; port them back upstream if that repo is alive.
 
 ## Prebuilt wheels
 
 [`build_kernels.yaml`](../../.github/workflows/build_kernels.yaml) builds the wheel for
 x86_64 and aarch64 in the CUDA devel image (no GPU needed — nvcc cross compiles). It runs on
-every change under `kernels/`, and `workflow_dispatch` with `release_tag: vX.Y.Z` attaches
-the wheels to that release, alongside the deep-ep/deep-gemm/torchao wheels.
+every change under `kernels/`, and attaches the wheels to a release when given a
+`release_tag`, alongside the deep-ep/deep-gemm/torchao wheels.
+
+Every release gets them: [`tag-and-release.yaml`](../../.github/workflows/tag-and-release.yaml)
+calls this workflow after the tag is cut and **before** it promotes the draft, so a published
+release always carries its wheels. To backfill a release that predates this, dispatch by hand:
+
+```bash
+gh workflow run build_kernels.yaml -f release_tag=vX.Y.Z -f ref=vX.Y.Z
+```
 
 The wheel version carries the ABI it was built against, e.g.
-`prime_kernels-0.1.0+cu128torch2.9.0-cp312-cp312-linux_x86_64.whl` — a wheel is only valid
-for that torch and CUDA major.
+`prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl` — it imports only under
+that exact torch, so the build installs the torch pinned in `uv.lock`, not the newest one.
 
-Once wheels are published, point the extra at them instead of building from source:
+### Pinning installs at the prebuilt wheels
+
+So that `uv sync --extra kernels` downloads instead of compiling, `[tool.uv.sources]` names
+the release assets — the pattern deep-ep, deep-gemm and vllm already use:
 
 ```toml
 [tool.uv.sources]
 prime-kernels = [
-    { url = ".../releases/download/vX.Y.Z/prime_kernels-...linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = ".../releases/download/vX.Y.Z/prime_kernels-...linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/vX.Y.Z/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/vX.Y.Z/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 ```
 
-CI needs `KERNELS_SUBMODULE_TOKEN` (read access to the private kernel repos) — the other
-workflows only init the public submodules.
+The build prints both lines, ready to paste, in its job summary. Then `uv lock`.
+
+The pin necessarily trails by one release: a release's own assets do not exist until that
+release is built, so `vX.Y.Z` can only point at wheels from an already published tag. Move it
+whenever the kernels or the torch/CUDA pin change — a stale pin ships stale kernels, and a
+pin whose torch no longer matches the lock fails at import, not at install.
 
 ## Gotchas
 
@@ -105,6 +133,5 @@ workflows only init the public submodules.
 - `match-runtime = true` does not work for `prime-kernels`: uv cannot read a source tree's
   metadata without building it. The build gets the environment's torch through
   `no-build-isolation-package` instead.
-- Ruff must not see vendored checkouts (upstream code, sometimes unformatted or broken) —
-  `kernels/prime_kernels/*/upstream` is in `extend-exclude`, which is why the submodule
-  directory is always named `upstream`.
+- Keep vendored-in Python out of the kernel folder — rewrite it as the kernel's own Python
+  surface instead. Everything under `kernels/` is normal first-party code that ruff lints.
