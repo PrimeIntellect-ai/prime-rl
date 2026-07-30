@@ -905,7 +905,9 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
-        await asyncio.to_thread(self.ckpt_manager.save, self.progress, self.train_source, step)
+        # Synchronous on purpose: the payload is tiny, and snapshotting on the
+        # event loop keeps the dispatcher from mutating TrainSource mid-save
+        self.ckpt_manager.save(self.progress, self.train_source, step)
         return time.perf_counter() - t
 
     def update_dispatch_gate(self) -> None:
