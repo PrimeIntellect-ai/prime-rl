@@ -88,7 +88,9 @@ class FileMonitor(Monitor):
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         pass
 
-    def save_final_summary(self, filename: str = "final_summary.json") -> None:
+    def save_final_summary(
+        self, filename: str = "final_summary.json", success: bool = True, error_message: str | None = None
+    ) -> None:
         if not self.is_master or not self.enabled or self.output_dir is None:
             return
         summary = self.history[-1] if self.history else {}

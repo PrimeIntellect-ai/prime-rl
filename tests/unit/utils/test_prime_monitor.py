@@ -117,3 +117,30 @@ def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
     monitor.logger.warning.assert_called_once_with(
         "Dropping 2 non-finite value(s) from Prime monitor metrics payload: metrics.nan, distributions[1]"
     )
+
+
+def test_submit_final_summary_reports_crash_exit_code(monkeypatch):
+    monitor = _new_monitor()
+    monitor.logger = Mock()
+    monitor.run_id = "run-123"
+    monitor.base_url = "https://api.example.com/monitoring"
+    monitor._headers = {}
+
+    captured = {}
+
+    def fake_post(url, headers, json, timeout):
+        captured["url"] = url
+        captured["json"] = json
+        return Mock(status_code=200)
+
+    monkeypatch.setattr("prime_rl.utils.monitor.prime.httpx.post", fake_post)
+
+    assert monitor._submit_final_summary({"reward": 0.5}, success=False, error_message="OSError: ENOSPC")
+
+    assert captured["url"].endswith("/finalize")
+    assert captured["json"]["exit_code"] == 1
+    assert captured["json"]["error_message"] == "OSError: ENOSPC"
+
+    assert monitor._submit_final_summary({"reward": 0.5}, success=True, error_message=None)
+    assert captured["json"]["exit_code"] == 0
+    assert captured["json"]["error_message"] is None

@@ -485,11 +485,21 @@ class PrimeMonitor(Monitor):
             f"Logged distributions at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
-    def _submit_final_summary(self, summary: dict[str, Any]) -> bool:
-        """Submit the final summary/finalize request synchronously."""
+    def _submit_final_summary(self, summary: dict[str, Any], success: bool, error_message: str | None) -> bool:
+        """Submit the final summary/finalize request synchronously.
+
+        ``exit_code`` must reflect whether the orchestrator actually finished:
+        the platform routes 0 to COMPLETED and non-zero to FAILED. Omitting it
+        made every crash land as COMPLETED (the API defaults the field to 0).
+        """
         payload = self._sanitize_json_payload(
             "finalize",
-            {"run_id": self.run_id, "summary": summary},
+            {
+                "run_id": self.run_id,
+                "summary": summary,
+                "exit_code": 0 if success else 1,
+                "error_message": error_message,
+            },
         )
 
         try:
@@ -512,14 +522,16 @@ class PrimeMonitor(Monitor):
 
         return True
 
-    def save_final_summary(self, filename: str = "final_summary.json") -> None:
+    def save_final_summary(
+        self, filename: str = "final_summary.json", success: bool = True, error_message: str | None = None
+    ) -> None:
         """Save final summary to Prime Intellect API."""
         if not self.is_master or not self.enabled:
             return
 
         self.logger.info("Saving final summary to Prime Intellect API")
         summary = self.history[-1] if self.history else {}
-        finalized_via_summary = self._submit_final_summary(summary)
+        finalized_via_summary = self._submit_final_summary(summary, success, error_message)
 
         if os.getpid() != self._owner_pid:
             return
@@ -528,7 +540,7 @@ class PrimeMonitor(Monitor):
             self._finalized = True
             return
 
-        self._finalize_run(success=True)
+        self._finalize_run(success=success)
         self._finalized = True
 
     def close(self) -> None:

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import time
 import uuid
 from typing import TYPE_CHECKING
@@ -493,7 +494,11 @@ class Orchestrator:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
-            self.monitor.save_final_summary()
+            # Report the real outcome: a finalize without it defaults to
+            # exit_code=0 on the platform and a crashed run lands as COMPLETED.
+            exc = sys.exc_info()[1]
+            error_message = f"{type(exc).__name__}: {exc}" if exc is not None and not clean_exit else None
+            self.monitor.save_final_summary(success=clean_exit, error_message=error_message)
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
             # first ship).
