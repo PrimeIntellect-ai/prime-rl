@@ -59,7 +59,7 @@ def mk(
         filter_results=filter_results or {},
         timing=SimpleNamespace(
             setup=SimpleNamespace(duration=setup),
-            generation=SimpleNamespace(
+            agent=SimpleNamespace(
                 duration=generation,
                 model=SimpleNamespace(duration=generation_model),
                 harness=SimpleNamespace(duration=generation_harness),

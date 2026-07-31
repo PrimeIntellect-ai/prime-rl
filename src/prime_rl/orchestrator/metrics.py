@@ -91,6 +91,9 @@ class TimingMetrics(StatGroup):
     ``total`` is the per-rollout sum across all phases."""
 
     PHASES = ("setup", "generation", "finalize", "scoring")
+    # Verifiers renamed its generation span to `agent`; the metric keeps the
+    # `generation` name so dashboards and the monitor-run skill stay stable.
+    TRACE_PHASES = {"generation": "agent"}
 
     @property
     def setup(self) -> Stat:
@@ -98,18 +101,18 @@ class TimingMetrics(StatGroup):
 
     @property
     def generation(self) -> Stat:
-        return Stat([r.timing.generation.duration for r in self.rollouts])
+        return Stat([r.timing.agent.duration for r in self.rollouts])
 
     @property
     def generation_model(self) -> Stat:
         """The share of the generation phase spent inside model calls (inference)."""
-        return Stat([r.timing.generation.model.duration for r in self.rollouts])
+        return Stat([r.timing.agent.model.duration for r in self.rollouts])
 
     @property
     def generation_harness(self) -> Stat:
         """The share of the generation phase spent outside model calls (harness, tools,
         user simulation)."""
-        return Stat([r.timing.generation.harness.duration for r in self.rollouts])
+        return Stat([r.timing.agent.harness.duration for r in self.rollouts])
 
     @property
     def finalize(self) -> Stat:
@@ -121,7 +124,9 @@ class TimingMetrics(StatGroup):
 
     @property
     def total(self) -> Stat:
-        return Stat([sum(getattr(r.timing, p).duration for p in self.PHASES) for r in self.rollouts])
+        return Stat(
+            [sum(getattr(r.timing, self.TRACE_PHASES.get(p, p)).duration for p in self.PHASES) for r in self.rollouts]
+        )
 
     def stats(self) -> dict[str, Stat]:
         return {
