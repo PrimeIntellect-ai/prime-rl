@@ -45,6 +45,7 @@ members = [
     "bfcl-v3-v1",
     "browsecomp-plus-v1",
     "browsecomp-v1",
+    "charxiv-v1",
     "clbench-v1",
     "code-golf-v1",
     "color-codeword-v1",
@@ -78,6 +79,7 @@ members = [
     "math500-v1",
     "mcp-atlas-v1",
     "mmlu-pro-v1",
+    "mmmu-pro-v1",
     "mmmu-v1",
     "mrcr-v2-v1",
     "multiswe-v1",
@@ -594,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "bfcl-v3-v1"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "deps/research-environments/environments/tool_use/bfcl_v3_v1" }
 dependencies = [
     { name = "bfcl-eval" },
@@ -606,7 +608,7 @@ dependencies = [
 requires-dist = [
     { name = "bfcl-eval", git = "https://github.com/mikasenghaas/gorilla.git?subdirectory=berkeley-function-call-leaderboard&rev=898763a" },
     { name = "soundfile", specifier = ">=0.13.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev21" },
 ]
 
 [[package]]
@@ -870,6 +872,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/38/dd/5a9ab159fe45c6e72079398f277b7d2b523e7f716acc489726115a910097/charset_normalizer-3.4.7-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:708838739abf24b2ceb208d0e22403dd018faeef86ddac04319a62ae884c4f15", size = 211229, upload-time = "2026-04-02T09:26:33.282Z" },
     { url = "https://files.pythonhosted.org/packages/8a/2d/a572df5c9204ab7688ec1edc895a73ebded3b023bb07364710b05dd1c9be/charset_normalizer-3.4.7-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:bb6d88045545b26da47aa879dd4a89a71d1dce0f0e549b1abcb31dfe4a8eac49", size = 218468, upload-time = "2026-04-02T09:26:40.17Z" },
     { url = "https://files.pythonhosted.org/packages/db/8f/61959034484a4a7c527811f4721e75d02d653a35afb0b6054474d8185d4c/charset_normalizer-3.4.7-py3-none-any.whl", hash = "sha256:3dce51d0f5e7951f8bb4900c257dad282f49190fdbebecd4ba99bcc41fef404d", size = 61958, upload-time = "2026-04-02T09:28:37.794Z" },
+]
+
+[[package]]
+name = "charxiv-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/multimodal/charxiv_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "pillow" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "pillow" },
+    { name = "verifiers", specifier = ">=0.2.0" },
 ]
 
 [[package]]
@@ -3737,6 +3756,23 @@ requires-dist = [
 ]
 
 [[package]]
+name = "mmmu-pro-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/multimodal/mmmu_pro_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "pillow" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "pillow" },
+    { name = "verifiers", specifier = ">=0.2.0" },
+]
+
+[[package]]
 name = "mmmu-v1"
 version = "0.1.0"
 source = { editable = "deps/research-environments/environments/knowledge/mmmu_v1" }
@@ -3947,7 +3983,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "multi-swe-bench" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -4574,7 +4610,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -5959,7 +5995,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -6278,7 +6314,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -6397,7 +6433,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.1" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev27" }]
 
 [[package]]
 name = "sentence-transformers"
@@ -6815,7 +6851,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.1" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev27" }]
 
 [[package]]
 name = "swebench-pro-v1"
@@ -6826,7 +6862,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.2.1" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.2.2.dev27" }]
 
 [[package]]
 name = "swebench-verified-v1"
@@ -6837,7 +6873,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.2.1" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.2.2.dev27" }]
 
 [[package]]
 name = "swelego-v1"
@@ -6851,7 +6887,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -6866,7 +6902,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -6890,7 +6926,7 @@ requires-dist = [
     { name = "datasets" },
     { name = "swebench" },
     { name = "swesmith", git = "https://github.com/SWE-bench/SWE-smith.git?rev=9b74ac0" },
-    { name = "verifiers", specifier = ">=0.2.2.dev5" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
@@ -8478,7 +8514,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
 [[package]]
