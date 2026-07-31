@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import uuid
 from typing import TYPE_CHECKING
 
 import tomli_w
@@ -157,7 +158,7 @@ class Orchestrator:
         # Route the in-process v1 library logging through our handler. The
         # env server runs in a child process, so its logging is separate.
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
-        algorithms = sorted({env.algo.type for env in config.train.env if env.algo is not None})
+        algorithms = sorted({env.algo.type for env in config.train.source if env.algo is not None})
         get_logger().info(f"Starting orchestrator (algorithm: {', '.join(algorithms)})")
 
         if config.bench:
@@ -239,9 +240,12 @@ class Orchestrator:
             tokenizer=self.tokenizer,
             run_config=config,
             keep_full_history=config.bench,
-            train_env_names=[env.resolved_name for env in config.train.env],
-            eval_env_names=[env.resolved_name for env in config.eval.env] if config.eval is not None else [],
+            train_env_names=[env.resolved_name for env in config.train.source],
+            eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
+        # ``RunInfo.id`` is required on the trace: fall back to a run-local uuid
+        # when no external monitor identity (W&B) exists.
+        self.run_id = self.monitor.run_id or uuid.uuid4().hex
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat.url)
@@ -257,7 +261,7 @@ class Orchestrator:
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
-            config.train.env, policy_pool=self.policy_inference, renderer_config=config.renderer
+            config.train.source, policy_pool=self.policy_inference, renderer_config=config.renderer
         )
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
@@ -271,7 +275,7 @@ class Orchestrator:
 
         if config.eval is not None:
             get_logger().info("Loading eval environment(s)")
-            self.eval_envs = EvalEnvs(config.eval.env)
+            self.eval_envs = EvalEnvs(config.eval.source)
             get_logger().debug(f"Loaded {len(self.eval_envs)} eval environment(s) ({', '.join(self.eval_envs.names)})")
             await self.eval_envs.start(
                 log_dir=get_log_dir(config.output_dir.parent) / "envs" / "eval",
@@ -392,7 +396,7 @@ class Orchestrator:
             else None
         )
 
-        assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
+        assert config.max_inflight_episodes is not None, "max_inflight_episodes must be resolved before dispatcher init"
         log_interval = config.log.interval
         wandb_enabled = config.wandb is not None
         self.dispatcher = RolloutDispatcher(
@@ -402,7 +406,7 @@ class Orchestrator:
             eval_source=self.eval_source,
             policy_pool=self.policy_inference,
             policy=self.policy,
-            max_inflight_rollouts=config.max_inflight_rollouts,
+            max_inflight_episodes=config.max_inflight_episodes,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
         )
@@ -528,12 +532,12 @@ class Orchestrator:
             step = episode[0].eval_step if kind == "eval" else self.progress.step
             assert step is not None
             run: vf.RunInfo = (
-                vf.EvalRunInfo(id=self.monitor.run_id, step=step)
+                vf.EvalRunInfo(id=self.run_id, step=step)
                 if kind == "eval"
-                else vf.TrainRunInfo(id=self.monitor.run_id, step=step)
+                else vf.TrainRunInfo(id=self.run_id, step=step)
             )
             for rollout in episode:
-                rollout.stamp(
+                rollout.record_run(
                     run,
                     env_name=rollout.env_name,
                     group_id=str(rollout.group_id),
@@ -598,11 +602,12 @@ class Orchestrator:
                 )
             return
         self.consecutive_empty_batches = 0
-        n_trainable = sum(1 for r in batch.rollouts if r.is_trainable)
-        if n_trainable / len(batch.rollouts) <= 0.1:
+        effective = batch.rollouts.effective
+        n_trainable = sum(1 for r in effective if r.is_trainable)
+        if effective and n_trainable / len(effective) <= 0.1:
             get_logger().warning(
-                f"Only {n_trainable}/{len(batch.rollouts)} generated rollouts are trainable "
-                f"({n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
+                f"Only {n_trainable}/{len(effective)} effective rollouts are trainable "
+                f"({n_trainable / len(effective):.1%}) — consider reviewing task difficulty / filter config"
             )
 
         # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}.
@@ -638,7 +643,6 @@ class Orchestrator:
         # at ship time; the full arrival window already streamed into ``all`` on arrival.
         # to_record drops the per-node training tensors — they're for training, not the rollout
         # record, and can't round-trip json (raw numpy bytes).
-        effective = batch.rollouts.effective
         records = [r.to_record() for r in effective]
         await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
 
@@ -806,19 +810,19 @@ class Orchestrator:
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
         ``Error`` is the sink-level rate (errored arrivals / total arrivals, over the full window);
-        the quality metrics are over the effective (clean, trained-on) subset; ``Trainable`` is
-        relative to all generated rollouts."""
+        the quality metrics are over the effective (clean, trained-on) subset, as is ``Trainable``."""
         rollouts = batch.rollouts
         effective = rollouts.effective
         eff = effective.metrics
         n_generated = len(rollouts)
-        n_trainable = sum(1 for r in rollouts if r.is_trainable)
-        trainable_rate = (n_trainable / n_generated) if n_generated else 0.0
+        n_effective = len(effective)
+        n_trainable = sum(1 for r in effective if r.is_trainable)
+        trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
         max_off_policy = max((r.off_policy_steps for r in effective), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
-            f"Trainable {n_trainable}/{n_generated} ({trainable_rate:.1%}) | "
+            f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Max Off-Policy {max_off_policy} | "
             f"Error {rollouts.metrics.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
@@ -876,15 +880,15 @@ class Orchestrator:
         metrics["step"] = float(batch.step)
         self.monitor.log(metrics, step=batch.step)
 
-        # Success line — reward / turns / truncation over the effective set, error rate + branches
-        # over the full returned cohort. ``Stat.mean()`` is 0.0 for an empty set.
+        # Success line — quality metrics over the effective set, error rate over the full returned
+        # cohort. ``Stat.mean()`` is 0.0 for an empty set.
         eff, full = effective.metrics, rollouts.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
-            f"Turns {eff.num_turns.mean():.1f} | Branches {full.num_branches.mean():.1f} | "
+            f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
         )
 

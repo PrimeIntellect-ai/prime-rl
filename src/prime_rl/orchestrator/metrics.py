@@ -12,7 +12,7 @@ is flat over the rollout list except the solve rates, which group by ``group_id`
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterator, Literal
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
 
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
@@ -134,16 +134,20 @@ class TimingMetrics(StatGroup):
 
 class CustomMetrics(StatGroup):
     """Per-key ``Stat``s over a dynamic per-rollout dict attribute (env ``@metric``s or reward
-    components), each averaged over the rollouts that report the key."""
+    components), each averaged over the rollouts that report the key. ``value`` extracts the
+    float from each entry (rewards are ``vf.Reward`` records; metrics are plain floats)."""
 
-    def __init__(self, rollouts: list[Rollout], attr: str) -> None:
+    def __init__(self, rollouts: list[Rollout], attr: str, value: Callable[[Any], float] = float) -> None:
         super().__init__(rollouts)
         self.attr = attr
+        self.value = value
 
     def stats(self) -> dict[str, Stat]:
         names = sorted({name for r in self.rollouts for name in getattr(r, self.attr)})
         return {
-            name: Stat([getattr(r, self.attr)[name] for r in self.rollouts if name in getattr(r, self.attr)])
+            name: Stat(
+                [self.value(getattr(r, self.attr)[name]) for r in self.rollouts if name in getattr(r, self.attr)]
+            )
             for name in names
         }
 
@@ -188,8 +192,9 @@ class RolloutMetrics:
 
     @property
     def rewards(self) -> CustomMetrics:
-        """Per-component reward breakdown, keyed by name (summed into the scalar ``reward``)."""
-        return CustomMetrics(self.rollouts, "rewards")
+        """Per-component reward breakdown, keyed by name (each entry's weighted ``value``,
+        summed into the scalar ``reward``)."""
+        return CustomMetrics(self.rollouts, "rewards", value=lambda reward: reward.value)
 
     # Boolean rate metrics (0/1 distributions — ``.mean()`` is the rate)
     @property
@@ -221,7 +226,7 @@ class RolloutMetrics:
     def error_types(self) -> dict[str, int]:
         """Count of errored rollouts by error type (the rollout's last error — e.g. ``Cancelled``,
         ``ProviderError``)."""
-        types = [r.error.type for r in self.rollouts if r.has_error]
+        types = [r.last_error.type for r in self.rollouts if r.has_error and r.last_error is not None]
         return {t: types.count(t) for t in sorted(set(types))}
 
     def solve_rates(self) -> dict[str, float]:
@@ -355,7 +360,7 @@ class TrainRollouts:
 
     @property
     def effective(self) -> TrainRollouts:
-        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered and r.trainable])
+        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered and r.agent.trainable])
 
     def by_env(self) -> dict[str, TrainRollouts]:
         grouped: dict[str, list[Rollout]] = {}
@@ -394,13 +399,15 @@ class EvalRollouts:
             return self._group_size
         counts: dict = {}
         for r in self.rollouts:
-            if r.trainable:
+            if r.agent.trainable:
                 counts[r.group_id] = counts.get(r.group_id, 0) + 1
         return max(counts.values(), default=0)
 
     @property
     def effective(self) -> EvalRollouts:
-        return EvalRollouts([r for r in self.rollouts if not r.has_error and r.trainable], group_size=self.group_size)
+        return EvalRollouts(
+            [r for r in self.rollouts if not r.has_error and r.agent.trainable], group_size=self.group_size
+        )
 
     @property
     def metrics(self) -> EvalMetrics:

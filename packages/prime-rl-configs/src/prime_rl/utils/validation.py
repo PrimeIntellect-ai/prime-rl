@@ -126,6 +126,9 @@ def propagate_shared_fields(data: Any) -> Any:
         "inference.model.chat_template",
     )
 
+    # [rollout_transport] → both sub-configs (host is launcher-injected for zmq multi-node).
+    propagate("rollout_transport", "trainer.rollout_transport", "orchestrator.rollout_transport")
+
     # Top-level scalars.
     propagate("max_steps", "trainer.max_steps", "orchestrator.max_steps")
     propagate("seq_len", "trainer.model.seq_len", "orchestrator.seq_len")

@@ -72,7 +72,7 @@ After a restart, verify all processes are back up and progress resumed before th
 │   └── torchrun/              # per-rank stdout/stderr
 ├── inference/
 │   ├── node_*.log             # per-node (multi-node only)
-│   └── router_0.log           # vllm-router per replica (multi-node only)
+│   └── router.log             # the single global router (multi-node only; single-node logs it in inference.log)
 └── envs/{train,eval}/{env_name}.log    # one log file per env
 ```
 
@@ -93,13 +93,13 @@ All metrics print to the console log (and W&B when configured).
 
 | Metric | Description |
 |--------|-------------|
-| `train/agg/all/reward/mean` | mean training reward (per env: `train/<env>/all/reward/mean`) |
-| `train/agg/all/num_total_tokens/mean` | avg tokens per rollout (also `num_input_tokens`, `num_output_tokens`) |
-| `train/agg/all/num_turns/mean` | avg turns per rollout (multi-turn only) |
-| `train/agg/all/is_truncated/mean` | fraction truncated |
+| `train/agg/effective/reward/mean` | mean training reward (per env: `train/<env>/effective/reward/mean`) |
+| `train/agg/effective/num_total_tokens/mean` | avg tokens per rollout (also `num_input_tokens`, `num_output_tokens`) |
+| `train/agg/effective/num_turns/mean` | avg turns per rollout (multi-turn only) |
+| `train/agg/effective/is_truncated/mean` | fraction truncated |
 | `train/agg/all/has_error/mean` | fraction errored (per-type under `train/agg/all/error/<type>`; also `dispatcher/errored/{train,eval}`) |
-| `train/<env>/all/metrics/<name>/mean` | env-specific metrics (e.g. pass rate) |
-| `eval/<env>/all/{avg@k,pass@k}` | eval scores when configured |
+| `train/<env>/effective/metrics/<name>/mean` | env-specific metrics (e.g. pass rate) |
+| `eval/<env>/effective/{avg@k,pass@k}` | eval scores when configured |
 
 **Stability** — trainer log:
 
@@ -126,7 +126,7 @@ All metrics print to the console log (and W&B when configured).
 For live vLLM stats, query Prometheus directly:
 
 ```bash
-curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
+curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  # engine port (8000 is the router)
 # vllm:num_requests_running, vllm:num_requests_waiting, vllm:gpu_cache_usage_perc (→1.0 = KV cache saturated)
 ```
 
@@ -154,7 +154,7 @@ jq '.rewards' {output_dir}/rollouts/step_42/train/effective/traces.jsonl
 jq 'select(.ok | not) | {id, env: .info.env_name, runtime}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
-The binary batches consumed by the trainer still live at `{output_dir}/rollouts/step_N/train_rollouts.bin`, next to the trace subtrees.
+The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{output_dir}/rollouts/step_N/train_rollouts.bin`, next to the trace subtrees.
 
 ### Common failure modes
 

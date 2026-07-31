@@ -21,10 +21,17 @@ name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 batch_size = 128
 group_size = 8
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "wordle"
-env.taskset = { id = "wordle-v1" }
-env.player.harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.train.source.env.taskset]
+id = "wordle-v1"
+
+[orchestrator.train.source.env.player.harness]
+id = "null"
+
+[orchestrator.train.source.env.player.runtime]
+type = "subprocess"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 1024

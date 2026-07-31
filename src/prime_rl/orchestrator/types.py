@@ -77,7 +77,7 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     orchestration metadata lives on it directly (set by the dispatcher once the rollout
     returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
     fields are ``exclude=True``, so dumping a Rollout yields a plain trace on the wire; the
-    orchestrator mirrors them onto the trace's own fields via ``vf.Trace.stamp`` (``kind`` as
+    orchestrator mirrors them onto the trace's own fields via ``vf.Trace.record_run`` (``kind`` as
     ``run.type``, the run id, the step, and ``env_name``/``group_id``/``policy_version`` into
     ``info``) when a rollout arrives, so the on-disk records stay fully placeable.
 
@@ -146,7 +146,7 @@ class TrainBatch:
     finalized in that span (errored + filtered included; rollouts of still-incomplete groups wait
     for a later window). Its ``.effective`` / ``.metrics`` views drive logging. ``samples`` is the
     trainer-bound payload (the shipped cohort's post-filter survivors) — an empty list means nothing
-    ships, which would stall the trainer. Trainable counts derive from ``rollouts``
+    ships, which would stall the trainer. Trainable counts derive from ``rollouts.effective``
     (``r.is_trainable``) and token totals from ``samples``, so neither is carried as a field."""
 
     rollouts: TrainRollouts

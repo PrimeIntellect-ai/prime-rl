@@ -1,12 +1,14 @@
 """RolloutDispatcher: schedules rollouts under a shared permit counter.
 
-- Capacity (``max_inflight_rollouts``) is shared across train + eval.
-  A group-scoring task that runs N rollouts in one call reserves N permits.
+- Capacity (``max_inflight_episodes``) is shared across train + eval. One permit is
+  one episode: for a v1 env one ``run`` request, and a group-scoring task that runs
+  N rollouts in one call reserves N permits (each bridged v0 rollout is its own
+  single-agent episode).
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched env-rollout eventually reaches
   ``out_q`` exactly once, as one episode (a ``list[Rollout]``). Failures
   (env error, empty trajectory, task exception, off-policy cancel) carry
-  ``trace.error`` set; sinks decide drop / partial-train policy.
+  ``trace.last_error`` set; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight rollouts of the opposite kind drain
@@ -129,7 +131,7 @@ class RolloutDispatcher:
         eval_source: EvalSource | None,
         policy_pool: InferencePool,
         policy: Policy,
-        max_inflight_rollouts: int,
+        max_inflight_episodes: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
     ) -> None:
@@ -143,7 +145,7 @@ class RolloutDispatcher:
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
 
-        self.max_inflight = max_inflight_rollouts
+        self.max_inflight = max_inflight_episodes
         self.inflight_permits = 0
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
@@ -519,11 +521,14 @@ class RolloutDispatcher:
             get_logger().warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             task_idx = group.task_idx if group is not None else -1
             rollouts = [
-                Rollout(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)))
+                Rollout(
+                    task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
+                    agent=vf.AgentInfo(config=vf.AgentConfig()),
+                )
                 for _ in range(meta.rollout_count)
             ]
             for r in rollouts:
-                r.capture_error(exc)
+                r.record_error(exc)
             is_synth_exception = True
 
         for r in rollouts:
@@ -535,9 +540,9 @@ class RolloutDispatcher:
                 get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
             if r.has_error:
                 self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
-                if not is_synth_exception and r.error is not None:
+                if not is_synth_exception and r.last_error is not None:
                     get_logger().warning(
-                        f"Rollout failed in group {meta.group_id} ({meta.env_name}) — {r.error.type}: {r.error.message}"
+                        f"Rollout failed in group {meta.group_id} ({meta.env_name}) — {r.last_error.type}: {r.last_error.message}"
                     )
         if meta.rollout_count == 1:
             # A ``run`` task: the whole result is one episode.
@@ -599,6 +604,7 @@ class RolloutDispatcher:
             for _ in range(meta.rollout_count):
                 trace = Rollout(
                     task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
+                    agent=vf.AgentInfo(config=vf.AgentConfig()),
                     ok=False,
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
                     stop_condition="error",
@@ -626,6 +632,7 @@ class RolloutDispatcher:
             for _ in range(unscheduled_cancelled):
                 trace = Rollout(
                     task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
+                    agent=vf.AgentInfo(config=vf.AgentConfig()),
                     ok=False,
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
                     stop_condition="error",

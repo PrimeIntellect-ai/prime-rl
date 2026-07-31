@@ -8,13 +8,13 @@ from prime_rl.configs.shared import (
     BaseModelConfig,
     EnvVars,
     FileMonitorConfig,
-    FileSystemTransportConfig,
     HeartbeatConfig,
     MetricsServerConfig,
     MultimodalConfig,
     TrainerLogConfig,
     TransportConfig,
     WandbConfig,
+    ZMQTransportConfig,
 )
 from prime_rl.utils.config import BaseConfig
 
@@ -584,7 +584,7 @@ class TrainerConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to broadcast updated weights from trainer to inference."""
 
-    rollout_transport: TransportConfig = FileSystemTransportConfig()
+    rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
     log: TrainerLogConfig = TrainerLogConfig()

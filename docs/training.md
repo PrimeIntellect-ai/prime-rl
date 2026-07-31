@@ -59,9 +59,9 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
-| `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
-| `[[orchestrator.train.env]]` | Training environments. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Environments](configuration.md#environments-orchestratortrainenv). |
-| `[[orchestrator.eval.env]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
+| `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
+| `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
+| `[[orchestrator.eval.source]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
 **Monitoring:**
 
@@ -89,6 +89,8 @@ The RL entrypoint supports several training algorithms, switched via `[orchestra
 |---|---|---|
 | `grpo` (default) | None | Standard group-relative RL |
 | `max_rl` | None | [MaxRL](https://arxiv.org/abs/2602.02710): GRPO with mean-normalized advantages (maximum-likelihood RL) |
+| `rae` | None | [SPIRAL](https://arxiv.org/abs/2506.24119)'s role-conditioned advantage estimation: reward minus a per-agent EMA baseline, for multi-agent self-play envs (e.g. `kuhn-poker-v1`) |
+| `hierarchical_grpo` | None | GRPO for proposer-solver envs: compare solvers only with attempts on the same proposed problem, and compare proposers with the other proposals in the group |
 | `opd` | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): the policy generates rollouts, the trainer minimizes per-token reverse KL to a reference model |
 | `sft` | Required, any OpenAI-compatible endpoint | Hard-distill: a frozen model generates rollouts, the policy trains on its tokens |
 | `opsd` | None — the live policy is its own reference (no deployment) | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own reference conditioned on expert demonstrations |
@@ -256,7 +258,7 @@ For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write t
 
 ### Log Files
 
-The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The full layout (single-node runs skip the `node_*.log` and `router_*.log` files):
+The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The full layout (single-node runs skip the `node_*.log` and `router.log` files — there the router logs into `inference.log`):
 
 ```
 <output_dir>/logs/
@@ -268,7 +270,7 @@ The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The f
 │   └── torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log   # per-rank
 ├── inference/
 │   ├── node_*.log               # per-node inference stdout (multi-node only)
-│   └── router_*.log             # vllm-router per replica (multi-node only)
+│   └── router.log               # the single global router (multi-node only)
 └── envs/{train,eval}/<env_name>/
     ├── env_server.log
     └── env_worker_<id>.log
@@ -281,7 +283,7 @@ Live tailing from a single point (works on the head node for multi-node runs ove
 ```bash
 tail -F <output_dir>/logs/{trainer,orchestrator,inference}.log
 tail -F <output_dir>/logs/trainer/node_*.log     # multi-node only
-tail -F <output_dir>/logs/inference/router_*.log # multi-node only
+tail -F <output_dir>/logs/inference/router.log   # multi-node only
 ```
 
 ### Console Output
