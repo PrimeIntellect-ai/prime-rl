@@ -555,6 +555,9 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     session_id: str = "default"
     """ModelExpress session ID."""
 
+    router_url: str | None = None
+    """Inference router URL used to discover NIXL transfer workers."""
+
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
