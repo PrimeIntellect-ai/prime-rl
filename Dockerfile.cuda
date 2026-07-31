@@ -1,7 +1,14 @@
 #inspired from https://github.com/astral-sh/uv-docker-example/blob/main/multistage.Dockerfile
 
 # Build stage - multi-arch base (supports amd64 + arm64)
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS builder
+#
+# CUDA 13 is required for Blackwell SM103 (B300). Under 12.8:
+#   - torch's prebuilt CUTLASS grouped-GEMM took an SM90 TMA path and failed with
+#     "cutlass cannot run, error 7" (fixed by the cu130 torch wheel, see pyproject)
+#   - deep-gemm's runtime nvcc JIT emitted a cubin containing zero kernels
+#     ("Corrupted JIT cache directory (expected 1 kernel, found 0)") because
+#     nvcc 12.8 cannot target sm_103 — that one needs THIS toolkit bumped.
+FROM nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04 AS builder
 LABEL maintainer="prime intellect"
 LABEL repository="prime-rl"
 
@@ -140,19 +147,18 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then /app/scripts/docker-arm64-post-install.
 # (uses pinned nvidia-* wheels) needs them. Keeps nvcc/nvvm/ptxas + headers +
 # libcudart/libnvrtc/libcudadevrt for JIT compile+link.
 FROM builder AS cuda-trim
-RUN find /usr/local/cuda-12.8/targets/*/lib \
+RUN find /usr/local/cuda-13.0/targets/*/lib \
         \( -name 'libcublas*' -o -name 'libcusparse*' -o -name 'libcufft*' \
            -o -name 'libcusolver*' -o -name 'libcurand*' -o -name 'libnpp*' \
            -o -name 'libnvjpeg*' -o -name 'libnvblas*' \) -delete \
-    && find /usr/local/cuda-12.8 -name '*.a' ! -name 'libcudadevrt.a' ! -name 'libcudart_static.a' -delete
+    && find /usr/local/cuda-13.0 -name '*.a' ! -name 'libcudadevrt.a' ! -name 'libcudart_static.a' -delete
 
-# CUDA 13 runtime libs source
-FROM nvidia/cuda:13.0.1-runtime-ubuntu24.04 AS cuda13
-RUN mkdir -p /cu13 && cp -d $(find /usr/local \
-        -name 'libcudart.so.13*' -o -name 'libnvrtc.so.13*' -o -name 'libnvrtc-builtins.so.13*') /cu13/
+# The separate cuda13 runtime-libs stage is gone: it existed only to graft
+# libcudart.so.13/libnvrtc.so.13 into a 12.8 image for deep-gemm. The toolkit
+# below is now CUDA 13, so those libs ship natively.
 
 # Runtime image
-FROM nvidia/cuda:12.8.1-base-ubuntu24.04
+FROM nvidia/cuda:13.0.1-base-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -186,18 +192,19 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# CUDA 12.8 toolkit (TileLang's runtime nvcc JIT)
-COPY --from=cuda-trim /usr/local/cuda-12.8 /usr/local/cuda-12.8
-RUN ln -sfn /usr/local/cuda-12.8 /usr/local/cuda && test -x /usr/local/cuda/bin/nvcc
-ENV CUDA_HOME=/usr/local/cuda
-ENV PATH="/usr/local/cuda/bin:${PATH}"
-
-# CUDA 13 runtime libs for deep-gemm
-COPY --from=cuda13 /cu13/ /opt/cuda13/lib64/
-RUN echo /opt/cuda13/lib64 > /etc/ld.so.conf.d/cuda13.conf \
+# CUDA 13 toolkit (runtime nvcc JIT for TileLang and deep-gemm). deep-gemm
+# shells out to $CUDA_HOME/bin/nvcc, so this is what determines whether it can
+# emit sm_103 — assert the version so a base-image regression fails the build
+# rather than silently producing empty cubins at runtime on B300.
+COPY --from=cuda-trim /usr/local/cuda-13.0 /usr/local/cuda-13.0
+RUN ln -sfn /usr/local/cuda-13.0 /usr/local/cuda \
+    && test -x /usr/local/cuda/bin/nvcc \
+    && /usr/local/cuda/bin/nvcc --version | grep -qE 'release 1[3-9]\.' \
     && ldconfig \
     && ldconfig -p | grep -q libcudart.so.13 \
     && ldconfig -p | grep -q libnvrtc.so.13
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH="/usr/local/cuda/bin:${PATH}"
 
 
 ARG USER_ID=1000

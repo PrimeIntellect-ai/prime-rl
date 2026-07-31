@@ -13,7 +13,9 @@ dependencies = [
     "loguru>=0.7.3",
     "pyarrow>=21.0.0",
     "numpy>=2.2.6",
-    "torch>=2.9.0",
+    # Pinned: the cu128->cu130 move must not also bump the torch minor.
+    # flash-attn is pinned to a `cu130torch2.11` wheel, so torch must stay 2.11.
+    "torch==2.11.0",
     "torchvision",
     "torchaudio",
     "torchdata>=0.11.0",
@@ -60,7 +62,7 @@ prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
 
 [project.optional-dependencies]
 flash-attn = [
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu130torch2.11-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
 ]
 flash-attn-3 = ["flash_attn_3"]
 
@@ -116,10 +118,10 @@ environments = [
 # Override torch's pinned cuDNN to fix Conv3d performance regression (torch 2.9 + cuDNN 9.8-9.14)
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
-    "nvidia-cudnn-cu12>=9.15",
+    "nvidia-cudnn-cu13>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
     "transformers==5.6.2",
-    "torch>=2.9.0",
+    "torch==2.11.0",
     "openenv-core",
 ]
 
@@ -188,9 +190,9 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
-torchaudio = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+torchaudio = { index = "pytorch-cu130" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "23e4dfc" }
 torchao = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
@@ -213,7 +215,7 @@ deep-gemm = [
 ]
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
-flash_attn_3 = { index = "pytorch-cu128-test" }
+flash_attn_3 = { index = "pytorch-cu130-test" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
@@ -223,14 +225,20 @@ mamba-ssm = [{ requirement = "torch", match-runtime = true }]
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 
+# CUDA 13 wheels. The cu128 build of torch ships CUTLASS grouped-GEMM kernels
+# compiled only up to SM90, so `torch._grouped_mm` fails on Blackwell SM103
+# (B300) with "cutlass cannot run, error 7" after taking a
+# CUTE_ARCH_..._SM90 TMA path. Those kernels are baked into the wheel — no
+# local nvcc/arch flag can fix them — so the fix is the cu130 wheel of the same
+# torch version (2.11.0+cu130 exists on this index).
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu128-test"
-url = "https://download.pytorch.org/whl/test/cu128"
+name = "pytorch-cu130-test"
+url = "https://download.pytorch.org/whl/test/cu130"
 explicit = true
 
 [tool.ruff.lint]
