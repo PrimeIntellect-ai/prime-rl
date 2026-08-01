@@ -1,6 +1,6 @@
-# Five-step reproduction of Mika's regular GLM-4.5-Air ScaleSWE run.
+# Daniel-owned reproduction of Mika's regular GLM-4.5-Air ScaleSWE baseline.
 
-max_steps = 5
+max_steps = 1000
 seq_len = 131072
 
 [env_vars]
@@ -19,7 +19,7 @@ num_infer_replicas = 4
 
 [wandb]
 project = "agentic-judging"
-name = "daniel-glm-air-scaleswe-regular-5step"
+name = "daniel-int5-rl-swe-air-scaleswe-regular"
 
 [weight_broadcast]
 type = "nccl"
@@ -89,6 +89,16 @@ env.agent.runtime = { type = "prime", vm = true, cpu = 1.0, memory = 2.0, disk =
 sampling = { temperature = 1.0, max_completion_tokens = "None", extra_body = { top_k = -1, min_p = 0.0, return_token_ids = true } }
 
 [orchestrator.prime_monitor]
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+env.taskset = { id = "swebench-verified-v1" }
+env.agent.harness = { id = "bash" }
+env.agent.runtime = { type = "prime", vm = true, cpu = 1.0, memory = 2.0, disk = 5.0, idle_timeout = "None", labels = ["daniel-air-scaleswe-regular"] }
+env.agent.timeout = { rollout = 3600 }
 
 [inference]
 enable_return_routed_experts = true
