@@ -236,7 +236,7 @@ class MultiRunManager:
             with open(config_path, "rb") as f:
                 config_dict = tomli.load(f)
 
-            from verifiers.v1.loaders import skip_plugin_install
+            from verifiers.v1.utils.loaders import skip_plugin_install
 
             from prime_rl.configs.orchestrator import OrchestratorConfig
 
