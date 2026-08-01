@@ -8,19 +8,20 @@ seq_len = 131072
 TRITON_CACHE_DIR = "/tmp/.triton-cache"
 
 [slurm]
-job_name = "laguna-xs21-scaleswe-regular-v6"
+job_name = "laguna-xs21-scaleswe-regular-v7-2infer"
 partition = "all"
-pre_run_command = 'timeout 120 prime sandbox delete --label "laguna-xs21-scaleswe-bash-pass1-v5" -y || true ; timeout 120 prime sandbox delete --label "laguna-xs21-scaleswe-regular-v6" -y || true'
+exclude = "ltc-idc3-hgx8-h200-22"
+pre_run_command = 'timeout 120 prime sandbox delete --label "laguna-xs21-scaleswe-bash-pass1-v5" -y || true ; timeout 120 prime sandbox delete --label "laguna-xs21-scaleswe-regular-v6" -y || true ; timeout 120 prime sandbox delete --label "laguna-xs21-scaleswe-regular-v7-2infer" -y || true'
 
 [deployment]
 type = "multi_node"
 num_train_nodes = 2
 num_infer_nodes = 1
-num_infer_replicas = 3
+num_infer_replicas = 2
 
 [wandb]
 project = "laguna-xs21-scaleswe"
-name = "laguna-xs21-scaleswe-regular-v6"
+name = "laguna-xs21-scaleswe-regular-v7-2infer"
 
 [weight_broadcast]
 type = "nccl"
@@ -87,7 +88,7 @@ thinking_retention = "all"
 name = "scaleswe"
 env.taskset = { id = "scaleswe-v1" }
 env.agent.harness = { id = "bash" }
-env.agent.runtime = { type = "prime", vm = true, cpu = 1.0, memory = 2.0, disk = 5.0, idle_timeout = "None", labels = ["laguna-xs21-scaleswe-regular-v6"] }
+env.agent.runtime = { type = "prime", vm = true, cpu = 1.0, memory = 2.0, disk = 5.0, idle_timeout = "None", labels = ["laguna-xs21-scaleswe-regular-v7-2infer"] }
 sampling = { temperature = 1.0, max_completion_tokens = 32768, extra_body = { top_k = 20, min_p = 0.0, return_token_ids = true } }
 
 [orchestrator.prime_monitor]
