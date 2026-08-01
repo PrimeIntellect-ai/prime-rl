@@ -1,5 +1,5 @@
-# Laguna XS 2.1 on ScaleSWE with the standard bash harness. The startup evaluation
-# uses the model-card sampling settings against the full SWE-Bench Verified set.
+# Laguna XS 2.1 on ScaleSWE with the standard bash harness. This follows the
+# tested six-node topology of the regular GLM-4.5-Air SWE run, without a judge.
 
 max_steps = 1000
 seq_len = 131072
@@ -8,21 +8,19 @@ seq_len = 131072
 TRITON_CACHE_DIR = "/tmp/.triton-cache"
 
 [slurm]
-job_name = "laguna-xs21-scaleswe-bash-pass1-v5"
+job_name = "laguna-xs21-scaleswe-regular-v6"
 partition = "all"
-pre_run_command = 'timeout 120 prime sandbox delete --label "laguna-xs21-scaleswe-bash-pass1-v4" -y || true ; timeout 120 prime sandbox delete --label "laguna-xs21-scaleswe-bash-pass1-v5" -y || true'
+pre_run_command = 'timeout 120 prime sandbox delete --label "laguna-xs21-scaleswe-bash-pass1-v5" -y || true ; timeout 120 prime sandbox delete --label "laguna-xs21-scaleswe-regular-v6" -y || true'
 
 [deployment]
 type = "multi_node"
-# Match Mika's topology: two trainer nodes and four independent TP8 inference
-# replicas, with one client-facing URL per inference engine.
 num_train_nodes = 2
 num_infer_nodes = 1
 num_infer_replicas = 4
 
 [wandb]
 project = "laguna-xs21-scaleswe"
-name = "laguna-xs21-scaleswe-bash-pass1-v5"
+name = "laguna-xs21-scaleswe-regular-v6"
 
 [weight_broadcast]
 type = "nccl"
@@ -48,6 +46,7 @@ impl = "custom"
 attn = "flash_attention_3"
 cp = 4
 cp_style = "ulysses"
+compile = "None"
 fused_lm_head_token_chunk_size = 1024
 optim_cpu_offload = true
 
@@ -55,8 +54,6 @@ optim_cpu_offload = true
 
 [trainer.model.ac_offloading]
 max_inflight_activations = 1
-
-[trainer.model.compile]
 
 [trainer.ckpt]
 skip_gather_master_weights = true
@@ -90,27 +87,10 @@ thinking_retention = "all"
 name = "scaleswe"
 env.taskset = { id = "scaleswe-v1" }
 env.agent.harness = { id = "bash" }
-env.agent.runtime = { type = "prime", vm = true, cpu = 2.0, memory = 8.0, idle_timeout = "None", labels = ["laguna-xs21-scaleswe-bash-pass1-v5"] }
-env.agent.retries = { max_retries = 3, include = ["ProviderError", "SandboxError"] }
+env.agent.runtime = { type = "prime", vm = true, cpu = 1.0, memory = 2.0, disk = 5.0, idle_timeout = "None", labels = ["laguna-xs21-scaleswe-regular-v6"] }
 sampling = { temperature = 1.0, max_completion_tokens = 32768, extra_body = { top_k = 20, min_p = 0.0, return_token_ids = true } }
 
 [orchestrator.prime_monitor]
-
-[orchestrator.eval]
-interval = 20
-skip_first_step = false
-sampling = { temperature = 1.0, top_p = 1.0, top_k = 20, min_p = 0.0, max_completion_tokens = 32768 }
-
-[[orchestrator.eval.env]]
-name = "swebench-verified"
-num_examples = -1
-# Online evaluation reports pass@1 with one attempt per task.
-group_size = 1
-env.taskset = { id = "swebench-verified-v1" }
-env.agent.harness = { id = "bash" }
-env.agent.runtime = { type = "prime", vm = true, cpu = 2.0, memory = 8.0, idle_timeout = "None", labels = ["laguna-xs21-scaleswe-bash-pass1-v5"] }
-env.agent.retries = { max_retries = 3, include = ["ProviderError", "SandboxError"] }
-env.agent.timeout = { rollout = 3600 }
 
 [inference]
 enable_expert_parallel = false
