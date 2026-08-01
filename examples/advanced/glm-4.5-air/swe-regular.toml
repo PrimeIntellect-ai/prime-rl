@@ -1,0 +1,114 @@
+# Daniel-owned reproduction of Mika's regular GLM-4.5-Air ScaleSWE baseline.
+
+max_steps = 1000
+seq_len = 131072
+
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/.triton-cache"
+
+[slurm]
+job_name = "daniel-glm-air-scaleswe-regular"
+partition = "all"
+pre_run_command = 'mkdir -p /tmp/daniel-tmp ; uv sync --all-extras --all-packages ; timeout 120 prime sandbox delete --label "daniel-air-scaleswe-regular" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 4
+
+[wandb]
+project = "agentic-judging"
+name = "daniel-int5-rl-swe-air-scaleswe-regular"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[rollout_transport]
+type = "zmq"
+
+[ckpt]
+interval = 50
+keep_last = 1
+resume_step = -1
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 4
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.ckpt]
+skip_gather_master_weights = true
+skip_optimizer = true
+
+[trainer.optim]
+type = "muon"
+
+[orchestrator]
+batch_size = 256
+group_size = 16
+max_off_policy_steps = 32
+max_inflight_rollouts = 768
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.renderer]
+name = "glm-4.5"
+thinking_retention = "all"
+
+[[orchestrator.train.env]]
+name = "scaleswe"
+env.taskset = { id = "scaleswe-v1" }
+env.agent.harness = { id = "bash" }
+env.agent.runtime = { type = "prime", vm = true, cpu = 1.0, memory = 2.0, disk = 5.0, idle_timeout = "None", labels = ["daniel-air-scaleswe-regular"] }
+sampling = { temperature = 1.0, max_completion_tokens = "None", extra_body = { top_k = -1, min_p = 0.0, return_token_ids = true } }
+
+[orchestrator.prime_monitor]
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.env]]
+name = "swebench-verified"
+env.taskset = { id = "swebench-verified-v1" }
+env.agent.harness = { id = "bash" }
+env.agent.runtime = { type = "prime", vm = true, cpu = 1.0, memory = 2.0, disk = 5.0, idle_timeout = "None", labels = ["daniel-air-scaleswe-regular"] }
+env.agent.timeout = { rollout = 3600 }
+
+[inference]
+enable_return_routed_experts = true
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/daniel-vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/daniel-flashinfer-cache"
+
+[inference.model]
+max_model_len = 131072
+
+[inference.parallel]
+tp = 8

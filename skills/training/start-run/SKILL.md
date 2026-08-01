@@ -40,6 +40,17 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
   `deps/verifiers/environments/` but does not import, install the env workspace
   members with `uv sync --all-packages` (all) or `uv sync --package prime-rl
   --package <env>` (one) — they're auto-discovered, no `pyproject.toml` edit needed.
+- Laguna XS-2.1 with the standard `bash` harness needs the repository's
+  `poolside_xs21` vLLM tool-parser plugin. The upstream `poolside_v1` non-streaming
+  parser requires a newline between the tool name and first `<arg_key>`, while
+  XS-2.1 emits the packed form. Set `inference.model.tool_call_parser =
+  "poolside_xs21"` and point `inference.vllm_extra.tool_parser_plugin` at
+  `src/prime_rl/inference/vllm/poolside_xs21_tool_parser.py`. Verify an initial
+  trace contains structured tool calls and more than one turn; `ok=true` alone
+  can hide a one-turn, zero-reward parser failure. Large Prime-runtime launches
+  can dispatch before the elastic interception tunnel pool finishes expanding;
+  set targeted agent retries for `ProviderError` and `SandboxError` when infra
+  failures must not contaminate a pass@1 baseline.
 
 ## `sft` — SFT training
 
