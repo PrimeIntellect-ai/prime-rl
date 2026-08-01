@@ -1,5 +1,5 @@
 # Laguna XS 2.1 on ScaleSWE with the standard bash harness. This follows the
-# tested six-node topology of the regular GLM-4.5-Air SWE run, without a judge.
+# tested trainer topology of the regular GLM-4.5-Air SWE run, without a judge.
 
 max_steps = 1000
 seq_len = 131072
@@ -16,7 +16,7 @@ pre_run_command = 'timeout 120 prime sandbox delete --label "laguna-xs21-scalesw
 type = "multi_node"
 num_train_nodes = 2
 num_infer_nodes = 1
-num_infer_replicas = 4
+num_infer_replicas = 3
 
 [wandb]
 project = "laguna-xs21-scaleswe"
