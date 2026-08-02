@@ -39,6 +39,7 @@ def response(body):
 def pool_with_clients(*, admin, system=None, frontend=None):
     pool = DynamoInferencePool.__new__(DynamoInferencePool)
     pool._admin_clients = [admin]
+    pool._router_clients = []
     pool._lora_update_clients = [] if system is None else [system]
     pool._frontend_model_clients = [] if frontend is None else [frontend]
     pool._initialized_transports = set()

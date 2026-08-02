@@ -478,6 +478,7 @@ class RLConfig(BaseConfig):
             )
         if self.rollout_transport is None:
             self.rollout_transport = self.trainer.rollout_transport
+        return self
 
     @model_validator(mode="after")
     def validate_resolved_enough_devices_for_nccl(self):
