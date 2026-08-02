@@ -17,7 +17,7 @@ inference_world_size = 2
 
 [trainer.model]
 impl = "custom"
-attn = "sdpa"
+attn = "flash_attention_3"
 ep = 2
 optim_cpu_offload = true
 optimization_dtype = "bfloat16"
@@ -29,7 +29,7 @@ freq = 1
 [orchestrator]
 batch_size = 2
 group_size = 2
-max_inflight_rollouts = 2
+max_inflight_episodes = 2
 max_off_policy_steps = 0
 
 [orchestrator.model.client]
@@ -49,7 +49,8 @@ enable_thinking = true
 temperature = 1.0
 max_completion_tokens = 2048
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "math"
-taskset = { id = "math-env-v1", dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", task = { math_verify_timeout = 60 } }
-harness = { id = "null", runtime = { type = "subprocess" } }
+env.taskset = { id = "math-env-v1", dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", task = { math_verify_timeout = 60 } }
+env.agent.harness = { id = "null" }
+env.agent.runtime = { type = "subprocess" }

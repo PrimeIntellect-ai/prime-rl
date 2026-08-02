@@ -340,9 +340,12 @@ def test_glm52_dynamo_r2e_example_matches_external_inference_contract():
         "X-Dynamo-Session-ID": "trajectory_id",
     }
 
-    train_env = orchestrator["train"]["env"]
-    assert len(train_env) == 1
-    assert train_env[0]["taskset"] == {"id": "r2e-gym-v1"}
+    train_source = orchestrator["train"]["source"]
+    assert len(train_source) == 1
+    assert train_source[0]["env"]["taskset"] == {"id": "r2e-gym-v1"}
+    assert train_source[0]["env"]["agent"]["harness"]["id"] == "bash"
+    assert train_source[0]["env"]["agent"]["runtime"]["type"] == "prime"
+    assert orchestrator["max_inflight_episodes"] == 2
     assert "pre_batch_filters" not in orchestrator
     assert orchestrator["post_batch_filters"] == [{"type": "zero_advantage", "enforce": False}]
 
@@ -358,8 +361,23 @@ def test_two_gpu_dynamo_qwen30b_example_uses_bfloat16_training():
         config = tomllib.load(stream)
 
     assert config["deployment"]["num_train_gpus"] == 2
+    assert config["trainer"]["model"]["attn"] == "flash_attention_3"
     assert config["trainer"]["model"]["optimization_dtype"] == "bfloat16"
     assert config["trainer"]["model"]["reduce_dtype"] == "bfloat16"
+    source = config["orchestrator"]["train"]["source"][0]
+    assert source["env"]["agent"]["harness"] == {"id": "null"}
+    assert source["env"]["agent"]["runtime"] == {"type": "subprocess"}
+    assert config["orchestrator"]["max_inflight_episodes"] == 2
+
+
+def test_dynamo_qwen06b_example_uses_current_environment_schema():
+    path = Path("examples/dynamo/qwen3_06b_math/rl.toml")
+    with path.open("rb") as stream:
+        config = tomllib.load(stream)
+
+    source = config["orchestrator"]["train"]["source"][0]
+    assert source["env"]["agent"]["harness"] == {"id": "null"}
+    assert source["env"]["agent"]["runtime"] == {"type": "subprocess"}
 
 
 def test_external_dynamo_lora_world_size_survives_filesystem_config_resolution():

@@ -2,7 +2,7 @@ max_steps = 3
 batch_size = 2
 group_size = 2
 seq_len = 32768
-max_inflight_rollouts = 2
+max_inflight_episodes = 2
 max_off_policy_steps = 1
 tasks_per_minute = 1
 
@@ -29,17 +29,18 @@ temperature = 1.0
 max_completion_tokens = 2048
 extra_body = { chat_template_kwargs = { clear_thinking = false } }
 
-[[train.env]]
+[[train.source]]
 name = "r2e"
 group_size = 2
-max_turns = 64
-max_input_tokens = 30720
-max_output_tokens = 16384
-max_total_tokens = 32768
-timeout = { setup = 600, rollout = 1800, finalize = 300, scoring = 600 }
-pool = { type = "static", num_workers = 2 }
-taskset = { id = "r2e-gym-v1" }
-harness = { id = "default", edit = true, runtime = { type = "prime", labels = ["glm52-dynamo"], cpu = 4, creates_per_min = 2 } }
+serve.pool = { type = "static", num_workers = 2 }
+env.taskset = { id = "r2e-gym-v1" }
+env.agent.max_turns = 64
+env.agent.max_input_tokens = 30720
+env.agent.max_output_tokens = 16384
+env.agent.max_total_tokens = 32768
+env.agent.timeout = { setup = 600, rollout = 1800, finalize = 300, scoring = 600 }
+env.agent.harness = { id = "bash", edit = true }
+env.agent.runtime = { type = "prime", labels = ["glm52-dynamo"], cpu = 4, creates_per_min = 2 }
 
 [[post_batch_filters]]
 type = "zero_advantage"
