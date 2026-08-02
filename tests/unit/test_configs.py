@@ -401,23 +401,24 @@ def test_external_dynamo_requires_world_size_at_rl_config_boundary():
         )
 
 
-def test_external_dynamo_full_weights_require_nccl_broadcast():
-    with pytest.raises(ValueError, match="full-weight training requires NCCL"):
-        RLConfig.model_validate(
-            {
-                "trainer": {},
-                "orchestrator": {
-                    "model": {
-                        "client": {
-                            "base_url": ["http://frontend:8000/v1"],
-                            "dynamo_discovery_url": "http://frontend:8001",
-                        }
+def test_external_dynamo_full_weights_accept_filesystem_broadcast():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "model": {
+                    "client": {
+                        "base_url": ["http://frontend:8000/v1"],
+                        "dynamo_discovery_url": "http://frontend:8001",
                     }
-                },
-                "inference": None,
-                "weight_broadcast": {"type": "filesystem", "inference_world_size": 8},
-            }
-        )
+                }
+            },
+            "inference": None,
+            "weight_broadcast": {"type": "filesystem", "inference_world_size": 8},
+        }
+    )
+
+    assert config.orchestrator.weight_broadcast.type == "filesystem"
 
 
 def test_external_dynamo_lora_accepts_filesystem_broadcast():

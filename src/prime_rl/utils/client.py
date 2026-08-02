@@ -85,7 +85,21 @@ class InferencePool(Protocol):
         """Initialize the inference workers' NCCL receivers."""
         ...
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+    async def init_nixl_broadcast(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        session_id: str,
+    ) -> None:
+        """Initialize the inference workers' NIXL receivers."""
+        ...
+
+    async def update_weights(
+        self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0, transport: str = "filesystem"
+    ) -> None:
         """Update weights on all inference servers."""
         ...
 
@@ -216,8 +230,17 @@ class StaticInferencePool:
             quantize_in_weight_transfer=quantize_in_weight_transfer,
         )
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+    async def update_weights(
+        self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0, transport: str = "filesystem"
+    ) -> None:
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+
+    async def init_nixl_broadcast(
+        self, *, host: str, port: int, timeout: int, inference_world_size: int, session_id: str
+    ) -> None:
+        await init_nixl_broadcast(
+            self._admin_clients, host, port, timeout, inference_world_size, session_id
+        )
 
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this pool's model (one logprob per
@@ -668,16 +691,21 @@ async def init_nixl_broadcast(
     timeout: int,
     inference_world_size: int,
     session_id: str,
+    *,
+    engine_world_sizes: list[int] | None = None,
+    use_native_collective_rpc: bool = False,
 ) -> None:
     """Configure every vLLM worker for NIXL + ModelExpress pulls."""
-    workers_per_server = inference_world_size // len(admin_clients)
+    if engine_world_sizes is None:
+        if inference_world_size % len(admin_clients) != 0:
+            raise ValueError("inference_world_size must be divisible by the number of admin clients")
+        engine_world_sizes = [inference_world_size // len(admin_clients)] * len(admin_clients)
+    if len(engine_world_sizes) != len(admin_clients):
+        raise ValueError("one engine world size is required for each admin client")
+    rank_offsets = _rank_offsets(engine_world_sizes, inference_world_size)
 
-    async def initialize(admin_client: AsyncClient, rank_offset: int) -> None:
-        await _admin_post(
-            admin_client,
-            "/init_broadcaster",
-            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
-            json={
+    async def initialize(admin_client: AsyncClient, rank_offset: int, engine_world_size: int) -> None:
+        kwargs = {
                 "host": host,
                 "port": port,
                 "rank_offset": rank_offset,
@@ -685,11 +713,23 @@ async def init_nixl_broadcast(
                 "timeout": timeout,
                 "quantize_in_weight_transfer": False,
                 "session_id": session_id,
-            },
-        )
+                "engine_world_size": engine_world_size,
+            }
+        if use_native_collective_rpc:
+            response = await admin_client.post(
+                "/collective_rpc", json={"method": "init_broadcaster", "kwargs": kwargs}
+            )
+            response.raise_for_status()
+        else:
+            await _admin_post(admin_client, "/init_broadcaster", timeout_s=max(ADMIN_TIMEOUT_S, timeout), json=kwargs)
 
     await asyncio.gather(
-        *[initialize(admin_client, index * workers_per_server) for index, admin_client in enumerate(admin_clients)]
+        *[
+            initialize(admin_client, rank_offset, engine_world_size)
+            for admin_client, rank_offset, engine_world_size in zip(
+                admin_clients, rank_offsets, engine_world_sizes, strict=True
+            )
+        ]
     )
 
 

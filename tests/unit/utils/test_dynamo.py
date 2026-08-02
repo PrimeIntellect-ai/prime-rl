@@ -41,7 +41,7 @@ def pool_with_clients(*, admin, system=None, frontend=None):
     pool._admin_clients = [admin]
     pool._lora_update_clients = [] if system is None else [system]
     pool._frontend_model_clients = [] if frontend is None else [frontend]
-    pool._nccl_initialized = False
+    pool._initialized_transports = set()
     pool._skip_model_check = False
     pool._wait_for_ready_timeout = 1
     pool._readiness_deadline = None
@@ -301,13 +301,12 @@ def test_lora_update_resumes_after_failure():
     assert [call.args[0] for call in admin.post.await_args_list] == ["/pause", "/resume"]
 
 
-def test_full_weight_update_uses_native_collective_rpc(tmp_path):
+def test_full_filesystem_update_uses_native_collective_rpc_without_rendezvous(tmp_path):
     admin = AsyncMock()
     admin.post.return_value = response({"status": "ok"})
     pool = pool_with_clients(admin=admin)
-    pool._nccl_initialized = True
 
-    asyncio.run(pool.update_weights(tmp_path, step=1))
+    asyncio.run(pool.update_weights(tmp_path, step=1, transport="filesystem"))
 
     assert [call.args[0] for call in admin.post.await_args_list] == [
         "/pause",
@@ -320,14 +319,40 @@ def test_full_weight_update_uses_native_collective_rpc(tmp_path):
     }
 
 
-def test_full_weight_update_requires_initialized_nccl(tmp_path):
+@pytest.mark.parametrize("transport", ["nccl", "nixl"])
+def test_full_weight_update_requires_initialized_in_memory_transport(tmp_path, transport):
     admin = AsyncMock()
     pool = pool_with_clients(admin=admin)
 
-    with pytest.raises(RuntimeError, match="init_nccl_broadcast"):
-        asyncio.run(pool.update_weights(tmp_path, step=1))
+    with pytest.raises(RuntimeError, match=f"init_{transport}_broadcast"):
+        asyncio.run(pool.update_weights(tmp_path, step=1, transport=transport))
 
     admin.post.assert_not_awaited()
+
+
+def test_nixl_initialization_uses_discovered_heterogeneous_rank_offsets(monkeypatch):
+    clients = [AsyncMock(), AsyncMock()]
+    for client in clients:
+        client.post.return_value = response({"status": "ok"})
+    pool = pool_with_clients(admin=clients[0])
+    pool._admin_clients = clients
+    pool._admin_world_sizes = [1, 3]
+
+    asyncio.run(
+        pool.init_nixl_broadcast(
+            host="trainer",
+            port=29501,
+            timeout=60,
+            inference_world_size=4,
+            session_id="session",
+        )
+    )
+
+    for client, rank_offset, engine_world_size in zip(clients, [0, 1], [1, 3], strict=True):
+        assert client.post.await_args.args == ("/collective_rpc",)
+        assert client.post.await_args.kwargs["json"]["kwargs"]["rank_offset"] == rank_offset
+        assert client.post.await_args.kwargs["json"]["kwargs"]["engine_world_size"] == engine_world_size
+    assert pool._initialized_transports == {"nixl"}
 
 
 def test_stop_closes_every_client_owned_by_dynamo_pool():

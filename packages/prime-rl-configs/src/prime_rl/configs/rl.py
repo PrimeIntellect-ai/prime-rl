@@ -421,15 +421,6 @@ class RLConfig(BaseConfig):
                 "LoRA training is not yet supported with in-memory weight broadcast. "
                 "Set weight_broadcast.type = 'filesystem'."
             )
-        if (
-            self.orchestrator.model.client.is_dynamo
-            and self.weight_broadcast.type == "filesystem"
-            and self.trainer.model.lora is None
-        ):
-            raise ValueError(
-                "Dynamo full-weight training requires NCCL weight broadcast; "
-                "filesystem broadcast is supported only for LoRA."
-            )
         if self.weight_broadcast.type in ("nccl", "nixl"):
             inference_world_size = (
                 self.inference.parallel.dp * self.inference.parallel.tp

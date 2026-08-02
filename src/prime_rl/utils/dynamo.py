@@ -18,6 +18,7 @@ from prime_rl.utils.client import (
     _pause_engines,
     _resume_engines,
     init_nccl_broadcast,
+    init_nixl_broadcast,
     setup_admin_clients,
     update_weights,
 )
@@ -229,7 +230,7 @@ class DynamoInferencePool(StaticInferencePool):
         frontend_config = client_config.model_copy(update={"admin_base_url": None})
         self._frontend_model_clients = setup_admin_clients(frontend_config)
         self._readiness_deadline: float | None = None
-        self._nccl_initialized = False
+        self._initialized_transports: set[str] = set()
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         effective_timeout = self._wait_for_ready_timeout if timeout is None else timeout
@@ -271,9 +272,26 @@ class DynamoInferencePool(StaticInferencePool):
             quantize_in_weight_transfer=quantize_in_weight_transfer,
             use_native_collective_rpc=True,
         )
-        self._nccl_initialized = True
+        self._initialized_transports.add("nccl")
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+    async def init_nixl_broadcast(
+        self, *, host: str, port: int, timeout: int, inference_world_size: int, session_id: str
+    ) -> None:
+        await init_nixl_broadcast(
+            self._admin_clients,
+            host,
+            port,
+            timeout,
+            inference_world_size,
+            session_id,
+            engine_world_sizes=self._admin_world_sizes,
+            use_native_collective_rpc=True,
+        )
+        self._initialized_transports.add("nixl")
+
+    async def update_weights(
+        self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0, transport: str = "filesystem"
+    ) -> None:
         if lora_name is not None and weight_dir is not None:
             if not self._lora_update_clients:
                 raise RuntimeError(
@@ -290,10 +308,9 @@ class DynamoInferencePool(StaticInferencePool):
             finally:
                 await _resume_engines(self._admin_clients)
             return
-        if not self._nccl_initialized:
+        if transport in {"nccl", "nixl"} and transport not in self._initialized_transports:
             raise RuntimeError(
-                "Dynamo full-weight updates require init_nccl_broadcast; "
-                "use NCCL weight broadcast, or filesystem broadcast with LoRA"
+                f"Dynamo full-weight updates require init_{transport}_broadcast"
             )
         await update_weights(
             self._admin_clients,

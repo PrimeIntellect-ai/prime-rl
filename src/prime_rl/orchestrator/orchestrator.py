@@ -76,7 +76,6 @@ from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.trainer.rl.broadcast.nixl.model_express import ModelExpressSession
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
-from prime_rl.utils.client import init_nixl_broadcast
 from prime_rl.utils.config import to_toml_dict
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
@@ -319,13 +318,12 @@ class Orchestrator:
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
             )
         elif config.weight_broadcast.type == "nixl":
-            await init_nixl_broadcast(
-                self.policy_inference.admin_clients,
-                config.weight_broadcast.host,
-                config.weight_broadcast.port,
-                config.weight_broadcast.timeout,
-                config.weight_broadcast.inference_world_size,
-                config.weight_broadcast.session_id,
+            await self.policy_inference.init_nixl_broadcast(
+                host=config.weight_broadcast.host,
+                port=config.weight_broadcast.port,
+                timeout=config.weight_broadcast.timeout,
+                inference_world_size=config.weight_broadcast.inference_world_size,
+                session_id=config.weight_broadcast.session_id,
             )
             self.model_express = ModelExpressSession(
                 client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
@@ -367,7 +365,12 @@ class Orchestrator:
                 )
             if self.model_express is not None:
                 await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
-            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
+            await self.policy_inference.update_weights(
+                weights_path,
+                lora_name=self.lora_name,
+                step=sync_version,
+                transport=self.config.weight_broadcast.type,
+            )
             if self.model_express is not None:
                 await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
                 # Complete the startup rendezvous before the watcher begins its next cycle.
