@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Generic, Literal, Protocol
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Generic, Literal, Protocol, cast
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
@@ -140,45 +140,35 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
         return bool(self.advantages) and any(a != 0.0 for a in self.advantages)
 
 
-@dataclass
-class EpisodeFailure:
-    """Why a dispatched episode carries no traces of its own. This is prime-rl's own verdict —
-    the episode never reached the env, or was pulled back before it finished — as opposed to an
-    env-side error, which rides on the trace that hit it (``Trace.last_error``)."""
+class Episode(vf.WireEpisode):
+    """The env's own ``vf.Episode`` extended with prime-rl's scheduling facts — the only thing
+    prime-rl genuinely adds, so the episode itself travels rather than a wrapper around it. Those
+    fields are ``exclude=True``, so dumping an Episode yields a plain wire episode.
 
-    type: Literal["Cancelled", "TaskFailed", "EmptyEpisode"]
-    message: str
+    An episode that produced no traces is not a special case and needs no stand-in rollout: vf
+    already records why on ``errors`` (its ``run_episode`` puts the exception there and returns the
+    episode with ``ok`` false), and prime-rl's own outcomes — an off-policy cancel, a task that
+    raised before reaching the env — are minted the same way. So ``failed`` is simply "no traces",
+    and ``last_error`` says why in one vocabulary for every cause."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)  # traces are ``Rollout``s
 
-@dataclass
-class EpisodeResult:
-    """One dispatched episode as it arrives from the dispatcher: the scheduling facts that
-    describe the whole episode, plus either the env's traces or the reason there are none.
-
-    The scheduling facts live here rather than on each trace because that is what they describe —
-    a group is dispatched, cancelled, and counted whole. ``episode`` is the env's own
-    ``vf.Episode``, kept whole so its aggregates (``by_agent``, ``num_turns``) are read rather than
-    rebuilt; it is set exactly when ``failure`` is not, since prime-rl never mints a stand-in trace
-    to carry an outcome the env did not produce."""
-
-    kind: RolloutKind
-    env_name: str
-    group_id: uuid.UUID
-    policy_version: int
-    off_policy_steps: int = 0
-    eval_step: int | None = None
-    episode: vf.WireEpisode | None = None
-    failure: EpisodeFailure | None = None
-
-    def __post_init__(self) -> None:
-        assert (self.episode is not None) != (self.failure is not None), (
-            "an episode carries either its traces or a failure, never both or neither"
-        )
+    kind: RolloutKind = Field(default="train", exclude=True)
+    env_name: str = Field(default="", exclude=True)
+    group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
+    policy_version: int = Field(default=0, exclude=True)
+    off_policy_steps: int = Field(default=0, exclude=True)
+    eval_step: int | None = Field(default=None, exclude=True)
 
     @property
     def rollouts(self) -> list[Rollout]:
-        """The episode's traces; empty when it failed before producing any."""
-        return list(self.episode.traces) if self.episode is not None else []
+        """The episode's traces, typed as the rollouts prime-rl works with."""
+        return cast(list[Rollout], self.traces)
+
+    @property
+    def failed(self) -> bool:
+        """Whether the episode produced nothing — ``last_error`` carries the reason."""
+        return not self.traces
 
 
 @dataclass
@@ -192,9 +182,6 @@ class TrainBatch:
 
     rollouts: TrainRollouts
     samples: list[TrainingSample]
-    failures: list[EpisodeFailure] = field(default_factory=list)
-    """Episodes in the window that produced no traces at all — they appear nowhere in
-    ``rollouts``, so their count would otherwise be invisible."""
 
 
 @dataclass
@@ -205,8 +192,6 @@ class EvalBatch:
     env_name: str
     step: int
     rollouts: EvalRollouts
-    failures: list[EpisodeFailure] = field(default_factory=list)
-    """Episodes in the epoch that produced no traces at all."""
 
 
 class VersionObserver(Protocol):

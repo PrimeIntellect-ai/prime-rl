@@ -6,10 +6,10 @@
   single-agent episode).
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched episode eventually reaches ``out_q`` exactly once,
-  as an ``EpisodeResult``. An env-side failure (env error, empty trajectory) rides the trace that
-  hit it (``trace.last_error``); a prime-rl-side one (task exception, off-policy cancel) has no
-  trace to ride, so it arrives as ``EpisodeResult.failure`` rather than as a stand-in rollout.
-  Sinks decide drop / partial-train policy.
+  as an ``Episode``. An env-side failure (env error, empty trajectory) rides the trace that hit it
+  (``trace.last_error``); a failure with no trace to ride — the env produced none, the task raised,
+  the group was cancelled — is an episode with no traces and the reason on ``episode.errors``,
+  never a stand-in rollout. Sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight rollouts of the opposite kind drain
@@ -41,8 +41,7 @@ from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
-    EpisodeFailure,
-    EpisodeResult,
+    Episode,
     GroupState,
     InflightRollout,
     Policy,
@@ -158,7 +157,7 @@ class RolloutDispatcher:
 
         # Bounded so the dispatcher backpressures on a slow sink. One entry per
         # episode — the sinks count episodes, never loose traces.
-        self.out_q: asyncio.Queue[EpisodeResult] = asyncio.Queue(maxsize=max(8, self.max_inflight))
+        self.out_q: asyncio.Queue[Episode] = asyncio.Queue(maxsize=max(8, self.max_inflight))
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -513,18 +512,12 @@ class RolloutDispatcher:
 
         try:
             result = task.result()
-            episodes: list[vf.WireEpisode] = result if isinstance(result, list) else [result]
+            episodes: list[Episode] = result if isinstance(result, list) else [result]
         except asyncio.CancelledError:
             return
         except Exception as exc:
             get_logger().warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
-            await self.emit_failed_episodes(meta, group, EpisodeFailure(type="TaskFailed", message=repr(exc)))
-            return
-        if not any(episode.traces for episode in episodes):
-            get_logger().warning(f"Env returned no traces in group {meta.group_id} ({meta.env_name})")
-            await self.emit_failed_episodes(
-                meta, group, EpisodeFailure(type="EmptyEpisode", message="env run returned an episode with no traces")
-            )
+            await self.emit_failed_episodes(meta, group, vf.Error(type="TaskFailed", message=repr(exc)))
             return
 
         for r in (r for episode in episodes for r in episode.traces):
@@ -548,13 +541,11 @@ class RolloutDispatcher:
         self,
         meta: InflightRollout,
         group: GroupState | None,
-        episode: vf.WireEpisode | None,
-        failure: EpisodeFailure | None = None,
+        episode: Episode,
     ) -> None:
-        """Put one completed episode on ``out_q`` — its traces, or the ``failure`` that stands in
-        for them. Pops the group from ``self.groups`` once every owed episode has been emitted.
-        The scheduling facts also ride each trace, where the sinks and the saved records read
-        them."""
+        """Put one completed episode on ``out_q``, stamped with the facts of the dispatch it came
+        from. Pops the group from ``self.groups`` once every owed episode has been emitted. The
+        same facts also ride each trace, where the algorithms and the saved records read them."""
         eval_step = meta.eval_step
         policy_version = meta.policy_version
         if group is not None:
@@ -566,7 +557,7 @@ class RolloutDispatcher:
         if meta.kind == "eval":
             assert eval_step is not None, "eval episode missing eval_step"
 
-        for rollout in episode.traces if episode is not None else []:
+        for rollout in episode.rollouts:
             rollout.kind = meta.kind
             rollout.env_name = meta.env_name
             rollout.group_id = meta.group_id
@@ -574,27 +565,21 @@ class RolloutDispatcher:
             rollout.off_policy_steps = meta.off_policy_steps
             if meta.kind == "eval":
                 rollout.eval_step = eval_step
-        await self.out_q.put(
-            EpisodeResult(
-                kind=meta.kind,
-                env_name=meta.env_name,
-                group_id=meta.group_id,
-                policy_version=policy_version,
-                off_policy_steps=meta.off_policy_steps,
-                eval_step=eval_step if meta.kind == "eval" else None,
-                episode=episode,
-                failure=failure,
-            )
-        )
+        episode.kind = meta.kind
+        episode.env_name = meta.env_name
+        episode.group_id = meta.group_id
+        episode.policy_version = policy_version
+        episode.off_policy_steps = meta.off_policy_steps
+        episode.eval_step = eval_step if meta.kind == "eval" else None
+        await self.out_q.put(episode)
 
-    async def emit_failed_episodes(
-        self, meta: InflightRollout, group: GroupState | None, failure: EpisodeFailure
-    ) -> None:
-        """Emit one failed episode per rollout the task owed, so the sink still counts its way to
-        ``group_size`` — prime-rl's own failure, carried as itself rather than as a stand-in trace."""
+    async def emit_failed_episodes(self, meta: InflightRollout, group: GroupState | None, error: vf.Error) -> None:
+        """Emit one traceless episode per rollout the task owed, so the sink still counts its way to
+        ``group_size``. This is the shape vf already gives a run that produced nothing — the reason
+        on ``errors`` — so prime-rl's own failures need no type of their own."""
         for _ in range(meta.rollout_count):
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
-            await self.emit_episode(meta, group, None, failure=failure)
+            await self.emit_episode(meta, group, Episode.model_construct(errors=[error]))
 
     async def drop_group(self, group_id: uuid.UUID) -> int:
         """Cancel remaining in-flight tasks for this group and emit a
@@ -619,10 +604,10 @@ class RolloutDispatcher:
         tasks_to_cancel = [task for task, _ in claimed]
         inflight_cancelled = sum(meta.rollout_count for _, meta in claimed)
         last_meta: InflightRollout | None = claimed[-1][1] if claimed else None
-        cancel = EpisodeFailure(type="Cancelled", message="Off-policy cancel")
+        cancel = vf.Error(type="Cancelled", message="Off-policy cancel")
         for _, meta in claimed:
             for _ in range(meta.rollout_count):
-                await self.emit_episode(meta, group, None, failure=cancel)
+                await self.emit_episode(meta, group, Episode.model_construct(errors=[cancel]))
 
         # For non-group-scoring envs, the group may have rollouts that
         # were never dispatched (``rollouts_to_schedule > 0``). Emit
@@ -643,7 +628,7 @@ class RolloutDispatcher:
             )
             unscheduled_cancelled = group.rollouts_to_schedule
             for _ in range(unscheduled_cancelled):
-                await self.emit_episode(fallback_meta, group, None, failure=cancel)
+                await self.emit_episode(fallback_meta, group, Episode.model_construct(errors=[cancel]))
 
         cancelled = inflight_cancelled + unscheduled_cancelled
         if cancelled > 0:

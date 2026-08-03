@@ -10,7 +10,7 @@
 3. ``process_batch`` — applies post-batch filter annotations and assembles
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
-``add()`` takes one ``EpisodeResult`` and returns
+``add()`` takes one ``Episode`` and returns
 ``TrainBatch | None``; group accounting counts episodes, never loose traces.
 I/O concerns (ship to trainer, save_rollouts, monitor.log) live on the
 orchestrator.
@@ -22,14 +22,12 @@ import asyncio
 import uuid
 from collections import defaultdict
 
-import verifiers.v1 as vf
-
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import EpisodeFailure, EpisodeResult, Rollout, TrainBatch
+from prime_rl.orchestrator.types import Episode, Rollout, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -78,14 +76,10 @@ class TrainSink:
         # finalized since the last ship (errored + filtered + survivors).
         # In-progress groups stay out until they finalize.
         self.pending_rollouts: TrainRollouts = TrainRollouts()
-        # Episodes in that window that produced no traces at all (cancelled, or the task
-        # itself failed). They have no rollout to be counted through, so they are tallied
-        # here and reported alongside the window's metrics.
-        self.pending_failures: list[EpisodeFailure] = []
         # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
         # isn't unique — the same task can be re-sampled while an
         # earlier group is still in flight
-        self.pending_groups: dict[uuid.UUID, list[vf.WireEpisode]] = defaultdict(list)
+        self.pending_groups: dict[uuid.UUID, list[Episode]] = defaultdict(list)
         # Episodes arrived per group — the finalization count (an episode may
         # add several traces to ``pending_groups`` but counts once here).
         self.pending_group_episodes: dict[uuid.UUID, int] = defaultdict(int)
@@ -119,7 +113,7 @@ class TrainSink:
         return sum(
             self.pending_group_episodes.get(group_id, 0)
             for group_id, episodes in self.pending_groups.items()
-            if episodes and not self.train_envs.get(episodes[0].traces[0].env_name).requires_group_scoring
+            if episodes and not self.train_envs.get(episodes[0].env_name).requires_group_scoring
         )
 
     def pending_batch_by_env(self) -> dict[str, int]:
@@ -130,7 +124,7 @@ class TrainSink:
             counts[r.env_name] += 1
         return dict(counts)
 
-    async def add(self, episode: EpisodeResult) -> TrainBatch | None:
+    async def add(self, episode: Episode) -> TrainBatch | None:
         """Process one episode arrival; finalize the group on the
         ``group_size``-th episode; return a ``TrainBatch`` if the finalization
         pushed (or left) the batch over its threshold. Arrivals into
@@ -138,12 +132,9 @@ class TrainSink:
         rollouts, but still counts toward the group so finalization triggers."""
         group_id = episode.group_id
         env_name = episode.env_name
-        if episode.failure is not None:
-            self.pending_failures.append(episode.failure)
         for rollout in episode.rollouts:
             await self.process_rollout(rollout)
-        if episode.episode is not None:
-            self.pending_groups[group_id].append(episode.episode)
+        self.pending_groups[group_id].append(episode)
         self.pending_group_episodes[group_id] += 1
         if self.pending_group_episodes[group_id] < self.group_size_for(env_name):
             return None
@@ -297,11 +288,9 @@ class TrainSink:
         # samples) — an empty batch is dropped unlogged by the orchestrator, so keep accumulating its
         # finalized groups (and any overflow) into the next shipped batch's window.
         rollouts = self.pending_rollouts
-        failures = self.pending_failures
         if samples:
             self.pending_rollouts = TrainRollouts()
-            self.pending_failures = []
-        return TrainBatch(rollouts=rollouts, samples=samples, failures=failures)
+        return TrainBatch(rollouts=rollouts, samples=samples)
 
     def reset_pre_filter_stats(self) -> None:
         self.pre_filter_seen = 0

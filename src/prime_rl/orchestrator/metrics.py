@@ -23,28 +23,29 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
 
-import verifiers.v1 as vf
-
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import EpisodeFailure, Rollout
+    from prime_rl.orchestrator.types import Episode, Rollout
 
 Subset = Literal["all", "effective"]
 
 
-def episode_failure_metrics(failures: list[EpisodeFailure], *, prefix: str, total: int) -> dict[str, float]:
+def episode_failure_metrics(episodes: list[Episode], *, prefix: str) -> dict[str, float]:
     """Episodes that produced no traces, by reason (``{prefix}/episode_failure/<type>``) plus their
-    share of the window. These are prime-rl's own outcomes — a cancellation or a task that never
-    reached the env — so they belong to no agent and are counted whole rather than folded into a
-    seat's error rate. ``total`` is the window's rollout count, for the rate's denominator."""
+    share of the window. A cancellation, a task that never reached the env, an env that ran no
+    agent — all of them are an episode with nothing on it but ``errors``, so one counter covers
+    every cause. They belong to no agent, so they are counted whole rather than folded into a
+    seat's error rate."""
+    if not episodes:
+        return {}
+    failed = [episode for episode in episodes if episode.failed]
     counts: dict[str, int] = {}
-    for failure in failures:
-        counts[failure.type] = counts.get(failure.type, 0) + 1
+    for episode in failed:
+        error = episode.last_error
+        counts[error.type if error else "Unknown"] = counts.get(error.type if error else "Unknown", 0) + 1
     out = {f"{prefix}/episode_failure/{name}": float(n) for name, n in sorted(counts.items())}
-    denominator = total + len(failures)
-    if denominator:
-        out[f"{prefix}/episode_failure/rate"] = len(failures) / denominator
+    out[f"{prefix}/episode_failure/rate"] = len(failed) / len(episodes)
     return out
 
 
@@ -283,7 +284,7 @@ class EpisodeMetrics:
     ``.mean()`` is the rate) serve the console log lines. ``TrainMetrics`` / ``EvalMetrics`` extend
     ``to_wandb`` with the train pipeline rates and the eval scores."""
 
-    def __init__(self, episodes: list[vf.WireEpisode]) -> None:
+    def __init__(self, episodes: list[Episode]) -> None:
         self.episodes = episodes
         self.rollouts: list[Rollout] = [trace for episode in episodes for trace in episode.traces]
 
@@ -387,7 +388,7 @@ class EvalMetrics(EpisodeMetrics):
     per example) is supplied by the container so the ``all`` and ``effective`` subsets — and every
     agent — share one stable key."""
 
-    def __init__(self, episodes: list[vf.WireEpisode], group_size: int) -> None:
+    def __init__(self, episodes: list[Episode], group_size: int) -> None:
         super().__init__(episodes)
         self.group_size = group_size
 
@@ -405,7 +406,7 @@ class EvalMetrics(EpisodeMetrics):
         return out
 
 
-def keep_traces(episode: vf.WireEpisode, keep: Callable[[Rollout], bool]) -> vf.WireEpisode | None:
+def keep_traces(episode: Episode, keep: Callable[[Rollout], bool]) -> Episode | None:
     """The episode narrowed to the traces that pass ``keep``, or ``None`` if none do. A subset view
     stays a list of episodes so the episode-level aggregates keep describing what survived."""
     traces = [trace for trace in episode.traces if keep(trace)]
@@ -418,10 +419,10 @@ class TrainRollouts:
     narrowed to its surviving traces; ``metrics`` builds ``TrainMetrics`` over them. Sized and
     iterated by *rollout*, since that is the unit almost every consumer wants."""
 
-    def __init__(self, episodes: list[vf.WireEpisode] | None = None) -> None:
+    def __init__(self, episodes: list[Episode] | None = None) -> None:
         self.episodes = episodes if episodes is not None else []
 
-    def append(self, episode: vf.WireEpisode) -> None:
+    def append(self, episode: Episode) -> None:
         self.episodes.append(episode)
 
     @property
@@ -443,9 +444,9 @@ class TrainRollouts:
         return TrainRollouts([episode for episode in kept if episode is not None])
 
     def by_env(self) -> dict[str, TrainRollouts]:
-        grouped: dict[str, list[vf.WireEpisode]] = {}
+        grouped: dict[str, list[Episode]] = {}
         for episode in self.episodes:
-            grouped.setdefault(episode.traces[0].env_name, []).append(episode)
+            grouped.setdefault(episode.env_name, []).append(episode)
         return {env: TrainRollouts(episodes) for env, episodes in grouped.items()}
 
     @property
@@ -459,7 +460,7 @@ class EvalRollouts:
     ``group_size`` (rollouts per example, the ``avg@k`` k) is derived from the full epoch and carried
     onto ``effective`` so both subsets share one stable key; ``metrics`` builds ``EvalMetrics``."""
 
-    def __init__(self, episodes: list[vf.WireEpisode] | None = None, group_size: int | None = None) -> None:
+    def __init__(self, episodes: list[Episode] | None = None, group_size: int | None = None) -> None:
         self.episodes = episodes if episodes is not None else []
         self._group_size = group_size
 

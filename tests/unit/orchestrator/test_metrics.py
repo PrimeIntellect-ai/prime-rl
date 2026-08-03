@@ -1,13 +1,12 @@
 import math
 from itertools import count
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts, episode_failure_metrics
-from prime_rl.orchestrator.types import EpisodeFailure, EpisodeResult
+from prime_rl.orchestrator.types import Episode
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 _ids = count()
@@ -81,10 +80,10 @@ def mk(
     )
 
 
-def ep(*rollouts):
+def ep(*rollouts, env_name: str = "env", errors=()):
     """One episode over these traces. ``model_construct`` skips validation so the duck-typed
     stand-ins above can stand in for real ones."""
-    return vf.WireEpisode.model_construct(id=f"e{next(_ids)}", traces=list(rollouts))
+    return Episode.model_construct(id=f"e{next(_ids)}", traces=list(rollouts), env_name=env_name, errors=list(errors))
 
 
 def solo(rollouts):
@@ -106,7 +105,12 @@ def test_stat():
 
 def test_container_effective_by_env_and_listlike():
     rc = TrainRollouts(
-        solo([mk(env_name="a"), mk(env_name="a", has_error=True), mk(env_name="b", is_filtered=True), mk(env_name="b")])
+        [
+            ep(mk(env_name="a"), env_name="a"),
+            ep(mk(env_name="a", has_error=True), env_name="a"),
+            ep(mk(env_name="b", is_filtered=True), env_name="b"),
+            ep(mk(env_name="b"), env_name="b"),
+        ]
     )
     assert len(rc) == 4 and [r.env_name for r in rc] == ["a", "a", "b", "b"]  # sized + iterable
     eff = rc.effective
@@ -237,7 +241,9 @@ def test_nested_metrics_and_rewards():
     assert eff["train/agg/effective/agent/rewards/format/mean"] == 0.5
     # cross-env agg: another env's unscored trace carries different keys, so it can't dilute these
     other = mk(env_name="other", has_error=True, rewards={"solved": None})
-    agg = TrainRollouts(solo(rollouts + [other])).metrics.to_wandb(prefix="train/agg", subset="all")
+    agg = TrainRollouts(solo(rollouts) + [ep(other, env_name="other")]).metrics.to_wandb(
+        prefix="train/agg", subset="all"
+    )
     assert agg["train/agg/all/agent/rewards/format/mean"] == pytest.approx(1 / 3)
     assert agg["train/agg/all/agent/rewards/solved/mean"] == 0.0
 
@@ -292,41 +298,34 @@ def test_compute_pass_metrics_matches_closed_form():
 
 
 def test_episode_failure_metrics():
-    """Episodes that never produced a trace are counted whole, by reason. They belong to no agent,
-    so they must never appear under an agent subtree — the phantom-seat bug this replaced."""
-    failures = [
-        EpisodeFailure(type="Cancelled", message="Off-policy cancel"),
-        EpisodeFailure(type="Cancelled", message="Off-policy cancel"),
-        EpisodeFailure(type="TaskFailed", message="boom"),
+    """An episode that produced no traces is counted whole, by the reason vf left on it. Every
+    cause — a cancel, a task that raised, an env that ran no agent — reads the same way, and none
+    of them is ever attributed to a seat."""
+    cancelled = vf.Error(type="Cancelled", message="Off-policy cancel")
+    episodes = [
+        ep(mk()),
+        ep(mk()),
+        ep(errors=[cancelled]),
+        ep(errors=[cancelled]),
+        ep(errors=[vf.Error(type="TaskFailed", message="boom")]),
     ]
-    out = episode_failure_metrics(failures, prefix="train/agg", total=9)
+    out = episode_failure_metrics(episodes, prefix="train/agg")
     assert out["train/agg/episode_failure/Cancelled"] == 2.0
     assert out["train/agg/episode_failure/TaskFailed"] == 1.0
-    assert out["train/agg/episode_failure/rate"] == 0.25  # 3 of the window's 12 episodes
+    assert out["train/agg/episode_failure/rate"] == 0.6  # 3 of 5 episodes
     assert not any("/agent/" in k for k in out)  # never attributed to a seat
-    assert episode_failure_metrics([], prefix="train/agg", total=4) == {"train/agg/episode_failure/rate": 0.0}
-    assert episode_failure_metrics([], prefix="train/agg", total=0) == {}  # nothing arrived at all
+    assert episode_failure_metrics([ep(mk())], prefix="train/agg") == {"train/agg/episode_failure/rate": 0.0}
+    assert episode_failure_metrics([], prefix="train/agg") == {}  # nothing arrived at all
 
 
-def test_episode_result_carries_traces_xor_failure():
-    """The envelope makes the phantom trace unrepresentable: an outcome is traces or a failure."""
-    episode = ep(mk())
-    assert EpisodeResult(kind="train", env_name="env", group_id=uuid4(), policy_version=0, episode=episode)
-    assert EpisodeResult(
-        kind="train",
-        env_name="env",
-        group_id=uuid4(),
-        policy_version=0,
-        failure=EpisodeFailure(type="Cancelled", message="Off-policy cancel"),
-    )
-    with pytest.raises(AssertionError):  # neither
-        EpisodeResult(kind="train", env_name="env", group_id=uuid4(), policy_version=0)
-    with pytest.raises(AssertionError):  # both
-        EpisodeResult(
-            kind="train",
-            env_name="env",
-            group_id=uuid4(),
-            policy_version=0,
-            episode=episode,
-            failure=EpisodeFailure(type="Cancelled", message="Off-policy cancel"),
-        )
+def test_traceless_episode_keeps_its_reason():
+    """The failure needs no type of its own: ``failed`` is just "no traces", and the reason is the
+    error vf (or the dispatcher) already put on the episode."""
+    episode = ep(errors=[vf.Error(type="Cancelled", message="Off-policy cancel")])
+    assert episode.failed and episode.rollouts == []
+    assert episode.last_error is not None and episode.last_error.type == "Cancelled"
+    assert not ep(mk()).failed
+    # A traceless episode still counts as an episode, but contributes no rollouts.
+    pool = TrainRollouts([ep(mk()), episode])
+    assert len(pool) == 1 and len(pool.episodes) == 2
+    assert len(pool.effective.episodes) == 1  # it survives nothing, so the subset drops it
