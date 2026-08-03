@@ -35,7 +35,7 @@ def mk(
     is_filtered: bool = False,
     filter_results: dict | None = None,
     setup: float = 0.0,
-    agent_time: float = 0.0,
+    agent: float = 0.0,
     agent_model: float = 0.0,
     agent_harness: float = 0.0,
     finalize: float = 0.0,
@@ -69,7 +69,7 @@ def mk(
         timing=SimpleNamespace(
             setup=SimpleNamespace(duration=setup),
             agent=SimpleNamespace(
-                duration=agent_time,
+                duration=agent,
                 model=SimpleNamespace(duration=agent_model),
                 harness=SimpleNamespace(duration=agent_harness),
             ),
@@ -193,9 +193,7 @@ def test_nested_metrics_and_rewards():
 
 
 def test_nested_timing():
-    m = TrainRollouts(
-        [mk(setup=1.0, agent_time=2.0, agent_model=1.5, agent_harness=0.5, finalize=0.5, scoring=0.5)]
-    ).metrics
+    m = TrainRollouts([mk(setup=1.0, agent=2.0, agent_model=1.5, agent_harness=0.5, finalize=0.5, scoring=0.5)]).metrics
     timing = m.by_agent()["agent"].timing
     assert timing.setup.mean() == 1.0 and timing.total.mean() == 4.0  # total sums all four phases
     assert timing.agent_model.mean() == 1.5 and timing.agent_harness.mean() == 0.5
