@@ -143,8 +143,11 @@ class TimingMetrics(StatGroup):
 
 class CustomMetrics(StatGroup):
     """Per-key ``Stat``s over a dynamic per-rollout dict attribute (env ``@metric``s or reward
-    components), each averaged over the rollouts that report the key. ``value`` extracts the
-    float from each entry (rewards are ``vf.Reward`` records; metrics are plain floats)."""
+    components), each over the rollouts that carry the key. Scoring seeds every expected key
+    with ``None`` before invoking it, so a ``None`` value means the signal never produced a
+    score and counts as 0.0 — the ``effective`` subset excludes errored rollouts and gives the
+    clean means. ``value`` extracts the float from each scored entry (rewards are ``vf.Reward``
+    records; metrics are plain floats)."""
 
     def __init__(self, rollouts: list[Rollout], attr: str, value: Callable[[Any], float] = float) -> None:
         super().__init__(rollouts)
@@ -155,7 +158,11 @@ class CustomMetrics(StatGroup):
         names = sorted({name for r in self.rollouts for name in getattr(r, self.attr)})
         return {
             name: Stat(
-                [self.value(getattr(r, self.attr)[name]) for r in self.rollouts if name in getattr(r, self.attr)]
+                [
+                    self.value(scores[name]) if scores[name] is not None else 0.0
+                    for r in self.rollouts
+                    if name in (scores := getattr(r, self.attr))
+                ]
             )
             for name in names
         }

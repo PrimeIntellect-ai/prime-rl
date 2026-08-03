@@ -197,14 +197,27 @@ def test_nested_metrics_and_rewards():
     rollouts = [
         mk(metrics={"acc": 1.0}, rewards={"correct": vf.Reward(score=1.0), "format": vf.Reward(score=0.0)}),
         mk(metrics={"acc": 3.0, "fmt": 5.0}, rewards={"correct": vf.Reward(score=0.0), "format": vf.Reward(score=1.0)}),
+        # scoring failed after seeding: unscored (None) entries count as 0.0 on `all`
+        mk(has_error=True, metrics={"acc": None}, rewards={"correct": None, "format": None}),
     ]
-    m = TrainRollouts(rollouts).metrics
+    rc = TrainRollouts(rollouts)
+    m = rc.metrics
     agent = m.by_agent()["agent"]
-    assert agent.metrics["acc"].mean() == 2.0 and agent.rewards["correct"].mean() == 0.5  # nested group access
+    assert agent.metrics["acc"].mean() == pytest.approx(4 / 3)  # nested group access
+    assert agent.rewards["correct"].mean() == pytest.approx(1 / 3)
     out = m.to_wandb(prefix="train/agg", subset="all")
-    assert out["train/agg/all/agent/metrics/acc/mean"] == 2.0  # averaged over reporters
+    assert out["train/agg/all/agent/metrics/acc/mean"] == pytest.approx(4 / 3)
     assert out["train/agg/all/agent/metrics/fmt/mean"] == 5.0  # single reporter
-    assert out["train/agg/all/agent/rewards/format/mean"] == 0.5
+    assert out["train/agg/all/agent/rewards/format/mean"] == pytest.approx(1 / 3)
+    # effective drops the errored rollout, so its seeds don't dilute the effective means
+    eff = rc.effective.metrics.to_wandb(prefix="train/agg", subset="effective")
+    assert eff["train/agg/effective/agent/metrics/acc/mean"] == 2.0
+    assert eff["train/agg/effective/agent/rewards/format/mean"] == 0.5
+    # cross-env agg: another env's unscored trace carries different keys, so it can't dilute these
+    other = mk(env_name="other", has_error=True, rewards={"solved": None})
+    agg = TrainRollouts(rollouts + [other]).metrics.to_wandb(prefix="train/agg", subset="all")
+    assert agg["train/agg/all/agent/rewards/format/mean"] == pytest.approx(1 / 3)
+    assert agg["train/agg/all/agent/rewards/solved/mean"] == 0.0
 
 
 def test_nested_timing():
