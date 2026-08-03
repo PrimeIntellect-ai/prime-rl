@@ -41,10 +41,8 @@ from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
-    Episode,
-    EvalEpisode,
     GroupState,
-    InflightRollout,
+    InflightEpisode,
     Policy,
     RolloutKind,
 )
@@ -153,7 +151,7 @@ class RolloutDispatcher:
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
         )
 
-        self.inflight: dict[asyncio.Task, InflightRollout] = {}
+        self.inflight: dict[asyncio.Task, InflightEpisode] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
 
         # Bounded so the dispatcher backpressures on a slow sink. One entry per
@@ -185,11 +183,11 @@ class RolloutDispatcher:
 
     @property
     def inflight_train_count(self) -> int:
-        return sum(m.rollout_count for m in self.inflight.values() if m.kind == "train")
+        return sum(m.episodes_owed for m in self.inflight.values() if m.kind == "train")
 
     @property
     def inflight_eval_count(self) -> int:
-        return sum(m.rollout_count for m in self.inflight.values() if m.kind == "eval")
+        return sum(m.episodes_owed for m in self.inflight.values() if m.kind == "eval")
 
     @property
     def available_permits(self) -> int:
@@ -199,7 +197,7 @@ class RolloutDispatcher:
     def inflight_by_env(self) -> dict[tuple[RolloutKind, str], int]:
         counts: dict[tuple[RolloutKind, str], int] = defaultdict(int)
         for meta in self.inflight.values():
-            counts[(meta.kind, meta.env_name)] += meta.rollout_count
+            counts[(meta.kind, meta.env_name)] += meta.episodes_owed
         return dict(counts)
 
     @property
@@ -474,12 +472,12 @@ class RolloutDispatcher:
                 )
             )
 
-        self.inflight[task] = InflightRollout(
+        self.inflight[task] = InflightEpisode(
             kind=group.kind,
             env_name=group.env_name,
             group_id=group_id,
             policy_version=group.policy_version_at_start,
-            rollout_count=permits,
+            episodes_owed=permits,
             client_config=client,
             eval_step=group.eval_step,
         )
@@ -498,8 +496,8 @@ class RolloutDispatcher:
 
     async def handle_completed_rollout(self, task: asyncio.Task) -> None:
         """Emit every dispatched episode exactly once to ``out_q``: a ``run``
-        result as one episode, a legacy ``run_group`` result as ``rollout_count``
-        single-trace episodes. Task exceptions synthesize ``rollout_count``
+        result as one episode, a legacy ``run_group`` result as ``episodes_owed``
+        single-trace episodes. Task exceptions synthesize ``episodes_owed``
         error-marker episodes so the sink's count-to-``group_size`` finalization
         still triggers. Cancelled tasks (popped by ``drop_group``) raise
         ``CancelledError`` and are discarded — ``drop_group`` already emitted
@@ -508,7 +506,7 @@ class RolloutDispatcher:
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_rollouts
-        self.release(meta.rollout_count)
+        self.release(meta.episodes_owed)
         group = self.groups.get(meta.group_id)
 
         try:
@@ -540,7 +538,7 @@ class RolloutDispatcher:
 
     async def emit_episode(
         self,
-        meta: InflightRollout,
+        meta: InflightEpisode,
         group: GroupState | None,
         episode: vf.WireEpisode,
     ) -> None:
@@ -555,30 +553,17 @@ class RolloutDispatcher:
             group.emitted += 1
             if group.emitted >= group.target_rollouts:
                 self.groups.pop(meta.group_id, None)
-        if meta.kind == "eval":
-            assert eval_step is not None, "eval episode missing eval_step"
 
         for rollout in episode.traces:
             rollout.env_name = meta.env_name
             rollout.group_id = meta.group_id
-        shared = {
-            **dict(episode),
-            "env_name": meta.env_name,
-            "group_id": meta.group_id,
-            "policy_version": policy_version,
-        }
-        dispatched: Episode = (
-            EvalEpisode.model_construct(**shared, step=eval_step)
-            if meta.kind == "eval"
-            else TrainEpisode.model_construct(**shared, off_policy_steps=meta.off_policy_steps)
-        )
-        await self.out_q.put(dispatched)
+        await self.out_q.put(meta.stamp(episode, policy_version=policy_version, eval_step=eval_step))
 
-    async def emit_failed_episodes(self, meta: InflightRollout, group: GroupState | None, error: vf.Error) -> None:
+    async def emit_failed_episodes(self, meta: InflightEpisode, group: GroupState | None, error: vf.Error) -> None:
         """Emit one traceless episode per rollout the task owed, so the sink still counts its way to
         ``group_size``. This is the shape vf already gives a run that produced nothing — the reason
         on ``errors`` — so prime-rl's own failures need no type of their own."""
-        for _ in range(meta.rollout_count):
+        for _ in range(meta.episodes_owed):
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
             await self.emit_episode(meta, group, Episode.model_construct(errors=[error]))
 
@@ -594,20 +579,20 @@ class RolloutDispatcher:
         # the dropped tasks are no longer reachable from ``self.inflight``,
         # so ``handle_completed_rollout``'s existing None-guard makes the
         # subsequent async emit phase race-free.
-        claimed: list[tuple[asyncio.Task, InflightRollout]] = []
+        claimed: list[tuple[asyncio.Task, InflightEpisode]] = []
         for task, meta in list(self.inflight.items()):
             if meta.group_id != group_id:
                 continue
             del self.inflight[task]
-            self.release(meta.rollout_count)
+            self.release(meta.episodes_owed)
             claimed.append((task, meta))
 
         tasks_to_cancel = [task for task, _ in claimed]
-        inflight_cancelled = sum(meta.rollout_count for _, meta in claimed)
-        last_meta: InflightRollout | None = claimed[-1][1] if claimed else None
+        inflight_cancelled = sum(meta.episodes_owed for _, meta in claimed)
+        last_meta: InflightEpisode | None = claimed[-1][1] if claimed else None
         cancel = vf.Error(type="Cancelled", message="Off-policy cancel")
         for _, meta in claimed:
-            for _ in range(meta.rollout_count):
+            for _ in range(meta.episodes_owed):
                 await self.emit_episode(meta, group, vf.WireEpisode.model_construct(errors=[cancel]))
 
         # For non-group-scoring envs, the group may have rollouts that
@@ -619,12 +604,12 @@ class RolloutDispatcher:
         # and us reaching it — synthesize a stand-in from the group state
         unscheduled_cancelled = 0
         if group is not None and group.rollouts_to_schedule > 0:
-            fallback_meta = last_meta or InflightRollout(
+            fallback_meta = last_meta or InflightEpisode(
                 kind=group.kind,
                 env_name=group.env_name,
                 group_id=group_id,
                 policy_version=group.policy_version_at_start,
-                rollout_count=1,
+                episodes_owed=1,
                 eval_step=group.eval_step,
             )
             unscheduled_cancelled = group.rollouts_to_schedule
@@ -634,12 +619,12 @@ class RolloutDispatcher:
         cancelled = inflight_cancelled + unscheduled_cancelled
         if cancelled > 0:
             meta_for_log = last_meta or (
-                InflightRollout(
+                InflightEpisode(
                     kind=group.kind,
                     env_name=group.env_name,
                     group_id=group_id,
                     policy_version=group.policy_version_at_start if group else 0,
-                    rollout_count=1,
+                    episodes_owed=1,
                     eval_step=group.eval_step,
                 )
                 if group is not None
@@ -660,8 +645,8 @@ class RolloutDispatcher:
         """Cancel all in-flight rollouts. Used on shutdown — doesn't emit
         markers since the sinks are being torn down anyway."""
         for meta in self.inflight.values():
-            self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name, n=meta.rollout_count)
-            self.release(meta.rollout_count)
+            self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name, n=meta.episodes_owed)
+            self.release(meta.episodes_owed)
         tasks = list(self.inflight.keys())
         self.inflight.clear()
         self.groups.clear()
@@ -679,9 +664,9 @@ class RolloutDispatcher:
             if meta.kind != "train":
                 continue
             self.inflight.pop(task, None)
-            self.release(meta.rollout_count)
-            self.metrics.record_cancellation(kind="train", env_name=meta.env_name, n=meta.rollout_count)
-            cancelled += meta.rollout_count
+            self.release(meta.episodes_owed)
+            self.metrics.record_cancellation(kind="train", env_name=meta.env_name, n=meta.episodes_owed)
+            cancelled += meta.episodes_owed
             train_tasks.append(task)
             train_group_ids.add(meta.group_id)
         for gid in train_group_ids:

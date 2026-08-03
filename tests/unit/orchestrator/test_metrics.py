@@ -1,12 +1,14 @@
 import math
+from dataclasses import replace
 from itertools import count
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts, episode_failure_metrics
-from prime_rl.orchestrator.types import EvalEpisode, Rollout, TrainEpisode, TrainRollout
+from prime_rl.orchestrator.types import EvalEpisode, InflightEpisode, Rollout, TrainEpisode, TrainRollout
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 _ids = count()
@@ -346,3 +348,20 @@ def test_training_state_is_train_only():
     assert {"samples", "advantages", "is_filtered", "filter_results"} <= set(TrainRollout.model_fields)
     assert not {"samples", "advantages", "is_filtered", "filter_results"} & set(Rollout.model_fields)
     assert {"env_name", "group_id", "episode_id"} <= set(Rollout.model_fields)  # links stay shared
+
+
+def test_inflight_episode_stamps_what_lands():
+    """The dispatch and the landed episode are one pair: `stamp` is the only place the facts of a
+    dispatch become facts of an episode, and it mints the class the path calls for."""
+    wire = vf.WireEpisode.model_construct(id="e", traces=[])
+    inflight = InflightEpisode(
+        kind="train", env_name="rt", group_id=uuid4(), policy_version=3, episodes_owed=1, off_policy_steps=2
+    )
+    train = inflight.stamp(wire, policy_version=7, eval_step=None)
+    assert isinstance(train, TrainEpisode) and train.KIND == "train"
+    assert (train.env_name, train.policy_version, train.off_policy_steps) == ("rt", 7, 2)  # group's version wins
+
+    evaluation = replace(inflight, kind="eval").stamp(wire, policy_version=7, eval_step=12)
+    assert isinstance(evaluation, EvalEpisode) and evaluation.step == 12
+    with pytest.raises(AssertionError):  # an eval episode without its step is not representable
+        replace(inflight, kind="eval").stamp(wire, policy_version=7, eval_step=None)

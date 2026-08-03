@@ -39,21 +39,6 @@ RolloutKind = Literal["train", "eval"]
 
 
 @dataclass
-class InflightRollout:
-    """Per-task scheduling state in the dispatcher; one entry per in-flight
-    ``run`` / ``run_group`` task."""
-
-    kind: RolloutKind
-    env_name: str
-    group_id: uuid.UUID
-    policy_version: int
-    rollout_count: int
-    client_config: vf.ClientConfig | None = None
-    off_policy_steps: int = 0
-    eval_step: int | None = None
-
-
-@dataclass
 class GroupState:
     """Per-group dispatcher state: what's left to schedule + the pinned
     client (for prefix-cache hits)."""
@@ -197,6 +182,38 @@ class EvalEpisode(Episode):
     KIND: ClassVar[RolloutKind] = "eval"
 
     step: int = Field(default=0, exclude=True)
+
+
+@dataclass
+class InflightEpisode:
+    """One episode in flight, and the facts of the dispatch that will be stamped onto it when it
+    lands. The pair is the whole lifecycle: an ``InflightEpisode`` going out, an ``Episode`` coming
+    back — so nothing downstream has to know how a rollout was scheduled."""
+
+    kind: RolloutKind
+    env_name: str
+    group_id: uuid.UUID
+    policy_version: int
+    episodes_owed: int
+    """How many episodes this dispatch owes the sink — one, except on the legacy group path."""
+    client_config: vf.ClientConfig | None = None
+    off_policy_steps: int = 0
+    eval_step: int | None = None
+
+    def stamp(self, episode: vf.WireEpisode, *, policy_version: int, eval_step: int | None) -> Episode:
+        """Mint the landed episode: the env's own, carrying the dispatch it came from. The group's
+        values win over this dispatch's when it is still alive, so they are passed in rather than
+        read off ``self``."""
+        common = {
+            **dict(episode),
+            "env_name": self.env_name,
+            "group_id": self.group_id,
+            "policy_version": policy_version,
+        }
+        if self.kind == "eval":
+            assert eval_step is not None, "eval episode missing its step"
+            return EvalEpisode.model_construct(**common, step=eval_step)
+        return TrainEpisode.model_construct(**common, off_policy_steps=self.off_policy_steps)
 
 
 @dataclass

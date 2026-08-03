@@ -93,18 +93,18 @@ def test_training_sample_requires_env_name():
 
 
 @pytest.mark.parametrize(
-    ("rollout_count", "num_train_workers", "expected_batches_per_worker"), [(4, 2, 2), (5, 2, 3), (7, 1, 7), (11, 4, 3)]
+    ("episodes_owed", "num_train_workers", "expected_batches_per_worker"), [(4, 2, 2), (5, 2, 3), (7, 1, 7), (11, 4, 3)]
 )
 def test_prepare_batch_balances_micro_batches_across_workers(
-    make_training_example, rollout_count, num_train_workers, expected_batches_per_worker
+    make_training_example, episodes_owed, num_train_workers, expected_batches_per_worker
 ):
-    examples = [make_training_example() for i in range(rollout_count)]
+    examples = [make_training_example() for i in range(episodes_owed)]
 
     batches_per_gpu = prepare_batch(
         rollouts=examples,
         seq_len=4,
         num_train_workers=num_train_workers,
-        idxs=[0] * rollout_count,
+        idxs=[0] * episodes_owed,
         num_loras=1,
         bin_cost=build_bin_cost(None),
     )
