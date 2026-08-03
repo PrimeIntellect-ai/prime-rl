@@ -173,10 +173,13 @@ class TraceMetrics(StatGroup):
         self.episodes = episodes
 
     def stats(self) -> dict[str, Stat]:
+        """One value per episode for the distributions (the fan-out collapses to its mean first);
+        one value per trace for the rates, so a rate stays the plain fraction of the agent's
+        rollouts — an episode that kept more traces than its siblings must not count for less."""
         return {
             name: Stat([sum(float(getattr(r, name)) for r in episode) / len(episode) for episode in self.episodes])
-            for name in (*self.DISTRIBUTIONS, *self.RATES)
-        }
+            for name in self.DISTRIBUTIONS
+        } | {name: Stat([float(getattr(r, name)) for r in self.rollouts]) for name in self.RATES}
 
     @property
     def timing(self) -> TimingMetrics:

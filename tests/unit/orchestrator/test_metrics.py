@@ -146,6 +146,21 @@ def test_episode_and_agent_levels():
     assert "train/agg/all/reward/mean" not in out  # reward never pools across agents
 
 
+def test_agent_rates_are_flat_over_traces():
+    """An uneven fan-out (one surviving solver trace here, three there — what the effective subset
+    leaves behind whenever a sibling errors) must not reweight a rate: it stays the plain fraction
+    of the agent's rollouts, unlike the distributions, which collapse per episode first."""
+    rollouts = [
+        mk(agent_name="solver", episode_id="e1", is_truncated=True, num_turns=1),
+        *[mk(agent_name="solver", episode_id="e2", is_truncated=False, num_turns=1) for _ in range(3)],
+    ]
+    out = TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset="all")
+    assert out["train/agg/all/solver/is_truncated/mean"] == 0.25  # 1 of 4 traces, not (1.0 + 0.0) / 2
+    assert out["train/agg/all/solver/is_completed/mean"] == 1.0
+    assert out["train/agg/all/solver/is_trainable/mean"] == 1.0  # sibling rates agree
+    assert out["train/agg/all/solver/num_turns/mean"] == 1.0  # distributions still collapse per episode
+
+
 def test_boolean_rates_and_error_breakdown_all_only():
     rc = TrainRollouts([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_filtered=True)])
     out = rc.metrics.to_wandb(prefix="train/agg", subset="all")
