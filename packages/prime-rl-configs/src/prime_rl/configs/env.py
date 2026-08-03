@@ -9,9 +9,8 @@ from prime_rl.utils.config import BaseConfig
 
 class EnvConfig(BaseConfig):
     """``uv run env``: what to serve (``[env]``, or ``[legacy]`` for a classic v0
-    env) and how it's hosted (``[serve]``) — the same blocks as verifiers' ``serve`` CLI.
-    The ``rl`` launcher writes one of these per train/eval source, with ``serve.address``
-    set to the source's derived address."""
+    env) and how it's hosted (``[serve]``). The ``rl`` launcher writes one of these per
+    train/eval source, with ``serve.address`` set to the source's derived address."""
 
     env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
