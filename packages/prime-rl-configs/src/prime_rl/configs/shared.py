@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal, Self, TypeAlias
 
 from pydantic import AfterValidator, Field, model_validator
 
@@ -144,16 +144,37 @@ class ClientConfig(BaseConfig):
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in disaggregated P/D deployments where the router must not handle admin traffic."""
 
+    dynamo_discovery_url: str | None = None
+    """Dynamo frontend URL used to discover direct vLLM admin endpoints from ``/v1/rl/workers``."""
+
+    dynamo_expected_world_size: int | None = Field(None, ge=1)
+    """Expected total vLLM world size reported by Dynamo discovery."""
+
     elastic: ElasticConfig | None = None
     """Elastic inference pool config for DNS-based service discovery. When set, ``base_url`` is ignored and inference servers are discovered dynamically via DNS."""
 
     router_url: str | None = None
     """vllm-router URL for load-aware inference routing. With elastic mode, inference requests go through the router while admin ops still hit discovered pods directly."""
 
+    @model_validator(mode="after")
+    def validate_pool_mode(self) -> Self:
+        if self.dynamo_discovery_url is not None and self.admin_base_url is not None:
+            raise ValueError("dynamo_discovery_url cannot be combined with admin_base_url")
+        if self.dynamo_discovery_url is not None and self.elastic is not None:
+            raise ValueError("dynamo_discovery_url cannot be combined with elastic discovery")
+        if self.dynamo_discovery_url is not None and self.dynamo_expected_world_size is None:
+            raise ValueError("dynamo_expected_world_size is required with dynamo_discovery_url")
+        return self
+
     @property
     def is_elastic(self) -> bool:
         """Check if elastic mode is enabled."""
         return self.elastic is not None
+
+    @property
+    def is_dynamo(self) -> bool:
+        """Check if Dynamo worker discovery is enabled."""
+        return self.dynamo_discovery_url is not None
 
 
 class LogConfig(BaseConfig):
