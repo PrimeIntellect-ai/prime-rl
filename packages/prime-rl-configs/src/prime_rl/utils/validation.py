@@ -129,6 +129,9 @@ def propagate_shared_fields(data: Any) -> Any:
     # [rollout_transport] → both sub-configs (host is launcher-injected for zmq multi-node).
     propagate("rollout_transport", "trainer.rollout_transport", "orchestrator.rollout_transport")
 
+    # The orchestrator validates external inference topology during construction.
+    propagate("weight_broadcast", "orchestrator.weight_broadcast")
+
     # Top-level scalars.
     propagate("max_steps", "trainer.max_steps", "orchestrator.max_steps")
     propagate("seq_len", "trainer.model.seq_len", "orchestrator.seq_len")
