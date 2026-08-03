@@ -568,7 +568,7 @@ class RolloutDispatcher:
             "policy_version": policy_version,
         }
         dispatched: Episode = (
-            EvalEpisode.model_construct(**shared, eval_step=eval_step)
+            EvalEpisode.model_construct(**shared, step=eval_step)
             if meta.kind == "eval"
             else TrainEpisode.model_construct(**shared, off_policy_steps=meta.off_policy_steps)
         )

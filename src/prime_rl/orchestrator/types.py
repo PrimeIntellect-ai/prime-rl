@@ -190,12 +190,13 @@ class TrainEpisode(Episode):
 
 
 class EvalEpisode(Episode):
-    """An episode collected for one eval epoch. ``eval_step`` is the step whose eval triggered it —
-    always known, unlike on the train path, so it is not optional here."""
+    """An episode collected for one eval epoch. ``step`` is the training step whose eval triggered
+    it — always known, unlike on the train path, so it is not optional here. It is the source for
+    the ``run.step`` each of its traces gets stamped with on arrival."""
 
     KIND: ClassVar[RolloutKind] = "eval"
 
-    eval_step: int = Field(default=0, exclude=True)
+    step: int = Field(default=0, exclude=True)
 
 
 @dataclass

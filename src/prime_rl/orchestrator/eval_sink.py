@@ -42,7 +42,7 @@ class EvalSink:
         group_id = episode.group_id
         for rollout in episode.rollouts:
             self.process_rollout(rollout)
-        bkey = (env_name, episode.eval_step)
+        bkey = (env_name, episode.step)
         self.pending_groups[group_id].append(episode)
         self.pending_group_episodes[group_id] += 1
         if self.pending_group_episodes[group_id] >= self.group_size_for(env_name):
@@ -73,7 +73,7 @@ class EvalSink:
             env_name = episodes[0].env_name
             if self.eval_envs.get(env_name).requires_group_scoring:
                 continue
-            bkey = (env_name, episodes[0].eval_step)
+            bkey = (env_name, episodes[0].step)
             buffered[bkey] = buffered.get(bkey, 0) + self.pending_group_episodes.get(group_id, 0)
         return [
             (
@@ -105,7 +105,7 @@ class EvalSink:
         # Read the group's facts off an episode, not a trace: every episode in it may have
         # produced none (a whole group cancelled off-policy).
         env_name = finished[0].env_name
-        eval_step = finished[0].eval_step
+        eval_step = finished[0].step
         group = [trace for episode in finished for trace in episode.rollouts]
         task_idx = group[0].task.data.idx if group else -1
         bucket = self.pending_batches[(env_name, eval_step)]

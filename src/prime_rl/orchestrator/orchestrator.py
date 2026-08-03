@@ -532,7 +532,7 @@ class Orchestrator:
             # eval rollouts to the step whose eval triggered them. A failed episode has no trace
             # to write; it is counted by the window's episode-failure metrics instead.
             is_eval = isinstance(episode, EvalEpisode)
-            step = episode.eval_step if isinstance(episode, EvalEpisode) else self.progress.step
+            step = episode.step if isinstance(episode, EvalEpisode) else self.progress.step
             run: vf.RunInfo = (
                 vf.EvalRunInfo(id=self.run_id, step=step) if is_eval else vf.TrainRunInfo(id=self.run_id, step=step)
             )

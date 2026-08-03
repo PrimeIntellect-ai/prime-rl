@@ -337,7 +337,7 @@ def test_train_and_eval_episodes_carry_only_their_own_facts():
     assert (TrainEpisode.KIND, EvalEpisode.KIND) == ("train", "eval")
     train, evaluation = TrainEpisode.model_construct(), EvalEpisode.model_construct()
     assert train.off_policy_steps == 0 and "off_policy_steps" not in EvalEpisode.model_fields
-    assert evaluation.eval_step == 0 and "eval_step" not in TrainEpisode.model_fields
+    assert evaluation.step == 0 and "step" not in TrainEpisode.model_fields
     assert train.policy_version == evaluation.policy_version == 0  # both measure a policy
 
 
