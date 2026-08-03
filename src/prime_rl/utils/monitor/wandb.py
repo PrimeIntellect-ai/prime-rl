@@ -303,8 +303,8 @@ OVERVIEW_NAME = "overview"
 # distributions. has_error only exists on all (effective drops errors by construction). The count
 # metrics are episode-level exact keys; the trace-level metrics (reward, truncation, errors) live
 # under the per-agent subtree, whose names are data-dependent — matched by regex, one panel per
-# agent. Only the reward metrics differ — train uses the per-agent "reward/mean", eval uses the
-# env-level "avg@k" — and each section builder prepends its own.
+# agent. Only the score metric differs — train scores with "reward/mean", eval with "avg@k" (its k
+# dynamic, so also a regex) — and each section builder prepends its own.
 COMMON_METRICS = [
     "effective/num_total_tokens/mean",
     "effective/num_turns/mean",
