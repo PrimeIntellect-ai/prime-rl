@@ -155,7 +155,7 @@ class TrainSink:
         message graph. Training is renderer-only across all modes (RL/OPD student, SFT teacher),
         so every node already carries its tokens. Errored rollouts are dropped at the group
         level, so skip them here; untrainable traces never become training data."""
-        if rollout.has_error or not rollout.trainable:
+        if rollout.has_error or not rollout.agent.trainable:
             return
         samples = await asyncio.to_thread(
             trace_to_samples,
@@ -198,7 +198,7 @@ class TrainSink:
             )
             return
         # Untrainable traces carry no samples and must not skew the group baseline.
-        survivors = [r for r in survivors if r.trainable]
+        survivors = [r for r in survivors if r.agent.trainable]
         if not survivors:
             get_logger().debug(
                 f"Finished group | env={env_name} task_idx={task_idx} | "

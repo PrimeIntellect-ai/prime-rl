@@ -614,6 +614,14 @@ class OrchestratorConfig(BaseConfig):
                 env_cfg.algo = self.algo.model_copy(deep=True)
         return self
 
+    @model_validator(mode="after")
+    def validate_env_algorithms(self):
+        """Let each algorithm reject environments it cannot score correctly."""
+        for env_cfg in self.train.source:
+            assert env_cfg.algo is not None  # resolved by inherit_env_algorithms
+            env_cfg.algo.validate_env(env_cfg.env)
+        return self
+
     @property
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""

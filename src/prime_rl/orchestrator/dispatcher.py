@@ -8,7 +8,7 @@
 - Emit-everything invariant: every dispatched env-rollout eventually reaches
   ``out_q`` exactly once, as one episode (a ``list[Rollout]``). Failures
   (env error, empty trajectory, task exception, off-policy cancel) carry
-  ``trace.error`` set; sinks decide drop / partial-train policy.
+  ``trace.last_error`` set; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight rollouts of the opposite kind drain
@@ -521,11 +521,14 @@ class RolloutDispatcher:
             get_logger().warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             task_idx = group.task_idx if group is not None else -1
             rollouts = [
-                Rollout(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)))
+                Rollout(
+                    task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
+                    agent=vf.AgentInfo(config=vf.AgentConfig()),
+                )
                 for _ in range(meta.rollout_count)
             ]
             for r in rollouts:
-                r.capture_error(exc)
+                r.record_error(exc)
             is_synth_exception = True
 
         for r in rollouts:
@@ -537,9 +540,9 @@ class RolloutDispatcher:
                 get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
             if r.has_error:
                 self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
-                if not is_synth_exception and r.error is not None:
+                if not is_synth_exception and r.last_error is not None:
                     get_logger().warning(
-                        f"Rollout failed in group {meta.group_id} ({meta.env_name}) — {r.error.type}: {r.error.message}"
+                        f"Rollout failed in group {meta.group_id} ({meta.env_name}) — {r.last_error.type}: {r.last_error.message}"
                     )
         if meta.rollout_count == 1:
             # A ``run`` task: the whole result is one episode.
@@ -601,6 +604,7 @@ class RolloutDispatcher:
             for _ in range(meta.rollout_count):
                 trace = Rollout(
                     task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
+                    agent=vf.AgentInfo(config=vf.AgentConfig()),
                     ok=False,
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
                     stop_condition="error",
@@ -628,6 +632,7 @@ class RolloutDispatcher:
             for _ in range(unscheduled_cancelled):
                 trace = Rollout(
                     task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
+                    agent=vf.AgentInfo(config=vf.AgentConfig()),
                     ok=False,
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
                     stop_condition="error",

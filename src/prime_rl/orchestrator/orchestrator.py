@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import uuid
 from typing import TYPE_CHECKING
 
 import tomli_w
@@ -241,6 +242,9 @@ class Orchestrator:
             train_env_names=[env.resolved_name for env in config.train.source],
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
+        # ``RunInfo.id`` is required on the trace: fall back to a run-local uuid
+        # when no external monitor identity (W&B) exists.
+        self.run_id = self.monitor.run_id or uuid.uuid4().hex
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat.url)
@@ -334,8 +338,10 @@ class Orchestrator:
 
         self.lora_name = config.model.lora.name if config.model.lora else None
 
+        self.train_source = TrainSource(self.train_envs)
+
         if self.resume_step is not None and self.ckpt_manager is not None:
-            self.ckpt_manager.load(self.progress, step=self.resume_step)
+            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step)
             # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
             # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
             # trainer even when ``ckpt.skip_progress`` left the counter unrestored.
@@ -375,7 +381,6 @@ class Orchestrator:
                 self.policy.model_name = self.lora_name
             self.policy.version = sync_version
 
-        self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source: EvalSource | None = (
             EvalSource(
                 self.eval_envs,
@@ -491,7 +496,7 @@ class Orchestrator:
             if self.ckpt_manager is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info("Writing final checkpoint")
-                self.ckpt_manager.save(self.progress, step=self.progress.step)
+                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
             await self.stop()
             if clean_exit:
                 get_logger().success("Orchestrator finished.")
@@ -522,12 +527,12 @@ class Orchestrator:
             step = episode[0].eval_step if kind == "eval" else self.progress.step
             assert step is not None
             run: vf.RunInfo = (
-                vf.EvalRunInfo(id=self.monitor.run_id, step=step)
+                vf.EvalRunInfo(id=self.run_id, step=step)
                 if kind == "eval"
-                else vf.TrainRunInfo(id=self.monitor.run_id, step=step)
+                else vf.TrainRunInfo(id=self.run_id, step=step)
             )
             for rollout in episode:
-                rollout.stamp(
+                rollout.record_run(
                     run,
                     env_name=rollout.env_name,
                     group_id=str(rollout.group_id),
@@ -895,7 +900,9 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
-        await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
+        # Synchronous on purpose: the payload is tiny, and snapshotting on the
+        # event loop keeps the dispatcher from mutating TrainSource mid-save
+        self.ckpt_manager.save(self.progress, self.train_source, step)
         return time.perf_counter() - t
 
     def update_dispatch_gate(self) -> None:

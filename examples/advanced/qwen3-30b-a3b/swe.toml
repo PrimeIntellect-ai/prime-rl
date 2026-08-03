@@ -48,18 +48,32 @@ max_off_policy_steps = 16
 
 [[orchestrator.train.source]]
 name = "swe"
-env.taskset = { id = "r2e-gym-v1" }
-env.agent.harness = { id = "bash" }
-env.agent.runtime = { type = "prime", labels = ["qwen30b-swe", "swe"] }
+
+[orchestrator.train.source.env.taskset]
+id = "r2e-gym-v1"
+
+[orchestrator.train.source.env.agent.harness]
+id = "bash"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "prime"
+labels = ["qwen30b-swe", "swe"]
 
 [orchestrator.eval]
 interval = 25
 
 [[orchestrator.eval.source]]
 name = "swe-bench-verified"
-env.taskset = { id = "swebench-verified-v1" }
-env.agent.harness = { id = "bash" }
-env.agent.runtime = { type = "prime", labels = ["qwen30b-swe", "swe-bench-verified"] }
+
+[orchestrator.eval.source.env.taskset]
+id = "swebench-verified-v1"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "bash"
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "prime"
+labels = ["qwen30b-swe", "swe-bench-verified"]
 
 [inference.parallel]
 tp = 8

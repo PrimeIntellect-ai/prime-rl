@@ -97,7 +97,7 @@ Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one i
 
 ### Dicts
 
-CLI takes a JSON literal. TOML uses a table or inline-table. CLI dicts deep-merge with TOML dicts — CLI keys win on conflict but don't wipe the file's keys:
+CLI takes a JSON literal. TOML uses a table. CLI dicts deep-merge with TOML dicts — CLI keys win on conflict but don't wipe the file's keys:
 
 ```bash
 uv run rl @ rl.toml --orchestrator.train.source.0.args \
@@ -106,7 +106,10 @@ uv run rl @ rl.toml --orchestrator.train.source.0.args \
 
 ```toml
 [[orchestrator.train.source]]
-args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
+
+[orchestrator.train.source.args]
+dataset_name = "openai/gsm8k"
+dataset_subset = "main"
 ```
 
 ### Optional Sub-Configs
@@ -149,23 +152,43 @@ Training and evaluation sources are arrays of tables. Set one source per environ
 ```toml
 [[orchestrator.train.source]]
 name = "gsm8k"
-env.taskset = { id = "gsm8k-v1", split = "train" }
-env.agent.harness = { id = "null" }
-env.agent.runtime = { type = "subprocess" }
 ratio = 3  # 75% of batches
+
+[orchestrator.train.source.env.taskset]
+id = "gsm8k-v1"
+split = "train"
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
 
 [[orchestrator.train.source]]
 name = "reverse-text"
-env.taskset = { id = "reverse-text-v1" }
-env.agent.harness = { id = "null" }
-env.agent.runtime = { type = "subprocess" }
 ratio = 1  # default — 25% of batches
+
+[orchestrator.train.source.env.taskset]
+id = "reverse-text-v1"
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
 
 [[orchestrator.eval.source]]
 name = "gsm8k-eval"
-env.taskset = { id = "gsm8k-v1", split = "test" }
-env.agent.harness = { id = "null" }
-env.agent.runtime = { type = "subprocess" }
+
+[orchestrator.eval.source.env.taskset]
+id = "gsm8k-v1"
+split = "test"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "null"
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "subprocess"
 ```
 
 `ratio` defaults to `1` (equal weight per env); values are relative weights normalized to probabilities across envs.

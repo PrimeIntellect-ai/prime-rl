@@ -226,7 +226,7 @@ class RolloutMetrics:
     def error_types(self) -> dict[str, int]:
         """Count of errored rollouts by error type (the rollout's last error — e.g. ``Cancelled``,
         ``ProviderError``)."""
-        types = [r.error.type for r in self.rollouts if r.has_error]
+        types = [r.last_error.type for r in self.rollouts if r.has_error and r.last_error is not None]
         return {t: types.count(t) for t in sorted(set(types))}
 
     def solve_rates(self) -> dict[str, float]:
@@ -360,7 +360,7 @@ class TrainRollouts:
 
     @property
     def effective(self) -> TrainRollouts:
-        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered and r.trainable])
+        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered and r.agent.trainable])
 
     def by_env(self) -> dict[str, TrainRollouts]:
         grouped: dict[str, list[Rollout]] = {}
@@ -399,13 +399,15 @@ class EvalRollouts:
             return self._group_size
         counts: dict = {}
         for r in self.rollouts:
-            if r.trainable:
+            if r.agent.trainable:
                 counts[r.group_id] = counts.get(r.group_id, 0) + 1
         return max(counts.values(), default=0)
 
     @property
     def effective(self) -> EvalRollouts:
-        return EvalRollouts([r for r in self.rollouts if not r.has_error and r.trainable], group_size=self.group_size)
+        return EvalRollouts(
+            [r for r in self.rollouts if not r.has_error and r.agent.trainable], group_size=self.group_size
+        )
 
     @property
     def metrics(self) -> EvalMetrics:

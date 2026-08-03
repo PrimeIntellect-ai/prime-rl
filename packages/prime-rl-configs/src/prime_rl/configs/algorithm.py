@@ -35,6 +35,7 @@ executes them.
 
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
+import verifiers.v1 as vf
 from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
@@ -188,6 +189,13 @@ class BaseAlgoConfig(BaseConfig):
             )
         return self
 
+    def validate_env(self, env_config: vf.EnvConfig) -> None:
+        """Raise if this algorithm cannot run on the env it is configured for,
+        given that env's resolved config. Most algorithms read only the rollouts
+        and their rewards, so they run on any env and the base does nothing;
+        override where the credit assignment encodes an env's episode structure.
+        Called once per train env after algorithm inheritance resolves."""
+
 
 class GRPOAlgoConfig(BaseAlgoConfig):
     type: Literal["grpo"] = "grpo"
@@ -251,6 +259,39 @@ class RAEAlgoConfig(BaseAlgoConfig):
     scored, its agent's baseline moves as ``baseline ← decay · baseline +
     (1 − decay) · reward``. Baselines start at 0 and live in orchestrator
     memory — a restart re-warms them over ~1/(1 − decay) traces per agent."""
+
+
+class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
+    type: Literal["hierarchical_grpo"] = "hierarchical_grpo"
+    """GRPO for proposer-solver envs.
+
+    Agents in ``episode_agents`` are compared with same-role attempts on the
+    same proposed problem. Other agents are compared with the same role across
+    proposals generated from one source task. This keeps rewards from different
+    problems and different roles out of the same average."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    episode_agents: list[str] = Field(min_length=1)
+    """Roles compared within one proposed problem. Use ``["solver"]`` for
+    ``proposer-solver-v1``."""
+
+    def validate_env(self, env_config: vf.EnvConfig) -> None:
+        """Require the proposer-solver structure used by the comparisons."""
+        try:
+            from proposer_solver_v1 import ProposerSolverEnvConfig
+        except ImportError as e:
+            raise ValueError(
+                "algorithm 'hierarchical_grpo' requires a proposer-solver env, but the "
+                "proposer-solver-v1 package is not installed (`uv sync --all-packages`)."
+            ) from e
+        if not isinstance(env_config, ProposerSolverEnvConfig):
+            raise ValueError(
+                f"algorithm 'hierarchical_grpo' needs a proposer-solver env, but this env resolved to "
+                f"{type(env_config).__name__}. It compares solver attempts on the same proposed "
+                "problem and proposers across proposals. Use 'grpo' for a flat env or 'rae' for "
+                "multi-agent self-play."
+            )
 
 
 class OPDAlgoConfig(BaseAlgoConfig):
@@ -326,7 +367,14 @@ class SFTAlgoConfig(BaseAlgoConfig):
 
 
 AlgoConfig: TypeAlias = Annotated[
-    GRPOAlgoConfig | EchoAlgoConfig | MaxRLAlgoConfig | RAEAlgoConfig | OPDAlgoConfig | OPSDAlgoConfig | SFTAlgoConfig,
+    GRPOAlgoConfig
+    | EchoAlgoConfig
+    | MaxRLAlgoConfig
+    | RAEAlgoConfig
+    | HierarchicalGRPOAlgoConfig
+    | OPDAlgoConfig
+    | OPSDAlgoConfig
+    | SFTAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -336,6 +384,7 @@ its class defaults are the vetted setting.
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``rae`` — reward minus a per-agent EMA baseline (SPIRAL), for multi-agent self-play envs.
+- ``hierarchical_grpo`` — GRPO for proposer-solver envs: solvers are compared within one proposed problem and proposers across proposals. Needs ``episode_agents``.
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
