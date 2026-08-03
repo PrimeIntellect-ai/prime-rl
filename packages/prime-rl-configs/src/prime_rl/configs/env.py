@@ -16,7 +16,7 @@ class EnvConfig(BaseConfig):
     env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
-    serve: vf.ServingConfig = vf.ServingConfig()
+    serve: vf.ServeConfig = vf.ServeConfig()
     """How it's served: the worker pool, the bind address, each worker's episode bound."""
 
     legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()

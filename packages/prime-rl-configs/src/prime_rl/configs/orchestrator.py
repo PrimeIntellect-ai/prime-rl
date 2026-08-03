@@ -123,9 +123,9 @@ class EvalSamplingConfig(BaseConfig):
         return args
 
 
-class ServingConfig(BaseConfig):
-    """The subset of verifiers' serving block a source configures — the worker pool and
-    the per-worker bound. The launcher materializes it into the env server's full
+class ServeConfig(BaseConfig):
+    """The subset of verifiers' ``ServeConfig`` a source configures — the worker pool
+    and the per-worker bound. The launcher materializes it into the env server's full
     ``[serve]`` block, filling in the source's derived address
     (``OrchestratorConfig.env_addresses``)."""
 
@@ -146,7 +146,7 @@ class SourceConfig(BaseConfig):
     env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
-    serve: ServingConfig = ServingConfig()
+    serve: ServeConfig = ServeConfig()
     """How this source's env server is sized. Consumed by the launcher (which writes each source's env config), not by the orchestrator — the orchestrator only connects."""
 
     legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()
