@@ -168,25 +168,25 @@ async def custom_init_app_state(
     args: Namespace,
     supported_tasks: tuple,
 ):
-    """
-    Modifies init_app_state:
-    1. Call the original init_app_state to set up standard state, including
-       vLLM 0.20's ``serving_tokens`` for ``/inference/v1/generate``.
-    2. Replace ``serving_tokens`` with ``PrimeRlServingTokens`` so DP-rank
-       routing and ``routed_experts`` export survive the migration off the
-       legacy ``/v1/generate`` endpoint.
-    """
+    """Initialize vLLM app state and install Prime's token response adapter."""
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
 
-    # Preserve vLLM's initialized collaborators while constructing the Prime
-    # subclass normally. Copying ``__dict__`` across versions is unsafe when
-    # vLLM renames renderer state or adds constructor-owned invariants.
     if "generate" in supported_tasks and state.serving_tokens is not None:
-        from prime_rl.inference.vllm.serving_tokens import build_prime_serving_tokens
+        from prime_rl.inference.vllm.serving_tokens import PrimeRlServingTokens
 
-        state.serving_tokens = build_prime_serving_tokens(state.serving_tokens)
+        upstream = state.serving_tokens
+        state.serving_tokens = PrimeRlServingTokens(
+            upstream.engine_client,
+            upstream.models,
+            upstream.online_renderer,
+            request_logger=upstream.request_logger,
+            return_tokens_as_token_ids=upstream.return_tokens_as_token_ids,
+            force_no_detokenize=upstream.force_no_detokenize,
+            enable_prompt_tokens_details=True,
+            enable_log_outputs=upstream.enable_log_outputs,
+        )
 
 
 import vllm.entrypoints.openai.api_server

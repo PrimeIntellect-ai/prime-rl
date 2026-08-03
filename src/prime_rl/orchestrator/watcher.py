@@ -136,12 +136,7 @@ class WeightWatcher:
 
             get_logger().debug(f"Updating weights to step {next_step}")
             t1 = time.perf_counter()
-            await self.inference.update_weights(
-                weights_path,
-                lora_name=self.lora_name,
-                step=next_step,
-                transport=self.config.weight_broadcast.type,
-            )
+            await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
             get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")

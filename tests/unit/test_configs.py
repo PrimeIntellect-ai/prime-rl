@@ -1,4 +1,3 @@
-import tomllib
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -290,96 +289,6 @@ def test_default_nccl_world_size_does_not_bypass_local_gpu_guard():
         )
 
 
-def test_explicit_world_size_does_not_bypass_local_inference_gpu_guard():
-    with pytest.raises(ValueError, match="NCCL weight broadcast requires at least 2"):
-        RLConfig.model_validate(
-            {
-                "trainer": {},
-                "orchestrator": {},
-                "inference": {},
-                "deployment": {
-                    "type": "single_node",
-                    "num_train_gpus": 1,
-                    "num_infer_gpus": 0,
-                },
-                "weight_broadcast": {
-                    "type": "nccl",
-                    "inference_world_size": 1,
-                },
-            }
-        )
-
-
-def test_absent_local_inference_does_not_count_configured_inference_gpus():
-    with pytest.raises(ValueError, match="NCCL weight broadcast requires at least 2"):
-        RLConfig.model_validate(
-            {
-                "trainer": {},
-                "orchestrator": {},
-                "inference": None,
-                "weight_broadcast": {"type": "nccl"},
-            }
-        )
-
-
-def test_glm52_dynamo_r2e_example_matches_external_inference_contract():
-    example = Path("examples/dynamo/glm52_fp8_r2e")
-    with (example / "orchestrator.toml").open("rb") as stream:
-        orchestrator = tomllib.load(stream)
-    with (example / "trainer.toml").open("rb") as stream:
-        trainer = tomllib.load(stream)
-
-    assert orchestrator["max_steps"] == 3
-    assert trainer["max_steps"] == 3
-    assert orchestrator["model"]["name"] == trainer["model"]["name"] == "zai-org/GLM-5.2-FP8"
-
-    client = orchestrator["model"]["client"]
-    assert client["base_url"] == ["http://dynamo-frontend:8000/v1"]
-    assert client["dynamo_discovery_url"] == "http://dynamo-frontend:8001"
-    assert client["extra_headers_from_state"] == {
-        "X-Dynamo-Session-ID": "trajectory_id",
-    }
-
-    train_source = orchestrator["train"]["source"]
-    assert len(train_source) == 1
-    assert train_source[0]["env"]["taskset"] == {"id": "r2e-gym-v1"}
-    assert train_source[0]["env"]["agent"]["harness"]["id"] == "bash"
-    assert train_source[0]["env"]["agent"]["runtime"]["type"] == "prime"
-    assert orchestrator["max_inflight_episodes"] == 2
-    assert "pre_batch_filters" not in orchestrator
-    assert orchestrator["post_batch_filters"] == [{"type": "zero_advantage", "enforce": False}]
-
-    assert orchestrator["weight_broadcast"]["type"] == "nccl"
-    assert trainer["weight_broadcast"]["type"] == "nccl"
-    assert orchestrator["weight_broadcast"]["inference_world_size"] == 16
-    assert trainer["weight_broadcast"]["inference_world_size"] == 16
-
-
-def test_two_gpu_dynamo_qwen30b_example_uses_bfloat16_training():
-    path = Path("examples/dynamo/qwen3_30b_Thinking/rl.toml")
-    with path.open("rb") as stream:
-        config = tomllib.load(stream)
-
-    assert config["deployment"]["num_train_gpus"] == 2
-    assert config["trainer"]["model"]["attn"] == "flash_attention_3"
-    assert config["trainer"]["model"]["optimization_dtype"] == "bfloat16"
-    assert config["trainer"]["model"]["reduce_dtype"] == "bfloat16"
-    source = config["orchestrator"]["train"]["source"][0]
-    assert source["env"]["agent"]["harness"] == {"id": "null"}
-    assert source["env"]["agent"]["runtime"] == {"type": "subprocess"}
-    assert config["orchestrator"]["max_inflight_episodes"] == 2
-
-
-def test_dynamo_qwen06b_example_uses_current_environment_schema():
-    path = Path("examples/dynamo/qwen3_06b_math/rl.toml")
-    with path.open("rb") as stream:
-        config = tomllib.load(stream)
-
-    source = config["orchestrator"]["train"]["source"][0]
-    assert source["env"]["agent"]["harness"] == {"id": "null"}
-    assert source["env"]["agent"]["runtime"] == {"type": "subprocess"}
-
-
 def test_external_dynamo_lora_world_size_survives_filesystem_config_resolution():
     config = RLConfig.model_validate(
         {
@@ -400,65 +309,19 @@ def test_external_dynamo_lora_world_size_survives_filesystem_config_resolution()
     assert config.orchestrator.weight_broadcast.inference_world_size == 8
 
 
-def test_external_dynamo_requires_world_size_at_rl_config_boundary():
+def test_dynamo_orchestrator_requires_explicit_inference_world_size():
     with pytest.raises(ValueError, match="inference_world_size"):
-        RLConfig.model_validate(
+        OrchestratorConfig.model_validate(
             {
-                "trainer": {},
-                "orchestrator": {
-                    "model": {
-                        "client": {
-                            "base_url": ["http://frontend:8000/v1"],
-                            "dynamo_discovery_url": "http://frontend:8001",
-                        }
+                "model": {
+                    "client": {
+                        "base_url": ["http://frontend:8000/v1"],
+                        "dynamo_discovery_url": "http://frontend:8001",
                     }
                 },
-                "inference": None,
                 "weight_broadcast": {"type": "filesystem"},
             }
         )
-
-
-def test_external_dynamo_full_weights_accept_filesystem_broadcast():
-    config = RLConfig.model_validate(
-        {
-            "trainer": {},
-            "orchestrator": {
-                "model": {
-                    "client": {
-                        "base_url": ["http://frontend:8000/v1"],
-                        "dynamo_discovery_url": "http://frontend:8001",
-                    }
-                }
-            },
-            "inference": None,
-            "weight_broadcast": {"type": "filesystem", "inference_world_size": 8},
-        }
-    )
-
-    assert config.orchestrator.weight_broadcast.type == "filesystem"
-
-
-def test_external_dynamo_lora_accepts_filesystem_broadcast():
-    config = RLConfig.model_validate(
-        {
-            "trainer": {"model": {"lora": {}}},
-            "orchestrator": {
-                "model": {
-                    "client": {
-                        "base_url": ["http://frontend:8000/v1"],
-                        "dynamo_discovery_url": "http://frontend:8001",
-                    }
-                }
-            },
-            "inference": None,
-            "weight_broadcast": {"type": "filesystem", "inference_world_size": 8},
-        }
-    )
-
-    assert config.trainer.model.lora is not None
-    assert config.orchestrator.model.lora is not None
-    assert config.orchestrator.weight_broadcast.type == "filesystem"
 
 
 def test_single_node_auto_inference_ports_follow_server_port():

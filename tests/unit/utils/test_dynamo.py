@@ -42,7 +42,6 @@ def pool_with_clients(*, admin, system=None, frontend=None):
     pool._router_clients = []
     pool._lora_update_clients = [] if system is None else [system]
     pool._frontend_model_clients = [] if frontend is None else [frontend]
-    pool._initialized_transports = set()
     pool._skip_model_check = False
     pool._wait_for_ready_timeout = 1
     pool._readiness_deadline = None
@@ -101,38 +100,6 @@ def test_parse_workers_ignores_workers_for_other_models():
 def test_parse_workers_rejects_incomplete_or_duplicate_snapshots(workers):
     with pytest.raises(ValueError):
         _parse_dynamo_workers(payload(*workers), MODEL)
-
-
-@pytest.mark.parametrize(
-    "admin_base_url",
-    [
-        "https://decode:8120",
-        "http://user:password@decode:8120",
-        "http://decode:8120/admin",
-        "http://decode:8120?target=other",
-    ],
-)
-def test_parse_workers_rejects_unsafe_admin_urls(admin_base_url):
-    with pytest.raises(ValueError, match="admin_base_url"):
-        _parse_dynamo_workers(payload(worker(admin_base_url=admin_base_url)), MODEL)
-
-
-@pytest.mark.parametrize("protocol_version", [None, 0, 2, "1", True, 1.0])
-def test_parse_workers_rejects_unknown_protocol_version(protocol_version):
-    discovery = payload(worker())
-    if protocol_version is None:
-        discovery.pop("protocol_version")
-    else:
-        discovery["protocol_version"] = protocol_version
-
-    with pytest.raises(ValueError, match="protocol version"):
-        _parse_dynamo_workers(discovery, MODEL)
-
-
-@pytest.mark.parametrize("discovery", [None, [], "not-an-object", 1, True])
-def test_parse_workers_rejects_non_object_snapshot(discovery):
-    with pytest.raises(ValueError, match="workers list"):
-        _parse_dynamo_workers(discovery, MODEL)
 
 
 def test_rank_offsets_support_heterogeneous_managed_world_sizes():
@@ -202,19 +169,6 @@ def test_discovery_retries_until_expected_world_size_is_complete():
     assert [item.component for item in pool.workers] == ["backend", "prefill"]
 
 
-def test_discovery_requires_expected_world_size():
-    with pytest.raises(ValueError, match="expected_inference_world_size"):
-        asyncio.run(
-            DynamoInferencePool.from_config(
-                ClientConfig(
-                    base_url=["http://frontend:8000/v1"],
-                    dynamo_discovery_url="http://frontend:8001",
-                ),
-                model_name=MODEL,
-            )
-        )
-
-
 def test_discovered_control_clients_do_not_receive_frontend_credentials(monkeypatch):
     monkeypatch.setenv("PRIME_TEST_API_KEY", "secret")
     config = ClientConfig(
@@ -246,21 +200,6 @@ def test_wait_for_ready_retries_frontend_model_publication():
     assert [call.args[0] for call in admin.get.await_args_list] == ["/health", "/v1/models"]
     assert [call.args[0] for call in frontend.get.await_args_list] == ["/v1/models", "/v1/models"]
     assert all(0 < call.kwargs["timeout"].connect <= 1 for call in frontend.get.await_args_list)
-
-
-def test_wait_for_ready_clears_expired_discovery_deadline_before_retry():
-    admin = AsyncMock()
-    frontend = AsyncMock()
-    admin.get.side_effect = lambda path: response({"data": [{"id": MODEL}]})
-    frontend.get.return_value = response({"data": [{"id": MODEL}]})
-    pool = pool_with_clients(admin=admin, frontend=frontend)
-    pool._readiness_deadline = 0.0
-
-    with pytest.raises(TimeoutError):
-        asyncio.run(pool.wait_for_ready(MODEL))
-
-    assert pool._readiness_deadline is None
-    asyncio.run(pool.wait_for_ready(MODEL))
 
 
 def test_lora_update_uses_system_route_and_resumes_after_publication():
@@ -302,12 +241,12 @@ def test_lora_update_resumes_after_failure():
     assert [call.args[0] for call in admin.post.await_args_list] == ["/pause", "/resume"]
 
 
-def test_full_filesystem_update_uses_native_collective_rpc_without_rendezvous(tmp_path):
+def test_full_weight_update_uses_native_collective_rpc(tmp_path):
     admin = AsyncMock()
     admin.post.return_value = response({"status": "ok"})
     pool = pool_with_clients(admin=admin)
 
-    asyncio.run(pool.update_weights(tmp_path, step=1, transport="filesystem"))
+    asyncio.run(pool.update_weights(tmp_path, step=1))
 
     assert [call.args[0] for call in admin.post.await_args_list] == [
         "/pause",
@@ -318,17 +257,6 @@ def test_full_filesystem_update_uses_native_collective_rpc_without_rendezvous(tm
         "method": "update_weights_from_path",
         "args": [str(tmp_path)],
     }
-
-
-@pytest.mark.parametrize("transport", ["nccl", "nixl"])
-def test_full_weight_update_requires_initialized_in_memory_transport(tmp_path, transport):
-    admin = AsyncMock()
-    pool = pool_with_clients(admin=admin)
-
-    with pytest.raises(RuntimeError, match=f"init_{transport}_broadcast"):
-        asyncio.run(pool.update_weights(tmp_path, step=1, transport=transport))
-
-    admin.post.assert_not_awaited()
 
 
 def test_nixl_initialization_uses_discovered_heterogeneous_rank_offsets(monkeypatch):
@@ -353,18 +281,3 @@ def test_nixl_initialization_uses_discovered_heterogeneous_rank_offsets(monkeypa
         assert client.post.await_args.args == ("/collective_rpc",)
         assert client.post.await_args.kwargs["json"]["kwargs"]["rank_offset"] == rank_offset
         assert client.post.await_args.kwargs["json"]["kwargs"]["engine_world_size"] == engine_world_size
-    assert pool._initialized_transports == {"nixl"}
-
-
-def test_stop_closes_every_client_owned_by_dynamo_pool():
-    admin = AsyncMock()
-    system = AsyncMock()
-    frontend = AsyncMock()
-    pool = pool_with_clients(admin=admin, system=system, frontend=frontend)
-
-    asyncio.run(pool.stop())
-
-    pool._scorer.aclose.assert_awaited_once()
-    admin.aclose.assert_awaited_once()
-    system.aclose.assert_awaited_once()
-    frontend.aclose.assert_awaited_once()

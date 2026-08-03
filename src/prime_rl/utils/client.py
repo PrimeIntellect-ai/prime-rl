@@ -5,7 +5,7 @@ import os
 from collections.abc import Mapping
 from itertools import cycle
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 import httpx
 import verifiers.v1 as vf
@@ -97,9 +97,7 @@ class InferencePool(Protocol):
         """Initialize the inference workers' NIXL receivers."""
         ...
 
-    async def update_weights(
-        self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0, transport: str = "filesystem"
-    ) -> None:
+    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         """Update weights on all inference servers."""
         ...
 
@@ -230,17 +228,13 @@ class StaticInferencePool:
             quantize_in_weight_transfer=quantize_in_weight_transfer,
         )
 
-    async def update_weights(
-        self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0, transport: str = "filesystem"
-    ) -> None:
+    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
 
     async def init_nixl_broadcast(
         self, *, host: str, port: int, timeout: int, inference_world_size: int, session_id: str
     ) -> None:
-        await init_nixl_broadcast(
-            self._admin_clients, host, port, timeout, inference_world_size, session_id
-        )
+        await init_nixl_broadcast(self._admin_clients, host, port, timeout, inference_world_size, session_id)
 
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this pool's model (one logprob per
@@ -283,7 +277,7 @@ async def setup_inference_pool(
             eval_client_type=eval_client_type,
             renderer_config=renderer_config,
             pool_size=pool_size,
-            expected_inference_world_size=expected_inference_world_size,
+            expected_inference_world_size=cast(int, expected_inference_world_size),
         )
 
     return StaticInferencePool(
@@ -579,11 +573,10 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     )
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
-        timeout = httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0)
         response = await admin_client.post(
             "/load_lora_adapter",
             json={"lora_name": lora_name, "lora_path": lora_path_posix},
-            timeout=timeout,
+            timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
         )
         response.raise_for_status()
 
@@ -621,6 +614,7 @@ async def init_nccl_broadcast(
     gets a unique rank in the NCCL broadcast group.
     """
     logger = get_logger()
+    has_explicit_engine_world_sizes = engine_world_sizes is not None
 
     if inference_world_size is None:
         if engine_world_sizes is not None:
@@ -655,10 +649,11 @@ async def init_nccl_broadcast(
             "port": port,
             "rank_offset": rank_offset,
             "inference_world_size": inference_world_size,
-            "engine_world_size": engine_world_size,
             "timeout": timeout,
             "quantize_in_weight_transfer": quantize_in_weight_transfer,
         }
+        if has_explicit_engine_world_sizes:
+            init_kwargs["engine_world_size"] = engine_world_size
         if use_native_collective_rpc:
             response = await admin_client.post(
                 "/collective_rpc",
@@ -696,6 +691,7 @@ async def init_nixl_broadcast(
     use_native_collective_rpc: bool = False,
 ) -> None:
     """Configure every vLLM worker for NIXL + ModelExpress pulls."""
+    has_explicit_engine_world_sizes = engine_world_sizes is not None
     if engine_world_sizes is None:
         if inference_world_size % len(admin_clients) != 0:
             raise ValueError("inference_world_size must be divisible by the number of admin clients")
@@ -706,19 +702,18 @@ async def init_nixl_broadcast(
 
     async def initialize(admin_client: AsyncClient, rank_offset: int, engine_world_size: int) -> None:
         kwargs = {
-                "host": host,
-                "port": port,
-                "rank_offset": rank_offset,
-                "inference_world_size": inference_world_size,
-                "timeout": timeout,
-                "quantize_in_weight_transfer": False,
-                "session_id": session_id,
-                "engine_world_size": engine_world_size,
-            }
+            "host": host,
+            "port": port,
+            "rank_offset": rank_offset,
+            "inference_world_size": inference_world_size,
+            "timeout": timeout,
+            "quantize_in_weight_transfer": False,
+            "session_id": session_id,
+        }
+        if has_explicit_engine_world_sizes:
+            kwargs["engine_world_size"] = engine_world_size
         if use_native_collective_rpc:
-            response = await admin_client.post(
-                "/collective_rpc", json={"method": "init_broadcaster", "kwargs": kwargs}
-            )
+            response = await admin_client.post("/collective_rpc", json={"method": "init_broadcaster", "kwargs": kwargs})
             response.raise_for_status()
         else:
             await _admin_post(admin_client, "/init_broadcaster", timeout_s=max(ADMIN_TIMEOUT_S, timeout), json=kwargs)
@@ -751,7 +746,7 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
     + ``prompt_logprobs`` (the prime-rl server-side extension in
     ``inference/vllm/serving_tokens.py``). Returns one logprob per token (0.0 for
     the leading token, which has no preceding context)."""
-    from prime_rl.inference.vllm.compat import GenerateResponse
+    from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse
 
     # `/inference/v1/generate` is mounted at server root, not under `/v1`: pass an
     # absolute URL so the SDK skips the base-url merge. vLLM's `GenerateResponse`

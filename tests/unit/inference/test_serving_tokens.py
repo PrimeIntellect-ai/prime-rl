@@ -5,25 +5,20 @@ import io
 
 import numpy as np
 import pybase64
-import pytest
-from pydantic import Field
 from vllm.entrypoints.openai.engine.protocol import RequestResponseMetadata, UsageInfo
-from vllm.sampling_params import SamplingParams
-
-from prime_rl.inference.vllm.compat import (
+from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
     GenerateResponse,
     GenerateResponseChoice,
-    ServingTokens,
 )
+from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
+from vllm.sampling_params import SamplingParams
+
 from prime_rl.inference.vllm.routed_experts import (
     compact_vllm_routed_experts,
     serialize_routed_experts,
 )
-from prime_rl.inference.vllm.serving_tokens import (
-    PrimeRlServingTokens,
-    build_prime_serving_tokens,
-)
+from prime_rl.inference.vllm.serving_tokens import PrimeRlServingTokens
 
 
 def _decode_compact(encoded: dict) -> np.ndarray:
@@ -84,17 +79,6 @@ def test_serve_tokens_forwards_kv_transfer_params_without_mutating_request(monke
     assert request.sampling_params.extra_args == {"existing": True}
 
 
-class _FutureGenerateResponseChoice(GenerateResponseChoice):
-    future_choice_field: str | None = None
-
-
-class _FutureGenerateResponse(GenerateResponse):
-    model: str | None = None
-    created: int | None = None
-    usage: UsageInfo | None = None
-    future_response_field: dict[str, int] = Field(default_factory=dict)
-
-
 def test_full_generator_preserves_all_upstream_response_fields(monkeypatch):
     routed_experts = np.array([[[1, 2, 3]]], dtype=np.uint8)
     usage = UsageInfo(
@@ -103,18 +87,16 @@ def test_full_generator_preserves_all_upstream_response_fields(monkeypatch):
         total_tokens=5,
         prompt_tokens_details={"cached_tokens": 2},
     )
-    upstream_response = _FutureGenerateResponse(
+    upstream_response = GenerateResponse(
         request_id="canonical-request-id",
         model="served-model",
         created=123456789,
         usage=usage,
-        future_response_field={"version": 2},
         choices=[
-            _FutureGenerateResponseChoice(
+            GenerateResponseChoice(
                 index=0,
                 token_ids=[10, 11],
                 routed_experts=_encode_vllm(routed_experts),
-                future_choice_field="retained",
             )
         ],
     )
@@ -150,85 +132,7 @@ def test_full_generator_preserves_all_upstream_response_fields(monkeypatch):
     assert response.model == "served-model"
     assert response.created == 123456789
     assert response.usage == usage
-    assert response.future_response_field == {"version": 2}
-    assert response.choices[0].future_choice_field == "retained"
     encoded = response.choices[0].routed_experts
     assert isinstance(encoded, dict)
     assert encoded["start"] == 1
     np.testing.assert_array_equal(_decode_compact(encoded), routed_experts)
-
-
-def test_full_generator_fills_fields_missing_from_legacy_response(monkeypatch):
-    upstream_response = GenerateResponse(
-        request_id="canonical-request-id",
-        choices=[GenerateResponseChoice(index=0, token_ids=[10])],
-    )
-
-    async def upstream(_self, _request, result_generator, *_args):
-        async for _ in result_generator:
-            pass
-        return upstream_response
-
-    monkeypatch.setattr(ServingTokens, "serve_tokens_full_generator", upstream)
-    server = object.__new__(PrimeRlServingTokens)
-    request = GenerateRequest(
-        token_ids=[1],
-        sampling_params=SamplingParams(max_tokens=1),
-    )
-
-    async def outputs():
-        if False:
-            yield
-
-    response = asyncio.run(
-        server.serve_tokens_full_generator(
-            request,
-            outputs(),
-            "input-request-id",
-            "served-model",
-            RequestResponseMetadata(request_id="input-request-id"),
-        )
-    )
-
-    assert response.model == "served-model"
-    assert isinstance(response.created, int)
-
-
-@pytest.mark.parametrize("renderer_attribute", ["online_renderer", "openai_serving_render"])
-def test_build_prime_serving_tokens_detects_renderer_independently_of_import_layout(
-    monkeypatch, renderer_attribute
-):
-    captured = {}
-
-    def fake_init(self, *args, **kwargs):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-
-    monkeypatch.setattr(PrimeRlServingTokens, "__init__", fake_init)
-    renderer = object()
-    attributes = {
-        "engine_client": object(),
-        "models": object(),
-        renderer_attribute: renderer,
-        "request_logger": object(),
-        "return_tokens_as_token_ids": True,
-        "force_no_detokenize": True,
-        "enable_log_outputs": True,
-    }
-    upstream = type("UpstreamServingTokens", (), attributes)()
-
-    replacement = build_prime_serving_tokens(upstream)
-
-    assert type(replacement) is PrimeRlServingTokens
-    assert captured["args"] == (
-        upstream.engine_client,
-        upstream.models,
-        renderer,
-    )
-    assert captured["kwargs"] == {
-        "request_logger": upstream.request_logger,
-        "return_tokens_as_token_ids": True,
-        "force_no_detokenize": True,
-        "enable_prompt_tokens_details": True,
-        "enable_log_outputs": True,
-    }

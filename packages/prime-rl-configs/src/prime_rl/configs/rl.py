@@ -132,9 +132,6 @@ class SharedInMemoryWeightBroadcastConfig(BaseConfig):
 class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     type: Literal["nccl"] = "nccl"
 
-    host: str = "localhost"
-    """Host advertised to inference workers for NCCL rendezvous."""
-
     port: int = 29501
     """Port for NCCL weight broadcast."""
 
@@ -335,27 +332,6 @@ class RLConfig(BaseConfig):
                 )
         return self
 
-    def _check_enough_devices_for_nccl(self) -> None:
-        if self.deployment.type != "single_node" or self.trainer.weight_broadcast.type != "nccl":
-            return
-
-        local_inference_gpus = self.deployment.num_infer_gpus if self.inference is not None else 0
-        local_world_size = self.deployment.num_train_gpus + local_inference_gpus
-        has_external_inference = (
-            self.inference is None
-            and self.weight_broadcast is not None
-            and self.weight_broadcast.inference_world_size is not None
-        )
-        if local_world_size < 2 and not has_external_inference:
-            raise ValueError(
-                "NCCL weight broadcast requires at least 2 local GPUs or an explicit external inference_world_size."
-            )
-
-    @model_validator(mode="after")
-    def validate_requested_enough_devices_for_nccl(self):
-        self._check_enough_devices_for_nccl()
-        return self
-
     @model_validator(mode="after")
     def validate_quantize_in_weight_transfer(self):
         if not isinstance(self.weight_broadcast, SharedNCCLWeightBroadcastConfig):
@@ -410,12 +386,6 @@ class RLConfig(BaseConfig):
                 self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
-        if (
-            self.inference is None
-            and self.orchestrator.model.client.is_dynamo
-            and self.weight_broadcast.inference_world_size is None
-        ):
-            raise ValueError("Dynamo inference requires weight_broadcast.inference_world_size")
         if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
                 "LoRA training is not yet supported with in-memory weight broadcast. "
@@ -481,8 +451,20 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_resolved_enough_devices_for_nccl(self):
-        self._check_enough_devices_for_nccl()
+    def validate_enough_devices_for_nccl(self):
+        if self.deployment.type != "single_node" or self.trainer.weight_broadcast.type != "nccl":
+            return self
+        if (
+            self.inference is None
+            and self.weight_broadcast is not None
+            and self.weight_broadcast.inference_world_size is not None
+        ):
+            return self
+        local_inference_gpus = self.deployment.num_infer_gpus if self.inference is not None else 0
+        if self.deployment.num_train_gpus + local_inference_gpus < 2:
+            raise ValueError(
+                "NCCL weight broadcast requires at least 2 local GPUs or an explicit external inference_world_size."
+            )
         return self
 
     @model_validator(mode="after")

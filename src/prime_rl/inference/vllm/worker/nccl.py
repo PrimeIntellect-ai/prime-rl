@@ -7,7 +7,7 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.ranks import global_inference_rank
+from prime_rl.inference.vllm.ranks import global_inference_rank
 from prime_rl.inference.vllm.worker.weight_transfer import (
     load_weights_checkpoint_layerwise,
     load_weights_kernel,
@@ -120,28 +120,26 @@ class NCCLWeightUpdateWorker(Worker):
         """
         del session_id
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
-        parallel_config = self.parallel_config
-        data_parallel_index = parallel_config.data_parallel_index
-        global_rank_inference = global_inference_rank(
-            rank_offset=rank_offset,
-            data_parallel_index=data_parallel_index,
-            data_parallel_size=parallel_config.data_parallel_size,
-            worker_rank=self.rank,
-            tensor_parallel_size=parallel_config.tensor_parallel_size,
-            pipeline_parallel_size=parallel_config.pipeline_parallel_size,
-            prefill_context_parallel_size=getattr(parallel_config, "prefill_context_parallel_size", 1),
-            inference_world_size=inference_world_size,
-            engine_world_size=engine_world_size,
-        )
+        if engine_world_size is None:
+            global_rank_inference = rank_offset + self.device.index
+        else:
+            parallel_config = self.parallel_config
+            global_rank_inference = global_inference_rank(
+                rank_offset=rank_offset,
+                data_parallel_index=parallel_config.data_parallel_index,
+                data_parallel_size=parallel_config.data_parallel_size,
+                worker_rank=self.rank,
+                tensor_parallel_size=parallel_config.tensor_parallel_size,
+                pipeline_parallel_size=parallel_config.pipeline_parallel_size,
+                prefill_context_parallel_size=parallel_config.prefill_context_parallel_size,
+                inference_world_size=inference_world_size,
+                engine_world_size=engine_world_size,
+            )
 
         logger.info(
-            f"Worker [worker_rank={self.rank} data_parallel_index={data_parallel_index} "
-            f"rank_offset={rank_offset}] "
+            f"Worker [worker_rank={self.rank} rank_offset={rank_offset}] "
             f"-> [global_rank={global_rank_inference} inference_world_size={inference_world_size}]"
         )
-        self._prime_rl_global_inference_rank = global_rank_inference
-        self._prime_rl_inference_world_size = inference_world_size
-
         self.nccl_broadcast_receiver = NCCLWeightBroadcastReceiver(
             host=host,
             port=port,
@@ -157,8 +155,6 @@ class NCCLWeightUpdateWorker(Worker):
 
     def update_weights_from_path(self, weight_dir: str) -> None:
         """Update weights with the nccl communicator."""
-        global_inference_rank = self._prime_rl_global_inference_rank
-        inference_world_size = self._prime_rl_inference_world_size
         model_runner = self.model_runner
         if hasattr(model_runner.model, "runnable"):
             model = model_runner.model.runnable
@@ -166,36 +162,14 @@ class NCCLWeightUpdateWorker(Worker):
             model = model_runner.model
         assert isinstance(model, Module)
 
-        received_tensors = 0
-
-        def track_received_tensors(
-            state_iter: Generator[tuple[str, torch.Tensor], None, None],
-        ) -> Generator[tuple[str, torch.Tensor], None, None]:
-            nonlocal received_tensors
-            for item in state_iter:
-                received_tensors += 1
-                yield item
-
         if self.quantize_in_weight_transfer:
-            state_iter = track_received_tensors(self.nccl_broadcast_receiver.receive_state_dict())
-            load_weights_kernel(model, state_iter)
+            load_weights_kernel(model, self.nccl_broadcast_receiver.receive_state_dict())
+            update_mla_absorbed_weights(model)
         else:
             for state_iter in self.nccl_broadcast_receiver.receive_state_dicts():
                 load_weights_checkpoint_layerwise(
                     model,
-                    track_received_tensors(state_iter),
+                    state_iter,
                     self.model_runner.model_config,
                     self.vllm_config,
                 )
-
-        if received_tensors == 0:
-            raise RuntimeError("NCCL weight update received no weight tensors")
-        if self.quantize_in_weight_transfer:
-            update_mla_absorbed_weights(model)
-
-        logger.info(
-            "Completed NCCL weight update "
-            f"[global_rank={global_inference_rank} "
-            f"inference_world_size={inference_world_size} "
-            f"weight_dir={weight_dir}]"
-        )

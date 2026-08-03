@@ -581,6 +581,17 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_dynamo_world_size(self):
+        if not self.model.client.is_dynamo:
+            return self
+        if (
+            self.weight_broadcast.inference_world_size is None
+            or "inference_world_size" not in self.weight_broadcast.model_fields_set
+        ):
+            raise ValueError("Dynamo inference requires an explicit weight_broadcast.inference_world_size")
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_prime_monitor_run_name(self):
         """Default ``prime_monitor.run_name`` to the W&B run name when monitoring
         is enabled and the user hasn't named the prime-monitor run explicitly."""

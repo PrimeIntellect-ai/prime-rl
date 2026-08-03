@@ -139,7 +139,7 @@ def test_init_nccl_broadcast_skips_missing_wrapper_without_native_probe():
 
     client.post.assert_awaited_once()
     assert client.post.await_args.args == ("/init_broadcaster",)
-    assert client.post.await_args.kwargs["json"]["engine_world_size"] == 1
+    assert "engine_world_size" not in client.post.await_args.kwargs["json"]
 
 
 def test_setup_clients_creates_one_renderer_client_per_url():

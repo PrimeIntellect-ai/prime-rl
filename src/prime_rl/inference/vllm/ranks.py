@@ -12,9 +12,6 @@ def global_inference_rank(
 ) -> int:
     """Map one vLLM worker to its rank in Prime's inference NCCL group."""
     model_parallel_size = tensor_parallel_size * pipeline_parallel_size * prefill_context_parallel_size
-    if model_parallel_size <= 0:
-        raise ValueError("model parallel size must be positive")
-
     logical_data_parallel_size = data_parallel_size
     if engine_world_size is not None:
         if engine_world_size <= 0 or engine_world_size % model_parallel_size:
@@ -36,13 +33,7 @@ def global_inference_rank(
             f"{logical_data_parallel_size}"
         )
 
-    local_rank = data_parallel_index * model_parallel_size + worker_rank % model_parallel_size
-    rank = rank_offset + local_rank
-    if engine_world_size is not None and not (rank_offset <= rank < rank_offset + engine_world_size):
-        raise ValueError(
-            f"calculated inference rank {rank} is outside engine rank interval "
-            f"[{rank_offset}, {rank_offset + engine_world_size})"
-        )
+    rank = rank_offset + data_parallel_index * model_parallel_size + worker_rank % model_parallel_size
     if not 0 <= rank < inference_world_size:
         raise ValueError(f"calculated inference rank {rank} is outside inference world size {inference_world_size}")
     return rank

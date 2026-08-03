@@ -2,64 +2,28 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
 from fastapi import Request
-from pydantic import ConfigDict
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata, UsageInfo
-from vllm.outputs import RequestOutput
-
-from prime_rl.inference.vllm.compat import (
+from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
+from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
     GenerateResponse,
     GenerateResponseChoice,
-    ServingTokens,
-    serving_renderer,
 )
+from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
+from vllm.outputs import RequestOutput
+
 from prime_rl.inference.vllm.routed_experts import compact_vllm_routed_experts
 
 
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
-    model_config = ConfigDict(extra="allow")
-
     routed_experts: dict[str, Any] | None = None
 
 
 class PrimeRlGenerateResponse(GenerateResponse):
-    model_config = ConfigDict(extra="allow")
-
-    model: str | None = None
-    created: int | None = None
     choices: list[PrimeRlGenerateResponseChoice]
-    usage: UsageInfo | None = None
-
-
-def _prime_response(
-    response: GenerateResponse,
-    *,
-    usage: UsageInfo | None,
-    model_name: str,
-    routed_experts_start: int,
-) -> PrimeRlGenerateResponse:
-    """Replace only routed-expert choices while retaining all response fields."""
-    payload = response.model_dump(exclude={"choices"})
-    payload.setdefault("model", model_name)
-    payload.setdefault("created", int(time.time()))
-    if payload.get("usage") is None:
-        payload["usage"] = usage
-    payload["choices"] = [
-        {
-            **choice.model_dump(exclude={"routed_experts"}),
-            "routed_experts": compact_vllm_routed_experts(
-                choice.routed_experts,
-                start=routed_experts_start,
-            ),
-        }
-        for choice in response.choices
-    ]
-    return PrimeRlGenerateResponse.model_validate(payload)
 
 
 class PrimeRlServingTokens(ServingTokens):
@@ -94,25 +58,18 @@ class PrimeRlServingTokens(ServingTokens):
             model_name,
             request_metadata,
         )
-        if not isinstance(response, GenerateResponse):
+        if not isinstance(response, GenerateResponse) or not any(
+            choice.routed_experts is not None for choice in response.choices
+        ):
             return response
-        return _prime_response(
-            response,
-            usage=request_metadata.final_usage_info,
-            model_name=model_name,
-            routed_experts_start=request.sampling_params.routed_experts_prompt_start or 0,
+        start = request.sampling_params.routed_experts_prompt_start or 0
+        return PrimeRlGenerateResponse(
+            **response.model_dump(exclude={"choices"}),
+            choices=[
+                PrimeRlGenerateResponseChoice(
+                    **choice.model_dump(exclude={"routed_experts"}),
+                    routed_experts=compact_vllm_routed_experts(choice.routed_experts, start=start),
+                )
+                for choice in response.choices
+            ],
         )
-
-
-def build_prime_serving_tokens(upstream: ServingTokens) -> PrimeRlServingTokens:
-    """Construct the Prime subclass through vLLM's public initializer."""
-    return PrimeRlServingTokens(
-        upstream.engine_client,
-        upstream.models,
-        serving_renderer(upstream),
-        request_logger=upstream.request_logger,
-        return_tokens_as_token_ids=upstream.return_tokens_as_token_ids,
-        force_no_detokenize=upstream.force_no_detokenize,
-        enable_prompt_tokens_details=True,
-        enable_log_outputs=upstream.enable_log_outputs,
-    )
