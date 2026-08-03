@@ -467,12 +467,6 @@ class OrchestratorConfig(BaseConfig):
     ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
     client; SFT uses it to backfill tokens for its chat-completions teacher."""
 
-    multiplex: int | None = Field(None, ge=1)
-    """Concurrent rollouts that share one renderer. The pool warms one and grows on
-    demand, so this bounds tokenizer count at ~concurrency/multiplex rather than
-    fixing it. Lower it for long multi-turn prompts where client-side jinja
-    tokenization serializes; None keeps the client default."""
-
     optim: OptimizerConfig = OptimizerConfig()
     """Per-run optimizer configuration for multi-run training."""
 
@@ -619,22 +613,6 @@ class OrchestratorConfig(BaseConfig):
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
         return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.source)
-
-    @model_validator(mode="after")
-    def validate_multiplex(self):
-        """``multiplex`` sizes the renderer-client pool for policy-sourced
-        sampling. Reject it when that path never runs — no train env samples
-        from the policy — so callers don't silently pass it and wonder why
-        it's ignored."""
-        if self.multiplex is None:
-            return self
-        if not self.any_policy_sourced:
-            raise ValueError(
-                f"orchestrator.multiplex={self.multiplex!r} is set but no train env samples "
-                "from the policy — the renderer-client sampling pool never runs (the renderer "
-                "is still used for client-side tokenization). Remove multiplex."
-            )
-        return self
 
     @model_validator(mode="after")
     def validate_renderer_auto_resolves(self):
