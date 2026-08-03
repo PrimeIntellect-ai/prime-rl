@@ -18,6 +18,7 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
             ),
             renderer=renderer_settings,
             any_policy_sourced=True,
+            weight_broadcast=SimpleNamespace(type="filesystem", inference_world_size=None),
         )
         renderer = object()
         inference_pool = object()
@@ -43,6 +44,7 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
             renderer_config=renderer_settings,
+            expected_inference_world_size=None,
         )
 
     asyncio.run(run())
@@ -64,6 +66,7 @@ def test_setup_policy_inference_pool_keeps_renderer_without_policy_sampling():
             ),
             renderer=renderer_settings,
             any_policy_sourced=False,
+            weight_broadcast=SimpleNamespace(inference_world_size=8),
         )
         renderer = object()
         inference_pool = object()
@@ -89,6 +92,7 @@ def test_setup_policy_inference_pool_keeps_renderer_without_policy_sampling():
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
             renderer_config=renderer_settings,
+            expected_inference_world_size=8,
         )
 
     asyncio.run(run())
