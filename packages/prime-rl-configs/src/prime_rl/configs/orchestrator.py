@@ -403,6 +403,9 @@ FilterConfig: TypeAlias = Annotated[
 class FileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    inference_world_size: int | None = Field(None, ge=1)
+    """Expected inference ranks for Dynamo discovery completeness; unused by filesystem transfer itself."""
+
 
 class InMemoryWeightBroadcastConfig(BaseConfig):
     host: str = "localhost"
@@ -570,6 +573,17 @@ class OrchestratorConfig(BaseConfig):
     def auto_setup_session_headers(self):
         """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
         self.model.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
+        return self
+
+    @model_validator(mode="after")
+    def validate_dynamo_world_size(self):
+        if not self.model.client.is_dynamo:
+            return self
+        if (
+            self.weight_broadcast.inference_world_size is None
+            or "inference_world_size" not in self.weight_broadcast.model_fields_set
+        ):
+            raise ValueError("Dynamo inference requires an explicit weight_broadcast.inference_world_size")
         return self
 
     @model_validator(mode="after")
