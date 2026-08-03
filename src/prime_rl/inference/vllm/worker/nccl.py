@@ -8,7 +8,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import (
-    load_weights_checkpoint_layerwise,
+    load_weight_groups_checkpoint_layerwise,
     load_weights_kernel,
     update_mla_absorbed_weights,
 )
@@ -155,10 +155,9 @@ class NCCLWeightUpdateWorker(Worker):
             load_weights_kernel(model, self.nccl_broadcast_receiver.receive_state_dict())
             update_mla_absorbed_weights(model)
         else:
-            for state_iter in self.nccl_broadcast_receiver.receive_state_dicts():
-                load_weights_checkpoint_layerwise(
-                    model,
-                    state_iter,
-                    self.model_runner.model_config,
-                    self.vllm_config,
-                )
+            load_weight_groups_checkpoint_layerwise(
+                model,
+                self.nccl_broadcast_receiver.receive_state_dicts(),
+                self.model_runner.model_config,
+                self.vllm_config,
+            )
