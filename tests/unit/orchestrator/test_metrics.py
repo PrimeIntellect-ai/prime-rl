@@ -30,9 +30,9 @@ def mk(
     is_filtered: bool = False,
     filter_results: dict | None = None,
     setup: float = 0.0,
-    generation: float = 0.0,
-    generation_model: float = 0.0,
-    generation_harness: float = 0.0,
+    agent: float = 0.0,
+    agent_model: float = 0.0,
+    agent_harness: float = 0.0,
     finalize: float = 0.0,
     scoring: float = 0.0,
 ):
@@ -59,10 +59,10 @@ def mk(
         filter_results=filter_results or {},
         timing=SimpleNamespace(
             setup=SimpleNamespace(duration=setup),
-            generation=SimpleNamespace(
-                duration=generation,
-                model=SimpleNamespace(duration=generation_model),
-                harness=SimpleNamespace(duration=generation_harness),
+            agent=SimpleNamespace(
+                duration=agent,
+                model=SimpleNamespace(duration=agent_model),
+                harness=SimpleNamespace(duration=agent_harness),
             ),
             finalize=SimpleNamespace(duration=finalize),
             scoring=SimpleNamespace(duration=scoring),
@@ -144,26 +144,36 @@ def test_nested_metrics_and_rewards():
     rollouts = [
         mk(metrics={"acc": 1.0}, rewards={"correct": vf.Reward(score=1.0), "format": vf.Reward(score=0.0)}),
         mk(metrics={"acc": 3.0, "fmt": 5.0}, rewards={"correct": vf.Reward(score=0.0), "format": vf.Reward(score=1.0)}),
+        # scoring failed after seeding: unscored (None) entries count as 0.0 on `all`
+        mk(has_error=True, metrics={"acc": None}, rewards={"correct": None, "format": None}),
     ]
-    m = TrainRollouts(rollouts).metrics
-    assert m.metrics["acc"].mean() == 2.0 and m.rewards["correct"].mean() == 0.5  # nested group access
+    rc = TrainRollouts(rollouts)
+    m = rc.metrics
+    assert m.metrics["acc"].mean() == pytest.approx(4 / 3) and m.rewards["correct"].mean() == pytest.approx(1 / 3)
     out = m.to_wandb(prefix="train/agg", subset="all")
-    assert out["train/agg/all/metrics/acc/mean"] == 2.0  # averaged over reporters
+    assert out["train/agg/all/metrics/acc/mean"] == pytest.approx(4 / 3)
     assert out["train/agg/all/metrics/fmt/mean"] == 5.0  # single reporter
-    assert out["train/agg/all/rewards/format/mean"] == 0.5
+    assert out["train/agg/all/rewards/format/mean"] == pytest.approx(1 / 3)
+    # effective drops the errored rollout, so its seeds don't dilute the effective means
+    eff = rc.effective.metrics.to_wandb(prefix="train/agg", subset="effective")
+    assert eff["train/agg/effective/metrics/acc/mean"] == 2.0
+    assert eff["train/agg/effective/rewards/format/mean"] == 0.5
+    # cross-env agg: another env's unscored trace carries different keys, so it can't dilute these
+    other = mk(env_name="other", has_error=True, rewards={"solved": None})
+    agg = TrainRollouts(rollouts + [other]).metrics.to_wandb(prefix="train/agg", subset="all")
+    assert agg["train/agg/all/rewards/format/mean"] == pytest.approx(1 / 3)
+    assert agg["train/agg/all/rewards/solved/mean"] == 0.0
 
 
 def test_nested_timing():
-    m = TrainRollouts(
-        [mk(setup=1.0, generation=2.0, generation_model=1.5, generation_harness=0.5, finalize=0.5, scoring=0.5)]
-    ).metrics
+    m = TrainRollouts([mk(setup=1.0, agent=2.0, agent_model=1.5, agent_harness=0.5, finalize=0.5, scoring=0.5)]).metrics
     assert m.timing.setup.mean() == 1.0 and m.timing.total.mean() == 4.0  # total sums all four phases
-    assert m.timing.generation_model.mean() == 1.5 and m.timing.generation_harness.mean() == 0.5
+    assert m.timing.agent_model.mean() == 1.5 and m.timing.agent_harness.mean() == 0.5
     out = m.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/timing/setup/mean"] == 1.0
     assert out["train/agg/all/timing/total/mean"] == 4.0
-    assert out["train/agg/all/timing/generation/model/mean"] == 1.5
-    assert out["train/agg/all/timing/generation/harness/mean"] == 0.5
+    assert out["train/agg/all/timing/agent/model/mean"] == 1.5
+    assert out["train/agg/all/timing/agent/harness/mean"] == 0.5
 
 
 def test_train_only_metrics_absent_from_eval():

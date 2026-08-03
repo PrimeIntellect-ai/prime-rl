@@ -90,26 +90,26 @@ class TimingMetrics(StatGroup):
     """Per-phase rollout durations, nested so ``metrics.timing.setup.mean()`` reads naturally.
     ``total`` is the per-rollout sum across all phases."""
 
-    PHASES = ("setup", "generation", "finalize", "scoring")
+    PHASES = ("setup", "agent", "finalize", "scoring")
 
     @property
     def setup(self) -> Stat:
         return Stat([r.timing.setup.duration for r in self.rollouts])
 
     @property
-    def generation(self) -> Stat:
-        return Stat([r.timing.generation.duration for r in self.rollouts])
+    def agent(self) -> Stat:
+        return Stat([r.timing.agent.duration for r in self.rollouts])
 
     @property
-    def generation_model(self) -> Stat:
-        """The share of the generation phase spent inside model calls (inference)."""
-        return Stat([r.timing.generation.model.duration for r in self.rollouts])
+    def agent_model(self) -> Stat:
+        """The share of the agent phase spent inside model calls (inference)."""
+        return Stat([r.timing.agent.model.duration for r in self.rollouts])
 
     @property
-    def generation_harness(self) -> Stat:
-        """The share of the generation phase spent outside model calls (harness, tools,
+    def agent_harness(self) -> Stat:
+        """The share of the agent phase spent outside model calls (harness, tools,
         user simulation)."""
-        return Stat([r.timing.generation.harness.duration for r in self.rollouts])
+        return Stat([r.timing.agent.harness.duration for r in self.rollouts])
 
     @property
     def finalize(self) -> Stat:
@@ -126,16 +126,19 @@ class TimingMetrics(StatGroup):
     def stats(self) -> dict[str, Stat]:
         return {
             **{phase: getattr(self, phase) for phase in self.PHASES},
-            "generation/model": self.generation_model,
-            "generation/harness": self.generation_harness,
+            "agent/model": self.agent_model,
+            "agent/harness": self.agent_harness,
             "total": self.total,
         }
 
 
 class CustomMetrics(StatGroup):
     """Per-key ``Stat``s over a dynamic per-rollout dict attribute (env ``@metric``s or reward
-    components), each averaged over the rollouts that report the key. ``value`` extracts the
-    float from each entry (rewards are ``vf.Reward`` records; metrics are plain floats)."""
+    components), each over the rollouts that carry the key. Scoring seeds every expected key
+    with ``None`` before invoking it, so a ``None`` value means the signal never produced a
+    score and counts as 0.0 — the ``effective`` subset excludes errored rollouts and gives the
+    clean means. ``value`` extracts the float from each scored entry (rewards are ``vf.Reward``
+    records; metrics are plain floats)."""
 
     def __init__(self, rollouts: list[Rollout], attr: str, value: Callable[[Any], float] = float) -> None:
         super().__init__(rollouts)
@@ -146,7 +149,11 @@ class CustomMetrics(StatGroup):
         names = sorted({name for r in self.rollouts for name in getattr(r, self.attr)})
         return {
             name: Stat(
-                [self.value(getattr(r, self.attr)[name]) for r in self.rollouts if name in getattr(r, self.attr)]
+                [
+                    self.value(scores[name]) if scores[name] is not None else 0.0
+                    for r in self.rollouts
+                    if name in (scores := getattr(r, self.attr))
+                ]
             )
             for name in names
         }

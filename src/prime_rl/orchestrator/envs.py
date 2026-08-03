@@ -126,14 +126,14 @@ class Env:
             sampling=self._sampling(cache_salt),
         )
         if not episode.traces:
-            error = episode.error
+            error = episode.last_error
             detail = f"{error.type}: {error.message}" if error is not None else "no traces and no error recorded"
             raise RuntimeError(f"env-rollout failed before any trace was minted — {detail}")
         rollouts = [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in episode.traces]
         for rollout in rollouts:
             rollout.episode_id = episode.id
             if not episode.ok and rollout.ok:
-                error = episode.error or vf.Error(
+                error = episode.last_error or vf.Error(
                     type="EpisodeFailed", message="A sibling trace in this episode failed"
                 )
                 rollout.errors = [*rollout.errors, error]
