@@ -26,6 +26,8 @@ from prime_rl.utils.client import (
     ClientIdentity,
     PrefillScorer,
     client_identity,
+    init_nccl_broadcast,
+    init_nixl_broadcast,
     load_lora_adapter,
     setup_admin_clients,
     setup_clients,
@@ -172,6 +174,31 @@ class ElasticInferencePool:
 
     def update_model_name(self, model_name: str) -> None:
         self.model_name = model_name
+
+    async def init_nccl_broadcast(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int | None,
+        quantize_in_weight_transfer: bool,
+    ) -> None:
+        await init_nccl_broadcast(
+            list(self._admin_clients.values()),
+            host=host,
+            port=port,
+            timeout=timeout,
+            inference_world_size=inference_world_size,
+            quantize_in_weight_transfer=quantize_in_weight_transfer,
+        )
+
+    async def init_nixl_broadcast(
+        self, *, host: str, port: int, timeout: int, inference_world_size: int, session_id: str
+    ) -> None:
+        await init_nixl_broadcast(
+            list(self._admin_clients.values()), host, port, timeout, inference_world_size, session_id
+        )
 
     def _build_url(self, ip: str) -> str:
         return f"http://{ip}:{self.port}"
