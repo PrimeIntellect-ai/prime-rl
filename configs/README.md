@@ -8,8 +8,9 @@ Configurations for running prime-rl.
   Envs: `reverse-text`, `alphabet-sort`, `wiki-search`, `wordle`, `hendrycks-sanity`.
 - **`ci/`** — integration and nightly configs used by CI.
 - **`debug/`** — throwaway configs for developing the framework itself: `algo/`
-  (per-algorithm smokes) and `fake/` (fake-data trainer/SFT smokes). Not guaranteed
-  functional or up to date.
+  (per-algorithm smokes), `fake/` (fake-data trainer/SFT smokes), and `multi-env/`
+  (two reverse-text train sources + one eval source, one env server per source). Not
+  guaranteed functional or up to date.
 
 ```bash
 uv run rl  @ configs/basic/<env>/rl.toml
