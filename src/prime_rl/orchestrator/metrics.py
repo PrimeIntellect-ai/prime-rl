@@ -39,7 +39,7 @@ def episode_failure_metrics(episodes: list[Episode], *, prefix: str) -> dict[str
     seat's error rate."""
     if not episodes:
         return {}
-    failed = [episode for episode in episodes if episode.failed]
+    failed = [e for e in episodes if e.failed]
     counts: dict[str, int] = {}
     for episode in failed:
         error = episode.last_error
@@ -286,7 +286,7 @@ class EpisodeMetrics:
 
     def __init__(self, episodes: list[Episode]) -> None:
         self.episodes = episodes
-        self.rollouts: list[Rollout] = [trace for episode in episodes for trace in episode.traces]
+        self.rollouts: list[Rollout] = [t for e in episodes for t in e.traces]
 
     def by_agent(self) -> dict[str, TraceMetrics]:
         """Per-agent metric views, merging each episode's own ``vf.Episode.by_agent`` grouping."""
@@ -299,23 +299,23 @@ class EpisodeMetrics:
     # Episode-level count metrics, one value per episode — ``vf.Episode``'s own aggregates.
     @property
     def num_total_tokens(self) -> Stat:
-        return Stat([float(episode.num_total_tokens) for episode in self.episodes])
+        return Stat([float(e.num_total_tokens) for e in self.episodes])
 
     @property
     def num_input_tokens(self) -> Stat:
-        return Stat([float(episode.num_input_tokens) for episode in self.episodes])
+        return Stat([float(e.num_input_tokens) for e in self.episodes])
 
     @property
     def num_output_tokens(self) -> Stat:
-        return Stat([float(episode.num_output_tokens) for episode in self.episodes])
+        return Stat([float(e.num_output_tokens) for e in self.episodes])
 
     @property
     def num_turns(self) -> Stat:
-        return Stat([float(episode.num_turns) for episode in self.episodes])
+        return Stat([float(e.num_turns) for e in self.episodes])
 
     @property
     def num_branches(self) -> Stat:
-        return Stat([float(sum(trace.num_branches for trace in episode.traces)) for episode in self.episodes])
+        return Stat([float(sum(t.num_branches for t in e.traces)) for e in self.episodes])
 
     # Boolean rate metrics for the console log lines (0/1 distributions — ``.mean()`` is the
     # rate); to_wandb emits their per-agent counterparts instead.
@@ -409,7 +409,7 @@ class EvalMetrics(EpisodeMetrics):
 def keep_traces(episode: Episode, keep: Callable[[Rollout], bool]) -> Episode | None:
     """The episode narrowed to the traces that pass ``keep``, or ``None`` if none do. A subset view
     stays a list of episodes so the episode-level aggregates keep describing what survived."""
-    traces = [trace for trace in episode.traces if keep(trace)]
+    traces = [t for t in episode.traces if keep(t)]
     return episode.model_copy(update={"traces": traces}) if traces else None
 
 
@@ -427,10 +427,10 @@ class TrainRollouts:
 
     @property
     def rollouts(self) -> list[TrainRollout]:
-        return [trace for episode in self.episodes for trace in episode.rollouts]
+        return [t for e in self.episodes for t in e.rollouts]
 
     def __len__(self) -> int:
-        return sum(len(episode.traces) for episode in self.episodes)
+        return sum(len(e.traces) for e in self.episodes)
 
     def __iter__(self) -> Iterator[TrainRollout]:
         return iter(self.rollouts)
@@ -438,10 +438,9 @@ class TrainRollouts:
     @property
     def effective(self) -> TrainRollouts:
         kept = (
-            keep_traces(episode, lambda r: not r.has_error and not r.is_filtered and r.agent.trainable)
-            for episode in self.episodes
+            keep_traces(e, lambda r: not r.has_error and not r.is_filtered and r.agent.trainable) for e in self.episodes
         )
-        return TrainRollouts([episode for episode in kept if episode is not None])
+        return TrainRollouts([e for e in kept if e is not None])
 
     def by_env(self) -> dict[str, TrainRollouts]:
         grouped: dict[str, list[TrainEpisode]] = {}
@@ -466,10 +465,10 @@ class EvalRollouts:
 
     @property
     def rollouts(self) -> list[Rollout]:
-        return [trace for episode in self.episodes for trace in episode.traces]
+        return [t for e in self.episodes for t in e.traces]
 
     def __len__(self) -> int:
-        return sum(len(episode.traces) for episode in self.episodes)
+        return sum(len(e.traces) for e in self.episodes)
 
     def __iter__(self) -> Iterator[Rollout]:
         return iter(self.rollouts)
@@ -490,8 +489,8 @@ class EvalRollouts:
 
     @property
     def effective(self) -> EvalRollouts:
-        kept = (keep_traces(episode, lambda r: not r.has_error and r.agent.trainable) for episode in self.episodes)
-        return EvalRollouts([episode for episode in kept if episode is not None], group_size=self.group_size)
+        kept = (keep_traces(e, lambda r: not r.has_error and r.agent.trainable) for e in self.episodes)
+        return EvalRollouts([e for e in kept if e is not None], group_size=self.group_size)
 
     @property
     def metrics(self) -> EvalMetrics:

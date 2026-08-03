@@ -106,7 +106,7 @@ class EvalSink:
         # produced none (a whole group cancelled off-policy).
         env_name = finished[0].env_name
         eval_step = finished[0].step
-        group = [trace for episode in finished for trace in episode.rollouts]
+        group = [t for e in finished for t in e.rollouts]
         task_idx = group[0].task.data.idx if group else -1
         bucket = self.pending_batches[(env_name, eval_step)]
         bucket.extend(finished)

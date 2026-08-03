@@ -547,7 +547,7 @@ class Orchestrator:
             if not episode.failed:
                 await asyncio.to_thread(
                     save_rollouts,
-                    [rollout.to_record() for rollout in episode.rollouts],
+                    [r.to_record() for r in episode.rollouts],
                     get_trace_path(self.config.output_dir, step, episode.KIND, "all"),
                 )
 

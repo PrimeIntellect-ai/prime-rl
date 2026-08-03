@@ -181,7 +181,7 @@ class TrainSink:
         # Read the group's facts off an episode, not a trace: every episode in it may have
         # produced none (a whole group cancelled off-policy).
         env_name = episodes[0].env_name
-        group = [trace for episode in episodes for trace in episode.rollouts]
+        group = [t for e in episodes for t in e.rollouts]
         # Window membership follows group finalization, not arrival: a rollout
         # only becomes observable (metrics / persistence) once its whole group
         # is finalized, so a batch's window never claims rollouts of a group

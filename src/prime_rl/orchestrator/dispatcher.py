@@ -519,7 +519,7 @@ class RolloutDispatcher:
             await self.emit_failed_episodes(meta, group, vf.Error(type="TaskFailed", message=repr(exc)))
             return
 
-        for r in (r for episode in episodes for r in episode.traces):
+        for r in (r for e in episodes for r in e.traces):
             if not r.has_error and r.num_turns == 0:
                 # Empty trajectory: promote to an explicit error so the sink
                 # treats it like any other failure (``has_error`` reads ``ok``)
