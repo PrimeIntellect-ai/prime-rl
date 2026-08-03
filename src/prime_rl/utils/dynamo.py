@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -9,7 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_delay, wait_exponential
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import StaticInferencePool, setup_admin_clients
+from prime_rl.utils.client import (
+    StaticInferencePool,
+    init_nccl_broadcast,
+    init_nixl_broadcast,
+    setup_admin_clients,
+    update_weights,
+)
 
 DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION = 1
 DYNAMO_READINESS_REQUEST_TIMEOUT_S = 30.0
@@ -133,6 +140,49 @@ class DynamoInferencePool(StaticInferencePool):
                     )
         finally:
             self._readiness_deadline = None
+
+    async def init_nccl_broadcast(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int | None,
+        quantize_in_weight_transfer: bool,
+    ) -> None:
+        await init_nccl_broadcast(
+            self._admin_clients,
+            host=host,
+            port=port,
+            timeout=timeout,
+            inference_world_size=inference_world_size,
+            engine_world_sizes=self._admin_world_sizes,
+            quantize_in_weight_transfer=quantize_in_weight_transfer,
+            use_native_collective_rpc=True,
+        )
+
+    async def init_nixl_broadcast(
+        self, *, host: str, port: int, timeout: int, inference_world_size: int, session_id: str
+    ) -> None:
+        await init_nixl_broadcast(
+            self._admin_clients,
+            host,
+            port,
+            timeout,
+            inference_world_size,
+            session_id,
+            engine_world_sizes=self._admin_world_sizes,
+            use_native_collective_rpc=True,
+        )
+
+    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+        await update_weights(
+            self._admin_clients,
+            weight_dir,
+            lora_name=lora_name,
+            step=step,
+            use_native_collective_rpc=True,
+        )
 
     async def stop(self) -> None:
         await super().stop()
