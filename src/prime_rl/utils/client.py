@@ -491,7 +491,7 @@ async def update_weights(
 
             update_path = "/collective_rpc" if use_native_collective_rpc else "/update_weights"
             payload = (
-                {"method": "update_weights_from_path", "kwargs": {"weight_dir": weight_dir_posix}}
+                {"method": "update_weights_from_path", "args": [weight_dir_posix]}
                 if use_native_collective_rpc
                 else {"weight_dir": weight_dir_posix}
             )
