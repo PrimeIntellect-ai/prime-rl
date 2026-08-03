@@ -366,11 +366,11 @@ def train_section(name: str, scope: str) -> ws.Section:
 
 
 def eval_section(name: str, env_pattern: str) -> ws.Section:
-    # Same metrics as train, but eval's reward is "avg@k" (dynamic k → regex). Everything is a regex so
-    # one section can also serve any env (env_pattern=".*").
+    # Same metrics as train, but eval's reward is the per-agent "avg@k" (dynamic k → regex).
+    # Everything is a regex so one section can also serve any env (env_pattern=".*").
     return section(
         name,
-        regexes=[f"eval/{env_pattern}/all/avg@.*", f"eval/{env_pattern}/effective/avg@.*"]
+        regexes=[f"eval/{env_pattern}/all/[^/]+/avg@.*", f"eval/{env_pattern}/effective/[^/]+/avg@.*"]
         + [f"eval/{env_pattern}/{m}" for m in COMMON_METRICS]
         + [f"eval/{env_pattern}/{r}" for r in COMMON_REGEXES],
     )

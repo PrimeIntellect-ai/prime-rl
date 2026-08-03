@@ -7,11 +7,11 @@ A rollout container (``TrainRollouts`` / ``EvalRollouts``) owns the rollout list
 ``{prefix}/{subset}/<metric>/<stat>`` wandb dict via ``.to_wandb(...)``.
 
 The wandb layout mirrors the episode/trace hierarchy. ``{prefix}/{subset}/<metric>/<stat>`` carries
-only episode-level facts: the count metrics sum an episode's traces (matching ``vf.Episode``'s
-aggregates), plus the train pipeline rates and the eval scores. Every trace-level metric lives under
-``{prefix}/{subset}/<agent>/<metric>/<stat>``, grouped by agent name (``vf.Episode.by_agent``) so
-agents never mix into one distribution. A single-agent env has one trace per episode, so the count
-metrics coincide across levels.
+only episode-level facts: the count metrics, summing an episode's traces (matching ``vf.Episode``'s
+aggregates). Every trace-level metric — reward, rates, timing, custom metrics, the pipeline verdicts,
+and the eval scores — lives under ``{prefix}/{subset}/<agent>/<metric>/<stat>``, grouped by agent
+name (``vf.Episode.by_agent``) so agents never mix into one distribution. A single-agent env has one
+trace per episode, so the count metrics coincide across levels.
 
 No I/O, no pandas — plain Python over the ``vf.Trace`` properties each rollout exposes.
 """
@@ -334,43 +334,49 @@ class EpisodeMetrics:
 
 
 class TrainMetrics(EpisodeMetrics):
-    """Common metrics plus the filter-pipeline rates. ``reward`` (flat over all traces) serves the
-    console log lines and distributions; the wandb reward stats are per-agent."""
+    """Common metrics plus the per-agent filter-pipeline rates. ``reward`` (flat over all traces)
+    serves the console log lines; the wandb reward stats are per-agent."""
 
     @property
     def reward(self) -> Stat:
         return Stat([float(r.reward) for r in self.rollouts])
 
-    @property
-    def is_trainable(self) -> Stat:
-        return Stat([float(r.is_trainable) for r in self.rollouts])
-
-    @property
-    def is_filtered(self) -> Stat:
-        return Stat([float(r.is_filtered) for r in self.rollouts])
-
-    def filter_rates(self) -> dict[str, float]:
-        """Per-filter detection rate over all rollouts."""
-        names = sorted({name for r in self.rollouts for name in r.filter_results})
-        return {
-            name: sum(1 for r in self.rollouts if r.filter_results.get(name)) / len(self.rollouts) for name in names
-        }
-
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
-        if not self.rollouts:
-            return out
-        p = f"{prefix}/{subset}"
-        out[f"{p}/is_trainable/mean"] = self.is_trainable.mean()
-        out[f"{p}/is_filtered/mean"] = self.is_filtered.mean()
-        out |= {f"{p}/filters/{k}/mean": v for k, v in self.filter_rates().items()}
+        # The pipeline verdicts are per-trace (an untrainable seat is 0.0 throughout, and filters
+        # only ever run on trainable survivors), so they read per agent like the rest.
+        for agent, traces in self.by_agent().items():
+            p = f"{prefix}/{subset}/{agent}"
+            rollouts = traces.rollouts
+            out[f"{p}/is_trainable/mean"] = sum(float(r.is_trainable) for r in rollouts) / len(rollouts)
+            out[f"{p}/is_filtered/mean"] = sum(float(r.is_filtered) for r in rollouts) / len(rollouts)
+            names = sorted({name for r in rollouts for name in r.filter_results})
+            out |= {
+                f"{p}/filters/{name}/mean": sum(1 for r in rollouts if r.filter_results.get(name)) / len(rollouts)
+                for name in names
+            }
         return out
 
 
+def pass_at_k(rollouts: list[Rollout]) -> dict[str, float]:
+    """pass@k / pass^k averaged over examples; ``{}`` for non-binary rewards."""
+    rewards = [r.reward for r in rollouts]
+    if not set(rewards).issubset({0.0, 1.0}):
+        return {}
+    by_example: dict = {}
+    for r in rollouts:
+        by_example.setdefault(r.group_id, []).append(r.reward)
+    per_example = [compute_pass_metrics(rs) for rs in by_example.values()]
+    keys = sorted({k for d in per_example for k in d})
+    return {k: sum(d[k] for d in per_example if k in d) / sum(1 for d in per_example if k in d) for k in keys}
+
+
 class EvalMetrics(EpisodeMetrics):
-    """Common metrics plus the ``avg@<group_size>`` score and (on the effective subset, for
-    binary-reward tasks) pass@k / pass^k. ``group_size`` (the ``avg@k`` k) is supplied by the
-    container so the ``all`` and ``effective`` subsets share one stable key."""
+    """Common metrics plus the per-agent ``avg@<group_size>`` score and (on the effective subset,
+    for binary-reward tasks) pass@k / pass^k. Both score an agent's own traces, so they live in its
+    subtree like every other trace-level metric. ``group_size`` (the ``avg@k`` k, the run's rollouts
+    per example) is supplied by the container so the ``all`` and ``effective`` subsets — and every
+    agent — share one stable key."""
 
     def __init__(self, rollouts: list[Rollout], group_size: int) -> None:
         super().__init__(rollouts)
@@ -380,26 +386,13 @@ class EvalMetrics(EpisodeMetrics):
     def reward(self) -> Stat:
         return Stat([float(r.reward) for r in self.rollouts])
 
-    def pass_at_k(self) -> dict[str, float]:
-        """pass@k / pass^k averaged over examples; ``{}`` for non-binary rewards."""
-        rewards = [r.reward for r in self.rollouts]
-        if not set(rewards).issubset({0.0, 1.0}):
-            return {}
-        by_example: dict = {}
-        for r in self.rollouts:
-            by_example.setdefault(r.group_id, []).append(r.reward)
-        per_example = [compute_pass_metrics(rs) for rs in by_example.values()]
-        keys = sorted({k for d in per_example for k in d})
-        return {k: sum(d[k] for d in per_example if k in d) / sum(1 for d in per_example if k in d) for k in keys}
-
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
-        if not self.rollouts:
-            return out
-        p = f"{prefix}/{subset}"
-        out[f"{p}/avg@{self.group_size}"] = self.reward.mean()
-        if subset == "effective":
-            out |= {f"{p}/{k}": v for k, v in self.pass_at_k().items()}
+        for agent, traces in self.by_agent().items():
+            p = f"{prefix}/{subset}/{agent}"
+            out[f"{p}/avg@{self.group_size}"] = traces.stats()["reward"].mean()
+            if subset == "effective":
+                out |= {f"{p}/{k}": v for k, v in pass_at_k(traces.rollouts).items()}
         return out
 
 

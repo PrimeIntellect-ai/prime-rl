@@ -210,9 +210,10 @@ def test_train_only_metrics_absent_from_eval():
         mk(is_trainable=False, filter_results={"gibberish": False}),
     ]
     out = train_wandb(rollouts)
-    assert out["train/agg/all/is_trainable/mean"] == 0.5
-    assert out["train/agg/all/is_filtered/mean"] == 0.5
-    assert out["train/agg/all/filters/gibberish/mean"] == 0.5
+    assert out["train/agg/all/agent/is_trainable/mean"] == 0.5
+    assert out["train/agg/all/agent/is_filtered/mean"] == 0.5
+    assert out["train/agg/all/agent/filters/gibberish/mean"] == 0.5
+    assert "train/agg/all/is_trainable/mean" not in out  # pipeline verdicts are per-trace
     eval_out = EvalRollouts(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
     assert not any("is_trainable" in k or "is_filtered" in k or "/filters/" in k for k in eval_out)
 
@@ -220,11 +221,11 @@ def test_train_only_metrics_absent_from_eval():
 def test_eval_avg_at_k_and_pass_k():
     binary = EvalRollouts([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")])
     eff = binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
-    assert eff["eval/x/effective/avg@2"] == 0.5  # mean reward under avg@<k> (k derived from the groups)
-    assert not any(k.startswith("eval/x/effective/reward") for k in eff)
-    assert eff["eval/x/effective/pass@1"] == 0.5 and eff["eval/x/effective/pass^2"] == 0.0
+    assert eff["eval/x/effective/agent/avg@2"] == 0.5  # mean reward under avg@<k> (k from the groups)
+    assert "eval/x/effective/avg@2" not in eff  # scores are per-agent, never pooled
+    assert eff["eval/x/effective/agent/pass@1"] == 0.5 and eff["eval/x/effective/agent/pass^2"] == 0.0
     all_out = binary.metrics.to_wandb(prefix="eval/x", subset="all")
-    assert all_out["eval/x/all/avg@2"] == 0.5
+    assert all_out["eval/x/all/agent/avg@2"] == 0.5
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
     non_binary = EvalRollouts([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
