@@ -12,7 +12,6 @@ ep = 8
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
 moe_router_dtype = "float32"
-fp8 = false
 optim_cpu_offload = true
 fused_lm_head_token_chunk_size = 1024
 
