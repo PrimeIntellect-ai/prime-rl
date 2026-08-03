@@ -127,6 +127,7 @@ members = [
     "unscramble-v1",
     "uuid-ctf-v1",
     "verbatim-copy-v1",
+    "virl39k-v1",
     "wideseek-v1",
     "wiki-search-v1",
     "wikispeedia-v1",
@@ -1993,7 +1994,7 @@ wheels = [
 
 [[package]]
 name = "forth-lang-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/research-environments/environments/code/forth_lang_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -2464,7 +2465,7 @@ wheels = [
 
 [[package]]
 name = "hle-v1"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "deps/research-environments/environments/knowledge/hle_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3667,7 +3668,7 @@ wheels = [
 
 [[package]]
 name = "mcp-atlas-v1"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "deps/research-environments/environments/tool_use/mcp_atlas_v1" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -5427,7 +5428,7 @@ requires-dist = [
 
 [[package]]
 name = "prolog-v1"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "deps/research-environments/environments/reasoning/prolog_v1" }
 dependencies = [
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -7974,6 +7975,25 @@ examples = [
     { name = "scratchpad-v1", editable = "deps/verifiers/environments/scratchpad_v1" },
     { name = "wiki-search-v1", editable = "deps/verifiers/environments/wiki_search_v1" },
     { name = "wordle-v1", editable = "deps/verifiers/environments/wordle_v1" },
+]
+
+[[package]]
+name = "virl39k-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/multimodal/virl39k_v1" }
+dependencies = [
+    { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "huggingface-hub", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "math-verify", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "huggingface-hub" },
+    { name = "math-verify" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
