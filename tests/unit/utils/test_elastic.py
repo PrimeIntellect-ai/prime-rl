@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-from verifiers.v1.clients.config import TrainClientConfig
+from verifiers.v1.configs.client import TrainClientConfig
 
 from prime_rl.utils.elastic import (
     AdapterState,

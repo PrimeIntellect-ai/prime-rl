@@ -45,7 +45,6 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
         train_client_type="renderer",
         eval_client_type="openai_chat_completions",
         renderer_config=config.renderer,
-        pool_size=config.pool_size,
     )
     return renderer, inference_pool
 

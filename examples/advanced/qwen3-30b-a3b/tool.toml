@@ -36,9 +36,19 @@ group_size = 16
 max_off_policy_steps = 32
 
 [[orchestrator.train.source]]
-env.taskset = { id = "general-agent-v1", task = { tools = { colocated = true } }, min_tier = 1 }
-env.agent.harness = { id = "null" }
-env.agent.runtime = { type = "modal" }
+
+[orchestrator.train.source.env.taskset]
+id = "general-agent-v1"
+min_tier = 1
+
+[orchestrator.train.source.env.taskset.task.tools]
+colocated = true
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "modal"
 
 [inference]
 gpu_memory_utilization = 0.85

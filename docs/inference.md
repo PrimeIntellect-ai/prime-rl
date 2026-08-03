@@ -174,11 +174,17 @@ Every deployment fronts its vLLM engines with a single global router — it list
 ```toml
 [inference.router]              # or [router] for the standalone inference entrypoint
 type = "llm-d"                  # "vllm-router" (default) or "llm-d"
-# llm-d-only knobs (all optional):
-scorers = { "prefix-cache-scorer" = 3.0, "active-request-scorer" = 2.0 }   # base, applied to every profile
-prefill_scorer_overrides = { "queue-scorer" = 2.0, "kv-cache-utilization-scorer" = 2.0 }  # merged onto the P/D prefill profile
-decode_scorer_overrides = {}    # merged onto the P/D decode profile
-non_cached_tokens = 16          # below this many non-cached prompt tokens, skip remote prefill (P/D)
+non_cached_tokens = 16          # llm-d only: below this many non-cached prompt tokens, skip remote prefill (P/D)
+
+# llm-d only: base scorer weights, applied to every profile
+[inference.router.scorers]
+"prefix-cache-scorer" = 3.0
+"active-request-scorer" = 2.0
+
+# llm-d only: merged onto the P/D prefill profile (decode_scorer_overrides for decode)
+[inference.router.prefill_scorer_overrides]
+"queue-scorer" = 2.0
+"kv-cache-utilization-scorer" = 2.0
 ```
 
 - **`vllm-router`** (default) — our fork of [vllm-router](https://github.com/PrimeIntellect-ai/router). Knob: `policy`. The only backend supported for single-node (local) deployments.
@@ -255,8 +261,12 @@ For configuring various knobs with environment variables, we enable you to confi
 [inference.deployment]
 type = "disaggregated"
 
-prefill_env_vars = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="skip"}
-decode_env_vars = {"VLLM_DEEP_GEMM_WARMUP"="skip"}
+[inference.deployment.prefill_env_vars]
+"VLLM_ENABLE_MOE_DP_CHUNK" = "0"
+"VLLM_DEEP_GEMM_WARMUP" = "skip"
+
+[inference.deployment.decode_env_vars]
+"VLLM_DEEP_GEMM_WARMUP" = "skip"
 ```
 
 These are role-specific and layer on top of [`env_vars`](configuration.md#environment-variables) shared by all inference processes regardless of role.

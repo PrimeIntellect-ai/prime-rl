@@ -93,8 +93,16 @@ num_turns_weight = 0.1
 
 [[orchestrator.train.source]]
 name = "tmax"
-env.agent.harness = { id = "rlm", summarize_at_tokens = [65536, 131072] }
-env.agent.runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] }
+
+[orchestrator.train.source.env.agent.harness]
+id = "rlm"
+summarize_at_tokens = [65536, 131072]
+
+[orchestrator.train.source.env.agent.runtime]
+type = "prime"
+vm = true
+idle_timeout = "None"
+labels = ["glm45air-terminal"]
 
 [orchestrator.train.source.env.taskset]
 id = "tmax-v1"
@@ -121,9 +129,19 @@ interval = 20
 
 [[orchestrator.eval.source]]
 name = "swebench-verified"
-env.agent.harness = { id = "rlm", summarize_at_tokens = 98304 }
-env.agent.runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] }
-env.agent.timeout = { rollout = 3600 }
+
+[orchestrator.eval.source.env.agent.harness]
+id = "rlm"
+summarize_at_tokens = 98304
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "prime"
+vm = true
+idle_timeout = "None"
+labels = ["glm45air-terminal"]
+
+[orchestrator.eval.source.env.agent.timeout]
+rollout = 3600
 
 [orchestrator.eval.source.env.taskset]
 id = "swebench-verified-v1"
@@ -145,9 +163,19 @@ id = "swebench-verified-v1"
 [[orchestrator.eval.source]]
 name = "terminal-bench-2"
 group_size = 4 # avg@4
-env.agent.harness = { id = "rlm", summarize_at_tokens = 98304 }
-env.agent.runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-terminal"] }
-env.agent.timeout = { rollout = 3600 }
+
+[orchestrator.eval.source.env.agent.harness]
+id = "rlm"
+summarize_at_tokens = 98304
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "prime"
+vm = true
+idle_timeout = "None"
+labels = ["glm45air-terminal"]
+
+[orchestrator.eval.source.env.agent.timeout]
+rollout = 3600
 
 [orchestrator.eval.source.env.taskset]
 id = "terminal-bench-2-v1"

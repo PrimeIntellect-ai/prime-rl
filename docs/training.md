@@ -217,7 +217,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Process | What's saved | Where |
 |---|---|---|
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<output_dir>/checkpoints/step_N/trainer/` |
-| Orchestrator | Step counter, total tokens / samples / problems | `<output_dir>/checkpoints/step_N/orchestrator/` |
+| Orchestrator | Progress, per-env data state | `<output_dir>/checkpoints/step_N/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 | Trainer (HF weights) | HF-compatible weight snapshot for serving | `<output_dir>/weights/step_N/` |
 
