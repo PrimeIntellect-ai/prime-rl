@@ -138,6 +138,9 @@ class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
+    inference_world_size: int | None = Field(None, ge=1)
+    """Expected number of externally managed inference ranks."""
+
 
 class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     type: Literal["nixl"] = "nixl"
@@ -148,9 +151,15 @@ class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     session_id: str = "default"
     """ModelExpress session ID."""
 
+    inference_world_size: int | None = Field(None, ge=1)
+    """Expected number of externally managed inference ranks."""
+
 
 class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
+
+    inference_world_size: int | None = Field(None, ge=1)
+    """Expected number of externally managed inference ranks."""
 
 
 SharedWeightBroadcastConfig: TypeAlias = Annotated[
@@ -325,12 +334,12 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_enough_devices_for_nccl(self):
-        if self.deployment.type == "single_node":
-            if self.trainer.weight_broadcast.type == "nccl":
-                if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
-                    raise ValueError(
-                        "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
-                    )
+        if self.deployment.type != "single_node" or self.trainer.weight_broadcast.type != "nccl":
+            return self
+        if self.inference is None and self.weight_broadcast.inference_world_size is not None:
+            return self
+        if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
+            raise ValueError("NCCL weight broadcast requires at least 2 local GPUs or external inference ranks.")
         return self
 
     @model_validator(mode="after")
@@ -396,14 +405,15 @@ class RLConfig(BaseConfig):
             inference_world_size = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
                 if self.inference
-                else 1
+                else self.weight_broadcast.inference_world_size
             )
             common_config = dict(
                 host=self.weight_broadcast.host,
                 port=self.weight_broadcast.port,
                 timeout=self.weight_broadcast.timeout,
-                inference_world_size=inference_world_size,
             )
+            if inference_world_size is not None:
+                common_config["inference_world_size"] = inference_world_size
             if self.weight_broadcast.type == "nccl":
                 transport_config = dict(
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
@@ -418,7 +428,9 @@ class RLConfig(BaseConfig):
             self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
         elif self.weight_broadcast.type == "filesystem":
             self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
-            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
+            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
+                inference_world_size=self.weight_broadcast.inference_world_size
+            )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 

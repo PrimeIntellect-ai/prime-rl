@@ -306,6 +306,8 @@ class Orchestrator:
                 config.weight_broadcast.timeout,
                 inference_world_size=config.weight_broadcast.inference_world_size,
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
+                engine_world_sizes=self.policy_inference._engine_world_sizes,
+                use_native_collective_rpc=self.policy_inference._use_native_collective_rpc,
             )
         elif config.weight_broadcast.type == "nixl":
             await init_nixl_broadcast(
@@ -315,6 +317,8 @@ class Orchestrator:
                 config.weight_broadcast.timeout,
                 config.weight_broadcast.inference_world_size,
                 config.weight_broadcast.session_id,
+                engine_world_sizes=self.policy_inference._engine_world_sizes,
+                use_native_collective_rpc=self.policy_inference._use_native_collective_rpc,
             )
             self.model_express = ModelExpressSession(
                 client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),

@@ -50,6 +50,11 @@ class InferencePool:
         train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
         renderer_config: RendererConfig | None = None,
+        expected_inference_world_size: int | None = None,
+        *,
+        admin_clients: list[AsyncClient] | None = None,
+        engine_world_sizes: list[int] | None = None,
+        use_native_collective_rpc: bool = False,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
         self.train_client = setup_client(
@@ -59,7 +64,9 @@ class InferencePool:
             renderer_model_name=renderer_model_name,
         )
         self.eval_client = setup_client(client_config, client_type=eval_client_type)
-        self._admin_clients = setup_admin_clients(client_config)
+        self._admin_clients = setup_admin_clients(client_config) if admin_clients is None else admin_clients
+        self._engine_world_sizes = engine_world_sizes
+        self._use_native_collective_rpc = use_native_collective_rpc
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
         self._router_clients = (
@@ -71,6 +78,32 @@ class InferencePool:
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._scorer = PrefillScorer()
         self.model_name = model_name
+
+    @classmethod
+    async def create(
+        cls,
+        client_config: ClientConfig,
+        model_name: str,
+        *,
+        expected_inference_world_size: int | None = None,
+        **kwargs,
+    ) -> "InferencePool":
+        if not client_config.is_dynamo:
+            return cls(client_config, model_name, **kwargs)
+        if expected_inference_world_size is None:
+            raise ValueError("Dynamo inference requires an explicit inference_world_size")
+        from prime_rl.utils.dynamo import discover_dynamo_workers, setup_dynamo_admin_clients
+
+        workers = await discover_dynamo_workers(client_config, model_name, expected_inference_world_size)
+        return cls(
+            client_config,
+            model_name,
+            expected_inference_world_size=expected_inference_world_size,
+            admin_clients=setup_dynamo_admin_clients(workers),
+            engine_world_sizes=[worker.world_size for worker in workers],
+            use_native_collective_rpc=True,
+            **kwargs,
+        )
 
     @property
     def admin_clients(self) -> list[AsyncClient]:
@@ -87,7 +120,13 @@ class InferencePool:
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+        await update_weights(
+            self._admin_clients,
+            weight_dir,
+            lora_name=lora_name,
+            step=step,
+            use_native_collective_rpc=self._use_native_collective_rpc,
+        )
 
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this pool's model (one logprob per
@@ -276,6 +315,8 @@ async def update_weights(
     weight_dir: Path | None,
     lora_name: str | None = None,
     step: int = 0,
+    *,
+    use_native_collective_rpc: bool = False,
 ) -> None:
     """Update weights on static inference servers.
 
@@ -305,12 +346,18 @@ async def update_weights(
                 nccl_ready_file.touch()
                 logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
+            update_path = "/collective_rpc" if use_native_collective_rpc else "/update_weights"
+            payload = (
+                {"method": "update_weights_from_path", "args": [weight_dir_posix]}
+                if use_native_collective_rpc
+                else {"weight_dir": weight_dir_posix}
+            )
             await asyncio.gather(
                 *[
                     _admin_post(
                         admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
+                        update_path,
+                        json=payload,
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                     )
                     for admin_client in admin_clients
@@ -397,6 +444,7 @@ async def init_nccl_broadcast(
     quantize_in_weight_transfer: bool = False,
     *,
     engine_world_sizes: list[int] | None = None,
+    use_native_collective_rpc: bool = False,
 ) -> None:
     """Initialize NCCL broadcast on all inference servers.
 
@@ -444,13 +492,20 @@ async def init_nccl_broadcast(
         }
         if has_explicit_engine_world_sizes:
             payload["engine_world_size"] = engine_world_size
-        try:
+        if use_native_collective_rpc:
+            response = await admin_client.post(
+                "/collective_rpc",
+                json={"method": "init_broadcaster", "kwargs": payload},
+            )
+        else:
             response = await admin_client.post("/init_broadcaster", json=payload)
+        try:
             response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
+        except httpx.HTTPStatusError as error:
+            if not use_native_collective_rpc and error.response.status_code == 404:
                 logger.warning("The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization.")
                 return
+            raise
 
     await asyncio.gather(
         *[
@@ -471,6 +526,7 @@ async def init_nixl_broadcast(
     session_id: str,
     *,
     engine_world_sizes: list[int] | None = None,
+    use_native_collective_rpc: bool = False,
 ) -> None:
     """Configure every vLLM worker for NIXL + ModelExpress pulls."""
     has_explicit_engine_world_sizes = engine_world_sizes is not None
@@ -494,12 +550,19 @@ async def init_nixl_broadcast(
         }
         if has_explicit_engine_world_sizes:
             payload["engine_world_size"] = engine_world_size
-        await _admin_post(
-            admin_client,
-            "/init_broadcaster",
-            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
-            json=payload,
-        )
+        if use_native_collective_rpc:
+            response = await admin_client.post(
+                "/collective_rpc",
+                json={"method": "init_broadcaster", "kwargs": payload},
+            )
+            response.raise_for_status()
+        else:
+            await _admin_post(
+                admin_client,
+                "/init_broadcaster",
+                timeout_s=max(ADMIN_TIMEOUT_S, timeout),
+                json=payload,
+            )
 
     await asyncio.gather(
         *[

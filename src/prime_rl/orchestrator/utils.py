@@ -39,12 +39,13 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
         get_logger().info("Using direct renderer rollout client")
     else:
         get_logger().info("No policy-sourced train env — renderer kept for client-side tokenization only")
-    inference_pool = InferencePool(
+    inference_pool = await InferencePool.create(
         client_config,
         model_name=model_name,
         train_client_type="renderer",
         eval_client_type="openai_chat_completions",
         renderer_config=config.renderer,
+        expected_inference_world_size=config.weight_broadcast.inference_world_size,
     )
     return renderer, inference_pool
 
