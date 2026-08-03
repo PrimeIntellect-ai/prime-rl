@@ -1,0 +1,14 @@
+max_steps = 20
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+seq_len = 2048
+
+[wandb]
+project = "reverse-text"
+name = "reverse-text"
+
+[optim]
+lr = 3e-6
+
+[ckpt] # Checkpoint at the end of training

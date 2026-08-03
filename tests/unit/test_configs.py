@@ -1,4 +1,3 @@
-import tomllib
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -26,26 +25,19 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`."""
+    """Any TOML file inside `configs/`, `examples/` or `k8s/`."""
     config_files = list(Path("configs").rglob("*.toml"))
     example_files = list(Path("examples").rglob("*.toml"))
+    # The k8s example configs are mounted into the chart's containers verbatim, so a
+    # stale key there breaks a deploy with nothing else to catch it.
+    k8s_files = list(Path("k8s").rglob("*.toml"))
 
-    return config_files + example_files
-
-
-def is_eval_config(path: Path) -> bool:
-    """vf-eval TOMLs live under configs but are not prime-rl entrypoint configs."""
-    with path.open("rb") as f:
-        data = tomllib.load(f)
-    return isinstance(data.get("eval"), list)
+    return config_files + example_files + k8s_files
 
 
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
 def test_load_configs(config_file: Path):
     """Tests that all config files can be loaded by at least one config class."""
-    if is_eval_config(config_file):
-        pytest.skip("vf-eval TOML files are not prime-rl entrypoint configs")
-
     could_parse = []
     for config_cls in CONFIG_CLASSES:
         try:
@@ -188,10 +180,10 @@ def test_env_algo_overrides_top_level():
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
             "algo": {"type": "echo"},
-            "train": {"env": [{"id": "a", "algo": {"type": "grpo"}}, {"id": "b"}]},
+            "train": {"source": [{"legacy": {"id": "a"}, "algo": {"type": "grpo"}}, {"legacy": {"id": "b"}}]},
         }
     )
-    env_a, env_b = config.train.env
+    env_a, env_b = config.train.source
     # Env a sets its own algorithm; only env b inherits the top-level echo algorithm.
     assert env_a.algo is not None and env_a.algo.type == "grpo"
     assert env_b.algo is not None and env_b.algo.type == "echo"
@@ -199,7 +191,23 @@ def test_env_algo_overrides_top_level():
     # Resolved configs round-trip.
     dumped = config.model_dump(exclude_none=True)
     reloaded = OrchestratorConfig.model_validate(dumped)
-    assert reloaded.train.env[0].algo is not None and reloaded.train.env[0].algo.type == "grpo"
+    assert reloaded.train.source[0].algo is not None and reloaded.train.source[0].algo.type == "grpo"
+
+    with pytest.raises(ValidationError, match="env"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "train": {"env": [{"legacy": {"id": "removed"}}]},
+            }
+        )
+
+    with pytest.raises(ValidationError, match="env"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "eval": {"env": [{"legacy": {"id": "removed"}}]},
+            }
+        )
 
 
 def test_trainer_enable_token_export_cli_flag():
@@ -207,12 +215,12 @@ def test_trainer_enable_token_export_cli_flag():
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
 
 
-def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
+def test_single_node_auto_inference_ports_follow_server_port():
     config = RLConfig.model_validate(
         {
             "trainer": {},
             "orchestrator": {},
-            "inference": {"parallel": {"tp": 1}},
+            "inference": {"server": {"port": 8001}, "parallel": {"tp": 1}},
             "deployment": {
                 "type": "single_node",
                 "gpus_per_node": 4,
@@ -224,10 +232,11 @@ def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
 
     assert config.inference is not None
     assert config.inference.parallel.dp == 2
-    assert config.orchestrator.model.client.dp_rank_count == 2
+    assert config.inference.backend_port == 8101
+    assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
 
-def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
+def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
         {
             "trainer": {},
@@ -246,7 +255,6 @@ def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
     assert config.inference is not None
     assert config.inference.data_parallel_size_local == 2
     assert config.inference.parallel.dp == 2
-    assert config.orchestrator.model.client.dp_rank_count == 1
 
 
 def test_orchestrator_vlm_requires_renderer():
@@ -277,6 +285,24 @@ def test_orchestrator_vlm_requires_renderer():
     )
 
     assert config.renderer is not None
+
+
+def test_trainer_rejects_vlm_cp_with_ring():
+    config = {
+        "model": {
+            "cp": 2,
+            "impl": "custom",
+            "optimization_dtype": "bfloat16",
+            "reduce_dtype": "bfloat16",
+            "vlm": {
+                "vision_encoder_attr": "model.visual",
+                "language_model_attr": "model.language_model",
+            },
+        },
+    }
+
+    with pytest.raises(ValidationError, match="cp_style='ulysses'"):
+        TrainerConfig.model_validate(config)
 
 
 def test_selective_activation_checkpointing_requires_custom_impl():

@@ -1,12 +1,14 @@
 from collections import Counter
 
 import pytest
+import torch
 from datasets import Dataset, interleave_datasets
 from renderers import create_renderer
-from renderers.base import RenderedTokens
+from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens, RenderedTrainingSample
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.sft.data import SFTDataset, _drop_null_fields
+import prime_rl.trainer.sft.data as sft_data
+from prime_rl.trainer.sft.data import CatDataset, SFTDataset, _drop_null_fields
 from prime_rl.trainer.utils import print_sample
 
 _BOS_TOKEN_ID = 0
@@ -399,3 +401,106 @@ def test_null_messages_falls_back_to_prompt_and_completion():
     )
 
     assert next(iter(mixed_row_dataset)) == next(iter(expected_dataset))
+
+
+def test_vlm_truncation_does_not_append_trainable_eos(monkeypatch):
+    mm = MultiModalData(
+        mm_placeholders={"image": [PlaceholderRange(offset=1, length=1)]},
+        mm_items={"image": [{"pixel_values": torch.ones(1, 1), "image_grid_thw": torch.tensor([[1, 1, 1]])}]},
+    )
+
+    def fake_build_training_sample(*args, **kwargs):
+        return RenderedTrainingSample(
+            token_ids=[10, 11, 12, _STOP_TOKEN_ID],
+            loss_mask=[False, False, False, True],
+            multi_modal_data=mm,
+            mm_token_type_ids=[0, 1, 0, 0],
+        )
+
+    monkeypatch.setattr(sft_data, "build_training_sample", fake_build_training_sample)
+    dataset = SFTDataset(Dataset.from_list([]), _DummyRenderer(), seq_len=2, multimodal=True)
+
+    assert dataset._process({"messages": [{"role": "assistant", "content": "ignored"}]}) is None
+
+
+def _sft_sample(
+    input_ids: list[int],
+    *,
+    mm_kwargs: dict[str, torch.Tensor] | None = None,
+    mm_token_type_ids: list[int] | None = None,
+) -> dict:
+    return {
+        "input_ids": input_ids,
+        "position_ids": list(range(len(input_ids))),
+        "loss_mask": [True] * len(input_ids),
+        "target_ids": [x + 1 for x in input_ids],
+        "seq_lens": [len(input_ids)],
+        "mm_kwargs": mm_kwargs,
+        "mm_token_type_ids": mm_token_type_ids,
+    }
+
+
+def test_cat_dataset_packs_multimodal_samples():
+    dataset = CatDataset(
+        [
+            _sft_sample(
+                [1, 2],
+                mm_kwargs={
+                    "pixel_values": torch.ones(2, 3),
+                    "image_grid_thw": torch.tensor([[1, 1, 2]]),
+                },
+                mm_token_type_ids=[0, 1],
+            ),
+            _sft_sample(
+                [3, 4, 5],
+                mm_kwargs={
+                    "pixel_values": 2 * torch.ones(3, 3),
+                    "image_grid_thw": torch.tensor([[1, 1, 3]]),
+                },
+                mm_token_type_ids=[0, 1, 1],
+            ),
+        ],
+        seq_len=5,
+    )
+
+    packed = next(iter(dataset))
+
+    assert packed["input_ids"] == [1, 2, 3, 4, 5]
+    assert packed["seq_lens"] == [2, 3]
+    assert packed["mm_token_type_ids"] == [0, 1, 0, 1, 1]
+    assert packed["mm_kwargs"]["pixel_values"].shape == (5, 3)
+    assert packed["mm_kwargs"]["image_grid_thw"].tolist() == [[1, 1, 2], [1, 1, 3]]
+
+
+def test_cat_dataset_packs_text_and_multimodal_samples_together():
+    dataset = CatDataset(
+        [
+            _sft_sample([1]),
+            _sft_sample(
+                [2, 3],
+                mm_kwargs={
+                    "pixel_values": torch.ones(2, 3),
+                    "image_grid_thw": torch.tensor([[1, 1, 2]]),
+                },
+                mm_token_type_ids=[0, 1],
+            ),
+            _sft_sample([4]),
+            _sft_sample([5, 6]),
+        ],
+        seq_len=5,
+    )
+
+    dataiter = iter(dataset)
+    packed = next(dataiter)
+    text_pack = next(dataiter)
+
+    assert packed["input_ids"] == [1, 2, 3, 4, 0]
+    assert packed["loss_mask"] == [True, True, True, True, False]
+    assert packed["seq_lens"] == [1, 2, 2]
+    assert packed["mm_kwargs"] is not None
+    assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0]
+    assert text_pack["input_ids"] == [5, 6, 0, 0, 0]
+    assert text_pack["loss_mask"] == [True, True, False, False, False]
+    assert text_pack["seq_lens"] == [5]
+    assert text_pack["mm_kwargs"] is None
+    assert text_pack["mm_token_type_ids"] is None

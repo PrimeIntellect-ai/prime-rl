@@ -8,6 +8,7 @@ from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.shared import (
     EnvVars,
+    FileMonitorConfig,
     HeartbeatConfig,
     SlurmConfig,
     TrainerLogConfig,
@@ -191,6 +192,9 @@ class SFTConfig(BaseConfig):
 
     wandb: WandbConfig | None = None
 
+    file_monitor: FileMonitorConfig | None = None
+    """Local JSONL metric sink. If set, metrics are appended to ``<output_dir>/metrics.jsonl``."""
+
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — checkpoints and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
 
@@ -302,6 +306,29 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def vlm_freeze_incompatible_with_lora(self):
+        if self.model.vlm is not None and not self.model.vlm.freeze_vision_encoder and self.model.lora is not None:
+            raise ValueError(
+                "freeze_vision_encoder=false is incompatible with LoRA. "
+                "LoRA freezes all non-adapter parameters including the vision encoder."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_vlm_constraints(self):
+        if self.model.vlm is None:
+            return self
+        if self.model.optimization_dtype != "bfloat16" or self.model.reduce_dtype != "bfloat16":
+            raise ValueError(
+                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
+            )
+        if self.data.micro_batch_size != 1:
+            raise ValueError("VLM SFT requires data.micro_batch_size = 1.")
+        if self.val is not None and self.val.data.micro_batch_size != 1:
+            raise ValueError("VLM SFT requires val.data.micro_batch_size = 1.")
+        return self
+
+    @model_validator(mode="after")
     def dont_do_massive_traces(self):
         if self.trace_path:
             if self.max_steps is None:
@@ -310,15 +337,6 @@ class SFTConfig(BaseConfig):
                 raise ValueError(
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
                 )
-        return self
-
-    @model_validator(mode="after")
-    def validate_renderer_vs_vlm(self):
-        if self.model.vlm is not None:
-            raise ValueError(
-                "renderer-only SFT does not support VLMs yet. The renderer tokenizes "
-                "text-only message dicts client-side and cannot handle image inputs."
-            )
         return self
 
     @model_validator(mode="after")

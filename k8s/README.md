@@ -1,6 +1,6 @@
 # Kubernetes Deployment with Helm
 
-This directory contains a Helm chart for deploying PRIME-RL training infrastructure on Kubernetes clusters.
+This directory contains a Helm chart for deploying prime-rl training infrastructure on Kubernetes clusters.
 
 For complete documentation, see the [Kubernetes guide](https://docs.primeintellect.ai/prime-rl/kubernetes).
 
@@ -15,7 +15,7 @@ kubectl get pods -l app.kubernetes.io/instance=my-exp
 
 # Exec into trainer and run training
 kubectl exec -it my-exp-trainer-0 -- bash
-cd /data && uv run trainer @ /app/examples/reverse_text/configs/train.toml
+cd /data && uv run trainer @ /app/k8s/prime-rl/examples/reverse-text/train.toml
 ```
 
 ## Prerequisites
@@ -32,7 +32,8 @@ prime-rl/
 ├── Chart.yaml
 ├── values.yaml           # Default configuration
 ├── examples/
-│   └── reverse-text.yaml # Example values for reverse-text
+│   ├── reverse-text.yaml # Example values for reverse-text
+│   └── reverse-text/     # Split orchestrator/inference/trainer configs the example runs
 └── templates/
     ├── deployment.yaml   # StatefulSets for orchestrator, inference, trainer
     ├── service.yaml      # Headless services for pod discovery

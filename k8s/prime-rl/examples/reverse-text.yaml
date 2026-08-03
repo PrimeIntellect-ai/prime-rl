@@ -11,7 +11,7 @@ image:
 orchestrator:
   enabled: true
   autoStart: true
-  command: "uv run orchestrator @ /app/examples/reverse_text/rl/orch.toml --output-dir /data/outputs/run_default --client.base-url $INFERENCE_URL ; sleep infinity"
+  command: "uv run orchestrator @ /app/k8s/prime-rl/examples/reverse-text/orch.toml --output-dir /data/outputs/run_default --client.base-url $INFERENCE_URL ; sleep infinity"
   resources:
     requests:
       memory: "1Gi"
@@ -21,7 +21,7 @@ orchestrator:
 inference:
   enabled: true
   autoStart: true
-  command: "uv run inference @ /app/examples/reverse_text/rl/infer.toml ; sleep infinity"
+  command: "uv run inference @ /app/k8s/prime-rl/examples/reverse-text/infer.toml ; sleep infinity"
   gpu:
     enabled: true
     count: 1
@@ -34,7 +34,7 @@ inference:
 trainer:
   enabled: true
   autoStart: true
-  command: "uv run trainer @ /app/examples/reverse_text/rl/train.toml --output-dir /data/outputs ; sleep infinity"
+  command: "uv run trainer @ /app/k8s/prime-rl/examples/reverse-text/train.toml --output-dir /data/outputs ; sleep infinity"
   gpu:
     enabled: true
     count: 1

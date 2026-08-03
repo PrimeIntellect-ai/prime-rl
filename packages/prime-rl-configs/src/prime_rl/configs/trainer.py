@@ -7,12 +7,13 @@ from pydantic import Field, model_validator
 from prime_rl.configs.shared import (
     BaseModelConfig,
     EnvVars,
-    FileSystemTransportConfig,
+    FileMonitorConfig,
     HeartbeatConfig,
     MetricsServerConfig,
     TrainerLogConfig,
     TransportConfig,
     WandbConfig,
+    ZMQTransportConfig,
 )
 from prime_rl.utils.config import BaseConfig
 
@@ -236,21 +237,25 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
-    def cp_only_with_flash_attn(self):
+    def vlm_only_with_custom_impl(self):
+        if self.vlm is not None and self.impl != "custom":
+            raise ValueError("VLM training requires model.impl='custom'")
+        return self
+
+    @model_validator(mode="after")
+    def vlm_cp_requires_ulysses(self):
+        if self.vlm is not None and self.cp > 1 and self.cp_style != "ulysses":
+            raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
+        return self
+
+    @model_validator(mode="after")
+    def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
-        if (
-            self.cp > 1
-            and self.attn in ("flash_attention_3", "flash_attention_4", "auto")
-            and self.impl not in ("custom", "auto")
-        ):
-            # Both ring and ulysses route FA3/FA4 through our custom FlashAttention class:
-            # ring patches `_compute_attention` with the ring kernel, ulysses patches it with
-            # the all-to-all wrapper around the FA3/FA4 kernel. The HF path patches
-            # `_flash_attention_forward` which only wraps FA2.
+        if self.cp > 1 and self.impl not in ("custom", "auto"):
             raise ValueError(
-                f"CP with {self.attn} requires model.impl='custom' or 'auto' "
-                "(FA3/FA4 paths are only implemented for the custom model attention class)"
+                "Context parallelism requires model.impl='custom' or 'auto' "
+                "(resolved to a custom PrimeRL implementation)"
             )
         return self
 
@@ -516,28 +521,44 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Weight checkpoint serialization format."""
 
 
-class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    type: Literal["nccl"] = "nccl"
-
+class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"
-    """Host for the NCCL broadcast rendezvous."""
+    """Weight transfer host."""
 
-    port: int = 29501
-    """Port for the NCCL broadcast rendezvous."""
+    port: int
+    """Weight transfer port."""
 
     timeout: int = 1200
-    """Timeout in seconds for the NCCL broadcast."""
+    """Weight transfer timeout in seconds."""
 
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: int = 1
-    """Number of GPUs used for inference."""
+    """Number of inference workers."""
+
+
+class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nccl"] = "nccl"
+
+    port: int = 29501
+    """Port for the NCCL broadcast rendezvous."""
 
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
 
+class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nixl"] = "nixl"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    session_id: str = "default"
+    """ModelExpress session ID."""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -561,12 +582,15 @@ class TrainerConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to broadcast updated weights from trainer to inference."""
 
-    rollout_transport: TransportConfig = FileSystemTransportConfig()
+    rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
     log: TrainerLogConfig = TrainerLogConfig()
 
     wandb: WandbConfig | None = None
+
+    file_monitor: FileMonitorConfig | None = None
+    """Local JSONL metric sink. If set, trainer metrics are appended to ``<output_dir>/metrics.jsonl``."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
@@ -686,9 +710,8 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.model.lora is not None and self.weight_broadcast.type == "nccl":
-            # TODO: Support NCCL broadcast with LoRA
-            raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+            raise ValueError("In-memory weight broadcast does not support LoRA yet.")
         return self
 
     @model_validator(mode="after")

@@ -1,6 +1,6 @@
 ---
 name: install
-description: How to install prime-rl and its optional dependencies. Use when setting up the project, installing extras like deep-gemm for FP8 models, or troubleshooting dependency issues.
+description: How to install prime-rl and its optional dependencies. Use when setting up the project, installing extras like DeepEP for multi-node expert parallelism, or troubleshooting dependency issues.
 ---
 
 # Install
@@ -57,7 +57,7 @@ Verify: `uv run python -c 'import deep_ep; print(deep_ep.__file__)'`.
 
 ### llm-d router backend
 
-Multi-node / disaggregated deployments can route through the upstream llm-d Endpoint Picker instead of `vllm-router` (set `[...deployment.router] type = "llm-d"`). It needs three native binaries — install once:
+Multi-node / disaggregated deployments can route through the upstream llm-d Endpoint Picker instead of `vllm-router` (set `[inference.router] type = "llm-d"`). It needs three native binaries — install once:
 
 ```bash
 bash scripts/install_llmd.sh   # builds epp + pd-sidecar from a pinned llm-d-router commit (vendored Go), fetches envoy

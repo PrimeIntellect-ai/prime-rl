@@ -1,0 +1,5 @@
+# Minimal SFT config with a [slurm] section — fixture for the slim-wheel config
+# parse check in cpu_tests.yaml. On the slim wheel the templates/ data dir is
+# absent, so [slurm].template_path must resolve to None instead of erroring.
+[slurm]
+job_name = "slim-sft-check"

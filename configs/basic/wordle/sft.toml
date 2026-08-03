@@ -1,0 +1,20 @@
+# SFT warmup for wordle on 2 GPUs. Dev-sized mirror of examples/basic/wordle/sft.toml.
+
+max_steps = 20
+
+[deployment]
+num_gpus = 2
+
+[ckpt] # Checkpoint at the end of training
+
+[model]
+name = "PrimeIntellect/Qwen3-1.7B"
+
+[data]
+name = "willcb/V3-wordle"
+seq_len = 1024
+batch_size = 64
+micro_batch_size = 1
+
+[optim]
+lr = 1e-5

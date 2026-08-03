@@ -82,7 +82,7 @@ class ModelConfig(BaseModelConfig):
 
 
 class WeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem"] = "filesystem"
+    type: Literal["nccl", "filesystem", "nixl"] = "filesystem"
     """Weight broadcast transport."""
 
 
@@ -190,9 +190,6 @@ class VllmRouterConfig(BaseConfig):
 
     type: Literal["vllm-router"] = "vllm-router"
 
-    port: int = 8000
-    """Port the router listens on — becomes the client-facing router URL."""
-
     policy: str = "consistent_hash"
     """Routing policy, e.g. ``consistent_hash`` or ``round_robin``."""
 
@@ -201,9 +198,6 @@ class LlmdRouterConfig(BaseConfig):
     """llm-d router backend (EPP + Envoy)."""
 
     type: Literal["llm-d"] = "llm-d"
-
-    port: int = 8000
-    """Port the Envoy gateway listens on — becomes the client-facing router URL."""
 
     scorers: dict[str, float] = {
         "prefix-cache-scorer": 3.0,
@@ -253,12 +247,6 @@ RouterConfig: TypeAlias = Annotated[VllmRouterConfig | LlmdRouterConfig, Field(d
 class BaseInferenceDeploymentConfig(BaseConfig):
     gpus_per_node: int = 8
     """GPUs per node."""
-
-    backend_port: int = 8100
-    """Port for the per-rank vLLM backend instances."""
-
-    router: RouterConfig = VllmRouterConfig()
-    """Router fronting the per-rank endpoints."""
 
 
 class SingleNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
@@ -331,6 +319,12 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 class InferenceConfig(BaseConfig):
     server: ServerConfig = ServerConfig()
 
+    router: RouterConfig | None = Field(default_factory=VllmRouterConfig)
+    """Router fronting the engine(s). Every deployment runs a single global router as the client-facing endpoint on ``server.port``, with the engines listening on ``backend_port``. Set to ``None`` to run a bare engine on ``server.port`` without a router (the SLURM launchers do this for per-rank engine processes; the sbatch script starts the router)."""
+
+    backend_port: int = 8100
+    """Port for the vLLM engine(s) behind the router. Defaults to ``server.port + 100``. Multi-node deployments start one engine per local DP rank at ``backend_port + rank``."""
+
     model: ModelConfig = Field(default_factory=ModelConfig)
 
     parallel: ParallelConfig = ParallelConfig()
@@ -366,7 +360,7 @@ class InferenceConfig(BaseConfig):
     gpu_memory_utilization: float = 0.9
     """GPU memory utilization. Forwarded as ``--gpu-memory-utilization``."""
 
-    quantization: Literal["mxfp8", "fp8_per_block"] | None = None
+    quantization: str | None = None
     """Online inference quantization method. Forwarded as ``--quantization``."""
 
     api_server_count: int = Field(1, ge=0)
@@ -439,33 +433,29 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_mxfp8_requires_sm100(self):
-        """Reject MXFP8 when validation runs on a non-SM100 CUDA host."""
-        if self.quantization != "mxfp8":
-            return self
-
-        try:
-            import torch
-        except ModuleNotFoundError as exc:
-            raise ValueError("inference.quantization='mxfp8' requires torch to validate SM100 support.") from exc
-
-        if torch.cuda.is_available():
-            capability = torch.cuda.get_device_capability()
-            if capability != (10, 0):
-                detected = f"SM{capability[0]}{capability[1]}"
-                raise ValueError(f"inference.quantization='mxfp8' requires SM100, detected {detected}.")
-        return self
-
-    @model_validator(mode="after")
     def validate_llmd_no_routed_experts(self):
         """Reject routed-expert return with the llm-d router (breaks P/D, unverified for multi-node)."""
-        router = getattr(self.deployment, "router", None)
-        if router is not None and router.type == "llm-d" and self.enable_return_routed_experts:
+        if self.router is not None and self.router.type == "llm-d" and self.enable_return_routed_experts:
             raise ValueError(
                 "The llm-d router backend does not support routed-expert return "
                 "(enable_return_routed_experts): it breaks P/D and is unverified for multi-node. "
                 "Use router type 'vllm-router' for routed-expert runs."
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_router_deployment(self):
+        """The llm-d router (EPP + Envoy) is launched by the SLURM templates only; multi-node deployments need a router to front the per-rank engines."""
+        if self.router is not None and self.router.type == "llm-d" and self.deployment.type == "single_node":
+            raise ValueError("The llm-d router backend requires a multi-node or disaggregated SLURM deployment.")
+        if self.router is None and self.deployment.type in ("multi_node", "disaggregated"):
+            raise ValueError("Multi-node / disaggregated deployments require a router fronting the per-rank engines.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_backend_port(self):
+        if self.router is not None and "backend_port" not in self.model_fields_set:
+            self.backend_port = self.server.port + 100
         return self
 
     @model_validator(mode="after")

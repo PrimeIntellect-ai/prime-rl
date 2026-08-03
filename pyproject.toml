@@ -18,12 +18,12 @@ dependencies = [
     "torchaudio",
     "torchdata>=0.11.0",
     "transformers==5.6.2",
-    "vllm>=0.24.0",
+    "vllm>=0.26.0",
     "mooncake-transfer-engine>=0.3.10.post2",
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",
     "ring-flash-attn>=0.1.8",
-    "prime>=0.6.4",
+    "prime>=0.6.19",
     "pyzmq>=27.1.0",
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
@@ -33,7 +33,7 @@ dependencies = [
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
     "torchtitan",
-    "verifiers[harbor]>=0.2.0",
+    "verifiers[harbor]>=0.2.2.dev43",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
@@ -44,6 +44,7 @@ dependencies = [
     "pandas>=2.0",
     "msgspec>=0.18",
     "torchao>=0.17.0",
+    "modelexpress==0.3.0",
 ]
 
 [project.scripts]
@@ -75,9 +76,6 @@ disagg = [
 ]
 gpt-oss = [
     "kernels",
-]
-modelexpress = [
-    "modelexpress==0.3.0",
 ]
 quack = [
     "quack-kernels>=0.4.1",
@@ -202,8 +200,8 @@ vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 vllm = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.26.0/vllm-0.26.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.26.0/vllm-0.26.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = [
     { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },

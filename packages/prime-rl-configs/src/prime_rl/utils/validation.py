@@ -106,6 +106,9 @@ def propagate_shared_fields(data: Any) -> Any:
     propagate("wandb.tags", "trainer.wandb.tags", "orchestrator.wandb.tags")
     propagate("wandb.offline", "trainer.wandb.offline", "orchestrator.wandb.offline")
 
+    # [file_monitor] leaf. (Bare empty ``[file_monitor]`` block enablement is at the end.)
+    propagate("file_monitor.filename", "trainer.file_monitor.filename", "orchestrator.file_monitor.filename")
+
     # [tokenizer]. ``chat_template`` also flows to ``inference.model`` (vLLM's
     # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
     # differ between sub-configs (auto-derived from model names, which may
@@ -122,6 +125,9 @@ def propagate_shared_fields(data: Any) -> Any:
         "orchestrator.tokenizer.chat_template",
         "inference.model.chat_template",
     )
+
+    # [rollout_transport] → both sub-configs (host is launcher-injected for zmq multi-node).
+    propagate("rollout_transport", "trainer.rollout_transport", "orchestrator.rollout_transport")
 
     # Top-level scalars.
     propagate("max_steps", "trainer.max_steps", "orchestrator.max_steps")
@@ -172,7 +178,7 @@ def propagate_shared_fields(data: Any) -> Any:
     # (not ``is not None``) is what makes CLI ``--no-wandb`` / ``--no-ckpt``
     # work — those land as the *string* ``"None"`` until ``BaseConfig``'s
     # parent-class validator converts it, which happens after this one.
-    for key in ("ckpt", "wandb"):
+    for key in ("ckpt", "wandb", "file_monitor"):
         if isinstance(get(key), dict):
             fill(f"trainer.{key}", {})
             fill(f"orchestrator.{key}", {})

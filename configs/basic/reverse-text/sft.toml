@@ -1,0 +1,19 @@
+# SFT warmup for reverse-text on 2 GPUs. Dev-sized mirror of examples/basic/reverse-text/sft.toml.
+
+max_steps = 100
+
+[deployment]
+num_gpus = 2
+
+[ckpt] # Checkpoint at the end of training
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[data]
+name = "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"
+seq_len = 4096
+batch_size = 32
+
+[optim]
+lr = 2e-5

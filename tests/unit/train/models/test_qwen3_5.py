@@ -3,13 +3,14 @@ from unittest.mock import MagicMock
 
 import pytest
 import torch
-from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
+from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM as HFQwen3_5ForCausalLM
 
 from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_attn
 from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5Model
 from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedFlashAttention
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig
+from prime_rl.utils.cp import setup_model_cp
 
 
 def _tiny_text_config(attn_impl: str = "flash_attention_2") -> Qwen3_5TextConfig:
@@ -30,6 +31,28 @@ def _tiny_text_config(attn_impl: str = "flash_attention_2") -> Qwen3_5TextConfig
         linear_conv_kernel_dim=4,
     )
     config._attn_implementation = attn_impl
+    return config
+
+
+def _tiny_vlm_config(attn_impl: str = "flash_attention_2") -> Qwen3_5Config:
+    text_config = _tiny_text_config(attn_impl)
+    vision_config = Qwen3_5VisionConfig(
+        depth=1,
+        hidden_size=64,
+        intermediate_size=128,
+        num_heads=4,
+        out_hidden_size=text_config.hidden_size,
+    )
+    config = Qwen3_5Config(
+        text_config=text_config,
+        vision_config=vision_config,
+        image_token_id=120,
+        video_token_id=121,
+        vision_start_token_id=122,
+        vision_end_token_id=123,
+    )
+    config._attn_implementation = attn_impl
+    config.text_config._attn_implementation = attn_impl
     return config
 
 
@@ -93,6 +116,47 @@ def test_qwen3_5_moe_full_attention_normalizes_fa3_hub_alias():
 
     assert isinstance(model.layers[1].self_attn, Qwen3_5MoeGatedFlashAttention)
     assert model.config._attn_implementation == "flash_attention_3"
+
+
+def test_qwen3_5_context_parallel_setup_chain_text_and_vlm():
+    cp_group = MagicMock()
+
+    text_model = Qwen3_5ForCausalLM(_tiny_text_config())
+    linear_layer = text_model.model.layers[0]
+    text_model.model.layers[0] = torch.nn.Sequential(linear_layer)
+    setup_model_cp(text_model, cp_group, cp_rank=1, cp_world_size=2)
+    assert text_model.model._cp_group is cp_group
+    assert text_model.model._cp_rank == 1
+    assert text_model.model._cp_world_size == 2
+    assert linear_layer.linear_attn.cp_group is cp_group
+
+    vlm_config = _tiny_vlm_config()
+    vlm_config.vision_config._attn_implementation = "sdpa"
+    vlm_config.vision_config._attn_implementation_internal = "sdpa"
+    with torch.device("meta"):
+        vlm_model = Qwen3_5ForCausalLM(vlm_config)
+    setup_model_cp(vlm_model, cp_group, cp_rank=0, cp_world_size=2)
+    assert vlm_model.model.language_model._cp_group is cp_group
+    assert vlm_model.model.language_model.layers[0].linear_attn.cp_world_size == 2
+
+
+def test_setup_model_cp_requires_hook_only_for_hybrid_models():
+    class HybridLayer(torch.nn.Module):
+        layer_type = "linear_attention"
+
+    class Inner:
+        layers = torch.nn.Sequential(torch.nn.Sequential(HybridLayer()))
+
+    class HybridNoHookModel:
+        model = Inner()
+
+    with pytest.raises(ValueError, match="set_context_parallel_attributes"):
+        setup_model_cp(HybridNoHookModel(), MagicMock(), cp_rank=0, cp_world_size=2)
+
+    class SoftmaxOnlyModel:
+        pass
+
+    setup_model_cp(SoftmaxOnlyModel(), MagicMock(), cp_rank=0, cp_world_size=2)
 
 
 def test_qwen3_5_ring_patches_dense_flash_attention():

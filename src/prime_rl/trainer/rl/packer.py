@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Callable, Sequence
 
-from prime_rl.trainer.batch import prepare_batch
+from prime_rl.trainer.batch import multimodal_sample_error, prepare_batch
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport import (
     MicroBatch,
@@ -177,6 +177,8 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with ref logprobs length != sample length ({len(sample.ref_logprobs)} != {sample_length})",
             )
+        if error := multimodal_sample_error(sample):
+            return False, error
         return True, None
 
     def _get_batch(self) -> None:

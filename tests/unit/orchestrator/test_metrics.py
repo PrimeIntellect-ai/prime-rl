@@ -2,6 +2,7 @@ import math
 from types import SimpleNamespace
 
 import pytest
+import verifiers.v1 as vf
 
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
 from prime_rl.orchestrator.utils import compute_pass_metrics
@@ -24,11 +25,14 @@ def mk(
     rewards: dict | None = None,
     env_name: str = "env",
     group_id: str = "g0",
+    trainable: bool = True,
     is_trainable: bool = True,
     is_filtered: bool = False,
     filter_results: dict | None = None,
     setup: float = 0.0,
     generation: float = 0.0,
+    generation_model: float = 0.0,
+    generation_harness: float = 0.0,
     finalize: float = 0.0,
     scoring: float = 0.0,
 ):
@@ -44,17 +48,22 @@ def mk(
         is_truncated=is_truncated,
         is_completed=is_completed,
         has_error=has_error,
-        error=SimpleNamespace(type=error_type) if has_error else None,
+        last_error=SimpleNamespace(type=error_type) if has_error else None,
         stop_condition=stop_condition,
         metrics=metrics or {},
         env_name=env_name,
         group_id=group_id,
+        agent=SimpleNamespace(trainable=trainable),
         is_trainable=is_trainable,
         is_filtered=is_filtered,
         filter_results=filter_results or {},
         timing=SimpleNamespace(
             setup=SimpleNamespace(duration=setup),
-            generation=SimpleNamespace(duration=generation),
+            generation=SimpleNamespace(
+                duration=generation,
+                model=SimpleNamespace(duration=generation_model),
+                harness=SimpleNamespace(duration=generation_harness),
+            ),
             finalize=SimpleNamespace(duration=finalize),
             scoring=SimpleNamespace(duration=scoring),
         ),
@@ -133,8 +142,8 @@ def test_stop_condition_breakdown():
 
 def test_nested_metrics_and_rewards():
     rollouts = [
-        mk(metrics={"acc": 1.0}, rewards={"correct": 1.0, "format": 0.0}),
-        mk(metrics={"acc": 3.0, "fmt": 5.0}, rewards={"correct": 0.0, "format": 1.0}),
+        mk(metrics={"acc": 1.0}, rewards={"correct": vf.Reward(score=1.0), "format": vf.Reward(score=0.0)}),
+        mk(metrics={"acc": 3.0, "fmt": 5.0}, rewards={"correct": vf.Reward(score=0.0), "format": vf.Reward(score=1.0)}),
     ]
     m = TrainRollouts(rollouts).metrics
     assert m.metrics["acc"].mean() == 2.0 and m.rewards["correct"].mean() == 0.5  # nested group access
@@ -145,11 +154,16 @@ def test_nested_metrics_and_rewards():
 
 
 def test_nested_timing():
-    m = TrainRollouts([mk(setup=1.0, generation=2.0, finalize=0.5, scoring=0.5)]).metrics
+    m = TrainRollouts(
+        [mk(setup=1.0, generation=2.0, generation_model=1.5, generation_harness=0.5, finalize=0.5, scoring=0.5)]
+    ).metrics
     assert m.timing.setup.mean() == 1.0 and m.timing.total.mean() == 4.0  # total sums all four phases
+    assert m.timing.generation_model.mean() == 1.5 and m.timing.generation_harness.mean() == 0.5
     out = m.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/timing/setup/mean"] == 1.0
     assert out["train/agg/all/timing/total/mean"] == 4.0
+    assert out["train/agg/all/timing/generation/model/mean"] == 1.5
+    assert out["train/agg/all/timing/generation/harness/mean"] == 0.5
 
 
 def test_train_only_metrics_absent_from_eval():

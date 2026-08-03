@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import pytest
 import torch
 from transformers.models.nemotron_h.configuration_nemotron_h import NemotronHConfig as HFNemotronHConfig
@@ -10,7 +12,8 @@ from transformers.models.nemotron_h.modeling_nemotron_h import (
 
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
-from prime_rl.trainer.models.nemotron_h.modeling_nemotron_h import NemotronHAttentionLayer
+from prime_rl.trainer.models.nemotron_h.modeling_nemotron_h import NemotronHAttentionLayer, NemotronHMambaLayer
+from prime_rl.utils.cp import setup_model_cp
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -67,7 +70,7 @@ def get_model_pairs():
     with torch.no_grad():
         state_dict = hf_model.state_dict()
         prime_state_keys = prime_model.state_dict().keys()
-        NemotronHForCausalLM.convert_to_prime(state_dict)
+        prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
 
     inject_prime_lm_head(prime_model, chunk_size=None)
@@ -127,7 +130,7 @@ def test_nemotron_h_reverse():
 
     with torch.no_grad():
         sd = prime_model.state_dict()
-        NemotronHForCausalLM.convert_to_hf(sd)
+        prime_model.convert_to_hf(sd)
         # convert_to_hf produces checkpoint format with "backbone." prefix;
         # the HF model uses "model." prefix for its state dict
         keys_to_rename = [k for k in sd if k.startswith("backbone.")]
@@ -208,9 +211,9 @@ def test_nemotron_h_weight_conversion_roundtrip():
     original_sd = {k: v.clone() for k, v in model.state_dict().items()}
 
     sd = model.state_dict()
-    NemotronHForCausalLM.convert_to_hf(sd)
+    model.convert_to_hf(sd)
     assert NemotronHForCausalLM.is_hf_state_dict(sd)
-    NemotronHForCausalLM.convert_to_prime(sd)
+    model.convert_to_prime(sd)
     assert NemotronHForCausalLM.is_prime_state_dict(sd)
 
     for key in original_sd:
@@ -223,6 +226,27 @@ def test_nemotron_h_hybrid_override_pattern():
     config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
     assert config.layers_block_type == ["mamba", "moe", "attention", "moe"]
     assert config.num_hidden_layers == 4
+
+
+def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():
+    config = NemotronHConfig(
+        **(_BASE | {"mamba_n_groups": 2}),
+        layers_block_type=["mamba", "moe", "attention", "moe"],
+        use_grouped_mm=False,
+    )
+    with torch.device("meta"):
+        model = NemotronHForCausalLM(config)
+
+    mamba_layer = model.model.layers[0]
+    assert isinstance(mamba_layer, NemotronHMambaLayer)
+    model.model.layers[0] = torch.nn.Sequential(mamba_layer)
+
+    cp_group = MagicMock()
+    setup_model_cp(model, cp_group, cp_rank=1, cp_world_size=2)
+
+    assert mamba_layer._cp_group is cp_group
+    assert mamba_layer._cp_rank == 1
+    assert mamba_layer._cp_world_size == 2
 
 
 def test_nemotron_h_no_latent_projection():

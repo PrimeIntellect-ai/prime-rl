@@ -121,3 +121,11 @@ jobs:
           PYTEST_OUTPUT_DIR: /tmp/outputs
           VLLM_WORKER_MULTIPROC_METHOD: spawn
         run: uv run pytest -vvs ${{ matrix.pytest_args }}
+      - name: Upload run logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.test }}-logs
+          path: /tmp/outputs/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore

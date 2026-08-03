@@ -297,12 +297,11 @@ def verify(arch: str, model_dir: Path) -> None:
 
     # Roundtrip weight conversion: HF -> PrimeRL -> HF
     # Normalize both through the same roundtrip to handle expert format differences
-    prime_cls = preset["prime_model_class"]
     with torch.no_grad():
-        roundtrip_sd = prime_cls.convert_to_hf(dict(prime_model.state_dict()))
+        roundtrip_sd = prime_model.convert_to_hf(dict(prime_model.state_dict()))
         orig_sd = dict(hf_model.state_dict())
-        prime_cls.convert_to_prime(orig_sd)
-        prime_cls.convert_to_hf(orig_sd)
+        prime_model.convert_to_prime(orig_sd)
+        prime_model.convert_to_hf(orig_sd)
 
     for key in orig_sd:
         assert key in roundtrip_sd, f"Missing key after roundtrip: {key}"

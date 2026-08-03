@@ -7,8 +7,11 @@ from __future__ import annotations
 import asyncio
 import time
 
+from modelexpress import p2p_pb2
+
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.types import Policy, VersionObserver
+from prime_rl.trainer.rl.broadcast.nixl.model_express import ModelExpressSession
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import format_time, get_logger
@@ -29,6 +32,7 @@ class WeightWatcher:
         lora_name: str | None,
         ckpt_step: int = 0,
         poll_interval: float = 1.0,
+        model_express: ModelExpressSession | None = None,
     ) -> None:
         self.config = config
         self.policy = policy
@@ -37,6 +41,7 @@ class WeightWatcher:
         self.lora_name = lora_name
         self.ckpt_step = ckpt_step
         self.poll_interval = poll_interval
+        self.model_express = model_express
 
         self.last_update_weights_time: float = 0.0
         self.last_wait_for_ckpt_time: float = 0.0
@@ -59,14 +64,25 @@ class WeightWatcher:
 
     async def stop(self) -> None:
         self.stopped.set()
+        # Let an in-flight apply finish before dying: the trainer blocks inside
+        # its in-memory broadcast until the apply completes, so cancelling
+        # mid-apply would strand it. The orchestrator's global teardown budget
+        # bounds this wait.
+        async with self.update_lock:
+            pass
         if self.task is not None:
             await safe_cancel(self.task)
             self.task = None
 
     def compute_next_ckpt_step(self) -> int:
-        """Next checkpoint to adopt — at least ``policy.version`` (we stay
-        one step ahead of the trainer) plus anything fresher already
-        published in ``broadcasts/``."""
+        """Return the next policy version exposed by the configured transport."""
+        if self.model_express is not None:
+            if self.config.max_steps is not None and self.ckpt_step >= self.config.max_steps - 2:
+                return self.ckpt_step
+            # ModelExpress status changes are unversioned, so its rendezvous advances
+            # exactly one policy version per READY/INITIALIZING cycle.
+            return self.ckpt_step + 1
+
         broadcast_dir = get_broadcast_dir(self.config.output_dir)
         latest_ckpt_step = get_latest_ckpt_step(broadcast_dir) or 0
         return max(self.policy.version, latest_ckpt_step)
@@ -77,20 +93,28 @@ class WeightWatcher:
                 # Another caller raced us — bail without re-applying
                 return
 
-            broadcast_dir = get_broadcast_dir(self.config.output_dir)
-            weights_path = get_step_path(broadcast_dir, next_step)
-            stable_marker = weights_path / "STABLE"
-            if not stable_marker.exists():
-                get_logger().info(
-                    f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
-                    "Training is progressing normally."
-                )
-                t0 = time.perf_counter()
-                await wait_for_path(stable_marker)
-                self.last_wait_for_ckpt_time = time.perf_counter() - t0
-                get_logger().info(
-                    f"Orchestrator resumed: checkpoint {next_step} ready (after {format_time(self.last_wait_for_ckpt_time)})"
-                )
+            t0 = time.perf_counter()
+            weights_path = None
+            if self.model_express is not None:
+                await self.wait_for_model_express_status(p2p_pb2.SOURCE_STATUS_READY)
+            else:
+                broadcast_dir = get_broadcast_dir(self.config.output_dir)
+                weights_path = get_step_path(broadcast_dir, next_step)
+                stable_marker = weights_path / "STABLE"
+                if not stable_marker.exists():
+                    get_logger().info(
+                        f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
+                        "Training is progressing normally."
+                    )
+                    await wait_for_path(stable_marker)
+            self.last_wait_for_ckpt_time = time.perf_counter() - t0
+
+            # Publish confirmed: the policy version advances here, before the
+            # apply — inference pauses during the update, so nothing can generate
+            # under the new number from the old weights, and a ship held on this
+            # version releases without waiting out the inference weight reload.
+            self.ckpt_step = next_step
+            self.policy.version = next_step
 
             # Drain off-policy rollouts BEFORE pausing the inference engines.
             # Aborting a rollout triggers vLLM's KV-connector cleanup (NIXL's
@@ -117,8 +141,6 @@ class WeightWatcher:
             self.update_count += 1
             get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
 
-            self.ckpt_step = next_step
-            self.policy.version = next_step
             if self.lora_name is not None:
                 self.inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
@@ -130,6 +152,21 @@ class WeightWatcher:
                     get_logger().warning(
                         f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
                     )
+
+            if self.model_express is not None:
+                await self.wait_for_model_express_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+
+    async def wait_for_model_express_status(self, status: int) -> None:
+        while not self.stopped.is_set():
+            found = await asyncio.to_thread(
+                self.model_express.exists_role_with_status,
+                "trainer",
+                status,
+            )
+            if found:
+                return
+            await asyncio.sleep(self.poll_interval)
+        raise asyncio.CancelledError
 
     def gauges(self) -> dict[str, float]:
         return {

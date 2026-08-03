@@ -1,6 +1,0 @@
-max_steps = 5
-batch_size = 16
-
-[train.sampling]
-max_completion_tokens = 16
-

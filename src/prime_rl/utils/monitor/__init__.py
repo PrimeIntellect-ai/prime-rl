@@ -2,9 +2,10 @@ from pathlib import Path
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.shared import PrimeMonitorConfig, WandbWithExtrasConfig
+from prime_rl.configs.shared import FileMonitorConfig, PrimeMonitorConfig, WandbWithExtrasConfig
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.monitor.base import Monitor, NoOpMonitor
+from prime_rl.utils.monitor.file import FileMonitor
 from prime_rl.utils.monitor.multi import MultiMonitor
 from prime_rl.utils.monitor.prime import PrimeMonitor
 from prime_rl.utils.monitor.wandb import WandbMonitor
@@ -13,6 +14,7 @@ __all__ = [
     "Monitor",
     "WandbMonitor",
     "PrimeMonitor",
+    "FileMonitor",
     "MultiMonitor",
     "NoOpMonitor",
     "setup_monitor",
@@ -37,6 +39,7 @@ def setup_monitor(
     run_config: BaseConfig | None = None,
     *,
     prime_config: PrimeMonitorConfig | None = None,
+    file_config: FileMonitorConfig | None = None,
     keep_full_history: bool = True,
     train_env_names: list[str] = [],
     eval_env_names: list[str] = [],
@@ -78,6 +81,16 @@ def setup_monitor(
                 config=prime_config,
                 output_dir=output_dir,
                 tokenizer=tokenizer,
+                run_config=run_config,
+                keep_full_history=keep_full_history,
+            )
+        )
+
+    if file_config is not None:
+        monitors.append(
+            FileMonitor(
+                config=file_config,
+                output_dir=output_dir,
                 run_config=run_config,
                 keep_full_history=keep_full_history,
             )

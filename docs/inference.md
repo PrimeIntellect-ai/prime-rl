@@ -9,7 +9,7 @@ This page covers the inference configuration and the supported features/deployme
 - [Multi-Node](#multi-node)
     - [Multi-replica](#multi-replica)
     - [Wide-EP](#wide-ep)
-- [P/D Dissagregation](#pd-dissagregation)
+- [P/D Disaggregation](#pd-disaggregation)
 - [Router](#router)
     - [Routing policies](#routing-policies)
 - [Advanced Configuration](#advanced-configuration)
@@ -26,11 +26,13 @@ This page covers the inference configuration and the supported features/deployme
 We support 3 distinct deployment shapes:
 - [Single-Node](#single-node) - Runs the inference server on a single node. Useful for debugging, small scale experiments or smaller models. The default deployment shape.
 - [Multi-Node](#multi-node) - Runs the inference server on multiple nodes. Useful for large scale experiments or larger models, where latency is not a concern - i.e. single turn inference, long context inference, etc.
-- [Disaggregated](#disaggregated) - Runs the inference server on multiple nodes, but disaggregates the prefill and decode stages. Useful for large scale experiments or larger models, where latency is a concern and multi-node deployment creates very high E2E rollout latency, such as agentic workflows.
+- [Disaggregated](#pd-disaggregation) - Runs the inference server on multiple nodes, but disaggregates the prefill and decode stages. Useful for large scale experiments or larger models, where latency is a concern and multi-node deployment creates very high E2E rollout latency, such as agentic workflows.
 
 Most of the features are supported for all deployment shapes, with few exceptions. These exceptions are rejected on validation.
 
-You can select the deployment shape with `InferenceDeploymentConfig` in your config file. This is a config-field that allows you to set the deployment shape, deployment-specific knobs such as `num_nodes`, `num_replicas`, `backend_port`, and a `[...deployment.router]` block, etc.
+Every deployment shape has the same client-facing layout: a single global router listens on `inference.server.port` and fronts all vLLM engines, which listen on `inference.backend_port` (+ rank offset). Clients always talk to one URL, regardless of how many engines run behind it.
+
+You can select the deployment shape with `InferenceDeploymentConfig` in your config file. This is a config-field that allows you to set the deployment shape and topology knobs such as `num_nodes` and `num_replicas`.
 
 ```toml
 [inference.deployment]
@@ -55,6 +57,8 @@ The single-node deployment is the default deployment shape. It runs the inferenc
 [inference.deployment]
 type = "single_node"
 ```
+
+The launcher starts a `vllm-router` on `inference.server.port` (default `8000`) fronting the vLLM engine on `inference.backend_port` (default `8100`). Clients connect to the router URL; admin operations (weight updates, health checks) bypass the router and hit the engine port directly — the RL entrypoint wires `orchestrator.model.client.admin_base_url` accordingly.
 
 This deployment shape runs the inference server on a single node, if configured with NVLink enabled, it allows you more freedom in terms of parallelism configurations.
 
@@ -102,7 +106,7 @@ tp = 2
 dp = 4
 ```
 
-This configuration will run 2 independent vLLM replicas, each with `tp=2` and `dp=4`. Routing is handled by a router instance running on the same node as the 1st replica — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via the `[...deployment.router]` block. You can read more about the supported routing options in the [router](#router) section.
+This configuration will run 2 independent vLLM replicas, each with `tp=2` and `dp=4`. Routing is handled by a single global router running on the first inference node, fronting the per-rank endpoints of all replicas — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via the `[inference.router]` block. You can read more about the supported routing options in the [router](#router) section.
 
 ### Wide-EP
 
@@ -124,7 +128,7 @@ dp = 8
 
 This configuration will run 2 vLLM processes, each with `data_parallel_size_local = 4` and `tp = 2` and expert parallelism spanning 2 nodes. The requests are again routed to these processes via the `vllm-router`.
 
-## P/D Dissagregation
+## P/D Disaggregation
 
 This is the most advanced deployment shape. It allows you to disaggregate the prefill and decode stages, with KV cache flowing between them. This is useful for large scale deployments, where there are high requirements on latency, such as agentic workflows spanning 100s of turns.
 
@@ -160,25 +164,31 @@ num_train_nodes = 4
 num_infer_replicas = 3
 ```
 
-This will run 3 inference islands, each running on 6 nodes. The total inference deployment will span 18 nodes and start 3 separate router instances.
+This will run 3 inference islands, each running on 6 nodes. The total inference deployment will span 18 nodes, fronted by the single global router.
 
 
 ## Router
 
-Multi-node and disaggregated deployments front their vLLM backends with a router, configured via a discriminated `[...deployment.router]` block (`type = "vllm-router" | "llm-d"`):
+Every deployment fronts its vLLM engines with a single global router — it listens on `inference.server.port` and is the one URL clients connect to. The backend is configured via a discriminated `[inference.router]` block (`type = "vllm-router" | "llm-d"`):
 
 ```toml
-[inference.deployment.router]   # or [deployment.router] for the standalone inference entrypoint
+[inference.router]              # or [router] for the standalone inference entrypoint
 type = "llm-d"                  # "vllm-router" (default) or "llm-d"
-# llm-d-only knobs (all optional):
-scorers = { "prefix-cache-scorer" = 3.0, "active-request-scorer" = 2.0 }   # base, applied to every profile
-prefill_scorer_overrides = { "queue-scorer" = 2.0, "kv-cache-utilization-scorer" = 2.0 }  # merged onto the P/D prefill profile
-decode_scorer_overrides = {}    # merged onto the P/D decode profile
-non_cached_tokens = 16          # below this many non-cached prompt tokens, skip remote prefill (P/D)
+non_cached_tokens = 16          # llm-d only: below this many non-cached prompt tokens, skip remote prefill (P/D)
+
+# llm-d only: base scorer weights, applied to every profile
+[inference.router.scorers]
+"prefix-cache-scorer" = 3.0
+"active-request-scorer" = 2.0
+
+# llm-d only: merged onto the P/D prefill profile (decode_scorer_overrides for decode)
+[inference.router.prefill_scorer_overrides]
+"queue-scorer" = 2.0
+"kv-cache-utilization-scorer" = 2.0
 ```
 
-- **`vllm-router`** (default) — our fork of [vllm-router](https://github.com/PrimeIntellect-ai/router). Knob: `policy`.
-- **`llm-d`** — the upstream [llm-d](https://llm-d.ai) Endpoint Picker (EPP) + Envoy proxy. Routing combines **prefix-cache affinity** (grouped rollouts reuse a cached prefix and skip prefill) with the **`active-request-scorer`** — an in-flight load balancer that spreads requests across ranks immediately, unlike the metrics-scraped `queue-scorer` / `kv-cache-utilization-scorer` / `load-aware-scorer` (which lag and concentrate bursts of same-prefix requests). The scorer weights follow the upstream llm-d P/D guide; tune via `scorers` (base) + `prefill_scorer_overrides` / `decode_scorer_overrides` (per-profile, P/D). Does not support `enable_return_routed_experts` (router replay).
+- **`vllm-router`** (default) — our fork of [vllm-router](https://github.com/PrimeIntellect-ai/router). Knob: `policy`. The only backend supported for single-node (local) deployments.
+- **`llm-d`** — the upstream [llm-d](https://llm-d.ai) Endpoint Picker (EPP) + Envoy proxy (multi-node / disaggregated SLURM deployments only). Routing combines **prefix-cache affinity** (grouped rollouts reuse a cached prefix and skip prefill) with the **`active-request-scorer`** — an in-flight load balancer that spreads requests across ranks immediately, unlike the metrics-scraped `queue-scorer` / `kv-cache-utilization-scorer` / `load-aware-scorer` (which lag and concentrate bursts of same-prefix requests). The scorer weights follow the upstream llm-d P/D guide; tune via `scorers` (base) + `prefill_scorer_overrides` / `decode_scorer_overrides` (per-profile, P/D). Does not support `enable_return_routed_experts` (router replay).
 
 Both backends support the 2 most important things:
 - Request routing - KV cache re-use and balanced routing
@@ -251,8 +261,12 @@ For configuring various knobs with environment variables, we enable you to confi
 [inference.deployment]
 type = "disaggregated"
 
-prefill_env_vars = {"VLLM_ENABLE_MOE_DP_CHUNK"="0", "VLLM_DEEP_GEMM_WARMUP"="skip"}
-decode_env_vars = {"VLLM_DEEP_GEMM_WARMUP"="skip"}
+[inference.deployment.prefill_env_vars]
+"VLLM_ENABLE_MOE_DP_CHUNK" = "0"
+"VLLM_DEEP_GEMM_WARMUP" = "skip"
+
+[inference.deployment.decode_env_vars]
+"VLLM_DEEP_GEMM_WARMUP" = "skip"
 ```
 
 These are role-specific and layer on top of [`env_vars`](configuration.md#environment-variables) shared by all inference processes regardless of role.
@@ -279,7 +293,7 @@ enable_router_replay = true # this will also auto-set the inference.enable_retur
 enable_return_routed_experts = true
 ```
 
-This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend increasing `orchestrator.*.env.num_workers` to allow for more parallelization on the verifiers side.
+This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend sizing up the env-server pool (`orchestrator.*.source.serve.pool`) to allow for more parallelization on the verifiers side.
 
 Currently this feature is also not supported with CPU KV cache offload, which can have negative impact on the inference throughput.
 
