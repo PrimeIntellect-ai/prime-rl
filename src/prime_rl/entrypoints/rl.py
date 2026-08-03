@@ -272,7 +272,7 @@ def rl_local(config: RLConfig):
 
             # Start monitoring thread
             stop_event = Event()
-            stop_events[f"env-server/{split}/{name}"] = stop_event
+            stop_events[f"env/{split}/{name}"] = stop_event
             monitor_thread = Thread(
                 target=monitor_process,
                 args=(env_server_process, stop_event, error_queue, f"{split} env server {name}"),
