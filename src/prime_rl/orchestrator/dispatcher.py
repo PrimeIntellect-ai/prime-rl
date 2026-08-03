@@ -46,7 +46,6 @@ from prime_rl.orchestrator.types import (
     GroupState,
     InflightRollout,
     Policy,
-    Rollout,
     RolloutKind,
 )
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
@@ -514,21 +513,21 @@ class RolloutDispatcher:
 
         try:
             result = task.result()
-            rollouts: list[Rollout] = result if isinstance(result, list) else [result]
+            episodes: list[vf.WireEpisode] = result if isinstance(result, list) else [result]
         except asyncio.CancelledError:
             return
         except Exception as exc:
             get_logger().warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             await self.emit_failed_episodes(meta, group, EpisodeFailure(type="TaskFailed", message=repr(exc)))
             return
-        if not rollouts:
+        if not any(episode.traces for episode in episodes):
             get_logger().warning(f"Env returned no traces in group {meta.group_id} ({meta.env_name})")
             await self.emit_failed_episodes(
                 meta, group, EpisodeFailure(type="EmptyEpisode", message="env run returned an episode with no traces")
             )
             return
 
-        for r in rollouts:
+        for r in (r for episode in episodes for r in episode.traces):
             if not r.has_error and r.num_turns == 0:
                 # Empty trajectory: promote to an explicit error so the sink
                 # treats it like any other failure (``has_error`` reads ``ok``)
@@ -541,19 +540,15 @@ class RolloutDispatcher:
                     get_logger().warning(
                         f"Rollout failed in group {meta.group_id} ({meta.env_name}) — {r.last_error.type}: {r.last_error.message}"
                     )
-        if meta.rollout_count == 1:
-            # A ``run`` task: the whole result is one episode.
-            await self.emit_episode(meta, group, rollouts)
-        else:
-            # A legacy ``run_group`` task: one single-trace episode per trace.
-            for r in rollouts:
-                await self.emit_episode(meta, group, [r])
+        # A ``run`` task answers one episode; a legacy ``run_group`` task one per rollout.
+        for episode in episodes:
+            await self.emit_episode(meta, group, episode)
 
     async def emit_episode(
         self,
         meta: InflightRollout,
         group: GroupState | None,
-        rollouts: list[Rollout],
+        episode: vf.WireEpisode | None,
         failure: EpisodeFailure | None = None,
     ) -> None:
         """Put one completed episode on ``out_q`` — its traces, or the ``failure`` that stands in
@@ -571,7 +566,7 @@ class RolloutDispatcher:
         if meta.kind == "eval":
             assert eval_step is not None, "eval episode missing eval_step"
 
-        for rollout in rollouts:
+        for rollout in episode.traces if episode is not None else []:
             rollout.kind = meta.kind
             rollout.env_name = meta.env_name
             rollout.group_id = meta.group_id
@@ -587,7 +582,7 @@ class RolloutDispatcher:
                 policy_version=policy_version,
                 off_policy_steps=meta.off_policy_steps,
                 eval_step=eval_step if meta.kind == "eval" else None,
-                rollouts=rollouts,
+                episode=episode,
                 failure=failure,
             )
         )
@@ -599,7 +594,7 @@ class RolloutDispatcher:
         ``group_size`` — prime-rl's own failure, carried as itself rather than as a stand-in trace."""
         for _ in range(meta.rollout_count):
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
-            await self.emit_episode(meta, group, [], failure=failure)
+            await self.emit_episode(meta, group, None, failure=failure)
 
     async def drop_group(self, group_id: uuid.UUID) -> int:
         """Cancel remaining in-flight tasks for this group and emit a
@@ -627,7 +622,7 @@ class RolloutDispatcher:
         cancel = EpisodeFailure(type="Cancelled", message="Off-policy cancel")
         for _, meta in claimed:
             for _ in range(meta.rollout_count):
-                await self.emit_episode(meta, group, [], failure=cancel)
+                await self.emit_episode(meta, group, None, failure=cancel)
 
         # For non-group-scoring envs, the group may have rollouts that
         # were never dispatched (``rollouts_to_schedule > 0``). Emit
@@ -648,7 +643,7 @@ class RolloutDispatcher:
             )
             unscheduled_cancelled = group.rollouts_to_schedule
             for _ in range(unscheduled_cancelled):
-                await self.emit_episode(fallback_meta, group, [], failure=cancel)
+                await self.emit_episode(fallback_meta, group, None, failure=cancel)
 
         cancelled = inflight_cancelled + unscheduled_cancelled
         if cancelled > 0:

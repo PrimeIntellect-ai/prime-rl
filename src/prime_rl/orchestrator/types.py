@@ -156,9 +156,10 @@ class EpisodeResult:
     describe the whole episode, plus either the env's traces or the reason there are none.
 
     The scheduling facts live here rather than on each trace because that is what they describe —
-    a group is dispatched, cancelled, and counted whole. ``rollouts`` is empty exactly when
-    ``failure`` is set: prime-rl never mints a stand-in trace to carry an outcome the env did not
-    produce, so a cancellation can't be mistaken for an agent's rollout."""
+    a group is dispatched, cancelled, and counted whole. ``episode`` is the env's own
+    ``vf.Episode``, kept whole so its aggregates (``by_agent``, ``num_turns``) are read rather than
+    rebuilt; it is set exactly when ``failure`` is not, since prime-rl never mints a stand-in trace
+    to carry an outcome the env did not produce."""
 
     kind: RolloutKind
     env_name: str
@@ -166,13 +167,18 @@ class EpisodeResult:
     policy_version: int
     off_policy_steps: int = 0
     eval_step: int | None = None
-    rollouts: list[Rollout] = field(default_factory=list)
+    episode: vf.WireEpisode | None = None
     failure: EpisodeFailure | None = None
 
     def __post_init__(self) -> None:
-        assert bool(self.rollouts) != (self.failure is not None), (
-            "an episode carries either traces or a failure, never both or neither"
+        assert (self.episode is not None) != (self.failure is not None), (
+            "an episode carries either its traces or a failure, never both or neither"
         )
+
+    @property
+    def rollouts(self) -> list[Rollout]:
+        """The episode's traces; empty when it failed before producing any."""
+        return list(self.episode.traces) if self.episode is not None else []
 
 
 @dataclass

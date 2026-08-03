@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
 
+import verifiers.v1 as vf
+
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 if TYPE_CHECKING:
@@ -274,52 +276,45 @@ class TraceMetrics(StatGroup):
 
 
 class EpisodeMetrics:
-    """Metrics shared by train and eval over a rollout list. The count metrics (tokens/turns/
-    branches) are episode-level — one value per episode, summing its traces — and are the only
-    per-metric keys ``to_wandb`` emits at the env level; every trace-level metric is emitted per
-    agent via ``by_agent()``. The boolean ``Stat`` properties (0/1 distributions, ``.mean()`` is
-    the rate) serve the console log lines. ``TrainMetrics`` / ``EvalMetrics`` extend ``to_wandb``
-    with the train pipeline rates and the eval scores."""
+    """Metrics shared by train and eval over a list of episodes. The count metrics (tokens/turns/
+    branches) are read straight off ``vf.Episode``, which already sums an episode's traces, and are
+    the only per-metric keys ``to_wandb`` emits at the env level; every trace-level metric is
+    emitted per agent via ``by_agent()``. The boolean ``Stat`` properties (0/1 distributions,
+    ``.mean()`` is the rate) serve the console log lines. ``TrainMetrics`` / ``EvalMetrics`` extend
+    ``to_wandb`` with the train pipeline rates and the eval scores."""
 
-    def __init__(self, rollouts: list[Rollout]) -> None:
-        self.rollouts = rollouts
-
-    def episodes(self) -> list[list[Rollout]]:
-        """The subset's rollouts grouped into their episodes. A rollout without an
-        ``episode_id`` (legacy envs, synthesized error markers) is its own episode."""
-        grouped: dict[str, list[Rollout]] = {}
-        for r in self.rollouts:
-            grouped.setdefault(r.episode_id or r.id, []).append(r)
-        return list(grouped.values())
+    def __init__(self, episodes: list[vf.WireEpisode]) -> None:
+        self.episodes = episodes
+        self.rollouts: list[Rollout] = [trace for episode in episodes for trace in episode.traces]
 
     def by_agent(self) -> dict[str, TraceMetrics]:
-        """Per-agent metric views (``vf.Episode.by_agent`` over the subset's rollouts)."""
+        """Per-agent metric views, merging each episode's own ``vf.Episode.by_agent`` grouping."""
         per_agent: dict[str, list[Rollout]] = {}
-        for r in self.rollouts:
-            per_agent.setdefault(r.agent.name, []).append(r)
+        for episode in self.episodes:
+            for name, traces in episode.by_agent.items():
+                per_agent.setdefault(name, []).extend(traces)
         return {name: TraceMetrics(rollouts) for name, rollouts in sorted(per_agent.items())}
 
-    # Episode-level count metrics: one value per episode, summing its traces — the same
-    # aggregation as ``vf.Episode.num_turns`` / ``num_*_tokens``.
+    # Episode-level count metrics, one value per episode — ``vf.Episode``'s own aggregates.
     @property
     def num_total_tokens(self) -> Stat:
-        return Stat([float(sum(r.num_total_tokens for r in episode)) for episode in self.episodes()])
+        return Stat([float(episode.num_total_tokens) for episode in self.episodes])
 
     @property
     def num_input_tokens(self) -> Stat:
-        return Stat([float(sum(r.num_input_tokens for r in episode)) for episode in self.episodes()])
+        return Stat([float(episode.num_input_tokens) for episode in self.episodes])
 
     @property
     def num_output_tokens(self) -> Stat:
-        return Stat([float(sum(r.num_output_tokens for r in episode)) for episode in self.episodes()])
+        return Stat([float(episode.num_output_tokens) for episode in self.episodes])
 
     @property
     def num_turns(self) -> Stat:
-        return Stat([float(sum(r.num_turns for r in episode)) for episode in self.episodes()])
+        return Stat([float(episode.num_turns) for episode in self.episodes])
 
     @property
     def num_branches(self) -> Stat:
-        return Stat([float(sum(r.num_branches for r in episode)) for episode in self.episodes()])
+        return Stat([float(sum(trace.num_branches for trace in episode.traces)) for episode in self.episodes])
 
     # Boolean rate metrics for the console log lines (0/1 distributions — ``.mean()`` is the
     # rate); to_wandb emits their per-agent counterparts instead.
@@ -392,8 +387,8 @@ class EvalMetrics(EpisodeMetrics):
     per example) is supplied by the container so the ``all`` and ``effective`` subsets — and every
     agent — share one stable key."""
 
-    def __init__(self, rollouts: list[Rollout], group_size: int) -> None:
-        super().__init__(rollouts)
+    def __init__(self, episodes: list[vf.WireEpisode], group_size: int) -> None:
+        super().__init__(episodes)
         self.group_size = group_size
 
     @property
@@ -410,50 +405,70 @@ class EvalMetrics(EpisodeMetrics):
         return out
 
 
+def keep_traces(episode: vf.WireEpisode, keep: Callable[[Rollout], bool]) -> vf.WireEpisode | None:
+    """The episode narrowed to the traces that pass ``keep``, or ``None`` if none do. A subset view
+    stays a list of episodes so the episode-level aggregates keep describing what survived."""
+    traces = [trace for trace in episode.traces if keep(trace)]
+    return episode.model_copy(update={"traces": traces}) if traces else None
+
+
 class TrainRollouts:
-    """A list of train rollouts (everything that came back, errored + filtered + untrainable
-    included). ``effective`` is the clean trainable subset (a view of the same traces);
-    ``metrics`` builds ``TrainMetrics`` over them."""
+    """The train episodes of one window (everything that came back, errored + filtered +
+    untrainable included). ``effective`` is the clean trainable subset — the same episodes, each
+    narrowed to its surviving traces; ``metrics`` builds ``TrainMetrics`` over them. Sized and
+    iterated by *rollout*, since that is the unit almost every consumer wants."""
 
-    def __init__(self, rollouts: list[Rollout] | None = None) -> None:
-        self.rollouts = rollouts if rollouts is not None else []
+    def __init__(self, episodes: list[vf.WireEpisode] | None = None) -> None:
+        self.episodes = episodes if episodes is not None else []
 
-    def append(self, rollout: Rollout) -> None:
-        self.rollouts.append(rollout)
+    def append(self, episode: vf.WireEpisode) -> None:
+        self.episodes.append(episode)
+
+    @property
+    def rollouts(self) -> list[Rollout]:
+        return [trace for episode in self.episodes for trace in episode.traces]
 
     def __len__(self) -> int:
-        return len(self.rollouts)
+        return sum(len(episode.traces) for episode in self.episodes)
 
     def __iter__(self) -> Iterator[Rollout]:
         return iter(self.rollouts)
 
     @property
     def effective(self) -> TrainRollouts:
-        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered and r.agent.trainable])
+        kept = (
+            keep_traces(episode, lambda r: not r.has_error and not r.is_filtered and r.agent.trainable)
+            for episode in self.episodes
+        )
+        return TrainRollouts([episode for episode in kept if episode is not None])
 
     def by_env(self) -> dict[str, TrainRollouts]:
-        grouped: dict[str, list[Rollout]] = {}
-        for r in self.rollouts:
-            grouped.setdefault(r.env_name, []).append(r)
-        return {env: TrainRollouts(rs) for env, rs in grouped.items()}
+        grouped: dict[str, list[vf.WireEpisode]] = {}
+        for episode in self.episodes:
+            grouped.setdefault(episode.traces[0].env_name, []).append(episode)
+        return {env: TrainRollouts(episodes) for env, episodes in grouped.items()}
 
     @property
     def metrics(self) -> TrainMetrics:
-        return TrainMetrics(self.rollouts)
+        return TrainMetrics(self.episodes)
 
 
 class EvalRollouts:
-    """A list of eval rollouts (errored + untrainable included). ``effective`` is the
-    non-errored trainable subset (a view).
+    """The eval episodes of one epoch (errored + untrainable included). ``effective`` is the
+    non-errored trainable subset — the same episodes, each narrowed to its surviving traces.
     ``group_size`` (rollouts per example, the ``avg@k`` k) is derived from the full epoch and carried
     onto ``effective`` so both subsets share one stable key; ``metrics`` builds ``EvalMetrics``."""
 
-    def __init__(self, rollouts: list[Rollout] | None = None, group_size: int | None = None) -> None:
-        self.rollouts = rollouts if rollouts is not None else []
+    def __init__(self, episodes: list[vf.WireEpisode] | None = None, group_size: int | None = None) -> None:
+        self.episodes = episodes if episodes is not None else []
         self._group_size = group_size
 
+    @property
+    def rollouts(self) -> list[Rollout]:
+        return [trace for episode in self.episodes for trace in episode.traces]
+
     def __len__(self) -> int:
-        return len(self.rollouts)
+        return sum(len(episode.traces) for episode in self.episodes)
 
     def __iter__(self) -> Iterator[Rollout]:
         return iter(self.rollouts)
@@ -474,10 +489,9 @@ class EvalRollouts:
 
     @property
     def effective(self) -> EvalRollouts:
-        return EvalRollouts(
-            [r for r in self.rollouts if not r.has_error and r.agent.trainable], group_size=self.group_size
-        )
+        kept = (keep_traces(episode, lambda r: not r.has_error and r.agent.trainable) for episode in self.episodes)
+        return EvalRollouts([episode for episode in kept if episode is not None], group_size=self.group_size)
 
     @property
     def metrics(self) -> EvalMetrics:
-        return EvalMetrics(self.rollouts, self.group_size)
+        return EvalMetrics(self.episodes, self.group_size)
