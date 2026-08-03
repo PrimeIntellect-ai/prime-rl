@@ -137,28 +137,28 @@ def test_episode_and_agent_levels():
     assert m.num_total_tokens.values == [30.0, 30.0]  # summed across the episode's traces
     out = m.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/num_turns/mean"] == 12.0
-    assert out["train/agg/all/proposer/num_turns/mean"] == 2.0  # one trace per episode: (1 + 3) / 2
-    assert out["train/agg/all/solver/num_turns/mean"] == 5.0  # mean of per-episode fan-out means (3, 7)
-    assert out["train/agg/all/solver/num_turns/max"] == 7.0
+    assert out["train/agg/all/proposer/num_turns/mean"] == 2.0  # (1 + 3) / 2
+    assert out["train/agg/all/solver/num_turns/mean"] == 5.0  # flat over the 4 solver traces
+    assert out["train/agg/all/solver/num_turns/max"] == 8.0  # a real trace, not an episode mean
     assert out["train/agg/all/solver/reward/mean"] == 0.5
     assert out["train/agg/all/proposer/is_truncated/mean"] == 0.0
     assert "train/agg/all/proposer/is_truncated/p90" not in out  # rates emit /mean only
     assert "train/agg/all/reward/mean" not in out  # reward never pools across agents
 
 
-def test_agent_rates_are_flat_over_traces():
-    """An uneven fan-out (one surviving solver trace here, three there — what the effective subset
-    leaves behind whenever a sibling errors) must not reweight a rate: it stays the plain fraction
-    of the agent's rollouts, unlike the distributions, which collapse per episode first."""
+def test_agent_metrics_are_flat_over_traces():
+    """Inside a seat the trace is the unit of aggregation, so an uneven fan-out (one solver trace
+    from this episode, three from that) never reweights anything: every agent-level metric is the
+    plain figure over that agent's rollouts."""
     rollouts = [
-        mk(agent_name="solver", episode_id="e1", is_truncated=True, num_turns=1),
-        *[mk(agent_name="solver", episode_id="e2", is_truncated=False, num_turns=1) for _ in range(3)],
+        mk(agent_name="solver", episode_id="e1", is_truncated=True, reward=1.0),
+        *[mk(agent_name="solver", episode_id="e2", is_truncated=False, reward=0.0) for _ in range(3)],
     ]
     out = TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/solver/is_truncated/mean"] == 0.25  # 1 of 4 traces, not (1.0 + 0.0) / 2
     assert out["train/agg/all/solver/is_completed/mean"] == 1.0
     assert out["train/agg/all/solver/is_trainable/mean"] == 1.0  # sibling rates agree
-    assert out["train/agg/all/solver/num_turns/mean"] == 1.0  # distributions still collapse per episode
+    assert out["train/agg/all/solver/reward/mean"] == 0.25  # 1 of 4 traces scored, not (1.0 + 0.0) / 2
 
 
 def test_boolean_rates_and_error_breakdown_all_only():

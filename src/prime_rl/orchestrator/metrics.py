@@ -6,12 +6,15 @@ A rollout container (``TrainRollouts`` / ``EvalRollouts``) owns the rollout list
 ``rollouts.metrics.num_input_tokens.mean()`` works — and assembles the full
 ``{prefix}/{subset}/<metric>/<stat>`` wandb dict via ``.to_wandb(...)``.
 
-The wandb layout mirrors the episode/trace hierarchy. ``{prefix}/{subset}/<metric>/<stat>`` carries
-only episode-level facts: the count metrics, summing an episode's traces (matching ``vf.Episode``'s
-aggregates). Every trace-level metric — reward, rates, timing, custom metrics, the pipeline verdicts,
-and the eval scores — lives under ``{prefix}/{subset}/<agent>/<metric>/<stat>``, grouped by agent
-name (``vf.Episode.by_agent``) so agents never mix into one distribution. A single-agent env has one
-trace per episode, so the count metrics coincide across levels.
+The wandb layout mirrors the episode/trace hierarchy, one aggregation per level:
+
+- ``{prefix}/{subset}/<metric>/<stat>`` — episode level, one value per episode summing its traces
+  (matching ``vf.Episode``'s aggregates). Only the count metrics live here.
+- ``{prefix}/{subset}/<agent>/<metric>/<stat>`` — agent level, one value per trace, grouped by agent
+  name (``vf.Episode.by_agent``) so agents never mix into one distribution. Everything trace-scoped
+  lives here: reward, rates, timing, custom metrics, the pipeline verdicts, the eval scores.
+
+A single-agent env has one trace per episode, so the count metrics coincide across levels.
 
 No I/O, no pandas — plain Python over the ``vf.Trace`` properties each rollout exposes.
 """
@@ -159,27 +162,18 @@ class CustomMetrics(StatGroup):
 
 
 class TraceMetrics(StatGroup):
-    """Trace-level metrics for one agent. The reward and count distributions carry one value per
-    episode — a fan-out (n same-agent traces in one episode, e.g. n solvers) collapses to its
-    within-episode mean first, so ``<agent>/num_turns/mean`` is the mean over episodes of the
-    agent's mean turns. Everything else (timing, custom metrics / reward components, rates, stop
-    conditions, errors, solve rates) is flat over the agent's traces."""
+    """Trace-level metrics for one agent, every one of them flat over that agent's traces: one
+    sample is one trace, so a fan-out (n same-agent traces in one episode, e.g. n solvers) simply
+    contributes n samples. Weighing whole episodes against each other is the episode level's job;
+    inside a seat the trace is the unit, which is also what the advantage computation samples."""
 
     DISTRIBUTIONS = ("reward", "num_total_tokens", "num_input_tokens", "num_output_tokens", "num_turns", "num_branches")
     RATES = ("is_truncated", "is_completed")
 
-    def __init__(self, episodes: list[list[Rollout]]) -> None:
-        super().__init__([r for episode in episodes for r in episode])
-        self.episodes = episodes
-
     def stats(self) -> dict[str, Stat]:
-        """One value per episode for the distributions (the fan-out collapses to its mean first);
-        one value per trace for the rates, so a rate stays the plain fraction of the agent's
-        rollouts — an episode that kept more traces than its siblings must not count for less."""
         return {
-            name: Stat([sum(float(getattr(r, name)) for r in episode) / len(episode) for episode in self.episodes])
-            for name in self.DISTRIBUTIONS
-        } | {name: Stat([float(getattr(r, name)) for r in self.rollouts]) for name in self.RATES}
+            name: Stat([float(getattr(r, name)) for r in self.rollouts]) for name in (*self.DISTRIBUTIONS, *self.RATES)
+        }
 
     @property
     def timing(self) -> TimingMetrics:
@@ -277,16 +271,11 @@ class EpisodeMetrics:
         return list(grouped.values())
 
     def by_agent(self) -> dict[str, TraceMetrics]:
-        """Per-agent metric views (``vf.Episode.by_agent`` over the subset's rollouts): each
-        episode contributes the agent's traces in it."""
-        per_agent: dict[str, list[list[Rollout]]] = {}
-        for episode in self.episodes():
-            traces: dict[str, list[Rollout]] = {}
-            for r in episode:
-                traces.setdefault(r.agent.name, []).append(r)
-            for name, agent_traces in traces.items():
-                per_agent.setdefault(name, []).append(agent_traces)
-        return {name: TraceMetrics(episodes) for name, episodes in sorted(per_agent.items())}
+        """Per-agent metric views (``vf.Episode.by_agent`` over the subset's rollouts)."""
+        per_agent: dict[str, list[Rollout]] = {}
+        for r in self.rollouts:
+            per_agent.setdefault(r.agent.name, []).append(r)
+        return {name: TraceMetrics(rollouts) for name, rollouts in sorted(per_agent.items())}
 
     # Episode-level count metrics: one value per episode, summing its traces — the same
     # aggregation as ``vf.Episode.num_turns`` / ``num_*_tokens``.
