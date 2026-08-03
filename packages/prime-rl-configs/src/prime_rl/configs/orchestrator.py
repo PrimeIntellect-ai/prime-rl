@@ -127,7 +127,7 @@ class ServingConfig(BaseConfig):
     """The subset of verifiers' serving block a source configures — the worker pool and
     the per-worker bound. The launcher materializes it into the env server's full
     ``[serve]`` block, filling in the source's derived address
-    (``OrchestratorConfig.env_server_addresses``)."""
+    (``OrchestratorConfig.env_addresses``)."""
 
     pool: PoolConfig = Field(default_factory=vf.ElasticPoolConfig)
     """Worker-pool sizing. ``elastic`` (default) starts at one worker and scales up on
@@ -760,7 +760,7 @@ class OrchestratorConfig(BaseConfig):
         return sources
 
     @property
-    def env_server_addresses(self) -> dict[tuple[str, str], str]:
+    def env_addresses(self) -> dict[tuple[str, str], str]:
         """Where each source's env server lives, keyed by ``(split, resolved_name)``:
         ``tcp://127.0.0.1:<port>`` with ports from ``env_server_base_port`` in
         ``env_sources`` order. The launcher binds env servers at exactly these addresses

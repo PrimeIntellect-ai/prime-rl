@@ -2,7 +2,7 @@
 
 Each ``Env`` is an ``EnvClient`` onto its source's env server. Each server's address
 is derived from the source's position in the config
-(``OrchestratorConfig.env_server_addresses``); the launcher runs the servers at
+(``OrchestratorConfig.env_addresses``); the launcher runs the servers at
 exactly those addresses, and the orchestrator connects. The
 orchestrator never *runs* an environment — the agents and their runtimes live only
 in the server — but it does own the *taskset*: a v1 env's tasks are loaded here,

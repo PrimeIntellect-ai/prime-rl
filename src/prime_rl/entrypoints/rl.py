@@ -51,7 +51,7 @@ ENVS_DIR = "envs"
 def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig, str]]:
     """``(split, source, address)`` for every train/eval source. The launcher runs one
     env server per source at its deterministic address; the orchestrator connects there."""
-    addresses = config.orchestrator.env_server_addresses
+    addresses = config.orchestrator.env_addresses
     return [
         (split, source, addresses[(split, source.resolved_name)]) for split, source in config.orchestrator.env_sources
     ]
@@ -251,7 +251,7 @@ def rl_local(config: RLConfig):
         # orchestrator start in parallel.
         for split, source, address in env_servers(config):
             name = source.resolved_name
-            env_server_cmd = ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.toml").as_posix()]
+            env_server_cmd = ["env", "@", (config_dir / ENVS_DIR / split / f"{name}.toml").as_posix()]
             logger.info(f"Starting {split} env server {name} at {address}")
             logger.debug(f"Env server start command: {' '.join(env_server_cmd)}")
             env_server_log = log_dir / ENVS_DIR / split / f"{name}.log"

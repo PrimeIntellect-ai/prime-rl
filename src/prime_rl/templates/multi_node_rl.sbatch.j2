@@ -416,12 +416,12 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     # the servers and the orchestrator start in parallel.
 {%- for name in train_env_names %}
     mkdir -p $OUTPUT_DIR/logs/envs/train
-    uv run env-server @ $CONFIG_DIR/envs/train/{{ name }}.toml \
+    uv run env @ $CONFIG_DIR/envs/train/{{ name }}.toml \
         > $OUTPUT_DIR/logs/envs/train/{{ name }}.log 2>&1 &
 {%- endfor %}
 {%- for name in eval_env_names %}
     mkdir -p $OUTPUT_DIR/logs/envs/eval
-    uv run env-server @ $CONFIG_DIR/envs/eval/{{ name }}.toml \
+    uv run env @ $CONFIG_DIR/envs/eval/{{ name }}.toml \
         > $OUTPUT_DIR/logs/envs/eval/{{ name }}.log 2>&1 &
 {%- endfor %}
 {%- endif %}

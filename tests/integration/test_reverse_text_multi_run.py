@@ -122,7 +122,7 @@ def start_env_server(log_dir: Path, name: str) -> subprocess.Popen:
             [
                 "uv",
                 "run",
-                "env-server",
+                "env",
                 "@",
                 "configs/ci/integration/reverse-text-multi-run/env.toml",
                 "--serve.address",

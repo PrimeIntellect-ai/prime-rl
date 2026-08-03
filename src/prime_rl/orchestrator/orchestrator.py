@@ -261,7 +261,7 @@ class Orchestrator:
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
             config.train.source,
-            config.env_server_addresses,
+            config.env_addresses,
             policy_pool=self.policy_inference,
             renderer_config=config.renderer,
         )
@@ -273,7 +273,7 @@ class Orchestrator:
 
         if config.eval is not None:
             get_logger().info("Loading eval environment(s)")
-            self.eval_envs = EvalEnvs(config.eval.source, config.env_server_addresses)
+            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses)
             get_logger().debug(f"Loaded {len(self.eval_envs)} eval environment(s) ({', '.join(self.eval_envs.names)})")
             await self.eval_envs.start()
             get_logger().success("Eval environment(s) ready")
