@@ -17,7 +17,7 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
                 name="policy-model",
             ),
             renderer=renderer_settings,
-            pool_size=None,
+            multiplex=None,
             any_policy_sourced=True,
         )
         renderer = object()
@@ -44,7 +44,7 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
             renderer_config=renderer_settings,
-            pool_size=None,
+            multiplex=None,
         )
 
     asyncio.run(run())
@@ -65,7 +65,7 @@ def test_setup_policy_inference_pool_keeps_renderer_without_policy_sampling():
                 name="policy-model",
             ),
             renderer=renderer_settings,
-            pool_size=None,
+            multiplex=None,
             any_policy_sourced=False,
         )
         renderer = object()
@@ -92,7 +92,7 @@ def test_setup_policy_inference_pool_keeps_renderer_without_policy_sampling():
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
             renderer_config=renderer_settings,
-            pool_size=None,
+            multiplex=None,
         )
 
     asyncio.run(run())

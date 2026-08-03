@@ -467,10 +467,11 @@ class OrchestratorConfig(BaseConfig):
     ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
     client; SFT uses it to backfill tokens for its chat-completions teacher."""
 
-    pool_size: int | None = Field(None, ge=1)
-    """Number of renderer slots shared across concurrent rollouts. Bump
-    for long multi-turn prompts where client-side jinja tokenization
-    serializes."""
+    multiplex: int | None = Field(None, ge=1)
+    """Concurrent rollouts that share one renderer. The pool warms one and grows on
+    demand, so this bounds tokenizer count at ~concurrency/multiplex rather than
+    fixing it. Lower it for long multi-turn prompts where client-side jinja
+    tokenization serializes; None keeps the client default."""
 
     optim: OptimizerConfig = OptimizerConfig()
     """Per-run optimizer configuration for multi-run training."""
@@ -620,18 +621,18 @@ class OrchestratorConfig(BaseConfig):
         return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.source)
 
     @model_validator(mode="after")
-    def validate_pool_size(self):
-        """``pool_size`` sizes the renderer-client pool for policy-sourced
+    def validate_multiplex(self):
+        """``multiplex`` sizes the renderer-client pool for policy-sourced
         sampling. Reject it when that path never runs — no train env samples
         from the policy — so callers don't silently pass it and wonder why
         it's ignored."""
-        if self.pool_size is None:
+        if self.multiplex is None:
             return self
         if not self.any_policy_sourced:
             raise ValueError(
-                f"orchestrator.pool_size={self.pool_size!r} is set but no train env samples "
+                f"orchestrator.multiplex={self.multiplex!r} is set but no train env samples "
                 "from the policy — the renderer-client sampling pool never runs (the renderer "
-                "is still used for client-side tokenization). Remove pool_size."
+                "is still used for client-side tokenization). Remove multiplex."
             )
         return self
 
