@@ -108,16 +108,16 @@ INFERENCE_BASE_URLS = [f"http://localhost:{port}/v1" for port in INFERENCE_PORTS
 
 # One env server per run (1:1 with its orchestrator), at that run's base port. A resumed
 # run keeps its port, so it reconnects to the same server.
-ENV_SERVER_PORTS = {name: 5000 + i for i, name in enumerate(ORCHESTRATOR_NAMES)}
-ENV_SERVER_PORTS["alpha_resume"] = ENV_SERVER_PORTS["alpha"]
-ENV_SERVER_PORTS["beta_resume"] = ENV_SERVER_PORTS["beta"]
+ENV_PORTS = {name: 5000 + i for i, name in enumerate(ORCHESTRATOR_NAMES)}
+ENV_PORTS["alpha_resume"] = ENV_PORTS["alpha"]
+ENV_PORTS["beta_resume"] = ENV_PORTS["beta"]
 
 
-def start_env_server(log_dir: Path, name: str) -> subprocess.Popen:
-    """Start one env server for orchestrator `name`, which derives the same address and
+def start_env(log_dir: Path, name: str) -> subprocess.Popen:
+    """Start one env for orchestrator `name`, which derives the same address and
     connects, polling until the server is up — no readiness wait needed here."""
-    env_server_log = log_dir / f"env_server_{name}.log"
-    with open(env_server_log, "w") as f:
+    env_log = log_dir / f"env_{name}.log"
+    with open(env_log, "w") as f:
         return subprocess.Popen(
             [
                 "uv",
@@ -126,7 +126,7 @@ def start_env_server(log_dir: Path, name: str) -> subprocess.Popen:
                 "@",
                 "configs/ci/integration/reverse-text-multi-run/env.toml",
                 "--serve.address",
-                f"tcp://127.0.0.1:{ENV_SERVER_PORTS[name]}",
+                f"tcp://127.0.0.1:{ENV_PORTS[name]}",
             ],
             stdout=f,
             stderr=f,
@@ -245,8 +245,8 @@ def start_orchestrator(
         str(max_steps),
         "--model.lora.name",
         name,
-        "--env-server-base-port",
-        str(ENV_SERVER_PORTS[name]),
+        "--env-base-port",
+        str(ENV_PORTS[name]),
         "--wandb.project",
         wandb_project,
         "--wandb.name",
@@ -278,7 +278,7 @@ def multi_run_result(
     processes: list[subprocess.Popen] = []
 
     for name in ORCHESTRATOR_NAMES:
-        processes.append(start_env_server(log_dir, name))
+        processes.append(start_env(log_dir, name))
 
     trainer_proc, inference_procs = start_inference_and_trainer(log_dir, output_dir, wandb_project, wandb_name)
     processes.append(trainer_proc)

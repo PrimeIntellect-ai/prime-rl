@@ -6,7 +6,7 @@ import tomli_w
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 
-from prime_rl.configs.env_server import EnvServerConfig
+from prime_rl.configs.env import EnvConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
@@ -22,7 +22,7 @@ CONFIG_CLASSES = [
     SFTConfig,
     OrchestratorConfig,
     InferenceConfig,
-    EnvServerConfig,
+    EnvConfig,
 ]
 
 

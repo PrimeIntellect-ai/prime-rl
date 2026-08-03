@@ -138,7 +138,7 @@ class ServingConfig(BaseConfig):
     ``max_inflight_episodes`` is the run's bound)."""
 
 
-class EnvConfig(BaseConfig):
+class SourceConfig(BaseConfig):
     """One environment a run pulls from: the verifiers blocks it composes (``env`` — what
     runs, ``serve`` — how it's hosted, ``legacy`` — a classic v0 env instead) plus this
     orchestrator's own per-env knobs."""
@@ -147,7 +147,7 @@ class EnvConfig(BaseConfig):
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
     serve: ServingConfig = ServingConfig()
-    """How this source's env server is sized. Consumed by the launcher (which writes each source's env-server config), not by the orchestrator — the orchestrator only connects."""
+    """How this source's env server is sized. Consumed by the launcher (which writes each source's env config), not by the orchestrator — the orchestrator only connects."""
 
     legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()
     """A classic (v0) environment to run through the bridge instead of ``env``."""
@@ -222,7 +222,7 @@ class EnvConfig(BaseConfig):
         return self
 
 
-class TrainSourceConfig(EnvConfig):
+class TrainSourceConfig(SourceConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
@@ -236,7 +236,7 @@ class TrainSourceConfig(EnvConfig):
     this env its own algorithm."""
 
 
-class EvalSourceConfig(EnvConfig):
+class EvalSourceConfig(SourceConfig):
     sampling: EvalSamplingConfig = EvalSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level eval sampling config."""
 
@@ -534,8 +534,8 @@ class OrchestratorConfig(BaseConfig):
     tasks_per_minute: int | None = Field(None, ge=1)
     """Rate limit per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. With multiple workers, the effective total rate is ``workers × this value``. None disables rate limiting."""
 
-    env_server_base_port: int = Field(5000, ge=1, le=65535)
-    """First port of the env-server port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
+    env_base_port: int = Field(5000, ge=1, le=65535)
+    """First port of the env port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
 
     batch_size: int | None = Field(None, ge=1)
     """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
@@ -751,10 +751,10 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @property
-    def env_sources(self) -> list[tuple[str, EnvConfig]]:
+    def env_sources(self) -> list[tuple[str, SourceConfig]]:
         """Every ``(split, source)`` this run pulls from, train first then eval — the
-        order that fixes each source's deterministic env-server port."""
-        sources: list[tuple[str, EnvConfig]] = [("train", source) for source in self.train.source]
+        order that fixes each source's deterministic env port."""
+        sources: list[tuple[str, SourceConfig]] = [("train", source) for source in self.train.source]
         if self.eval is not None:
             sources += [("eval", source) for source in self.eval.source]
         return sources
@@ -762,11 +762,11 @@ class OrchestratorConfig(BaseConfig):
     @property
     def env_addresses(self) -> dict[tuple[str, str], str]:
         """Where each source's env server lives, keyed by ``(split, resolved_name)``:
-        ``tcp://127.0.0.1:<port>`` with ports from ``env_server_base_port`` in
+        ``tcp://127.0.0.1:<port>`` with ports from ``env_base_port`` in
         ``env_sources`` order. The launcher binds env servers at exactly these addresses
         and the orchestrator connects to them, so both sides agree from the config
         alone."""
         return {
-            (split, source.resolved_name): f"tcp://127.0.0.1:{self.env_server_base_port + index}"
+            (split, source.resolved_name): f"tcp://127.0.0.1:{self.env_base_port + index}"
             for index, (split, source) in enumerate(self.env_sources)
         }

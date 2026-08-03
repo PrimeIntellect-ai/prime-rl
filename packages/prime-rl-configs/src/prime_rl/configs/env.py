@@ -7,8 +7,8 @@ from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import BaseConfig
 
 
-class EnvServerConfig(BaseConfig):
-    """``uv run env-server``: what to serve (``[env]``, or ``[legacy]`` for a classic v0
+class EnvConfig(BaseConfig):
+    """``uv run env``: what to serve (``[env]``, or ``[legacy]`` for a classic v0
     env) and how it's hosted (``[serve]``) — the same blocks as verifiers' ``serve`` CLI.
     The ``rl`` launcher writes one of these per train/eval source, with ``serve.address``
     set to the source's derived address."""

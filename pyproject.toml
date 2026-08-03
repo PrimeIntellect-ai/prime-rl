@@ -53,8 +53,8 @@ sft = "prime_rl.entrypoints.sft:main"
 inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.entrypoints.trainer:main"
 orchestrator = "prime_rl.entrypoints.orchestrator:main"
-env = "prime_rl.orchestrator.env_server.env_server:main"
-env-server = "prime_rl.orchestrator.env_server.env_server:main"  # alias of `env`
+env = "prime_rl.entrypoints.env:main"
+env-server = "prime_rl.entrypoints.env:main"  # alias of `env`
 
 [project.entry-points."vllm.general_plugins"]
 prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"

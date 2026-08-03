@@ -172,7 +172,7 @@ All processes use `setproctitle` so they're visible in `ps`/`htop`/`pstree`:
 ```
 PRIME-RL::Launcher
 ├── PRIME-RL::Inference          (vLLM server, GPU 0)
-├── PRIME-RL::EnvServer          (verifiers' ZMQ env server, run in-process; one per train/eval source)
+├── PRIME-RL::Env                (verifiers' ZMQ env server, run in-process; one per train/eval source)
 │   └── Verifiers::EnvWorker0..N
 ├── PRIME-RL::Orchestrator       (CPU-only; connects to each env server)
 ├── torchrun
