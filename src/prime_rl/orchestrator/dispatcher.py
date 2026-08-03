@@ -42,6 +42,7 @@ from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     Episode,
+    EvalEpisode,
     GroupState,
     InflightRollout,
     Policy,
@@ -512,7 +513,7 @@ class RolloutDispatcher:
 
         try:
             result = task.result()
-            episodes: list[Episode] = result if isinstance(result, list) else [result]
+            episodes: list[vf.WireEpisode] = result if isinstance(result, list) else [result]
         except asyncio.CancelledError:
             return
         except Exception as exc:
@@ -541,7 +542,7 @@ class RolloutDispatcher:
         self,
         meta: InflightRollout,
         group: GroupState | None,
-        episode: Episode,
+        episode: vf.WireEpisode,
     ) -> None:
         """Put one completed episode on ``out_q``, stamped with the facts of the dispatch it came
         from. Pops the group from ``self.groups`` once every owed episode has been emitted. The
@@ -557,21 +558,21 @@ class RolloutDispatcher:
         if meta.kind == "eval":
             assert eval_step is not None, "eval episode missing eval_step"
 
-        for rollout in episode.rollouts:
-            rollout.kind = meta.kind
+        for rollout in episode.traces:
             rollout.env_name = meta.env_name
             rollout.group_id = meta.group_id
-            rollout.policy_version = policy_version
-            rollout.off_policy_steps = meta.off_policy_steps
-            if meta.kind == "eval":
-                rollout.eval_step = eval_step
-        episode.kind = meta.kind
-        episode.env_name = meta.env_name
-        episode.group_id = meta.group_id
-        episode.policy_version = policy_version
-        episode.off_policy_steps = meta.off_policy_steps
-        episode.eval_step = eval_step if meta.kind == "eval" else None
-        await self.out_q.put(episode)
+        shared = {
+            **dict(episode),
+            "env_name": meta.env_name,
+            "group_id": meta.group_id,
+            "policy_version": policy_version,
+        }
+        dispatched: Episode = (
+            EvalEpisode.model_construct(**shared, eval_step=eval_step)
+            if meta.kind == "eval"
+            else TrainEpisode.model_construct(**shared, off_policy_steps=meta.off_policy_steps)
+        )
+        await self.out_q.put(dispatched)
 
     async def emit_failed_episodes(self, meta: InflightRollout, group: GroupState | None, error: vf.Error) -> None:
         """Emit one traceless episode per rollout the task owed, so the sink still counts its way to
@@ -607,7 +608,7 @@ class RolloutDispatcher:
         cancel = vf.Error(type="Cancelled", message="Off-policy cancel")
         for _, meta in claimed:
             for _ in range(meta.rollout_count):
-                await self.emit_episode(meta, group, Episode.model_construct(errors=[cancel]))
+                await self.emit_episode(meta, group, vf.WireEpisode.model_construct(errors=[cancel]))
 
         # For non-group-scoring envs, the group may have rollouts that
         # were never dispatched (``rollouts_to_schedule > 0``). Emit
@@ -628,7 +629,7 @@ class RolloutDispatcher:
             )
             unscheduled_cancelled = group.rollouts_to_schedule
             for _ in range(unscheduled_cancelled):
-                await self.emit_episode(fallback_meta, group, Episode.model_construct(errors=[cancel]))
+                await self.emit_episode(fallback_meta, group, vf.WireEpisode.model_construct(errors=[cancel]))
 
         cancelled = inflight_cancelled + unscheduled_cancelled
         if cancelled > 0:

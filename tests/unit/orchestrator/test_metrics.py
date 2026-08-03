@@ -6,7 +6,7 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts, episode_failure_metrics
-from prime_rl.orchestrator.types import Episode
+from prime_rl.orchestrator.types import EvalEpisode, Rollout, TrainEpisode, TrainRollout
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 _ids = count()
@@ -80,15 +80,15 @@ def mk(
     )
 
 
-def ep(*rollouts, env_name: str = "env", errors=()):
+def ep(*rollouts, env_name: str = "env", errors=(), cls=TrainEpisode):
     """One episode over these traces. ``model_construct`` skips validation so the duck-typed
     stand-ins above can stand in for real ones."""
-    return Episode.model_construct(id=f"e{next(_ids)}", traces=list(rollouts), env_name=env_name, errors=list(errors))
+    return cls.model_construct(id=f"e{next(_ids)}", traces=list(rollouts), env_name=env_name, errors=list(errors))
 
 
-def solo(rollouts):
+def solo(rollouts, cls=TrainEpisode):
     """Each rollout as its own single-trace episode — the single-agent shape."""
-    return [ep(r) for r in rollouts]
+    return [ep(r, cls=cls) for r in rollouts]
 
 
 def train_wandb(rollouts, subset: str = "all") -> dict:
@@ -272,12 +272,12 @@ def test_train_only_metrics_absent_from_eval():
     assert out["train/agg/all/agent/is_filtered/mean"] == 0.5
     assert out["train/agg/all/agent/filters/gibberish/mean"] == 0.5
     assert "train/agg/all/is_trainable/mean" not in out  # pipeline verdicts are per-trace
-    eval_out = EvalRollouts(solo(rollouts)).metrics.to_wandb(prefix="eval/x", subset="all")
+    eval_out = EvalRollouts(solo(rollouts, cls=EvalEpisode)).metrics.to_wandb(prefix="eval/x", subset="all")
     assert not any("is_trainable" in k or "is_filtered" in k or "/filters/" in k for k in eval_out)
 
 
 def test_eval_avg_at_k_and_pass_k():
-    binary = EvalRollouts(solo([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")]))
+    binary = EvalRollouts(solo([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")], cls=EvalEpisode))
     eff = binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
     assert eff["eval/x/effective/agent/avg@2"] == 0.5  # mean reward under avg@<k> (k from the groups)
     assert "eval/x/effective/avg@2" not in eff  # scores are per-agent, never pooled
@@ -285,7 +285,7 @@ def test_eval_avg_at_k_and_pass_k():
     all_out = binary.metrics.to_wandb(prefix="eval/x", subset="all")
     assert all_out["eval/x/all/agent/avg@2"] == 0.5
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
-    non_binary = EvalRollouts(solo([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")]))
+    non_binary = EvalRollouts(solo([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")], cls=EvalEpisode))
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
 
 
@@ -329,3 +329,20 @@ def test_traceless_episode_keeps_its_reason():
     pool = TrainRollouts([ep(mk()), episode])
     assert len(pool) == 1 and len(pool.episodes) == 2
     assert len(pool.effective.episodes) == 1  # it survives nothing, so the subset drops it
+
+
+def test_train_and_eval_episodes_carry_only_their_own_facts():
+    """The path is the type, not a discriminator field: an eval episode always knows its step, and
+    only a train episode can go stale — neither can be asked for the other's fact."""
+    assert (TrainEpisode.KIND, EvalEpisode.KIND) == ("train", "eval")
+    train, evaluation = TrainEpisode.model_construct(), EvalEpisode.model_construct()
+    assert train.off_policy_steps == 0 and "off_policy_steps" not in EvalEpisode.model_fields
+    assert evaluation.eval_step == 0 and "eval_step" not in TrainEpisode.model_fields
+    assert train.policy_version == evaluation.policy_version == 0  # both measure a policy
+
+
+def test_training_state_is_train_only():
+    """Only a train rollout carries trainer-bound state; an eval trace has no field for it."""
+    assert {"samples", "advantages", "is_filtered", "filter_results"} <= set(TrainRollout.model_fields)
+    assert not {"samples", "advantages", "is_filtered", "filter_results"} & set(Rollout.model_fields)
+    assert {"env_name", "group_id", "episode_id"} <= set(Rollout.model_fields)  # links stay shared

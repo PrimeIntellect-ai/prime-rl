@@ -37,16 +37,16 @@ from verifiers.v1.serve import EnvClient, env_config_data
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.sampler import Sampler
-from prime_rl.orchestrator.types import Episode, Rollout
+from prime_rl.orchestrator.types import TrainRollout
 from prime_rl.utils.logger import get_logger
 
 # Every wire trace validates into this type. WireTaskData (extra="allow") keeps the env's task
 # fields without importing the env package — the orchestrator never reads them typed (only
 # task.idx + task.model_dump).
-ROLLOUT_TYPE = Rollout[vf.WireTaskData]
-# The env server answers a wire episode; we keep that envelope, re-type its traces, and let the
-# dispatcher stamp the scheduling facts onto it.
-EPISODE_TYPE = Episode
+ROLLOUT_TYPE = TrainRollout[vf.WireTaskData]
+# The env server answers a wire episode; we keep that envelope and only re-type its traces. The
+# dispatcher then mints the Train/Eval episode that carries the dispatch's own facts.
+EPISODE_TYPE = vf.WireEpisode
 
 # Max wait for a spawned env server to bind and report its address. A legacy
 # child loads its dataset before reporting, so this is generous.
@@ -235,7 +235,7 @@ class Env:
 
     async def run_group(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
-    ) -> list[Rollout]:
+    ) -> list[TrainRollout]:
         """Run a group of rollouts for ``task_idx`` (group-scoring envs); return typed Traces."""
         wires = await self.env_client.run_group(
             task_idx=task_idx,

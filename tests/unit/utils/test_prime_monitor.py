@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pyarrow.parquet as pq
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import TrainRollout
 from prime_rl.utils.monitor.prime import PrimeMonitor
 
 
@@ -15,8 +15,8 @@ def _new_monitor() -> PrimeMonitor:
     return monitor
 
 
-def _build_rollout(*, example_id: int, reward: float, task: str) -> Rollout:
-    """Build a v1 ``Rollout`` (message-graph trace). The user node carries the prompt and the
+def _build_rollout(*, example_id: int, reward: float, task: str) -> TrainRollout:
+    """Build a v1 ``TrainRollout`` (message-graph trace). The user node carries the prompt and the
     assistant node the completion; ``_rollouts_to_parquet_bytes`` reads the conversation off the
     branches (its ``completion`` column is the last branch's messages, ``trajectory`` is one
     message list per branch)."""
@@ -35,7 +35,7 @@ def _build_rollout(*, example_id: int, reward: float, task: str) -> Rollout:
             sampled=True,
         ),
     ]
-    rollout = Rollout[vf.TaskData](
+    rollout = TrainRollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=example_id, prompt=f"prompt-{example_id}")),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=nodes,
@@ -81,7 +81,7 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     monitor.run_id = "run-456"
 
     rollout_with_branches = _build_rollout(example_id=1, reward=1.0, task="task-a")
-    rollout_without_branches = Rollout[vf.TaskData](
+    rollout_without_branches = TrainRollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=2, prompt="missing-trajectory")),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
     )

@@ -27,12 +27,12 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Episode, Rollout, TrainBatch
+from prime_rl.orchestrator.types import TrainBatch, TrainEpisode, TrainRollout
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
 
-def payload_tokens(rollout: Rollout) -> int:
+def payload_tokens(rollout: TrainRollout) -> int:
     """Token cost of the rollout's trainer-bound payload — the samples built by
     ``process_rollout``. This is what actually ships: forked traces can drop
     branches with no trainable tokens, so ``Trace.num_total_tokens`` (which sums
@@ -79,11 +79,11 @@ class TrainSink:
         # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
         # isn't unique — the same task can be re-sampled while an
         # earlier group is still in flight
-        self.pending_groups: dict[uuid.UUID, list[Episode]] = defaultdict(list)
+        self.pending_groups: dict[uuid.UUID, list[TrainEpisode]] = defaultdict(list)
         # Episodes arrived per group — the finalization count (an episode may
         # add several traces to ``pending_groups`` but counts once here).
         self.pending_group_episodes: dict[uuid.UUID, int] = defaultdict(int)
-        self.pending_batch: list[Rollout] = []
+        self.pending_batch: list[TrainRollout] = []
         # Running payload-token total of ``pending_batch`` (token-batched
         # runs), kept in sync on append/pop so the readiness check never
         # re-sums per arrival.
@@ -124,7 +124,7 @@ class TrainSink:
             counts[r.env_name] += 1
         return dict(counts)
 
-    async def add(self, episode: Episode) -> TrainBatch | None:
+    async def add(self, episode: TrainEpisode) -> TrainBatch | None:
         """Process one episode arrival; finalize the group on the
         ``group_size``-th episode; return a ``TrainBatch`` if the finalization
         pushed (or left) the batch over its threshold. Arrivals into
@@ -151,7 +151,7 @@ class TrainSink:
             return self.process_batch()
         return None
 
-    async def process_rollout(self, rollout: Rollout) -> None:
+    async def process_rollout(self, rollout: TrainRollout) -> None:
         """Build training samples from the rollout's Trace (one per branch), walking the
         message graph. Training is renderer-only across all modes (RL/OPD student, SFT teacher),
         so every node already carries its tokens. Errored rollouts are dropped at the group
@@ -178,15 +178,17 @@ class TrainSink:
         self.pending_group_episodes.pop(group_id, None)
         if not episodes:
             return
-        group = [trace for episode in episodes for trace in episode.traces]
+        # Read the group's facts off an episode, not a trace: every episode in it may have
+        # produced none (a whole group cancelled off-policy).
+        env_name = episodes[0].env_name
+        group = [trace for episode in episodes for trace in episode.rollouts]
         # Window membership follows group finalization, not arrival: a rollout
         # only becomes observable (metrics / persistence) once its whole group
         # is finalized, so a batch's window never claims rollouts of a group
         # that ships later. Dropped groups still land here — they were observed.
         for episode in episodes:
             self.pending_rollouts.append(episode)
-        env_name = group[0].env_name
-        task_idx = group[0].task.data.idx
+        task_idx = group[0].task.data.idx if group else -1
         survivors = [r for r in group if not r.has_error]
         num_errored = len(group) - len(survivors)
 

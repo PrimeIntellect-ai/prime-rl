@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Episode, Rollout
+    from prime_rl.orchestrator.types import Episode, EvalEpisode, Rollout, TrainEpisode, TrainRollout
 
 Subset = Literal["all", "effective"]
 
@@ -419,20 +419,20 @@ class TrainRollouts:
     narrowed to its surviving traces; ``metrics`` builds ``TrainMetrics`` over them. Sized and
     iterated by *rollout*, since that is the unit almost every consumer wants."""
 
-    def __init__(self, episodes: list[Episode] | None = None) -> None:
+    def __init__(self, episodes: list[TrainEpisode] | None = None) -> None:
         self.episodes = episodes if episodes is not None else []
 
-    def append(self, episode: Episode) -> None:
+    def append(self, episode: TrainEpisode) -> None:
         self.episodes.append(episode)
 
     @property
-    def rollouts(self) -> list[Rollout]:
-        return [trace for episode in self.episodes for trace in episode.traces]
+    def rollouts(self) -> list[TrainRollout]:
+        return [trace for episode in self.episodes for trace in episode.rollouts]
 
     def __len__(self) -> int:
         return sum(len(episode.traces) for episode in self.episodes)
 
-    def __iter__(self) -> Iterator[Rollout]:
+    def __iter__(self) -> Iterator[TrainRollout]:
         return iter(self.rollouts)
 
     @property
@@ -444,7 +444,7 @@ class TrainRollouts:
         return TrainRollouts([episode for episode in kept if episode is not None])
 
     def by_env(self) -> dict[str, TrainRollouts]:
-        grouped: dict[str, list[Episode]] = {}
+        grouped: dict[str, list[TrainEpisode]] = {}
         for episode in self.episodes:
             grouped.setdefault(episode.env_name, []).append(episode)
         return {env: TrainRollouts(episodes) for env, episodes in grouped.items()}
@@ -460,7 +460,7 @@ class EvalRollouts:
     ``group_size`` (rollouts per example, the ``avg@k`` k) is derived from the full epoch and carried
     onto ``effective`` so both subsets share one stable key; ``metrics`` builds ``EvalMetrics``."""
 
-    def __init__(self, episodes: list[Episode] | None = None, group_size: int | None = None) -> None:
+    def __init__(self, episodes: list[EvalEpisode] | None = None, group_size: int | None = None) -> None:
         self.episodes = episodes if episodes is not None else []
         self._group_size = group_size
 

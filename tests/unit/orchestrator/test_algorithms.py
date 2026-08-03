@@ -10,7 +10,7 @@ from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import TrainRollout
 from prime_rl.transport.types import TrainingSample
 
 FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
@@ -160,8 +160,8 @@ def test_stamp_loss_routing_merges_action_weights_into_ce_stream():
 def _make_rollout(
     samples: list[TrainingSample],
     advantages: list[float] | None = None,
-) -> Rollout:
-    rollout = Rollout(
+) -> TrainRollout:
+    rollout = TrainRollout(
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=[],
@@ -244,7 +244,7 @@ def _node(message, *, parent, sampled, token_ids, logprobs=None, is_content=None
     )
 
 
-def _two_turn_rollout(observation_role: str = "tool") -> Rollout:
+def _two_turn_rollout(observation_role: str = "tool") -> TrainRollout:
     """A single linear branch: user prompt, an assistant response, an
     env-provided observation (tool output / user feedback), then a second
     assistant response. Tokens: prompt [1,2], action [3,4], observation
@@ -259,7 +259,7 @@ def _two_turn_rollout(observation_role: str = "tool") -> Rollout:
         _node(obs_message, parent=1, sampled=False, token_ids=[5, 6]),
         _node(AssistantMessage(content="A2"), parent=2, sampled=True, token_ids=[7, 8], logprobs=[-0.3, -0.4]),
     ]
-    rollout = Rollout(
+    rollout = TrainRollout(
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=nodes,
@@ -311,7 +311,7 @@ def test_echo_weights_only_content_tokens_when_is_content_present():
         ),
         _node(AssistantMessage(content="A2"), parent=2, sampled=True, token_ids=[7, 8], logprobs=[-0.3, -0.4]),
     ]
-    rollout = Rollout(
+    rollout = TrainRollout(
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=nodes,

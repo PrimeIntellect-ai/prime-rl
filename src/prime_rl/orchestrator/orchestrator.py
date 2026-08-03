@@ -60,6 +60,7 @@ from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     Episode,
     EvalBatch,
+    EvalEpisode,
     Policy,
     Progress,
     TrainBatch,
@@ -530,13 +531,10 @@ class Orchestrator:
             # Train rollouts belong to the batch window currently collecting (``progress.step``),
             # eval rollouts to the step whose eval triggered them. A failed episode has no trace
             # to write; it is counted by the window's episode-failure metrics instead.
-            kind = episode.kind
-            step = episode.eval_step if kind == "eval" else self.progress.step
-            assert step is not None
+            is_eval = isinstance(episode, EvalEpisode)
+            step = episode.eval_step if isinstance(episode, EvalEpisode) else self.progress.step
             run: vf.RunInfo = (
-                vf.EvalRunInfo(id=self.run_id, step=step)
-                if kind == "eval"
-                else vf.TrainRunInfo(id=self.run_id, step=step)
+                vf.EvalRunInfo(id=self.run_id, step=step) if is_eval else vf.TrainRunInfo(id=self.run_id, step=step)
             )
             for rollout in episode.rollouts:
                 rollout.record_run(
@@ -544,16 +542,16 @@ class Orchestrator:
                     env_name=rollout.env_name,
                     group_id=str(rollout.group_id),
                     episode_id=rollout.episode_id,
-                    policy_version=rollout.policy_version,
+                    policy_version=episode.policy_version,
                 )
             if not episode.failed:
                 await asyncio.to_thread(
                     save_rollouts,
                     [rollout.to_record() for rollout in episode.rollouts],
-                    get_trace_path(self.config.output_dir, step, kind, "all"),
+                    get_trace_path(self.config.output_dir, step, episode.KIND, "all"),
                 )
 
-            if kind == "eval":
+            if isinstance(episode, EvalEpisode):
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(episode)
                 if eval_batch is not None:
@@ -638,9 +636,9 @@ class Orchestrator:
         # off-policy — queue time included, unlike the dispatcher's in-flight
         # counter, which only sees weight updates during generation. Frozen-
         # sourced rollouts stay 0 (their sampler doesn't follow the policy).
-        for r in batch.rollouts:
-            if self.train_envs.get(r.env_name).sampler.samples_from_live_policy:
-                r.off_policy_steps = (step - 1) - r.policy_version
+        for train_episode in batch.rollouts.episodes:
+            if self.train_envs.get(train_episode.env_name).sampler.samples_from_live_policy:
+                train_episode.off_policy_steps = (step - 1) - train_episode.policy_version
 
         # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
         # at ship time; the full arrival window already streamed into ``all`` on arrival.
@@ -824,7 +822,7 @@ class Orchestrator:
         n_effective = len(effective)
         n_trainable = sum(1 for r in effective if r.is_trainable)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_off_policy = max((r.off_policy_steps for r in effective), default=0)
+        max_off_policy = max((e.off_policy_steps for e in effective.episodes), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
@@ -848,7 +846,7 @@ class Orchestrator:
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Off-Policy {max((r.off_policy_steps for r in env_eff_pool), default=0)} | "
+                f"Max Off-Policy {max((e.off_policy_steps for e in env_eff_pool.episodes), default=0)} | "
                 f"Error {pool.metrics.has_error.mean():.1%} | Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
@@ -869,7 +867,7 @@ class Orchestrator:
             save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
-        policy_versions = {r.policy_version for r in batch.rollouts}
+        policy_versions = {e.policy_version for e in batch.rollouts.episodes}
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:
             get_logger().warning(

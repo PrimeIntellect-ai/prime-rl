@@ -8,7 +8,7 @@ from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.utils.client import StaticInferencePool
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import TrainRollout
     from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
 
@@ -37,7 +37,7 @@ class OPDAlgorithm(Algorithm):
             raise TypeError("opd teacher must be a static endpoint — prefill scoring needs fixed endpoints")
         self.teacher_pool = pool
 
-    async def score_rollout(self, rollout: Rollout) -> None:
+    async def score_rollout(self, rollout: TrainRollout) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
 

@@ -11,7 +11,7 @@ from prime_rl.orchestrator.filters import (
     setup_filter,
     setup_filters,
 )
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import TrainRollout
 
 
 def _assistant_node(token_ids: list[int], logprobs: list[float]) -> vf.MessageNode:
@@ -46,8 +46,8 @@ def _make_rollout(
     *,
     reward: float = 1.0,
     multi_step: bool = False,
-) -> Rollout:
-    """Build a ``Rollout`` (a message-graph trace) carrying the completion tokens — enough for
+) -> TrainRollout:
+    """Build a ``TrainRollout`` (a message-graph trace) carrying the completion tokens — enough for
     the filters to inspect each node's sampled tokens / logprobs."""
     if multi_step:
         mid = len(completion_ids) // 2
@@ -57,7 +57,7 @@ def _make_rollout(
         ]
     else:
         nodes = [_assistant_node(completion_ids, completion_logprobs)]
-    rollout = Rollout[vf.TaskData](
+    rollout = TrainRollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="")),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=nodes,
@@ -140,7 +140,7 @@ def test_gibberish_aligns_logprobs_under_generation_prompt_scaffold():
     it; reading the aligned branch streams detects it."""
     gibberish_filter = _make_gibberish_filter()
 
-    rollout = Rollout[vf.TaskData](
+    rollout = TrainRollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="")),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=[_scaffold_assistant_node([50, 80, 120_000], [-1.0, -0.5, gibberish_filter.logprob_threshold - 1.0])],

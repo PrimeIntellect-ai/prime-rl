@@ -16,7 +16,7 @@ from prime_rl.configs.orchestrator import FilterConfig
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import TrainRollout
 
 
 @dataclass
@@ -28,7 +28,7 @@ class RolloutFilter(Protocol):
     name: str
     enforce: bool
 
-    def check(self, rollout: Rollout) -> FilterResult: ...
+    def check(self, rollout: TrainRollout) -> FilterResult: ...
 
 
 @dataclass
@@ -48,7 +48,7 @@ class GibberishFilter:
     logprob_threshold: float
     enforce: bool = False
 
-    def check(self, rollout: Rollout) -> FilterResult:
+    def check(self, rollout: TrainRollout) -> FilterResult:
         for branch in rollout.branches:
             # branch.{token_ids,logprobs,sampled_mask} are flat and mutually aligned; the raw
             # node arrays are not (node.logprobs covers only the sampled suffix, not the
@@ -78,7 +78,7 @@ class RepetitionFilter:
     logprob_threshold: float
     enforce: bool = False
 
-    def check(self, rollout: Rollout) -> FilterResult:
+    def check(self, rollout: TrainRollout) -> FilterResult:
         for branch in rollout.branches:
             # Aligned branch streams (see GibberishFilter), and reset the streak per branch:
             # flat rollout.nodes interleaves distinct root->leaf paths (compaction/subagents),
@@ -104,7 +104,7 @@ class ZeroAdvantageFilter:
     name: str
     enforce: bool = True
 
-    def check(self, rollout: Rollout) -> FilterResult:
+    def check(self, rollout: TrainRollout) -> FilterResult:
         if rollout.advantages is not None and all(a == 0.0 for a in rollout.advantages):
             return FilterResult(detected=True)
         return FilterResult(detected=False)
@@ -146,8 +146,8 @@ def setup_filters(configs: list[FilterConfig], vocab_size: int, *, kind: str) ->
     return filters
 
 
-def apply_filters(filters: list[RolloutFilter], rollouts: list[Rollout]) -> None:
-    """Flag ``Rollout``\\ s in place with per-filter detection + drop decision.
+def apply_filters(filters: list[RolloutFilter], rollouts: list[TrainRollout]) -> None:
+    """Flag ``TrainRollout``\\ s in place with per-filter detection + drop decision.
 
     Each rollout's ``filter_results`` dict records per-filter detection bools;
     ``is_filtered`` is True iff an enforcing filter detected it. First matching

@@ -49,7 +49,7 @@ from prime_rl.utils.logger import get_logger
 if TYPE_CHECKING:
     from renderers import RendererConfig
 
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import TrainRollout
     from prime_rl.utils.client import InferencePool
 
 
@@ -91,9 +91,9 @@ class Algorithm:
       (``action_loss_type``);
     - lifecycle — :meth:`setup` connects client pools to the frozen models
       the algorithm declares, resolving each reference via :meth:`connect`;
-    - the two scoring hooks, each ``async`` and given the :class:`Rollout`
+    - the two scoring hooks, each ``async`` and given the :class:`TrainRollout`
       directly — read the trace, write credit via
-      :meth:`Rollout.assign_advantages`. They are
+      :meth:`TrainRollout.assign_advantages`. They are
       async so either stage may do I/O — e.g. a process-reward model or a
       teacher at arrival, or a judge at group time whose signal a pre-batch
       filter then reads; a hook that only does advantage math simply never
@@ -137,24 +137,24 @@ class Algorithm:
         self.connected_pools.append(pool)
         return pool
 
-    async def score_rollout(self, rollout: Rollout) -> None:
+    async def score_rollout(self, rollout: TrainRollout) -> None:
         """Arrival phase, one rollout, before its group is complete: write
         rollout-local credit (``rollout.assign_advantages``), observation ce
         weights (echo), or per-token results from a model — an inference pool
         connected in :meth:`setup`, or the live policy (opsd). No siblings, no
         group stats."""
 
-    async def score_group(self, group: list[Rollout]) -> None:
+    async def score_group(self, group: list[TrainRollout]) -> None:
         """Group phase, the finalized cohort, before filtering: write
         group-relative credit."""
 
-    async def finalize_rollout(self, rollout: Rollout) -> None:
+    async def finalize_rollout(self, rollout: TrainRollout) -> None:
         """Arrival phase (non-virtual): rollout-local scoring as each rollout is
         tokenized."""
         if rollout.samples:
             await self.score_rollout(rollout)
 
-    async def finalize_group(self, rollouts: list[Rollout]) -> None:
+    async def finalize_group(self, rollouts: list[TrainRollout]) -> None:
         """Group phase (non-virtual): group-relative scoring, then stamp each
         sample's wire fields (the advantage stream + loss routing). After this
         the records are frozen — groups die at stamping."""

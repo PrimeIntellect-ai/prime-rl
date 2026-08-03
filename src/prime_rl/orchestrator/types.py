@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, Literal, Protocol, cast
+from typing import TYPE_CHECKING, ClassVar, Generic, Literal, Protocol, cast
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
@@ -73,29 +73,30 @@ class GroupState:
 
 
 class Rollout(vf.Trace[DataT], Generic[DataT]):
-    """A completed rollout: the env's typed ``vf.Trace`` *is* the rollout — prime-rl's
-    orchestration metadata lives on it directly (set by the dispatcher once the rollout
-    returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
-    fields are ``exclude=True``, so dumping a Rollout yields a plain trace on the wire; the
-    orchestrator mirrors them onto the trace's own fields via ``vf.Trace.record_run`` (``kind`` as
-    ``run.type``, the run id, the step, and ``env_name``/``group_id``/``policy_version`` into
-    ``info``) when a rollout arrives, so the on-disk records stay fully placeable.
+    """A completed rollout: the env's typed ``vf.Trace`` *is* the rollout, carrying only the links
+    prime-rl needs to place a loose trace back among its peers — its episode, its comparison group,
+    its env. Everything about the dispatch itself lives on the ``Episode``, which is the thing that
+    was dispatched. All added fields are ``exclude=True``, so dumping a Rollout yields a plain
+    trace on the wire; ``vf.Trace.record_run`` mirrors them into ``info`` on arrival so the on-disk
+    records stay fully placeable.
 
-    It is also the single currency the scoring hooks receive: a hook reads the trace
-    directly (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``) and writes
-    credit through :meth:`assign_advantages` (scalar broadcast or per-token), which
-    spreads over the samples' trainable (mask-True) tokens."""
+    It is also the currency the scoring hooks receive: a hook reads the trace directly
+    (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``)."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)  # ``samples`` holds msgspec structs
-
-    kind: RolloutKind = Field(default="train", exclude=True)
     env_name: str = Field(default="", exclude=True)
     group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
     # Links the traces of one episode; stamped into ``info`` on arrival so
     # saved records keep their grouping.
     episode_id: str = Field(default="", exclude=True)
-    policy_version: int = Field(default=0, exclude=True)
-    off_policy_steps: int = Field(default=0, exclude=True)
+
+
+class TrainRollout(Rollout[DataT], Generic[DataT]):
+    """A rollout on the training path, which alone carries training state: the trainer-bound
+    samples built from its branches, the credit assigned over them, and the filter verdicts. Eval
+    rollouts have none of this, so they are plain ``Rollout``\\ s and can't be asked for it."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)  # ``samples`` holds msgspec structs
+
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
     # Per-token rl advantage stream, full-length-N (= len(token_ids)) per
     # sample, concatenated across the rollout's samples in order; 0.0 on
@@ -104,7 +105,6 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     advantages: list[float] | None = Field(default=None, exclude=True)
     is_filtered: bool = Field(default=False, exclude=True)
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
-    eval_step: int | None = Field(default=None, exclude=True)
 
     def assign_advantages(self, values: float | list[float]) -> None:
         """Write the rl advantage stream: a scalar broadcast over the
@@ -141,24 +141,29 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
 
 
 class Episode(vf.WireEpisode):
-    """The env's own ``vf.Episode`` extended with prime-rl's scheduling facts — the only thing
-    prime-rl genuinely adds, so the episode itself travels rather than a wrapper around it. Those
-    fields are ``exclude=True``, so dumping an Episode yields a plain wire episode.
+    """The env's own ``vf.Episode`` extended with the facts of the dispatch it came from — the only
+    thing prime-rl genuinely adds, so the episode itself travels rather than a wrapper around it.
+    Those fields are ``exclude=True``, so dumping an Episode yields a plain wire episode.
 
     An episode that produced no traces is not a special case and needs no stand-in rollout: vf
     already records why on ``errors`` (its ``run_episode`` puts the exception there and returns the
     episode with ``ok`` false), and prime-rl's own outcomes — an off-policy cancel, a task that
     raised before reaching the env — are minted the same way. So ``failed`` is simply "no traces",
-    and ``last_error`` says why in one vocabulary for every cause."""
+    and ``last_error`` says why in one vocabulary for every cause.
+
+    Train and eval are the two subclasses rather than a discriminator field, so each carries only
+    what its path means: an eval episode has a step it belongs to, a train episode has the policy
+    it was generated from."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)  # traces are ``Rollout``s
 
-    kind: RolloutKind = Field(default="train", exclude=True)
+    KIND: ClassVar[RolloutKind]
+    """Which path this episode is on, for the run record and the dispatcher's counters."""
+
     env_name: str = Field(default="", exclude=True)
     group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
     policy_version: int = Field(default=0, exclude=True)
-    off_policy_steps: int = Field(default=0, exclude=True)
-    eval_step: int | None = Field(default=None, exclude=True)
+    """The policy that generated it — the thing being trained on one path, measured on the other."""
 
     @property
     def rollouts(self) -> list[Rollout]:
@@ -169,6 +174,28 @@ class Episode(vf.WireEpisode):
     def failed(self) -> bool:
         """Whether the episode produced nothing — ``last_error`` carries the reason."""
         return not self.traces
+
+
+class TrainEpisode(Episode):
+    """An episode collected for training, which alone can go stale relative to the live policy."""
+
+    KIND: ClassVar[RolloutKind] = "train"
+
+    off_policy_steps: int = Field(default=0, exclude=True)
+    """How stale it was by the time it shipped — meaningless for eval, which never trains on it."""
+
+    @property
+    def rollouts(self) -> list[TrainRollout]:
+        return cast(list[TrainRollout], self.traces)
+
+
+class EvalEpisode(Episode):
+    """An episode collected for one eval epoch. ``eval_step`` is the step whose eval triggered it —
+    always known, unlike on the train path, so it is not optional here."""
+
+    KIND: ClassVar[RolloutKind] = "eval"
+
+    eval_step: int = Field(default=0, exclude=True)
 
 
 @dataclass
