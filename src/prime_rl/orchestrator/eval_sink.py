@@ -8,7 +8,7 @@ Same shape as ``TrainSink``, but no tokenization / advantages / filters:
 3. ``process_batch`` — at ``num_examples × group_size`` episodes, return an
    ``EvalBatch`` with the full returned cohort (metrics are computed downstream).
 
-``add()`` takes one episode (``list[Rollout]``) and returns ``EvalBatch | None``;
+``add()`` takes one ``EpisodeResult`` and returns ``EvalBatch | None``;
 all accounting counts episodes, never loose traces.
 """
 
@@ -19,7 +19,7 @@ from collections import defaultdict
 
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalRollouts
-from prime_rl.orchestrator.types import EvalBatch, Rollout
+from prime_rl.orchestrator.types import EpisodeFailure, EpisodeResult, EvalBatch, Rollout
 from prime_rl.utils.logger import get_logger
 
 
@@ -33,16 +33,21 @@ class EvalSink:
         self.pending_group_episodes: dict[uuid.UUID, int] = defaultdict(int)
         self.pending_batches: dict[tuple[str, int], list[Rollout]] = defaultdict(list)
         self.pending_batch_episodes: dict[tuple[str, int], int] = defaultdict(int)
+        # Episodes of the epoch that produced no traces at all (cancelled, or the task failed).
+        self.pending_batch_failures: dict[tuple[str, int], list[EpisodeFailure]] = defaultdict(list)
 
-    def add(self, episode: list[Rollout]) -> EvalBatch | None:
+    def add(self, episode: EpisodeResult) -> EvalBatch | None:
         """Process one episode arrival; finalize the group on the ``group_size``-th
-        episode and the per-env epoch on the ``num_examples × group_size``-th."""
-        env_name = episode[0].env_name
-        group_id = episode[0].group_id
-        for rollout in episode:
+        episode and the per-env epoch on the ``num_examples × group_size``-th. A failed
+        episode brings no rollouts but still counts toward both."""
+        env_name = episode.env_name
+        group_id = episode.group_id
+        for rollout in episode.rollouts:
             self.process_rollout(rollout)
-        bkey = (env_name, episode[0].eval_step)
-        self.pending_groups[group_id].extend(episode)
+        bkey = (env_name, episode.eval_step)
+        if episode.failure is not None:
+            self.pending_batch_failures[bkey].append(episode.failure)
+        self.pending_groups[group_id].extend(episode.rollouts)
         self.pending_group_episodes[group_id] += 1
         if self.pending_group_episodes[group_id] >= self.group_size_for(env_name):
             self.process_group(group_id)
@@ -125,4 +130,5 @@ class EvalSink:
         env_name, step = key
         rollouts = self.pending_batches.pop(key, [])
         self.pending_batch_episodes.pop(key, None)
-        return EvalBatch(env_name=env_name, step=step, rollouts=EvalRollouts(rollouts))
+        failures = self.pending_batch_failures.pop(key, [])
+        return EvalBatch(env_name=env_name, step=step, rollouts=EvalRollouts(rollouts), failures=failures)

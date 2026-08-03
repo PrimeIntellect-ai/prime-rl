@@ -10,7 +10,7 @@
 3. ``process_batch`` — applies post-batch filter annotations and assembles
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
-``add()`` takes one episode (``list[Rollout]``) and returns
+``add()`` takes one ``EpisodeResult`` and returns
 ``TrainBatch | None``; group accounting counts episodes, never loose traces.
 I/O concerns (ship to trainer, save_rollouts, monitor.log) live on the
 orchestrator.
@@ -27,7 +27,7 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout, TrainBatch
+from prime_rl.orchestrator.types import EpisodeFailure, EpisodeResult, Rollout, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -76,6 +76,10 @@ class TrainSink:
         # finalized since the last ship (errored + filtered + survivors).
         # In-progress groups stay out until they finalize.
         self.pending_rollouts: TrainRollouts = TrainRollouts()
+        # Episodes in that window that produced no traces at all (cancelled, or the task
+        # itself failed). They have no rollout to be counted through, so they are tallied
+        # here and reported alongside the window's metrics.
+        self.pending_failures: list[EpisodeFailure] = []
         # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
         # isn't unique — the same task can be re-sampled while an
         # earlier group is still in flight
@@ -124,16 +128,19 @@ class TrainSink:
             counts[r.env_name] += 1
         return dict(counts)
 
-    async def add(self, episode: list[Rollout]) -> TrainBatch | None:
+    async def add(self, episode: EpisodeResult) -> TrainBatch | None:
         """Process one episode arrival; finalize the group on the
         ``group_size``-th episode; return a ``TrainBatch`` if the finalization
         pushed (or left) the batch over its threshold. Arrivals into
-        still-incomplete groups never ship a batch."""
-        group_id = episode[0].group_id
-        env_name = episode[0].env_name
-        for rollout in episode:
+        still-incomplete groups never ship a batch. A failed episode brings no
+        rollouts, but still counts toward the group so finalization triggers."""
+        group_id = episode.group_id
+        env_name = episode.env_name
+        if episode.failure is not None:
+            self.pending_failures.append(episode.failure)
+        for rollout in episode.rollouts:
             await self.process_rollout(rollout)
-        self.pending_groups[group_id].extend(episode)
+        self.pending_groups[group_id].extend(episode.rollouts)
         self.pending_group_episodes[group_id] += 1
         if self.pending_group_episodes[group_id] < self.group_size_for(env_name):
             return None
@@ -286,9 +293,11 @@ class TrainSink:
         # samples) — an empty batch is dropped unlogged by the orchestrator, so keep accumulating its
         # finalized groups (and any overflow) into the next shipped batch's window.
         rollouts = self.pending_rollouts
+        failures = self.pending_failures
         if samples:
             self.pending_rollouts = TrainRollouts()
-        return TrainBatch(rollouts=rollouts, samples=samples)
+            self.pending_failures = []
+        return TrainBatch(rollouts=rollouts, samples=samples, failures=failures)
 
     def reset_pre_filter_stats(self) -> None:
         self.pre_filter_seen = 0

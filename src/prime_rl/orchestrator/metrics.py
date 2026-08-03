@@ -26,9 +26,24 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import EpisodeFailure, Rollout
 
 Subset = Literal["all", "effective"]
+
+
+def episode_failure_metrics(failures: list[EpisodeFailure], *, prefix: str, total: int) -> dict[str, float]:
+    """Episodes that produced no traces, by reason (``{prefix}/episode_failure/<type>``) plus their
+    share of the window. These are prime-rl's own outcomes — a cancellation or a task that never
+    reached the env — so they belong to no agent and are counted whole rather than folded into a
+    seat's error rate. ``total`` is the window's rollout count, for the rate's denominator."""
+    counts: dict[str, int] = {}
+    for failure in failures:
+        counts[failure.type] = counts.get(failure.type, 0) + 1
+    out = {f"{prefix}/episode_failure/{name}": float(n) for name, n in sorted(counts.items())}
+    denominator = total + len(failures)
+    if denominator:
+        out[f"{prefix}/episode_failure/rate"] = len(failures) / denominator
+    return out
 
 
 class Stat:

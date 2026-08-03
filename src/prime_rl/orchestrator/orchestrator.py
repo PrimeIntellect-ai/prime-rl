@@ -3,8 +3,8 @@
 ``Orchestrator`` owns the shared state (policy, progress, ckpt, monitor)
 and drives the pipeline. Components are single-purpose:
 
-- ``RolloutDispatcher`` schedules rollouts; emits ``Rollout`` (train/eval
-  discriminated by ``kind``) on its queue.
+- ``RolloutDispatcher`` schedules rollouts; emits ``EpisodeResult`` (train/eval
+  discriminated by ``kind``) on its queue — its traces, or the failure that replaced them.
 - ``TrainSink`` ingests train rollouts (tokenize → advantages → filters)
   and returns a ``TrainBatch`` when the threshold is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
@@ -49,6 +49,7 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
+from prime_rl.orchestrator.metrics import episode_failure_metrics
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
@@ -57,10 +58,10 @@ from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
+    EpisodeResult,
     EvalBatch,
     Policy,
     Progress,
-    Rollout,
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
@@ -510,7 +511,7 @@ class Orchestrator:
             trim_process_memory()
 
     async def main_loop(self) -> None:
-        """Consume episodes (``list[Rollout]``) from the dispatcher and route them
+        """Consume ``EpisodeResult``\\ s from the dispatcher and route them
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
@@ -520,23 +521,24 @@ class Orchestrator:
                 break
 
             try:
-                episode: list[Rollout] = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                episode: EpisodeResult = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
 
             # Every completed rollout — errored, filtered, or never batched — lands in the
             # ``all`` trace file the moment it arrives, so it survives crashes and drains.
             # Train rollouts belong to the batch window currently collecting (``progress.step``),
-            # eval rollouts to the step whose eval triggered them.
-            kind = episode[0].kind
-            step = episode[0].eval_step if kind == "eval" else self.progress.step
+            # eval rollouts to the step whose eval triggered them. A failed episode has no trace
+            # to write; it is counted in the batch's failure tally instead.
+            kind = episode.kind
+            step = episode.eval_step if kind == "eval" else self.progress.step
             assert step is not None
             run: vf.RunInfo = (
                 vf.EvalRunInfo(id=self.run_id, step=step)
                 if kind == "eval"
                 else vf.TrainRunInfo(id=self.run_id, step=step)
             )
-            for rollout in episode:
+            for rollout in episode.rollouts:
                 rollout.record_run(
                     run,
                     env_name=rollout.env_name,
@@ -544,11 +546,12 @@ class Orchestrator:
                     episode_id=rollout.episode_id,
                     policy_version=rollout.policy_version,
                 )
-            await asyncio.to_thread(
-                save_rollouts,
-                [rollout.to_record() for rollout in episode],
-                get_trace_path(self.config.output_dir, step, kind, "all"),
-            )
+            if episode.rollouts:
+                await asyncio.to_thread(
+                    save_rollouts,
+                    [rollout.to_record() for rollout in episode.rollouts],
+                    get_trace_path(self.config.output_dir, step, kind, "all"),
+                )
 
             if kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
@@ -660,6 +663,9 @@ class Orchestrator:
             metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
             for env_name, env_pool in pool.by_env().items():
                 metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
+        # Episodes that produced no trace at all are an episode-level fact — they belong to no
+        # agent, so they are counted here rather than folded into any seat's error rate.
+        metrics |= episode_failure_metrics(batch.failures, prefix="train/agg", total=len(batch.rollouts))
 
         # Progress / timing / env-share / pre-filter accounting (assembled here, not in the metrics
         # objects). ``num_tokens`` is over the full arrival window; the input/output breakdown is over
@@ -876,6 +882,7 @@ class Orchestrator:
         metrics: dict[str, float] = {}
         for subset, pool in (("all", rollouts), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
+        metrics |= episode_failure_metrics(batch.failures, prefix=f"eval/{batch.env_name}", total=len(rollouts))
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
         self.monitor.log(metrics, step=batch.step)

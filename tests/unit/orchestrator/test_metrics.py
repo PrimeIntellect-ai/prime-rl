@@ -1,11 +1,13 @@
 import math
 from itertools import count
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
+from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts, episode_failure_metrics
+from prime_rl.orchestrator.types import EpisodeFailure, EpisodeResult
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 _ids = count()
@@ -265,3 +267,44 @@ def test_compute_pass_metrics_matches_closed_form():
     assert out["pass@2"] == 1.0 - math.comb(2, 2) / math.comb(4, 2)
     assert out["pass^2"] == math.comb(2, 2) / math.comb(4, 2)
     assert set(out) == {"pass@1", "pass@2", "pass@4", "pass^1", "pass^2", "pass^4"}
+
+
+def test_episode_failure_metrics():
+    """Episodes that never produced a trace are counted whole, by reason. They belong to no agent,
+    so they must never appear under an agent subtree — the phantom-seat bug this replaced."""
+    failures = [
+        EpisodeFailure(type="Cancelled", message="Off-policy cancel"),
+        EpisodeFailure(type="Cancelled", message="Off-policy cancel"),
+        EpisodeFailure(type="TaskFailed", message="boom"),
+    ]
+    out = episode_failure_metrics(failures, prefix="train/agg", total=9)
+    assert out["train/agg/episode_failure/Cancelled"] == 2.0
+    assert out["train/agg/episode_failure/TaskFailed"] == 1.0
+    assert out["train/agg/episode_failure/rate"] == 0.25  # 3 of the window's 12 episodes
+    assert not any("/agent/" in k for k in out)  # never attributed to a seat
+    assert episode_failure_metrics([], prefix="train/agg", total=4) == {"train/agg/episode_failure/rate": 0.0}
+    assert episode_failure_metrics([], prefix="train/agg", total=0) == {}  # nothing arrived at all
+
+
+def test_episode_result_carries_traces_xor_failure():
+    """The envelope makes the phantom trace unrepresentable: an outcome is traces or a failure."""
+    rollout = mk()
+    assert EpisodeResult(kind="train", env_name="env", group_id=uuid4(), policy_version=0, rollouts=[rollout])
+    assert EpisodeResult(
+        kind="train",
+        env_name="env",
+        group_id=uuid4(),
+        policy_version=0,
+        failure=EpisodeFailure(type="Cancelled", message="Off-policy cancel"),
+    )
+    with pytest.raises(AssertionError):  # neither
+        EpisodeResult(kind="train", env_name="env", group_id=uuid4(), policy_version=0)
+    with pytest.raises(AssertionError):  # both
+        EpisodeResult(
+            kind="train",
+            env_name="env",
+            group_id=uuid4(),
+            policy_version=0,
+            rollouts=[rollout],
+            failure=EpisodeFailure(type="Cancelled", message="Off-policy cancel"),
+        )

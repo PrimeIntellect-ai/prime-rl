@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Generic, Literal, Protocol
 
 import verifiers.v1 as vf
@@ -141,6 +141,41 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
 
 
 @dataclass
+class EpisodeFailure:
+    """Why a dispatched episode carries no traces of its own. This is prime-rl's own verdict —
+    the episode never reached the env, or was pulled back before it finished — as opposed to an
+    env-side error, which rides on the trace that hit it (``Trace.last_error``)."""
+
+    type: Literal["Cancelled", "TaskFailed", "EmptyEpisode"]
+    message: str
+
+
+@dataclass
+class EpisodeResult:
+    """One dispatched episode as it arrives from the dispatcher: the scheduling facts that
+    describe the whole episode, plus either the env's traces or the reason there are none.
+
+    The scheduling facts live here rather than on each trace because that is what they describe —
+    a group is dispatched, cancelled, and counted whole. ``rollouts`` is empty exactly when
+    ``failure`` is set: prime-rl never mints a stand-in trace to carry an outcome the env did not
+    produce, so a cancellation can't be mistaken for an agent's rollout."""
+
+    kind: RolloutKind
+    env_name: str
+    group_id: uuid.UUID
+    policy_version: int
+    off_policy_steps: int = 0
+    eval_step: int | None = None
+    rollouts: list[Rollout] = field(default_factory=list)
+    failure: EpisodeFailure | None = None
+
+    def __post_init__(self) -> None:
+        assert bool(self.rollouts) != (self.failure is not None), (
+            "an episode carries either traces or a failure, never both or neither"
+        )
+
+
+@dataclass
 class TrainBatch:
     """``rollouts`` is the observation window since the last ship — every rollout of every group
     finalized in that span (errored + filtered included; rollouts of still-incomplete groups wait
@@ -151,6 +186,9 @@ class TrainBatch:
 
     rollouts: TrainRollouts
     samples: list[TrainingSample]
+    failures: list[EpisodeFailure] = field(default_factory=list)
+    """Episodes in the window that produced no traces at all — they appear nowhere in
+    ``rollouts``, so their count would otherwise be invisible."""
 
 
 @dataclass
@@ -161,6 +199,8 @@ class EvalBatch:
     env_name: str
     step: int
     rollouts: EvalRollouts
+    failures: list[EpisodeFailure] = field(default_factory=list)
+    """Episodes in the epoch that produced no traces at all."""
 
 
 class VersionObserver(Protocol):
