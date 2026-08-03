@@ -134,22 +134,40 @@ class TimingMetrics(StatGroup):
 
 class CustomMetrics(StatGroup):
     """Per-key ``Stat``s over a dynamic per-rollout dict attribute (env ``@metric``s or reward
-    components), each averaged over the rollouts that report the key. ``value`` extracts the
-    float from each entry (rewards are ``vf.Reward`` records; metrics are plain floats)."""
+    components), each over the rollouts that carry the key. Scoring seeds every expected key
+    with ``None`` before invoking it, so a ``None`` value means the signal never produced a
+    score: with ``unscored_as_zero`` (rewards) it counts as 0.0 — matching the scalar
+    ``reward``, which sums unscored components as 0 — without it (metrics) it is skipped and
+    the key averages over the rollouts that scored it. ``value`` extracts the float from each
+    scored entry (rewards are ``vf.Reward`` records; metrics are plain floats)."""
 
-    def __init__(self, rollouts: list[Rollout], attr: str, value: Callable[[Any], float] = float) -> None:
+    def __init__(
+        self,
+        rollouts: list[Rollout],
+        attr: str,
+        value: Callable[[Any], float] = float,
+        unscored_as_zero: bool = False,
+    ) -> None:
         super().__init__(rollouts)
         self.attr = attr
         self.value = value
+        self.unscored_as_zero = unscored_as_zero
 
     def stats(self) -> dict[str, Stat]:
         names = sorted({name for r in self.rollouts for name in getattr(r, self.attr)})
-        return {
-            name: Stat(
-                [self.value(getattr(r, self.attr)[name]) for r in self.rollouts if name in getattr(r, self.attr)]
-            )
-            for name in names
-        }
+        stats = {}
+        for name in names:
+            values = []
+            for r in self.rollouts:
+                scores = getattr(r, self.attr)
+                if name not in scores:
+                    continue
+                if scores[name] is not None:
+                    values.append(self.value(scores[name]))
+                elif self.unscored_as_zero:
+                    values.append(0.0)
+            stats[name] = Stat(values)
+        return stats
 
 
 class RolloutMetrics:
@@ -193,8 +211,9 @@ class RolloutMetrics:
     @property
     def rewards(self) -> CustomMetrics:
         """Per-component reward breakdown, keyed by name (each entry's weighted ``value``,
-        summed into the scalar ``reward``)."""
-        return CustomMetrics(self.rollouts, "rewards", value=lambda reward: reward.value)
+        summed into the scalar ``reward``). Unscored components count as 0.0 so the breakdown
+        stays consistent with ``reward`` when scoring fails."""
+        return CustomMetrics(self.rollouts, "rewards", value=lambda reward: reward.value, unscored_as_zero=True)
 
     # Boolean rate metrics (0/1 distributions — ``.mean()`` is the rate)
     @property
