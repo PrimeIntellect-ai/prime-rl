@@ -544,7 +544,7 @@ class Orchestrator:
                     episode_id=rollout.episode_id,
                     policy_version=episode.policy_version,
                 )
-            if not episode.failed:
+            if episode.traces:
                 await asyncio.to_thread(
                     save_rollouts,
                     [r.to_record() for r in episode.rollouts],

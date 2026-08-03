@@ -324,9 +324,9 @@ def test_traceless_episode_keeps_its_reason():
     """The failure needs no type of its own: ``failed`` is just "no traces", and the reason is the
     error vf (or the dispatcher) already put on the episode."""
     episode = ep(errors=[vf.Error(type="Cancelled", message="Off-policy cancel")])
-    assert episode.failed and episode.rollouts == []
+    assert episode.is_empty and episode.rollouts == []
     assert episode.last_error is not None and episode.last_error.type == "Cancelled"
-    assert not ep(mk()).failed
+    assert not ep(mk()).is_empty
     # A traceless episode still counts as an episode, but contributes no rollouts.
     pool = TrainRollouts([ep(mk()), episode])
     assert len(pool) == 1 and len(pool.episodes) == 2
@@ -365,3 +365,11 @@ def test_inflight_episode_stamps_what_lands():
     assert isinstance(evaluation, EvalEpisode) and evaluation.step == 12
     with pytest.raises(AssertionError):  # an eval episode without its step is not representable
         replace(inflight, kind="eval").stamp(wire, policy_version=7, eval_step=None)
+
+
+def test_empty_is_not_the_same_as_failed():
+    """An episode can error and still have traces — that failure rides the traces and must not be
+    counted as an episode that produced nothing."""
+    errored = ep(mk(has_error=True), errors=[vf.Error(type="EnvError", message="boom")])
+    assert not errored.is_empty and not errored.ok  # failed, but something came back
+    assert episode_failure_metrics([errored], prefix="t") == {"t/episode_failure/rate": 0.0}

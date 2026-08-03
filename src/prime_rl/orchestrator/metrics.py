@@ -39,13 +39,13 @@ def episode_failure_metrics(episodes: list[Episode], *, prefix: str) -> dict[str
     seat's error rate."""
     if not episodes:
         return {}
-    failed = [e for e in episodes if e.failed]
+    empty = [e for e in episodes if e.is_empty]
     counts: dict[str, int] = {}
-    for episode in failed:
+    for episode in empty:
         error = episode.last_error
         counts[error.type if error else "Unknown"] = counts.get(error.type if error else "Unknown", 0) + 1
     out = {f"{prefix}/episode_failure/{name}": float(n) for name, n in sorted(counts.items())}
-    out[f"{prefix}/episode_failure/rate"] = len(failed) / len(episodes)
+    out[f"{prefix}/episode_failure/rate"] = len(empty) / len(episodes)
     return out
 
 

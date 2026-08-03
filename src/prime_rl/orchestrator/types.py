@@ -133,8 +133,8 @@ class Episode(vf.WireEpisode):
     An episode that produced no traces is not a special case and needs no stand-in rollout: vf
     already records why on ``errors`` (its ``run_episode`` puts the exception there and returns the
     episode with ``ok`` false), and prime-rl's own outcomes — an off-policy cancel, a task that
-    raised before reaching the env — are minted the same way. So ``failed`` is simply "no traces",
-    and ``last_error`` says why in one vocabulary for every cause.
+    raised before reaching the env — are minted the same way. So ``is_empty`` is simply "no
+    traces", and ``last_error`` says why in one vocabulary for every cause.
 
     Train and eval are the two subclasses rather than a discriminator field, so each carries only
     what its path means: an eval episode has a step it belongs to, a train episode has the policy
@@ -156,8 +156,11 @@ class Episode(vf.WireEpisode):
         return cast(list[Rollout], self.traces)
 
     @property
-    def failed(self) -> bool:
-        """Whether the episode produced nothing — ``last_error`` carries the reason."""
+    def is_empty(self) -> bool:
+        """Whether nothing came back at all — ``last_error`` then carries the reason. Not the
+        same as failing: an episode can error and still have traces (vf keeps the completed subset
+        and marks its clean siblings failed), and that failure is accounted for through those
+        traces. vf's ``ok`` is the success sentinel; this is only "there is nothing here"."""
         return not self.traces
 
 
