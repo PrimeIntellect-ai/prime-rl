@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
 from httpx import AsyncClient
 from pydantic import BaseModel, ConfigDict, Field
-from tenacity import AsyncRetrying, retry_if_exception, stop_after_delay, wait_exponential
+from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import StaticInferencePool, setup_admin_clients
+from prime_rl.utils.client import (
+    LORA_LOAD_READ_TIMEOUT_S,
+    LORA_LOAD_TOTAL_TIMEOUT_S,
+    StaticInferencePool,
+    _is_retryable_lora_error,
+    _pause_engines,
+    _resume_engines,
+    setup_admin_clients,
+)
 
 DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION = 1
 DYNAMO_READINESS_REQUEST_TIMEOUT_S = 30.0
@@ -23,6 +32,8 @@ class DiscoveredDynamoWorker(BaseModel):
     model: str
     admin_base_url: str = Field(min_length=1)
     world_size: int = Field(gt=0, strict=True)
+    system_url: str | None = Field(None, min_length=1)
+    system_routes: tuple[str, ...] = ()
 
 
 class DynamoDiscoverySnapshot(BaseModel):
@@ -64,6 +75,11 @@ def _parse_dynamo_workers(payload: object, model_name: str) -> tuple[DiscoveredD
         raise ValueError("Dynamo RL discovery returned duplicate worker identities")
     if len(set(admin_urls)) != len(admin_urls):
         raise ValueError("Dynamo RL discovery returned duplicate admin endpoints")
+    lora_workers = [worker for worker in workers if "update/load_lora" in worker.system_routes]
+    if lora_workers and len(lora_workers) != len(workers):
+        raise ValueError("Dynamo RL discovery returned a partial update/load_lora capability snapshot")
+    if any(worker.system_url is None for worker in lora_workers):
+        raise ValueError("Dynamo RL discovery returned update/load_lora without a system_url")
     return tuple(sorted(workers, key=lambda worker: (worker.component, worker.instance_id)))
 
 
@@ -76,6 +92,30 @@ def _setup_control_clients(urls: list[str]) -> list[AsyncClient]:
         )
         for url in urls
     ]
+
+
+async def _load_lora_adapter(update_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
+    timeout = httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0)
+    payload = {
+        "lora_name": lora_name,
+        "source": {"uri": lora_path.resolve().as_uri()},
+        "load_inplace": True,
+    }
+
+    @retry(
+        retry=retry_if_exception(_is_retryable_lora_error),
+        stop=stop_after_delay(LORA_LOAD_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
+    async def load(update_client: AsyncClient) -> None:
+        response = await update_client.post("/v1/loras", json=payload, timeout=timeout)
+        response.raise_for_status()
+        result = response.json()
+        if isinstance(result, dict) and result.get("status") == "error":
+            raise RuntimeError(result.get("message") or "Dynamo LoRA update failed")
+
+    await asyncio.gather(*(load(update_client) for update_client in update_clients))
 
 
 async def _wait_for_model(clients: list[AsyncClient], model_name: str, timeout: float) -> None:
@@ -110,6 +150,10 @@ class DynamoInferencePool(StaticInferencePool):
         admin_clients = _setup_control_clients([worker.admin_base_url for worker in workers])
         super().__init__(client_config, admin_clients=admin_clients, **kwargs)
         self._admin_world_sizes = [worker.world_size for worker in workers]
+        self._lora_update_clients: list[AsyncClient] = []
+        if all("update/load_lora" in worker.system_routes for worker in workers):
+            system_urls = [worker.system_url for worker in workers if worker.system_url is not None]
+            self._lora_update_clients = _setup_control_clients(system_urls)
         self._frontend_model_clients = setup_admin_clients(client_config)
         self._readiness_deadline: float | None = None
 
@@ -134,9 +178,31 @@ class DynamoInferencePool(StaticInferencePool):
         finally:
             self._readiness_deadline = None
 
+    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+        if lora_name is None or weight_dir is None:
+            await super().update_weights(weight_dir, lora_name=lora_name, step=step)
+            return
+        if not self._lora_update_clients:
+            raise RuntimeError("Dynamo LoRA update requires every worker to advertise system_url and update/load_lora")
+        try:
+            await _pause_engines(self._admin_clients, step=step)
+            await _load_lora_adapter(self._lora_update_clients, lora_name, weight_dir)
+            await _wait_for_model(
+                self._frontend_model_clients,
+                lora_name,
+                timeout=self._wait_for_ready_timeout,
+            )
+        finally:
+            await _resume_engines(self._admin_clients)
+
     async def stop(self) -> None:
         await super().stop()
-        await asyncio.gather(*(client.aclose() for client in [*self._admin_clients, *self._frontend_model_clients]))
+        await asyncio.gather(
+            *(
+                client.aclose()
+                for client in [*self._admin_clients, *self._lora_update_clients, *self._frontend_model_clients]
+            )
+        )
 
     @classmethod
     async def from_config(
