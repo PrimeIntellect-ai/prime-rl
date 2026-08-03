@@ -5,8 +5,8 @@
   N rollouts in one call reserves N permits (each bridged v0 rollout is its own
   single-agent episode).
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
-- Emit-everything invariant: every dispatched env-rollout eventually reaches
-  ``out_q`` exactly once, as one episode (a ``list[Rollout]``). Failures
+- Emit-everything invariant: every dispatched episode eventually reaches
+  ``out_q`` exactly once, as a ``list[Rollout]``. Failures
   (env error, empty trajectory, task exception, off-policy cancel) carry
   ``trace.last_error`` set; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
@@ -495,7 +495,7 @@ class RolloutDispatcher:
         self.inflight_permits -= n
 
     async def handle_completed_rollout(self, task: asyncio.Task) -> None:
-        """Emit every dispatched env-rollout exactly once to ``out_q``: a ``run``
+        """Emit every dispatched episode exactly once to ``out_q``: a ``run``
         result as one episode, a legacy ``run_group`` result as ``rollout_count``
         single-trace episodes. Task exceptions synthesize ``rollout_count``
         error-marker episodes so the sink's count-to-``group_size`` finalization

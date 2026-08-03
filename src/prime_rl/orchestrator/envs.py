@@ -6,7 +6,7 @@ is derived from the source's position in the config
 exactly those addresses, and the orchestrator connects. The
 orchestrator never *runs* an environment — the agents and their runtimes live only
 in the server — but it does own the *taskset*: a v1 env's tasks are loaded here,
-once, and each dispatched env-rollout ships its task's data on the request
+once, and each dispatched episode ships its task's data on the request
 (``task_data``); the server pydantic-validates it into the taskset's declared
 ``TaskData`` type and runs it. That keeps the server (and every worker in its
 pool) stateless about data — no per-worker dataset loads, no idx-addressed task
@@ -14,7 +14,7 @@ cache — and gives the orchestrator real tasks to cycle, shuffle, and filter. O
 the legacy (v0) bridge, whose dataset genuinely lives server-side, is still driven
 by ``task_idx`` (its count comes from ``info``).
 
-The server answers one ``Episode`` per env-rollout, whose traces we validate into
+The server answers one ``Episode`` per run request, whose traces we validate into
 ``Trace[WireTaskData]`` — real ``vf.Trace``\\ s (never loose dicts) whose task
 keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 """
@@ -128,7 +128,7 @@ class Env:
         if not episode.traces:
             error = episode.last_error
             detail = f"{error.type}: {error.message}" if error is not None else "no traces and no error recorded"
-            raise RuntimeError(f"env-rollout failed before any trace was minted — {detail}")
+            raise RuntimeError(f"episode failed before any trace was produced — {detail}")
         rollouts = [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in episode.traces]
         for rollout in rollouts:
             rollout.episode_id = episode.id
