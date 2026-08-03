@@ -454,11 +454,7 @@ class RLConfig(BaseConfig):
     def validate_enough_devices_for_nccl(self):
         if self.deployment.type != "single_node" or self.trainer.weight_broadcast.type != "nccl":
             return self
-        if (
-            self.inference is None
-            and self.weight_broadcast is not None
-            and self.weight_broadcast.inference_world_size is not None
-        ):
+        if self.inference is None and self.weight_broadcast.inference_world_size is not None:
             return self
         local_inference_gpus = self.deployment.num_infer_gpus if self.inference is not None else 0
         if self.deployment.num_train_gpus + local_inference_gpus < 2:
