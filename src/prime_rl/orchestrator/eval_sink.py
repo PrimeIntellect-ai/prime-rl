@@ -17,10 +17,19 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict
 
+import verifiers.v1 as vf
+
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalRollouts
 from prime_rl.orchestrator.types import Episode, EvalBatch, Rollout
 from prime_rl.utils.logger import get_logger
+
+
+def eval_step_of(episode: Episode) -> int:
+    """The eval epoch an episode belongs to, off the run the dispatcher recorded when it landed.
+    Only the eval path has one, which is why this lives here and not on ``Episode``."""
+    assert isinstance(episode.run, vf.EvalRunInfo) and episode.run.step is not None
+    return episode.run.step
 
 
 class EvalSink:
@@ -42,7 +51,7 @@ class EvalSink:
         group_id = episode.group_id
         for rollout in episode.rollouts:
             self.process_rollout(rollout)
-        bkey = (env_name, episode.step)
+        bkey = (env_name, eval_step_of(episode))
         self.pending_groups[group_id].append(episode)
         self.pending_group_episodes[group_id] += 1
         if self.pending_group_episodes[group_id] >= self.group_size_for(env_name):
@@ -73,7 +82,7 @@ class EvalSink:
             env_name = episodes[0].env_name
             if self.eval_envs.get(env_name).requires_group_scoring:
                 continue
-            bkey = (env_name, episodes[0].step)
+            bkey = (env_name, eval_step_of(episodes[0]))
             buffered[bkey] = buffered.get(bkey, 0) + self.pending_group_episodes.get(group_id, 0)
         return [
             (
@@ -105,7 +114,7 @@ class EvalSink:
         # Read the group's facts off an episode, not a trace: every episode in it may have
         # produced none (a whole group cancelled off-policy).
         env_name = finished[0].env_name
-        eval_step = finished[0].step
+        eval_step = eval_step_of(finished[0])
         group = [t for e in finished for t in e.rollouts]
         task_idx = group[0].task.data.idx if group else -1
         bucket = self.pending_batches[(env_name, eval_step)]
