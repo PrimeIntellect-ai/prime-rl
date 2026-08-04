@@ -139,7 +139,7 @@ labels = ["laguna-xs21-swe"]
 rollout = 3600
 
 [inference]
-enable_expert_parallel = false
+enable_expert_parallel = true
 enable_return_routed_experts = true
 
 [inference.env_vars]
