@@ -1,6 +1,6 @@
 # Algorithms
 
-This page covers the math and the configurable algorithmic components: the algorithm abstraction and its algorithms, how off-policy training works, the loss components and advantage functions, how to plug in your own, the degeneracy detectors and drop policy applied between rollout and training, and how multi-turn rollouts get merged into training samples.
+This page covers the math and the configurable algorithmic components: the algorithm abstraction and its algorithms, how off-policy training works, the loss components and advantage functions, how to plug in your own, the degeneracy measurements and drop policy applied between rollout and training, and how multi-turn rollouts get merged into training samples.
 
 ## Table of Contents
 
@@ -21,7 +21,7 @@ This page covers the math and the configurable algorithmic components: the algor
   - [Self-Play Advantage (RAE)](#self-play-advantage-rae)
   - [Authoring an Algorithm](#authoring-an-algorithm)
   - [Reference Scoring](#reference-scoring)
-- [Detectors and the drop policy](#detectors-and-the-drop-policy)
+- [Degeneracy and the drop policy](#degeneracy-and-the-drop-policy)
 - [Multi-Turn Trajectories](#multi-turn-trajectories)
   - [Extension Property](#extension-property)
   - [Best-Effort Interleaving](#best-effort-interleaving)
@@ -458,48 +458,40 @@ demo_key = "demonstration"
 
 Scoring runs at arrival, *before* the drop policy, so a rollout that is later dropped still cost its reference compute — accepted for the simpler one-rollout-at-a-time shape (zero-advantage dropping never applies to opd/opsd anyway, since neither assigns an advantage).
 
-## Detectors and the drop policy
+## Degeneracy and the drop policy
 
 Two separate things: **measuring** what a rollout looks like, and **deciding** whether to train on it.
 
-Detectors measure. Each one asks a single question of a trace's tokens, runs on every trace as soon
-as it is tokenized, and reports its rate per agent alongside reward and truncation — whether or not
-anything acts on it. Every detector measures every trace, so one detection never hides another.
+Every trace is measured, unconditionally, as soon as it is tokenized, and each measurement is
+reported per agent alongside reward and truncation. Nothing configures that — a rate is only a rate
+if nothing decided in advance which traces to look at, and every measurement runs on every trace, so
+one never hides another.
 
-| Detector | Measures |
+| Measurement | What it finds |
 |---|---|
-| `gibberish` | rare tokens (high BPE id) generated at high entropy — degenerate output |
+| `gibberish` | a rare token (high BPE id) generated at high entropy — degenerate output |
 | `repetition` | a long stretch of very-high-confidence tokens — a repetition loop |
 
-```toml
-[orchestrator.detectors]
-drop = ["gibberish"]              # measured always; this says which detections also drop
-
-[orchestrator.detectors.repetition]
-window = 2000
-```
-
-Set a detector to `false` to stop measuring it (`[orchestrator.detectors] repetition = false`).
-
 The drop policy decides. It runs once, when a finalized group's credit is assigned and the rollouts
-would enter the batch buffer, and it has two inputs: the detections the run listed in
-`detectors.drop`, and **zero credit**, which drops on its own:
+would enter the batch buffer, and it has two inputs — the measurements the run chose to act on, and
+**zero credit**, which drops on its own:
 
 ```toml
 [orchestrator]
+drop_degenerate = ["gibberish"]   # measuring is unconditional; acting on it is opt-in
 drop_zero_advantage = true        # the default
 ```
 
 A scored rollout whose every token is worth nothing — a GRPO group where all rollouts earned the
-same reward — produces no gradient, so training on it is a wasted forward pass. It is not a plugin
-because it is not a property of the generation: it is only knowable after the group is scored, and
-it is what `TrainRollout.is_trainable` already means.
+same reward — produces no gradient, so training on it is a wasted forward pass. It is not one of the
+measurements because it is not a property of the generation: it is only knowable after the group is
+scored, and it is what `TrainRollout.is_trainable` already means.
 
 A rollout that was **never** scored is not zero-credit. `opd` / `opsd` assign no advantages at all
 and train through reference KL, so they are never dropped by this rule.
 
 Dropped rollouts still appear in the metrics window and the `all` trace file — they just don't ship.
-`{scope}/{subset}/<agent>/detected/<name>/mean` is each detector's rate, and
+`{scope}/{subset}/<agent>/detected/<name>/mean` is each measurement's rate, and
 `{scope}/{subset}/<agent>/is_filtered/mean` is the share the policy dropped.
 
 ## Multi-Turn Trajectories

@@ -1,8 +1,8 @@
 """TrainSink: three-level rollout sink for the training side.
 
 1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
-   dispatcher producing more rollouts), the degeneracy detectors, then the env
-   algorithm's ``finalize_rollout`` (rollout-local scoring + any reference
+   dispatcher producing more rollouts), the degeneracy measurements, then the
+   env algorithm's ``finalize_rollout`` (rollout-local scoring + any reference
    I/O). Errored and untrainable rollouts skip this.
 2. ``process_group`` — filters errored rollouts, hands the episodes narrowed
    to their trainable survivors to the env algorithm's ``finalize_group``
@@ -23,7 +23,7 @@ import asyncio
 from collections import defaultdict
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.detectors import Detector, detect, drop_reasons
+from prime_rl.orchestrator.degeneracy import drop_reasons, measure
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
@@ -66,8 +66,8 @@ class TrainSink:
         mm_token_type_ids_mapping: dict[int, int] | None,
         batch_size: int | None,
         token_batch_size: int | None,
-        detectors: list[Detector],
-        drop_detections: list[str],
+        vocab_size: int,
+        drop_degenerate: list[str],
         drop_zero_advantage: bool,
     ) -> None:
         assert (batch_size is None) != (token_batch_size is None), (
@@ -79,8 +79,8 @@ class TrainSink:
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
-        self.detectors = detectors
-        self.drop_detections = drop_detections
+        self.vocab_size = vocab_size
+        self.drop_degenerate = drop_degenerate
         self.drop_zero_advantage = drop_zero_advantage
 
         # Observation window for the next shipped batch: rollouts of groups
@@ -176,7 +176,7 @@ class TrainSink:
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
         )
         rollout.samples = samples or []
-        detect(self.detectors, rollout)
+        measure(rollout, self.vocab_size)
         # Arrival phase: rollout-local scoring (raw reward, echo observation
         # weighting, opd/opsd reference logprobs) runs as soon as the rollout is
         # tokenized — before its group is complete.
@@ -242,7 +242,7 @@ class TrainSink:
         for r in survivors:
             self.pre_filter_seen += 1
             reasons = drop_reasons(
-                r, drop_detections=self.drop_detections, drop_zero_advantage=self.drop_zero_advantage
+                r, drop=self.drop_degenerate, drop_zero_advantage=self.drop_zero_advantage
             )
             r.is_filtered = bool(reasons)
             if reasons:

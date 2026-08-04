@@ -357,38 +357,6 @@ class CheckpointConfig(BaseConfig):
 
 
 # Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
-class GibberishDetectorConfig(BaseConfig):
-    """Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387)."""
-
-    token_id_threshold: int = 100_000
-    """Token IDs above this are candidates for gibberish. BPE tokens are sorted by merge order."""
-
-    logprob_offset: float = 2.0
-    """Offset from uniform-distribution logprob. Threshold = ``-log(vocab_size) - logprob_offset``."""
-
-
-class RepetitionDetectorConfig(BaseConfig):
-    """Flags rollouts stuck in a repetition loop: high-confidence tokens for an extended stretch
-    (Section 3.2, https://arxiv.org/abs/2506.13585)."""
-
-    window: int = Field(3_000, ge=1)
-    """Consecutive high-probability steps required to flag the rollout."""
-
-    prob_threshold: float = Field(0.99, gt=0, le=1)
-    """Tokens sampled with probability above this are considered repetitive. Consecutive such tokens count toward the window."""
-
-
-class DetectorsConfig(BaseConfig):
-    """Degeneracy detectors. Each one measures every trace and reports its rate per agent; set
-    ``drop`` to also keep what it flags out of the training batch."""
-
-    gibberish: GibberishDetectorConfig | None = GibberishDetectorConfig()
-    repetition: RepetitionDetectorConfig | None = RepetitionDetectorConfig()
-
-    drop: list[Literal["gibberish", "repetition"]] = []
-    """Which detections keep a rollout out of the batch. Measuring is always on; dropping is not."""
-
-
 class FileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
@@ -462,9 +430,9 @@ class OrchestratorConfig(BaseConfig):
     eval: EvalConfig | None = None
     """Evaluation configuration."""
 
-    detectors: DetectorsConfig = DetectorsConfig()
-    """Degeneracy detectors, measured on every trace and reported per agent. ``detectors.drop``
-    says which detections also keep a rollout out of the training batch."""
+    drop_degenerate: list[Literal["gibberish", "repetition"]] = []
+    """Which degeneracy measurements also keep a rollout out of the training batch. Every trace is
+    measured for all of them and reports them per agent; acting on one is opt-in."""
 
     drop_zero_advantage: bool = True
     """Keep scored rollouts whose credit is all zero out of the batch — a GRPO group that earned a

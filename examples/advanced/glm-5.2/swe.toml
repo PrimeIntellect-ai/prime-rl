@@ -60,6 +60,7 @@ weight_decay = 0.1
 
 
 [orchestrator]
+drop_degenerate = ["gibberish"]
 batch_size = 4096
 group_size = 16
 oversampling_factor = 3
@@ -84,8 +85,6 @@ id = "bash"
 type = "prime"
 labels = ["glm5-pd-disag", "swe-bench-verified"]
 
-[orchestrator.detectors]
-drop = ["gibberish"]
 
 [inference]
 enable_expert_parallel = true

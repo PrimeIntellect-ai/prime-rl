@@ -5,7 +5,7 @@ and drives the pipeline. Components are single-purpose:
 
 - ``RolloutDispatcher`` schedules rollouts; emits ``Episode`` (train/eval discriminated by
   ``kind``) on its queue — the env's own episode, or a traceless one saying why there is none.
-- ``TrainSink`` ingests train rollouts (tokenize → detect → advantages → drop policy)
+- ``TrainSink`` ingests train rollouts (tokenize → measure → advantages → drop policy)
   and returns a ``TrainBatch`` when the threshold is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
   returned cohort) on epoch completion.
@@ -44,7 +44,6 @@ import verifiers.v1 as vf
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.detectors import setup_detectors
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
@@ -258,7 +257,6 @@ class Orchestrator:
             self.usage_reporter = UsageReporter()
 
         # Filters apply to train rollouts only
-        detectors = setup_detectors(config.detectors, vocab_size=self.tokenizer.vocab_size)
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
@@ -420,8 +418,8 @@ class Orchestrator:
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
-            detectors=detectors,
-            drop_detections=config.detectors.drop,
+            vocab_size=self.tokenizer.vocab_size,
+            drop_degenerate=config.drop_degenerate,
             drop_zero_advantage=config.drop_zero_advantage,
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
@@ -592,7 +590,7 @@ class Orchestrator:
             if self.consecutive_empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
                 raise RuntimeError(
                     f"{self.consecutive_empty_batches} consecutive empty train batches — "
-                    "check the drop policy (detectors.drop / drop_zero_advantage) or task difficulty."
+                    "check the drop policy (drop_degenerate / drop_zero_advantage) or task difficulty."
                 )
             return
         self.consecutive_empty_batches = 0

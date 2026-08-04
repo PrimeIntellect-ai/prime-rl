@@ -67,7 +67,7 @@ Where a trace sits (its episode, its group, its env) is the episode's to say."""
 class TrainRollout(vf.Trace[DataT], Generic[DataT]):
     """A rollout on the training path — the one place prime-rl extends a verifiers type, because
     trainer-bound state has nowhere else to live: the samples built from its branches, what the
-    degeneracy detectors measured on it, and whether the drop policy kept it. All of it is
+    degeneracy measurements found on it, and whether the drop policy kept it. All of it is
     ``exclude=True``, so dumping one yields a plain trace on the wire.
 
     ``env_name`` rides along because a sample is routed by it (the trainer's per-env loss config)
@@ -77,8 +77,8 @@ class TrainRollout(vf.Trace[DataT], Generic[DataT]):
 
     env_name: str = Field(default="", exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
-    detections: dict[str, bool] = Field(default_factory=dict, exclude=True)
-    """What each degeneracy detector measured on this trace — a measurement, not a verdict."""
+    degeneracy: dict[str, bool] = Field(default_factory=dict, exclude=True)
+    """What each degeneracy measurement found on this trace — a measurement, not a verdict."""
     is_filtered: bool = Field(default=False, exclude=True)
     """The sink's verdict: this rollout is not trained on. Kept for the metrics window, which
     reports what came back as well as what shipped."""
