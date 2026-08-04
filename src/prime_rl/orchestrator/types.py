@@ -190,15 +190,18 @@ class InflightEpisode:
         has for them. The group's values win over this dispatch's when it is still alive, so they
         are passed in rather than read off ``self``.
 
-        The run's ``kind`` says which path the episode is on, which is all the rest of the
-        orchestrator needs to route it. An eval episode knows its step here; an episode to train on
-        does not — it belongs to whichever batch window is collecting when it lands, so the main
-        loop fills that in."""
+        The run's metadata says what the episode is to the run, which is all the rest of the
+        orchestrator needs to route it. An eval knows its step here; an episode to train on does
+        not — it belongs to whichever batch window is collecting when it lands, so the main loop
+        fills that in."""
         episode.env.name = self.env_name
         episode.group = vf.GroupInfo(id=str(self.group_id))
         if self.kind == "eval":
             assert eval_step is not None, "eval episode missing its step"
-        episode.run = vf.TrainRunInfo(id=run_id, kind=self.kind, step=eval_step, policy=policy)
+            metadata: vf.EpisodeMetadata = vf.EvalMetadata(step=eval_step)
+        else:
+            metadata = vf.TrainMetadata()
+        episode.run = vf.TrainRunInfo(id=run_id, metadata=metadata, policy=policy)
         return episode
 
 

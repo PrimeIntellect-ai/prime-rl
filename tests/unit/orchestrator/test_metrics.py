@@ -348,21 +348,22 @@ def test_inflight_episode_stamps_what_lands():
     span = vf.PolicySpan(start=3, end=4)  # an update landed while it was generating
     train = inflight.stamp(wire, run_id="r", policy=span, eval_step=None)
     run = run_of(train)
-    assert (run.kind, run.policy) == ("train", span)
-    assert run.step is None  # the batch window it lands in is not known yet
+    assert isinstance(run.metadata, vf.TrainMetadata) and run.policy == span
+    assert run.metadata.step is None  # the batch window it lands in is not known yet
     assert run.off_policy_steps is None  # so there is nothing to be behind yet
     assert train.env.name == "rt" and train.group is not None
 
-    run.step = 6  # the window it landed in, which step 6 trains v5 from
+    run.metadata.step = 6  # the window it landed in, which step 6 trains v5 from
     assert run.off_policy_steps == 2 and run.policy.drift == 1
 
     evaluation = replace(inflight, kind="eval").stamp(
         vf.WireEpisode.model_construct(id="e", traces=[]), run_id="r", policy=span, eval_step=12
     )
-    # An online eval belongs to the same training run — same record, told apart by kind, and
+    # An online eval belongs to the same training run — same id, told apart by its metadata, and
     # measured against the policy in training exactly as an episode trained on is.
-    assert (run_of(evaluation).kind, run_of(evaluation).step) == ("eval", 12)
-    assert run_of(evaluation).off_policy_steps == 8
+    eval_run = run_of(evaluation)
+    assert isinstance(eval_run.metadata, vf.EvalMetadata) and eval_run.metadata.step == 12
+    assert eval_run.id == run.id and eval_run.off_policy_steps == 8
     with pytest.raises(AssertionError):  # an eval episode without its step is not representable
         replace(inflight, kind="eval").stamp(wire, run_id="r", policy=span, eval_step=None)
 

@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from prime_rl.transport.base import TrainingBatchSender
     from prime_rl.utils.client import InferencePool
     from prime_rl.utils.monitor.base import Monitor
+import verifiers.v1 as vf
+
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
@@ -532,17 +534,17 @@ class Orchestrator:
             # An eval episode already knows its step (the eval that triggered it); a train one
             # belongs to the batch window collecting right now, which only this loop knows.
             run = run_of(episode)
-            if run.kind == "train":
-                run.step = self.progress.step
-            step = run.step
+            if isinstance(run.metadata, vf.TrainMetadata):
+                run.metadata.step = self.progress.step
+            step = run.metadata.step
             assert step is not None
             await asyncio.to_thread(
                 save_episodes,
                 [to_record(episode)],
-                get_trace_path(self.config.output_dir, step, run.kind, "all"),
+                get_trace_path(self.config.output_dir, step, run.metadata.type, "all"),
             )
 
-            if run.kind == "eval":
+            if run.metadata.type == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(episode)
                 if eval_batch is not None:

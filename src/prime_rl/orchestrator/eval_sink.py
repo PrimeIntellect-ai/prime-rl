@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+import verifiers.v1 as vf
+
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalRollouts
 from prime_rl.orchestrator.types import (
@@ -32,11 +34,11 @@ from prime_rl.utils.logger import get_logger
 
 def eval_step_of(episode: Episode) -> int:
     """The eval epoch an episode belongs to, off the run the dispatcher recorded when it landed.
-    An online eval belongs to the training run, so its step is known from the start — unlike an
+    An online eval belongs to the training run, and its metadata requires the step, unlike an
     episode to train on, whose step is the window it lands in."""
-    run = run_of(episode)
-    assert run.kind == "eval" and run.step is not None, "not an eval episode"
-    return run.step
+    metadata = run_of(episode).metadata
+    assert isinstance(metadata, vf.EvalMetadata), "not an eval episode"
+    return metadata.step
 
 
 class EvalSink:
