@@ -11,7 +11,6 @@ from renderers.mm_store import RAW_MM_ITEM_KIND
 class RawMMItem:
     modality: str
     family: str
-    layout_fingerprint: str
     raw_image_uri: str
     payload: dict[str, Any]
     raw_ref: str | None = None
@@ -56,7 +55,6 @@ def parse_raw_mm_item(value: Any) -> RawMMItem:
     return RawMMItem(
         modality=_required_str(descriptor, "modality"),
         family=_required_str(descriptor, "family"),
-        layout_fingerprint=_required_str(descriptor, "layout_fingerprint"),
         raw_image_uri=_required_str(descriptor, "raw_image_uri"),
         payload=_payload(descriptor),
         raw_ref=_optional_str(descriptor, "raw_ref"),

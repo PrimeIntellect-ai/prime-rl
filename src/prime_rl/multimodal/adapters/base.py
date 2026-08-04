@@ -28,8 +28,6 @@ class MultimodalAdapter(Protocol):
 
     def validate_item(self, item: "RawMMItem") -> None: ...
 
-    def processor_fingerprint(self, image_processor: Any) -> str: ...
-
     def materialize_for_trainer(
         self,
         image_processor: Any,

@@ -28,7 +28,6 @@ def _qwen_item(grid, uri: str = "file:///tmp/missing-image.png"):
         "kind": RAW_MM_ITEM_KIND,
         "modality": "image",
         "family": "qwen_vl",
-        "layout_fingerprint": "f" * 32,
         "raw_image_uri": uri,
         "payload": {"image_grid_thw": grid},
     }

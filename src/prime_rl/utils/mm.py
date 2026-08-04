@@ -123,15 +123,6 @@ def _single_family_adapter(items: list[RawMMItem]) -> MultimodalAdapter:
     return get_multimodal_adapter(next(iter(families)))
 
 
-def _validate_processor_layout(adapter: MultimodalAdapter, image_processor: Any, image_items: list[RawMMItem]) -> None:
-    actual_fingerprint = adapter.processor_fingerprint(image_processor)
-    for item in image_items:
-        if item.layout_fingerprint != actual_fingerprint:
-            raise ValueError(
-                f"Raw image layout fingerprint mismatch: expected {item.layout_fingerprint}, got {actual_fingerprint}"
-            )
-
-
 def _load_verified_images(image_refs: list[MMImageRef]) -> list[Any]:
     from PIL import Image
 
@@ -173,7 +164,6 @@ class RawImageMaterializer:
 
         image_processor = self.image_processor
         adapter = _single_family_adapter(image_items)
-        _validate_processor_layout(adapter, image_processor, image_items)
         images = _load_verified_images(refs.images)
         return adapter.materialize_for_trainer(image_processor, image_items, images)
 

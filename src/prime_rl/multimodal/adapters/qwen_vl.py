@@ -3,8 +3,6 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from renderers.qwen3_vl import qwen_layout_from
-
 from prime_rl.multimodal.adapters.base import ForwardPolicy, MaterializedMM
 from prime_rl.multimodal.schema import RawMMItem
 
@@ -58,11 +56,6 @@ class QwenVLAdapter:
             raise ValueError(f"Qwen adapter cannot handle family {item.family!r}")
         _grid_payload(item)
 
-    def processor_fingerprint(self, image_processor: Any) -> str:
-        # Same canonical knob list and hash as the renderer used at layout time
-        # (the spec dataclass in renderers.qwen3_vl is the single field list).
-        return qwen_layout_from(image_processor).fingerprint()
-
     def materialize_for_trainer(
         self,
         image_processor: Any,
@@ -93,13 +86,8 @@ class QwenVLAdapter:
         from vllm.multimodal.inputs import MultiModalKwargsItems
 
         self.validate_item(item)
-        actual_fingerprint = self.processor_fingerprint(image_processor)
-        if actual_fingerprint != item.layout_fingerprint:
-            raise ValueError(
-                f"Image layout fingerprint mismatch: expected {item.layout_fingerprint}, got {actual_fingerprint}"
-            )
         hf_inputs = image_processor(images=[image], return_tensors="pt")
-        merge_size = qwen_layout_from(image_processor).merge_size
+        merge_size = int(image_processor.merge_size)
         config_by_key = _create_qwen2vl_field_factory(merge_size)(hf_inputs)
         mm_item = MultiModalKwargsItems.from_hf_inputs(hf_inputs, config_by_key)["image"][0]
         expected_grid = _grid_payload(item)

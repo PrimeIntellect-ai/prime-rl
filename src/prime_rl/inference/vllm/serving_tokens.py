@@ -237,7 +237,6 @@ def _materialize_raw_image_ref_sync(
     item = RawMMItem(
         modality=ref.modality,
         family=ref.family,
-        layout_fingerprint=ref.fingerprint,
         raw_image_uri=ref.raw_image_uri,
         payload=dict(ref.payload),
         raw_ref=raw_ref,
