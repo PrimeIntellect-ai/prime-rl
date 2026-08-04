@@ -148,51 +148,6 @@ Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_
 
 The optimizer step is performed per-transformer-layer with stream-overlapped H2D/D2H transfers: while layer *i* computes, layer *i+1* is prefetched and layer *i-1* is evicted. The prefetch waits for the eviction to complete, so at most two layers' optimizer states are on GPU at any time. This reduces peak GPU optimizer-state memory from the full model's states to about two layers' worth, preventing OOM when `weight + grad + all_opt_states > VRAM`.
 
-#### Experimental gradient offloading
-
-`grad_cpu_offload` extends optimizer offloading to FSDP2's sharded gradients:
-
-```toml
-[trainer.model]
-optim_cpu_offload = true
-grad_cpu_offload = true
-```
-
-It is opt-in and requires `optim_cpu_offload`. Each finalized gradient shard is copied into a persistent pinned CPU accumulator during backward and its CUDA `DTensor.grad` is released. Intermediate accumulation microbatches can continue copying while the next forward runs, with per-buffer synchronization preventing staging reuse before its CPU add completes. The worker collects the final L2 norm and zero count while those copies arrive. Gradient scaling and clipping are represented by one deferred factor that is applied when each chunk rides the optimizer state's existing H2D stream, so scaling does not require another CPU scan or GPU round trip.
-
-The motivating 32×H200 budget can be estimated from the measured 64-rank peak. A 134 GiB peak at 64 ranks consists of about 114 GiB of non-gradient peak plus about 20 GiB of resident BF16 gradient shards. Halving the shard count doubles gradient bytes per rank: resident BF16 gradients imply roughly 154 GiB at 32 ranks, and FP32 gradients roughly 194 GiB. Both exceed a 141 GiB H200. Moving gradients only after `backward()` does not change that peak because the full set has already accumulated; eviction must overlap backward to approach the roughly 114 GiB non-gradient target.
-
-FSDP2 assigns `param.grad` as a sharded `DTensor` only after reduce-scatter, post-division, and restoration to the parameter dtype. Ordinary autograd post-accumulate timing therefore cannot observe that finalized shard. PyTorch 2.11 manually replays registered post-accumulate hooks after assignment, but that replay is skipped by compiled autograd, and generic helpers such as torchao's do not provide CPU accumulation or the chunked step-side return path. The POC does not depend on that version-specific replay. Conversely, a trainer-level post-backward copy runs too late to lower backward peak.
-
-In the locked PyTorch 2.11 implementation, `FSDPModule.set_all_reduce_hook` runs after reduce-scatter/all-reduce but before post-division, dtype restoration, and `DTensor.grad` assignment. The implementation therefore uses the lag-1 `full_backward_hook` fallback and gates its D2H stream on the FSDP post-reduce event. Recheck these semantics before changing the Torch pin; a future post-assignment all-reduce hook can replace the fallback. The hooks wrap FSDP outside compiled transformer blocks, so the fake-model compile check does not introduce a layer graph break.
-
-Pinned accumulators are allocated once on the first gradient of each dtype and shape. A buffer's accumulation staging allocation is deferred until its second microbatch. The trainer logs total pinned allocation and the number of gradients evicted before backward returned. This lazy allocation also preserves BF16/FP32 router and FP8-produced gradient dtypes rather than guessing from parameter storage. Qwen3-4B with FP32 gradients and two-way sharding uses 7.49 GiB per rank for accumulators and, with accumulation greater than one, another 7.49 GiB for staging.
-
-The local POC harness covers dense FSDP, accumulation greater than one, first-step AdamW state creation, BF16 and FP32 reduction, clipping parity, and compiled layers:
-
-```bash
-uv run torchrun --standalone --nproc-per-node=2 scripts/grad_cpu_offload_poc.py \
-  --accumulation 3 --reduce-dtype bfloat16 --compile \
-  --snapshot-dir /tmp/grad-offload-snapshots
-```
-
-Before enabling this on a large run, complete the cluster compatibility matrix:
-
-| Configuration | POC status |
-| --- | --- |
-| Dense FSDP, BF16 reduce, accumulation > 1 | validated on 2 GPUs |
-| Dense FSDP, FP32 reduce | validated on 2 GPUs |
-| Compiled transformer blocks (`fullgraph=False`) | validated on 2 GPUs |
-| Native HSDP / `dp_replicate > 1` | validated on a 2×1 mesh; larger meshes require cluster validation |
-| FP32 router FSDP unit | validated on 2 GPUs |
-| Expert parallel parameters | requires cluster validation |
-| FP8/MXFP8 parameter paths | requires cluster validation |
-| Full and weights-only checkpoint save/resume | requires cluster validation |
-
-Acceptance for a production rollout is update and gradient-norm parity with accumulation greater than one across that matrix, CUDA snapshots showing no full resident gradient set, peak near 114 GiB for the 32-rank target, CPU RAM matching the one-time allocation log, and less than 5% steady-state step-time regression.
-
-The optimized POC still does not meet the `<5%` performance gate on a two-GPU Qwen3-4B SFT benchmark with random initialization, compiled layers, full activation checkpointing, FP32 reduction, and two accumulated microbatches. At sequence length 1024, mean step time increased from 3.585 s to 4.198 s (+17.1%) and throughput fell 13.3%. At sequence length 4096, mean step time increased from 4.342 s to 5.185 s (+19.4%) and throughput fell 15.9%. This improves the original POC's +30.5% and +40.9% regressions by overlapping accumulation copies, collecting statistics on the worker, and deferring scaling to H2D prefetch. The first-step reserved-memory reading improved by about 5.4–6.0 GiB per GPU, but allocator reservation grows as streamed optimizer and gradient chunks populate the CUDA cache, so the benchmark's cumulative `max_memory_reserved` is not sufficient evidence for the target peak. Production work should next use a bounded staging pool or fused D2H accumulation and repeat large-cluster snapshots and timing on the target H200 topology.
-
 ### LM Head Chunking
 
 The vanilla LM head materializes a `[batch * seq, vocab]` logits tensor on every step — a major memory tax when the vocabulary is large (often >100K). `fused_lm_head_token_chunk_size` swaps in a custom fused linear + logprob/entropy kernel that streams through `chunk_size` tokens at a time, avoiding the materialization. It defaults to `1024` for RL training:
