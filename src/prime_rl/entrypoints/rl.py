@@ -8,12 +8,14 @@ import uuid
 from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
+from urllib.parse import urlparse
 
 import pynvml
 import tomli_w
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
+from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.inference import vllm_overrides_fragment
 from prime_rl.utils.config import cli, to_toml_dict
@@ -42,6 +44,17 @@ RL_SBATCH = "rl.sbatch"
 TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
 INFERENCE_TOML = "inference.toml"
+
+ENVS_DIR = "envs"
+
+
+def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig, str]]:
+    """``(split, source, address)`` for every train/eval source. The launcher runs one
+    env server per source at its deterministic address; the orchestrator connects there."""
+    addresses = config.orchestrator.env_addresses
+    return [
+        (split, source, addresses[(split, source.resolved_name)]) for split, source in config.orchestrator.env_sources
+    ]
 
 
 def get_physical_gpu_ids() -> list[int]:
@@ -79,6 +92,22 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             inference_dict["router"] = "None"
         with open(output_dir / INFERENCE_TOML, "wb") as f:
             tomli_w.dump(inference_dict, f)
+
+    # One EnvServerConfig TOML per source: `env-server @ <path>` binds at the source's
+    # deterministic address, where the orchestrator connects. The source's env/serve/legacy
+    # blocks carry over; its other knobs (sampling, algo, name, ...) are orchestrator-side.
+    for split, source, address in env_servers(config):
+        env_dir = output_dir / ENVS_DIR / split
+        env_dir.mkdir(parents=True, exist_ok=True)
+        source_dict = to_toml_dict(source)
+        env_server_dict = {
+            "env": source_dict["env"],
+            "serve": {**source_dict.get("serve", {}), "address": address},
+            "legacy": source_dict.get("legacy", {}),
+            "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
+        }
+        with open(env_dir / f"{source.resolved_name}.toml", "wb") as f:
+            tomli_w.dump(env_server_dict, f)
 
 
 def rl_local(config: RLConfig):
@@ -131,8 +160,6 @@ def rl_local(config: RLConfig):
 
     # Validate client port matches inference server port
     if config.inference is not None and not config.orchestrator.model.client.is_elastic:
-        from urllib.parse import urlparse
-
         base_url = config.orchestrator.model.client.base_url[0]
         parsed = urlparse(base_url)
         client_port = parsed.port
@@ -218,6 +245,41 @@ def rl_local(config: RLConfig):
                 f"Make sure these endpoints are serving before the orchestrator starts: {endpoints}; "
                 "otherwise rollouts will hang."
             )
+
+        # Start one env server per source. The orchestrator connects to each source's
+        # deterministic address, polling until the server is up, so the servers and the
+        # orchestrator start in parallel.
+        for split, source, address in env_servers(config):
+            name = source.resolved_name
+            env_server_cmd = ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.toml").as_posix()]
+            logger.info(f"Starting {split} env server {name} at {address}")
+            logger.debug(f"Env server start command: {' '.join(env_server_cmd)}")
+            env_server_log = log_dir / ENVS_DIR / split / f"{name}.log"
+            env_server_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(env_server_log, "w") as log_file:
+                env_server_process = Popen(
+                    env_server_cmd,
+                    env={
+                        **os.environ,
+                        **DEFAULT_COMMON_ENV_VARS,
+                        **config.env_vars,
+                        **config.orchestrator.env_vars,
+                    },
+                    stdout=log_file,
+                    stderr=log_file,
+                )
+            processes.append(env_server_process)
+
+            # Start monitoring thread
+            stop_event = Event()
+            stop_events[f"env/{split}/{name}"] = stop_event
+            monitor_thread = Thread(
+                target=monitor_process,
+                args=(env_server_process, stop_event, error_queue, f"{split} env server {name}"),
+                daemon=True,
+            )
+            monitor_thread.start()
+            monitor_threads.append(monitor_thread)
 
         orchestrator_cmd = ["orchestrator", "@", (config_dir / ORCHESTRATOR_TOML).as_posix()]
         logger.info("Starting orchestrator process")
@@ -391,6 +453,11 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         else {}
     )
 
+    # Env servers launch next to the orchestrator, one per train/eval source.
+    sources = config.orchestrator.env_sources
+    train_env_names = [source.resolved_name for split, source in sources if split == "train"]
+    eval_env_names = [source.resolved_name for split, source in sources if split == "eval"]
+
     if config.deployment.type == "single_node":
         script = template.render(
             **config.slurm.template_vars,
@@ -438,6 +505,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
+            train_env_names=train_env_names,
+            eval_env_names=eval_env_names,
         )
     else:
         script = template.render(
@@ -467,6 +536,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             trainer_env_vars=trainer_env_vars,
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
+            train_env_names=train_env_names,
+            eval_env_names=eval_env_names,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)

@@ -84,7 +84,7 @@ from prime_rl.utils.config import to_toml_dict
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pathing import get_log_dir, get_trace_path
+from prime_rl.utils.pathing import get_trace_path
 from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
     clean_exit,
@@ -260,27 +260,22 @@ class Orchestrator:
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
-            config.train.source, policy_pool=self.policy_inference, renderer_config=config.renderer
+            config.train.source,
+            config.env_addresses,
+            policy_pool=self.policy_inference,
+            renderer_config=config.renderer,
         )
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
         )
-        await self.train_envs.start(
-            log_dir=get_log_dir(config.output_dir.parent) / "envs" / "train",
-            log_level=config.log.vf_level,
-            json_logging=config.log.json_logging,
-        )
+        await self.train_envs.start()
         get_logger().success("Train environment(s) ready")
 
         if config.eval is not None:
             get_logger().info("Loading eval environment(s)")
-            self.eval_envs = EvalEnvs(config.eval.source)
+            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses)
             get_logger().debug(f"Loaded {len(self.eval_envs)} eval environment(s) ({', '.join(self.eval_envs.names)})")
-            await self.eval_envs.start(
-                log_dir=get_log_dir(config.output_dir.parent) / "envs" / "eval",
-                log_level=config.log.vf_level,
-                json_logging=config.log.json_logging,
-            )
+            await self.eval_envs.start()
             get_logger().success("Eval environment(s) ready")
 
         if config.ckpt is not None and config.ckpt.resume_step is not None and self.ckpt_manager is not None:
@@ -965,9 +960,6 @@ class Orchestrator:
                 for env in self.train_envs:
                     for pool in (*env.sampler.connected_pools, *env.algorithm.connected_pools):
                         await pool.stop()
-                self.train_envs.shutdown()
-            if self.eval_envs is not None:
-                self.eval_envs.shutdown()
             if self.usage_reporter is not None:
                 self.usage_reporter.close()
 
