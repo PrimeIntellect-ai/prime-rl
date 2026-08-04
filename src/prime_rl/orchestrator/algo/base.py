@@ -50,7 +50,7 @@ from prime_rl.utils.logger import get_logger
 if TYPE_CHECKING:
     from renderers import RendererConfig
 
-    from prime_rl.orchestrator.types import TrainEpisode, TrainRollout
+    from prime_rl.orchestrator.types import Episode, TrainRollout
     from prime_rl.utils.client import InferencePool
 
 
@@ -94,7 +94,7 @@ class Algorithm:
       the algorithm declares, resolving each reference via :meth:`connect`;
     - the two scoring hooks, each ``async`` and given the env's own data
       directly — a :class:`TrainRollout` on arrival, the group's
-      :class:`TrainEpisode`\ s at group time — so a hook reads the trace and
+      :class:`Episode`\ s at group time — so a hook reads the trace and
       writes credit via :meth:`TrainRollout.assign_advantages`. They are
       async so either stage may do I/O — e.g. a process-reward model or a
       teacher at arrival, or a judge at group time whose signal a pre-batch
@@ -146,7 +146,7 @@ class Algorithm:
         connected in :meth:`setup`, or the live policy (opsd). No siblings, no
         group stats."""
 
-    async def score_group(self, group: list[TrainEpisode]) -> None:
+    async def score_group(self, group: list[Episode]) -> None:
         """Group phase, the finalized cohort, before filtering: write
         group-relative credit. The cohort arrives as episodes, so an algorithm
         can compare within one episode as well as across them; ``group_rollouts``
@@ -158,7 +158,7 @@ class Algorithm:
         if rollout.samples:
             await self.score_rollout(rollout)
 
-    async def finalize_group(self, episodes: list[TrainEpisode]) -> None:
+    async def finalize_group(self, episodes: list[Episode]) -> None:
         """Group phase (non-virtual): group-relative scoring, then stamp each
         sample's wire fields (the advantage stream + loss routing). After this
         the records are frozen — groups die at stamping."""

@@ -12,7 +12,7 @@ from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import stamp_advantages
 from prime_rl.orchestrator.trajectories import iter_trainable_branches, trace_to_samples
-from prime_rl.orchestrator.types import TrainEpisode, TrainRollout
+from prime_rl.orchestrator.types import Episode, TrainRollout
 
 
 def _build_rollout(
@@ -139,10 +139,10 @@ def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[TrainR
     return rollouts
 
 
-def _as_episodes(group: list[TrainRollout]) -> list[TrainEpisode]:
+def _as_episodes(group: list[TrainRollout]) -> list[Episode]:
     """One episode per rollout — the shape a single-agent env produces, and what the
     algorithms are handed."""
-    return [TrainEpisode.model_construct(id=f"e{i}", traces=[rollout]) for i, rollout in enumerate(group)]
+    return [Episode.model_construct(id=f"e{i}", traces=[rollout]) for i, rollout in enumerate(group)]
 
 
 def _scalar(rollout: TrainRollout) -> float:

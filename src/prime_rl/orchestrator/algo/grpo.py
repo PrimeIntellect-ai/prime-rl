@@ -9,7 +9,7 @@ from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.types import group_rollouts
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainEpisode
+    from prime_rl.orchestrator.types import Episode
     from prime_rl.utils.client import InferencePool
 
 
@@ -22,7 +22,7 @@ class GRPOAlgorithm(Algorithm):
         super().__init__(config, policy_pool)
         self.length_penalty = config.length_penalty
 
-    async def score_group(self, group: list[TrainEpisode]) -> None:
+    async def score_group(self, group: list[Episode]) -> None:
         rollouts = group_rollouts(group)
         rewards = torch.tensor([rollout.reward for rollout in rollouts], dtype=torch.float32)
         length_penalty = self.length_penalty

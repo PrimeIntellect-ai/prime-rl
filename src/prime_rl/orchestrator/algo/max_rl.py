@@ -8,7 +8,7 @@ from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.types import group_rollouts
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainEpisode
+    from prime_rl.orchestrator.types import Episode
 
 
 class MaxRLAlgorithm(Algorithm):
@@ -24,7 +24,7 @@ class MaxRLAlgorithm(Algorithm):
     <= 0 carries no signal and gets zero advantages (the zero-advantage filter
     drops it, matching the paper's no-success convention)."""
 
-    async def score_group(self, group: list[TrainEpisode]) -> None:
+    async def score_group(self, group: list[Episode]) -> None:
         rollouts = group_rollouts(group)
         rewards = torch.tensor([rollout.reward for rollout in rollouts], dtype=torch.float32)
         mean = rewards.mean()

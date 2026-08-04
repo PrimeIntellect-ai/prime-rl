@@ -8,7 +8,7 @@ from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.types import group_rollouts
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainEpisode
+    from prime_rl.orchestrator.types import Episode
     from prime_rl.utils.client import InferencePool
 
 
@@ -35,7 +35,7 @@ class RAEAlgorithm(Algorithm):
         self.decay = config.decay
         self.baselines: dict[str, float] = defaultdict(float)
 
-    async def score_group(self, group: list[TrainEpisode]) -> None:
+    async def score_group(self, group: list[Episode]) -> None:
         for rollout in group_rollouts(group):
             baseline = self.baselines[rollout.agent.name]
             rollout.assign_advantages(rollout.reward - baseline)

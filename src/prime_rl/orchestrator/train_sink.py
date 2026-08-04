@@ -27,7 +27,7 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import TrainBatch, TrainEpisode, TrainRollout, group_rollouts
+from prime_rl.orchestrator.types import Episode, TrainBatch, TrainRollout, group_rollouts
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -79,7 +79,7 @@ class TrainSink:
         # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
         # isn't unique — the same task can be re-sampled while an
         # earlier group is still in flight
-        self.pending_groups: dict[uuid.UUID, list[TrainEpisode]] = defaultdict(list)
+        self.pending_groups: dict[uuid.UUID, list[Episode]] = defaultdict(list)
         # Episodes arrived per group — the finalization count (an episode may
         # add several traces to ``pending_groups`` but counts once here).
         self.pending_group_episodes: dict[uuid.UUID, int] = defaultdict(int)
@@ -124,7 +124,7 @@ class TrainSink:
             counts[r.env_name] += 1
         return dict(counts)
 
-    async def add(self, episode: TrainEpisode) -> TrainBatch | None:
+    async def add(self, episode: Episode) -> TrainBatch | None:
         """Process one episode arrival; finalize the group on the
         ``group_size``-th episode; return a ``TrainBatch`` if the finalization
         pushed (or left) the batch over its threshold. Arrivals into

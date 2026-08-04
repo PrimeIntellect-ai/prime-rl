@@ -8,7 +8,7 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
-from prime_rl.orchestrator.types import EvalEpisode, InflightEpisode, Rollout, TrainEpisode, TrainRollout
+from prime_rl.orchestrator.types import Episode, InflightEpisode, Rollout, TrainRollout
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 _ids = count()
@@ -82,13 +82,13 @@ def mk(
     )
 
 
-def ep(*rollouts, env_name: str = "env", errors=(), cls=TrainEpisode):
+def ep(*rollouts, env_name: str = "env", errors=(), cls=Episode):
     """One episode over these traces. ``model_construct`` skips validation so the duck-typed
     stand-ins above can stand in for real ones."""
     return cls.model_construct(id=f"e{next(_ids)}", traces=list(rollouts), env_name=env_name, errors=list(errors))
 
 
-def solo(rollouts, cls=TrainEpisode):
+def solo(rollouts, cls=Episode):
     """Each rollout as its own single-trace episode — the single-agent shape."""
     return [ep(r, cls=cls) for r in rollouts]
 
@@ -274,12 +274,12 @@ def test_train_only_metrics_absent_from_eval():
     assert out["train/agg/all/agent/is_filtered/mean"] == 0.5
     assert out["train/agg/all/agent/filters/gibberish/mean"] == 0.5
     assert "train/agg/all/is_trainable/mean" not in out  # pipeline verdicts are per-trace
-    eval_out = EvalRollouts(solo(rollouts, cls=EvalEpisode)).metrics.to_wandb(prefix="eval/x", subset="all")
+    eval_out = EvalRollouts(solo(rollouts)).metrics.to_wandb(prefix="eval/x", subset="all")
     assert not any("is_trainable" in k or "is_filtered" in k or "/filters/" in k for k in eval_out)
 
 
 def test_eval_avg_at_k_and_pass_k():
-    binary = EvalRollouts(solo([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")], cls=EvalEpisode))
+    binary = EvalRollouts(solo([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")]))
     eff = binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
     assert eff["eval/x/effective/agent/avg@2"] == 0.5  # mean reward under avg@<k> (k from the groups)
     assert "eval/x/effective/avg@2" not in eff  # scores are per-agent, never pooled
@@ -287,7 +287,7 @@ def test_eval_avg_at_k_and_pass_k():
     all_out = binary.metrics.to_wandb(prefix="eval/x", subset="all")
     assert all_out["eval/x/all/agent/avg@2"] == 0.5
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
-    non_binary = EvalRollouts(solo([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")], cls=EvalEpisode))
+    non_binary = EvalRollouts(solo([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")]))
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
 
 
@@ -312,16 +312,6 @@ def test_traceless_episode_keeps_its_reason():
     assert len(pool.effective.episodes) == 1  # it survives nothing, so the subset drops it
 
 
-def test_train_and_eval_episodes_carry_only_their_own_facts():
-    """The path is the type, not a discriminator field: an eval episode always knows its step, and
-    only a train episode can go stale — neither can be asked for the other's fact."""
-    assert (TrainEpisode.KIND, EvalEpisode.KIND) == ("train", "eval")
-    train, evaluation = TrainEpisode.model_construct(), EvalEpisode.model_construct()
-    assert train.off_policy_steps == 0 and "off_policy_steps" not in EvalEpisode.model_fields
-    assert evaluation.step == 0 and "step" not in TrainEpisode.model_fields
-    assert train.policy_version == evaluation.policy_version == 0  # both measure a policy
-
-
 def test_training_state_is_train_only():
     """Only a train rollout carries trainer-bound state; an eval trace has no field for it.
     Credit is not among them — it lives on the graph's nodes, which every trace has."""
@@ -333,19 +323,21 @@ def test_training_state_is_train_only():
 
 def test_inflight_episode_stamps_what_lands():
     """The dispatch and the landed episode are one pair: `stamp` is the only place the facts of a
-    dispatch become facts of an episode, and it mints the class the path calls for."""
+    dispatch become facts of an episode, and the run it writes is what tells the rest of the
+    orchestrator which path the episode is on."""
     wire = vf.WireEpisode.model_construct(id="e", traces=[])
     inflight = InflightEpisode(
         kind="train", env_name="rt", group_id=uuid4(), policy_version=3, episodes_owed=1, off_policy_steps=2
     )
-    train = inflight.stamp(wire, policy_version=7, eval_step=None)
-    assert isinstance(train, TrainEpisode) and train.KIND == "train"
+    train = inflight.stamp(wire, run_id="r", policy_version=7, eval_step=None)
+    assert train.run is not None and train.run.type == "train"
+    assert train.run.step is None  # the batch window it lands in is not known yet
     assert (train.env_name, train.policy_version, train.off_policy_steps) == ("rt", 7, 2)  # group's version wins
 
-    evaluation = replace(inflight, kind="eval").stamp(wire, policy_version=7, eval_step=12)
-    assert isinstance(evaluation, EvalEpisode) and evaluation.step == 12
+    evaluation = replace(inflight, kind="eval").stamp(wire, run_id="r", policy_version=7, eval_step=12)
+    assert evaluation.run is not None and (evaluation.run.type, evaluation.run.step) == ("eval", 12)
     with pytest.raises(AssertionError):  # an eval episode without its step is not representable
-        replace(inflight, kind="eval").stamp(wire, policy_version=7, eval_step=None)
+        replace(inflight, kind="eval").stamp(wire, run_id="r", policy_version=7, eval_step=None)
 
 
 def test_empty_is_not_the_same_as_failed():

@@ -19,7 +19,7 @@ from collections import defaultdict
 
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalRollouts
-from prime_rl.orchestrator.types import EvalBatch, EvalEpisode, Rollout
+from prime_rl.orchestrator.types import Episode, EvalBatch, Rollout
 from prime_rl.utils.logger import get_logger
 
 
@@ -28,13 +28,13 @@ class EvalSink:
 
     def __init__(self, *, eval_envs: EvalEnvs) -> None:
         self.eval_envs = eval_envs
-        self.pending_groups: dict[uuid.UUID, list[EvalEpisode]] = defaultdict(list)
+        self.pending_groups: dict[uuid.UUID, list[Episode]] = defaultdict(list)
         # Episodes arrived per group / per batch bucket — the finalization counts.
         self.pending_group_episodes: dict[uuid.UUID, int] = defaultdict(int)
-        self.pending_batches: dict[tuple[str, int], list[EvalEpisode]] = defaultdict(list)
+        self.pending_batches: dict[tuple[str, int], list[Episode]] = defaultdict(list)
         self.pending_batch_episodes: dict[tuple[str, int], int] = defaultdict(int)
 
-    def add(self, episode: EvalEpisode) -> EvalBatch | None:
+    def add(self, episode: Episode) -> EvalBatch | None:
         """Process one episode arrival; finalize the group on the ``group_size``-th
         episode and the per-env epoch on the ``num_examples × group_size``-th. A failed
         episode brings no rollouts but still counts toward both."""

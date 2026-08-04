@@ -131,11 +131,13 @@ class RolloutDispatcher:
         eval_source: EvalSource | None,
         policy_pool: InferencePool,
         policy: Policy,
+        run_id: str,
         max_inflight_episodes: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
     ) -> None:
         self.policy = policy
+        self.run_id = run_id
         self.train_envs = train_envs
         self.eval_envs = eval_envs
         # Train rollouts go to the env sampler's pool; eval always
@@ -563,7 +565,9 @@ class RolloutDispatcher:
         for rollout in episode.traces:
             rollout.env_name = meta.env_name
             rollout.group_id = meta.group_id
-        await self.out_q.put(meta.stamp(episode, policy_version=policy_version, eval_step=eval_step))
+        await self.out_q.put(
+            meta.stamp(episode, run_id=self.run_id, policy_version=policy_version, eval_step=eval_step)
+        )
 
     async def emit_failed_episodes(self, meta: InflightEpisode, group: GroupState | None, error: vf.Error) -> None:
         """Emit one traceless episode per rollout the task owed, so the sink still counts its way to

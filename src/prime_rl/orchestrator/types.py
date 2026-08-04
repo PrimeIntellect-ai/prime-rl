@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, Protocol, Self, cast
+from typing import TYPE_CHECKING, Any, Generic, Literal, Protocol, Self, cast
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
@@ -132,24 +132,25 @@ class Episode(vf.WireEpisode):
     raised before reaching the env — are minted the same way. So ``is_empty`` is simply "no
     traces", and ``last_error`` says why in one vocabulary for every cause.
 
-    Train and eval are the two subclasses rather than a discriminator field, so each carries only
-    what its path means: an eval episode has a step it belongs to, a train episode has the policy
-    it was generated from."""
+    Which path it is on is ``run.type``, vf's own discriminator, stamped by the dispatcher when the
+    episode lands — so there is one episode class and no prime-rl-side kind."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)  # traces are ``Rollout``s
 
-    KIND: ClassVar[RolloutKind]
-    """Which path this episode is on, for the run record and the dispatcher's counters."""
-
     env_name: str = Field(default="", exclude=True)
+    """The env as prime-rl names it (the config key), which is not vf's ``env.id``."""
     group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
     policy_version: int = Field(default=0, exclude=True)
     """The policy that generated it — the thing being trained on one path, measured on the other."""
+    off_policy_steps: int = Field(default=0, exclude=True)
+    """How stale it was by the time it shipped. Always 0 on the eval path, which never trains."""
 
     @property
-    def rollouts(self) -> list[Rollout]:
-        """The episode's traces, typed as the rollouts prime-rl works with."""
-        return cast(list[Rollout], self.traces)
+    def rollouts(self) -> list[TrainRollout]:
+        """The episode's traces, typed as the rollouts prime-rl works with. Every trace is built as
+        a ``TrainRollout`` (``Env.run`` is shared), so the training fields are always reachable —
+        on the eval path they simply stay empty."""
+        return cast(list[TrainRollout], self.traces)
 
     def narrow(self, keep: Callable[[Rollout], bool]) -> Self | None:
         """This episode with only the traces that pass ``keep``, or ``None`` if none do. A subset
@@ -173,30 +174,7 @@ class Episode(vf.WireEpisode):
         return not self.traces
 
 
-class TrainEpisode(Episode):
-    """An episode collected for training, which alone can go stale relative to the live policy."""
-
-    KIND: ClassVar[RolloutKind] = "train"
-
-    off_policy_steps: int = Field(default=0, exclude=True)
-    """How stale it was by the time it shipped — meaningless for eval, which never trains on it."""
-
-    @property
-    def rollouts(self) -> list[TrainRollout]:
-        return cast(list[TrainRollout], self.traces)
-
-
-class EvalEpisode(Episode):
-    """An episode collected for one eval epoch. ``step`` is the training step whose eval triggered
-    it — always known, unlike on the train path, so it is not optional here. It is the source for
-    the ``run.step`` each of its traces gets stamped with on arrival."""
-
-    KIND: ClassVar[RolloutKind] = "eval"
-
-    step: int = Field(default=0, exclude=True)
-
-
-def group_rollouts(episodes: Iterable[TrainEpisode]) -> list[TrainRollout]:
+def group_rollouts(episodes: Iterable[Episode]) -> list[TrainRollout]:
     """Every trace of a group, flat — the view an algorithm comparing across the whole cohort
     wants, where the episode an attempt came from does not matter."""
     return [r for e in episodes for r in e.rollouts]
@@ -218,20 +196,34 @@ class InflightEpisode:
     off_policy_steps: int = 0
     eval_step: int | None = None
 
-    def stamp(self, episode: vf.WireEpisode, *, policy_version: int, eval_step: int | None) -> Episode:
+    def stamp(self, episode: vf.WireEpisode, *, run_id: str, policy_version: int, eval_step: int | None) -> Episode:
         """Mint the landed episode: the env's own, carrying the dispatch it came from. The group's
         values win over this dispatch's when it is still alive, so they are passed in rather than
-        read off ``self``."""
-        common = {
+        read off ``self``.
+
+        The run record is written here because this is where a dispatch's facts become an episode's,
+        and its ``type`` is what tells the rest of the orchestrator which path the episode is on. A
+        train episode's step is not known yet — it belongs to whichever batch window is collecting
+        when it lands, so the main loop fills it in."""
+        landed = Episode.model_construct(
             **dict(episode),
-            "env_name": self.env_name,
-            "group_id": self.group_id,
-            "policy_version": policy_version,
-        }
+            env_name=self.env_name,
+            group_id=self.group_id,
+            policy_version=policy_version,
+            off_policy_steps=self.off_policy_steps,
+        )
         if self.kind == "eval":
             assert eval_step is not None, "eval episode missing its step"
-            return EvalEpisode.model_construct(**common, step=eval_step)
-        return TrainEpisode.model_construct(**common, off_policy_steps=self.off_policy_steps)
+            run: vf.RunInfo = vf.EvalRunInfo(id=run_id, step=eval_step)
+        else:
+            run = vf.TrainRunInfo(id=run_id)
+        landed.record_run(
+            run,
+            env_name=self.env_name,
+            group_id=str(self.group_id),
+            policy_version=policy_version,
+        )
+        return landed
 
 
 @dataclass

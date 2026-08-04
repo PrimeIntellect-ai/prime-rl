@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import EvalEpisode, Rollout, TrainEpisode, TrainRollout
+    from prime_rl.orchestrator.types import Episode, Rollout, TrainRollout
 
 Subset = Literal["all", "effective"]
 
@@ -394,10 +394,10 @@ class TrainRollouts:
     narrowed to its surviving traces; ``metrics`` builds ``TrainMetrics`` over them. Sized and
     iterated by *rollout*, since that is the unit almost every consumer wants."""
 
-    def __init__(self, episodes: list[TrainEpisode] | None = None) -> None:
+    def __init__(self, episodes: list[Episode] | None = None) -> None:
         self.episodes = episodes if episodes is not None else []
 
-    def append(self, episode: TrainEpisode) -> None:
+    def append(self, episode: Episode) -> None:
         self.episodes.append(episode)
 
     @property
@@ -416,7 +416,7 @@ class TrainRollouts:
         return TrainRollouts([e for e in kept if e is not None])
 
     def by_env(self) -> dict[str, TrainRollouts]:
-        grouped: dict[str, list[TrainEpisode]] = {}
+        grouped: dict[str, list[Episode]] = {}
         for episode in self.episodes:
             grouped.setdefault(episode.env_name, []).append(episode)
         return {env: TrainRollouts(episodes) for env, episodes in grouped.items()}
@@ -432,7 +432,7 @@ class EvalRollouts:
     ``group_size`` (rollouts per example, the ``avg@k`` k) is derived from the full epoch and carried
     onto ``effective`` so both subsets share one stable key; ``metrics`` builds ``EvalMetrics``."""
 
-    def __init__(self, episodes: list[EvalEpisode] | None = None, group_size: int | None = None) -> None:
+    def __init__(self, episodes: list[Episode] | None = None, group_size: int | None = None) -> None:
         self.episodes = episodes if episodes is not None else []
         self._group_size = group_size
 

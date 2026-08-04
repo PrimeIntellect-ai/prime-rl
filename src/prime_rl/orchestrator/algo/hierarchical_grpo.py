@@ -7,7 +7,7 @@ from prime_rl.configs.algorithm import HierarchicalGRPOAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainEpisode, TrainRollout
+    from prime_rl.orchestrator.types import Episode, TrainRollout
     from prime_rl.utils.client import InferencePool
 
 
@@ -28,7 +28,7 @@ class HierarchicalGRPOAlgorithm(Algorithm):
         super().__init__(config, policy_pool)
         self.episode_agents = set(config.episode_agents)
 
-    async def score_group(self, group: list[TrainEpisode]) -> None:
+    async def score_group(self, group: list[Episode]) -> None:
         peers: dict[tuple[str, str | None], list[TrainRollout]] = defaultdict(list)
         for episode in group:
             for rollout in episode.rollouts:

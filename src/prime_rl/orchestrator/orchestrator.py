@@ -28,7 +28,6 @@ import uuid
 from typing import TYPE_CHECKING
 
 import tomli_w
-import verifiers.v1 as vf
 from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
 
@@ -59,7 +58,6 @@ from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     Episode,
     EvalBatch,
-    EvalEpisode,
     Policy,
     Progress,
     TrainBatch,
@@ -407,6 +405,7 @@ class Orchestrator:
             eval_source=self.eval_source,
             policy_pool=self.policy_inference,
             policy=self.policy,
+            run_id=self.run_id,
             max_inflight_episodes=config.max_inflight_episodes,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
@@ -528,26 +527,21 @@ class Orchestrator:
             # Every completed episode — errored, filtered, or never batched — lands in the
             # ``all`` trace file the moment it arrives, so it survives crashes and drains. One
             # episode per line, so an episode that produced no traces still records why.
-            # Train episodes belong to the batch window currently collecting (``progress.step``),
-            # eval ones to the step whose eval triggered them.
-            is_eval = isinstance(episode, EvalEpisode)
-            step = episode.step if isinstance(episode, EvalEpisode) else self.progress.step
-            run: vf.RunInfo = (
-                vf.EvalRunInfo(id=self.run_id, step=step) if is_eval else vf.TrainRunInfo(id=self.run_id, step=step)
-            )
-            episode.record_run(
-                run,
-                env_name=episode.env_name,
-                group_id=str(episode.group_id),
-                policy_version=episode.policy_version,
-            )
+            # An eval episode already knows its step (the eval that triggered it); a train one
+            # belongs to the batch window collecting right now, which only this loop knows.
+            run = episode.run
+            assert run is not None, "the dispatcher records the run when the episode lands"
+            if run.type == "train":
+                run.step = self.progress.step
+            step = run.step
+            assert step is not None
             await asyncio.to_thread(
                 save_episodes,
                 [episode.to_record()],
-                get_trace_path(self.config.output_dir, step, episode.KIND, "all"),
+                get_trace_path(self.config.output_dir, step, run.type, "all"),
             )
 
-            if isinstance(episode, EvalEpisode):
+            if run.type == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(episode)
                 if eval_batch is not None:
