@@ -28,7 +28,6 @@ def _qwen_item(grid, image_data: str = _IMAGE_DATA):
         "kind": RAW_MM_ITEM_KIND,
         "modality": "image",
         "family": "qwen_vl",
-        "layout_fingerprint": "f" * 32,
         "raw_image_data": image_data,
         "payload": {"image_grid_thw": grid},
     }

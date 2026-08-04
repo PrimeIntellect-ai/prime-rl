@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from renderers.kimi_k25 import kimi_layout_from
-
 from prime_rl.multimodal.adapters.base import ForwardPolicy, MaterializedMM
 from prime_rl.multimodal.schema import RawMMItem
 
@@ -49,11 +47,6 @@ class KimiK25Adapter:
             raise ValueError(f"Kimi adapter cannot handle family {item.family!r}")
         _grid_payload(item)
 
-    def processor_fingerprint(self, image_processor: Any) -> str:
-        # Same canonical knob list and hash as the renderer used at layout time
-        # (the spec dataclass in renderers.kimi_k25 is the single field list).
-        return kimi_layout_from(image_processor).fingerprint()
-
     def materialize_for_trainer(
         self,
         image_processor: Any,
@@ -83,11 +76,6 @@ class KimiK25Adapter:
         from vllm.multimodal.inputs import MultiModalFieldConfig, MultiModalKwargsItems
 
         self.validate_item(item)
-        actual_fingerprint = self.processor_fingerprint(image_processor)
-        if actual_fingerprint != item.layout_fingerprint:
-            raise ValueError(
-                f"Image layout fingerprint mismatch: expected {item.layout_fingerprint}, got {actual_fingerprint}"
-            )
         hf_inputs = _process_images(image_processor, [image], return_tensors="pt")
         tensors = {str(k): _tensorize(v) for k, v in dict(hf_inputs).items()}
         expected_grid = _grid_payload(item)

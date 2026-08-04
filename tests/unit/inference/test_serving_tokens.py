@@ -286,10 +286,8 @@ def test_materialize_raw_image_ref_uses_generic_family_payload(monkeypatch):
     image_data = "data:image/png;base64," + base64.b64encode(raw_bytes).decode("ascii")
 
     mm_hash = hashlib.sha256(raw_bytes).hexdigest()[:32]
-    fingerprint = "f" * 32
     raw_ref = raw_mm_ref(
         family="test_family",
-        fingerprint=fingerprint,
         modality="image",
         mm_hash=mm_hash,
         raw_image_data=image_data,
@@ -329,7 +327,6 @@ def test_materialize_raw_image_ref_uses_generic_family_payload(monkeypatch):
     assert captured["expected_placeholder_length"] == 7
     item = captured["item"]
     assert item.family == "test_family"
-    assert item.layout_fingerprint == fingerprint
     assert item.raw_image_data == image_data
     assert item.payload == {"adapter_owned": [1, 2, 3]}
 
@@ -343,12 +340,12 @@ def test_materialize_raw_image_ref_maps_adapter_validation_error(monkeypatch):
 
     class _InvalidAdapter:
         def materialize_for_vllm(self, image_processor, item, image, expected_placeholder_length):
-            raise ValueError("image layout fingerprint mismatch")
+            raise ValueError("image grid mismatch")
 
     monkeypatch.setattr(serving_tokens, "_load_image_processor", lambda _model, _trust: object())
     monkeypatch.setattr(serving_tokens, "get_multimodal_adapter", lambda _family: _InvalidAdapter())
 
-    with pytest.raises(serving_tokens._MMImageRefError, match="image layout fingerprint mismatch") as exc_info:
+    with pytest.raises(serving_tokens._MMImageRefError, match="image grid mismatch") as exc_info:
         serving_tokens._materialize_raw_image_ref_sync(
             raw_ref,
             feature_modality="image",
@@ -378,7 +375,6 @@ def _mm_features(*, image_seed: int = 0, placeholder_length: int = 7):
     mm_hash = hashlib.sha256(raw_bytes).hexdigest()[:32]
     raw_ref = raw_mm_ref(
         family="test_family",
-        fingerprint="f" * 32,
         modality="image",
         mm_hash=mm_hash,
         raw_image_data=image_data,

@@ -68,7 +68,6 @@ def _mm_sample(value: float, env_name: str = "test-env") -> TrainingSample:
                         "kind": "prime_raw_mm_item",
                         "modality": "image",
                         "family": "qwen_vl",
-                        "layout_fingerprint": "f" * 32,
                         "raw_image_data": image_data,
                         "payload": {"image_grid_thw": [[1, 1, 1]]},
                     },

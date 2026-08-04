@@ -417,7 +417,6 @@ def _image_ref(image_data: str, offset: int, length: int) -> MMImageRef:
             "kind": "prime_raw_mm_item",
             "modality": "image",
             "family": "qwen_vl",
-            "layout_fingerprint": "f" * 32,
             "raw_image_data": image_data,
             "payload": {"image_grid_thw": [[1, 1, 1]]},
         },
