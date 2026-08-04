@@ -67,9 +67,7 @@ prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
 
 [project.optional-dependencies]
 flash-attn = [
-    # Astral GPU index build (x86_64 + aarch64). The local tag must name torch
-    # 2.11 exactly: +cu.13.0.torch.2.12 sorts higher and wins an unpinned resolve.
-    "flash-attn==2.8.3+cu.13.0.torch.2.11",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu130torch2.11-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
 ]
 flash-attn-3 = ["flash_attn_3"]
 
@@ -99,9 +97,6 @@ all = [
 
 [dependency-groups]
 mamba-ssm = [
-    # Source build (needs nvcc). The Astral cu130 prebuilt (2.3.2.post1) is
-    # blocked on apache-tvm-ffi: mamba caps <=0.1.9, vllm 0.26 pins ==0.1.10 —
-    # revisit on the next vllm or mamba bump.
     "mamba-ssm>=2.3.0",
 ]
 dev = [
@@ -235,7 +230,6 @@ deep-gemm = [
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 flash_attn_3 = { index = "pytorch-cu130-test" }
-flash-attn = { index = "astral-cu130" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
@@ -244,11 +238,6 @@ mamba-ssm = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
-
-[[tool.uv.index]]
-name = "astral-cu130"
-url = "https://wheels.astral.sh/simple/cu130/"
-explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu130"
