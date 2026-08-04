@@ -171,6 +171,8 @@ def train(config: TrainerConfig):
             parallel_dims,
             lora=config.model.lora is not None,
             cpu_offload=config.model.optim_cpu_offload,
+            grad_cpu_offload=config.model.grad_cpu_offload,
+            model=model,
         )
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
@@ -481,7 +483,11 @@ def train(config: TrainerConfig):
 
             # Backward pass
             with maybe_record_function("backward"):
+                if config.model.grad_cpu_offload:
+                    optimizer.begin_backward(collect_stats=micro_step == len(micro_batches) - 1)
                 loss.backward()
+                if config.model.grad_cpu_offload:
+                    optimizer.finish_backward(wait_for_copies=micro_step == len(micro_batches) - 1)
 
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
@@ -563,20 +569,29 @@ def train(config: TrainerConfig):
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
-        for param in model.parameters():
-            if param.grad is not None:
-                param.grad.mul_(parallel_dims.fsdp_gradient_divide_factor)
+        if config.model.grad_cpu_offload:
+            optimizer.scale_gradients_(parallel_dims.fsdp_gradient_divide_factor)
+        else:
+            for param in model.parameters():
+                if param.grad is not None:
+                    param.grad.mul_(parallel_dims.fsdp_gradient_divide_factor)
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
-            grad_norm = clip_grad_norm_(
-                model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
-            )
+            if config.model.grad_cpu_offload:
+                grad_norm = optimizer.clip_grad_norm_(config.optim.max_norm)
+            else:
+                grad_norm = clip_grad_norm_(
+                    model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
+                )
             if grad_norm.device.type == "cpu":
                 grad_norm = grad_norm.to(torch.device("cuda"))
 
-        zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
+        if config.model.grad_cpu_offload:
+            zero_grad_ratio = optimizer.zero_gradient_ratio()
+        else:
+            zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
 
         # Update the model parameters
         optimizer.step()

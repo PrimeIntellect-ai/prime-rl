@@ -184,6 +184,8 @@ def train(config: SFTConfig):
         list(model.named_parameters()),
         parallel_dims,
         cpu_offload=config.model.optim_cpu_offload,
+        grad_cpu_offload=config.model.grad_cpu_offload,
+        model=model,
     )
 
     # Set up the learning rate scheduler
@@ -425,7 +427,11 @@ def train(config: SFTConfig):
                 scaled_loss = local_loss_sum / grad_accum_steps
 
             with maybe_record_function("backward"):
+                if config.model.grad_cpu_offload:
+                    optimizer.begin_backward(collect_stats=micro_step == grad_accum_steps - 1)
                 scaled_loss.backward()
+                if config.model.grad_cpu_offload:
+                    optimizer.finish_backward(wait_for_copies=micro_step == grad_accum_steps - 1)
 
             if is_moe_model:
                 for name, values in get_load_balance_stats(model).items():
@@ -449,9 +455,12 @@ def train(config: SFTConfig):
 
         if global_token_count_val > 0:
             grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-            for param in model.parameters():
-                if param.grad is not None:
-                    param.grad.mul_(grad_scale)
+            if config.model.grad_cpu_offload:
+                optimizer.scale_gradients_(grad_scale)
+            else:
+                for param in model.parameters():
+                    if param.grad is not None:
+                        param.grad.mul_(grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -473,12 +482,18 @@ def train(config: SFTConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-            grad_norm = clip_grad_norm_(
-                model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
-            )
+            if config.model.grad_cpu_offload:
+                grad_norm = optimizer.clip_grad_norm_(config.optim.max_norm)
+            else:
+                grad_norm = clip_grad_norm_(
+                    model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
+                )
             if grad_norm.device.type == "cpu":
                 grad_norm = grad_norm.to(torch.device("cuda"))
-        zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
+        if config.model.grad_cpu_offload:
+            zero_grad_ratio = optimizer.zero_gradient_ratio()
+        else:
+            zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
 
         logger.debug("Optimizer step")
         optimizer.step()
