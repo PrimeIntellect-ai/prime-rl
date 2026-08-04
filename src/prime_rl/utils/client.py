@@ -13,7 +13,7 @@ from httpx import AsyncClient
 from openai import AsyncOpenAI
 from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
-from verifiers.v1.clients.config import EvalClientConfig, TrainClientConfig
+from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
@@ -122,7 +122,6 @@ class StaticInferencePool:
         train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
         renderer_config: RendererConfig | None = None,
-        pool_size: int | None = None,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
         self._train_clients = setup_clients(
@@ -130,7 +129,6 @@ class StaticInferencePool:
             client_type=train_client_type,
             renderer_config=renderer_config,
             renderer_model_name=renderer_model_name,
-            pool_size=pool_size,
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
         self._admin_clients = setup_admin_clients(client_config)
@@ -195,7 +193,6 @@ async def setup_inference_pool(
     train_client_type: str = "openai_chat_completions",
     eval_client_type: str = "openai_chat_completions",
     renderer_config: RendererConfig | None = None,
-    pool_size: int | None = None,
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     if client_config.is_elastic:
@@ -207,7 +204,6 @@ async def setup_inference_pool(
             train_client_type=train_client_type,
             eval_client_type=eval_client_type,
             renderer_config=renderer_config,
-            pool_size=pool_size,
         )
 
     return StaticInferencePool(
@@ -216,7 +212,6 @@ async def setup_inference_pool(
         train_client_type=train_client_type,
         eval_client_type=eval_client_type,
         renderer_config=renderer_config,
-        pool_size=pool_size,
     )
 
 
@@ -225,7 +220,6 @@ def setup_clients(
     client_type: str = "openai_chat_completions",
     renderer_config: RendererConfig | None = None,
     renderer_model_name: str | None = None,
-    pool_size: int | None = None,
 ) -> list[vf.ClientConfig]:
     """Build one v1 client config per base URL. ``client_type``
     ``renderer`` → token-in/out (``TrainClientConfig``, with the renderer the env
@@ -237,7 +231,6 @@ def setup_clients(
     if is_renderer:
         renderer_extra = {
             "renderer": renderer_config,
-            "pool_size": pool_size or 1,
             "renderer_model_name": renderer_model_name,
         }
     env_headers = {

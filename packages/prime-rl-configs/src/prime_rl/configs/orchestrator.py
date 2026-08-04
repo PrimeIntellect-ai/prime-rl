@@ -123,12 +123,12 @@ class EvalSamplingConfig(BaseConfig):
         return args
 
 
-class ServingConfig(vf.ServingConfig):
-    """Verifiers' serving block with ``address`` back to optional. Verifiers defaults it
-    to the address its own ``serve`` CLI binds; here the question is whether to spawn a
-    server or connect to one already running, and that answer has to survive the
-    resolved config being written to a file and read back — so it must be a *value*
-    (``None``), not field-set metadata, which a round-trip drops."""
+class ServeConfig(vf.ServeConfig):
+    """Verifiers' serve block with ``address`` back to optional. Verifiers defaults it
+    to a fixed local bind address; here the question is whether to spawn a server or
+    connect to one already running, and that answer has to survive the resolved config
+    being written to a file and read back — so it must be a *value* (``None``), not
+    field-set metadata, which a round-trip drops."""
 
     address: str | None = None
     """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to that server instead of spawning one; when None, it spawns a subprocess env server on a free port. ``pool`` sizes the spawned server."""
@@ -142,7 +142,7 @@ class EnvConfig(BaseConfig):
     env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
-    serve: ServingConfig = ServingConfig()
+    serve: ServeConfig = ServeConfig()
     """How the env server is run: ``serve.pool`` sizes the spawned server, ``serve.address`` points at an external one instead, and ``serve.max_concurrent`` bounds one worker's episodes in flight (unset = unbounded; the dispatcher's ``max_inflight_episodes`` is the run's bound)."""
 
     legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()
@@ -468,11 +468,6 @@ class OrchestratorConfig(BaseConfig):
     ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
     client; SFT uses it to backfill tokens for its chat-completions teacher."""
 
-    pool_size: int | None = Field(None, ge=1)
-    """Number of renderer slots shared across concurrent rollouts. Bump
-    for long multi-turn prompts where client-side jinja tokenization
-    serializes."""
-
     optim: OptimizerConfig = OptimizerConfig()
     """Per-run optimizer configuration for multi-run training."""
 
@@ -622,22 +617,6 @@ class OrchestratorConfig(BaseConfig):
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
         return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.source)
-
-    @model_validator(mode="after")
-    def validate_pool_size(self):
-        """``pool_size`` sizes the renderer-client pool for policy-sourced
-        sampling. Reject it when that path never runs — no train env samples
-        from the policy — so callers don't silently pass it and wonder why
-        it's ignored."""
-        if self.pool_size is None:
-            return self
-        if not self.any_policy_sourced:
-            raise ValueError(
-                f"orchestrator.pool_size={self.pool_size!r} is set but no train env samples "
-                "from the policy — the renderer-client sampling pool never runs (the renderer "
-                "is still used for client-side tokenization). Remove pool_size."
-            )
-        return self
 
     @model_validator(mode="after")
     def validate_renderer_auto_resolves(self):

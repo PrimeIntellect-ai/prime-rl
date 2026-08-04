@@ -51,12 +51,14 @@ members = [
     "color-codeword-v1",
     "compact",
     "deepdive-v1",
+    "deepseek-prover-v1",
     "deepwiki-v1",
     "enterprise-ops-gym-v1",
     "forth-lang-v1",
     "frontierscience-v1",
     "general-agent-v1",
     "glossary-v1",
+    "goedel-pset-v1",
     "gpqa-v1",
     "graphwalks-v1",
     "gsm8k-v1",
@@ -68,8 +70,8 @@ members = [
     "i3-science-v1",
     "ifbench-v1",
     "ifeval-v1",
+    "kimina-v1",
     "kuhn-poker-v1",
-    "lean-v1",
     "livecodebench-v1",
     "longbenchpro-v1",
     "longcot-mini-v1",
@@ -78,12 +80,14 @@ members = [
     "math-env-v1",
     "math500-v1",
     "mcp-atlas-v1",
+    "minif2f-v1",
     "mmlu-pro-v1",
     "mmmu-pro-v1",
     "mmmu-v1",
     "mrcr-v2-v1",
     "multiswe-v1",
     "nl2repobench-v1",
+    "numina-v1",
     "oolong-pairs-v1",
     "oolong-real-v1",
     "oolong-synth-v1",
@@ -98,6 +102,7 @@ members = [
     "programbench-v1",
     "prolog-v1",
     "proposer-solver-v1",
+    "proverbench-v1",
     "r2e-gym-v1",
     "redsearcher-v1",
     "reverse-text-v1",
@@ -122,6 +127,7 @@ members = [
     "unscramble-v1",
     "uuid-ctf-v1",
     "verbatim-copy-v1",
+    "virl39k-v1",
     "wideseek-v1",
     "wiki-search-v1",
     "wikispeedia-v1",
@@ -484,7 +490,7 @@ requires-dist = [
     { name = "datasets" },
     { name = "mcp", specifier = "<2" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.1" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -608,7 +614,7 @@ dependencies = [
 requires-dist = [
     { name = "bfcl-eval", git = "https://github.com/mikasenghaas/gorilla.git?subdirectory=berkeley-function-call-leaderboard&rev=898763a" },
     { name = "soundfile", specifier = ">=0.13.0" },
-    { name = "verifiers", specifier = ">=0.2.2.dev21" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -730,7 +736,7 @@ requires-dist = [
     { name = "openai" },
     { name = "pystemmer" },
     { name = "tokenizers" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -1413,6 +1419,21 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+]
+
+[[package]]
+name = "deepseek-prover-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/lean/deepseek_prover_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets", specifier = ">=2.0.0" },
     { name = "verifiers", specifier = ">=0.2.0" },
 ]
 
@@ -1604,7 +1625,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -1973,7 +1994,7 @@ wheels = [
 
 [[package]]
 name = "forth-lang-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/research-environments/environments/code/forth_lang_v1" }
 dependencies = [
     { name = "datasets" },
@@ -1983,7 +2004,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -2056,7 +2077,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "pydantic" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.2.0" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -2129,6 +2150,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "verifiers" }]
+
+[[package]]
+name = "goedel-pset-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/lean/goedel_pset_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets", specifier = ">=2.0.0" },
+    { name = "verifiers", specifier = ">=0.2.0" },
+]
 
 [[package]]
 name = "google-auth"
@@ -2429,7 +2465,7 @@ wheels = [
 
 [[package]]
 name = "hle-v1"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "deps/research-environments/environments/knowledge/hle_v1" }
 dependencies = [
     { name = "datasets" },
@@ -3178,6 +3214,21 @@ wheels = [
 ]
 
 [[package]]
+name = "kimina-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/lean/kimina_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets", specifier = ">=2.0.0" },
+    { name = "verifiers", specifier = ">=0.2.0" },
+]
+
+[[package]]
 name = "kiwisolver"
 version = "1.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3270,21 +3321,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/30/75/456da2da05f6380ea96e6ea804ab2c03e41fc3ed80052307fe8efe6ea20e/latex2sympy2_extended-1.11.0.tar.gz", hash = "sha256:9695657c81b50abba2636638638618db59f4663ed2a4a12d62cef74a40e28fec", size = 207023, upload-time = "2026-01-10T01:43:21.319Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e9/61/f75cd1fa54d8434276126034aed54dd120747de9a8fa013cdd79545ccbeb/latex2sympy2_extended-1.11.0-py3-none-any.whl", hash = "sha256:aebb77d52ce269e25028e4bea89ddb14d242ba36bcf7b636496fb5fd9728d234", size = 209050, upload-time = "2026-01-10T01:43:19.458Z" },
-]
-
-[[package]]
-name = "lean-v1"
-version = "0.1.0"
-source = { editable = "deps/research-environments/environments/math/lean_v1" }
-dependencies = [
-    { name = "datasets" },
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets", specifier = ">=2.0.0" },
-    { name = "verifiers", specifier = ">=0.2.0" },
 ]
 
 [[package]]
@@ -3632,7 +3668,7 @@ wheels = [
 
 [[package]]
 name = "mcp-atlas-v1"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "deps/research-environments/environments/tool_use/mcp_atlas_v1" }
 dependencies = [
     { name = "datasets" },
@@ -3646,7 +3682,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "httpx" },
     { name = "prime-sandboxes", specifier = ">=0.2.19" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -3668,6 +3704,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
+]
+
+[[package]]
+name = "minif2f-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/lean/minif2f_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets", specifier = ">=2.0.0" },
+    { name = "verifiers", specifier = ">=0.2.0" },
 ]
 
 [[package]]
@@ -4156,6 +4207,21 @@ wheels = [
 ]
 
 [[package]]
+name = "numina-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/lean/numina_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets", specifier = ">=2.0.0" },
+    { name = "verifiers", specifier = ">=0.2.0" },
+]
+
+[[package]]
 name = "numpy"
 version = "2.3.5"
 source = { registry = "https://pypi.org/simple" }
@@ -4593,7 +4659,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -4743,11 +4809,11 @@ name = "openthoughts-tblite-v1"
 version = "0.1.1"
 source = { editable = "deps/research-environments/environments/terminal/openthoughts_tblite_v1" }
 dependencies = [
-    { name = "verifiers" },
+    { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.2.1" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.1" }]
 
 [[package]]
 name = "orderly-set"
@@ -4828,7 +4894,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -4924,7 +4990,7 @@ requires-dist = [
     { name = "openai" },
     { name = "prime-sandboxes", specifier = ">=0.2.19" },
     { name = "pyyaml", specifier = ">=6.0.1" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -5286,7 +5352,7 @@ requires-dist = [
     { name = "renderers", specifier = ">=0.1.9.dev10" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomli-w", specifier = ">=1.2.0" },
-    { name = "verifiers", specifier = ">=0.2.2.dev43" },
+    { name = "verifiers", specifier = ">=0.2.2.dev76" },
 ]
 
 [[package]]
@@ -5362,7 +5428,7 @@ requires-dist = [
 
 [[package]]
 name = "prolog-v1"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "deps/research-environments/environments/reasoning/prolog_v1" }
 dependencies = [
     { name = "verifiers" },
@@ -5438,6 +5504,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ee/90/b3c01fdec7d2f627b3a6884243ba328c1217ed2d978def5c12dc50d328a3/protobuf-6.33.6-cp39-abi3-manylinux2014_aarch64.whl", hash = "sha256:e2afbae9b8e1825e3529f88d514754e094278bb95eadc0e199751cdd9a2e82a2", size = 324610, upload-time = "2026-03-18T19:04:53.096Z" },
     { url = "https://files.pythonhosted.org/packages/16/92/d1e32e3e0d894fe00b15ce28ad4944ab692713f2e7f0a99787405e43533a/protobuf-6.33.6-cp39-abi3-manylinux2014_x86_64.whl", hash = "sha256:e9db7e292e0ab79dd108d7f1a94fe31601ce1ee3f7b79e0692043423020b0593", size = 323436, upload-time = "2026-03-18T19:04:55.768Z" },
     { url = "https://files.pythonhosted.org/packages/c4/72/02445137af02769918a93807b2b7890047c32bfb9f90371cbc12688819eb/protobuf-6.33.6-py3-none-any.whl", hash = "sha256:77179e006c476e69bf8e8ce866640091ec42e1beb80b213c3900006ecfba6901", size = 170656, upload-time = "2026-03-18T19:04:59.826Z" },
+]
+
+[[package]]
+name = "proverbench-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/lean/proverbench_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets", specifier = ">=2.0.0" },
+    { name = "verifiers", specifier = ">=0.2.0" },
 ]
 
 [[package]]
@@ -6058,7 +6139,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -6263,7 +6344,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -6332,7 +6413,7 @@ wheels = [
 
 [[package]]
 name = "scicode-v1"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "deps/research-environments/environments/code/scicode_v1" }
 dependencies = [
     { name = "datasets" },
@@ -6342,7 +6423,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
 ]
 
 [[package]]
@@ -6433,7 +6514,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev27" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev73" }]
 
 [[package]]
 name = "sentence-transformers"
@@ -6851,29 +6932,29 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev27" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev65" }]
 
 [[package]]
 name = "swebench-pro-v1"
 version = "0.1.0"
 source = { editable = "deps/research-environments/environments/swe/swebench_pro_v1" }
 dependencies = [
-    { name = "verifiers" },
+    { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.2.2.dev27" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev27" }]
 
 [[package]]
 name = "swebench-verified-v1"
 version = "0.1.0"
 source = { editable = "deps/research-environments/environments/swe/swebench_verified_v1" }
 dependencies = [
-    { name = "verifiers" },
+    { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.2.2.dev27" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev65" }]
 
 [[package]]
 name = "swelego-v1"
@@ -7063,11 +7144,11 @@ name = "terminal-bench-2-v1"
 version = "0.1.0"
 source = { editable = "deps/research-environments/environments/terminal/terminal_bench_2_v1" }
 dependencies = [
-    { name = "verifiers" },
+    { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.2.1" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.2.1" }]
 
 [[package]]
 name = "terminal-lego-v1"
@@ -7075,13 +7156,13 @@ version = "0.1.1"
 source = { editable = "deps/research-environments/environments/terminal/terminal_lego_v1" }
 dependencies = [
     { name = "huggingface-hub" },
-    { name = "verifiers" },
+    { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.2.0" },
 ]
 
 [[package]]
@@ -7901,6 +7982,25 @@ examples = [
 ]
 
 [[package]]
+name = "virl39k-v1"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/multimodal/virl39k_v1" }
+dependencies = [
+    { name = "datasets" },
+    { name = "huggingface-hub" },
+    { name = "math-verify" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "huggingface-hub" },
+    { name = "math-verify" },
+    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+]
+
+[[package]]
 name = "virtualenv"
 version = "21.3.3"
 source = { registry = "https://pypi.org/simple" }
@@ -8552,7 +8652,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.2.0" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.2.2.dev65" }]
 
 [[package]]
 name = "wordle-v1"
