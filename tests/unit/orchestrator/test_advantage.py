@@ -10,6 +10,7 @@ from prime_rl.configs.algorithm import (
 )
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
+from prime_rl.orchestrator.algo.routing import stamp_advantages
 from prime_rl.orchestrator.trajectories import iter_trainable_branches, trace_to_samples
 from prime_rl.orchestrator.types import TrainEpisode, TrainRollout
 
@@ -272,3 +273,40 @@ def test_unassigned_credit_is_not_zero_credit():
     scored = _build_rollout(0.0, sampled_lengths=[2])
     scored.assign_advantages(0.0)
     assert scored.advantages == [0.0, 0.0] and not scored.is_trainable  # scored, but no gradient
+
+
+def test_stamp_advantages_zeros_a_shared_node_in_the_later_branch():
+    """A forked node is trained in the first branch containing it; in the later branch it is
+    context, so its credit must not ride along on that branch's sample."""
+    root = vf.MessageNode(
+        message=vf.AssistantMessage(role="assistant", content=""),
+        sampled=True,
+        token_ids=[1, 2],
+        mask=[True, True],
+        logprobs=[-0.1, -0.2],
+    )
+    leaves = [
+        vf.MessageNode(
+            parent=0,
+            message=vf.AssistantMessage(role="assistant", content=""),
+            sampled=True,
+            token_ids=[3],
+            mask=[True],
+            logprobs=[-0.3],
+        )
+        for _ in range(2)
+    ]
+    rollout = TrainRollout[vf.TaskData](
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        nodes=[root, *leaves],
+        rewards={"reward": vf.Reward(score=0.0)},
+    )
+    rollout.env_name = "test"
+    rollout.samples = trace_to_samples(rollout, env_name="test")
+    rollout.assign_advantages(0.5)
+    stamp_advantages(rollout)
+
+    first, second = rollout.samples
+    assert first.advantages == [0.5, 0.5, 0.5]
+    assert second.advantages == [0.0, 0.0, 0.5]

@@ -53,8 +53,12 @@ def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType)
 
 
 def stamp_advantages(rollout: TrainRollout) -> None:
-    """Copy each trainable branch's per-token credit onto the sample built from it. The branch
-    spreads its nodes' values across its own tokens, so the two align by construction; a rollout
-    that was never scored (opd/opsd) leaves ``None`` and ships no advantage stream."""
+    """Copy each trainable branch's per-token credit onto the sample built from it, zeroed where
+    the sample does not train. The branch spreads its nodes' values across its own tokens, so the
+    two align by construction, but a node shared with an earlier branch is credited there and is
+    only context here. A rollout that was never scored (opd/opsd) ships no advantage stream."""
     for sample, (branch, _) in zip(rollout.samples, iter_trainable_branches(rollout), strict=True):
-        sample.advantages = branch.advantages
+        advantages = branch.advantages
+        if advantages is None:
+            continue
+        sample.advantages = [a if trains else 0.0 for a, trains in zip(advantages, sample.mask, strict=True)]
