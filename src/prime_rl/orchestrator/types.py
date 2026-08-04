@@ -84,8 +84,11 @@ class TrainRollout(Rollout[DataT], Generic[DataT]):
     model_config = ConfigDict(arbitrary_types_allowed=True)  # ``samples`` holds msgspec structs
 
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
+    detections: dict[str, bool] = Field(default_factory=dict, exclude=True)
+    """What each degeneracy detector measured on this trace — a measurement, not a verdict."""
     is_filtered: bool = Field(default=False, exclude=True)
-    filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
+    """The sink's verdict: this rollout is not trained on. Kept for the metrics window, which
+    reports what came back as well as what shipped."""
 
     def assign_advantages(self, value: float) -> None:
         """Write ``value`` as the credit for every trainable token, node by node. Credit lives on

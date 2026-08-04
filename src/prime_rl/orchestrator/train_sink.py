@@ -1,14 +1,15 @@
 """TrainSink: three-level rollout sink for the training side.
 
 1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
-   dispatcher producing more rollouts), then the env algorithm's
-   ``finalize_rollout`` (rollout-local scoring + any reference I/O). Errored
-   and untrainable rollouts skip this.
+   dispatcher producing more rollouts), the degeneracy detectors, then the env
+   algorithm's ``finalize_rollout`` (rollout-local scoring + any reference
+   I/O). Errored and untrainable rollouts skip this.
 2. ``process_group`` — filters errored rollouts, hands the episodes narrowed
    to their trainable survivors to the env algorithm's ``finalize_group``
-   (advantages + per-sample wire stamping), runs the pre-batch filter pass.
-3. ``process_batch`` — applies post-batch filter annotations and assembles
-   the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
+   (advantages + per-sample wire stamping), then applies the drop policy —
+   the one place a rollout is kept out of training.
+3. ``process_batch`` — pops a cohort and flattens it into the trainer-bound
+   ``TrainingSample`` list. Returns a ``TrainBatch``.
 
 ``add()`` takes one ``Episode`` and returns
 ``TrainBatch | None``; group accounting counts episodes, never loose traces.
@@ -23,8 +24,8 @@ import uuid
 from collections import defaultdict
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.detectors import Detector, detect, drop_reasons
 from prime_rl.orchestrator.envs import TrainEnvs
-from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Episode, TrainBatch, TrainRollout, group_rollouts
@@ -57,8 +58,9 @@ class TrainSink:
         mm_token_type_ids_mapping: dict[int, int] | None,
         batch_size: int | None,
         token_batch_size: int | None,
-        pre_filters: list[RolloutFilter],
-        post_filters: list[RolloutFilter],
+        detectors: list[Detector],
+        drop_detections: list[str],
+        drop_zero_advantage: bool,
     ) -> None:
         assert (batch_size is None) != (token_batch_size is None), (
             "Exactly one of batch_size / token_batch_size must be set"
@@ -69,8 +71,9 @@ class TrainSink:
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
-        self.pre_filters = pre_filters
-        self.post_filters = post_filters
+        self.detectors = detectors
+        self.drop_detections = drop_detections
+        self.drop_zero_advantage = drop_zero_advantage
 
         # Observation window for the next shipped batch: rollouts of groups
         # finalized since the last ship (errored + filtered + survivors).
@@ -165,6 +168,7 @@ class TrainSink:
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
         )
         rollout.samples = samples or []
+        detect(self.detectors, rollout)
         # Arrival phase: rollout-local scoring (raw reward, echo observation
         # weighting, opd/opsd reference logprobs) runs as soon as the rollout is
         # tokenized — before its group is complete.
@@ -173,7 +177,7 @@ class TrainSink:
     async def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
         when ``requires_group_scoring`` and any failed), assign advantages,
-        run pre-batch filters, append survivors to ``pending_batch``."""
+        apply the drop policy, append what survives to ``pending_batch``."""
         episodes = self.pending_groups.pop(group_id, [])
         self.pending_group_episodes.pop(group_id, None)
         if not episodes:
@@ -223,44 +227,40 @@ class TrainSink:
             for sample in r.samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
 
-        if self.pre_filters:
-            apply_filters(self.pre_filters, survivors)
-        filtered_by_name: dict[str, int] = {}
-        num_filtered = 0
+        # Credit is assigned, so the drop decision can be made now: every detection was already
+        # measured at tokenization, and zero credit is only knowable after the group scored.
+        dropped_by_reason: dict[str, int] = {}
+        num_dropped = 0
         for r in survivors:
             self.pre_filter_seen += 1
-            if r.is_filtered:
+            reasons = drop_reasons(
+                r, drop_detections=self.drop_detections, drop_zero_advantage=self.drop_zero_advantage
+            )
+            r.is_filtered = bool(reasons)
+            if reasons:
                 self.pre_filter_dropped += 1
-                num_filtered += 1
-                for name, hit in r.filter_results.items():
-                    if hit:
-                        self.pre_filter_dropped_by_name[name] = self.pre_filter_dropped_by_name.get(name, 0) + 1
-                        filtered_by_name[name] = filtered_by_name.get(name, 0) + 1
+                num_dropped += 1
+                for reason in reasons:
+                    self.pre_filter_dropped_by_name[reason] = self.pre_filter_dropped_by_name.get(reason, 0) + 1
+                    dropped_by_reason[reason] = dropped_by_reason.get(reason, 0) + 1
                 continue
-            # Reset annotations so the post-batch filter pass starts clean
-            r.filter_results = {}
-            r.is_filtered = False
             self.pending_batch.append(r)
             if self.token_batch_size is not None:
                 self.pending_tokens += payload_tokens(r)
 
-        # Per-group summary. One line per finalized group; per-filter
-        # detection breakdown lives at debug level in ``apply_filters``
         rewards = [r.reward for r in survivors]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
-        filter_str = ", ".join(f"{n}={c}" for n, c in filtered_by_name.items()) if filtered_by_name else "—"
+        drop_str = ", ".join(f"{n}={c}" for n, c in dropped_by_reason.items()) if dropped_by_reason else "—"
         get_logger().debug(
             f"Finished group | env={env_name} task_idx={task_idx} | "
-            f"rollouts={len(group)} (errored={num_errored}, filtered={num_filtered}) | "
-            f"reward={avg_reward:.4f} | filters: {filter_str}"
+            f"rollouts={len(group)} (errored={num_errored}, dropped={num_dropped}) | "
+            f"reward={avg_reward:.4f} | dropped: {drop_str}"
         )
 
     def process_batch(self) -> TrainBatch:
-        """Pop a cohort off ``pending_batch`` (by rollout count when
-        ``batch_size`` is set, by token count when ``token_batch_size`` is
-        set), apply post-batch filter annotations, and assemble the
-        trainer-bound ``TrainingSample`` list. Overflow stays for the next
-        batch."""
+        """Pop a cohort off ``pending_batch`` (by rollout count when ``batch_size`` is set, by
+        token count when ``token_batch_size`` is set) and flatten it into the trainer-bound
+        ``TrainingSample`` list. Overflow stays for the next batch."""
         if self.batch_size is not None:
             cohort = self.pending_batch[: self.batch_size]
             self.pending_batch = self.pending_batch[self.batch_size :]
@@ -277,12 +277,10 @@ class TrainSink:
             self.pending_batch = self.pending_batch[cut:]
             self.pending_tokens -= running
 
-        if self.post_filters:
-            apply_filters(self.post_filters, cohort)
-
         # Samples are pre-built by ``process_rollout``; ``process_group`` already stamped the
-        # advantage stream and loss routing on each sample. Filtered rollouts don't ship.
-        samples: list[TrainingSample] = [sample for r in cohort if not r.is_filtered for sample in r.samples]
+        # advantage stream and loss routing on each sample, and decided what ships. Past this line
+        # the batch is samples — the episode it came from has served its purpose.
+        samples: list[TrainingSample] = [sample for r in cohort for sample in r.samples]
 
         # ``rollouts`` is the observation window — every rollout of every group finalized since the
         # last ship (errored + filtered + survivors) — while ``samples`` is the shipped cohort's
