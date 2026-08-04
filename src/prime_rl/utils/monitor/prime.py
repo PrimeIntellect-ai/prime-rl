@@ -23,7 +23,7 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor, drop_non_finite_json_values, sample_items_for_logging
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import Episode
 
 
 _SAMPLE_SCHEMA = pa.schema(
@@ -248,7 +248,7 @@ class PrimeMonitor(Monitor):
             },
         )
 
-    def log_samples(self, rollouts: list[Rollout], step: int) -> None:
+    def log_samples(self, episodes: list[Episode], step: int) -> None:
         """Logs rollouts to Prime Intellect API using presigned URLs for direct R2 upload."""
         if not self.is_master:
             return
@@ -262,11 +262,11 @@ class PrimeMonitor(Monitor):
         ):
             return
 
-        rollouts = sample_items_for_logging(
-            rollouts,
+        episodes = sample_items_for_logging(
+            episodes,
             self.config.log_extras.sample_ratio,
         )
-        if not rollouts:
+        if not episodes:
             return
 
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
@@ -276,7 +276,7 @@ class PrimeMonitor(Monitor):
         self.logger.info(f"Logging {len(rollouts)} samples to Prime Intellect API at step {step}")
         start_time = time.perf_counter()
 
-        parquet_bytes = self._rollouts_to_parquet_bytes(rollouts, step)
+        parquet_bytes = self._rollouts_to_parquet_bytes(episodes, step)
 
         if not parquet_bytes:
             self.logger.warning(f"No samples to log at step {step}")
@@ -291,8 +291,9 @@ class PrimeMonitor(Monitor):
             f"Initiated samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
-    def _rollouts_to_parquet_bytes(self, rollouts: list[Rollout], step: int) -> bytes | None:
-        """Convert rollouts to Parquet bytes for upload. One row per rollout. The conversation
+    def _rollouts_to_parquet_bytes(self, episodes: list[Episode], step: int) -> bytes | None:
+        """Convert episodes to Parquet bytes for upload. One row per trace, carrying the episode
+        it belongs to. The conversation
         is the unit (no prompt/completion split — meaningless mid-branch): `completion` is the
         last branch's messages and `trajectory` is one message list per branch. Shares
         `verifiers.v1.utils.platform.trace_to_sample` with verifiers' eval `--push`, so a training-run
@@ -301,8 +302,10 @@ class PrimeMonitor(Monitor):
         now = datetime.now(timezone.utc)
         rows = []
 
-        for sample_id, rollout in enumerate(rollouts):
-            sample = trace_to_sample(rollout, rollout_number=sample_id + 1, episode_id=rollout.episode_id or None)
+        for sample_id, (episode, rollout) in enumerate(
+            (episode, trace) for episode in episodes for trace in episode.traces
+        ):
+            sample = trace_to_sample(rollout, rollout_number=sample_id + 1, episode_id=episode.id)
             trajectory = sample["trajectory"]
             if not trajectory:  # no branches (e.g. a rollout that errored before any message)
                 continue
@@ -326,7 +329,7 @@ class PrimeMonitor(Monitor):
                     "completion": json.dumps(sample["completion"]),
                     "trajectory": json.dumps(trajectory),
                     "answer": "",
-                    "env_name": rollout.env_name,
+                    "env_name": episode.env.name or "",
                     "task": json.dumps(sample["task"]),
                     "info": json.dumps(rollout.info),
                     "reward": sample["reward"],
@@ -447,7 +450,7 @@ class PrimeMonitor(Monitor):
                 await asyncio.sleep(delay)
         return False
 
-    def log_eval_samples(self, rollouts: list[Rollout], env_name: str, step: int) -> None:
+    def log_eval_samples(self, episodes: list[Episode], env_name: str, step: int) -> None:
         pass
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:

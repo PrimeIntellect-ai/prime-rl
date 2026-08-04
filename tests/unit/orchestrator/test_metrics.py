@@ -332,10 +332,10 @@ def test_training_state_is_train_only():
     """Only a train rollout carries trainer-bound state; an eval trace has no field for it.
     Credit is not among them — it lives on the graph's nodes, which every trace has."""
     assert {"samples", "is_filtered", "detections"} <= set(TrainRollout.model_fields)
-    assert not {"samples", "is_filtered", "detections"} & set(Rollout.model_fields)
     assert "advantages" not in TrainRollout.model_fields  # derived from the nodes
-    assert {"env_name", "episode_id"} <= set(Rollout.model_fields)  # links stay shared
-    assert "group_id" not in Rollout.model_fields  # the example a trace answered is the episode's
+    # An eval trace is the env's own, unextended — where a trace sits is the episode's to say.
+    assert Rollout is vf.Trace
+    assert not {"samples", "is_filtered", "detections", "group_id", "episode_id"} & set(Rollout.model_fields)
 
 
 def test_inflight_episode_stamps_what_lands():

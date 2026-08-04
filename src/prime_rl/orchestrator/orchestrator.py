@@ -683,7 +683,7 @@ class Orchestrator:
                 metrics[f"dropped/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
         self.monitor.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
-        self.monitor.log_samples(effective.rollouts, step=step)
+        self.monitor.log_samples(effective.episodes, step=step)
         self.monitor.log_distributions(
             distributions={
                 "rewards": [r.reward for r in effective],
@@ -851,7 +851,7 @@ class Orchestrator:
         await asyncio.to_thread(
             save_episodes, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
-        self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
+        self.monitor.log_eval_samples(batch.rollouts.episodes, env_name=batch.env_name, step=batch.step)
         policy_versions = {run_of(e).policy_version for e in batch.rollouts.episodes}
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:

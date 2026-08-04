@@ -7,7 +7,7 @@ from prime_rl.utils.monitor.base import Monitor
 from prime_rl.utils.monitor.prime import PrimeMonitor
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import Episode
 
 
 class MultiMonitor(Monitor):
@@ -33,17 +33,17 @@ class MultiMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to log metrics to {monitor.__class__.__name__}: {e}")
 
-    def log_samples(self, rollouts: list[Rollout], step: int) -> None:
+    def log_samples(self, episodes: list[Episode], step: int) -> None:
         for monitor in self.monitors:
             try:
-                monitor.log_samples(rollouts=rollouts, step=step)
+                monitor.log_samples(episodes=episodes, step=step)
             except Exception as e:
                 self.logger.warning(f"Failed to log samples to {monitor.__class__.__name__}: {e}")
 
-    def log_eval_samples(self, rollouts: list[Rollout], env_name: str, step: int) -> None:
+    def log_eval_samples(self, episodes: list[Episode], env_name: str, step: int) -> None:
         for monitor in self.monitors:
             try:
-                monitor.log_eval_samples(rollouts=rollouts, env_name=env_name, step=step)
+                monitor.log_eval_samples(episodes=episodes, env_name=env_name, step=step)
             except Exception as e:
                 self.logger.warning(f"Failed to log eval samples to {monitor.__class__.__name__}: {e}")
 

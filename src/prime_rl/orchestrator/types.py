@@ -58,30 +58,23 @@ class GroupState:
     policy_version_at_start: int = 0
 
 
-class Rollout(vf.Trace[DataT], Generic[DataT]):
-    """A completed rollout: the env's typed ``vf.Trace`` *is* the rollout, carrying only the links
-    a consumer that works in loose traces — the sample monitors — needs to place one back among its
-    peers. Anything episode-scoped is read off the ``Episode``, which is the atomic unit everything
-    else passes around. All added fields are ``exclude=True``, so dumping a Rollout yields a plain
-    trace on the wire; ``vf.Trace.record_run`` mirrors them into ``info`` on arrival so the on-disk
-    records stay fully placeable.
-
-    It is also the currency the scoring hooks receive: a hook reads the trace directly
-    (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``)."""
-
-    env_name: str = Field(default="", exclude=True)
-    # Links the traces of one episode; stamped into ``info`` on arrival so
-    # saved records keep their grouping.
-    episode_id: str = Field(default="", exclude=True)
+Rollout = vf.Trace
+"""The env's own trace, unextended — what an eval rollout is, and the read side of a training one.
+Where a trace sits (its episode, its group, its env) is the episode's to say."""
 
 
-class TrainRollout(Rollout[DataT], Generic[DataT]):
-    """A rollout on the training path, which alone carries training state: the trainer-bound
-    samples built from its branches, the credit assigned over them, and the filter verdicts. Eval
-    rollouts have none of this, so they are plain ``Rollout``\\ s and can't be asked for it."""
+class TrainRollout(vf.Trace[DataT], Generic[DataT]):
+    """A rollout on the training path — the one place prime-rl extends a verifiers type, because
+    trainer-bound state has nowhere else to live: the samples built from its branches, what the
+    degeneracy detectors measured on it, and whether the drop policy kept it. All of it is
+    ``exclude=True``, so dumping one yields a plain trace on the wire.
+
+    ``env_name`` rides along because a sample is routed by it (the trainer's per-env loss config)
+    and the sink's pending batch is a trace list. Eval rollouts carry the fields unset."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)  # ``samples`` holds msgspec structs
 
+    env_name: str = Field(default="", exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
     detections: dict[str, bool] = Field(default_factory=dict, exclude=True)
     """What each degeneracy detector measured on this trace — a measurement, not a verdict."""

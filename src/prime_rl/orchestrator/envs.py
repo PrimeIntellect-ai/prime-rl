@@ -224,7 +224,6 @@ class Env:
         )
         rollouts = [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in episode.traces]
         for rollout in rollouts:
-            rollout.episode_id = episode.id
             if not episode.ok and rollout.ok:
                 error = episode.last_error or vf.Error(
                     type="EpisodeFailed", message="A sibling trace in this episode failed"

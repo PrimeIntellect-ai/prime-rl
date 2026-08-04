@@ -46,14 +46,19 @@ def _build_rollout(*, example_id: int, reward: float, task: str) -> TrainRollout
     return rollout
 
 
+def _episode(*rollouts: TrainRollout, env_name: str = "task-a") -> vf.WireEpisode:
+    """The unit the monitor uploads: one episode, whose traces become the rows."""
+    return vf.WireEpisode.model_construct(traces=list(rollouts), env=vf.EnvInfo(name=env_name))
+
+
 def test_rollouts_to_parquet_bytes_preserves_all_rollouts_and_ids():
     monitor = _new_monitor()
     monitor.run_id = "run-123"
 
     parquet_bytes = monitor._rollouts_to_parquet_bytes(
         [
-            _build_rollout(example_id=101, reward=1.0, task="task-a"),
-            _build_rollout(example_id=202, reward=0.0, task="task-b"),
+            _episode(_build_rollout(example_id=101, reward=1.0, task="task-a")),
+            _episode(_build_rollout(example_id=202, reward=0.0, task="task-b"), env_name="task-b"),
         ],
         step=7,
     )
@@ -86,7 +91,7 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     assert rollout_without_branches.branches == []
 
     parquet_bytes = monitor._rollouts_to_parquet_bytes(
-        [rollout_with_branches, rollout_without_branches],
+        [_episode(rollout_with_branches, rollout_without_branches)],
         step=3,
     )
 
