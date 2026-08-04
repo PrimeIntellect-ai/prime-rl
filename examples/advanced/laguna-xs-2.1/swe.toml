@@ -20,7 +20,7 @@ num_infer_replicas = 4
 
 [wandb]
 project = "laguna-xs21-swe"
-name = "laguna-xs21-scaleswe"
+name = "laguna-xs21-scaleswe-dep8"
 
 [weight_broadcast]
 type = "nccl"
@@ -152,8 +152,8 @@ tool_call_parser = "poolside_v1"
 reasoning_parser = "poolside_v1"
 
 [inference.parallel]
-tp = 8
-dp = 1
+tp = 1
+dp = 8
 
 [inference.vllm_extra]
 default_chat_template_kwargs = { enable_thinking = true }
