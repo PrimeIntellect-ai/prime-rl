@@ -146,15 +146,14 @@ optim_cpu_offload = true   # already the default
 
 Mutually exclusive with `fsdp_cpu_offload`. Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
 
-The optimizer step is performed per-transformer-layer ("chunked"): each layer's optimizer states are moved to GPU, the step runs for that layer only, and the states move back to CPU before the next layer. This reduces peak GPU optimizer-state memory from the full model's states to about one layer's worth (two layers with stream overlap: the current layer being computed plus the next layer being prefetched). Set `optim_cpu_offload_chunked = true` to enable:
+The optimizer step can be performed per-transformer-layer ("chunked"): each layer's optimizer states are moved to GPU, the step runs for that layer only, and the states move back to CPU before the next layer. H2D/D2H transfers are overlapped with compute on dedicated CUDA streams — while layer *i* computes, layer *i+1* is prefetched and layer *i-1* is evicted — but the prefetch waits for the eviction to complete, so at most two layers' optimizer states are on GPU at any time. Set `optim_cpu_offload_chunked = true` to enable:
 
 ```toml
 [trainer.model]
 optim_cpu_offload_chunked = true
-optim_cpu_offload_stream = true
 ```
 
-Both default to `false`. Set `optim_cpu_offload_stream = true` to additionally overlap H2D/D2H transfers with optimizer compute on dedicated CUDA streams (up to ~3 layers resident on GPU during overlap). When chunked is enabled but stream is not, the step uses a simple sequential move→step→move loop (1 layer resident at a time).
+Defaults to `false`. This reduces peak GPU optimizer-state memory from the full model's states to about two layers' worth, preventing OOM when `weight + grad + all_opt_states > VRAM`.
 
 ### LM Head Chunking
 

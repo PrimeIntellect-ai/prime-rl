@@ -23,9 +23,10 @@ class CPUOffloadOptimizer:
 
     When ``named_params`` is provided, the step is performed per-transformer-layer
     ("chunked") instead of all-at-once, reducing peak GPU optimizer-state memory
-    from the full model's to about one layer's worth (two with stream overlap).
-    H2D/D2H transfers can optionally overlap with compute on dedicated CUDA streams
-    (``stream=True``).
+    from the full model's to at most two layers' worth. H2D/D2H transfers are
+    overlapped with compute on dedicated CUDA streams: while layer *i* computes,
+    layer *i+1* is prefetched and layer *i-1* is evicted, but the prefetch waits
+    for the eviction to complete so never more than two layers are on GPU at once.
     """
 
     def __init__(
@@ -33,11 +34,9 @@ class CPUOffloadOptimizer:
         optimizer: Optimizer,
         named_params: list[tuple[str, nn.Parameter]] | None = None,
         pin_memory: bool = True,
-        stream: bool = False,
     ):
         self.optimizer = optimizer
         self.pin_memory = pin_memory
-        self.stream = stream
         self._initialized = False
         self._chunks: list[list[nn.Parameter]] | None = None
         if named_params is not None:
@@ -158,23 +157,12 @@ class CPUOffloadOptimizer:
         self._original_param_groups = self.optimizer.param_groups
         original_steps = [g.get("step", 0) for g in self._original_param_groups]
 
-        if self.stream:
-            self._step_chunked_streamed(closure)
-        else:
-            self._step_chunked(closure)
+        self._step_chunked_streamed(closure)
 
         self._sync_step_counters(original_steps)
         self._original_param_groups = None
         self._initialized = True
         return None
-
-    def _step_chunked(self, closure=None):
-        """Sequential per-layer step without stream overlap."""
-        for i in range(len(self._chunks)):
-            self._move_chunk_states(i, "cuda")
-            self._step_chunk(i, closure if i == 0 else None)
-            self._move_chunk_states(i, "cpu")
-        torch.cuda.synchronize()
 
     def _step_chunked_streamed(self, closure=None):
         """Per-layer step with stream-overlapped H2D / D2H."""
@@ -241,7 +229,6 @@ def setup_optimizer(
     parallel_dims: ParallelDims,
     cpu_offload: bool = False,
     cpu_offload_chunked: bool = False,
-    cpu_offload_stream: bool = False,
 ) -> Optimizer | CPUOffloadOptimizer:
     optimizer = _create_optimizer(config, named_params, parallel_dims)
 
@@ -250,7 +237,6 @@ def setup_optimizer(
         return CPUOffloadOptimizer(
             optimizer,
             named_params=named_params if cpu_offload_chunked else None,
-            stream=cpu_offload_stream,
         )
 
     return optimizer
