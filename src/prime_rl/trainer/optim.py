@@ -21,26 +21,22 @@ class CPUOffloadOptimizer:
     activations and optimizer states are never on GPU at the same time, so peak
     memory is max(activations, opt_states) instead of sum.
 
-    When ``named_params`` is provided, the step is performed per-transformer-layer
-    ("chunked") instead of all-at-once, reducing peak GPU optimizer-state memory
-    from the full model's to at most two layers' worth. H2D/D2H transfers are
-    overlapped with compute on dedicated CUDA streams: while layer *i* computes,
-    layer *i+1* is prefetched and layer *i-1* is evicted, but the prefetch waits
-    for the eviction to complete so never more than two layers are on GPU at once.
+    The step is performed per-transformer-layer with stream-overlapped H2D/D2H
+    transfers: while layer *i* computes, layer *i+1* is prefetched and layer *i-1*
+    is evicted. The prefetch waits for the eviction to complete, so at most two
+    layers' optimizer states are on GPU at any time.
     """
 
     def __init__(
         self,
         optimizer: Optimizer,
-        named_params: list[tuple[str, nn.Parameter]] | None = None,
+        named_params: list[tuple[str, nn.Parameter]],
         pin_memory: bool = True,
     ):
         self.optimizer = optimizer
         self.pin_memory = pin_memory
         self._initialized = False
-        self._chunks: list[list[nn.Parameter]] | None = None
-        if named_params is not None:
-            self._chunks = self._build_chunks(named_params)
+        self._chunks = self._build_chunks(named_params)
 
     @staticmethod
     def _extract_layer_idx(name: str) -> int | None:
@@ -48,7 +44,7 @@ class CPUOffloadOptimizer:
         return int(m.group(1)) if m else None
 
     def _build_chunks(self, named_params: list[tuple[str, nn.Parameter]]) -> list[list[nn.Parameter]]:
-        """Group optimizer params by transformer layer; non-layer params go last."""
+        """Group params by transformer layer; non-layer params go last."""
         param_layer = {id(p): self._extract_layer_idx(n) for n, p in named_params}
         by_layer: dict[int, list[nn.Parameter]] = {}
         misc: list[nn.Parameter] = []
@@ -74,13 +70,12 @@ class CPUOffloadOptimizer:
         return v.to(device, non_blocking=True)
 
     def _move_states(self, device: str):
-        """Move all optimizer states to *device*."""
+        """Move all optimizer states to *device* (bulk, for state_dict/checkpoint)."""
         for state in self.optimizer.state.values():
             for k, v in state.items():
                 if isinstance(v, DTensor):
-                    new_local = self._move_tensor(v._local_tensor, device)
                     new_dtensor = copy.copy(v)
-                    new_dtensor._local_tensor = new_local
+                    new_dtensor._local_tensor = self._move_tensor(v._local_tensor, device)
                     state[k] = new_dtensor
                 elif isinstance(v, torch.Tensor):
                     state[k] = self._move_tensor(v, device)
@@ -88,9 +83,9 @@ class CPUOffloadOptimizer:
     def _move_chunk_states(self, chunk_idx: int, device: str, stream: torch.cuda.Stream | None = None):
         """Move optimizer states for a single chunk to/from *device*.
 
-        When *stream* is provided the transfers are issued on that stream. For D2H
-        (device == "cpu"), the old GPU tensor is recorded on the stream so the
-        caching allocator won't reuse its storage until the async copy finishes.
+        When *stream* is provided the transfers are issued on that stream. For D2H,
+        the old GPU tensor is recorded on the stream so the caching allocator won't
+        reuse its storage until the async copy finishes.
         """
         chunk_ids = {id(p) for p in self._chunks[chunk_idx]}
         ctx = torch.cuda.stream(stream) if stream is not None else torch.cuda.default_stream()
@@ -102,9 +97,8 @@ class CPUOffloadOptimizer:
                     if isinstance(v, DTensor):
                         if device == "cpu" and stream is not None and v._local_tensor.is_cuda:
                             v._local_tensor.record_stream(stream)
-                        new_local = self._move_tensor(v._local_tensor, device)
                         new_dtensor = copy.copy(v)
-                        new_dtensor._local_tensor = new_local
+                        new_dtensor._local_tensor = self._move_tensor(v._local_tensor, device)
                         state[k] = new_dtensor
                     elif isinstance(v, torch.Tensor):
                         if device == "cpu" and stream is not None and v.is_cuda:
@@ -139,54 +133,29 @@ class CPUOffloadOptimizer:
             group["step"] = orig_step + 1
 
     def step(self, closure=None):
-        # Non-chunked path.
-        if self._chunks is None or len(self._chunks) <= 1:
-            if not self._initialized:
-                result = self.optimizer.step(closure)
-                self._move_states("cpu")
-                torch.cuda.synchronize()
-                self._initialized = True
-                return result
-            self._move_states("cuda")
-            result = self.optimizer.step(closure)
-            self._move_states("cpu")
-            return result
-
-        # Chunked path (also used for the first step to avoid materializing
-        # all optimizer states on GPU at once during initialization).
         self._original_param_groups = self.optimizer.param_groups
         original_steps = [g.get("step", 0) for g in self._original_param_groups]
 
-        self._step_chunked_streamed(closure)
-
-        self._sync_step_counters(original_steps)
-        self._original_param_groups = None
-        self._initialized = True
-        return None
-
-    def _step_chunked_streamed(self, closure=None):
-        """Per-layer step with stream-overlapped H2D / D2H."""
         h2d_stream = torch.cuda.Stream()
         d2h_stream = torch.cuda.Stream()
         compute_stream = torch.cuda.current_stream()
         n = len(self._chunks)
 
         self._move_chunk_states(0, "cuda", h2d_stream)
-
         for i in range(n):
             compute_stream.wait_stream(h2d_stream)
-
             if i + 1 < n:
                 # Wait for previous D2H before reusing pinned CPU buffers.
                 h2d_stream.wait_stream(d2h_stream)
                 self._move_chunk_states(i + 1, "cuda", h2d_stream)
-
             self._step_chunk(i, closure if i == 0 else None)
-
             d2h_stream.wait_stream(compute_stream)
             self._move_chunk_states(i, "cpu", d2h_stream)
-
         torch.cuda.synchronize()
+
+        self._sync_step_counters(original_steps)
+        self._original_param_groups = None
+        self._initialized = True
 
     def zero_grad(self, set_to_none: bool = True):
         self.optimizer.zero_grad(set_to_none=set_to_none)
@@ -228,16 +197,12 @@ def setup_optimizer(
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     cpu_offload: bool = False,
-    cpu_offload_chunked: bool = False,
 ) -> Optimizer | CPUOffloadOptimizer:
     optimizer = _create_optimizer(config, named_params, parallel_dims)
 
     if cpu_offload:
         get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
-        return CPUOffloadOptimizer(
-            optimizer,
-            named_params=named_params if cpu_offload_chunked else None,
-        )
+        return CPUOffloadOptimizer(optimizer, named_params=named_params)
 
     return optimizer
 
