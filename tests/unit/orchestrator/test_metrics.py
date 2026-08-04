@@ -344,23 +344,27 @@ def test_inflight_episode_stamps_what_lands():
     dispatch become facts of an episode, and the run it writes is what tells the rest of the
     orchestrator which path the episode is on."""
     wire = vf.WireEpisode.model_construct(id="e", traces=[])
-    inflight = InflightEpisode(
-        kind="train", env_name="rt", group_id=uuid4(), policy_version=3, episodes_owed=1, off_policy_steps=2
-    )
-    train = inflight.stamp(wire, run_id="r", policy_version=7, eval_step=None)
+    inflight = InflightEpisode(kind="train", env_name="rt", group_id=uuid4(), policy_version=3, episodes_owed=1)
+    span = vf.PolicySpan(start=3, end=4)  # an update landed while it was generating
+    train = inflight.stamp(wire, run_id="r", policy=span, eval_step=None)
     run = run_of(train)
-    assert (run.kind, run.policy_version, run.off_policy_steps) == ("train", 7, 2)  # group's wins
+    assert (run.kind, run.policy) == ("train", span)
     assert run.step is None  # the batch window it lands in is not known yet
+    assert run.off_policy_steps is None  # so there is nothing to be behind yet
     assert train.env.name == "rt" and train.group is not None
 
+    run.step = 6  # the window it landed in, which step 6 trains v5 from
+    assert run.off_policy_steps == 2 and run.policy.drift == 1
+
     evaluation = replace(inflight, kind="eval").stamp(
-        vf.WireEpisode.model_construct(id="e", traces=[]), run_id="r", policy_version=7, eval_step=12
+        vf.WireEpisode.model_construct(id="e", traces=[]), run_id="r", policy=span, eval_step=12
     )
-    # An online eval belongs to the same training run — same record, told apart by kind.
+    # An online eval belongs to the same training run — same record, told apart by kind, and
+    # measured against the policy in training exactly as an episode trained on is.
     assert (run_of(evaluation).kind, run_of(evaluation).step) == ("eval", 12)
-    assert run_of(evaluation).off_policy_steps == 0  # only what trains can go stale
+    assert run_of(evaluation).off_policy_steps == 8
     with pytest.raises(AssertionError):  # an eval episode without its step is not representable
-        replace(inflight, kind="eval").stamp(wire, run_id="r", policy_version=7, eval_step=None)
+        replace(inflight, kind="eval").stamp(wire, run_id="r", policy=span, eval_step=None)
 
 
 def test_eval_sink_reads_the_epoch_a_stamped_episode_landed_in():
@@ -370,13 +374,11 @@ def test_eval_sink_reads_the_epoch_a_stamped_episode_landed_in():
     inflight = InflightEpisode(
         kind="eval", env_name="rt", group_id=uuid4(), policy_version=3, episodes_owed=1, eval_step=12
     )
-    landed = inflight.stamp(
-        vf.WireEpisode.model_construct(id="e", traces=[]), run_id="r", policy_version=3, eval_step=12
-    )
+    landed = inflight.stamp(vf.WireEpisode.model_construct(id="e", traces=[]), run_id="r", policy=None, eval_step=12)
     assert eval_step_of(landed) == 12
 
     trained_on = replace(inflight, kind="train").stamp(
-        vf.WireEpisode.model_construct(id="e2", traces=[]), run_id="r", policy_version=3, eval_step=None
+        vf.WireEpisode.model_construct(id="e2", traces=[]), run_id="r", policy=None, eval_step=None
     )
     with pytest.raises(AssertionError):  # an episode to train on is not placed by an eval epoch
         eval_step_of(trained_on)

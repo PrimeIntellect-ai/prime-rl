@@ -15,8 +15,8 @@
   source's emptiness), so in-flight rollouts of the opposite kind drain
   naturally on either side of an eval boundary.
 - ``on_version_pending`` (called by the watcher before the engines pause for
-  the weight update) bumps ``off_policy_steps`` on in-flight train rollouts and
-  drops groups past ``max_off_policy_steps``.
+  the weight update) drops in-flight train groups whose generating policy would
+  fall further behind than ``max_off_policy_steps``.
   Eval rollouts are measurements for the policy version they started with,
   so they are allowed to finish even if training advances. Train rollouts
   sampled from a frozen model never age — their sampler doesn't change
@@ -227,15 +227,19 @@ class RolloutDispatcher:
         triggered eval drain naturally."""
         self.train_scheduling_disabled = True
 
+    def _inflight_lag(self) -> list[int]:
+        """How far behind the live policy each in-flight train dispatch has fallen."""
+        return [self.policy.version - m.policy_version for m in self.inflight.values() if m.kind == "train"]
+
     @property
     def max_off_policy_level(self) -> int:
-        steps = [m.off_policy_steps for m in self.inflight.values() if m.kind == "train"]
-        return max(steps) if steps else 0
+        lag = self._inflight_lag()
+        return max(lag) if lag else 0
 
     @property
     def mean_off_policy_level(self) -> float:
-        steps = [m.off_policy_steps for m in self.inflight.values() if m.kind == "train"]
-        return sum(steps) / len(steps) if steps else 0.0
+        lag = self._inflight_lag()
+        return sum(lag) / len(lag) if lag else 0.0
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -271,8 +275,13 @@ class RolloutDispatcher:
             await safe_cancel(self.task)
             self.task = None
 
+    def samples_from_live_policy(self, meta: InflightEpisode) -> bool:
+        """Whether this dispatch follows the live policy at all. A frozen sampler does not, so it
+        never ages and has no version to be behind."""
+        return meta.kind == "eval" or self.train_envs.get(meta.env_name).sampler.samples_from_live_policy
+
     async def on_version_pending(self, step: int) -> None:
-        """Bump off-policy counters and drop groups past
+        """Drop groups whose generating policy is now further behind than
         ``max_off_policy_steps`` (drop_group emits ``Cancelled`` markers so
         the sink still finalizes the partial group). Eval rollouts are not
         aged because they are tied to their start-time policy version.
@@ -288,10 +297,11 @@ class RolloutDispatcher:
                 continue
             # Frozen-sourced rollouts never go stale — their sampler doesn't
             # change with policy updates.
-            if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
+            if not self.samples_from_live_policy(meta):
                 continue
-            meta.off_policy_steps += 1
-            if meta.off_policy_steps > self.max_off_policy_steps:
+            # The live version is about to become ``step``'s, so this dispatch will be one
+            # further behind than it is now.
+            if (self.policy.version + 1) - meta.policy_version > self.max_off_policy_steps:
                 stale_groups.add(meta.group_id)
 
         for gid in stale_groups:
@@ -564,9 +574,14 @@ class RolloutDispatcher:
 
         for rollout in episode.traces:
             rollout.env_name = meta.env_name
-        await self.out_q.put(
-            meta.stamp(episode, run_id=self.run_id, policy_version=policy_version, eval_step=eval_step)
+        # Generation is over, so the span closes at whatever version is live now: an episode that
+        # outlived an update spans more than one.
+        policy = (
+            vf.PolicySpan(start=policy_version, end=self.policy.version)
+            if self.samples_from_live_policy(meta)
+            else None
         )
+        await self.out_q.put(meta.stamp(episode, run_id=self.run_id, policy=policy, eval_step=eval_step))
 
     async def emit_failed_episodes(self, meta: InflightEpisode, group: GroupState | None, error: vf.Error) -> None:
         """Emit one traceless episode per rollout the task owed, so the sink still counts its way to

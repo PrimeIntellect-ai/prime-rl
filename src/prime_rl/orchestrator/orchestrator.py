@@ -61,7 +61,6 @@ from prime_rl.orchestrator.types import (
     Policy,
     Progress,
     TrainBatch,
-    env_name_of,
     group_id_of,
     run_of,
 )
@@ -622,16 +621,6 @@ class Orchestrator:
                 await self.version_advanced.wait()
             self.wait_for_policy_time += time.perf_counter() - hold_start
 
-        # Stamp each rollout's true staleness: batch ``step`` trains on policy
-        # v{step-1}, so a rollout generated from v{k} is (step-1)-k versions
-        # off-policy — queue time included, unlike the dispatcher's in-flight
-        # counter, which only sees weight updates during generation. Frozen-
-        # sourced rollouts stay 0 (their sampler doesn't follow the policy).
-        for train_episode in batch.rollouts.episodes:
-            if self.train_envs.get(env_name_of(train_episode)).sampler.samples_from_live_policy:
-                run = run_of(train_episode)
-                run.off_policy_steps = (step - 1) - (run.policy_version or 0)
-
         # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
         # at ship time; the full arrival window already streamed into ``all`` on arrival.
         # to_record drops the per-node training tensors — they're for training, not the rollout
@@ -809,7 +798,7 @@ class Orchestrator:
         n_effective = len(effective)
         n_trainable = sum(1 for r in effective if r.is_trainable)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_off_policy = max((run_of(e).off_policy_steps for e in effective.episodes), default=0)
+        max_off_policy = max((run_of(e).off_policy_steps or 0 for e in effective.episodes), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
@@ -833,7 +822,7 @@ class Orchestrator:
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Off-Policy {max((run_of(e).off_policy_steps for e in env_eff_pool.episodes), default=0)} | "
+                f"Max Off-Policy {max((run_of(e).off_policy_steps or 0 for e in env_eff_pool.episodes), default=0)} | "
                 f"Error {pool.metrics.has_error.mean():.1%} | Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))

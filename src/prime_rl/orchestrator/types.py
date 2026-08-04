@@ -176,10 +176,9 @@ class InflightEpisode:
     episodes_owed: int
     """How many episodes this dispatch owes the sink — one, except on the legacy group path."""
     client_config: vf.ClientConfig | None = None
-    off_policy_steps: int = 0
     eval_step: int | None = None
 
-    def stamp(self, episode: Episode, *, run_id: str, policy_version: int, eval_step: int | None) -> Episode:  # noqa: E501
+    def stamp(self, episode: Episode, *, run_id: str, policy: vf.PolicySpan | None, eval_step: int | None) -> Episode:
         """Write the dispatch's facts onto the landed episode, in the places the episode already
         has for them. The group's values win over this dispatch's when it is still alive, so they
         are passed in rather than read off ``self``.
@@ -192,13 +191,7 @@ class InflightEpisode:
         episode.group = vf.GroupInfo(id=str(self.group_id))
         if self.kind == "eval":
             assert eval_step is not None, "eval episode missing its step"
-        episode.run = vf.TrainRunInfo(
-            id=run_id,
-            kind=self.kind,
-            step=eval_step,
-            policy_version=policy_version,
-            off_policy_steps=0 if self.kind == "eval" else self.off_policy_steps,
-        )
+        episode.run = vf.TrainRunInfo(id=run_id, kind=self.kind, step=eval_step, policy=policy)
         return episode
 
 
