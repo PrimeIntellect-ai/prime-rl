@@ -73,7 +73,7 @@ jobs:
           from prime_rl.configs.inference import InferenceConfig
           from prime_rl.configs.orchestrator import OrchestratorConfig
           from prime_rl.configs.trainer import TrainerConfig
-          from prime_rl.configs.env_server import EnvServerConfig
+          from prime_rl.configs.env import EnvConfig
           from prime_rl.utils.config import BaseConfig, find_package_resource, rgetattr, rsetattr
           from prime_rl.utils.validation import validate_shared_ckpt_config
 
