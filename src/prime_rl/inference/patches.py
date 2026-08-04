@@ -15,7 +15,6 @@ def apply_shared_vllm_patches():
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_qwen3_coder_param_newline_trim()
-    monkey_patch_poolside_v1_tool_call_name_boundary()
     monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
@@ -123,37 +122,6 @@ def monkey_patch_nano_v3_reasoning_parser():
             return reasoning_content, final_content
 
     ReasoningParserManager.register_module("nano_v3", module=NanoV3ReasoningParser)
-
-
-def monkey_patch_poolside_v1_tool_call_name_boundary():
-    """Accept ``<tool_call>name<arg_key>`` without a newline in poolside_v1.
-
-    Laguna S 2.1 emits tool calls with no newline between the function name
-    and the first ``<arg_key>``; this vLLM's non-streaming
-    ``func_detail_regex`` requires ``name\\n`` (upstream vLLM >=0.25 accepts
-    both), so every tool call fails detail parsing and leaks verbatim into
-    ``content``. The streaming path already treats ``<arg_key>`` and
-    ``</tool_call>`` as name terminators. Only the regex changes: the name
-    group stops at ``<`` or a newline, and ``\\s*`` covers the optional
-    newline.
-    """
-    import re
-
-    from vllm.tool_parsers import poolside_v1_tool_parser as poolside
-
-    parser_cls = poolside.PoolsideV1ToolParser
-    original_init = parser_cls.__init__
-    if getattr(original_init, "_prime_rl_name_boundary", False):
-        return
-
-    def _patched_init(self, *args, **kwargs):
-        original_init(self, *args, **kwargs)
-        ## START PATCHED CODE (upstream: r"<tool_call>([^\n]*)\n(.*)</tool_call>")
-        self.func_detail_regex = re.compile(r"<tool_call>\s*([^\n<]*)\s*(.*)</tool_call>", re.DOTALL)
-        ## END PATCHED CODE
-
-    _patched_init._prime_rl_name_boundary = True
-    parser_cls.__init__ = _patched_init
 
 
 def monkey_patch_qwen3_coder_param_newline_trim():
