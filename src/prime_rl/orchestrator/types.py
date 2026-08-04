@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Generic, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, Protocol, cast
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
 from verifiers.v1.task import DataT
+from verifiers.v1.trace import EXCLUDE_FIELDS
 
 from prime_rl.transport import TrainingSample
 
@@ -154,6 +155,12 @@ class Episode(vf.WireEpisode):
     def rollouts(self) -> list[Rollout]:
         """The episode's traces, typed as the rollouts prime-rl works with."""
         return cast(list[Rollout], self.traces)
+
+    def to_record(self) -> dict[str, Any]:
+        """JSON record without raw tensors — the episode form of ``Trace.to_record``, and the unit
+        ``traces.jsonl`` stores: one episode per line, matching what verifiers writes and what its
+        ``read_episodes`` expects."""
+        return self.model_dump(mode="json", exclude={"traces": {"__all__": EXCLUDE_FIELDS}})
 
     @property
     def is_empty(self) -> bool:

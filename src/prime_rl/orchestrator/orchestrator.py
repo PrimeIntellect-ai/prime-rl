@@ -68,7 +68,7 @@ from prime_rl.orchestrator.types import (
 from prime_rl.orchestrator.utils import (
     get_weight_dir,
     intercept_vf_logging,
-    save_rollouts,
+    save_episodes,
     set_default_executor,
     setup_policy_inference_pool,
     trim_process_memory,
@@ -526,11 +526,11 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 continue
 
-            # Every completed rollout — errored, filtered, or never batched — lands in the
-            # ``all`` trace file the moment it arrives, so it survives crashes and drains.
-            # Train rollouts belong to the batch window currently collecting (``progress.step``),
-            # eval rollouts to the step whose eval triggered them. A failed episode has no trace
-            # to write; it is counted by the window's episode-failure metrics instead.
+            # Every completed episode — errored, filtered, or never batched — lands in the
+            # ``all`` trace file the moment it arrives, so it survives crashes and drains. One
+            # episode per line, so an episode that produced no traces still records why.
+            # Train episodes belong to the batch window currently collecting (``progress.step``),
+            # eval ones to the step whose eval triggered them.
             is_eval = isinstance(episode, EvalEpisode)
             step = episode.step if isinstance(episode, EvalEpisode) else self.progress.step
             run: vf.RunInfo = (
@@ -544,12 +544,11 @@ class Orchestrator:
                     episode_id=rollout.episode_id,
                     policy_version=episode.policy_version,
                 )
-            if episode.traces:
-                await asyncio.to_thread(
-                    save_rollouts,
-                    [r.to_record() for r in episode.rollouts],
-                    get_trace_path(self.config.output_dir, step, episode.KIND, "all"),
-                )
+            await asyncio.to_thread(
+                save_episodes,
+                [episode.to_record()],
+                get_trace_path(self.config.output_dir, step, episode.KIND, "all"),
+            )
 
             if isinstance(episode, EvalEpisode):
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
@@ -566,7 +565,7 @@ class Orchestrator:
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
-        side-effects (ckpt, save_rollouts, reference scoring, sender.send,
+        side-effects (ckpt, save_episodes, reference scoring, sender.send,
         metrics, heartbeat, progress, eval trigger). The sink has already
         done all data-transformation work."""
         config = self.config
@@ -644,8 +643,8 @@ class Orchestrator:
         # at ship time; the full arrival window already streamed into ``all`` on arrival.
         # to_record drops the per-node training tensors — they're for training, not the rollout
         # record, and can't round-trip json (raw numpy bytes).
-        records = [r.to_record() for r in effective]
-        await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
+        records = [e.to_record() for e in effective.episodes]
+        await asyncio.to_thread(save_episodes, records, get_trace_path(config.output_dir, step, "train", "effective"))
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.progress.step += 1
@@ -852,7 +851,7 @@ class Orchestrator:
         get_logger().success("\n\t\t ".join(lines))
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
-        """Persist + log one completed eval epoch (save_rollouts,
+        """Persist + log one completed eval epoch (save_episodes,
         monitor.log_eval_samples, monitor.log)."""
         if not batch.rollouts:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
@@ -862,9 +861,9 @@ class Orchestrator:
         # completion (multiple eval envs share the step file — each epoch appends its cohort
         # once, and every record carries ``env_name``); the full returned cohort already
         # streamed into ``all`` on arrival.
-        records = [r.to_record() for r in batch.rollouts.effective]
+        records = [e.to_record() for e in batch.rollouts.effective.episodes]
         await asyncio.to_thread(
-            save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
+            save_episodes, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
         policy_versions = {e.policy_version for e in batch.rollouts.episodes}
