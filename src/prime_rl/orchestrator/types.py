@@ -137,6 +137,13 @@ def rollouts_of(episode: Episode) -> list[TrainRollout]:
     return cast(list[TrainRollout], episode.traces)
 
 
+def to_record(episode: Episode) -> dict[str, Any]:
+    """JSON record without the per-node training tensors — the episode form of
+    ``Trace.to_record``, and the unit ``traces.jsonl`` stores: one episode per line. The tensors
+    are the trainer's, not the record's, and raw numpy bytes don't round-trip through json."""
+    return episode.model_dump(mode="json", exclude={"traces": {"__all__": EXCLUDE_FIELDS}})
+
+
 def group_id_of(episode: Episode) -> str:
     """The group an episode was planned in. The dispatcher plans every episode into one, so this
     is always set by the time anything downstream asks."""

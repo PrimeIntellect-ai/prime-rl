@@ -63,6 +63,7 @@ from prime_rl.orchestrator.types import (
     TrainBatch,
     group_id_of,
     run_of,
+    to_record,
 )
 from prime_rl.orchestrator.utils import (
     get_weight_dir,
@@ -537,7 +538,7 @@ class Orchestrator:
             assert step is not None
             await asyncio.to_thread(
                 save_episodes,
-                [episode.to_record()],
+                [to_record(episode)],
                 get_trace_path(self.config.output_dir, step, run.kind, "all"),
             )
 
@@ -625,7 +626,7 @@ class Orchestrator:
         # at ship time; the full arrival window already streamed into ``all`` on arrival.
         # to_record drops the per-node training tensors — they're for training, not the rollout
         # record, and can't round-trip json (raw numpy bytes).
-        records = [e.to_record() for e in effective.episodes]
+        records = [to_record(e) for e in effective.episodes]
         await asyncio.to_thread(save_episodes, records, get_trace_path(config.output_dir, step, "train", "effective"))
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
@@ -838,7 +839,7 @@ class Orchestrator:
         # completion (multiple eval envs share the step file — each epoch appends its cohort
         # once, and every record carries ``env_name``); the full returned cohort already
         # streamed into ``all`` on arrival.
-        records = [e.to_record() for e in batch.rollouts.effective.episodes]
+        records = [to_record(e) for e in batch.rollouts.effective.episodes]
         await asyncio.to_thread(
             save_episodes, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
