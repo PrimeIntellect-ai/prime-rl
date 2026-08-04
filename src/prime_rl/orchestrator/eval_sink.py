@@ -86,7 +86,7 @@ class EvalSink:
         for group_id, episodes in self.pending_groups.items():
             if not episodes:
                 continue
-            env_name = episodes[0].env_name
+            env_name = env_name_of(episodes[0])
             if self.eval_envs.get(env_name).requires_group_scoring:
                 continue
             bkey = (env_name, eval_step_of(episodes[0]))
@@ -120,7 +120,7 @@ class EvalSink:
             return
         # Read the group's facts off an episode, not a trace: every episode in it may have
         # produced none (a whole group cancelled off-policy).
-        env_name = finished[0].env_name
+        env_name = env_name_of(finished[0])
         eval_step = eval_step_of(finished[0])
         group = [t for e in finished for t in rollouts_of(e)]
         task_idx = group[0].task.data.idx if group else -1

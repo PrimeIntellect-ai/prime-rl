@@ -61,6 +61,8 @@ from prime_rl.orchestrator.types import (
     Policy,
     Progress,
     TrainBatch,
+    env_name_of,
+    group_id_of,
     run_of,
 )
 from prime_rl.orchestrator.utils import (
@@ -626,7 +628,7 @@ class Orchestrator:
         # counter, which only sees weight updates during generation. Frozen-
         # sourced rollouts stay 0 (their sampler doesn't follow the policy).
         for train_episode in batch.rollouts.episodes:
-            if self.train_envs.get(train_episode.env_name).sampler.samples_from_live_policy:
+            if self.train_envs.get(env_name_of(train_episode)).sampler.samples_from_live_policy:
                 run = run_of(train_episode)
                 run.off_policy_steps = (step - 1) - (run.policy_version or 0)
 
@@ -660,7 +662,7 @@ class Orchestrator:
         num_input = sum(r.num_input_tokens for r in effective)
         num_output = sum(r.num_output_tokens for r in effective)
         num_rollouts = len(batch.rollouts)
-        num_unique_examples = len({e.group_id for e in batch.rollouts.episodes})
+        num_unique_examples = len({group_id_of(e) for e in batch.rollouts.episodes})
         metrics |= {
             "progress/tokens": num_tokens,
             "progress/input_tokens": num_input,

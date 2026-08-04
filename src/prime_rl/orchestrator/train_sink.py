@@ -124,7 +124,7 @@ class TrainSink:
         return sum(
             self.pending_group_episodes.get(group_id, 0)
             for group_id, episodes in self.pending_groups.items()
-            if episodes and not self.train_envs.get(episodes[0].env_name).requires_group_scoring
+            if episodes and not self.train_envs.get(env_name_of(episodes[0])).requires_group_scoring
         )
 
     def pending_batch_by_env(self) -> dict[str, int]:
@@ -192,7 +192,7 @@ class TrainSink:
             return
         # Read the group's facts off an episode, not a trace: every episode in it may have
         # produced none (a whole group cancelled off-policy).
-        env_name = episodes[0].env_name
+        env_name = env_name_of(episodes[0])
         group = [t for e in episodes for t in rollouts_of(e)]
         # Window membership follows group finalization, not arrival: a rollout
         # only becomes observable (metrics / persistence) once its whole group
