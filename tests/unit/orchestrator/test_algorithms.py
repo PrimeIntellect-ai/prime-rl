@@ -9,7 +9,7 @@ from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
-from prime_rl.orchestrator.trajectories import trace_to_samples
+from prime_rl.orchestrator.trajectories import iter_trainable_branches, trace_to_samples
 from prime_rl.orchestrator.types import TrainRollout
 from prime_rl.transport.types import TrainingSample
 
@@ -157,36 +157,39 @@ def test_stamp_loss_routing_merges_action_weights_into_ce_stream():
     assert sample.ref_kl_weights is None
 
 
-def _make_rollout(
-    samples: list[TrainingSample],
-    advantages: list[float] | None = None,
-) -> TrainRollout:
+def _make_rollout(samples: list[TrainingSample]) -> TrainRollout:
+    """A rollout whose graph mirrors ``_make_sample``: one node per sample, carrying that
+    sample's tokens and mask, so branches and samples line up as they do in a real trace."""
+    nodes = [
+        MessageNode(
+            parent=None,
+            message=AssistantMessage(role="assistant", content=""),
+            sampled=True,
+            token_ids=list(sample.token_ids),
+            mask=list(sample.mask),
+            logprobs=[lp for lp, m in zip(sample.logprobs, sample.mask, strict=True) if m],
+        )
+        for sample in samples
+    ]
     rollout = TrainRollout(
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
-        nodes=[],
+        nodes=nodes,
         rewards={},
         env_name="test-env",
     )
     rollout.samples = samples
-    rollout.advantages = advantages
     return rollout
 
 
-def test_stamp_advantages_full_length_stream():
-    # The advantage stream is full-length-N: 0.0 on prompt + non-trainable
-    # positions, the rl credit on trainable (mask True) tokens.
-    rollout = _make_rollout([_make_sample()], advantages=[0.0, 0.0, 0.5, -0.5, 0.0, 1.0])
+def test_stamp_advantages_copies_the_branch_view():
+    """Each sample takes its branch's spread credit — no offsets, so the two align by
+    construction. Covered end to end in test_advantage.py, which builds real nodes."""
+    rollout = _make_rollout([_make_sample()])
+    rollout.assign_advantages(1.0)
     stamp_advantages(rollout)
-    assert rollout.samples[0].advantages == [0.0, 0.0, 0.5, -0.5, 0.0, 1.0]
-
-
-def test_stamp_advantages_slices_across_samples():
-    samples = [_make_sample(), _make_sample()]
-    rollout = _make_rollout(samples, advantages=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0])
-    stamp_advantages(rollout)
-    assert rollout.samples[0].advantages == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
-    assert rollout.samples[1].advantages == [7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+    (branch, _), *_ = iter_trainable_branches(rollout)
+    assert rollout.samples[0].advantages == branch.advantages
 
 
 def test_stamp_advantages_no_credit_ships_none():
@@ -195,22 +198,10 @@ def test_stamp_advantages_no_credit_ships_none():
     assert rollout.samples[0].advantages is None
 
 
-def test_stamp_advantages_rejects_misaligned():
-    rollout = _make_rollout([_make_sample()], advantages=[0.5])
-    with pytest.raises(ValueError, match="align"):
-        stamp_advantages(rollout)
-
-
 def test_assign_advantages_scalar_broadcasts_over_mask():
     rollout = _make_rollout([_make_sample()])
     rollout.assign_advantages(1.0)
-    assert rollout.advantages == [0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
-
-
-def test_assign_advantages_list_rejects_misaligned():
-    rollout = _make_rollout([_make_sample()])
-    with pytest.raises(ValueError, match="align"):
-        rollout.assign_advantages([0.5])
+    assert rollout.advantages == [1.0, 1.0, 1.0]  # one per trainable token
 
 
 # --------------------------------------------------------------------------

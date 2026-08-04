@@ -84,46 +84,40 @@ class TrainRollout(Rollout[DataT], Generic[DataT]):
     model_config = ConfigDict(arbitrary_types_allowed=True)  # ``samples`` holds msgspec structs
 
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
-    # Per-token rl advantage stream, full-length-N (= len(token_ids)) per
-    # sample, concatenated across the rollout's samples in order; 0.0 on
-    # non-trainable positions. None = no credit assigned (advantage-based
-    # filters skip it; the wire ships no advantage stream).
-    advantages: list[float] | None = Field(default=None, exclude=True)
     is_filtered: bool = Field(default=False, exclude=True)
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
 
-    def assign_advantages(self, values: float | list[float]) -> None:
-        """Write the rl advantage stream: a scalar broadcast over the
-        rollout's trainable (mask-True) tokens (0.0 elsewhere), or a per-token
-        list already aligned full-length to the samples' concatenated
-        ``token_ids``. A rollout never assigned ships no advantage stream."""
-        total = sum(len(sample.token_ids) for sample in self.samples)
-        if isinstance(values, (int, float)):
-            self.advantages = [
-                float(values) if trainable else 0.0 for sample in self.samples for trainable in sample.mask
-            ]
-            return
-        if len(values) != total:
-            raise ValueError(
-                f"per-token advantages must align with the rollout's tokens: "
-                f"got {len(values)}, expected {total} (env '{self.env_name}')."
-            )
-        self.advantages = [float(v) for v in values]
+    def assign_advantages(self, value: float) -> None:
+        """Write ``value`` as the credit for every trainable token, node by node. Credit lives on
+        the nodes so branches sharing one cannot disagree about it, and so the trainer reads it
+        aligned to the tokens (``Branch.advantages``) rather than re-sliced by offset."""
+        for node in self.nodes:
+            trainable = sum(node.mask)
+            node.advantages = [value] * trainable if trainable else None
+
+    @property
+    def advantages(self) -> list[float] | None:
+        """Every assigned credit on this trace, or ``None`` if it was never scored — which a
+        trace assigned all zeros is not."""
+        if all(node.advantages is None for node in self.nodes):
+            return None
+        return [a for node in self.nodes for a in (node.advantages or [])]
 
     def scalar_advantage(self) -> float | None:
-        """Scalar view of the per-token advantage stream for monitoring: the
-        mean over assigned (non-zero) positions — exact for the uniform GRPO
-        case, 0.0 for a zero-advantage group, None when no credit was assigned."""
-        if not self.advantages:
+        """Scalar view of the credit for monitoring: the mean over assigned (non-zero) positions —
+        exact for the uniform GRPO case, 0.0 for a zero-advantage group, None when unscored."""
+        advantages = self.advantages
+        if not advantages:
             return None
-        nonzero = [a for a in self.advantages if a != 0.0]
+        nonzero = [a for a in advantages if a != 0.0]
         return sum(nonzero) / len(nonzero) if nonzero else 0.0
 
     @property
     def is_trainable(self) -> bool:
         """Whether the rollout carries a training signal — a nonzero advantage on some token. A
         uniform-reward GRPO group (all-zero advantages) or an unscored rollout has no gradient."""
-        return bool(self.advantages) and any(a != 0.0 for a in self.advantages)
+        advantages = self.advantages
+        return bool(advantages) and any(a != 0.0 for a in advantages)
 
 
 class Episode(vf.WireEpisode):

@@ -323,9 +323,11 @@ def test_train_and_eval_episodes_carry_only_their_own_facts():
 
 
 def test_training_state_is_train_only():
-    """Only a train rollout carries trainer-bound state; an eval trace has no field for it."""
-    assert {"samples", "advantages", "is_filtered", "filter_results"} <= set(TrainRollout.model_fields)
-    assert not {"samples", "advantages", "is_filtered", "filter_results"} & set(Rollout.model_fields)
+    """Only a train rollout carries trainer-bound state; an eval trace has no field for it.
+    Credit is not among them — it lives on the graph's nodes, which every trace has."""
+    assert {"samples", "is_filtered", "filter_results"} <= set(TrainRollout.model_fields)
+    assert not {"samples", "is_filtered", "filter_results"} & set(Rollout.model_fields)
+    assert "advantages" not in TrainRollout.model_fields  # derived from the nodes
     assert {"env_name", "group_id", "episode_id"} <= set(Rollout.model_fields)  # links stay shared
 
 

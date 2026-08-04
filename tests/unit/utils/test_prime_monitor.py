@@ -42,9 +42,7 @@ def _build_rollout(*, example_id: int, reward: float, task: str) -> TrainRollout
         rewards={"reward": vf.Reward(score=reward)},
     )
     rollout.env_name = task
-    # Per-token advantage stream (full-length-N): 0.0 on the 3 prompt tokens,
-    # reward/2 on the 2 completion (mask-True) tokens.
-    rollout.advantages = [0.0, 0.0, 0.0, reward / 2, reward / 2]
+    rollout.assign_advantages(reward / 2)  # over the 2 completion (mask-True) tokens
     return rollout
 
 
