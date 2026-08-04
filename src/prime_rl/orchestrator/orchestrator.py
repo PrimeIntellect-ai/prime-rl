@@ -843,8 +843,8 @@ class Orchestrator:
             save_episodes, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
         self.monitor.log_eval_samples(batch.rollouts.episodes, env_name=batch.env_name, step=batch.step)
-        policy_versions = {run_of(e).policy_version for e in batch.rollouts.episodes}
-        policy_version = min(policy_versions)
+        policy_versions = {run.policy.start for e in batch.rollouts.episodes if (run := run_of(e)).policy}
+        policy_version = min(policy_versions, default=0)
         if len(policy_versions) > 1:
             get_logger().warning(
                 f"Eval {batch.env_name} step {batch.step} had mixed policy versions: {sorted(policy_versions)}"
