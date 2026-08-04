@@ -488,10 +488,11 @@ def train(config: SFTConfig):
                 )
             if grad_norm.device.type == "cpu":
                 grad_norm = grad_norm.to(torch.device("cuda"))
-        if config.model.grad_cpu_offload:
-            zero_grad_ratio = optimizer.zero_gradient_ratio()
-        else:
-            zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
+        zero_grad_ratio = (
+            None
+            if config.model.grad_cpu_offload
+            else get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
+        )
 
         logger.debug("Optimizer step")
         optimizer.step()
@@ -599,9 +600,10 @@ def train(config: SFTConfig):
         # Log optimizer metrics
         optim_metrics = {
             "optim/lr": current_lr,
-            "optim/zero_grad_ratio": zero_grad_ratio,
             "step": progress.step,
         }
+        if zero_grad_ratio is not None:
+            optim_metrics["optim/zero_grad_ratio"] = zero_grad_ratio
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
         monitor.log(optim_metrics, step=progress.step)

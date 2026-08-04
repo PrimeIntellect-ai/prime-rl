@@ -57,11 +57,6 @@ class CPUGradientOffloader:
         self._seen_units: set[int] = set()
 
         self._gradient_scale = 1.0
-        unique_params = {id(param): param for chunk in chunks for param in chunk}
-        self._local_numel = sum(
-            (param.to_local() if isinstance(param, DTensor) else param).numel() for param in unique_params.values()
-        )
-
         self._logged_cpu_allocation = 0
 
         fsdp_modules = [module for module in model.modules() if isinstance(module, FSDPModule)]
@@ -214,19 +209,6 @@ class CPUGradientOffloader:
         clip_coefficient = torch.clamp(max_norm / (total_norm + 1e-6), max=1.0).item()
         self._gradient_scale *= clip_coefficient
         return total_norm
-
-    @torch.no_grad()
-    def zero_gradient_ratio(self) -> float:
-        self.wait()
-        num_zero = self._local_numel
-        if self._gradient_scale != 0.0:
-            for buffer in self._buffers.values():
-                if buffer.initialized:
-                    num_zero -= torch.count_nonzero(buffer.accumulator).item()
-        counts = torch.tensor([num_zero, self._local_numel], dtype=torch.long, device="cuda")
-        dist.all_reduce(counts, op=dist.ReduceOp.SUM)
-        counts = torch.div(counts, self._dp_replicate, rounding_mode="floor")
-        return (counts[0].float() / counts[1].clamp_min(1).float()).item()
 
     def prefetch_chunk(self, chunk_idx: int, stream: torch.cuda.Stream) -> None:
         with torch.cuda.stream(stream):
@@ -433,11 +415,6 @@ class CPUOffloadOptimizer:
         if self.grad_offloader is None:
             raise RuntimeError("clip_grad_norm_ is only available when gradient CPU offload is enabled")
         return self.grad_offloader.clip_grad_norm_(max_norm)
-
-    def zero_gradient_ratio(self) -> float:
-        if self.grad_offloader is None:
-            raise RuntimeError("zero_gradient_ratio is only available when gradient CPU offload is enabled")
-        return self.grad_offloader.zero_gradient_ratio()
 
     def state_dict(self):
         if self._initialized:
