@@ -49,7 +49,6 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.metrics import episode_failure_metrics
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
@@ -658,9 +657,6 @@ class Orchestrator:
             metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
             for env_name, env_pool in pool.by_env().items():
                 metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
-        # Episodes that produced no trace at all are an episode-level fact — they belong to no
-        # agent, so they are counted here rather than folded into any seat's error rate.
-        metrics |= episode_failure_metrics(batch.rollouts.episodes, prefix="train/agg")
 
         # Progress / timing / env-share / pre-filter accounting (assembled here, not in the metrics
         # objects). ``num_tokens`` is over the full arrival window; the input/output breakdown is over
@@ -877,7 +873,6 @@ class Orchestrator:
         metrics: dict[str, float] = {}
         for subset, pool in (("all", rollouts), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-        metrics |= episode_failure_metrics(rollouts.episodes, prefix=f"eval/{batch.env_name}")
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
         self.monitor.log(metrics, step=batch.step)

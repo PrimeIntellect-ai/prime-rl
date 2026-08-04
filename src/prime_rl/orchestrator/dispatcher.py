@@ -534,6 +534,12 @@ class RolloutDispatcher:
                     )
         # A ``run`` task answers one episode; a legacy ``run_group`` task one per rollout.
         for episode in episodes:
+            if not episode.traces:
+                # No trace to carry the failure, so the episode's own error is all there is.
+                error = episode.last_error
+                detail = f"{error.type}: {error.message}" if error is not None else "no error recorded"
+                get_logger().warning(f"Env returned no traces in group {meta.group_id} ({meta.env_name}) — {detail}")
+                self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
             await self.emit_episode(meta, group, episode)
 
     async def emit_episode(

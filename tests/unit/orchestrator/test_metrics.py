@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts, episode_failure_metrics
+from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
 from prime_rl.orchestrator.types import EvalEpisode, InflightEpisode, Rollout, TrainEpisode, TrainRollout
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
@@ -299,27 +299,6 @@ def test_compute_pass_metrics_matches_closed_form():
     assert set(out) == {"pass@1", "pass@2", "pass@4", "pass^1", "pass^2", "pass^4"}
 
 
-def test_episode_failure_metrics():
-    """An episode that produced no traces is counted whole, by the reason vf left on it. Every
-    cause — a cancel, a task that raised, an env that ran no agent — reads the same way, and none
-    of them is ever attributed to a seat."""
-    cancelled = vf.Error(type="Cancelled", message="Off-policy cancel")
-    episodes = [
-        ep(mk()),
-        ep(mk()),
-        ep(errors=[cancelled]),
-        ep(errors=[cancelled]),
-        ep(errors=[vf.Error(type="TaskFailed", message="boom")]),
-    ]
-    out = episode_failure_metrics(episodes, prefix="train/agg")
-    assert out["train/agg/episode_failure/Cancelled"] == 2.0
-    assert out["train/agg/episode_failure/TaskFailed"] == 1.0
-    assert out["train/agg/episode_failure/rate"] == 0.6  # 3 of 5 episodes
-    assert not any("/agent/" in k for k in out)  # never attributed to a seat
-    assert episode_failure_metrics([ep(mk())], prefix="train/agg") == {"train/agg/episode_failure/rate": 0.0}
-    assert episode_failure_metrics([], prefix="train/agg") == {}  # nothing arrived at all
-
-
 def test_traceless_episode_keeps_its_reason():
     """The failure needs no type of its own: ``failed`` is just "no traces", and the reason is the
     error vf (or the dispatcher) already put on the episode."""
@@ -372,4 +351,4 @@ def test_empty_is_not_the_same_as_failed():
     counted as an episode that produced nothing."""
     errored = ep(mk(has_error=True), errors=[vf.Error(type="EnvError", message="boom")])
     assert not errored.is_empty and not errored.ok  # failed, but something came back
-    assert episode_failure_metrics([errored], prefix="t") == {"t/episode_failure/rate": 0.0}
+    assert errored.rollouts[0].has_error  # the failure rides the trace, where the seat's rate sees it
