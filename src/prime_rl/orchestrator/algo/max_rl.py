@@ -5,9 +5,10 @@ from typing import TYPE_CHECKING
 import torch
 
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.types import group_rollouts
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.orchestrator.types import TrainEpisode
 
 
 class MaxRLAlgorithm(Algorithm):
@@ -23,9 +24,10 @@ class MaxRLAlgorithm(Algorithm):
     <= 0 carries no signal and gets zero advantages (the zero-advantage filter
     drops it, matching the paper's no-success convention)."""
 
-    async def score_group(self, group: list[TrainRollout]) -> None:
-        rewards = torch.tensor([rollout.reward for rollout in group], dtype=torch.float32)
+    async def score_group(self, group: list[TrainEpisode]) -> None:
+        rollouts = group_rollouts(group)
+        rewards = torch.tensor([rollout.reward for rollout in rollouts], dtype=torch.float32)
         mean = rewards.mean()
         advantages = torch.zeros_like(rewards) if mean <= 0 else (rewards - mean) / mean
-        for rollout, advantage in zip(group, advantages.tolist(), strict=True):
+        for rollout, advantage in zip(rollouts, advantages.tolist(), strict=True):
             rollout.assign_advantages(advantage)

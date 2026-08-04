@@ -388,13 +388,6 @@ class EvalMetrics(EpisodeMetrics):
         return out
 
 
-def keep_traces(episode: Episode, keep: Callable[[Rollout], bool]) -> Episode | None:
-    """The episode narrowed to the traces that pass ``keep``, or ``None`` if none do. A subset view
-    stays a list of episodes so the episode-level aggregates keep describing what survived."""
-    traces = [t for t in episode.traces if keep(t)]
-    return episode.model_copy(update={"traces": traces}) if traces else None
-
-
 class TrainRollouts:
     """The train episodes of one window (everything that came back, errored + filtered +
     untrainable included). ``effective`` is the clean trainable subset — the same episodes, each
@@ -419,9 +412,7 @@ class TrainRollouts:
 
     @property
     def effective(self) -> TrainRollouts:
-        kept = (
-            keep_traces(e, lambda r: not r.has_error and not r.is_filtered and r.agent.trainable) for e in self.episodes
-        )
+        kept = (e.narrow(lambda r: not r.has_error and not r.is_filtered and r.agent.trainable) for e in self.episodes)
         return TrainRollouts([e for e in kept if e is not None])
 
     def by_env(self) -> dict[str, TrainRollouts]:
@@ -471,7 +462,7 @@ class EvalRollouts:
 
     @property
     def effective(self) -> EvalRollouts:
-        kept = (keep_traces(e, lambda r: not r.has_error and r.agent.trainable) for e in self.episodes)
+        kept = (e.narrow(lambda r: not r.has_error and r.agent.trainable) for e in self.episodes)
         return EvalRollouts([e for e in kept if e is not None], group_size=self.group_size)
 
     @property

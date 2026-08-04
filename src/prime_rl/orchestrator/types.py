@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, Protocol, Self, cast
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
@@ -150,6 +151,13 @@ class Episode(vf.WireEpisode):
         """The episode's traces, typed as the rollouts prime-rl works with."""
         return cast(list[Rollout], self.traces)
 
+    def narrow(self, keep: Callable[[Rollout], bool]) -> Self | None:
+        """This episode with only the traces that pass ``keep``, or ``None`` if none do. A subset
+        stays a list of episodes rather than a flat trace list, so the episode-level aggregates
+        keep describing what survived. The kept traces are the same objects, not copies."""
+        traces = [t for t in self.traces if keep(t)]
+        return self.model_copy(update={"traces": traces}) if traces else None
+
     def to_record(self) -> dict[str, Any]:
         """JSON record without raw tensors — the episode form of ``Trace.to_record``, and the unit
         ``traces.jsonl`` stores: one episode per line, matching what verifiers writes and what its
@@ -186,6 +194,12 @@ class EvalEpisode(Episode):
     KIND: ClassVar[RolloutKind] = "eval"
 
     step: int = Field(default=0, exclude=True)
+
+
+def group_rollouts(episodes: Iterable[TrainEpisode]) -> list[TrainRollout]:
+    """Every trace of a group, flat — the view an algorithm comparing across the whole cohort
+    wants, where the episode an attempt came from does not matter."""
+    return [r for e in episodes for r in e.rollouts]
 
 
 @dataclass

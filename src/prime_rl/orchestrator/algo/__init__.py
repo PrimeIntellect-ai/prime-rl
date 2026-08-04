@@ -17,10 +17,9 @@ turns the signal half into runtime objects (the sampling half is the env's
   ``finalize_rollout`` / ``finalize_group`` methods the pipeline drives.
   Advantages are per-token everywhere they are stored or shipped — there is no
   scalar advantage in the pipeline. An algorithm assigns credit in its scoring
-  hook via ``TrainRollout.assign_advantages``: a scalar that is *broadcast* over the
-  rollout's completion tokens (uniform credit, the common case), or an explicit
-  full-length-N per-token list aligned to the concatenated sample token_ids
-  (0.0 off-mask).
+  hook via ``TrainRollout.assign_advantages``, which broadcasts one value over
+  the rollout's trainable tokens and writes it onto the graph's nodes, where
+  the tokens themselves live.
 - ``routing`` — wire-field stamping: per-token component weight streams
   (rl / ce / ref_kl) and the per-token advantage stream.
 """

@@ -166,12 +166,12 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 | `opsd` | `OPSDAlgorithm` | `score_rollout`: demo-conditioned prefill under the live policy |
 | `sft` | `SFTDistillAlgorithm` | `score_group`: group-norm credit (feeds filters) |
 
-Each class owns its hooks outright — reading one top to bottom reads the algorithm, and everything on the class is an override point. The two hooks are one scope-and-timing ladder — the wider scope is unlocked by a later barrier, so the two axes coincide. Each is handed the `Rollout` directly — the env's typed trace (`reward`, `nodes`, `num_turns`, ...) with `samples` attached, plus `assign_advantages` to write credit:
+Each class owns its hooks outright — reading one top to bottom reads the algorithm, and everything on the class is an override point. The two hooks are one scope-and-timing ladder — the wider scope is unlocked by a later barrier, so the two axes coincide. Each is handed the env's own data directly — a `Rollout` (the typed trace: `reward`, `nodes`, `num_turns`, ... with `samples` attached) on arrival, the group's `Episode`s at group time — plus `assign_advantages` to write credit:
 
 - `async score_rollout(rollout)` — one rollout, **on arrival** (as it's tokenized, before its group is complete): rollout-local credit (`rollout.assign_advantages(...)`, scalar broadcast or per-token), observation ce weights, **or** model I/O — query a reference pool (e.g. `self.teacher_pool`, connected in `setup()` via `self.connect(...)`, or the live `self.policy_pool` for opsd) and attach per-token results (e.g. teacher logprobs) with bounded concurrency. No siblings. `echo` weights observation tokens here, identifying env-provided observation nodes by their non-sampled status and source step role attribution, applying the optional user filter, and writing the `ce_weights` stream. Model I/O runs *before* the pre-batch filters, so it pays compute on rollouts that may then be filtered out.
-- `score_group(group)` — the cohort, **before filtering** (filters read the streams), synchronous: group-relative credit (GRPO/MaxRL baselines). `group` is a list of `Rollout`.
+- `score_group(group)` — the cohort, **before filtering** (filters read the streams), synchronous: group-relative credit (GRPO/MaxRL baselines). `group` is a list of `TrainEpisode`, so an algorithm can compare within an episode as well as across them (`hierarchical_grpo` does); `group_rollouts(group)` flattens it for the ones that only compare across.
 
-The pipeline drives the hooks through two non-virtual methods it never looks inside: `algorithm.finalize_rollout(rollout)` per arrival (rollout-local scoring + reference I/O) and `algorithm.finalize_group(rollouts)` per group (scoring + wire stamping; after this the records are frozen — groups die at stamping). Sample construction (interleaving) is pure pipeline — observation-token provenance is available through structural attribution (`node.sampled`, `node.is_content`) for any algorithm that trains on env-provided tokens.
+The pipeline drives the hooks through two non-virtual methods it never looks inside: `algorithm.finalize_rollout(rollout)` per arrival (rollout-local scoring + reference I/O) and `algorithm.finalize_group(episodes)` per group (scoring + wire stamping; after this the records are frozen — groups die at stamping). Sample construction (interleaving) is pure pipeline — observation-token provenance is available through structural attribution (`node.sampled`, `node.is_content`) for any algorithm that trains on env-provided tokens.
 
 Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy pool (`self.policy_pool`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint (tokenizer is always the live policy's — self-distillation has no separate model). The pipeline only ever calls the two `finalize_*` methods — writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)). Shared math (efficiency shaping, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
 
@@ -427,19 +427,21 @@ There is no config hook that points at user code — a new credit-assignment sch
 import torch
 
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.types import group_rollouts
 
 
 class MyAlgorithm(Algorithm):
     async def score_group(self, group):
-        rewards = torch.tensor([rollout.reward for rollout in group], dtype=torch.float32)
+        rollouts = group_rollouts(group)
+        rewards = torch.tensor([rollout.reward for rollout in rollouts], dtype=torch.float32)
         advantages = ...  # one value per rollout
-        for rollout, advantage in zip(group, advantages.tolist(), strict=True):
+        for rollout, advantage in zip(rollouts, advantages.tolist(), strict=True):
             rollout.assign_advantages(advantage)
 ```
 
-Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick the hook by *when* your signal is ready: `score_rollout` for per-arrival credit or credit that needs a model call (it's `async`), `score_group` for group-relative credit (GRPO/MaxRL). `assign_advantages` takes a scalar (broadcast over the rollout's trainable tokens — the common case) or a full-length per-token list aligned to the concatenated sample token_ids (process rewards, step-level credit; `0.0` off-mask).
+Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick the hook by *when* your signal is ready: `score_rollout` for per-arrival credit or credit that needs a model call (it's `async`), `score_group` for group-relative credit (GRPO/MaxRL). `assign_advantages` takes a scalar and broadcasts it over the rollout's trainable tokens, writing it onto the graph's nodes so branches sharing a node cannot disagree about its credit.
 
-Each per-token list must match the rollout's completion-token count exactly — validated loudly when the view writes it. Advantage-based filters and metrics derive from the streams (the zero-advantage filter checks for all-zero streams; logged distributions use per-rollout means). Signals that depend on the live policy's weights (like OPD's reverse KL) cannot be precomputed here; those are reference-scoring algorithms, evaluated in the trainer.
+Advantage-based filters and metrics derive from the streams (the zero-advantage filter checks for all-zero streams; logged distributions use per-rollout means). Signals that depend on the live policy's weights (like OPD's reverse KL) cannot be precomputed here; those are reference-scoring algorithms, evaluated in the trainer.
 
 ### Reference Scoring
 

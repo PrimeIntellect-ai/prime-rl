@@ -11,7 +11,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.trajectories import iter_trainable_branches, trace_to_samples
-from prime_rl.orchestrator.types import TrainRollout
+from prime_rl.orchestrator.types import TrainEpisode, TrainRollout
 
 
 def _build_rollout(
@@ -138,6 +138,12 @@ def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[TrainR
     return rollouts
 
 
+def _as_episodes(group: list[TrainRollout]) -> list[TrainEpisode]:
+    """One episode per rollout — the shape a single-agent env produces, and what the
+    algorithms are handed."""
+    return [TrainEpisode.model_construct(id=f"e{i}", traces=[rollout]) for i, rollout in enumerate(group)]
+
+
 def _scalar(rollout: TrainRollout) -> float:
     """The per-rollout advantage scalar an algorithm assigned — broadcast over the rollout's
     trainable tokens, so every assigned position holds it."""
@@ -148,14 +154,14 @@ def _scalar(rollout: TrainRollout) -> float:
 def _grpo(group: list[TrainRollout], length_penalty=None) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
     algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), policy_pool=None)
-    asyncio.run(algo.score_group(group))
+    asyncio.run(algo.score_group(_as_episodes(group)))
     return [_scalar(rollout) for rollout in group]
 
 
 def _max_rl(group: list[TrainRollout]) -> list[float]:
     """Drive ``MaxRLAlgorithm.score_group`` and read back each per-rollout scalar."""
     algo = MaxRLAlgorithm(MaxRLAlgoConfig(), policy_pool=None)
-    asyncio.run(algo.score_group(group))
+    asyncio.run(algo.score_group(_as_episodes(group)))
     return [_scalar(rollout) for rollout in group]
 
 
@@ -217,7 +223,7 @@ def test_linear_context_term_penalizes_more_context():
         _build_rollout(1.0, sampled_lengths=[10], obs_lengths=[]),
         _build_rollout(1.0, sampled_lengths=[10], obs_lengths=[100]),
     ]
-    asyncio.run(GRPOAlgorithm(GRPOAlgoConfig(length_penalty=cfg), policy_pool=None).score_group(group))
+    asyncio.run(GRPOAlgorithm(GRPOAlgoConfig(length_penalty=cfg), policy_pool=None).score_group(_as_episodes(group)))
     advs = [_scalar(rollout) for rollout in group]
     assert advs[0] > advs[1]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)

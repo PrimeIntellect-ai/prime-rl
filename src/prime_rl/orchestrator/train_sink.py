@@ -4,9 +4,9 @@
    dispatcher producing more rollouts), then the env algorithm's
    ``finalize_rollout`` (rollout-local scoring + any reference I/O). Errored
    and untrainable rollouts skip this.
-2. ``process_group`` — filters errored rollouts, hands the trainable
-   survivors to the env algorithm's ``finalize_group`` (advantages +
-   per-sample wire stamping), runs the pre-batch filter pass.
+2. ``process_group`` — filters errored rollouts, hands the episodes narrowed
+   to their trainable survivors to the env algorithm's ``finalize_group``
+   (advantages + per-sample wire stamping), runs the pre-batch filter pass.
 3. ``process_batch`` — applies post-batch filter annotations and assembles
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
@@ -27,7 +27,7 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import TrainBatch, TrainEpisode, TrainRollout
+from prime_rl.orchestrator.types import TrainBatch, TrainEpisode, TrainRollout, group_rollouts
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -189,8 +189,7 @@ class TrainSink:
         for episode in episodes:
             self.pending_rollouts.append(episode)
         task_idx = group[0].task.data.idx if group else -1
-        survivors = [r for r in group if not r.has_error]
-        num_errored = len(group) - len(survivors)
+        num_errored = sum(r.has_error for r in group)
 
         # Group-scoring envs: any failure makes survivors' rewards unsafe
         # (computed relative to the missing ones)
@@ -201,8 +200,10 @@ class TrainSink:
                 f"rollouts={len(group)} (errored={num_errored}) | dropped: group-scored partial"
             )
             return
-        # Untrainable traces carry no samples and must not skew the group baseline.
-        survivors = [r for r in survivors if r.agent.trainable]
+        # Untrainable traces carry no samples and must not skew the group baseline. The cohort
+        # stays episodes so the algorithm can still see which attempts shared one.
+        cohort = [n for e in episodes if (n := e.narrow(lambda r: not r.has_error and r.agent.trainable))]
+        survivors = group_rollouts(cohort)
         if not survivors:
             get_logger().debug(
                 f"Finished group | env={env_name} task_idx={task_idx} | "
@@ -213,7 +214,7 @@ class TrainSink:
         # Advantages + per-sample wire stamping (advantage stream, loss
         # routing) are the algorithm's job (finalize_group); the sink only
         # owns the grouping mechanics.
-        await env.algorithm.finalize_group(survivors)
+        await env.algorithm.finalize_group(cohort)
 
         # The env has a single sampling temperature; fan it out per token
         # (context tokens are masked out, so their temperature is don't-care).

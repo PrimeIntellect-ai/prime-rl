@@ -19,7 +19,7 @@ I/O); a hook that only does advantage math never awaits:
   I/O against another model — an inference pool the algorithm connected in
   ``setup()`` (a frozen teacher) or the live policy (opsd's self-distillation),
   queried with bounded concurrency. No siblings.
-- ``score_group(group)`` — the cohort, on group completion, *before* filtering
+- ``score_group(group)`` — the cohort of episodes, on group completion, *before* filtering
   (filters read the streams): group-relative credit (GRPO/MaxRL baselines).
 
 How rollouts are *produced* is not the algorithm's concern: that is the env's
@@ -44,12 +44,13 @@ from typing import TYPE_CHECKING, ClassVar
 
 from prime_rl.configs.algorithm import ActionLossType, AlgoConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.types import group_rollouts
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from renderers import RendererConfig
 
-    from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.orchestrator.types import TrainEpisode, TrainRollout
     from prime_rl.utils.client import InferencePool
 
 
@@ -91,9 +92,10 @@ class Algorithm:
       (``action_loss_type``);
     - lifecycle — :meth:`setup` connects client pools to the frozen models
       the algorithm declares, resolving each reference via :meth:`connect`;
-    - the two scoring hooks, each ``async`` and given the :class:`TrainRollout`
-      directly — read the trace, write credit via
-      :meth:`TrainRollout.assign_advantages`. They are
+    - the two scoring hooks, each ``async`` and given the env's own data
+      directly — a :class:`TrainRollout` on arrival, the group's
+      :class:`TrainEpisode`\ s at group time — so a hook reads the trace and
+      writes credit via :meth:`TrainRollout.assign_advantages`. They are
       async so either stage may do I/O — e.g. a process-reward model or a
       teacher at arrival, or a judge at group time whose signal a pre-batch
       filter then reads; a hook that only does advantage math simply never
@@ -103,9 +105,9 @@ class Algorithm:
         observation ce weights, or per-token results from a model the algorithm
         connected in :meth:`setup` (e.g. teacher reference logprobs). Default:
         nothing.
-      - :meth:`score_group` — the cohort, *before* filtering (filters read the
-        streams): group-relative credit. Default: nothing — rollouts keep
-        ``advantages=None``, so advantage-based filters skip them.
+      - :meth:`score_group` — the cohort of episodes, *before* filtering
+        (filters read the streams): group-relative credit. Default: nothing —
+        rollouts keep ``advantages=None``, so advantage-based filters skip them.
 
     Model I/O lives in :meth:`score_rollout`: it runs at arrival, *before* the
     pre-batch filters, so it pays compute on rollouts that may then be filtered
@@ -144,9 +146,11 @@ class Algorithm:
         connected in :meth:`setup`, or the live policy (opsd). No siblings, no
         group stats."""
 
-    async def score_group(self, group: list[TrainRollout]) -> None:
+    async def score_group(self, group: list[TrainEpisode]) -> None:
         """Group phase, the finalized cohort, before filtering: write
-        group-relative credit."""
+        group-relative credit. The cohort arrives as episodes, so an algorithm
+        can compare within one episode as well as across them; ``group_rollouts``
+        flattens it for the algorithms that only compare across."""
 
     async def finalize_rollout(self, rollout: TrainRollout) -> None:
         """Arrival phase (non-virtual): rollout-local scoring as each rollout is
@@ -154,12 +158,12 @@ class Algorithm:
         if rollout.samples:
             await self.score_rollout(rollout)
 
-    async def finalize_group(self, rollouts: list[TrainRollout]) -> None:
+    async def finalize_group(self, episodes: list[TrainEpisode]) -> None:
         """Group phase (non-virtual): group-relative scoring, then stamp each
         sample's wire fields (the advantage stream + loss routing). After this
         the records are frozen — groups die at stamping."""
-        await self.score_group(rollouts)
-        for rollout in rollouts:
+        await self.score_group(episodes)
+        for rollout in group_rollouts(episodes):
             stamp_advantages(rollout)
             for sample in rollout.samples:
                 stamp_loss_routing(sample, self.action_loss_type)
