@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Generic, Literal, Protocol, cast
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
 from verifiers.v1.task import DataT
+from verifiers.v1.trace import EXCLUDE_FIELDS
 
 from prime_rl.transport import TrainingSample
 
