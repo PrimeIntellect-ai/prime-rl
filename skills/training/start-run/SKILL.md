@@ -20,6 +20,9 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 - Validation aliases let renamed fields keep working; legacy keys can be remapped in a `model_validator(mode="before")`.
 - Auto-generated `--help` panels from `Field(description=...)` or PEP 224 docstrings.
 - Friendly errors: required-field boxes, validator errors point at the offending flag, unknown flags get a "did you mean" hint.
+- Experimental gradient offload requires both `model.optim_cpu_offload = true` and
+  `model.grad_cpu_offload = true`. Budget pinned CPU RAM for an accumulator plus
+  a same-sized staging set when gradient accumulation is greater than one.
 
 ## `rl` — RL training
 
@@ -54,9 +57,6 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 - Config: `SFTConfig` (`packages/prime-rl-configs/src/prime_rl/configs/sft.py`)
 - Entrypoint: `src/prime_rl/entrypoints/sft.py`
 - SLURM: single- and multi-node
-- Experimental gradient offload requires both `model.optim_cpu_offload = true` and
-  `model.grad_cpu_offload = true`. Budget pinned CPU RAM for an accumulator plus
-  a same-sized staging set when gradient accumulation is greater than one.
 
 ## `inference` — vLLM server
 

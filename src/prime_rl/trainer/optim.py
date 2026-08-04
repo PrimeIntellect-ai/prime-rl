@@ -174,13 +174,14 @@ class CPUGradientOffloader:
             self.wait()
         self._lagged_unit = None
         self._seen_units.clear()
-        allocated = sum(
-            buffer.accumulator.nbytes + (buffer.staging.nbytes if buffer.staging is not None else 0)
-            for buffer in self._buffers.values()
-        )
-        if allocated != self._logged_cpu_allocation:
-            get_logger().info(f"Gradient CPU offload allocated {allocated / 1024**3:.2f} GiB pinned RAM")
-            self._logged_cpu_allocation = allocated
+        if wait_for_copies:
+            allocated = sum(
+                buffer.accumulator.nbytes + (buffer.staging.nbytes if buffer.staging is not None else 0)
+                for buffer in self._buffers.values()
+            )
+            if allocated != self._logged_cpu_allocation:
+                get_logger().info(f"Gradient CPU offload allocated {allocated / 1024**3:.2f} GiB pinned RAM")
+                self._logged_cpu_allocation = allocated
 
     def wait(self) -> None:
         with self._condition:
@@ -233,9 +234,6 @@ class CPUGradientOffloader:
         for buffer in self._buffers.values():
             buffer.initialized = False
         self._gradient_scale = 1.0
-        for chunk in self._chunks:
-            for param in chunk:
-                param.grad = None
 
 
 class CPUOffloadOptimizer:
