@@ -93,7 +93,7 @@ monkey_patch_chat_completion_logprobs()
 
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
-# shutdown wedges (env ZMQ recv, vLLM admin aclose, etc)
+# shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
 # Abort after this many consecutive train batches drop all rollouts to

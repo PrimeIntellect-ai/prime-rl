@@ -7,8 +7,8 @@ from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import BaseConfig
 
 
-class EnvConfig(BaseConfig):
-    """``uv run env``: what to serve (``[env]``, or ``[legacy]`` for a classic v0
+class EnvServerConfig(BaseConfig):
+    """``uv run env-server``: what to serve (``[env]``, or ``[legacy]`` for a classic v0
     env) and how it's hosted (``[serve]``). The ``rl`` launcher writes one of these per
     train/eval source, with ``serve.address`` set to the source's derived address."""
 
@@ -41,3 +41,26 @@ class EnvConfig(BaseConfig):
     def env_id(self) -> str:
         """The served env's identifier: the v1 env's, else the v0 env id."""
         return self.env.env_id or self.legacy.id or ""
+
+    @model_validator(mode="after")
+    def validate_env(self):
+        # A v0 id next to any v1 env identity leaves one of the two going nowhere, and
+        # which one depends on `is_legacy`: a taskset makes it False, so the v0 env never
+        # loads; a bare `env.id` leaves it True, so the v0 env runs under the v1 name.
+        if self.legacy.id is not None and self.env.env_id:
+            if self.env.taskset.id:
+                raise ValueError(
+                    f"legacy.id {self.legacy.id!r} is a classic (v0) env and can't combine with "
+                    f"the v1 taskset {self.env.taskset.id!r}. Pairing a reusable env with a taskset "
+                    f"is env.id = {self.legacy.id!r}; to run the v0 env instead, drop the taskset."
+                )
+            raise ValueError(
+                f"legacy.id {self.legacy.id!r} is a classic (v0) env and can't combine with the "
+                f"v1 env.id {self.env.id!r}: the v0 env is what would run, stamped with the v1 "
+                "env's name. Keep whichever one you meant to run."
+            )
+        if not self.env_id:
+            raise ValueError(
+                'no env configured — set env = { taskset = { id = "<id>" } } (v1) or legacy = { id = "<id>" } (v0)'
+            )
+        return self

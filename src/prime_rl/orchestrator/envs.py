@@ -29,7 +29,7 @@ from typing import Generic, TypeVar
 import verifiers.v1 as vf
 from verifiers.v1.serve import EnvClient
 
-from prime_rl.configs.orchestrator import EvalSourceConfig, SourceConfig, TrainSourceConfig
+from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.sampler import Sampler
 from prime_rl.orchestrator.types import Rollout
@@ -43,14 +43,14 @@ ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 # Max wait for the env server to answer health. Generous because the launcher spawns
 # servers concurrently with the orchestrator, and a legacy server loads its dataset
 # before serving.
-ENV_STARTUP_TIMEOUT = 600.0
+ENV_SERVER_STARTUP_TIMEOUT = 600.0
 
 
 class Env:
     """Client onto a v1 env server. The orchestrator owns the taskset (loaded once,
     client-side); the server owns agent/harness execution."""
 
-    def __init__(self, config: SourceConfig, address: str):
+    def __init__(self, config: EnvConfig, address: str):
         self.config = config
         self.address = address
         self.sampling_args: dict = {}
@@ -81,7 +81,7 @@ class Env:
         self._env_client = EnvClient(address=self.address)
         # The server may still be coming up (the launcher spawns it concurrently with
         # the orchestrator), so poll until it answers.
-        await self.env_client.wait_for_server_startup(timeout=ENV_STARTUP_TIMEOUT)
+        await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
         if self.config.is_legacy:
             info = await self.env_client.info()
             self.num_tasks = info.num_tasks
@@ -199,7 +199,7 @@ class Envs(Generic[EnvT]):
         return list(self._envs.keys())
 
     @property
-    def configs(self) -> list[SourceConfig]:
+    def configs(self) -> list[EnvConfig]:
         return [env.config for env in self._envs.values()]
 
     def get(self, name: str) -> EnvT:

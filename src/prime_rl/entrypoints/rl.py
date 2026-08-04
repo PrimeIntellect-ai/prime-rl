@@ -15,7 +15,7 @@ import tomli_w
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
-from prime_rl.configs.orchestrator import SourceConfig
+from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.inference import vllm_overrides_fragment
 from prime_rl.utils.config import cli, to_toml_dict
@@ -48,9 +48,9 @@ INFERENCE_TOML = "inference.toml"
 ENVS_DIR = "envs"
 
 
-def envs(config: RLConfig) -> list[tuple[str, SourceConfig, str]]:
+def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig, str]]:
     """``(split, source, address)`` for every train/eval source. The launcher runs one
-    env per source at its deterministic address; the orchestrator connects there."""
+    env server per source at its deterministic address; the orchestrator connects there."""
     addresses = config.orchestrator.env_addresses
     return [
         (split, source, addresses[(split, source.resolved_name)]) for split, source in config.orchestrator.env_sources
@@ -93,21 +93,21 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         with open(output_dir / INFERENCE_TOML, "wb") as f:
             tomli_w.dump(inference_dict, f)
 
-    # One EnvConfig TOML per source: `env @ <path>` binds at the source's
+    # One EnvServerConfig TOML per source: `env-server @ <path>` binds at the source's
     # deterministic address, where the orchestrator connects. The source's env/serve/legacy
     # blocks carry over; its other knobs (sampling, algo, name, ...) are orchestrator-side.
-    for split, source, address in envs(config):
+    for split, source, address in env_servers(config):
         env_dir = output_dir / ENVS_DIR / split
         env_dir.mkdir(parents=True, exist_ok=True)
         source_dict = to_toml_dict(source)
-        env_dict = {
+        env_server_dict = {
             "env": source_dict["env"],
             "serve": {**source_dict.get("serve", {}), "address": address},
             "legacy": source_dict.get("legacy", {}),
             "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
         }
         with open(env_dir / f"{source.resolved_name}.toml", "wb") as f:
-            tomli_w.dump(env_dict, f)
+            tomli_w.dump(env_server_dict, f)
 
 
 def rl_local(config: RLConfig):
@@ -246,19 +246,19 @@ def rl_local(config: RLConfig):
                 "otherwise rollouts will hang."
             )
 
-        # Start one env per source. The orchestrator connects to each source's
+        # Start one env server per source. The orchestrator connects to each source's
         # deterministic address, polling until the server is up, so the servers and the
         # orchestrator start in parallel.
-        for split, source, address in envs(config):
+        for split, source, address in env_servers(config):
             name = source.resolved_name
-            env_cmd = ["env", "@", (config_dir / ENVS_DIR / split / f"{name}.toml").as_posix()]
-            logger.info(f"Starting {split} env {name} at {address}")
-            logger.debug(f"Env start command: {' '.join(env_cmd)}")
-            env_log = log_dir / ENVS_DIR / split / f"{name}.log"
-            env_log.parent.mkdir(parents=True, exist_ok=True)
-            with open(env_log, "w") as log_file:
-                env_process = Popen(
-                    env_cmd,
+            env_server_cmd = ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.toml").as_posix()]
+            logger.info(f"Starting {split} env server {name} at {address}")
+            logger.debug(f"Env server start command: {' '.join(env_server_cmd)}")
+            env_server_log = log_dir / ENVS_DIR / split / f"{name}.log"
+            env_server_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(env_server_log, "w") as log_file:
+                env_server_process = Popen(
+                    env_server_cmd,
                     env={
                         **os.environ,
                         **DEFAULT_COMMON_ENV_VARS,
@@ -268,14 +268,14 @@ def rl_local(config: RLConfig):
                     stdout=log_file,
                     stderr=log_file,
                 )
-            processes.append(env_process)
+            processes.append(env_server_process)
 
             # Start monitoring thread
             stop_event = Event()
             stop_events[f"env/{split}/{name}"] = stop_event
             monitor_thread = Thread(
                 target=monitor_process,
-                args=(env_process, stop_event, error_queue, f"{split} env {name}"),
+                args=(env_server_process, stop_event, error_queue, f"{split} env server {name}"),
                 daemon=True,
             )
             monitor_thread.start()
