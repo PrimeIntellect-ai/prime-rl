@@ -388,7 +388,7 @@ def _patch_adapter(monkeypatch, calls: list, materialize=None):
 
     class _Adapter:
         def materialize_for_vllm(self, image_processor, item, image, expected_placeholder_length):
-            calls.append(item.raw_ref)
+            calls.append(item.raw_image_uri)
             if materialize is not None:
                 return materialize(item)
             return {"materialized": item.raw_image_uri}

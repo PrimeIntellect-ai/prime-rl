@@ -9,12 +9,9 @@ from renderers.mm_store import RAW_MM_ITEM_KIND
 
 @dataclass(frozen=True)
 class RawMMItem:
-    modality: str
     family: str
     raw_image_uri: str
     payload: dict[str, Any]
-    raw_ref: str | None = None
-    vllm_modality: str | None = None
 
 
 def _descriptor_mapping(value: Any) -> Mapping[str, Any]:
@@ -28,13 +25,6 @@ def _required_str(value: Mapping[str, Any], field: str) -> str:
     if isinstance(item, str) and item:
         return item
     raise ValueError(f"raw multimodal descriptor is missing {field}")
-
-
-def _optional_str(value: Mapping[str, Any], field: str) -> str | None:
-    item = value.get(field)
-    if item is None or isinstance(item, str):
-        return item
-    raise ValueError(f"raw multimodal descriptor {field} must be a string when present")
 
 
 def _payload(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -53,10 +43,7 @@ def parse_raw_mm_item(value: Any) -> RawMMItem:
     descriptor = _descriptor_mapping(value)
     _validate_envelope(descriptor)
     return RawMMItem(
-        modality=_required_str(descriptor, "modality"),
         family=_required_str(descriptor, "family"),
         raw_image_uri=_required_str(descriptor, "raw_image_uri"),
         payload=_payload(descriptor),
-        raw_ref=_optional_str(descriptor, "raw_ref"),
-        vllm_modality=_optional_str(descriptor, "vllm_modality"),
     )

@@ -415,7 +415,6 @@ def _image_ref(uri: str, offset: int, length: int) -> MMImageRef:
     return MMImageRef(
         item={
             "kind": "prime_raw_mm_item",
-            "modality": "image",
             "family": "qwen_vl",
             "raw_image_uri": uri,
             "payload": {"image_grid_thw": [[1, 1, 1]]},

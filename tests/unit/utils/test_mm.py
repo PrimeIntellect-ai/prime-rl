@@ -26,7 +26,6 @@ class _MissingMaterializer:
 def _qwen_item(grid, uri: str = "file:///tmp/missing-image.png"):
     return {
         "kind": RAW_MM_ITEM_KIND,
-        "modality": "image",
         "family": "qwen_vl",
         "raw_image_uri": uri,
         "payload": {"image_grid_thw": grid},
