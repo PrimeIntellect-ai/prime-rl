@@ -237,9 +237,7 @@ explicit = true
 select = ["F", "I"]
 
 # jaxtyping writes shapes as string annotations (`Int[Tensor, "batch seq"]`), which ruff reads as
-# forward references and reports as syntax errors / undefined names. Scoped to the modules that
-# actually use them, so F821 keeps catching real undefined names everywhere else.
-# https://docs.kidger.site/jaxtyping/faq/
+# forward references and reports as syntax errors / undefined names.
 [tool.ruff.lint.per-file-ignores]
 "src/prime_rl/trainer/model.py" = ["F722", "F821"]
 "src/prime_rl/trainer/rl/data.py" = ["F722", "F821"]
