@@ -16,19 +16,27 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-import verifiers.v1 as vf
-
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalRollouts
-from prime_rl.orchestrator.types import Episode, EvalBatch, Rollout, env_name_of, group_id_of, rollouts_of
+from prime_rl.orchestrator.types import (
+    Episode,
+    EvalBatch,
+    Rollout,
+    env_name_of,
+    group_id_of,
+    rollouts_of,
+    run_of,
+)
 from prime_rl.utils.logger import get_logger
 
 
 def eval_step_of(episode: Episode) -> int:
     """The eval epoch an episode belongs to, off the run the dispatcher recorded when it landed.
-    Only the eval path has one, which is why this lives here and not on ``Episode``."""
-    assert isinstance(episode.run, vf.EvalRunInfo) and episode.run.step is not None
-    return episode.run.step
+    An online eval belongs to the training run, so its step is known from the start — unlike an
+    episode to train on, whose step is the window it lands in."""
+    run = run_of(episode)
+    assert run.kind == "eval" and run.step is not None, "not an eval episode"
+    return run.step
 
 
 class EvalSink:

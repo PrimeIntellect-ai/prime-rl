@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 import verifiers.v1 as vf
 
+from prime_rl.orchestrator.eval_sink import eval_step_of
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
 from prime_rl.orchestrator.types import (
     Episode,
@@ -360,6 +361,25 @@ def test_inflight_episode_stamps_what_lands():
     assert run_of(evaluation).off_policy_steps == 0  # only what trains can go stale
     with pytest.raises(AssertionError):  # an eval episode without its step is not representable
         replace(inflight, kind="eval").stamp(wire, run_id="r", policy_version=7, eval_step=None)
+
+
+def test_eval_sink_reads_the_epoch_a_stamped_episode_landed_in():
+    """The eval sink places an episode by the step on its run. Regression: online eval moved onto
+    the training run (kind="eval"), and nothing unit-tested the sink, so the sink kept asserting on
+    the old record and only a live run caught it."""
+    inflight = InflightEpisode(
+        kind="eval", env_name="rt", group_id=uuid4(), policy_version=3, episodes_owed=1, eval_step=12
+    )
+    landed = inflight.stamp(
+        vf.WireEpisode.model_construct(id="e", traces=[]), run_id="r", policy_version=3, eval_step=12
+    )
+    assert eval_step_of(landed) == 12
+
+    trained_on = replace(inflight, kind="train").stamp(
+        vf.WireEpisode.model_construct(id="e2", traces=[]), run_id="r", policy_version=3, eval_step=None
+    )
+    with pytest.raises(AssertionError):  # an episode to train on is not placed by an eval epoch
+        eval_step_of(trained_on)
 
 
 def test_empty_is_not_the_same_as_failed():
