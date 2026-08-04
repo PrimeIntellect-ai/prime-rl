@@ -405,7 +405,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             is_disaggregated=True,
             config_dir=config_dir,
             output_dir=config.output_dir,
-            orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
             nodes_per_infer_replica=infer_deploy.num_nodes,
@@ -444,7 +443,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             is_disaggregated=False,
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             output_dir=config.output_dir,
-            orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes,
             nodes_per_infer_replica=config.deployment.infer_nodes_per_replica,

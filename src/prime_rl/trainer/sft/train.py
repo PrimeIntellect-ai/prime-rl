@@ -15,11 +15,11 @@ from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import setup_ckpt_managers
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
-from prime_rl.trainer.runs import Progress, get_multi_run_manager, setup_multi_run_manager
+from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
@@ -92,9 +92,6 @@ def train(config: SFTConfig):
     # (e.g. matmul_precision = "highest") on ROCm.
     torch.set_float32_matmul_precision(config.matmul_precision)
 
-    if config.model.lora is not None:
-        setup_multi_run_manager(config.output_dir, 1, torch.device("cuda", world.local_rank), config.model.lora)
-
     # Resolve ep="auto" to a concrete integer before creating parallel dims
     resolve_ep(config.model)
 
@@ -157,9 +154,7 @@ def train(config: SFTConfig):
             setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     if config.model.lora is not None:
-        multi_run_manager = get_multi_run_manager()
-        multi_run_manager.reset_run_parameters(0)
-        multi_run_manager.scaling_factors[0] = config.model.lora.alpha / config.model.lora.rank
+        get_lora_state().reset_adapter_parameters()
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)

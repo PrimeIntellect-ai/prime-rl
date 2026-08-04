@@ -13,10 +13,9 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import setup_ckpt_managers
-from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
-from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
-from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
+from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
@@ -46,7 +45,6 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
-    build_bin_cost,
     GarbageCollection,
     MemoryProfiler,
     Tensors,
@@ -58,10 +56,10 @@ from prime_rl.trainer.utils import (
     print_benchmark,
 )
 from prime_rl.trainer.world import get_world
-from prime_rl.trainer.runs import setup_multi_run_manager, Progress, get_multi_run_manager
+from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
+from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
@@ -118,33 +116,22 @@ def train(config: TrainerConfig):
     # (e.g. matmul_precision = "highest") on ROCm.
     torch.set_float32_matmul_precision(config.matmul_precision)
 
-    # Setup multi run manager and offsets (including LoRA validation/scaling hooks if applicable)
-    multi_run_manager = setup_multi_run_manager(
-        config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank), config.model.lora
-    )
-
     # Resolve ep="auto" to a concrete integer before creating parallel dims
     resolve_ep(config.model)
 
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
-    # For single-run, check for checkpoint to resume from
+    # Check for checkpoint to resume from
     checkpoint_step = None
-    if config.max_concurrent_runs == 1:
-        # Set up checkpoint manager for single-run
-        logger.info(f"Initializing checkpoint managers ({config.ckpt})")
-        ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(config.output_dir, config.ckpt, config.model.lora)
+    logger.info(f"Initializing checkpoint managers ({config.ckpt})")
+    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(config.output_dir, config.ckpt, config.model.lora)
 
-        if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
-            if config.ckpt.resume_step == -1:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
-            else:
-                checkpoint_step = config.ckpt.resume_step
-    else:
-        # Multi-run uses per-run checkpointing via MultiCheckpointManager
-        ckpt_manager, weight_ckpt_manager = setup_multi_checkpoint_manager(config.output_dir)
-        logger.info("Initialized multi-run checkpoint manager")
+    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
+        if config.ckpt.resume_step == -1:
+            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+        else:
+            checkpoint_step = config.ckpt.resume_step
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
@@ -164,24 +151,13 @@ def train(config: TrainerConfig):
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
 
-    if config.max_concurrent_runs == 1:
-        optimizer = setup_optimizer(
-            config.optim,
-            list(model.named_parameters()),
-            parallel_dims,
-            lora=config.model.lora is not None,
-            cpu_offload=config.model.optim_cpu_offload,
-        )
-        scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
-    else:
-        optimizer = setup_multi_optimizer(config.optim, parallel_dims)
-        scheduler = setup_multi_scheduler(optimizer, config.scheduler, config.max_steps)
-
-        # Register checkpoint loading callback at index 1 (after scheduler creation at index 0)
-        def load_run_checkpoint(_optimizer, idx: int) -> None:
-            ckpt_manager.load_run(idx, optimizer, scheduler)
-
-        optimizer.register_post_creation_callback(load_run_checkpoint, index=1)
+    optimizer = setup_optimizer(
+        config.optim,
+        list(model.named_parameters()),
+        parallel_dims,
+        cpu_offload=config.model.optim_cpu_offload,
+    )
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
 
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
@@ -226,6 +202,11 @@ def train(config: TrainerConfig):
         if config.model.cp_style == "ulysses":
             setup_model_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
+    # Fresh adapter init after FSDP materialization (the pretrained checkpoint
+    # carries no adapter weights); a checkpoint resume below overwrites it.
+    if config.model.lora is not None:
+        get_lora_state().reset_adapter_parameters()
+
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if checkpoint_step is not None:
@@ -247,9 +228,6 @@ def train(config: TrainerConfig):
             config.output_dir,
             progress.step,
             parallel_dims.get_mesh("dp").size(),
-            config.model.seq_len,
-            config.model.cp,
-            build_bin_cost(model.config),
             config.rollout_transport,
         )
 
@@ -282,9 +260,6 @@ def train(config: TrainerConfig):
             and config.weight_broadcast.type in ("nccl", "nixl")
         ):
             logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
-            multi_run_manager.wait_for_run(0)
-            for idx in multi_run_manager.used_idxs:
-                multi_run_manager.ready_to_update[idx] = True
             weight_broadcast.broadcast_weights(model, step=progress.step - 1)
 
         # Wait for the batch to be available
@@ -554,12 +529,7 @@ def train(config: TrainerConfig):
 
         if config.enable_token_export:
             dist.barrier()
-            ready_run_ids = {
-                multi_run_manager.idx_2_id[idx]
-                for idx in multi_run_manager.ready_to_update_idxs
-                if idx in multi_run_manager.idx_2_id
-            }
-            token_exporter.mark_stable(ready_run_ids)
+            token_exporter.mark_stable()
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
@@ -585,10 +555,7 @@ def train(config: TrainerConfig):
         # Update learning rate scheduler
         scheduler.step()
 
-        if config.max_concurrent_runs == 1:
-            current_lr = optimizer.param_groups[0]["lr"]
-        else:
-            current_lr = optimizer.get_current_lr()
+        current_lr = optimizer.param_groups[0]["lr"]
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
@@ -609,22 +576,12 @@ def train(config: TrainerConfig):
                 # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
                 if config.weight_broadcast.type == "filesystem":
                     interval_to_keep = config.ckpt and config.ckpt.interval
-                    weight_broadcast.maybe_clean(interval_to_keep)
+                    weight_broadcast.maybe_clean(progress.step, interval_to_keep)
             else:
                 broadcast_weights_time = 0
-                # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
-                for idx in multi_run_manager.used_idxs:
-                    multi_run_manager.ready_to_update[idx] = False
 
         # Checkpoint the step we just finished (model = policy v{progress.step}).
-        if config.max_concurrent_runs > 1:
-            # Multi-run: save per-run checkpoints every step (interval-gated inside
-            # MultiCheckpointManager); there is no after-loop final save for multi-run.
-            save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(optimizer, scheduler)
-            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
-            ckpt_manager.maybe_clean()
-        elif (
+        if (
             ckpt_manager is not None
             and (config.ckpt and config.ckpt.interval)
             # the last step is written once after the loop (final ckpt), so skip it here
@@ -634,7 +591,6 @@ def train(config: TrainerConfig):
             save_ckpt_time = 0
 
             if not config.ckpt.weights_only:
-                # Single-run: Save full checkpoint
                 logger.info(f"Saving checkpoint at step {progress.step}")
                 save_ckpt_start_time = time.perf_counter()
                 ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
@@ -743,31 +699,6 @@ def train(config: TrainerConfig):
                 mismatch_kl=tensor_stats.get("mismatch_kl/all/mean", 0.0),
                 zero_grad_ratio=zero_grad_ratio,
             )
-            # Update run/LoRA metrics
-            multi_run_manager = get_multi_run_manager()
-            runs_discovered = len(list(config.output_dir.glob("run_*")))
-            run_stats = []
-            for idx in multi_run_manager.used_idxs:
-                run_id = multi_run_manager.idx_2_id[idx]
-                run_progress = multi_run_manager.progress[idx]
-                if config.max_concurrent_runs == 1:
-                    lr = optimizer.param_groups[0]["lr"]
-                else:
-                    lr = optimizer.get_current_lr(idx) if optimizer.optimizers[idx] else 0.0
-                run_stats.append(
-                    RunStats(
-                        run_id=run_id,
-                        step=run_progress.step,
-                        total_tokens=run_progress.total_tokens,
-                        learning_rate=lr,
-                        ready=multi_run_manager.ready_to_update[idx],
-                    )
-                )
-            metrics_server.update_runs(
-                runs_discovered=runs_discovered,
-                runs_max=multi_run_manager.max_runs,
-                run_stats=run_stats,
-            )
 
         # Send heartbeat if configured
         if heart is not None:
@@ -787,14 +718,14 @@ def train(config: TrainerConfig):
 
     token_exporter.close()
 
-    # Write final checkpoint (only for single-run mode; multi-run checkpoints are managed by MultiCheckpointManager)
-    if config.max_concurrent_runs == 1 and ckpt_manager is not None:
+    # Write final checkpoint
+    if ckpt_manager is not None:
         if not (config.ckpt and config.ckpt.weights_only):
             logger.info("Writing final checkpoint")
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.maybe_clean()
 
-    if config.max_concurrent_runs == 1 and weight_ckpt_manager is not None:
+    if weight_ckpt_manager is not None:
         logger.info("Writing final weight checkpoint")
         weight_ckpt_manager.save(progress.step, model, tokenizer)
         weight_ckpt_manager.maybe_clean()

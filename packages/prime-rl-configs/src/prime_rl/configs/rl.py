@@ -599,6 +599,7 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
+        self.orchestrator.pad_to_multiple_of = self.trainer.model.cp
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
             non_data_parallel_size = self.trainer.model.cp
@@ -621,7 +622,9 @@ class RLConfig(BaseConfig):
                     self.inference.api_server_count = dp
 
         elif self.deployment.type == "multi_node":  # multi-node
-            self.orchestrator.num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node
+            self.orchestrator.num_train_workers = (
+                self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
+            )
 
             if self.deployment.nodes_per_fsdp_group is not None:
                 if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:

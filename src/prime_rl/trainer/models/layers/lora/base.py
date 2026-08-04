@@ -1,11 +1,8 @@
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import torch
 from torch import nn
-
-if TYPE_CHECKING:
-    from prime_rl.trainer.runs import MultiRunManager
 
 _LORA_PREFIX = "base_layer."
 
@@ -122,24 +119,6 @@ class MultiLoRAModule(nn.Module):
             - adapted_params: Number of base layer parameters being adapted by LoRA
         """
         ...
-
-    def register_with_runs(self, runs: "MultiRunManager", prefix: str) -> None:
-        """Register this module with the MultiRunManager system.
-
-        This method should be called after FSDP/compile/AC setup as these
-        transformations may change the underlying parameters while preserving
-        the module.
-
-        The MultiRunManager class will use this registration to:
-        - Get named parameters for specific run indices (for optimizer setup)
-        - Reset parameters when new runs are created
-        - Construct sliced state dicts for weight broadcast
-
-        Args:
-            runs: The MultiRunManager instance to register with
-            prefix: The module's name/prefix in the model (e.g., "model.layers.0.self_attn.q_proj")
-        """
-        runs.register_module(prefix, self)
 
     def __getattr__(self, name: str) -> Any:
         """Forward missing attributes to wrapped module."""

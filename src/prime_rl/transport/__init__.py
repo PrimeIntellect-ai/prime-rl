@@ -1,43 +1,20 @@
 from pathlib import Path
 
 from prime_rl.configs.shared import TransportConfig
-from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
+from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender
 from prime_rl.transport.filesystem import (
     FileSystemMicroBatchReceiver,
     FileSystemMicroBatchSender,
-    FileSystemTrainingBatchReceiver,
-    FileSystemTrainingBatchSender,
 )
 from prime_rl.transport.types import (
     MicroBatch,
     RoutedExperts,
-    TrainingBatch,
     TrainingSample,
 )
 from prime_rl.transport.zmq import (
     ZMQMicroBatchReceiver,
     ZMQMicroBatchSender,
-    ZMQTrainingBatchReceiver,
-    ZMQTrainingBatchSender,
 )
-
-
-def setup_training_batch_sender(output_dir: Path, transport: TransportConfig) -> TrainingBatchSender:
-    if transport.type == "filesystem":
-        return FileSystemTrainingBatchSender(output_dir)
-    elif transport.type == "zmq":
-        return ZMQTrainingBatchSender(output_dir, transport)
-    else:
-        raise ValueError(f"Invalid transport type: {transport.type}")
-
-
-def setup_training_batch_receiver(transport: TransportConfig) -> TrainingBatchReceiver:
-    if transport.type == "filesystem":
-        return FileSystemTrainingBatchReceiver()
-    elif transport.type == "zmq":
-        return ZMQTrainingBatchReceiver(transport)
-    else:
-        raise ValueError(f"Invalid transport type: {transport.type}")
 
 
 def setup_micro_batch_sender(
@@ -63,18 +40,15 @@ def setup_micro_batch_receiver(
 
 
 __all__ = [
-    "FileSystemTrainingBatchSender",
-    "FileSystemTrainingBatchReceiver",
     "FileSystemMicroBatchSender",
     "FileSystemMicroBatchReceiver",
+    "ZMQMicroBatchSender",
+    "ZMQMicroBatchReceiver",
     "MicroBatchReceiver",
     "MicroBatchSender",
     "TrainingSample",
-    "TrainingBatch",
     "MicroBatch",
     "RoutedExperts",
-    "setup_training_batch_sender",
-    "setup_training_batch_receiver",
     "setup_micro_batch_sender",
     "setup_micro_batch_receiver",
 ]
