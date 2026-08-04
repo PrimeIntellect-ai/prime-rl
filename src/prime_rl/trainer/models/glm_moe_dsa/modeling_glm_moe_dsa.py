@@ -207,10 +207,20 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
+        # Document boundaries derive from position_ids (sparse MLA builds its
+        # varlen indices from them); seq_lens is accepted to satisfy the
+        # trainer's universal contract (the fused LM head wrapper forwards it).
+        *,
+        seq_lens: Optional[torch.LongTensor] = None,
+        seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`, *optional*):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract). Unused.
+        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries. Unused.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
