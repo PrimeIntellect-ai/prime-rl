@@ -43,10 +43,10 @@ impl = "custom"
 attn = "flash_attention_3"
 cp = 4
 cp_style = "ulysses"
-# torch.compile caused trainer ranks to enter mismatched MoE collectives and time out in NCCL.
-compile = "None"
 fused_lm_head_token_chunk_size = 1024
 optim_cpu_offload = true
+
+[trainer.model.compile]
 
 [trainer.model.ac]
 
