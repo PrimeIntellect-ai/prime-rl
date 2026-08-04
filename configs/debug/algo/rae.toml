@@ -21,13 +21,23 @@ name = "prime-qwen3"
 [orchestrator.train.sampling]
 max_completion_tokens = 512
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "kuhn-poker"
-env.taskset = { id = "kuhn-poker-v1" }
-env.player0.harness = { id = "null" }
-env.player0.runtime = { type = "subprocess" }
-env.player1.harness = { id = "null" }
-env.player1.runtime = { type = "subprocess" }
+
+[orchestrator.train.source.env.taskset]
+id = "kuhn-poker-v1"
+
+[orchestrator.train.source.env.player0.harness]
+id = "null"
+
+[orchestrator.train.source.env.player0.runtime]
+type = "subprocess"
+
+[orchestrator.train.source.env.player1.harness]
+id = "null"
+
+[orchestrator.train.source.env.player1.runtime]
+type = "subprocess"
 
 [orchestrator.eval]
 interval = 1
@@ -36,13 +46,23 @@ num_examples = 16
 [orchestrator.eval.sampling]
 max_completion_tokens = 512
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "kuhn-poker"
-env.taskset = { id = "kuhn-poker-v1" }
-env.player0.harness = { id = "null" }
-env.player0.runtime = { type = "subprocess" }
-env.player1.harness = { id = "null" }
-env.player1.runtime = { type = "subprocess" }
+
+[orchestrator.eval.source.env.taskset]
+id = "kuhn-poker-v1"
+
+[orchestrator.eval.source.env.player0.harness]
+id = "null"
+
+[orchestrator.eval.source.env.player0.runtime]
+type = "subprocess"
+
+[orchestrator.eval.source.env.player1.harness]
+id = "null"
+
+[orchestrator.eval.source.env.player1.runtime]
+type = "subprocess"
 
 [trainer.optim]
 lr = 3e-6

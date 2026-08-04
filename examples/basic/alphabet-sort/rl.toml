@@ -31,10 +31,21 @@ group_size = 16
 [orchestrator.train.sampling]
 max_completion_tokens = 768
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "alphabet-sort"
-env.taskset = { id = "alphabet-sort-v1", min_turns = 3, max_turns = 5, task = { power_per_turn = false } }
-env.agent.harness = { id = "null" }
-env.agent.runtime = { type = "subprocess" }
+
+[orchestrator.train.source.env.taskset]
+id = "alphabet-sort-v1"
+min_turns = 3
+max_turns = 5
+
+[orchestrator.train.source.env.taskset.task]
+power_per_turn = false
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
 
 [inference] # Default inference config

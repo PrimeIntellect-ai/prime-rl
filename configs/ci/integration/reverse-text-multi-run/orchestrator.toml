@@ -14,11 +14,17 @@ lr = 3e-5
 [train.sampling]
 max_completion_tokens = 128
 
-[[train.env]]
+[[train.source]]
 name = "reverse-text"
-env.taskset = { id = "reverse-text-v1" }
-env.agent.harness = { id = "null" }
-env.agent.runtime = { type = "subprocess" }
+
+[train.source.env.taskset]
+id = "reverse-text-v1"
+
+[train.source.env.agent.harness]
+id = "null"
+
+[train.source.env.agent.runtime]
+type = "subprocess"
 
 [ckpt]
 interval = 10

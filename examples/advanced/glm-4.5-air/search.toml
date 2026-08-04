@@ -71,7 +71,7 @@ type = "muon"
 batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
-max_inflight_rollouts = 512
+max_inflight_episodes = 512
 
 [orchestrator.renderer]
 name = "glm-4.5"
@@ -93,15 +93,25 @@ num_turns_weight = 0.0
 # openseeker/redsearcher pre-plug a `reference` judge; declaring `judges` here replaces that
 # entry wholesale (keep `name`/`question_field`/`choices` in sync with the taskset defaults —
 # the plugged BC-style prompt is replaced by the reference judge's stock prompt).
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "openseeker"
-env.agent.harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = [65536, 131072] }
-env.agent.runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-search"] }
 
-[orchestrator.train.env.env.taskset]
+[orchestrator.train.source.env.agent.harness]
+id = "rlm"
+skills = ["search"]
+forward_env = ["SERPER_API_KEY"]
+summarize_at_tokens = [65536, 131072]
+
+[orchestrator.train.source.env.agent.runtime]
+type = "prime"
+vm = true
+idle_timeout = "None"
+labels = ["glm45air-search"]
+
+[orchestrator.train.source.env.taskset]
 id = "openseeker-v1"
 
-[[orchestrator.train.env.env.taskset.task.judges]]
+[[orchestrator.train.source.env.taskset.task.judges]]
 id = "reference"
 name = "correct"
 model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
@@ -109,22 +119,32 @@ question_field = "question"
 choices = ["A", "B"]
 
 # # Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
-# [[orchestrator.train.env.env.taskset.task.judges]]
+# [[orchestrator.train.source.env.taskset.task.judges]]
 # id = "rubric"
 # name = "rlm"
 # path = "deps/research-environments/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "redsearcher"
-env.agent.harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = [65536, 131072] }
-env.agent.runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-search"] }
 
-[orchestrator.train.env.env.taskset]
+[orchestrator.train.source.env.agent.harness]
+id = "rlm"
+skills = ["search"]
+forward_env = ["SERPER_API_KEY"]
+summarize_at_tokens = [65536, 131072]
+
+[orchestrator.train.source.env.agent.runtime]
+type = "prime"
+vm = true
+idle_timeout = "None"
+labels = ["glm45air-search"]
+
+[orchestrator.train.source.env.taskset]
 id = "redsearcher-v1" # optional `difficulty` filter (easy/medium/hard)
 
-[[orchestrator.train.env.env.taskset.task.judges]]
+[[orchestrator.train.source.env.taskset.task.judges]]
 id = "reference"
 name = "correct"
 model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
@@ -132,7 +152,7 @@ question_field = "question"
 choices = ["A", "B"]
 
 # # Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
-# [[orchestrator.train.env.env.taskset.task.judges]]
+# [[orchestrator.train.source.env.taskset.task.judges]]
 # id = "rubric"
 # name = "rlm"
 # path = "deps/research-environments/rubrics/rlm.toml"
@@ -144,19 +164,33 @@ choices = ["A", "B"]
 [orchestrator.eval]
 interval = 20
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "browsecomp"
 num_examples = 500 # full set is 1266; cap eval at 500
-env.agent.harness = { id = "rlm", skills = ["search"], forward_env = ["SERPER_API_KEY"], summarize_at_tokens = 98304 }
-env.agent.runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-search"] }
-env.agent.timeout = { rollout = 3600 }
 
-[orchestrator.eval.env.env.taskset]
+[orchestrator.eval.source.env.agent.harness]
+id = "rlm"
+skills = ["search"]
+forward_env = ["SERPER_API_KEY"]
+summarize_at_tokens = 98304
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "prime"
+vm = true
+idle_timeout = "None"
+labels = ["glm45air-search"]
+
+[orchestrator.eval.source.env.agent.timeout]
+rollout = 3600
+
+[orchestrator.eval.source.env.taskset]
 id = "browsecomp-v1"
-task = { judge = { model = "Qwen/Qwen3-235B-A22B-Instruct-2507" } }
+
+[orchestrator.eval.source.env.taskset.task.judge]
+model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 
 # # Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
-# [[orchestrator.eval.env.env.taskset.task.judges]]
+# [[orchestrator.eval.source.env.taskset.task.judges]]
 # id = "rubric"
 # name = "rlm"
 # path = "deps/research-environments/rubrics/rlm.toml"

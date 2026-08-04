@@ -71,11 +71,18 @@ name = "zai-org/GLM-5-FP8"
 [orchestrator.eval]
 interval = 20
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "swe-bench-verified"
-env.taskset = { id = "swebench-verified-v1" }
-env.agent.harness = { id = "bash" }
-env.agent.runtime = { type = "prime", labels = ["glm5-pd-disag", "swe-bench-verified"] }
+
+[orchestrator.eval.source.env.taskset]
+id = "swebench-verified-v1"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "bash"
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "prime"
+labels = ["glm5-pd-disag", "swe-bench-verified"]
 
 [[orchestrator.post_batch_filters]]
 type = "gibberish"

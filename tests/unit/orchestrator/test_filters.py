@@ -59,6 +59,7 @@ def _make_rollout(
         nodes = [_assistant_node(completion_ids, completion_logprobs)]
     rollout = Rollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="")),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=nodes,
         rewards={"reward": vf.Reward(score=reward)},
     )
@@ -141,6 +142,7 @@ def test_gibberish_aligns_logprobs_under_generation_prompt_scaffold():
 
     rollout = Rollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="")),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=[_scaffold_assistant_node([50, 80, 120_000], [-1.0, -0.5, gibberish_filter.logprob_threshold - 1.0])],
         rewards={"reward": vf.Reward(score=1.0)},
     )

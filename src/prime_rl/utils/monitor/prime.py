@@ -15,7 +15,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from prime_cli.core.config import Config as PrimeConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
-from verifiers.v1.push import trace_to_sample
+from verifiers.v1.utils.platform import trace_to_sample
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import PrimeMonitorConfig
@@ -168,7 +168,7 @@ class PrimeMonitor(Monitor):
                 payload["batch_size"] = run_config.batch_size
             payload["rollouts_per_example"] = run_config.group_size
             payload["seq_len"] = run_config.seq_len
-            payload["environments"] = [{"id": env.id} for env in run_config.train.env]
+            payload["environments"] = [{"id": env.env_id} for env in run_config.train.source]
             payload["run_config"] = run_config.model_dump(exclude_none=True, mode="json")
             if run_config.wandb:
                 payload["wandb_project"] = run_config.wandb.project
@@ -295,7 +295,7 @@ class PrimeMonitor(Monitor):
         """Convert rollouts to Parquet bytes for upload. One row per rollout. The conversation
         is the unit (no prompt/completion split — meaningless mid-branch): `completion` is the
         last branch's messages and `trajectory` is one message list per branch. Shares
-        `verifiers.v1.push.trace_to_sample` with verifiers' eval `--push`, so a training-run
+        `verifiers.v1.utils.platform.trace_to_sample` with verifiers' eval `--push`, so a training-run
         sample and an eval sample land on the platform identically; the RFT-only columns
         (run/step/advantage/problem_id/env_name) are layered on here."""
         now = datetime.now(timezone.utc)

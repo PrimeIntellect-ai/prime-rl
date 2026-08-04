@@ -40,11 +40,17 @@ group_size = 16
 [orchestrator.train.sampling]
 max_completion_tokens = 512
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "wiki-search"
-env.taskset = { id = "wiki-search-v1" }
-env.agent.harness = { id = "null" }
-env.agent.runtime = { type = "subprocess" }
+
+[orchestrator.train.source.env.taskset]
+id = "wiki-search-v1"
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
 
 [ckpt] # Checkpoint at the end of training
 

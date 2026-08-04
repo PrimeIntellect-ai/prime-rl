@@ -133,7 +133,7 @@ uv run eval wiki-search-v1 --harness.id null \
 The V1 taskset fixes the question bank and searchable corpus. You can replace its reference judge in `rl.toml`:
 
 ```toml
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "wiki-search"
 taskset = { id = "wiki-search-v1", task = { judges = [{ id = "reference", model = "openai/gpt-5.4-nano" }] } }
 harness = { id = "null" }
