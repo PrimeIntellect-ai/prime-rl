@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
 
+from prime_rl.orchestrator.types import env_name_of, group_id_of, narrow, rollouts_of
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 if TYPE_CHECKING:
@@ -179,7 +180,7 @@ class TraceMetrics(StatGroup):
 
     def __init__(self, episodes: list[Episode]) -> None:
         self.episodes = episodes
-        super().__init__([t for e in episodes for t in e.rollouts])
+        super().__init__([t for e in episodes for t in rollouts_of(e)])
 
     DISTRIBUTIONS = ("reward", "num_total_tokens", "num_input_tokens", "num_output_tokens", "num_turns", "num_branches")
     RATES = ("is_truncated", "is_completed")
@@ -235,7 +236,7 @@ class TraceMetrics(StatGroup):
         groups)."""
         groups: dict = {}
         for e in self.episodes:
-            groups.setdefault(e.group_id, []).extend(e.rollouts)
+            groups.setdefault(group_id_of(e), []).extend(rollouts_of(e))
         n_groups = len(groups)
         solved_none = sum(1 for g in groups.values() if sum(r.reward for r in g) == 0)
         solved_all = sum(1 for g in groups.values() if all(r.reward == 1.0 for r in g))
@@ -282,7 +283,7 @@ class EpisodeMetrics:
         names each episode's own ``vf.Episode.by_agent`` reports."""
         names = sorted({name for e in self.episodes for name in e.by_agent})
         return {
-            name: TraceMetrics([n for e in self.episodes if (n := e.narrow(lambda r: r.agent.name == name))])
+            name: TraceMetrics([n for e in self.episodes if (n := narrow(e, lambda r: r.agent.name == name))])
             for name in names
         }
 
@@ -360,12 +361,12 @@ class TrainMetrics(EpisodeMetrics):
 
 def pass_at_k(episodes: list[Episode]) -> dict[str, float]:
     """pass@k / pass^k averaged over examples; ``{}`` for non-binary rewards."""
-    rewards = [r.reward for e in episodes for r in e.rollouts]
+    rewards = [r.reward for e in episodes for r in rollouts_of(e)]
     if not set(rewards).issubset({0.0, 1.0}):
         return {}
     by_example: dict = {}
     for e in episodes:
-        by_example.setdefault(e.group_id, []).extend(r.reward for r in e.rollouts)
+        by_example.setdefault(group_id_of(e), []).extend(r.reward for r in rollouts_of(e))
     per_example = [compute_pass_metrics(rs) for rs in by_example.values()]
     keys = sorted({k for d in per_example for k in d})
     return {k: sum(d[k] for d in per_example if k in d) / sum(1 for d in per_example if k in d) for k in keys}
@@ -410,7 +411,7 @@ class TrainRollouts:
 
     @property
     def rollouts(self) -> list[TrainRollout]:
-        return [t for e in self.episodes for t in e.rollouts]
+        return [t for e in self.episodes for t in rollouts_of(e)]
 
     def __len__(self) -> int:
         return sum(len(e.traces) for e in self.episodes)
@@ -420,13 +421,13 @@ class TrainRollouts:
 
     @property
     def effective(self) -> TrainRollouts:
-        kept = (e.narrow(lambda r: not r.has_error and not r.is_filtered and r.agent.trainable) for e in self.episodes)
+        kept = (narrow(e, lambda r: not r.has_error and not r.is_filtered and r.agent.trainable) for e in self.episodes)
         return TrainRollouts([e for e in kept if e is not None])
 
     def by_env(self) -> dict[str, TrainRollouts]:
         grouped: dict[str, list[Episode]] = {}
         for episode in self.episodes:
-            grouped.setdefault(episode.env_name, []).append(episode)
+            grouped.setdefault(env_name_of(episode), []).append(episode)
         return {env: TrainRollouts(episodes) for env, episodes in grouped.items()}
 
     @property
@@ -464,13 +465,13 @@ class EvalRollouts:
             return self._group_size
         counts: dict = {}
         for e in self.episodes:
-            trainable = sum(1 for r in e.rollouts if r.agent.trainable)
-            counts[e.group_id] = counts.get(e.group_id, 0) + trainable
+            trainable = sum(1 for r in rollouts_of(e) if r.agent.trainable)
+            counts[group_id_of(e)] = counts.get(group_id_of(e), 0) + trainable
         return max(counts.values(), default=0)
 
     @property
     def effective(self) -> EvalRollouts:
-        kept = (e.narrow(lambda r: not r.has_error and r.agent.trainable) for e in self.episodes)
+        kept = (narrow(e, lambda r: not r.has_error and r.agent.trainable) for e in self.episodes)
         return EvalRollouts([e for e in kept if e is not None], group_size=self.group_size)
 
     @property

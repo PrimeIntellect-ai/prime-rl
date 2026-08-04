@@ -8,7 +8,14 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
-from prime_rl.orchestrator.types import Episode, InflightEpisode, Rollout, TrainRollout
+from prime_rl.orchestrator.types import (
+    Episode,
+    InflightEpisode,
+    Rollout,
+    TrainRollout,
+    rollouts_of,
+    run_of,
+)
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 _ids = count()
@@ -81,10 +88,15 @@ def mk(
 
 
 def ep(*rollouts, env_name: str = "env", errors=(), group_id="g0", cls=Episode):
-    """One episode over these traces. ``model_construct`` skips validation so the duck-typed
-    stand-ins above can stand in for real ones."""
+    """One episode over these traces, named and grouped the way the dispatcher stamps it.
+    ``model_construct`` skips validation so the duck-typed stand-ins above can stand in for real
+    ones."""
     return cls.model_construct(
-        id=f"e{next(_ids)}", traces=list(rollouts), env_name=env_name, errors=list(errors), group_id=group_id
+        id=f"e{next(_ids)}",
+        traces=list(rollouts),
+        env=vf.EnvInfo(name=env_name),
+        group=vf.GroupInfo(id=group_id),
+        errors=list(errors),
     )
 
 
@@ -307,9 +319,9 @@ def test_traceless_episode_keeps_its_reason():
     """The failure needs no type of its own: ``failed`` is just "no traces", and the reason is the
     error vf (or the dispatcher) already put on the episode."""
     episode = ep(errors=[vf.Error(type="Cancelled", message="Off-policy cancel")])
-    assert episode.is_empty and episode.rollouts == []
+    assert not episode.traces and rollouts_of(episode) == []
     assert episode.last_error is not None and episode.last_error.type == "Cancelled"
-    assert not ep(mk()).is_empty
+    assert ep(mk()).traces
     # A traceless episode still counts as an episode, but contributes no rollouts.
     pool = TrainRollouts([ep(mk()), episode])
     assert len(pool) == 1 and len(pool.episodes) == 2
@@ -335,12 +347,17 @@ def test_inflight_episode_stamps_what_lands():
         kind="train", env_name="rt", group_id=uuid4(), policy_version=3, episodes_owed=1, off_policy_steps=2
     )
     train = inflight.stamp(wire, run_id="r", policy_version=7, eval_step=None)
-    assert train.run is not None and train.run.type == "train"
-    assert train.run.step is None  # the batch window it lands in is not known yet
-    assert (train.env_name, train.policy_version, train.off_policy_steps) == ("rt", 7, 2)  # group's version wins
+    run = run_of(train)
+    assert (run.kind, run.policy_version, run.off_policy_steps) == ("train", 7, 2)  # group's wins
+    assert run.step is None  # the batch window it lands in is not known yet
+    assert train.env.name == "rt" and train.group is not None
 
-    evaluation = replace(inflight, kind="eval").stamp(wire, run_id="r", policy_version=7, eval_step=12)
-    assert evaluation.run is not None and (evaluation.run.type, evaluation.run.step) == ("eval", 12)
+    evaluation = replace(inflight, kind="eval").stamp(
+        vf.WireEpisode.model_construct(id="e", traces=[]), run_id="r", policy_version=7, eval_step=12
+    )
+    # An online eval belongs to the same training run — same record, told apart by kind.
+    assert (run_of(evaluation).kind, run_of(evaluation).step) == ("eval", 12)
+    assert run_of(evaluation).off_policy_steps == 0  # only what trains can go stale
     with pytest.raises(AssertionError):  # an eval episode without its step is not representable
         replace(inflight, kind="eval").stamp(wire, run_id="r", policy_version=7, eval_step=None)
 
@@ -349,5 +366,6 @@ def test_empty_is_not_the_same_as_failed():
     """An episode can error and still have traces — that failure rides the traces and must not be
     counted as an episode that produced nothing."""
     errored = ep(mk(has_error=True), errors=[vf.Error(type="EnvError", message="boom")])
-    assert not errored.is_empty and not errored.ok  # failed, but something came back
-    assert errored.rollouts[0].has_error  # the failure rides the trace, where the seat's rate sees it
+    assert errored.traces and not errored.ok  # failed, but something came back
+    # the failure rides the trace, where the seat's rate sees it
+    assert rollouts_of(errored)[0].has_error

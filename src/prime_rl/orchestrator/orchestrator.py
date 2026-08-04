@@ -61,6 +61,7 @@ from prime_rl.orchestrator.types import (
     Policy,
     Progress,
     TrainBatch,
+    run_of,
 )
 from prime_rl.orchestrator.utils import (
     get_weight_dir,
@@ -528,19 +529,18 @@ class Orchestrator:
             # episode per line, so an episode that produced no traces still records why.
             # An eval episode already knows its step (the eval that triggered it); a train one
             # belongs to the batch window collecting right now, which only this loop knows.
-            run = episode.run
-            assert run is not None, "the dispatcher records the run when the episode lands"
-            if run.type == "train":
+            run = run_of(episode)
+            if run.kind == "train":
                 run.step = self.progress.step
             step = run.step
             assert step is not None
             await asyncio.to_thread(
                 save_episodes,
                 [episode.to_record()],
-                get_trace_path(self.config.output_dir, step, run.type, "all"),
+                get_trace_path(self.config.output_dir, step, run.kind, "all"),
             )
 
-            if run.type == "eval":
+            if run.kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(episode)
                 if eval_batch is not None:
@@ -627,7 +627,8 @@ class Orchestrator:
         # sourced rollouts stay 0 (their sampler doesn't follow the policy).
         for train_episode in batch.rollouts.episodes:
             if self.train_envs.get(train_episode.env_name).sampler.samples_from_live_policy:
-                train_episode.off_policy_steps = (step - 1) - train_episode.policy_version
+                run = run_of(train_episode)
+                run.off_policy_steps = (step - 1) - (run.policy_version or 0)
 
         # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
         # at ship time; the full arrival window already streamed into ``all`` on arrival.
@@ -806,7 +807,7 @@ class Orchestrator:
         n_effective = len(effective)
         n_trainable = sum(1 for r in effective if r.is_trainable)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_off_policy = max((e.off_policy_steps for e in effective.episodes), default=0)
+        max_off_policy = max((run_of(e).off_policy_steps for e in effective.episodes), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
@@ -830,7 +831,7 @@ class Orchestrator:
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Off-Policy {max((e.off_policy_steps for e in env_eff_pool.episodes), default=0)} | "
+                f"Max Off-Policy {max((run_of(e).off_policy_steps for e in env_eff_pool.episodes), default=0)} | "
                 f"Error {pool.metrics.has_error.mean():.1%} | Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
@@ -851,7 +852,7 @@ class Orchestrator:
             save_episodes, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
-        policy_versions = {e.policy_version for e in batch.rollouts.episodes}
+        policy_versions = {run_of(e).policy_version for e in batch.rollouts.episodes}
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:
             get_logger().warning(

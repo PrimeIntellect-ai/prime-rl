@@ -20,7 +20,6 @@ orchestrator.
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections import defaultdict
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -28,7 +27,16 @@ from prime_rl.orchestrator.detectors import Detector, detect, drop_reasons
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Episode, TrainBatch, TrainRollout, group_rollouts
+from prime_rl.orchestrator.types import (
+    Episode,
+    TrainBatch,
+    TrainRollout,
+    env_name_of,
+    group_id_of,
+    group_rollouts,
+    narrow,
+    rollouts_of,
+)
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -82,10 +90,10 @@ class TrainSink:
         # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
         # isn't unique — the same task can be re-sampled while an
         # earlier group is still in flight
-        self.pending_groups: dict[uuid.UUID, list[Episode]] = defaultdict(list)
+        self.pending_groups: dict[str, list[Episode]] = defaultdict(list)
         # Episodes arrived per group — the finalization count (an episode may
         # add several traces to ``pending_groups`` but counts once here).
-        self.pending_group_episodes: dict[uuid.UUID, int] = defaultdict(int)
+        self.pending_group_episodes: dict[str, int] = defaultdict(int)
         self.pending_batch: list[TrainRollout] = []
         # Running payload-token total of ``pending_batch`` (token-batched
         # runs), kept in sync on append/pop so the readiness check never
@@ -133,9 +141,9 @@ class TrainSink:
         pushed (or left) the batch over its threshold. Arrivals into
         still-incomplete groups never ship a batch. A failed episode brings no
         rollouts, but still counts toward the group so finalization triggers."""
-        group_id = episode.group_id
-        env_name = episode.env_name
-        for rollout in episode.rollouts:
+        group_id = group_id_of(episode)
+        env_name = env_name_of(episode)
+        for rollout in rollouts_of(episode):
             await self.process_rollout(rollout)
         self.pending_groups[group_id].append(episode)
         self.pending_group_episodes[group_id] += 1
@@ -174,7 +182,7 @@ class TrainSink:
         # tokenized — before its group is complete.
         await self.train_envs.get(rollout.env_name).algorithm.finalize_rollout(rollout)
 
-    async def process_group(self, group_id: uuid.UUID) -> None:
+    async def process_group(self, group_id: str) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
         when ``requires_group_scoring`` and any failed), assign advantages,
         apply the drop policy, append what survives to ``pending_batch``."""
@@ -185,7 +193,7 @@ class TrainSink:
         # Read the group's facts off an episode, not a trace: every episode in it may have
         # produced none (a whole group cancelled off-policy).
         env_name = episodes[0].env_name
-        group = [t for e in episodes for t in e.rollouts]
+        group = [t for e in episodes for t in rollouts_of(e)]
         # Window membership follows group finalization, not arrival: a rollout
         # only becomes observable (metrics / persistence) once its whole group
         # is finalized, so a batch's window never claims rollouts of a group
@@ -206,7 +214,7 @@ class TrainSink:
             return
         # Untrainable traces carry no samples and must not skew the group baseline. The cohort
         # stays episodes so the algorithm can still see which attempts shared one.
-        cohort = [n for e in episodes if (n := e.narrow(lambda r: not r.has_error and r.agent.trainable))]
+        cohort = [n for e in episodes if (n := narrow(e, lambda r: not r.has_error and r.agent.trainable))]
         survivors = group_rollouts(cohort)
         if not survivors:
             get_logger().debug(

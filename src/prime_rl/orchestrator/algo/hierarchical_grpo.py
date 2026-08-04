@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import HierarchicalGRPOAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.types import rollouts_of
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Episode, TrainRollout
@@ -31,7 +32,7 @@ class HierarchicalGRPOAlgorithm(Algorithm):
     async def score_group(self, group: list[Episode]) -> None:
         peers: dict[tuple[str, str | None], list[TrainRollout]] = defaultdict(list)
         for episode in group:
-            for rollout in episode.rollouts:
+            for rollout in rollouts_of(episode):
                 episode_scoped = rollout.agent.name in self.episode_agents
                 peers[(rollout.agent.name, episode.id if episode_scoped else None)].append(rollout)
         for members in peers.values():
