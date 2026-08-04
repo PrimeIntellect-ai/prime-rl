@@ -316,10 +316,11 @@ srun --kill-on-bad-exit=1 bash -c '
     fi
 
     # Replica geometry: each replica spans NODES_PER_REPLICA consecutive nodes (1 = the
-    # classic replica-per-node shape). For MoE the replica's ranks form one external-LB
+    # classic replica-per-node shape). For MoE the ranks of a replica form one external-LB
     # DP group (EP all2all spans them) rooted on the replica-head DP coordinator, matching
     # the RL and P/D launch paths: ranks on the head reach the coordinator via LOCAL_IP,
-    # ranks on other nodes via the head hostname.
+    # ranks on other nodes via the head hostname. NOTE: this whole block lives inside a
+    # single-quoted `srun bash -c` string — apostrophes in comments break the quoting.
     read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
     REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_REPLICA))
     RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_REPLICA))
