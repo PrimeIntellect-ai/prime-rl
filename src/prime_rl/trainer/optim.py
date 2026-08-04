@@ -1,5 +1,4 @@
 import copy
-import math
 import queue
 import re
 import threading
@@ -34,7 +33,6 @@ class _CPUGradientBuffer:
 class _GradientCopyTask:
     event: torch.cuda.Event
     buffers: list[tuple[_CPUGradientBuffer, bool]]
-    collect_stats: bool
 
 
 class CPUGradientOffloader:
@@ -49,31 +47,28 @@ class CPUGradientOffloader:
         self._dp_replicate = dp_replicate
         self._optimizer_param_ids = {id(param) for chunk in chunks for param in chunk}
         self._buffers: dict[int, _CPUGradientBuffer] = {}
+
         self._d2h_stream = torch.cuda.Stream()
-        self._tasks: queue.Queue[_GradientCopyTask] = queue.Queue()
+        self._tasks: queue.SimpleQueue[_GradientCopyTask] = queue.SimpleQueue()
         self._condition = threading.Condition()
-        self._worker_error: BaseException | None = None
+        self._worker_error: Exception | None = None
+
         self._lagged_unit: tuple[list[nn.Parameter], object | None] | None = None
         self._seen_units: set[int] = set()
-        self._hook_handles = []
-        self._logged_cpu_allocation = 0
-        self._mid_backward_evictions = 0
-        self._collect_stats = False
-        self._stats_valid = False
-        self._local_squared_norm = 0.0
-        self._local_nonzero = 0
-        self._gradient_scale = 1.0
 
+        self._gradient_scale = 1.0
         unique_params = {id(param): param for chunk in chunks for param in chunk}
         self._local_numel = sum(
             (param.to_local() if isinstance(param, DTensor) else param).numel() for param in unique_params.values()
         )
 
+        self._logged_cpu_allocation = 0
+
         fsdp_modules = [module for module in model.modules() if isinstance(module, FSDPModule)]
         if not fsdp_modules:
             raise ValueError("Gradient CPU offload requires an FSDP2 model")
         for module in fsdp_modules:
-            self._hook_handles.append(module.register_full_backward_hook(self._backward_hook))
+            module.register_full_backward_hook(self._backward_hook)
 
         self._worker = threading.Thread(target=self._copy_worker, name="grad-offload", daemon=True)
         self._worker.start()
@@ -91,16 +86,12 @@ class CPUGradientOffloader:
                     if accumulate:
                         assert buffer.staging is not None
                         buffer.accumulator.add_(buffer.staging)
-                    if task.collect_stats:
-                        norm = torch.linalg.vector_norm(buffer.accumulator, dtype=torch.float32)
-                        self._local_squared_norm += norm.square().item()
-                        self._local_nonzero += torch.count_nonzero(buffer.accumulator).item()
                     with self._condition:
                         buffer.initialized = True
                         buffer.pending = False
                         self._condition.notify_all()
-                self._tasks.task_done()
-        except BaseException as error:
+        except Exception as error:
+            # Surface daemon failures to waiters instead of leaving them blocked.
             with self._condition:
                 self._worker_error = error
                 self._condition.notify_all()
@@ -109,21 +100,10 @@ class CPUGradientOffloader:
         if self._worker_error is not None:
             raise RuntimeError("Gradient CPU offload worker failed") from self._worker_error
 
-    def begin_backward(self, *, collect_stats: bool) -> None:
-        self._collect_stats = collect_stats
-        if collect_stats:
-            self._stats_valid = False
-            self._local_squared_norm = 0.0
-            self._local_nonzero = 0
-
-    @staticmethod
-    def _local_grad(grad: DTensor) -> torch.Tensor:
-        return grad.to_local()
-
     def _get_buffer(self, param: nn.Parameter, grad: DTensor) -> _CPUGradientBuffer:
         param_id = id(param)
         if param_id not in self._buffers:
-            local_grad = self._local_grad(grad)
+            local_grad = grad.to_local()
             accumulator = torch.empty_like(local_grad, device="cpu", pin_memory=True)
             template = copy.copy(grad)
             template._local_tensor = accumulator
@@ -140,7 +120,6 @@ class CPUGradientOffloader:
         self,
         params: list[nn.Parameter],
         *,
-        mid_backward: bool,
         post_reduce_event: torch.cuda.Event | None = None,
     ) -> None:
         copies: list[tuple[_CPUGradientBuffer, bool]] = []
@@ -156,7 +135,7 @@ class CPUGradientOffloader:
                     raise TypeError(f"Expected FSDP2 DTensor gradient, got {type(param.grad)}")
                 buffer = self._get_buffer(param, param.grad)
                 self._wait_buffer(buffer)
-                local_grad = self._local_grad(param.grad)
+                local_grad = param.grad.to_local()
                 accumulate = buffer.initialized
                 if accumulate and buffer.staging is None:
                     buffer.staging = torch.empty_like(buffer.accumulator, pin_memory=True)
@@ -169,9 +148,7 @@ class CPUGradientOffloader:
                 param.grad = None
             if copies:
                 event = self._d2h_stream.record_event()
-                self._tasks.put(_GradientCopyTask(event, copies, self._collect_stats))
-                if mid_backward:
-                    self._mid_backward_evictions += len(copies)
+                self._tasks.put(_GradientCopyTask(event, copies))
 
     def _unit(self, module: nn.Module) -> tuple[list[nn.Parameter], object | None]:
         state = module._get_fsdp_state()
@@ -189,21 +166,18 @@ class CPUGradientOffloader:
         if self._lagged_unit is not None:
             params, param_group = self._lagged_unit
             post_reduce_event = getattr(param_group, "_post_reduce_event", None)
-            self._offload_params(params, mid_backward=True, post_reduce_event=post_reduce_event)
+            self._offload_params(params, post_reduce_event=post_reduce_event)
         self._lagged_unit = self._unit(module)
 
     def finish_backward(self, *, wait_for_copies: bool = True) -> None:
         if self._lagged_unit is not None:
             params, param_group = self._lagged_unit
             post_reduce_event = getattr(param_group, "_post_reduce_event", None)
-            self._offload_params(params, mid_backward=False, post_reduce_event=post_reduce_event)
+            self._offload_params(params, post_reduce_event=post_reduce_event)
         remaining = [param for chunk in self._chunks for param in chunk if param.grad is not None]
-        self._offload_params(remaining, mid_backward=False)
+        self._offload_params(remaining)
         if wait_for_copies:
             self.wait()
-            if self._collect_stats:
-                self._stats_valid = True
-        self._collect_stats = False
         self._lagged_unit = None
         self._seen_units.clear()
         allocated = sum(
@@ -211,10 +185,7 @@ class CPUGradientOffloader:
             for buffer in self._buffers.values()
         )
         if allocated != self._logged_cpu_allocation:
-            get_logger().info(
-                f"Gradient CPU offload allocated {allocated / 1024**3:.2f} GiB pinned RAM "
-                f"and evicted {self._mid_backward_evictions} gradients before backward completed"
-            )
+            get_logger().info(f"Gradient CPU offload allocated {allocated / 1024**3:.2f} GiB pinned RAM")
             self._logged_cpu_allocation = allocated
 
     def wait(self) -> None:
@@ -230,27 +201,17 @@ class CPUGradientOffloader:
         self._gradient_scale *= factor
 
     @torch.no_grad()
-    def clip_grad_norm_(self, max_norm: float, norm_type: float = 2.0) -> torch.Tensor:
+    def clip_grad_norm_(self, max_norm: float) -> torch.Tensor:
         self.wait()
-        if norm_type not in (2.0, math.inf):
-            raise ValueError("Gradient CPU offload POC supports only L2 and infinity norms")
-        if norm_type == 2.0 and self._stats_valid:
-            local_norm = torch.tensor(self._local_squared_norm * self._gradient_scale**2, dtype=torch.float32)
-        else:
-            local_norm = torch.zeros((), dtype=torch.float32)
-            for buffer in self._buffers.values():
-                if not buffer.initialized:
-                    continue
-                grad_norm = torch.linalg.vector_norm(buffer.accumulator, ord=norm_type, dtype=torch.float32)
-                grad_norm.mul_(abs(self._gradient_scale))
-                if math.isinf(norm_type):
-                    local_norm.maximum_(grad_norm)
-                else:
-                    local_norm.add_(grad_norm.square())
-        total_norm = local_norm.cuda()
-        dist.all_reduce(total_norm, op=dist.ReduceOp.MAX if math.isinf(norm_type) else dist.ReduceOp.SUM)
-        if not math.isinf(norm_type):
-            total_norm.div_(self._dp_replicate).sqrt_()
+        local_squared_norm = sum(
+            torch.linalg.vector_norm(buffer.accumulator, dtype=torch.float32).square().item()
+            for buffer in self._buffers.values()
+            if buffer.initialized
+        )
+        local_squared_norm *= self._gradient_scale**2
+        total_norm = torch.tensor(local_squared_norm, dtype=torch.float32, device="cuda")
+        dist.all_reduce(total_norm, op=dist.ReduceOp.SUM)
+        total_norm.div_(self._dp_replicate).sqrt_()
         clip_coefficient = torch.clamp(max_norm / (total_norm + 1e-6), max=1.0).item()
         self._gradient_scale *= clip_coefficient
         return total_norm
@@ -258,10 +219,8 @@ class CPUGradientOffloader:
     @torch.no_grad()
     def zero_gradient_ratio(self) -> float:
         self.wait()
-        if self._stats_valid:
-            num_zero = self._local_numel if self._gradient_scale == 0.0 else self._local_numel - self._local_nonzero
-        else:
-            num_zero = self._local_numel
+        num_zero = self._local_numel
+        if self._gradient_scale != 0.0:
             for buffer in self._buffers.values():
                 if buffer.initialized:
                     num_zero -= torch.count_nonzero(buffer.accumulator).item()
@@ -292,7 +251,6 @@ class CPUGradientOffloader:
         self.wait()
         for buffer in self._buffers.values():
             buffer.initialized = False
-        self._stats_valid = False
         self._gradient_scale = 1.0
         for chunk in self._chunks:
             for param in chunk:
@@ -463,10 +421,6 @@ class CPUOffloadOptimizer:
         if self.grad_offloader is not None:
             self.grad_offloader.finish_backward(wait_for_copies=wait_for_copies)
 
-    def begin_backward(self, *, collect_stats: bool) -> None:
-        if self.grad_offloader is not None:
-            self.grad_offloader.begin_backward(collect_stats=collect_stats)
-
     def scale_gradients_(self, factor: float) -> None:
         if self.grad_offloader is None:
             for group in self.optimizer.param_groups:
@@ -485,10 +439,6 @@ class CPUOffloadOptimizer:
         if self.grad_offloader is None:
             raise RuntimeError("zero_gradient_ratio is only available when gradient CPU offload is enabled")
         return self.grad_offloader.zero_gradient_ratio()
-
-    @property
-    def grad_cpu_offload(self) -> bool:
-        return self.grad_offloader is not None
 
     def state_dict(self):
         if self._initialized:

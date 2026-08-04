@@ -483,8 +483,6 @@ def train(config: TrainerConfig):
 
             # Backward pass
             with maybe_record_function("backward"):
-                if config.model.grad_cpu_offload:
-                    optimizer.begin_backward(collect_stats=micro_step == len(micro_batches) - 1)
                 loss.backward()
                 if config.model.grad_cpu_offload:
                     optimizer.finish_backward(wait_for_copies=micro_step == len(micro_batches) - 1)

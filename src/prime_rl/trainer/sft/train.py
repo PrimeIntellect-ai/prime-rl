@@ -427,8 +427,6 @@ def train(config: SFTConfig):
                 scaled_loss = local_loss_sum / grad_accum_steps
 
             with maybe_record_function("backward"):
-                if config.model.grad_cpu_offload:
-                    optimizer.begin_backward(collect_stats=micro_step == grad_accum_steps - 1)
                 scaled_loss.backward()
                 if config.model.grad_cpu_offload:
                     optimizer.finish_backward(wait_for_copies=micro_step == grad_accum_steps - 1)
