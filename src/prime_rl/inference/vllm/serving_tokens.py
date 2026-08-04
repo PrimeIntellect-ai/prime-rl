@@ -235,11 +235,9 @@ def _materialize_raw_image_ref_sync(
     image = _decode_raw_image(raw)
     image_processor = _load_image_processor(processor_model_name, trust_remote_code)
     item = RawMMItem(
-        modality=ref.modality,
         family=ref.family,
         raw_image_data=ref.raw_image_data,
         payload=dict(ref.payload),
-        raw_ref=raw_ref,
     )
     try:
         adapter = get_multimodal_adapter(ref.family)

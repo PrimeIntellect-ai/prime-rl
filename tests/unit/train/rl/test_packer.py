@@ -66,7 +66,6 @@ def _mm_sample(value: float, env_name: str = "test-env") -> TrainingSample:
                 MMImageRef(
                     item={
                         "kind": "prime_raw_mm_item",
-                        "modality": "image",
                         "family": "qwen_vl",
                         "raw_image_data": image_data,
                         "payload": {"image_grid_thw": [[1, 1, 1]]},
