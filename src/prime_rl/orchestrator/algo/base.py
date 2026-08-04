@@ -65,15 +65,15 @@ async def connect_frozen_pool(
     (sft), so the rollout carries tokens. Left as plain chat-completions
     otherwise (opd/opsd read teacher logprobs via prefill, where the train
     client type is moot)."""
-    from prime_rl.utils.client import setup_inference_pool
+    from prime_rl.utils.client import InferencePool
 
-    get_logger().info(f"Initializing frozen model pool (model={config.name}, base_url={', '.join(config.base_url)})")
+    get_logger().info(f"Initializing frozen model pool (model={config.name}, base_url={config.base_url})")
     if renderer_config is not None:
-        pool = await setup_inference_pool(
+        pool = InferencePool(
             config, model_name=config.name, train_client_type="renderer", renderer_config=renderer_config
         )
     else:
-        pool = await setup_inference_pool(config, model_name=config.name)
+        pool = InferencePool(config, model_name=config.name)
     await pool.wait_for_ready(config.name)
     return pool
 

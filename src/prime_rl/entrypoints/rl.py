@@ -130,11 +130,10 @@ def rl_local(config: RLConfig):
     }
 
     # Validate client port matches inference server port
-    if config.inference is not None and not config.orchestrator.model.client.is_elastic:
+    if config.inference is not None:
         from urllib.parse import urlparse
 
-        base_url = config.orchestrator.model.client.base_url[0]
-        parsed = urlparse(base_url)
+        parsed = urlparse(config.orchestrator.model.client.base_url)
         client_port = parsed.port
         expected_port = config.inference.server.port
         if client_port != expected_port:
@@ -200,7 +199,7 @@ def rl_local(config: RLConfig):
                 "No [inference] block configured - the policy inference server will not be started here. "
                 "Every algorithm requires a policy inference pool for evals + weight sync; "
                 "make sure one is running at orchestrator.model.client.base_url "
-                f"({', '.join(config.orchestrator.model.client.base_url)}), otherwise the orchestrator "
+                f"({config.orchestrator.model.client.base_url}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
 
@@ -210,7 +209,7 @@ def rl_local(config: RLConfig):
             assert algo is not None, "TrainSourceConfig.algo must be resolved before launch (inherit_env_algorithms)"
             for ref in (algo.sampling.source, getattr(algo, "teacher", None)):
                 if isinstance(ref, FrozenModelConfig):
-                    frozen_endpoints.append(f"{ref.name} ({', '.join(ref.base_url)})")
+                    frozen_endpoints.append(f"{ref.name} ({ref.base_url})")
         if frozen_endpoints:
             endpoints = ", ".join(dict.fromkeys(frozen_endpoints))
             logger.info(

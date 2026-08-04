@@ -47,7 +47,7 @@ type = "opd"
 
 [orchestrator.algo.teacher]   # opd's teacher: the frozen model it scores against
 name = "Qwen/Qwen3-32B"
-base_url = ["http://localhost:8001/v1"]
+base_url = "http://localhost:8001/v1"
 ```
 
 Model *roles* are algorithm-local vocabulary — each algorithm names its reference on the field where the model is actually used, and there is no shared `teacher` slot. `opd` declares a `teacher` field (the frozen model whose reverse KL the policy distills toward); `sft`'s teacher *is* its `sampling.source` (the frozen model it imitates); `opsd` self-distills against the live policy and names no model at all. No role exists outside the algorithm that declares it: the dispatcher, sink, and trainer branch on liveness alone, never on what an algorithm calls a model.

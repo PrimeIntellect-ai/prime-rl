@@ -222,7 +222,7 @@ class RLConfig(BaseConfig):
     orchestrator: OrchestratorConfig
 
     inference: InferenceConfig | None = None
-    """Inference server configuration. If None, the rl entrypoint will not start an inference server (useful for elastic inference pools or manually started servers)."""
+    """Inference server configuration. If None, the rl entrypoint will not start an inference server (useful for manually started servers)."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for every launched RL component. Component-specific env_vars override these."""

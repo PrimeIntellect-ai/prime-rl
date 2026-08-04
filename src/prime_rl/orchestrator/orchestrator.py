@@ -218,8 +218,7 @@ class Orchestrator:
         # references are external endpoints — each env's Algorithm builds its
         # own pools in ``setup()`` below.
         get_logger().info(
-            f"Initializing policy inference pool (base_url={', '.join(config.model.client.base_url)}, "
-            f"model={config.model.name})"
+            f"Initializing policy inference pool (base_url={config.model.client.base_url}, model={config.model.name})"
         )
         self.renderer, self.policy_inference = await setup_policy_inference_pool(
             config=config, tokenizer=self.tokenizer
