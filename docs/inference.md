@@ -108,6 +108,21 @@ dp = 4
 
 This configuration will run 2 independent vLLM replicas, each with `tp=2` and `dp=4`. Routing is handled by a single global router running on the first inference node, fronting the per-rank endpoints of all replicas — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via the `[inference.router]` block. You can read more about the supported routing options in the [router](#router) section.
 
+For models too large to fit a single node, `nodes_per_replica` groups consecutive nodes into one replica: the replica's ranks form a single external-LB DP group with expert parallelism spanning the group, so expert weights shard across all of the replica's GPUs. Requires `enable_expert_parallel` and the `vllm-router` backend.
+
+```toml
+[inference.deployment]
+type = "multi_node"
+num_nodes = 4
+nodes_per_replica = 2  # 2 replicas, each spanning 2 nodes (dp=2, EP over 16 GPUs at tp=8)
+
+[inference]
+enable_expert_parallel = true
+
+[inference.parallel]
+tp = 8
+```
+
 ### Wide-EP
 
 For huge, 200B+ scale models, you might want to use multi-node expert parallelism to maximize the KV-cache space. This deployment shape is defined by setting `inference.deployment.type = "multi_node"` and `inference.enable_expert_parallel = true`.
