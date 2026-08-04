@@ -70,8 +70,7 @@ class CPUGradientOffloader:
         for module in fsdp_modules:
             module.register_full_backward_hook(self._backward_hook)
 
-        self._worker = threading.Thread(target=self._copy_worker, name="grad-offload", daemon=True)
-        self._worker.start()
+        threading.Thread(target=self._copy_worker, name="grad-offload", daemon=True).start()
         get_logger().info(
             "Gradient CPU offload uses the lag-1 FSDP module backward-hook path; "
             "PyTorch 2.11 set_all_reduce_hook runs before sharded DTensor.grad assignment"
