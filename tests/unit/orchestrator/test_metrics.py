@@ -359,11 +359,12 @@ def test_inflight_episode_stamps_what_lands():
     evaluation = replace(inflight, kind="eval").stamp(
         vf.WireEpisode.model_construct(id="e", traces=[]), run_id="r", policy=span, eval_step=12
     )
-    # An online eval belongs to the same training run — same id, told apart by its metadata, and
-    # measured against the policy in training exactly as an episode trained on is.
+    # An online eval belongs to the same training run — same id, told apart by its metadata. Its
+    # off-policy reading is what drifted under it, not its distance from a step it was dispatched
+    # at: nothing trains on an eval, and a slow one would otherwise look on-policy forever.
     eval_run = run_of(evaluation)
     assert isinstance(eval_run.metadata, vf.EvalMetadata) and eval_run.metadata.step == 12
-    assert eval_run.id == run.id and eval_run.off_policy_steps == 8
+    assert eval_run.id == run.id and eval_run.off_policy_steps == span.drift == 1
     with pytest.raises(AssertionError):  # an eval episode without its step is not representable
         replace(inflight, kind="eval").stamp(wire, run_id="r", policy=span, eval_step=None)
 
