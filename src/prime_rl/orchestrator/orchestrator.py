@@ -536,14 +536,12 @@ class Orchestrator:
             run: vf.RunInfo = (
                 vf.EvalRunInfo(id=self.run_id, step=step) if is_eval else vf.TrainRunInfo(id=self.run_id, step=step)
             )
-            for rollout in episode.rollouts:
-                rollout.record_run(
-                    run,
-                    env_name=rollout.env_name,
-                    group_id=str(rollout.group_id),
-                    episode_id=rollout.episode_id,
-                    policy_version=episode.policy_version,
-                )
+            episode.record_run(
+                run,
+                env_name=episode.env_name,
+                group_id=str(episode.group_id),
+                policy_version=episode.policy_version,
+            )
             await asyncio.to_thread(
                 save_episodes,
                 [episode.to_record()],
