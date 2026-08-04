@@ -364,16 +364,20 @@ class Orchestrator:
                 config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
             )
 
-        # Sync inference to the incoming policy before the first step when resuming or when using
-        # an in-memory transport, which rendezvouses with the trainer's startup broadcast.
-        if self.resume_step is not None or config.weight_broadcast.type in ("nccl", "nixl"):
+        # Sync inference to the incoming policy before the first step, rendezvousing
+        # with the trainer's startup broadcast (v{resume_step} on resume, v0 from
+        # scratch). Bench runs have no trainer, so there is no broadcast to wait for.
+        if not config.bench:
             sync_version = self.resume_step if self.resume_step is not None else 0
             if config.weight_broadcast.type == "nixl":
                 weights_path = None
             else:
                 check_exists = config.weight_broadcast.type == "filesystem"
-                # Without a ckpt block, fall back to a default timeout instead of not waiting at all.
-                wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
+                # The trainer's startup broadcast is always coming, so wait for it
+                # rather than failing immediately when the directory is not there yet.
+                wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
+                    STARTUP_WEIGHT_WAIT_TIMEOUT_S
+                )
                 weights_path = get_weight_dir(
                     config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
                 )

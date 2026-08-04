@@ -339,7 +339,7 @@ class CheckpointConfig(BaseConfig):
     """Step to resume the orchestrator from. None starts from scratch; ``-1`` resumes from the latest checkpoint available."""
 
     wait_for_weights_timeout: int | None = Field(None, ge=1)
-    """When resuming, wait up to this many seconds for the weight directory to appear. Useful when the orchestrator restarts while the trainer is still saving weights. If None, fail immediately when weights are not found."""
+    """Wait up to this many seconds for the startup weight directory to appear (the trainer broadcasts the incoming policy — v0 from scratch, v{resume_step} on resume — before the first step). If None, fall back to a default timeout. Raise this for large models on slow shared filesystems."""
 
     keep_last: int | None = Field(None, ge=1)
     """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""

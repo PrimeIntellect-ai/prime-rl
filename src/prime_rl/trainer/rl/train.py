@@ -252,13 +252,11 @@ def train(config: TrainerConfig):
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
 
-        # In-memory transfers broadcast the incoming policy (v{progress.step-1}) before waiting
-        # for its rollouts so the trainer and inference pool join the same update lifecycle.
-        if (
-            progress.step == start_step
-            and weight_broadcast is not None
-            and config.weight_broadcast.type in ("nccl", "nixl")
-        ):
+        # Broadcast the incoming policy (v{progress.step-1}) before waiting for its
+        # rollouts so the trainer and inference pool join the same update lifecycle,
+        # and so a broken broadcast path fails at startup instead of after the first
+        # optimizer step.
+        if progress.step == start_step and weight_broadcast is not None:
             logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
             weight_broadcast.broadcast_weights(model, step=progress.step - 1)
 
