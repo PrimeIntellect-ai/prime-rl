@@ -564,7 +564,6 @@ class RolloutDispatcher:
 
         for rollout in episode.traces:
             rollout.env_name = meta.env_name
-            rollout.group_id = meta.group_id
         await self.out_q.put(
             meta.stamp(episode, run_id=self.run_id, policy_version=policy_version, eval_step=eval_step)
         )

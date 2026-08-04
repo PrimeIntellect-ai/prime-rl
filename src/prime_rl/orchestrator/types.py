@@ -61,9 +61,9 @@ class GroupState:
 
 class Rollout(vf.Trace[DataT], Generic[DataT]):
     """A completed rollout: the env's typed ``vf.Trace`` *is* the rollout, carrying only the links
-    prime-rl needs to place a loose trace back among its peers — its episode, its comparison group,
-    its env. Everything about the dispatch itself lives on the ``Episode``, which is the thing that
-    was dispatched. All added fields are ``exclude=True``, so dumping a Rollout yields a plain
+    a consumer that works in loose traces — the sample monitors — needs to place one back among its
+    peers. Anything episode-scoped is read off the ``Episode``, which is the atomic unit everything
+    else passes around. All added fields are ``exclude=True``, so dumping a Rollout yields a plain
     trace on the wire; ``vf.Trace.record_run`` mirrors them into ``info`` on arrival so the on-disk
     records stay fully placeable.
 
@@ -71,7 +71,6 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``)."""
 
     env_name: str = Field(default="", exclude=True)
-    group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
     # Links the traces of one episode; stamped into ``info`` on arrival so
     # saved records keep their grouping.
     episode_id: str = Field(default="", exclude=True)

@@ -32,7 +32,6 @@ def mk(
     metrics: dict | None = None,
     rewards: dict | None = None,
     env_name: str = "env",
-    group_id: str = "g0",
     trainable: bool = True,
     is_trainable: bool = True,
     is_filtered: bool = False,
@@ -64,7 +63,6 @@ def mk(
         stop_condition=stop_condition,
         metrics=metrics or {},
         env_name=env_name,
-        group_id=group_id,
         agent=SimpleNamespace(trainable=trainable, name=agent_name),
         is_trainable=is_trainable,
         is_filtered=is_filtered,
@@ -82,19 +80,23 @@ def mk(
     )
 
 
-def ep(*rollouts, env_name: str = "env", errors=(), cls=Episode):
+def ep(*rollouts, env_name: str = "env", errors=(), group_id="g0", cls=Episode):
     """One episode over these traces. ``model_construct`` skips validation so the duck-typed
     stand-ins above can stand in for real ones."""
-    return cls.model_construct(id=f"e{next(_ids)}", traces=list(rollouts), env_name=env_name, errors=list(errors))
+    return cls.model_construct(
+        id=f"e{next(_ids)}", traces=list(rollouts), env_name=env_name, errors=list(errors), group_id=group_id
+    )
 
 
-def solo(rollouts, cls=Episode):
-    """Each rollout as its own single-trace episode — the single-agent shape."""
-    return [ep(r, cls=cls) for r in rollouts]
+def solo(rollouts, group_ids=None, cls=Episode):
+    """Each rollout as its own single-trace episode — the single-agent shape. ``group_ids`` gives
+    the example each answers; by default they all answer the same one."""
+    ids = group_ids or ["g0"] * len(rollouts)
+    return [ep(r, group_id=g, cls=cls) for r, g in zip(rollouts, ids, strict=True)]
 
 
-def train_wandb(rollouts, subset: str = "all") -> dict:
-    return TrainRollouts(solo(rollouts)).metrics.to_wandb(prefix="train/agg", subset=subset)
+def train_wandb(rollouts, subset: str = "all", group_ids=None) -> dict:
+    return TrainRollouts(solo(rollouts, group_ids)).metrics.to_wandb(prefix="train/agg", subset=subset)
 
 
 def test_stat():
@@ -204,7 +206,9 @@ def test_boolean_rates_and_error_breakdown_all_only():
 
 def test_solve_rates():
     groups = {"A": [1.0, 1.0], "B": [0.0, 0.0], "C": [1.0, 0.0], "D": [1.0, 0.0]}  # all / none / some / some
-    out = train_wandb([mk(reward=r, group_id=g) for g, rs in groups.items() for r in rs])
+    out = train_wandb(
+        [mk(reward=r) for _, rs in groups.items() for r in rs], group_ids=[g for g, rs in groups.items() for _ in rs]
+    )
     rates = (
         out["train/agg/all/agent/solved_all"],
         out["train/agg/all/agent/solved_none"],
@@ -279,7 +283,7 @@ def test_train_only_metrics_absent_from_eval():
 
 
 def test_eval_avg_at_k_and_pass_k():
-    binary = EvalRollouts(solo([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")]))
+    binary = EvalRollouts(solo([mk(reward=1.0), mk(reward=0.0)]))
     eff = binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
     assert eff["eval/x/effective/agent/avg@2"] == 0.5  # mean reward under avg@<k> (k from the groups)
     assert "eval/x/effective/avg@2" not in eff  # scores are per-agent, never pooled
@@ -287,7 +291,7 @@ def test_eval_avg_at_k_and_pass_k():
     all_out = binary.metrics.to_wandb(prefix="eval/x", subset="all")
     assert all_out["eval/x/all/agent/avg@2"] == 0.5
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
-    non_binary = EvalRollouts(solo([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")]))
+    non_binary = EvalRollouts(solo([mk(reward=0.5), mk(reward=1.0)]))
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
 
 
@@ -318,7 +322,8 @@ def test_training_state_is_train_only():
     assert {"samples", "is_filtered", "filter_results"} <= set(TrainRollout.model_fields)
     assert not {"samples", "is_filtered", "filter_results"} & set(Rollout.model_fields)
     assert "advantages" not in TrainRollout.model_fields  # derived from the nodes
-    assert {"env_name", "group_id", "episode_id"} <= set(Rollout.model_fields)  # links stay shared
+    assert {"env_name", "episode_id"} <= set(Rollout.model_fields)  # links stay shared
+    assert "group_id" not in Rollout.model_fields  # the example a trace answered is the episode's
 
 
 def test_inflight_episode_stamps_what_lands():

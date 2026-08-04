@@ -660,7 +660,7 @@ class Orchestrator:
         num_input = sum(r.num_input_tokens for r in effective)
         num_output = sum(r.num_output_tokens for r in effective)
         num_rollouts = len(batch.rollouts)
-        num_unique_examples = len({r.group_id for r in batch.rollouts})
+        num_unique_examples = len({e.group_id for e in batch.rollouts.episodes})
         metrics |= {
             "progress/tokens": num_tokens,
             "progress/input_tokens": num_input,

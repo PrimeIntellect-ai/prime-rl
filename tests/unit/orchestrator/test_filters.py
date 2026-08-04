@@ -1,5 +1,4 @@
 import math
-import uuid
 
 import verifiers.v1 as vf
 
@@ -64,7 +63,6 @@ def _make_rollout(
         rewards={"reward": vf.Reward(score=reward)},
     )
     rollout.env_name = "test"
-    rollout.group_id = uuid.uuid4()
     return rollout
 
 
