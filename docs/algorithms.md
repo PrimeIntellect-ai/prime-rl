@@ -1,6 +1,6 @@
 # Algorithms
 
-This page covers the math and the configurable algorithmic components: the algorithm abstraction and its algorithms, how off-policy training works, the loss components and advantage functions, how to plug in your own, the degeneracy measurements and drop policy applied between rollout and training, and how multi-turn rollouts get merged into training samples.
+This page covers the math and the configurable algorithmic components: the algorithm abstraction and its algorithms, how off-policy training works, the loss components and advantage functions, how to plug in your own, the filters applied between rollout and training, and how multi-turn rollouts get merged into training samples.
 
 ## Table of Contents
 
@@ -21,7 +21,7 @@ This page covers the math and the configurable algorithmic components: the algor
   - [Self-Play Advantage (RAE)](#self-play-advantage-rae)
   - [Authoring an Algorithm](#authoring-an-algorithm)
   - [Reference Scoring](#reference-scoring)
-- [Degeneracy and the drop policy](#degeneracy-and-the-drop-policy)
+- [Filters](#filters)
 - [Multi-Turn Trajectories](#multi-turn-trajectories)
   - [Extension Property](#extension-property)
   - [Best-Effort Interleaving](#best-effort-interleaving)
@@ -164,12 +164,12 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 | `hierarchical_grpo` | `HierarchicalGRPOAlgorithm` | `score_group`: GRPO baseline per episode for solvers, per group for the proposer |
 | `opd` | `OPDAlgorithm` | `score_rollout`: own-context prefill under the teacher |
 | `opsd` | `OPSDAlgorithm` | `score_rollout`: demo-conditioned prefill under the live policy |
-| `sft` | `SFTDistillAlgorithm` | `score_group`: group-norm credit (feeds the drop policy) |
+| `sft` | `SFTDistillAlgorithm` | `score_group`: group-norm credit (feeds filters) |
 
 Each class owns its hooks outright — reading one top to bottom reads the algorithm, and everything on the class is an override point. The two hooks are one scope-and-timing ladder — the wider scope is unlocked by a later barrier, so the two axes coincide. Each is handed the env's own data directly — a `Rollout` (the typed trace: `reward`, `nodes`, `num_turns`, ... with `samples` attached) on arrival, the group's `Episode`s at group time — plus `assign_advantages` to write credit:
 
-- `async score_rollout(rollout)` — one rollout, **on arrival** (as it's tokenized, before its group is complete): rollout-local credit (`rollout.assign_advantages(...)`), observation ce weights, **or** model I/O — query a reference pool (e.g. `self.teacher_pool`, connected in `setup()` via `self.connect(...)`, or the live `self.policy_pool` for opsd) and attach per-token results (e.g. teacher logprobs) with bounded concurrency. No siblings. `echo` weights observation tokens here, identifying env-provided observation nodes by their non-sampled status and source step role attribution, applying the optional user filter, and writing the `ce_weights` stream. Model I/O runs *before* the drop policy, so it pays compute on rollouts that may then be dropped.
-- `score_group(group)` — the cohort, **before the drop policy** (which reads the streams), synchronous: group-relative credit (GRPO/MaxRL baselines). `group` is a list of `TrainEpisode`, so an algorithm can compare within an episode as well as across them (`hierarchical_grpo` does); `group_rollouts(group)` flattens it for the ones that only compare across.
+- `async score_rollout(rollout)` — one rollout, **on arrival** (as it's tokenized, before its group is complete): rollout-local credit (`rollout.assign_advantages(...)`), observation ce weights, **or** model I/O — query a reference pool (e.g. `self.teacher_pool`, connected in `setup()` via `self.connect(...)`, or the live `self.policy_pool` for opsd) and attach per-token results (e.g. teacher logprobs) with bounded concurrency. No siblings. `echo` weights observation tokens here, identifying env-provided observation nodes by their non-sampled status and source step role attribution, applying the optional user filter, and writing the `ce_weights` stream. Model I/O runs *before* the pre-batch filters, so it pays compute on rollouts that may then be filtered out.
+- `score_group(group)` — the cohort, **before filtering** (filters read the streams), synchronous: group-relative credit (GRPO/MaxRL baselines). `group` is a list of `TrainEpisode`, so an algorithm can compare within an episode as well as across them (`hierarchical_grpo` does); `group_rollouts(group)` flattens it for the ones that only compare across.
 
 The pipeline drives the hooks through two non-virtual methods it never looks inside: `algorithm.finalize_rollout(rollout)` per arrival (rollout-local scoring + reference I/O) and `algorithm.finalize_group(episodes)` per group (scoring + wire stamping; after this the records are frozen — groups die at stamping). Sample construction (interleaving) is pure pipeline — observation-token provenance is available through structural attribution (`node.sampled`, `node.is_content`) for any algorithm that trains on env-provided tokens.
 
@@ -305,8 +305,8 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 | `rae` | `rl` | Reward minus a per-agent EMA baseline (SPIRAL's role-conditioned advantage estimation) — for multi-agent self-play envs. |
 | `hierarchical_grpo` | `rl` | GRPO for proposer-solver envs: solvers are compared within one proposed problem, while proposers are compared across proposals. |
 | `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-provided tokens selected by message role (each role's `alpha` is its ECHO λ), optionally narrowed by a user filter. |
-| `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`teacher`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No credit — rollouts keep `advantages = None` (so zero-advantage dropping never applies) and ship no advantage stream; `group_size` only fans out sampling. |
-| `opsd` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No credit — rollouts keep `advantages = None` (so zero-advantage dropping never applies) and ship no advantage stream. |
+| `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`teacher`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream; `group_size` only fans out sampling. |
+| `opsd` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No credit — rollouts keep `advantages = None` (advantage-based filters never fire) and ship no advantage stream. |
 | `sft` | `ce` | Cross-entropy on the sampled tokens. Assigns no advantage — trains on every sampled token. |
 
 ### Default Advantage
@@ -441,7 +441,7 @@ class MyAlgorithm(Algorithm):
 
 Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick the hook by *when* your signal is ready: `score_rollout` for per-arrival credit or credit that needs a model call (it's `async`), `score_group` for group-relative credit (GRPO/MaxRL). `assign_advantages` takes a scalar and broadcasts it over the rollout's trainable tokens, writing it onto the graph's nodes so branches sharing a node cannot disagree about its credit.
 
-The drop policy and metrics derive from the streams (zero-advantage dropping checks for an all-zero stream; logged distributions use per-rollout means). Signals that depend on the live policy's weights (like OPD's reverse KL) cannot be precomputed here; those are reference-scoring algorithms, evaluated in the trainer.
+Advantage-based filters and metrics derive from the streams (the zero-advantage filter checks for all-zero streams; logged distributions use per-rollout means). Signals that depend on the live policy's weights (like OPD's reverse KL) cannot be precomputed here; those are reference-scoring algorithms, evaluated in the trainer.
 
 ### Reference Scoring
 
@@ -456,43 +456,30 @@ type = "opsd"
 demo_key = "demonstration"
 ```
 
-Scoring runs at arrival, *before* the drop policy, so a rollout that is later dropped still cost its reference compute — accepted for the simpler one-rollout-at-a-time shape (zero-advantage dropping never applies to opd/opsd anyway, since neither assigns an advantage).
+Scoring runs at arrival, *before* the pre-batch filters, so a rollout that is later filtered still cost its reference compute — accepted for the simpler one-rollout-at-a-time shape (advantage-based filters never fire for opd/opsd anyway, since neither assigns an advantage).
 
-## Degeneracy and the drop policy
+## Filters
 
-Two separate things: **measuring** what a rollout looks like, and **deciding** whether to train on it.
+Filters drop rollouts between scoring and training. Built-ins (composable):
 
-Every trace is measured, unconditionally, as soon as it is tokenized, and each measurement is
-reported per agent alongside reward and truncation. Nothing configures that — a rate is only a rate
-if nothing decided in advance which traces to look at, and every measurement runs on every trace, so
-one never hides another.
-
-| Measurement | What it finds |
+| Filter | Effect |
 |---|---|
-| `gibberish` | a rare token (high BPE id) generated at high entropy — degenerate output |
-| `repetition` | a long stretch of very-high-confidence tokens — a repetition loop |
+| `gibberish` | Drops rollouts whose mean log-prob fall below a threshold — usually a sign of degenerate output. |
+| `repetition` | Drops rollouts with high n-gram repetition. |
+| `zero_advantage` | Drops rollouts whose advantage is zero, so the trainer doesn't waste tokens on them. |
 
-The drop policy decides. It runs once, when a finalized group's credit is assigned and the rollouts
-would enter the batch buffer, and it has two inputs — the measurements the run chose to act on, and
-**zero credit**, which drops on its own:
+The default `[orchestrator]` config registers all three in both filter slots: `post_batch_filters` enforce by default (flagged rollouts are recorded but not shipped to the trainer), while `pre_batch_filters` run in monitor mode (`enforce = false`); flip `enforce = true` there to drop matching rollouts before they consume a slot in the batch. Setting a slot replaces its defaults wholesale:
 
 ```toml
-[orchestrator]
-drop_degenerate = ["gibberish"]   # measuring is unconditional; acting on it is opt-in
-drop_zero_advantage = true        # the default
+[[orchestrator.post_batch_filters]]
+type = "zero_advantage"
+
+[[orchestrator.post_batch_filters]]
+type = "repetition"
+threshold = 0.4
 ```
 
-A scored rollout whose every token is worth nothing — a GRPO group where all rollouts earned the
-same reward — produces no gradient, so training on it is a wasted forward pass. It is not one of the
-measurements because it is not a property of the generation: it is only knowable after the group is
-scored, and it is what `TrainRollout.is_trainable` already means.
-
-A rollout that was **never** scored is not zero-credit. `opd` / `opsd` assign no advantages at all
-and train through reference KL, so they are never dropped by this rule.
-
-Dropped rollouts still appear in the metrics window and the `all` trace file — they just don't ship.
-`{scope}/{subset}/<agent>/detected/<name>/mean` is each measurement's rate, and
-`{scope}/{subset}/<agent>/is_filtered/mean` is the share the policy dropped.
+Filtered rollouts still appear in W&B distributions, just not in the trainer batch — useful for spotting whether filtering is doing its job.
 
 ## Multi-Turn Trajectories
 

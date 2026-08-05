@@ -107,11 +107,11 @@ class Algorithm:
         nothing.
       - :meth:`score_group` — the cohort of episodes, *before* filtering
         (filters read the streams): group-relative credit. Default: nothing —
-        rollouts keep ``advantages=None``, which the drop policy reads as unscored,
-        not as zero credit.
+        rollouts keep ``advantages=None``, so advantage-based filters skip them.
 
     Model I/O lives in :meth:`score_rollout`: it runs at arrival, *before* the
-    drop policy, so it pays compute on rollouts that may then be dropped — accepted for the simpler one-rollout-at-a-time shape.
+    pre-batch filters, so it pays compute on rollouts that may then be filtered
+    out — accepted for the simpler one-rollout-at-a-time shape.
 
     Constructed with the algorithm config it interprets plus the live policy
     pool (``self.policy_pool`` — always available, never closed by the

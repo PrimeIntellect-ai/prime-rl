@@ -45,7 +45,7 @@ def mk(
     trainable: bool = True,
     is_trainable: bool = True,
     is_filtered: bool = False,
-    degeneracy: dict | None = None,
+    filter_results: dict | None = None,
     setup: float = 0.0,
     agent: float = 0.0,
     agent_model: float = 0.0,
@@ -76,7 +76,7 @@ def mk(
         agent=SimpleNamespace(trainable=trainable, name=agent_name),
         is_trainable=is_trainable,
         is_filtered=is_filtered,
-        degeneracy=degeneracy or {},
+        filter_results=filter_results or {},
         timing=SimpleNamespace(
             setup=SimpleNamespace(duration=setup),
             agent=SimpleNamespace(
@@ -285,16 +285,16 @@ def test_nested_timing():
 
 def test_train_only_metrics_absent_from_eval():
     rollouts = [
-        mk(is_trainable=True, is_filtered=True, degeneracy={"gibberish": True}),
-        mk(is_trainable=False, degeneracy={"gibberish": False}),
+        mk(is_trainable=True, is_filtered=True, filter_results={"gibberish": True}),
+        mk(is_trainable=False, filter_results={"gibberish": False}),
     ]
     out = train_wandb(rollouts)
     assert out["train/agg/all/agent/is_trainable/mean"] == 0.5
     assert out["train/agg/all/agent/is_filtered/mean"] == 0.5
-    assert out["train/agg/all/agent/detected/gibberish/mean"] == 0.5
+    assert out["train/agg/all/agent/filters/gibberish/mean"] == 0.5
     assert "train/agg/all/is_trainable/mean" not in out  # pipeline verdicts are per-trace
     eval_out = EvalRollouts(solo(rollouts)).metrics.to_wandb(prefix="eval/x", subset="all")
-    assert not any("is_trainable" in k or "is_filtered" in k or "/detected/" in k for k in eval_out)
+    assert not any("is_trainable" in k or "is_filtered" in k or "/filters/" in k for k in eval_out)
 
 
 def test_eval_avg_at_k_and_pass_k():
@@ -334,12 +334,12 @@ def test_traceless_episode_keeps_its_reason():
 def test_training_state_is_train_only():
     """Only a train rollout carries trainer-bound state; an eval trace has no field for it.
     Credit is not among them — it lives on the graph's nodes, which every trace has."""
-    assert {"samples", "is_filtered", "degeneracy"} <= set(TrainRollout.model_fields)
+    assert {"samples", "is_filtered", "filter_results"} <= set(TrainRollout.model_fields)
     assert "advantages" not in TrainRollout.model_fields  # derived from the nodes
     # An eval trace is the env's own, unextended — where a trace sits is the episode's to say,
     # and it is the same wire specialization the episode's ``traces`` hold.
     assert Rollout is vf.WireTrace
-    assert not {"samples", "is_filtered", "degeneracy", "group_id", "episode_id"} & set(Rollout.model_fields)
+    assert not {"samples", "is_filtered", "filter_results", "group_id", "episode_id"} & set(Rollout.model_fields)
 
 
 def test_inflight_episode_stamps_what_lands():

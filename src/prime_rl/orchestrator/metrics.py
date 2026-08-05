@@ -344,16 +344,16 @@ class TrainMetrics(EpisodeMetrics):
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
-        # Degeneracy is measured on every trace; the drop verdict is only ever reached for
-        # trainable survivors (an untrainable seat is 0.0 throughout). Both read per agent.
+        # The pipeline verdicts are per-trace (an untrainable seat is 0.0 throughout, and filters
+        # only ever run on trainable survivors), so they read per agent like the rest.
         for agent, traces in self.by_agent().items():
             p = f"{prefix}/{subset}/{agent}"
             rollouts = traces.rollouts
             out[f"{p}/is_trainable/mean"] = sum(float(r.is_trainable) for r in rollouts) / len(rollouts)
             out[f"{p}/is_filtered/mean"] = sum(float(r.is_filtered) for r in rollouts) / len(rollouts)
-            names = sorted({name for r in rollouts for name in r.degeneracy})
+            names = sorted({name for r in rollouts for name in r.filter_results})
             out |= {
-                f"{p}/detected/{name}/mean": sum(1 for r in rollouts if r.degeneracy.get(name)) / len(rollouts)
+                f"{p}/filters/{name}/mean": sum(1 for r in rollouts if r.filter_results.get(name)) / len(rollouts)
                 for name in names
             }
         return out

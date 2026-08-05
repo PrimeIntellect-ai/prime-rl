@@ -19,6 +19,10 @@ batch_size = 512
 group_size = 16
 oversampling_factor = 2.0
 
+[[orchestrator.pre_batch_filters]]
+type = "zero_advantage"
+enforce = true
+
 [[orchestrator.train.source]]
 name = "wiki-search"
 
