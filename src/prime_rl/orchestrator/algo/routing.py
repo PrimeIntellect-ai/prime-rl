@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import ActionLossType
+from prime_rl.orchestrator.trajectories import iter_trainable_branches
 from prime_rl.transport import TrainingSample
 
 if TYPE_CHECKING:
@@ -52,23 +53,12 @@ def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType)
 
 
 def stamp_advantages(rollout: Rollout) -> None:
-    """Stamp the rollout's per-token advantage stream onto its samples' wire
-    fields. The stream is full-length-N — aligned to the samples' ``token_ids``
-    concatenated in order, 0.0 on non-trainable positions — and sliced across
-    them. Rollouts with no credit assigned (``advantages=None``, e.g. opd/opsd)
-    ship no advantage stream.
-    """
-    advantages = rollout.advantages
-    if advantages is None:
-        return
-    total = sum(len(sample.token_ids) for sample in rollout.samples)
-    if len(advantages) != total:
-        raise ValueError(
-            f"advantage stream must align with the rollout's tokens: "
-            f"got {len(advantages)}, expected {total} (env '{rollout.env_name}')."
-        )
-    offset = 0
-    for sample in rollout.samples:
-        num_tokens = len(sample.token_ids)
-        sample.advantages = list(advantages[offset : offset + num_tokens])
-        offset += num_tokens
+    """Copy each trainable branch's per-token credit onto the sample built from it, zeroed where
+    the sample does not train. The branch spreads its nodes' values across its own tokens, so the
+    two align by construction, but a node shared with an earlier branch is credited there and is
+    only context here. A rollout that was never scored (opd/opsd) ships no advantage stream."""
+    for sample, (branch, _) in zip(rollout.samples, iter_trainable_branches(rollout), strict=True):
+        advantages = branch.advantages
+        if advantages is None:
+            continue
+        sample.advantages = [a if trains else 0.0 for a, trains in zip(advantages, sample.mask, strict=True)]

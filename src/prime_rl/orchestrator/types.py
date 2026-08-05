@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, Literal, Protocol
+from typing import TYPE_CHECKING, Generic, Literal, Protocol, cast
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
@@ -39,18 +40,36 @@ RolloutKind = Literal["train", "eval"]
 
 
 @dataclass
-class InflightRollout:
-    """Per-task scheduling state in the dispatcher; one entry per in-flight
-    ``run`` / ``run_group`` task."""
+class InflightEpisode:
+    """One episode in flight, and the facts of the dispatch that will be stamped onto it when it
+    lands. The pair is the whole lifecycle: an ``InflightEpisode`` going out, an ``Episode`` coming
+    back — so nothing downstream has to know how a rollout was scheduled."""
 
     kind: RolloutKind
     env_name: str
     group_id: uuid.UUID
     policy_version: int
-    rollout_count: int
+    episodes_owed: int
+    """How many episodes this dispatch owes the sink — one, except on the legacy group path."""
     client_config: vf.ClientConfig | None = None
-    off_policy_steps: int = 0
     eval_step: int | None = None
+
+    def stamp(self, episode: Episode, *, run_id: str, policy: vf.PolicySpan | None, eval_step: int | None) -> Episode:
+        """Write the dispatch's facts onto the landed episode, in the places the episode already
+        has for them. The group's values win over this dispatch's while it is alive, so they are
+        passed in rather than read off ``self``.
+
+        An eval knows its step here; an episode to train on does not — it belongs to whichever
+        batch window is collecting when it lands, so the main loop fills that in."""
+        episode.env.name = self.env_name
+        episode.group_id = self.group_id
+        if self.kind == "eval":
+            assert eval_step is not None, "eval episode missing its step"
+            metadata: vf.EpisodeMetadata = vf.EvalMetadata(step=eval_step, policy=policy)
+        else:
+            metadata = vf.TrainMetadata(policy=policy)
+        episode.run = vf.TrainRunInfo(id=run_id, metadata=metadata)
+        return episode
 
 
 @dataclass
@@ -73,71 +92,95 @@ class GroupState:
 
 
 class Rollout(vf.Trace[DataT], Generic[DataT]):
-    """A completed rollout: the env's typed ``vf.Trace`` *is* the rollout — prime-rl's
-    orchestration metadata lives on it directly (set by the dispatcher once the rollout
-    returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
-    fields are ``exclude=True``, so dumping a Rollout yields a plain trace on the wire; the
-    orchestrator mirrors them onto the trace's own fields via ``vf.Trace.record_run`` (``kind`` as
-    ``run.type``, the run id, the step, and ``env_name``/``group_id``/``policy_version`` into
-    ``info``) when a rollout arrives, so the on-disk records stay fully placeable.
+    """A completed rollout: the env's typed ``vf.Trace`` *is* the rollout, carrying only what
+    places a loose trace back among its peers. Everything about the dispatch — which run, which
+    step, which policy — belongs to the ``Episode``, which is the thing that was dispatched. The
+    added fields are ``exclude=True``, so dumping a Rollout yields a plain trace on the wire.
 
-    It is also the single currency the scoring hooks receive: a hook reads the trace
-    directly (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``) and writes
-    credit through :meth:`assign_advantages` (scalar broadcast or per-token), which
-    spreads over the samples' trainable (mask-True) tokens."""
+    It is also the currency the scoring hooks receive: a hook reads the trace directly
+    (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``) and writes credit through
+    :meth:`assign_advantages`."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)  # ``samples`` holds msgspec structs
 
-    kind: RolloutKind = Field(default="train", exclude=True)
     env_name: str = Field(default="", exclude=True)
     group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
-    # Links the traces of one episode; stamped into ``info`` on arrival so
-    # saved records keep their grouping.
-    episode_id: str = Field(default="", exclude=True)
-    policy_version: int = Field(default=0, exclude=True)
-    off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
-    # Per-token rl advantage stream, full-length-N (= len(token_ids)) per
-    # sample, concatenated across the rollout's samples in order; 0.0 on
-    # non-trainable positions. None = no credit assigned (advantage-based
-    # filters skip it; the wire ships no advantage stream).
-    advantages: list[float] | None = Field(default=None, exclude=True)
     is_filtered: bool = Field(default=False, exclude=True)
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
-    eval_step: int | None = Field(default=None, exclude=True)
 
-    def assign_advantages(self, values: float | list[float]) -> None:
-        """Write the rl advantage stream: a scalar broadcast over the
-        rollout's trainable (mask-True) tokens (0.0 elsewhere), or a per-token
-        list already aligned full-length to the samples' concatenated
-        ``token_ids``. A rollout never assigned ships no advantage stream."""
-        total = sum(len(sample.token_ids) for sample in self.samples)
-        if isinstance(values, (int, float)):
-            self.advantages = [
-                float(values) if trainable else 0.0 for sample in self.samples for trainable in sample.mask
-            ]
-            return
-        if len(values) != total:
-            raise ValueError(
-                f"per-token advantages must align with the rollout's tokens: "
-                f"got {len(values)}, expected {total} (env '{self.env_name}')."
-            )
-        self.advantages = [float(v) for v in values]
+    def assign_advantages(self, value: float) -> None:
+        """Write ``value`` as the credit for every trainable token, node by node. Credit lives on
+        the nodes so branches sharing one cannot disagree about it, and so the trainer reads it
+        aligned to the tokens (``Branch.advantages``) rather than re-sliced by offset."""
+        for node in self.nodes:
+            trainable = sum(node.mask)
+            node.advantages = [value] * trainable if trainable else None
+
+    @property
+    def advantages(self) -> list[float] | None:
+        """Every assigned credit on this trace, or ``None`` if it was never scored — which a trace
+        assigned all zeros is not."""
+        if all(node.advantages is None for node in self.nodes):
+            return None
+        return [a for node in self.nodes for a in (node.advantages or [])]
 
     def scalar_advantage(self) -> float | None:
-        """Scalar view of the per-token advantage stream for monitoring: the
-        mean over assigned (non-zero) positions — exact for the uniform GRPO
-        case, 0.0 for a zero-advantage group, None when no credit was assigned."""
-        if not self.advantages:
+        """Scalar view of the credit for monitoring: the mean over assigned (non-zero) positions —
+        exact for the uniform GRPO case, 0.0 for a zero-advantage group, None when unscored."""
+        advantages = self.advantages
+        if not advantages:
             return None
-        nonzero = [a for a in self.advantages if a != 0.0]
+        nonzero = [a for a in advantages if a != 0.0]
         return sum(nonzero) / len(nonzero) if nonzero else 0.0
 
     @property
     def is_trainable(self) -> bool:
         """Whether the rollout carries a training signal — a nonzero advantage on some token. A
         uniform-reward GRPO group (all-zero advantages) or an unscored rollout has no gradient."""
-        return bool(self.advantages) and any(a != 0.0 for a in self.advantages)
+        advantages = self.advantages
+        return bool(advantages) and any(a != 0.0 for a in advantages)
+
+
+class Episode(vf.WireEpisode):
+    """The env's own episode, extended with the one thing verifiers has no notion of: the group it
+    was planned in, whose rollouts are scored against each other. Everything else it needs a place
+    for, the episode already has — the env it ran (``env.name``) and the run it belongs to
+    (``run``, whose metadata says whether the run trains on it or measures itself with it, and
+    carries the step and the policy versions generation spanned).
+
+    An episode that produced no traces is not a special case and needs no stand-in rollout: vf
+    already records why on ``errors``, and prime-rl's own outcomes — an off-policy cancel, a task
+    that raised before reaching the env — are recorded the same way.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)  # traces are ``Rollout``\ s
+
+    group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
+
+    @property
+    def env_name(self) -> str:
+        """The env as prime-rl names it — its config key, which is not vf's ``env.id``."""
+        return self.env.name or ""
+
+    @property
+    def rollouts(self) -> list[Rollout]:
+        """The episode's traces, typed as the rollouts prime-rl works with."""
+        return cast(list[Rollout], self.traces)
+
+    @property
+    def train_run(self) -> vf.TrainRunInfo:
+        """The run record. Every episode the orchestrator produces belongs to the training run —
+        the ones it trains on and the ones it evaluates along the way."""
+        assert isinstance(self.run, vf.TrainRunInfo), "the dispatcher records the run on arrival"
+        return self.run
+
+    def narrow(self, keep: Callable[[Rollout], bool]) -> "Episode | None":
+        """This episode with only the traces that pass ``keep``, or ``None`` if none do. A subset
+        stays a list of episodes rather than a flat trace list, so the episode-level aggregates
+        keep describing what survived. The kept traces are the same objects, not copies."""
+        traces = [t for t in self.traces if keep(t)]
+        return self.model_copy(update={"traces": traces}) if traces else None
 
 
 @dataclass

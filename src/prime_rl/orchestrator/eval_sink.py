@@ -8,19 +8,33 @@ Same shape as ``TrainSink``, but no tokenization / advantages / filters:
 3. ``process_batch`` — at ``num_examples × group_size`` episodes, return an
    ``EvalBatch`` with the full returned cohort (metrics are computed downstream).
 
-``add()`` takes one episode (``list[Rollout]``) and returns ``EvalBatch | None``;
+``add()`` takes one ``Episode`` and returns ``EvalBatch | None``;
 all accounting counts episodes, never loose traces.
 """
 
 from __future__ import annotations
 
-import uuid
 from collections import defaultdict
+
+import verifiers.v1 as vf
 
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalRollouts
-from prime_rl.orchestrator.types import EvalBatch, Rollout
+from prime_rl.orchestrator.types import (
+    Episode,
+    EvalBatch,
+    Rollout,
+)
 from prime_rl.utils.logger import get_logger
+
+
+def eval_step_of(episode: Episode) -> int:
+    """The eval epoch an episode belongs to, off the run the dispatcher recorded when it landed.
+    An online eval belongs to the training run, and its metadata requires the step, unlike an
+    episode to train on, whose step is the window it lands in."""
+    metadata = episode.train_run.metadata
+    assert isinstance(metadata, vf.EvalMetadata), "not an eval episode"
+    return metadata.step
 
 
 class EvalSink:
@@ -28,21 +42,22 @@ class EvalSink:
 
     def __init__(self, *, eval_envs: EvalEnvs) -> None:
         self.eval_envs = eval_envs
-        self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
+        self.pending_groups: dict[str, list[Episode]] = defaultdict(list)
         # Episodes arrived per group / per batch bucket — the finalization counts.
-        self.pending_group_episodes: dict[uuid.UUID, int] = defaultdict(int)
-        self.pending_batches: dict[tuple[str, int], list[Rollout]] = defaultdict(list)
+        self.pending_group_episodes: dict[str, int] = defaultdict(int)
+        self.pending_batches: dict[tuple[str, int], list[Episode]] = defaultdict(list)
         self.pending_batch_episodes: dict[tuple[str, int], int] = defaultdict(int)
 
-    def add(self, episode: list[Rollout]) -> EvalBatch | None:
+    def add(self, episode: Episode) -> EvalBatch | None:
         """Process one episode arrival; finalize the group on the ``group_size``-th
-        episode and the per-env epoch on the ``num_examples × group_size``-th."""
-        env_name = episode[0].env_name
-        group_id = episode[0].group_id
-        for rollout in episode:
+        episode and the per-env epoch on the ``num_examples × group_size``-th. A failed
+        episode brings no rollouts but still counts toward both."""
+        env_name = episode.env_name
+        group_id = episode.group_id
+        for rollout in episode.rollouts:
             self.process_rollout(rollout)
-        bkey = (env_name, episode[0].eval_step)
-        self.pending_groups[group_id].extend(episode)
+        bkey = (env_name, eval_step_of(episode))
+        self.pending_groups[group_id].append(episode)
         self.pending_group_episodes[group_id] += 1
         if self.pending_group_episodes[group_id] >= self.group_size_for(env_name):
             self.process_group(group_id)
@@ -66,13 +81,13 @@ class EvalSink:
         ``buffered`` is partial-group episode arrivals from non-group-scoring envs."""
         batch_counts: dict[tuple[str, int], int] = dict(self.pending_batch_episodes)
         buffered: dict[tuple[str, int], int] = {}
-        for group_id, rollouts in self.pending_groups.items():
-            if not rollouts:
+        for group_id, episodes in self.pending_groups.items():
+            if not episodes:
                 continue
-            env_name = rollouts[0].env_name
+            env_name = episodes[0].env_name
             if self.eval_envs.get(env_name).requires_group_scoring:
                 continue
-            bkey = (env_name, rollouts[0].eval_step)
+            bkey = (env_name, eval_step_of(episodes[0]))
             buffered[bkey] = buffered.get(bkey, 0) + self.pending_group_episodes.get(group_id, 0)
         return [
             (
@@ -96,16 +111,19 @@ class EvalSink:
 
     # ── level 2: per-group (move into batch bucket) ───────────────────────
 
-    def process_group(self, group_id: uuid.UUID) -> None:
-        group = self.pending_groups.pop(group_id, [])
+    def process_group(self, group_id: str) -> None:
+        finished = self.pending_groups.pop(group_id, [])
         episodes = self.pending_group_episodes.pop(group_id, 0)
-        if not group:
+        if not finished:
             return
-        env_name = group[0].env_name
-        task_idx = group[0].task.data.idx
-        eval_step = group[0].eval_step
+        # Read the group's facts off an episode, not a trace: every episode in it may have
+        # produced none (a whole group cancelled off-policy).
+        env_name = finished[0].env_name
+        eval_step = eval_step_of(finished[0])
+        group = [t for e in finished for t in e.rollouts]
+        task_idx = group[0].task.data.idx if group else -1
         bucket = self.pending_batches[(env_name, eval_step)]
-        bucket.extend(group)
+        bucket.extend(finished)
         self.pending_batch_episodes[(env_name, eval_step)] += episodes
 
         survivors = [r for r in group if not r.has_error]
@@ -123,6 +141,6 @@ class EvalSink:
         downstream via ``EvalBatch.rollouts.metrics`` over the all/effective subsets, so the sink
         does no aggregation."""
         env_name, step = key
-        rollouts = self.pending_batches.pop(key, [])
+        episodes = self.pending_batches.pop(key, [])
         self.pending_batch_episodes.pop(key, None)
-        return EvalBatch(env_name=env_name, step=step, rollouts=EvalRollouts(rollouts))
+        return EvalBatch(env_name=env_name, step=step, rollouts=EvalRollouts(episodes))

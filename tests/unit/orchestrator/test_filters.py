@@ -1,7 +1,7 @@
 import math
-import uuid
 
 import verifiers.v1 as vf
+from verifiers.v1.configs.agent import WireAgentConfig
 
 from prime_rl.configs.orchestrator import GibberishFilterConfig, RepetitionFilterConfig
 from prime_rl.orchestrator.filters import (
@@ -59,12 +59,11 @@ def _make_rollout(
         nodes = [_assistant_node(completion_ids, completion_logprobs)]
     rollout = Rollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="")),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
         nodes=nodes,
         rewards={"reward": vf.Reward(score=reward)},
     )
     rollout.env_name = "test"
-    rollout.group_id = uuid.uuid4()
     return rollout
 
 
@@ -142,7 +141,7 @@ def test_gibberish_aligns_logprobs_under_generation_prompt_scaffold():
 
     rollout = Rollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="")),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
         nodes=[_scaffold_assistant_node([50, 80, 120_000], [-1.0, -0.5, gibberish_filter.logprob_threshold - 1.0])],
         rewards={"reward": vf.Reward(score=1.0)},
     )

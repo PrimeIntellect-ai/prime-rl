@@ -39,6 +39,9 @@ from prime_rl.utils.logger import get_logger
 # fields without importing the env package — the orchestrator never reads them typed (only
 # task.idx + task.model_dump).
 ROLLOUT_TYPE = Rollout[vf.WireTaskData]
+# The env server answers a wire episode; we keep that envelope and only re-type its traces. The
+# dispatcher then mints the Train/Eval episode that carries the dispatch's own facts.
+EPISODE_TYPE = vf.WireEpisode
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
 # servers concurrently with the orchestrator, and a legacy server loads its dataset
@@ -112,12 +115,15 @@ class Env:
         cache_salt: str | None,
         task_data: dict | None = None,
         task_idx: int | None = None,
-    ) -> list[Rollout]:
-        """Run one episode; return its typed Traces. A v1 env takes the task itself
-        (``task_data``); the legacy bridge is addressed by dataset row (``task_idx``).
-        A zero-trace episode raises (the dispatcher synthesizes the error marker); a
-        not-``ok`` episode marks its clean traces failed so partial episodes never
-        train."""
+    ) -> EPISODE_TYPE:
+        """Run one episode; return it with its traces re-typed as ``Rollout``. A v1 env takes the
+        task itself (``task_data``); the legacy bridge is addressed by dataset row (``task_idx``).
+        A zero-trace episode comes back as-is — vf already recorded on it why it produced nothing;
+        a not-``ok`` episode marks its clean traces failed so partial episodes never train.
+
+        The episode itself is kept rather than flattened away: it is what groups an env's seats,
+        and downstream reads its aggregates (``by_agent``, ``num_turns``) instead of rebuilding
+        them from loose traces."""
         episode = await self.env_client.run(
             task_data=task_data,
             task_idx=task_idx,
@@ -125,20 +131,15 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        if not episode.traces:
-            error = episode.last_error
-            detail = f"{error.type}: {error.message}" if error is not None else "no traces and no error recorded"
-            raise RuntimeError(f"episode failed before any trace was produced — {detail}")
         rollouts = [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in episode.traces]
         for rollout in rollouts:
-            rollout.episode_id = episode.id
             if not episode.ok and rollout.ok:
                 error = episode.last_error or vf.Error(
                     type="EpisodeFailed", message="A sibling trace in this episode failed"
                 )
                 rollout.errors = [*rollout.errors, error]
                 rollout.ok = False
-        return rollouts
+        return EPISODE_TYPE.model_construct(**{**dict(episode), "traces": rollouts})
 
     async def run_group(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
@@ -151,7 +152,7 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in wires]
+        return [EPISODE_TYPE.model_construct(traces=[ROLLOUT_TYPE.model_construct(**dict(wire))]) for wire in wires]
 
 
 class TrainEnv(Env):
