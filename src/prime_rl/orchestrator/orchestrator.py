@@ -402,6 +402,7 @@ class Orchestrator:
             eval_source=self.eval_source,
             policy_pool=self.policy_inference,
             policy=self.policy,
+            run_id=self.run_id,
             max_inflight_episodes=config.max_inflight_episodes,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
