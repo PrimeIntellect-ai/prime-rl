@@ -247,6 +247,11 @@ class CPUOffloadOptimizer:
         self.pin_memory = pin_memory
         self._initialized = False
         self._chunks = self._build_chunks(named_params)
+        # Reuse the transfer streams across steps: fresh streams each step land
+        # their H2D/D2H staging in new per-stream allocator pools, growing
+        # reserved memory every step and starving the default stream.
+        self._h2d_stream = torch.cuda.Stream()
+        self._d2h_stream = torch.cuda.Stream()
         if grad_cpu_offload and model is None:
             raise ValueError("Gradient CPU offload requires the model")
         self._gradient_manager = GradientOffloadManager(model, self._chunks, dp_replicate) if grad_cpu_offload else None
@@ -349,8 +354,8 @@ class CPUOffloadOptimizer:
         self._original_param_groups = self.optimizer.param_groups
         original_steps = [g.get("step", 0) for g in self._original_param_groups]
 
-        h2d_stream = torch.cuda.Stream()
-        d2h_stream = torch.cuda.Stream()
+        h2d_stream = self._h2d_stream
+        d2h_stream = self._d2h_stream
         compute_stream = torch.cuda.current_stream()
         n = len(self._chunks)
 
