@@ -513,6 +513,9 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     save_format: Literal["safetensors", "torch"] = "safetensors"
     """Weight checkpoint serialization format."""
 
+    min_retention_seconds: float = Field(120.0, ge=0)
+    """Floor on how long an adapter broadcast dir survives before retention may delete it. Retention normally keeps the last two steps, which on a fast-stepping run can be a shorter window than the inference engine needs to read a large adapter off shared storage. Deleting a dir mid-read kills the reading process (an unlinked, mmapped file faults with SIGBUS on NFS) instead of raising, so keep this above the slowest expected adapter load. Ignored for full-weight broadcasts, where extra copies cost a model's worth of disk each."""
+
 
 class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["nccl"] = "nccl"

@@ -29,6 +29,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         super().__init__(output_dir, lora_config)
         self.save_format: Literal["safetensors", "torch"] = config.save_format
         self.save_sharded = config.save_sharded if lora_config is None else False
+        self.min_retention_seconds = config.min_retention_seconds
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
         self.logger.debug(
@@ -111,9 +112,17 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         stable_file.touch()
 
     def maybe_clean(self, interval_to_keep: int | None):
+        # Only the rank that wrote the broadcast prunes it: every rank calling rmtree on the same
+        # shared dir means N concurrent unlink streams over one partially-deleted directory.
+        if not self.world.is_master:
+            return
+        # The retention floor only applies to adapters. Full-weight broadcast dirs hold the whole
+        # model, so holding extra copies to widen a read window is not a trade worth making.
+        min_age_seconds = self.min_retention_seconds if self.lora_config is not None else 0.0
         for idx in self.multi_run_manager.used_idxs:
             maybe_clean(
                 get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
                 self.multi_run_manager.progress[idx].step - 1,
                 interval_to_keep,
+                min_age_seconds=min_age_seconds,
             )

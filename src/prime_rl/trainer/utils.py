@@ -24,7 +24,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.pathing import get_ckpt_dir
+from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir
 from prime_rl.utils.utils import format_num, format_time, get_step_path
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
@@ -654,18 +654,29 @@ class MemoryProfiler:
         self.step_num += 1
 
 
-def maybe_clean(path: Path, step: int, interval_to_keep: int | None) -> None:
-    """Delete the broadcast dir from 2 trainer steps ago.
+def maybe_clean(path: Path, step: int, interval_to_keep: int | None, min_age_seconds: float = 0.0) -> None:
+    """Delete broadcast dirs older than 2 trainer steps.
 
     With a 1-step async barrier, the orchestrator at trainer step ``step`` is still consuming the
-    ckpt from ``step - 1``; ``step - 2`` is therefore safe to remove unless it falls on a
-    checkpoint interval that we want to preserve.
+    ckpt from ``step - 1``; ``step - 2`` and older are therefore candidates. A candidate is spared
+    when it falls on a checkpoint interval we want to preserve, or when it is younger than
+    ``min_age_seconds`` — an inference engine reads adapters straight off this shared directory and
+    unlinking one mid-read kills the reading process rather than raising (an unlinked, mmapped file
+    faults with SIGBUS on NFS). Sweeping every eligible step rather than only ``step - 2`` keeps
+    spared dirs from leaking: they are reconsidered on the next call.
     """
     logger = get_logger()
-    candidate_step = max(step - 2, 0)
-    candidate_path = get_step_path(path, candidate_step)
-    if interval_to_keep and candidate_step % interval_to_keep == 0:
-        logger.debug(f"Keeping path {candidate_path} (on ckpt interval)")
-        return
-    logger.debug(f"Removing path {candidate_path}")
-    shutil.rmtree(candidate_path, ignore_errors=True)
+    now = time.time()
+    for candidate_step in get_all_ckpt_steps(path):
+        if candidate_step > step - 2:
+            break
+        candidate_path = get_step_path(path, candidate_step)
+        if interval_to_keep and candidate_step % interval_to_keep == 0:
+            logger.debug(f"Keeping path {candidate_path} (on ckpt interval)")
+            continue
+        age = now - candidate_path.stat().st_mtime
+        if age < min_age_seconds:
+            logger.debug(f"Keeping path {candidate_path} ({age:.0f}s old, retaining for {min_age_seconds:.0f}s)")
+            continue
+        logger.debug(f"Removing path {candidate_path}")
+        shutil.rmtree(candidate_path, ignore_errors=True)
