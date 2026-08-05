@@ -50,7 +50,7 @@ CLI flags mirror the TOML tree using dots:
 --max-steps 50                              # top-level
 --model.name Qwen/Qwen3-4B                  # nested
 --trainer.optim.lr 1e-5                     # double-nested
---inference.parallel.tp 4
+--inference.vllm.tensor-parallel-size 4
 ```
 
 > Field names are snake_case in TOML (`max_model_len`) and kebab-case on the CLI (`--max-model-len`).
@@ -126,11 +126,11 @@ To **disable** a sub-config that's on by default, use `--no-<name>` on the CLI o
 TOML has no `null`. Use the string `"None"`, which the loader coerces:
 
 ```toml
-[inference.model]
+[inference.vllm]
 max_model_len = "None"
 ```
 
-On the CLI: `--inference.model.max-model-len None`.
+On the CLI: `--inference.vllm.max-model-len None`.
 
 ### Discriminated Unions
 

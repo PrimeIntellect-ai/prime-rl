@@ -103,7 +103,7 @@ Frozen models are declared inline on the algorithm, named where the model is use
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \
-  --model.name <frozen-model> --server.port 8001
+  --vllm.model <frozen-model> --server.port 8001
 ```
 
 The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no orchestrator. Use the `sft` algorithm only when you want a frozen model to generate the supervision on the fly.

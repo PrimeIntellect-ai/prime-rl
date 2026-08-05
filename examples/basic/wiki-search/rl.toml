@@ -40,10 +40,6 @@ name = "qwen3-4b-wiki-search"
 [orchestrator.train.sampling]
 max_completion_tokens = 512
 
-[[orchestrator.pre_batch_filters]]
-type = "zero_advantage"
-enforce = true
-
 [[orchestrator.train.source]]
 name = "wiki-search"
 
@@ -56,7 +52,11 @@ id = "null"
 [orchestrator.train.source.env.agent.runtime]
 type = "subprocess"
 
+[[orchestrator.pre_batch_filters]]
+type = "zero_advantage"
+enforce = true
+
 [ckpt] # Checkpoint at the end of training
 
-[inference.model]
+[inference.vllm]
 tool_call_parser = "hermes"

@@ -220,7 +220,7 @@ srun --kill-on-bad-exit=1 bash -c '
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
     # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
-    # InferenceConfig.to_vllm() from the per-node config, so it is no longer assembled here.
+    # InferenceConfig.to_namespace() from the per-node config, so it is no longer assembled here.
 
     DECODE_COMPILE_CFG='"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"'
 
@@ -293,7 +293,7 @@ srun --kill-on-bad-exit=1 bash -c '
     # External-LB: one vLLM API server per local DP rank (PORT + k), each pinned to its TP
     # slice of GPUs with a unique NIXL side-channel port. Each role is its own external-LB DP
     # group rooted on the role-replica head (HEAD_HOST); the router balances across the per-rank
-    # endpoints. The kv_transfer_config is built in InferenceConfig.to_vllm() from the config.
+    # endpoints. The kv_transfer_config is built in InferenceConfig.to_namespace() from the config.
     if [ "$ROLE_RANK" -eq 0 ]; then DP_ADDR=$LOCAL_IP; else DP_ADDR=$HEAD_HOST; fi
     for k in $(seq 0 $((DP_PER_NODE - 1))); do
         GLOBAL_RANK=$((ROLE_RANK * DP_PER_NODE + k))

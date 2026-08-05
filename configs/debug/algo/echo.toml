@@ -58,4 +58,6 @@ name = "prime-qwen3"
 lr = 1e-6
 
 [inference]
+
+[inference.vllm]
 gpu_memory_utilization = 0.5

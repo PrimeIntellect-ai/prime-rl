@@ -489,8 +489,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             router_port=config.inference.server.port,
             prefill_port=infer_deploy.prefill_port,
             decode_port=infer_deploy.decode_port,
-            inference_tp=config.inference.parallel.tp,
-            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
+            inference_tp=config.inference.vllm.tensor_parallel_size,
+            inference_data_parallel_rpc_port=config.inference.vllm.data_parallel_rpc_port,
             use_deep_gemm=config.inference.use_deep_gemm,
             prefill_env_vars=infer_deploy.prefill_env_vars,
             decode_env_vars=infer_deploy.decode_env_vars,
@@ -499,7 +499,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_env_vars=inference_env_vars,
             prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
             decode_vllm_extra_json=vllm_overrides_fragment(infer_deploy.decode_vllm_overrides),
-            dp_per_node=config.deployment.gpus_per_node // config.inference.parallel.tp,
+            dp_per_node=config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
@@ -524,10 +524,16 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             router_port=config.inference.server.port if config.inference else 8000,
             infer_nodes_per_replica=config.deployment.infer_nodes_per_replica,
             backend_port=config.inference.backend_port if config.inference else 8100,
-            inference_tp=config.inference.parallel.tp if config.inference else 1,
-            inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
-            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
-            dp_per_node=(config.deployment.gpus_per_node // config.inference.parallel.tp) if config.inference else 1,
+            inference_tp=config.inference.vllm.tensor_parallel_size if config.inference else 1,
+            inference_enable_expert_parallel=config.inference.vllm.enable_expert_parallel
+            if config.inference
+            else False,
+            inference_data_parallel_rpc_port=config.inference.vllm.data_parallel_rpc_port
+            if config.inference
+            else 29600,
+            dp_per_node=(config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size)
+            if config.inference
+            else 1,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",

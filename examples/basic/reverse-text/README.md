@@ -22,7 +22,7 @@ Let's check how well `Qwen3-0.6B` does out-of-the-box on the `reverse-text` envi
 
 ```bash
 # Run this in the `Inference` pane
-uv run inference --model.name Qwen/Qwen3-0.6B
+uv run inference --vllm.model Qwen/Qwen3-0.6B
 ```
 
 ```bash
@@ -95,7 +95,7 @@ Let's see how our final RL checkpoints perform on the `reverse-text` environment
 
 ```bash
 # Run this in the `Inference` pane
-uv run inference --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL
+uv run inference --vllm.model PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL
 ```
 
 ```bash
@@ -210,7 +210,7 @@ kubectl exec -it my-exp-trainer-0 -- bash
 
 # If inference server isn't running with the RL model, start it in another terminal:
 kubectl exec -it my-exp-inference-0 -- bash
-uv run inference --model.name /data/outputs/weights/step_20
+uv run inference --vllm.model /data/outputs/weights/step_20
 
 # Back in trainer pod, run evaluation
 uv run eval reverse-text-v1 --harness.id null \

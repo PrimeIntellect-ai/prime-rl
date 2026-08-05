@@ -24,10 +24,10 @@ Needed for `opd*.toml`, `sft_distill.toml` / `sft_distill_lora.toml`, and `mixed
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \
-  --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
+  --vllm.model PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
   --server.port 8001 \
-  --gpu-memory-utilization 0.5 \
-  --model.enforce-eager
+  --vllm.gpu-memory-utilization 0.5 \
+  --vllm.enforce-eager
 ```
 
 ## Run the debug configs

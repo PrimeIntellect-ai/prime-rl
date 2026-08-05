@@ -151,9 +151,7 @@ id = "null"
 [orchestrator.eval.source.env.agent.runtime]
 type = "subprocess"
 
-[inference.parallel]
-tp = 8
-
-# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[inference.vllm]
+tensor_parallel_size = 8
 [orchestrator.renderer]
 name = "default"

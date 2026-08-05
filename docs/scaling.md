@@ -38,7 +38,7 @@ The `rl`, `sft`, and `inference` entrypoints all accept a `[deployment]` block (
 uv run rl @ rl.toml \
   --deployment.num-infer-gpus 6 \
   --deployment.num-train-gpus 2 \
-  --inference.parallel.dp 6
+  --inference.vllm.data-parallel-size 6
 ```
 
 The launcher allocates GPUs in order from `CUDA_VISIBLE_DEVICES` (or all visible GPUs): inference first, trainer next. To target a specific physical subset, pin `CUDA_VISIBLE_DEVICES` before launching.

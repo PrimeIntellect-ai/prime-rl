@@ -142,15 +142,13 @@ rollout = 3600
 # --- Inference ---
 
 [inference]
-enable_return_routed_experts = true
 
 # vLLM + FlashInfer caches on node-local /tmp (see [env_vars]).
 [inference.env_vars]
 VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
 FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 
-[inference.model]
+[inference.vllm]
 max_model_len = 131072
-
-[inference.parallel]
-tp = 8
+tensor_parallel_size = 8
+enable_return_routed_experts = true

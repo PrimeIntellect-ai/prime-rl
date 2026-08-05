@@ -68,13 +68,12 @@ def propagate_shared_fields(data: Any) -> Any:
     propagate(
         "model.name",
         "trainer.model.name",
-        "inference.model.name",
+        "inference.vllm.model",
         "orchestrator.model.name",
     )
     propagate(
         "model.vlm",
         "trainer.model.vlm",
-        "inference.model.vlm",
         "orchestrator.model.vlm",
     )
 
@@ -109,7 +108,7 @@ def propagate_shared_fields(data: Any) -> Any:
     # [file_monitor] leaf. (Bare empty ``[file_monitor]`` block enablement is at the end.)
     propagate("file_monitor.filename", "trainer.file_monitor.filename", "orchestrator.file_monitor.filename")
 
-    # [tokenizer]. ``chat_template`` also flows to ``inference.model`` (vLLM's
+    # [tokenizer]. ``chat_template`` also flows to ``inference.vllm`` (vLLM's
     # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
     # differ between sub-configs (auto-derived from model names, which may
     # differ for FP8-quantized inference variants).
@@ -123,7 +122,7 @@ def propagate_shared_fields(data: Any) -> Any:
         "tokenizer.chat_template",
         "trainer.tokenizer.chat_template",
         "orchestrator.tokenizer.chat_template",
-        "inference.model.chat_template",
+        "inference.vllm.chat_template",
     )
 
     # [rollout_transport] → both sub-configs (host is launcher-injected for zmq multi-node).
@@ -155,7 +154,7 @@ def propagate_shared_fields(data: Any) -> Any:
                 conflicts.append(("output_dir", sub))
             fill(sub, expected_value)
 
-    # Cascade trainer.tokenizer.chat_template → inference.model.chat_template
+    # Cascade trainer.tokenizer.chat_template → inference.vllm.chat_template
     # (vLLM ``--chat-template``). Read trainer's value *after* the shared
     # propagation above so we cover both:
     #   - shared ``[tokenizer] chat_template`` (already filled all three above,
@@ -165,7 +164,7 @@ def propagate_shared_fields(data: Any) -> Any:
     #     would otherwise complain about the missing inference value).
     trainer_chat_template = get("trainer.tokenizer.chat_template")
     if trainer_chat_template is not None:
-        fill("inference.model.chat_template", trainer_chat_template)
+        fill("inference.vllm.chat_template", trainer_chat_template)
 
     # Bare ``[ckpt]`` / ``[wandb]`` block: presence-only signal that enables
     # the section with defaults on both sub-configs. Necessary because
@@ -225,9 +224,9 @@ def validate_shared_model_name(
 ) -> None:
     # Orchestrator must match inference (it queries the inference server)
     if inference is not None:
-        if inference.model.name != orchestrator.model.name:
+        if inference.vllm.model != orchestrator.model.name:
             raise ValueError(
-                f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. "
+                f"Inference model name ({inference.vllm.model}) and orchestrator model name ({orchestrator.model.name}) are not the same. "
                 "The orchestrator queries the inference server and must use the same model name."
             )
         return
@@ -310,9 +309,9 @@ def validate_shared_tokenizer(
             f"Use the shared [tokenizer] config to set chat_template for both."
         )
     if inference is not None:
-        if trainer.tokenizer.chat_template != inference.model.chat_template:
+        if trainer.tokenizer.chat_template != inference.vllm.chat_template:
             raise ValueError(
-                f"Inference chat_template ({inference.model.chat_template!r}) does not match "
+                f"Inference chat_template ({inference.vllm.chat_template!r}) does not match "
                 f"the shared tokenizer chat_template ({trainer.tokenizer.chat_template!r}). "
                 f"Use the shared [tokenizer] config to set chat_template for all components."
             )

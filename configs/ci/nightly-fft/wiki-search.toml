@@ -40,8 +40,6 @@ max_completion_tokens = 512
 
 [trainer]
 
-[inference.parallel]
-dp = 4
-
-[inference.model]
+[inference.vllm]
 tool_call_parser = "hermes"
+data_parallel_size = 4

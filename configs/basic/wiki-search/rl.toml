@@ -54,5 +54,5 @@ type = "subprocess"
 
 [ckpt] # Checkpoint at the end of training
 
-[inference.model]
+[inference.vllm]
 tool_call_parser = "hermes"

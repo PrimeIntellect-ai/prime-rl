@@ -1,12 +1,4 @@
-enable_expert_parallel = true
-enable_eplb = false
 use_deep_gemm = true
-gpu_memory_utilization = 0.85
-
-[model]
-name = "zai-org/GLM-5-FP8"
-tool_call_parser = "auto"
-reasoning_parser = "glm45"
 
 [deployment]
 type = "disaggregated"
@@ -17,3 +9,11 @@ gpus_per_node = 8
 [slurm]
 job_name = "glm5"
 partition = "cluster"
+
+[vllm]
+model = "zai-org/GLM-5-FP8"
+tool_call_parser = "auto"
+reasoning_parser = "glm45"
+gpu_memory_utilization = 0.85
+enable_expert_parallel = true
+enable_eplb = false
