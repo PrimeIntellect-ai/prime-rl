@@ -111,6 +111,7 @@ labels = ["laguna-xs21-swe-tpep8"]
 [orchestrator.eval]
 interval = 20
 group_size = 1
+skip_first_step = true
 
 [orchestrator.eval.sampling]
 temperature = 1.0
