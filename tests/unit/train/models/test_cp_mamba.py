@@ -6,6 +6,8 @@ import torch
 
 from prime_rl.trainer.models.layers import cp_mamba
 
+pytestmark = [pytest.mark.gpu]
+
 
 class _FakeMixer(torch.nn.Module):
     def __init__(self):
@@ -19,6 +21,7 @@ class _FakeMixer(torch.nn.Module):
         self.chunk_size = 1
         self.time_step_limit = None
         self.variance_epsilon = 1e-5
+        self.activation = "silu"
 
         self.in_proj = torch.nn.Linear(1, 5, bias=False)
         self.in_proj.weight.data.copy_(torch.tensor([[1.0], [1.0], [1.0], [1.0], [1.0]]))
@@ -27,7 +30,9 @@ class _FakeMixer(torch.nn.Module):
         self.dt_bias = torch.nn.Parameter(torch.zeros(1))
         self.conv1d = torch.nn.Conv1d(3, 3, kernel_size=2, groups=3, bias=False)
         self.conv1d.weight.data.fill_(1.0)
-        self.norm = types.SimpleNamespace(weight=torch.ones(1), variance_epsilon=self.variance_epsilon, group_size=1)
+        self.norm = types.SimpleNamespace(
+            weight=torch.ones(1, device="cuda"), variance_epsilon=self.variance_epsilon, group_size=1
+        )
         self.out_proj = torch.nn.Identity()
 
 
@@ -52,20 +57,29 @@ def test_mamba_cp_forward_resets_conv_and_scan_at_packed_boundaries(monkeypatch)
     monkeypatch.setattr(cp_mamba, "seq_to_head_parallel", lambda value, *_: value)
     monkeypatch.setattr(cp_mamba, "head_to_seq_parallel", lambda value, *_: value)
 
-    mixer = _FakeMixer()
-    cu_seqlens = torch.tensor([0, 2, 4], dtype=torch.int32)
-    first = torch.tensor([[[1.0], [2.0], [3.0], [4.0]]])
+    mixer = _FakeMixer().cuda()
+    cu_seqlens = torch.tensor([0, 2, 4], dtype=torch.int32, device="cuda")
+    first = torch.tensor([[[1.0], [2.0], [3.0], [4.0]]], device="cuda")
     second = first.clone()
     second[0, 1, 0] = 200.0
 
     first_out = cp_mamba.mamba_cp_forward(mixer, first, None, 0, 1, cu_seqlens)
     second_out = cp_mamba.mamba_cp_forward(mixer, second, None, 0, 1, cu_seqlens)
 
-    assert torch.equal(seen_seq_idx[0], torch.tensor([[0, 0, 1, 1]], dtype=torch.int32))
+    assert torch.equal(seen_seq_idx[0], torch.tensor([[0, 0, 1, 1]], dtype=torch.int32, device="cuda"))
     assert torch.equal(seen_seq_idx[1], seen_seq_idx[0])
     torch.testing.assert_close(first_out[:, 2:], second_out[:, 2:])
 
 
-def test_mamba_cp_forward_rejects_local_boundaries():
-    with pytest.raises(ValueError, match="full sequence length 4"):
-        cp_mamba._build_seq_idx([0, 2], 4, torch.device("cpu"))
+def test_mamba_cp_forward_builds_seq_idx_for_uneven_packs(monkeypatch):
+    seen_seq_idx: list[torch.Tensor] = []
+    _install_fake_scan(monkeypatch, seen_seq_idx)
+    monkeypatch.setattr(cp_mamba, "seq_to_head_parallel", lambda value, *_: value)
+    monkeypatch.setattr(cp_mamba, "head_to_seq_parallel", lambda value, *_: value)
+
+    cu_seqlens = torch.tensor([0, 1, 4, 6], dtype=torch.int32, device="cuda")
+    hidden_states = torch.arange(6, dtype=torch.float32, device="cuda").reshape(1, 6, 1)
+
+    cp_mamba.mamba_cp_forward(_FakeMixer().cuda(), hidden_states, None, 0, 1, cu_seqlens)
+
+    assert torch.equal(seen_seq_idx[0], torch.tensor([[0, 1, 1, 1, 2, 2]], dtype=torch.int32, device="cuda"))

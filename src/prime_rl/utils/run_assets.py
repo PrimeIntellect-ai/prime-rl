@@ -60,9 +60,3 @@ def build_run_asset_env(
     env[IMAGE_OFFLOAD_DIR_ENV] = str(resolve_image_offload_dir(output_dir, config, env))
 
     return env
-
-
-def apply_run_asset_env(output_dir: Path, multimodal: MultimodalConfig) -> None:
-    if os.environ.get(IMAGE_OFFLOAD_DIR_ENV):
-        return
-    os.environ.update(build_run_asset_env(output_dir, multimodal=multimodal))

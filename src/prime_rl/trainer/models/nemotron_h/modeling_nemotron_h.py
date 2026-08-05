@@ -10,6 +10,8 @@ from typing import Optional
 
 import torch
 import torch.distributed as dist
+from fla.modules.conv import causal_conv1d as fla_causal_conv1d
+from fla.ops.utils import prepare_sequence_ids
 from torch import Tensor, nn
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
@@ -40,10 +42,8 @@ def _patch_mamba2_use_triton_ssd():
     Triton kernels and mamba_ssm use fp32. This causes ~0.4 KL divergence.
 
     This patch makes the mixer use mamba_chunk_scan_combined (Triton, fp32
-    softplus) for the SSD computation, with PyTorch nn.Conv1d for convolution.
-    Requires mamba_ssm installed; causal_conv1d should NOT be installed (it
-    needs arch-specific CUDA compilation). The HF cuda_kernels_forward
-    already falls back to PyTorch nn.Conv1d when causal_conv1d is absent.
+    softplus) for the SSD computation, with fla's Triton causal_conv1d for
+    convolution. Requires mamba_ssm installed.
     """
     global _patch_applied
     if _patch_applied:
@@ -68,7 +68,7 @@ def _patch_mamba2_use_triton_ssd():
     def _varlen_mamba_forward(self, hidden_states, cu_seqlens):
         """Varlen-aware mamba forward. `cu_seqlens` is required: shape [num_seq+1],
         e.g. [0, s1, s1+s2, ...]. Handles packed batches by:
-          - applying conv1d per-sequence (with kernel-1 leading zeros)
+          - passing cu_seqlens to causal_conv1d (conv state resets at boundaries)
           - passing seq_idx to mamba_chunk_scan_combined (SSM state resets at boundaries)
         """
         batch_size, seq_len, _ = hidden_states.shape
@@ -86,20 +86,15 @@ def _patch_mamba2_use_triton_ssd():
             dim=-1,
         )
 
-        # 2. Per-sequence causal conv1d. self.conv1d already has padding=kernel-1 so
-        # applying it to each segment independently gives the correct causal output
-        # without cross-sequence history.
-        hbc_t = hidden_states_B_C.transpose(1, 2)  # (1, C, L)
-        cu = cu_seqlens.tolist()
-        conv_outs = []
-        for i in range(len(cu) - 1):
-            s, e = cu[i], cu[i + 1]
-            if s == e:
-                continue
-            seg = hbc_t[:, :, s:e]
-            conv_out = self.conv1d(seg)[:, :, : e - s]
-            conv_outs.append(conv_out)
-        hidden_states_B_C = self.act(torch.cat(conv_outs, dim=-1).transpose(1, 2))
+        # 2. Causal conv1d — must reset at sequence boundaries for packed batches,
+        # otherwise the kernel-1 left pad leaks state across sequences.
+        hidden_states_B_C, _ = fla_causal_conv1d(
+            x=hidden_states_B_C,
+            weight=self.conv1d.weight.squeeze(1),
+            bias=self.conv1d.bias,
+            activation=self.activation,
+            cu_seqlens=cu_seqlens,
+        )
 
         hidden_states, B, C = torch.split(
             hidden_states_B_C,
@@ -108,12 +103,7 @@ def _patch_mamba2_use_triton_ssd():
         )
 
         # 3. SSM with seq_idx so state resets at sequence boundaries
-        seq_idx = torch.zeros(seq_len, dtype=torch.int32, device=hidden_states.device)
-        for i in range(len(cu) - 1):
-            s, e = cu[i], cu[i + 1]
-            if e > s:
-                seq_idx[s:e] = i
-        seq_idx = seq_idx.unsqueeze(0)  # (1, L)
+        seq_idx = prepare_sequence_ids(cu_seqlens).to(torch.int32).unsqueeze(0)
 
         scan_output = _mamba_chunk_scan_combined(
             hidden_states.view(batch_size, seq_len, -1, self.head_dim),

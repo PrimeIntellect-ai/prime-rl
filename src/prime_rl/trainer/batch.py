@@ -6,7 +6,7 @@ import msgspec
 import numpy as np
 
 from prime_rl.trainer.utils import balanced_partition
-from prime_rl.transport.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
+from prime_rl.transport.types import EncodedTensor, MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl

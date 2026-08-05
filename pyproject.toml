@@ -53,7 +53,7 @@ sft = "prime_rl.entrypoints.sft:main"
 inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.entrypoints.trainer:main"
 orchestrator = "prime_rl.entrypoints.orchestrator:main"
-env-server = "prime_rl.orchestrator.env_server.env_server:main"
+env-server = "prime_rl.entrypoints.env_server:main"
 
 [project.entry-points."vllm.general_plugins"]
 prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
@@ -235,7 +235,14 @@ explicit = true
 
 [tool.ruff.lint]
 select = ["F", "I"]
-ignore = ["F722", "F821"] # Need to ignore for jaxtyping (https://docs.kidger.site/jaxtyping/faq/)
+
+# jaxtyping writes shapes as string annotations (`Int[Tensor, "batch seq"]`), which ruff reads as
+# forward references and reports as syntax errors / undefined names.
+[tool.ruff.lint.per-file-ignores]
+"src/prime_rl/trainer/model.py" = ["F722", "F821"]
+"src/prime_rl/trainer/rl/data.py" = ["F722", "F821"]
+"src/prime_rl/trainer/rl/loss.py" = ["F722", "F821"]
+"src/prime_rl/trainer/sft/data.py" = ["F722", "F821"]
 
 [tool.ruff.lint.isort]
 # `prime_rl` is split across two editable wheels (prime-rl + prime-rl-configs).
