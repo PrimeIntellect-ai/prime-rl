@@ -1,5 +1,10 @@
 import asyncio
+import hashlib
+import os
+import shutil
+import tempfile
 from argparse import Namespace
+from pathlib import Path
 from typing import Any
 
 import uvloop
@@ -91,6 +96,47 @@ async def update_weights(request: Request):
     return {"status": "ok"}
 
 
+LORA_STAGING_DIR_ENV = "PRIME_LORA_STAGING_DIR"
+
+
+def _lora_staging_root() -> Path | None:
+    """Node-local scratch dir for adapter copies. Set the env var empty to load in place."""
+    configured = os.environ.get(LORA_STAGING_DIR_ENV)
+    if configured is not None:
+        return Path(configured) if configured else None
+    return Path(tempfile.gettempdir()) / "prime-rl-lora"
+
+
+def _stage_lora_adapter(root: Path, lora_name: str, source: Path) -> Path:
+    """Copy ``source`` into node-local scratch and return the local path.
+
+    Broadcast dirs are immutable per step, so an already-staged copy is reused. The copy lands
+    under a temporary name and is renamed into place, so a concurrent load never observes a
+    half-copied adapter. Earlier copies of the same adapter are dropped once the new one lands.
+    """
+    key = hashlib.sha1(str(source).encode()).hexdigest()[:12]
+    staged = root / lora_name / key / source.name
+    if staged.is_dir():
+        return staged
+
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    tmp = staged.with_name(f".{staged.name}.{os.getpid()}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.copytree(source, tmp)
+    try:
+        os.replace(tmp, staged)
+    except OSError:
+        # Lost the rename race to a concurrent load of the same step; its copy is equivalent.
+        shutil.rmtree(tmp, ignore_errors=True)
+        if not staged.is_dir():
+            raise
+
+    for previous in (root / lora_name).iterdir():
+        if previous.name != key:
+            shutil.rmtree(previous, ignore_errors=True)
+    return staged
+
+
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
     """Wrapper around vLLM's /v1/load_lora_adapter.
@@ -109,13 +155,36 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     The reset runs regardless of success/error: vLLM only stores the adapter on
     success today, but resetting whatever is stored keeps us correct even if a
     future version were to leave a ``load_inplace=True`` request behind on error.
+
+    Two guards protect the engine from the trainer's broadcast retention, which prunes the
+    directory we are handed while the run is live. A missing adapter is answered here rather
+    than through ``add_lora``, which reports a load failure as a fatal executor error and takes
+    the engine down. And the adapter is copied to node-local scratch before the workers see it:
+    they mmap it, and unlinking an mmapped file under them kills the process outright (SIGBUS on
+    NFS), with no traceback and no way to catch it. The stored path is rewound to the broadcast
+    dir afterwards so ``/v1/models`` keeps reporting the step the orchestrator asked for.
     """
+    source = Path(lora_request.lora_path)
+    if not (source / "adapter_config.json").is_file():
+        logger.warning("No adapter for %s at %s", lora_request.lora_name, source)
+        return JSONResponse(
+            content={"error": {"message": f"No adapter found at {source}", "type": "NotFoundError", "code": 404}},
+            status_code=404,
+        )
+
+    staging_root = _lora_staging_root()
+    if staging_root is not None:
+        staged = await asyncio.to_thread(_stage_lora_adapter, staging_root, lora_request.lora_name, source)
+        lora_request.lora_path = str(staged)
+
     handler = models(raw_request)
     lora_request.load_inplace = True
     response = await handler.load_lora_adapter(lora_request)
     stored = handler.lora_requests.get(lora_request.lora_name)
     if stored is not None:
         stored.load_inplace = False
+        if stored.lora_path == lora_request.lora_path:
+            stored.lora_path = str(source)
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     return {"status": "ok"}
@@ -214,8 +283,6 @@ vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
 # Only difference we do some config translation (i.e. pass populated namespace
 # to `parse_args`) and additional arg validation
 def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
-    import os
-
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
     from vllm.entrypoints.openai.api_server import run_server
 
