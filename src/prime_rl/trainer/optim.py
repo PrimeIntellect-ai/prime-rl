@@ -171,6 +171,7 @@ class CPUOffloadOptimizer:
     def load_state_dict(self, state_dict):
         self.optimizer.load_state_dict(state_dict)
         self._move_states("cpu")
+        torch.cuda.synchronize()
         self._initialized = True
 
     @property
