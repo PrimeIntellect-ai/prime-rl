@@ -35,7 +35,7 @@ class _GradientCopyTask:
     buffers: list[tuple[_CPUGradientBuffer, bool]]
 
 
-class CPUGradientOffloader:
+class GradientOffloadManager:
     """Evicts finalized FSDP2 sharded gradients while backward is still running."""
 
     def __init__(self, model: nn.Module, chunks: list[list[nn.Parameter]], dp_replicate: int):
@@ -264,7 +264,7 @@ class CPUOffloadOptimizer:
         self._chunks = self._build_chunks(named_params)
         if grad_cpu_offload and model is None:
             raise ValueError("Gradient CPU offload requires the model")
-        self.grad_offloader = CPUGradientOffloader(model, self._chunks, dp_replicate) if grad_cpu_offload else None
+        self._gradient_manager = GradientOffloadManager(model, self._chunks, dp_replicate) if grad_cpu_offload else None
 
     @staticmethod
     def _extract_layer_idx(name: str) -> int | None:
@@ -370,19 +370,19 @@ class CPUOffloadOptimizer:
         n = len(self._chunks)
 
         self._move_chunk_states(0, "cuda", h2d_stream)
-        if self.grad_offloader is not None:
-            self.grad_offloader.prefetch_chunk(0, h2d_stream)
+        if self._gradient_manager is not None:
+            self._gradient_manager.prefetch_chunk(0, h2d_stream)
         for i in range(n):
             compute_stream.wait_stream(h2d_stream)
             if i + 1 < n:
                 # Wait for previous D2H before reusing pinned CPU buffers.
                 h2d_stream.wait_stream(d2h_stream)
                 self._move_chunk_states(i + 1, "cuda", h2d_stream)
-                if self.grad_offloader is not None:
-                    self.grad_offloader.prefetch_chunk(i + 1, h2d_stream)
+                if self._gradient_manager is not None:
+                    self._gradient_manager.prefetch_chunk(i + 1, h2d_stream)
             self._step_chunk(i, closure if i == 0 else None)
-            if self.grad_offloader is not None:
-                self.grad_offloader.release_chunk(i)
+            if self._gradient_manager is not None:
+                self._gradient_manager.release_chunk(i)
             d2h_stream.wait_stream(compute_stream)
             self._move_chunk_states(i, "cpu", d2h_stream)
         torch.cuda.synchronize()
@@ -393,26 +393,8 @@ class CPUOffloadOptimizer:
 
     def zero_grad(self, set_to_none: bool = True):
         self.optimizer.zero_grad(set_to_none=set_to_none)
-        if self.grad_offloader is not None:
-            self.grad_offloader.zero_grad()
-
-    def finish_backward(self, *, wait_for_copies: bool = True) -> None:
-        if self.grad_offloader is not None:
-            self.grad_offloader.finish_backward(wait_for_copies=wait_for_copies)
-
-    def scale_gradients_(self, factor: float) -> None:
-        if self.grad_offloader is None:
-            for group in self.optimizer.param_groups:
-                for param in group["params"]:
-                    if param.grad is not None:
-                        param.grad.mul_(factor)
-            return
-        self.grad_offloader.scale_(factor)
-
-    def clip_grad_norm_(self, max_norm: float) -> torch.Tensor:
-        if self.grad_offloader is None:
-            raise RuntimeError("clip_grad_norm_ is only available when gradient CPU offload is enabled")
-        return self.grad_offloader.clip_grad_norm_(max_norm)
+        if self._gradient_manager is not None:
+            self._gradient_manager.zero_grad()
 
     def state_dict(self):
         if self._initialized:
@@ -454,7 +436,7 @@ def setup_optimizer(
     cpu_offload: bool = False,
     grad_cpu_offload: bool = False,
     model: nn.Module | None = None,
-) -> Optimizer | CPUOffloadOptimizer:
+) -> tuple[Optimizer | CPUOffloadOptimizer, GradientOffloadManager | None]:
     if grad_cpu_offload and not cpu_offload:
         raise ValueError("Gradient CPU offload requires optimizer CPU offload")
     if lora:
@@ -469,15 +451,16 @@ def setup_optimizer(
     if cpu_offload:
         offload_description = "optimizer state and gradient" if grad_cpu_offload else "optimizer state"
         get_logger().info(f"Wrapping optimizer for {offload_description} CPU offloading")
-        return CPUOffloadOptimizer(
+        optimizer = CPUOffloadOptimizer(
             optimizer,
             named_params=named_params,
             model=model,
             grad_cpu_offload=grad_cpu_offload,
             dp_replicate=parallel_dims.dp_replicate,
         )
+        return optimizer, optimizer._gradient_manager
 
-    return optimizer
+    return optimizer, None
 
 
 def _create_optimizer(
