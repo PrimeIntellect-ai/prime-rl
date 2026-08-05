@@ -24,8 +24,10 @@ class ServerConfig(BaseConfig):
     """Timeout in seconds for the ``/liveness`` endpoint's internal vLLM worker RPC. With Kubernetes liveness probes, keep the probe ``timeoutSeconds`` at least this high."""
 
 
-# Valid vLLM max_lora_rank values (from vllm/config/lora.py)
-# TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
+# Valid vLLM max_lora_rank values (`vllm.config.lora.MaxLoRARanks`), excluding 1 so
+# tiny adapters round up to 8. Hardcoded rather than imported: prime-rl-configs does
+# not depend on vLLM, and importing it costs seconds in every config-parsing process.
+# Pinned against the installed vLLM by `test_valid_vllm_lora_ranks_match_vllm`.
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
 # vLLM all2all backend options for expert-parallel deployments.
