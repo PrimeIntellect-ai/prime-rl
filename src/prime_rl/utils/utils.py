@@ -2,7 +2,6 @@ import asyncio
 import functools
 import importlib
 import os
-import sys
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
@@ -50,18 +49,21 @@ def clean_exit(func: Callable) -> Callable:
         async def async_wrapper(*args, **kwargs):
             try:
                 ret = await func(*args, **kwargs)
-                wandb.finish()
-                return ret
             except Exception:
                 get_logger().opt(exception=True).error(f"Fatal error in {func.__name__}")
                 wandb.finish(exit_code=1)
-                # sys.exit raises SystemExit so the finally block still runs.
-                # raise alone doesn't terminate the process in an async context —
-                # the event loop swallows it and the process hangs indefinitely.
-                sys.exit(1)
-            finally:
-                if dist.is_initialized():
-                    dist.destroy_process_group()
+                # Do NOT destroy the process group on the fatal path: peer ranks are
+                # typically still blocked in a collective this rank will never join, so
+                # a graceful shutdown hangs in ProcessGroup.shutdown() and the job only
+                # dies at the collective timeout — with the watchdog blaming a victim
+                # collective on a healthy rank. Hard-exit instead so the launcher's
+                # failure propagation (torchrun / srun --kill-on-bad-exit) tears the
+                # world down immediately.
+                os._exit(1)
+            wandb.finish()
+            if dist.is_initialized():
+                dist.destroy_process_group()
+            return ret
 
         return async_wrapper
     else:
@@ -70,16 +72,21 @@ def clean_exit(func: Callable) -> Callable:
         def sync_wrapper(*args, **kwargs):
             try:
                 ret = func(*args, **kwargs)
-                wandb.finish()
-                return ret
             except Exception:
                 get_logger().opt(exception=True).error(f"Fatal error in {func.__name__}")
                 wandb.finish(exit_code=1)
-                # sys.exit raises SystemExit so the finally block still runs.
-                sys.exit(1)
-            finally:
-                if dist.is_initialized():
-                    dist.destroy_process_group()
+                # Do NOT destroy the process group on the fatal path: peer ranks are
+                # typically still blocked in a collective this rank will never join, so
+                # a graceful shutdown hangs in ProcessGroup.shutdown() and the job only
+                # dies at the collective timeout — with the watchdog blaming a victim
+                # collective on a healthy rank. Hard-exit instead so the launcher's
+                # failure propagation (torchrun / srun --kill-on-bad-exit) tears the
+                # world down immediately.
+                os._exit(1)
+            wandb.finish()
+            if dist.is_initialized():
+                dist.destroy_process_group()
+            return ret
 
         return sync_wrapper
 
