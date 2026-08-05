@@ -584,6 +584,10 @@ def train(config: TrainerConfig):
             )
             if not broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()
+                # The per-layer gather + fp8 conversion peaks ~50 GiB above the
+                # resident weights; release cached blocks (incl. offload-stream
+                # pools) so the broadcast gets the full headroom.
+                torch.cuda.empty_cache()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
                 # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)

@@ -102,24 +102,46 @@ def convert_tt_layer_to_vllm_kernel(
         w2 = state_dict[w2_key]
         w3 = state_dict[w3_key]
         w13 = torch.cat([w1, w3], dim=1)
+        # The full routed-expert tensors dominate broadcast peak memory (tens of
+        # GiB per layer once gathered). Drop consumed inputs eagerly and write
+        # quantized experts into preallocated stacks instead of stack() copies.
+        del w1, w3
+        del state_dict[w1_key], state_dict[w3_key]
 
         if quantize_fp8:
-            w13_fp8: list[Tensor] = []
-            w13_scales: list[Tensor] = []
-            w2_fp8: list[Tensor] = []
-            w2_scales: list[Tensor] = []
-            for expert_idx in range(w1.shape[0]):
+            num_experts = w13.shape[0]
+            w13_fp8 = w13_scales = w2_fp8 = w2_scales = None
+            for expert_idx in range(num_experts):
                 expert_w13_fp8, expert_w13_scales = quantize_to_vllm_kernel_format(w13[expert_idx])
                 expert_w2_fp8, expert_w2_scales = quantize_to_vllm_kernel_format(w2[expert_idx])
-                w13_fp8.append(expert_w13_fp8)
-                w13_scales.append(expert_w13_scales)
-                w2_fp8.append(expert_w2_fp8)
-                w2_scales.append(expert_w2_scales)
+                if w13_fp8 is None:
+                    w13_fp8 = torch.empty(
+                        (num_experts, *expert_w13_fp8.shape), dtype=expert_w13_fp8.dtype, device=expert_w13_fp8.device
+                    )
+                    w13_scales = torch.empty(
+                        (num_experts, *expert_w13_scales.shape),
+                        dtype=expert_w13_scales.dtype,
+                        device=expert_w13_scales.device,
+                    )
+                    w2_fp8 = torch.empty(
+                        (num_experts, *expert_w2_fp8.shape), dtype=expert_w2_fp8.dtype, device=expert_w2_fp8.device
+                    )
+                    w2_scales = torch.empty(
+                        (num_experts, *expert_w2_scales.shape),
+                        dtype=expert_w2_scales.dtype,
+                        device=expert_w2_scales.device,
+                    )
+                w13_fp8[expert_idx] = expert_w13_fp8
+                w13_scales[expert_idx] = expert_w13_scales
+                w2_fp8[expert_idx] = expert_w2_fp8
+                w2_scales[expert_idx] = expert_w2_scales
+            del w13, w2
+            del state_dict[w2_key]
 
-            out[f"{prefix}.mlp.experts.w13_weight"] = torch.stack(w13_fp8)
-            out[f"{prefix}.mlp.experts.w13_weight_scale_inv"] = torch.stack(w13_scales)
-            out[f"{prefix}.mlp.experts.w2_weight"] = torch.stack(w2_fp8)
-            out[f"{prefix}.mlp.experts.w2_weight_scale_inv"] = torch.stack(w2_scales)
+            out[f"{prefix}.mlp.experts.w13_weight"] = w13_fp8
+            out[f"{prefix}.mlp.experts.w13_weight_scale_inv"] = w13_scales
+            out[f"{prefix}.mlp.experts.w2_weight"] = w2_fp8
+            out[f"{prefix}.mlp.experts.w2_weight_scale_inv"] = w2_scales
         else:
             out[f"{prefix}.mlp.experts.w13_weight"] = w13
             out[f"{prefix}.mlp.experts.w2_weight"] = w2
