@@ -794,7 +794,7 @@ class Orchestrator:
         n_effective = len(effective)
         n_trainable = sum(1 for r in effective if r.is_trainable)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_off_policy = max((run_of(e).off_policy_steps or 0 for e in effective.episodes), default=0)
+        max_off_policy = max((run_of(e).metadata.off_policy_steps or 0 for e in effective.episodes), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
@@ -818,7 +818,7 @@ class Orchestrator:
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Off-Policy {max((run_of(e).off_policy_steps or 0 for e in env_eff_pool.episodes), default=0)} | "
+                f"Max Off-Policy {max((run_of(e).metadata.off_policy_steps or 0 for e in env_eff_pool.episodes), default=0)} | "
                 f"Error {pool.metrics.has_error.mean():.1%} | Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
@@ -839,7 +839,7 @@ class Orchestrator:
             save_episodes, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
         self.monitor.log_eval_samples(batch.rollouts.episodes, env_name=batch.env_name, step=batch.step)
-        policy_versions = {run.policy.start for e in batch.rollouts.episodes if (run := run_of(e)).policy}
+        policy_versions = {m.policy.start for e in batch.rollouts.episodes if (m := run_of(e).metadata).policy}
         policy_version = min(policy_versions, default=0)
         if len(policy_versions) > 1:
             get_logger().warning(

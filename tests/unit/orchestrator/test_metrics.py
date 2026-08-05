@@ -348,13 +348,13 @@ def test_inflight_episode_stamps_what_lands():
     span = vf.PolicySpan(start=3, end=4)  # an update landed while it was generating
     train = inflight.stamp(wire, run_id="r", policy=span, eval_step=None)
     run = run_of(train)
-    assert isinstance(run.metadata, vf.TrainMetadata) and run.policy == span
+    assert isinstance(run.metadata, vf.TrainMetadata) and run.metadata.policy == span
     assert run.metadata.step is None  # the batch window it lands in is not known yet
-    assert run.off_policy_steps is None  # so there is nothing to be behind yet
+    assert run.metadata.off_policy_steps is None  # so there is nothing to be behind yet
     assert train.env.name == "rt" and train.group is not None
 
     run.metadata.step = 6  # the window it landed in, which step 6 trains v5 from
-    assert run.off_policy_steps == 2 and run.policy.drift == 1
+    assert run.metadata.off_policy_steps == 2 and run.metadata.policy.drift == 1
 
     evaluation = replace(inflight, kind="eval").stamp(
         vf.WireEpisode.model_construct(id="e", traces=[]), run_id="r", policy=span, eval_step=12
@@ -362,9 +362,9 @@ def test_inflight_episode_stamps_what_lands():
     # An online eval belongs to the same training run — same id, told apart by its metadata. Its
     # off-policy reading is what drifted under it, not its distance from a step it was dispatched
     # at: nothing trains on an eval, and a slow one would otherwise look on-policy forever.
-    eval_run = run_of(evaluation)
-    assert isinstance(eval_run.metadata, vf.EvalMetadata) and eval_run.metadata.step == 12
-    assert eval_run.id == run.id and eval_run.off_policy_steps == span.drift == 1
+    eval_meta = run_of(evaluation).metadata
+    assert isinstance(eval_meta, vf.EvalMetadata) and eval_meta.step == 12
+    assert run_of(evaluation).id == run.id and eval_meta.off_policy_steps == span.drift == 1
     with pytest.raises(AssertionError):  # an eval episode without its step is not representable
         replace(inflight, kind="eval").stamp(wire, run_id="r", policy=span, eval_step=None)
 

@@ -199,10 +199,10 @@ class InflightEpisode:
         episode.group = vf.GroupInfo(id=str(self.group_id))
         if self.kind == "eval":
             assert eval_step is not None, "eval episode missing its step"
-            metadata: vf.EpisodeMetadata = vf.EvalMetadata(step=eval_step)
+            metadata: vf.EpisodeMetadata = vf.EvalMetadata(step=eval_step, policy=policy)
         else:
-            metadata = vf.TrainMetadata()
-        episode.run = vf.TrainRunInfo(id=run_id, metadata=metadata, policy=policy)
+            metadata = vf.TrainMetadata(policy=policy)
+        episode.run = vf.TrainRunInfo(id=run_id, metadata=metadata)
         return episode
 
 
