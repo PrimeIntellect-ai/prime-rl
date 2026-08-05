@@ -207,9 +207,6 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
-        # Document boundaries derive from position_ids (sparse MLA builds its
-        # varlen indices from them); seq_lens is accepted to satisfy the
-        # trainer's universal contract (the fused LM head wrapper forwards it).
         *,
         seq_lens: Optional[torch.LongTensor] = None,
         seq_lens_are_pre_shard: bool = False,
