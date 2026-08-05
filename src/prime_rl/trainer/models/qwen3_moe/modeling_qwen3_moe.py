@@ -66,7 +66,6 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
             route_scale=1.0,
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
-            use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=config.load_balance_coeff,
             fp8=getattr(config, "fp8", False),
         )
@@ -80,7 +79,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
         if (layer_idx not in config.mlp_only_layers) and (
             config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
         ):
-            self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            self.mlp = MoE.from_args(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
         else:
             self.mlp = MLP(mlp_config)
 

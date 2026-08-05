@@ -1,13 +1,66 @@
+from collections.abc import Callable
+from functools import wraps
+from typing import Any
+
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 from torch.distributed import ProcessGroup
 from torch.distributed.distributed_c10d import _resolve_process_group
-from torch.distributed.tensor import DeviceMesh, Shard, distribute_module, distribute_tensor
+from torch.distributed.tensor import DeviceMesh, DTensor, Shard, distribute_module, distribute_tensor
 from torch.distributed.tensor.parallel import ParallelStyle
 from torchao.prototype.moe_training.ep import a2a_combine_hp_fwd_mxfp8_bwd, a2a_dispatch_mxfp8_fwd_hp_bwd
 from torchao.prototype.mx_formats.mx_tensor import MXTensor
 from torchtitan.distributed.expert_parallel import ExpertParallel
+
+TOKEN_GROUP_ALIGN_SIZE_M = 8
+
+
+def set_token_group_alignment_size_m(alignment: int) -> None:
+    global TOKEN_GROUP_ALIGN_SIZE_M
+    if alignment not in (8, 16, 32):
+        raise ValueError("token group alignment must be 8, 16, or 32")
+    TOKEN_GROUP_ALIGN_SIZE_M = alignment
+
+
+def expert_parallel(func: Callable) -> Callable:
+    """Apply EP token permutation to a grouped expert's runtime weights."""
+
+    @wraps(func)
+    def wrapper(*args: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+        *weights, x, num_tokens_per_expert = args
+        weights = [weight.to_local() if isinstance(weight, DTensor) else weight for weight in weights]
+        kwargs = {name: value.to_local() if isinstance(value, DTensor) else value for name, value in kwargs.items()}
+
+        if num_tokens_per_expert is not None:
+            from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+
+            experts_per_ep_rank = weights[0].shape[0]
+            num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
+
+            with torch.no_grad():
+                permuted_indices, num_tokens_per_expert, _ = generate_permute_indices(
+                    num_tokens_per_expert,
+                    experts_per_ep_rank,
+                    num_ep_ranks,
+                    x.shape[0] + experts_per_ep_rank * TOKEN_GROUP_ALIGN_SIZE_M,
+                    TOKEN_GROUP_ALIGN_SIZE_M,
+                )
+
+            x = torch.vstack((x, x.new_zeros((x.shape[-1]))))
+            input_shape = x.shape
+            x = x[permuted_indices, :]
+
+        out = func(*weights, x, num_tokens_per_expert, **kwargs)
+
+        if num_tokens_per_expert is not None:
+            out_unpermuted = out.new_empty(input_shape)
+            out_unpermuted[permuted_indices, :] = out
+            out = out_unpermuted[:-1]
+
+        return out
+
+    return wrapper
 
 
 class _MXFP8Dispatch(torch.autograd.Function):

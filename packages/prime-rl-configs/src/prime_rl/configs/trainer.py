@@ -94,7 +94,7 @@ class LoRAConfig(BaseConfig):
         "fc1_latent_proj",
         "fc2_latent_proj",
     ]
-    """Module names or regex patterns to apply LoRA to. Simple names (e.g. ``q_proj``) match any component in the module path; regex patterns match anywhere in the name. Names unknown to the current model are silently ignored, so defaults cover multiple architectures. NemotronH note: ``experts`` matches NonGatedGroupedExperts inside LatentMoE; ``fc1_latent_proj``/``fc2_latent_proj`` adapt the latent up/down projections. Add ``in_proj``/``out_proj`` to also LoRA Mamba."""
+    """Module names or regex patterns to apply LoRA to. Simple names (e.g. ``q_proj``) match any component in the module path; regex patterns match anywhere in the name. Names unknown to the current model are silently ignored, so defaults cover multiple architectures. NemotronH note: ``experts`` matches the ReLU² GroupedExperts inside LatentMoE; ``fc1_latent_proj``/``fc2_latent_proj`` adapt the latent up/down projections. Add ``in_proj``/``out_proj`` to also LoRA Mamba."""
 
     modules_to_save: list[str] = []
     """Module names or regex patterns to keep fully trainable (not freeze). Same matching rules as ``target_modules``."""
@@ -207,9 +207,6 @@ class ModelConfig(BaseModelConfig):
 
     moe_router_dtype: Literal["bfloat16", "float32"] = "float32"
     """Compute dtype for MoE router gates. ``float32`` (default) keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. Router score functions (sigmoid/softmax) run in fp32 regardless. Only affects the custom MoE implementation; a no-op for non-MoE and HF-impl models."""
-
-    moe_use_grouped_mm: bool = True
-    """Use grouped mm for MoE layers. Requires compute capability ≥ 9.0."""
 
     quantization: QuantizationConfig | None = None
 
