@@ -241,9 +241,7 @@ class TrainSink:
         num_dropped = 0
         for r in survivors:
             self.pre_filter_seen += 1
-            reasons = drop_reasons(
-                r, drop=self.drop_degenerate, drop_zero_advantage=self.drop_zero_advantage
-            )
+            reasons = drop_reasons(r, drop=self.drop_degenerate, drop_zero_advantage=self.drop_zero_advantage)
             r.is_filtered = bool(reasons)
             if reasons:
                 self.pre_filter_dropped += 1
