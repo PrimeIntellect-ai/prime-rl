@@ -110,6 +110,15 @@ class WeightWatcher:
                         f"Observer {type(observer).__name__}.on_version_pending({next_step}) raised: {exc!r}"
                     )
 
+            # Draining can outlast the trainer's retention window on a fast-stepping run, so
+            # re-check the broadcast before loading it. Returning here leaves `ckpt_step` alone;
+            # the next poll resolves to whatever is live.
+            if not stable_marker.exists():
+                get_logger().warning(
+                    f"Broadcast {next_step} was pruned before it could be loaded; waiting for a newer checkpoint"
+                )
+                return
+
             get_logger().debug(f"Updating weights to step {next_step}")
             t1 = time.perf_counter()
             await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)

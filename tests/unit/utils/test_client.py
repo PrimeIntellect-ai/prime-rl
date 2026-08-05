@@ -3,10 +3,16 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
 from verifiers.v1.clients.config import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter, setup_clients
+from prime_rl.utils.client import (
+    AdapterPathMissingError,
+    _is_retryable_lora_error,
+    load_lora_adapter,
+    setup_clients,
+)
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -34,19 +40,32 @@ def test_is_retryable_lora_error_returns_false_for_non_http_error():
     assert _is_retryable_lora_error(ValueError("some error")) is False
 
 
-def test_load_lora_adapter_succeeds_on_first_attempt():
+def test_is_retryable_lora_error_returns_false_for_missing_adapter_path():
+    assert _is_retryable_lora_error(AdapterPathMissingError("gone")) is False
+
+
+def test_load_lora_adapter_succeeds_on_first_attempt(tmp_path: Path):
     mock_client = AsyncMock()
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
     mock_client.post.return_value = mock_response
 
-    asyncio.run(load_lora_adapter([mock_client], "test-lora", Path("/test/path")))
+    asyncio.run(load_lora_adapter([mock_client], "test-lora", tmp_path))
 
     mock_client.post.assert_called_once_with(
         "/load_lora_adapter",
-        json={"lora_name": "test-lora", "lora_path": "/test/path"},
+        json={"lora_name": "test-lora", "lora_path": tmp_path.as_posix()},
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
+
+
+def test_load_lora_adapter_does_not_post_a_pruned_path(tmp_path: Path):
+    mock_client = AsyncMock()
+
+    with pytest.raises(AdapterPathMissingError):
+        asyncio.run(load_lora_adapter([mock_client], "test-lora", tmp_path / "step_7"))
+
+    mock_client.post.assert_not_called()
 
 
 def test_setup_clients_assigns_renderer_and_dp_rank_headers():

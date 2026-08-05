@@ -444,8 +444,14 @@ async def update_weights(
             await _resume_engines(admin_clients)
 
 
+class AdapterPathMissingError(RuntimeError):
+    """The adapter directory is gone from shared storage — retrying cannot bring it back."""
+
+
 def _is_retryable_lora_error(exception: BaseException) -> bool:
     """Check if an exception should trigger a retry for LoRA loading."""
+    if isinstance(exception, AdapterPathMissingError):
+        return False
     if isinstance(exception, httpx.HTTPStatusError):
         # Retry on 404 (adapter not found) or 500 (server error during loading)
         return exception.response.status_code in (404, 500)
@@ -476,7 +482,10 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     KV computed under old weights is never reused.
 
     Retries with exponential backoff if the adapter files are not found,
-    which can happen due to NFS propagation delays.
+    which can happen due to NFS propagation delays. A path that has disappeared
+    entirely — trainer retention pruned the broadcast step — raises
+    ``AdapterPathMissingError`` instead, so we stop hammering a dir that is never
+    coming back and let the caller resync against a live step.
     """
     logger = get_logger()
     lora_path_posix = lora_path.as_posix()
@@ -488,6 +497,8 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
         reraise=True,
     )
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
+        if not lora_path.exists():
+            raise AdapterPathMissingError(f"Adapter path {lora_path} no longer exists")
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
         response = await admin_client.post(
             "/load_lora_adapter",

@@ -23,6 +23,7 @@ from renderers import RendererConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.client import (
+    AdapterPathMissingError,
     ClientIdentity,
     PrefillScorer,
     client_identity,
@@ -343,6 +344,14 @@ class ElasticInferencePool:
             try:
                 self.logger.debug(f"Loading adapter {self._desired.name} on {ip}")
                 await load_lora_adapter([self._admin_clients[ip]], self._desired.name, self._desired.path)
+            except AdapterPathMissingError as e:
+                # Trainer retention pruned the step we were told to load. The server itself is
+                # healthy and still serving the previous adapter, so keep it in the pool — dropping
+                # it would empty `ready_urls` and stall dispatch over a stale path — and wait for
+                # the watcher to point us at a live step.
+                self.logger.warning(f"Skipping adapter sync on {ip}: {e}")
+                server.status = "ready" if loaded is not None else "syncing"
+                return False
             except Exception as e:
                 server.status = "unhealthy"
                 server.sync_failures += 1
