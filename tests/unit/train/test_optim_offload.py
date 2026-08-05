@@ -67,10 +67,7 @@ def _run_step(model, optimizer, input_ids):
     out = model(input_ids)
     loss = out.float().sum()
     loss.backward()
-    if isinstance(optimizer, CPUOffloadOptimizer):
-        optimizer.step()
-    else:
-        optimizer.step()
+    optimizer.step()
     optimizer.zero_grad()
     return loss
 
