@@ -1,6 +1,7 @@
 import math
 
 import verifiers.v1 as vf
+from verifiers.v1.configs.agent import WireAgentConfig
 
 from prime_rl.orchestrator.degeneracy import (
     REPETITION_PROB,
@@ -33,7 +34,7 @@ def _assistant_node(token_ids: list[int], logprobs: list[float]) -> vf.MessageNo
 def _make_rollout(nodes: list[vf.MessageNode]) -> TrainRollout:
     rollout = TrainRollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="")),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
         nodes=nodes,
         rewards={"reward": vf.Reward(score=1.0)},
     )

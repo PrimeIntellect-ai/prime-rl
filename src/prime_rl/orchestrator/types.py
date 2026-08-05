@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, Protocol, cast
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
+from verifiers.v1.configs.agent import WireAgentConfig
+from verifiers.v1.state import State
 from verifiers.v1.task import DataT
 from verifiers.v1.trace import EXCLUDE_FIELDS
 
@@ -59,12 +61,12 @@ class GroupState:
     policy_version_at_start: int = 0
 
 
-Rollout = vf.Trace
+Rollout = vf.WireTrace
 """The env's own trace, unextended — what an eval rollout is, and the read side of a training one.
 Where a trace sits (its episode, its group, its env) is the episode's to say."""
 
 
-class TrainRollout(vf.Trace[DataT], Generic[DataT]):
+class TrainRollout(vf.Trace[DataT, State, WireAgentConfig], Generic[DataT]):
     """A rollout on the training path — the one place prime-rl extends a verifiers type, because
     trainer-bound state has nowhere else to live: the samples built from its branches, what the
     degeneracy measurements found on it, and whether the drop policy kept it. All of it is

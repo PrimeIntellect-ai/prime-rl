@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 import verifiers.v1 as vf
+from verifiers.v1.configs.agent import WireAgentConfig
 
 from prime_rl.configs.algorithm import (
     GRPOAlgoConfig,
@@ -100,7 +101,7 @@ def _build_rollout(
 
     rollout = TrainRollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
         nodes=nodes,
         calls=calls,
         rewards={"reward": vf.Reward(score=reward)},
@@ -298,7 +299,7 @@ def test_stamp_advantages_zeros_a_shared_node_in_the_later_branch():
     ]
     rollout = TrainRollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
         nodes=[root, *leaves],
         rewards={"reward": vf.Reward(score=0.0)},
     )

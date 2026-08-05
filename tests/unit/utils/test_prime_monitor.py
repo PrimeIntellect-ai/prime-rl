@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import pyarrow.parquet as pq
 import verifiers.v1 as vf
+from verifiers.v1.configs.agent import WireAgentConfig
 
 from prime_rl.orchestrator.types import TrainRollout
 from prime_rl.utils.monitor.prime import PrimeMonitor
@@ -37,7 +38,7 @@ def _build_rollout(*, example_id: int, reward: float, task: str) -> TrainRollout
     ]
     rollout = TrainRollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=example_id, prompt=f"prompt-{example_id}")),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
         nodes=nodes,
         rewards={"reward": vf.Reward(score=reward)},
     )
@@ -86,7 +87,7 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     rollout_with_branches = _build_rollout(example_id=1, reward=1.0, task="task-a")
     rollout_without_branches = TrainRollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=2, prompt="missing-trajectory")),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
     )
     assert rollout_without_branches.branches == []
 

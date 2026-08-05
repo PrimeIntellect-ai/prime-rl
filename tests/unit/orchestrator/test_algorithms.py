@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pydantic
 import pytest
 import verifiers.v1 as vf
+from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
@@ -173,7 +174,7 @@ def _make_rollout(samples: list[TrainingSample]) -> TrainRollout:
     ]
     rollout = TrainRollout(
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
         nodes=nodes,
         rewards={},
         env_name="test-env",
@@ -252,7 +253,7 @@ def _two_turn_rollout(observation_role: str = "tool") -> TrainRollout:
     ]
     rollout = TrainRollout(
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
         nodes=nodes,
         rewards={"r": vf.Reward(score=1.0)},
         env_name="test-env",
@@ -304,7 +305,7 @@ def test_echo_weights_only_content_tokens_when_is_content_present():
     ]
     rollout = TrainRollout(
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
         nodes=nodes,
         rewards={"r": vf.Reward(score=1.0)},
         env_name="test-env",

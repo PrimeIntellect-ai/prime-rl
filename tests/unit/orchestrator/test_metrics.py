@@ -334,8 +334,9 @@ def test_training_state_is_train_only():
     Credit is not among them — it lives on the graph's nodes, which every trace has."""
     assert {"samples", "is_filtered", "degeneracy"} <= set(TrainRollout.model_fields)
     assert "advantages" not in TrainRollout.model_fields  # derived from the nodes
-    # An eval trace is the env's own, unextended — where a trace sits is the episode's to say.
-    assert Rollout is vf.Trace
+    # An eval trace is the env's own, unextended — where a trace sits is the episode's to say,
+    # and it is the same wire specialization the episode's ``traces`` hold.
+    assert Rollout is vf.WireTrace
     assert not {"samples", "is_filtered", "degeneracy", "group_id", "episode_id"} & set(Rollout.model_fields)
 
 
