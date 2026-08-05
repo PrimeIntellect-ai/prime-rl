@@ -10,10 +10,12 @@ import verifiers.v1 as vf
 from prime_rl.orchestrator.eval_sink import eval_step_of
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
 from prime_rl.orchestrator.types import (
+    GROUP_ID,
     Episode,
     InflightEpisode,
     Rollout,
     TrainRollout,
+    group_id_of,
     rollouts_of,
     run_of,
 )
@@ -96,7 +98,7 @@ def ep(*rollouts, env_name: str = "env", errors=(), group_id="g0", cls=Episode):
         id=f"e{next(_ids)}",
         traces=list(rollouts),
         env=vf.EnvInfo(name=env_name),
-        group=vf.GroupInfo(id=group_id),
+        info={GROUP_ID: group_id},
         errors=list(errors),
     )
 
@@ -352,7 +354,7 @@ def test_inflight_episode_stamps_what_lands():
     assert isinstance(run.metadata, vf.TrainMetadata) and run.metadata.policy == span
     assert run.metadata.step is None  # the batch window it lands in is not known yet
     assert run.metadata.off_policy_steps is None  # so there is nothing to be behind yet
-    assert train.env.name == "rt" and train.group is not None
+    assert train.env.name == "rt" and group_id_of(train) is not None
 
     run.metadata.step = 6  # the window it landed in, which step 6 trains v5 from
     assert run.metadata.off_policy_steps == 2 and run.metadata.policy.drift == 1

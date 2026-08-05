@@ -147,11 +147,17 @@ def to_record(episode: Episode) -> dict[str, Any]:
     return episode.model_dump(mode="json", exclude={"traces": {"__all__": EXCLUDE_FIELDS}})
 
 
+GROUP_ID = "group_id"
+"""``Episode.info`` key for the comparison group. Verifiers has no notion of one — a group is the
+consumer's: the episodes it planned from one task and scores against each other."""
+
+
 def group_id_of(episode: Episode) -> str:
     """The group an episode was planned in. The dispatcher plans every episode into one, so this
     is always set by the time anything downstream asks."""
-    assert episode.group is not None, "the dispatcher plans every episode into a group"
-    return episode.group.id
+    group_id = episode.info.get(GROUP_ID)
+    assert isinstance(group_id, str), "the dispatcher plans every episode into a group"
+    return group_id
 
 
 def env_name_of(episode: Episode) -> str:
@@ -198,7 +204,7 @@ class InflightEpisode:
         not — it belongs to whichever batch window is collecting when it lands, so the main loop
         fills that in."""
         episode.env.name = self.env_name
-        episode.group = vf.GroupInfo(id=str(self.group_id))
+        episode.info[GROUP_ID] = str(self.group_id)
         if self.kind == "eval":
             assert eval_step is not None, "eval episode missing its step"
             metadata: vf.EpisodeMetadata = vf.EvalMetadata(step=eval_step, policy=policy)
