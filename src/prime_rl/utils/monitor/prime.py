@@ -273,7 +273,7 @@ class PrimeMonitor(Monitor):
         assert step not in self._pending_sample_steps, f"Step {step} upload already in progress"
         assert self.logger is not None, "Logger is required for sample logging"
 
-        self.logger.info(f"Logging {len(rollouts)} samples to Prime Intellect API at step {step}")
+        self.logger.info(f"Logging {len(episodes)} episodes to Prime Intellect API at step {step}")
         start_time = time.perf_counter()
 
         parquet_bytes = self._rollouts_to_parquet_bytes(episodes, step)

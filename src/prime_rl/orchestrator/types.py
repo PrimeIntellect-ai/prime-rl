@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Generic, Literal, Protocol, cast
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
