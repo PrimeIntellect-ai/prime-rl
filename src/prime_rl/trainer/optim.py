@@ -51,7 +51,6 @@ class GradientOffloadManager:
         self._d2h_stream = torch.cuda.Stream()
         self._tasks: queue.SimpleQueue[_GradientCopyTask] = queue.SimpleQueue()
         self._condition = threading.Condition()
-        self._worker_error: Exception | None = None
 
         self._lagged_unit: tuple[list[nn.Parameter], object | None] | None = None
         self._seen_units: set[int] = set()
@@ -72,27 +71,17 @@ class GradientOffloadManager:
         )
 
     def _copy_worker(self) -> None:
-        try:
-            while True:
-                task = self._tasks.get()
-                task.event.synchronize()
-                for buffer, accumulate in task.buffers:
-                    if accumulate:
-                        assert buffer.staging is not None
-                        buffer.accumulator.add_(buffer.staging)
-                    with self._condition:
-                        buffer.initialized = True
-                        buffer.pending = False
-                        self._condition.notify_all()
-        except Exception as error:
-            # Surface daemon failures to waiters instead of leaving them blocked.
-            with self._condition:
-                self._worker_error = error
-                self._condition.notify_all()
-
-    def _raise_worker_error(self) -> None:
-        if self._worker_error is not None:
-            raise RuntimeError("Gradient CPU offload worker failed") from self._worker_error
+        while True:
+            task = self._tasks.get()
+            task.event.synchronize()
+            for buffer, accumulate in task.buffers:
+                if accumulate:
+                    assert buffer.staging is not None
+                    buffer.accumulator.add_(buffer.staging)
+                with self._condition:
+                    buffer.initialized = True
+                    buffer.pending = False
+                    self._condition.notify_all()
 
     def _get_buffer(self, param: nn.Parameter, grad: DTensor) -> _CPUGradientBuffer:
         param_id = id(param)
@@ -106,8 +95,7 @@ class GradientOffloadManager:
 
     def _wait_buffer(self, buffer: _CPUGradientBuffer) -> None:
         with self._condition:
-            self._condition.wait_for(lambda: not buffer.pending or self._worker_error is not None)
-        self._raise_worker_error()
+            self._condition.wait_for(lambda: not buffer.pending)
 
     @torch.no_grad()
     def _offload_params(
@@ -185,10 +173,7 @@ class GradientOffloadManager:
 
     def wait(self) -> None:
         with self._condition:
-            self._condition.wait_for(
-                lambda: not any(buffer.pending for buffer in self._buffers.values()) or self._worker_error is not None
-            )
-        self._raise_worker_error()
+            self._condition.wait_for(lambda: not any(buffer.pending for buffer in self._buffers.values()))
 
     @torch.no_grad()
     def scale_(self, factor: float) -> None:
