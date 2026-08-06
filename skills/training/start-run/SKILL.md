@@ -28,7 +28,7 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
   Budget pinned CPU RAM for an accumulator plus
   a same-sized staging set when gradient accumulation is greater than one.
 - The experimental CPU optimizer step uses
-  `model.optim_cpu_offload = { gradients = true, cpu_step = true }`. It keeps a
+  `model.optim_cpu_offload = { gradients = true, step_on_cpu = true }`. It keeps a
   persistent BF16 compute model on GPU, stores FP32 master weights and gradients
   in pinned CPU RAM, uses fused CPU AdamW, and refreshes the BF16 weights once
   per optimizer step. With

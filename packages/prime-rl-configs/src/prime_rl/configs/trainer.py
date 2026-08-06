@@ -59,12 +59,12 @@ class OptimizerOffloadingConfig(BaseConfig):
     gradients: bool = False
     """Offload sharded gradients to pinned CPU memory during backward."""
 
-    cpu_step: bool = False
+    step_on_cpu: bool = False
     """Run the AdamW update on CPU-resident FP32 master weights, then refresh persistent BF16 GPU weights."""
 
     @model_validator(mode="after")
-    def cpu_step_requires_gradients(self):
-        if self.cpu_step and not self.gradients:
+    def step_on_cpu_requires_gradients(self):
+        if self.step_on_cpu and not self.gradients:
             raise ValueError("CPU optimizer step requires gradient CPU offload")
         return self
 
@@ -715,7 +715,11 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_master_weight_offload_checkpointing(self):
-        if self.model.optim_cpu_offload is not None and self.model.optim_cpu_offload.cpu_step and self.ckpt is not None:
+        if (
+            self.model.optim_cpu_offload is not None
+            and self.model.optim_cpu_offload.step_on_cpu
+            and self.ckpt is not None
+        ):
             raise ValueError("Master-weight CPU offload does not support resumable checkpoints")
         return self
 

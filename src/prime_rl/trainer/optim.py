@@ -474,7 +474,7 @@ def setup_optimizer(
     offload_config: OptimizerOffloadingConfig | None = None,
     model: nn.Module | None = None,
 ) -> tuple[Optimizer | CPUOffloadOptimizer, GradientOffloadManager | None]:
-    if offload_config is not None and offload_config.cpu_step and config.type != "adamw":
+    if offload_config is not None and offload_config.step_on_cpu and config.type != "adamw":
         raise ValueError("CPU optimizer step currently supports AdamW only")
     if lora:
         # Wait for run 0 to be created in the multi run manager
@@ -485,7 +485,7 @@ def setup_optimizer(
 
     master_weights = None
     optimizer_named_params = named_params
-    if offload_config is not None and offload_config.cpu_step:
+    if offload_config is not None and offload_config.step_on_cpu:
         if model is None:
             raise ValueError("Master-weight CPU offload requires the model")
         optimizer_named_params, master_weights = _create_cpu_master_weights(
@@ -497,14 +497,14 @@ def setup_optimizer(
         config,
         optimizer_named_params,
         parallel_dims,
-        fused_adamw=offload_config is not None and offload_config.cpu_step,
+        fused_adamw=offload_config is not None and offload_config.step_on_cpu,
     )
 
     if offload_config is not None:
         offload_parts = ["optimizer state"]
         if offload_config.gradients:
             offload_parts.append("gradient")
-        if offload_config.cpu_step:
+        if offload_config.step_on_cpu:
             offload_parts.append("CPU optimizer step")
         offload_description = ", ".join(offload_parts)
         get_logger().info(f"Wrapping optimizer for {offload_description} CPU offloading")
