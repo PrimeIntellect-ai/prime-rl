@@ -28,16 +28,11 @@ with `inspect.getfile` before launching so the run cannot silently use another c
 - Auto-generated `--help` panels from `Field(description=...)` or PEP 224 docstrings.
 - Friendly errors: required-field boxes, validator errors point at the offending flag, unknown flags get a "did you mean" hint.
 - Experimental gradient offload uses `model.optim_cpu_offload = { gradients = true }`.
-  Budget pinned CPU RAM for an accumulator plus
-  a same-sized staging set when gradient accumulation is greater than one.
-- The experimental CPU optimizer step uses
-  `model.optim_cpu_offload = { gradients = true, step_on_cpu = true }`. It keeps a
-  persistent BF16 compute model on GPU, stores FP32 master weights and gradients
-  in pinned CPU RAM, uses fused CPU AdamW, and refreshes the BF16 weights once
-  per optimizer step. With
-  gradient accumulation, budget two FP32 gradient-sized buffers. It currently
-  supports AdamW and weights-only checkpoints; resumable optimizer checkpoints
-  are rejected.
+  It keeps a persistent BF16 compute model on GPU, stores FP32 master weights and
+  gradients in pinned CPU RAM, runs the optimizer on CPU, and refreshes the BF16
+  weights once per optimizer step. With gradient accumulation, budget two FP32
+  gradient-sized buffers. Muon is not supported. Resumable checkpoints include
+  the FP32 masters and optimizer state under the original FSDP parameter names.
 
 ## `rl` — RL training
 

@@ -266,13 +266,6 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_master_weight_offload_checkpointing(self):
-        offload = self.model.optim_cpu_offload
-        if offload is not None and offload.step_on_cpu and self.ckpt is not None and not self.ckpt.weights_only:
-            raise ValueError("CPU optimizer step requires weights-only checkpoints")
-        return self
-
-    @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever SFT renders real samples."""
         if self.data.type == "fake" and self.val is None:
