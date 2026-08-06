@@ -155,6 +155,7 @@ def train(config: TrainerConfig):
             parallel_dims,
             lora=config.model.lora is not None,
             cpu_offload=config.model.optim_cpu_offload,
+            cpu_offload_chunked=config.model.optim_cpu_offload_chunked,
         )
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
