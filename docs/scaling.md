@@ -87,6 +87,10 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 | `trainer.model.reshard_after_forward` | If `true` (default), parameters are resharded after the forward pass to free memory; the backward pass re-gathers. Set `false` to keep params resident — faster but more memory. |
 | `trainer.model.fsdp_cpu_offload` | Offload params + grads + optimizer state to CPU. Big memory win, large throughput hit. |
 | `trainer.model.optim_cpu_offload` | Offload only optimizer state. Mid-ground — small throughput cost, decent memory savings, especially at low GPU count. |
+| `trainer.model.grad_cpu_offload` | Additionally offload gradients during backward. Requires optimizer offload. |
+| `trainer.model.master_weight_cpu_offload` | Keep FP32 master weights on CPU and persistent BF16 compute weights on GPU. Experimental AdamW-only mode requiring optimizer and gradient offload. |
+
+Gradient offload attaches public post-accumulate hooks to FSDP's sharded parameters, so each finalized gradient starts its CPU transfer immediately after reduce-scatter without accessing private FSDP state.
 
 ### Expert Parallelism
 
@@ -147,6 +151,17 @@ optim_cpu_offload = true   # already the default
 Mutually exclusive with `fsdp_cpu_offload`. Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
 
 The optimizer step is performed per-transformer-layer with stream-overlapped H2D/D2H transfers: while layer *i* computes, layer *i+1* is prefetched and layer *i-1* is evicted. The prefetch waits for the eviction to complete, so at most two layers' optimizer states are on GPU at any time. This reduces peak GPU optimizer-state memory from the full model's states to about two layers' worth, preventing OOM when `weight + grad + all_opt_states > VRAM`.
+
+For the experimental persistent-BF16 path, enable all three offload options:
+
+```toml
+[trainer.model]
+optim_cpu_offload = true
+grad_cpu_offload = true
+master_weight_cpu_offload = true
+```
+
+This stores FP32 master weights and gradients in pinned CPU memory, updates them with fused CPU AdamW, and refreshes the persistent BF16 GPU weights after each optimizer step. Gradient accumulation requires two FP32 gradient-sized pinned buffers. It currently supports AdamW and weights-only checkpoints; resumable optimizer checkpoints are rejected.
 
 ### LM Head Chunking
 

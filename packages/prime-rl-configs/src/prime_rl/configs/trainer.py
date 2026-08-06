@@ -171,6 +171,9 @@ class ModelConfig(BaseModelConfig):
     grad_cpu_offload: bool = False
     """Offload sharded gradients to pinned CPU memory during backward and stream them back per optimizer chunk. This experimental path requires optim_cpu_offload."""
 
+    master_weight_cpu_offload: bool = False
+    """Keep FP32 master weights and fused AdamW state on CPU with persistent BF16 compute weights on GPU. Gradients are offloaded directly into FP32 buffers, and updated BF16 weights are copied to the GPU once per optimizer step. This experimental path requires optimizer and gradient CPU offload and does not support resumable checkpoints."""
+
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
 
@@ -277,6 +280,8 @@ class ModelConfig(BaseModelConfig):
             raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
         if self.grad_cpu_offload and not self.optim_cpu_offload:
             raise ValueError("Gradient CPU offload requires optim_cpu_offload.")
+        if self.master_weight_cpu_offload and not self.grad_cpu_offload:
+            raise ValueError("Master-weight CPU offload requires grad_cpu_offload.")
         return self
 
     @model_validator(mode="after")
@@ -685,6 +690,18 @@ class TrainerConfig(BaseConfig):
     def validate_opt_and_fsdp_offload(self):
         if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
             raise ValueError("Muon optimizer does not support FSDP CPU offload")
+        return self
+
+    @model_validator(mode="after")
+    def validate_optim_cpu_offload_single_run(self):
+        if self.model.optim_cpu_offload and self.max_concurrent_runs > 1:
+            raise ValueError("Optimizer CPU offload is not supported with max_concurrent_runs > 1")
+        return self
+
+    @model_validator(mode="after")
+    def validate_master_weight_offload_checkpointing(self):
+        if self.model.master_weight_cpu_offload and self.ckpt is not None:
+            raise ValueError("Master-weight CPU offload does not support resumable checkpoints")
         return self
 
     @model_validator(mode="after")

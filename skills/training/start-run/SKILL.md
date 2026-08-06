@@ -27,6 +27,13 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 - Experimental gradient offload requires both `model.optim_cpu_offload = true` and
   `model.grad_cpu_offload = true`. Budget pinned CPU RAM for an accumulator plus
   a same-sized staging set when gradient accumulation is greater than one.
+- Experimental master-weight offload additionally requires
+  `model.master_weight_cpu_offload = true`. It keeps a persistent BF16 compute
+  model on GPU, stores FP32 master weights and gradients in pinned CPU RAM, uses
+  fused CPU AdamW, and refreshes the BF16 weights once per optimizer step. With
+  gradient accumulation, budget two FP32 gradient-sized buffers. It currently
+  supports AdamW and weights-only checkpoints; resumable optimizer checkpoints
+  are rejected.
 
 ## `rl` — RL training
 
