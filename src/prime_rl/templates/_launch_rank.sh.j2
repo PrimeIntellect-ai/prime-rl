@@ -1,11 +1,6 @@
 {# Shared external-LB vLLM launch helper, included once per template and called
    from every per-rank launch site (multi-node and disaggregated).
-   One vLLM API server per DP rank, pinned to its GPU slice.
-
-   This file is rendered inside the single-quoted `srun bash -c '...'` body, so it
-   must not contain a single quote anywhere — including in comments (an apostrophe
-   ends the quoted body and the rest of the script is parsed by the outer shell).
-   `test_rendered_slurm_scripts_are_valid_bash` catches violations. #}
+   One vLLM API server per DP rank, pinned to its GPU slice. #}
 # rank_log <node_rank> <k> — DP rank 0 logs to the node-level file (node_<rank>.log,
 # the target of the top-level inference.log symlink) so it captures real server output;
 # ranks 1+ get their own node_<rank>_rank<k>.log.
@@ -31,9 +26,9 @@ launch_inference_rank() {
         --vllm.data-parallel-size "$dp" --vllm.data-parallel-size-local 1 --vllm.api-server-count 1)
     [ -n "$rpc" ] && cmd+=(--vllm.data-parallel-rpc-port "$rpc")
     # Per-rank vLLM overrides go through a JSON file merged into [inference.vllm]
-    # (dict-valued keys like compilation_config cannot be inlined as CLI flags).
+    # (dict-valued keys like compilation_config can't be inlined as CLI flags).
     if [ -n "$extra" ]; then
-        printf %s "$extra" > "$rpcbase/vllm-overrides.json"
+        printf '%s' "$extra" > "$rpcbase/vllm-overrides.json"
         cmd+=(--vllm @ "$rpcbase/vllm-overrides.json")
     fi
     if [ -n "$nixl" ]; then
