@@ -268,7 +268,7 @@ class SFTConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_master_weight_offload_checkpointing(self):
         offload = self.model.optim_cpu_offload
-        if offload is not None and offload.cpu_step and self.ckpt is not None and not self.ckpt.weights_only:
+        if offload is not None and offload.step_on_cpu and self.ckpt is not None and not self.ckpt.weights_only:
             raise ValueError("CPU optimizer step requires weights-only checkpoints")
         return self
 
