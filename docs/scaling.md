@@ -159,7 +159,7 @@ grad_cpu_offload = true
 master_weight_cpu_offload = true
 ```
 
-This stores FP32 master weights in pinned CPU memory and refreshes the persistent BF16 GPU weights after each optimizer step. It currently supports AdamW and weights-only checkpoints; resumable optimizer checkpoints are rejected.
+This stores FP32 master weights and gradients in pinned CPU memory, updates them with fused CPU AdamW, and refreshes the persistent BF16 GPU weights after each optimizer step. Gradient accumulation requires two FP32 gradient-sized pinned buffers. It currently supports AdamW and weights-only checkpoints; resumable optimizer checkpoints are rejected.
 
 ### LM Head Chunking
 

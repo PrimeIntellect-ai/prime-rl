@@ -176,7 +176,7 @@ class ModelConfig(BaseModelConfig):
     """Offload sharded gradients to pinned CPU memory during backward and stream them back per optimizer chunk. This experimental path requires optim_cpu_offload."""
 
     master_weight_cpu_offload: bool = False
-    """Keep FP32 master weights and AdamW state on CPU with persistent BF16 compute weights on GPU. Updated BF16 weights are copied to the GPU once per optimizer step. This experimental path requires optimizer and gradient CPU offload and does not support resumable checkpoints."""
+    """Keep FP32 master weights and fused AdamW state on CPU with persistent BF16 compute weights on GPU. Gradients are offloaded directly into FP32 buffers, and updated BF16 weights are copied to the GPU once per optimizer step. This experimental path requires optimizer and gradient CPU offload and does not support resumable checkpoints."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""

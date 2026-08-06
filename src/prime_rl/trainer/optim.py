@@ -44,13 +44,20 @@ class _MasterWeight:
 class GradientOffloadManager:
     """Evicts finalized FSDP2 sharded gradients while backward is still running."""
 
-    def __init__(self, model: nn.Module, chunks: list[list[nn.Parameter]], dp_replicate: int):
+    def __init__(
+        self,
+        model: nn.Module,
+        chunks: list[list[nn.Parameter]],
+        dp_replicate: int,
+        cpu_dtype: torch.dtype | None = None,
+    ):
         if not torch.__version__.startswith("2.11."):
             raise RuntimeError(
                 "Gradient CPU offload hook ordering is verified only for the locked PyTorch 2.11 release"
             )
         self._chunks = chunks
         self._dp_replicate = dp_replicate
+        self._cpu_dtype = cpu_dtype
         self._optimizer_param_ids = {id(param) for chunk in chunks for param in chunk}
         self._buffers: dict[int, _CPUGradientBuffer] = {}
 
@@ -93,7 +100,12 @@ class GradientOffloadManager:
         param_id = id(param)
         if param_id not in self._buffers:
             local_grad = grad.to_local()
-            accumulator = torch.empty_like(local_grad, device="cpu", pin_memory=True)
+            accumulator = torch.empty_like(
+                local_grad,
+                dtype=self._cpu_dtype or local_grad.dtype,
+                device="cpu",
+                pin_memory=True,
+            )
             template = copy.copy(grad)
             template._local_tensor = accumulator
             self._buffers[param_id] = _CPUGradientBuffer(template, accumulator)
@@ -300,7 +312,14 @@ class CPUOffloadOptimizer:
         if master_weights is not None:
             gradient_chunks = [[master_weights[id(param)].model_param for param in chunk] for chunk in self._chunks]
         self._gradient_manager = (
-            GradientOffloadManager(model, gradient_chunks, dp_replicate) if grad_cpu_offload else None
+            GradientOffloadManager(
+                model,
+                gradient_chunks,
+                dp_replicate,
+                cpu_dtype=torch.float32 if master_weights is not None else None,
+            )
+            if grad_cpu_offload
+            else None
         )
 
     @staticmethod
@@ -517,7 +536,12 @@ def setup_optimizer(
             raise ValueError("Master-weight CPU offload requires the model")
         optimizer_named_params, master_weights = _create_cpu_master_weights(model, named_params)
 
-    optimizer = _create_optimizer(config, optimizer_named_params, parallel_dims)
+    optimizer = _create_optimizer(
+        config,
+        optimizer_named_params,
+        parallel_dims,
+        fused_adamw=master_weight_cpu_offload,
+    )
 
     if cpu_offload:
         offload_parts = ["optimizer state"]
@@ -583,6 +607,7 @@ def _create_optimizer(
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     lr: float | None = None,
+    fused_adamw: bool = False,
 ) -> Optimizer:
     """Create optimizer. If lr is None, uses config.lr."""
     if lr is None:
@@ -607,6 +632,7 @@ def _create_optimizer(
                 lr=lr,
                 weight_decay=config.weight_decay,
                 betas=(config.betas1, config.betas2),
+                fused=fused_adamw,
             )
         case "muon":
             return _create_muon_optimizer(config, named_params, parallel_dims, lr)
