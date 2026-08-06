@@ -535,9 +535,11 @@ class Orchestrator:
                 if kind == "eval"
                 else vf.TrainRunInfo(id=self.run_id, step=step)
             )
+            # Run identity moved from ``vf.Trace`` onto ``vf.Episode``; prime-rl saves per-trace
+            # records, so stamp it into ``info`` to keep every on-disk record placeable on its own.
             for rollout in episode:
-                rollout.record_run(
-                    run,
+                rollout.info.update(
+                    run=run.model_dump(mode="json"),
                     env_name=rollout.env_name,
                     group_id=str(rollout.group_id),
                     episode_id=rollout.episode_id,
