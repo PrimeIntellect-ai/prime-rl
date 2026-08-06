@@ -39,7 +39,7 @@ attn = "flash_attention_2"
 fused_lm_head_token_chunk_size = 1024
 cp = 8
 ep = 8
-optim_cpu_offload = { gradients = true }
+optim_cpu_offload = { full = true }
 
 [trainer.model.quantization]
 type = "fp8"

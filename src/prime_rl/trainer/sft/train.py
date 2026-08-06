@@ -477,7 +477,7 @@ def train(config: SFTConfig):
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, parallel_dims.ep_enabled)
         zero_grad_ratio = (
             None
-            if config.model.optim_cpu_offload is not None and config.model.optim_cpu_offload.gradients
+            if config.model.optim_cpu_offload is not None and config.model.optim_cpu_offload.full
             else get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
         )
 

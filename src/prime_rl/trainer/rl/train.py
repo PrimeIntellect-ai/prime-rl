@@ -577,7 +577,7 @@ def train(config: TrainerConfig):
 
         zero_grad_ratio = (
             None
-            if config.model.optim_cpu_offload is not None and config.model.optim_cpu_offload.gradients
+            if config.model.optim_cpu_offload is not None and config.model.optim_cpu_offload.full
             else get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
         )
 
