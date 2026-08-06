@@ -186,6 +186,7 @@ def train(config: SFTConfig):
         parallel_dims,
         cpu_offload=config.model.optim_cpu_offload,
         grad_cpu_offload=config.model.grad_cpu_offload,
+        master_weight_cpu_offload=config.model.master_weight_cpu_offload,
         model=model,
     )
 

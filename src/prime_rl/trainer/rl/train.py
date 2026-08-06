@@ -174,6 +174,7 @@ def train(config: TrainerConfig):
             lora=config.model.lora is not None,
             cpu_offload=config.model.optim_cpu_offload,
             grad_cpu_offload=config.model.grad_cpu_offload,
+            master_weight_cpu_offload=config.model.master_weight_cpu_offload,
             model=model,
         )
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
