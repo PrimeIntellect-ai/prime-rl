@@ -615,15 +615,6 @@ class Orchestrator:
                 await self.version_advanced.wait()
             self.wait_for_policy_time += time.perf_counter() - hold_start
 
-        # Stamp each rollout's true staleness: batch ``step`` trains on policy
-        # v{step-1}, so a rollout generated from v{k} is (step-1)-k versions
-        # off-policy — queue time included, unlike the dispatcher's in-flight
-        # counter, which only sees weight updates during generation. Frozen-
-        # sourced rollouts stay 0 (their sampler doesn't follow the policy).
-        for r in batch.rollouts:
-            if self.train_envs.get(r.env_name).sampler.samples_from_live_policy:
-                r.off_policy_steps = (step - 1) - r.policy_version
-
         # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
         # at ship time; the full arrival window already streamed into ``all`` on arrival.
         # to_record drops the per-node training tensors — they're for training, not the rollout
@@ -803,7 +794,7 @@ class Orchestrator:
         n_effective = len(effective)
         n_trainable = sum(1 for r in effective if r.is_trainable)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_off_policy = max((r.off_policy_steps for r in effective), default=0)
+        max_off_policy = max((e.train_run.off_policy_steps or 0 for e in effective.episodes), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
@@ -827,7 +818,7 @@ class Orchestrator:
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Off-Policy {max((r.off_policy_steps for r in env_eff_pool), default=0)} | "
+                f"Max Off-Policy {max((e.train_run.off_policy_steps or 0 for e in env_eff_pool.episodes), default=0)} | "
                 f"Error {pool.metrics.has_error.mean():.1%} | Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
@@ -847,9 +838,9 @@ class Orchestrator:
         await asyncio.to_thread(
             save_episodes, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
-        self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
-        policy_versions = {r.policy_version for r in batch.rollouts}
-        policy_version = min(policy_versions)
+        self.monitor.log_eval_samples(batch.rollouts.episodes, env_name=batch.env_name, step=batch.step)
+        policy_versions = {m.policy.start for e in batch.rollouts.episodes if (m := e.train_run.metadata).policy}
+        policy_version = min(policy_versions, default=0)
         if len(policy_versions) > 1:
             get_logger().warning(
                 f"Eval {batch.env_name} step {batch.step} had mixed policy versions: {sorted(policy_versions)}"
