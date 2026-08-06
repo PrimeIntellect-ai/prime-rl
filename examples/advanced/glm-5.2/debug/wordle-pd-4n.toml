@@ -4,7 +4,7 @@
 # NCCL weight broadcast with fp8 quantization.
 #
 # Notes from bring-up (H200 cluster, 2 TiB hosts):
-# - grad_cpu_offload is required at 4 trainer nodes; keep gradient accumulation
+# - Gradient CPU offload is required at 4 trainer nodes; keep gradient accumulation
 #   low (batch_size 32 / dp 32 -> ~1 micro-batch per rank), since accumulation
 #   pins a second ~700 GiB/node staging set on the host.
 # - NIXL needs a working UCX (see scripts/install_nixl_from_source.sh and
@@ -57,8 +57,7 @@ attn = "flash_attention_2"
 fused_lm_head_token_chunk_size = 1024
 cp = 1
 ep = 8
-optim_cpu_offload = true
-grad_cpu_offload = true
+optim_cpu_offload = { gradients = true }
 
 [trainer.model.quantization]
 type = "fp8"

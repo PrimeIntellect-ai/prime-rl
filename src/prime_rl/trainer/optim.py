@@ -11,7 +11,7 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 from torch.optim import SGD, AdamW, Optimizer
 
-from prime_rl.configs.trainer import OptimizerConfig
+from prime_rl.configs.trainer import OptimizerConfig, OptimizerOffloadingConfig
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
@@ -36,19 +36,6 @@ class _GradientCopyTask:
 class _MasterWeight:
     model_param: nn.Parameter
     cpu_tensor: torch.Tensor
-
-
-@dataclass(frozen=True)
-class CPUOptimizerOffloadPolicy:
-    """Controls CPU placement for optimizer-owned training state."""
-
-    offload_gradients: bool = False
-    offload_master_weights: bool = False
-    pin_memory: bool = True
-
-    def __post_init__(self) -> None:
-        if self.offload_master_weights and not self.offload_gradients:
-            raise ValueError("Master-weight CPU offload requires gradient CPU offload")
 
 
 class GradientOffloadManager:
@@ -277,13 +264,13 @@ class CPUOffloadOptimizer:
     def __init__(
         self,
         optimizer: Optimizer,
-        offload_policy: CPUOptimizerOffloadPolicy,
+        offload_config: OptimizerOffloadingConfig,
         master_weights: dict[int, _MasterWeight] | None = None,
         dp_replicate: int = 1,
     ):
         self.optimizer = optimizer
-        self.offload_policy = offload_policy
-        self.pin_memory = offload_policy.pin_memory
+        self.offload_config = offload_config
+        self.pin_memory = offload_config.pin_memory
         self._initialized = False
         self._chunks = self._build_chunks()
         # Reuse the transfer streams across steps: fresh streams each step land
@@ -300,9 +287,9 @@ class CPUOffloadOptimizer:
                 gradient_chunks,
                 dp_replicate,
                 cpu_dtype=torch.float32 if master_weights is not None else None,
-                pin_memory=offload_policy.pin_memory,
+                pin_memory=offload_config.pin_memory,
             )
-            if offload_policy.offload_gradients
+            if offload_config.gradients
             else None
         )
 
@@ -490,10 +477,10 @@ def setup_optimizer(
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     lora: bool = False,
-    offload_policy: CPUOptimizerOffloadPolicy | None = None,
+    offload_config: OptimizerOffloadingConfig | None = None,
     model: nn.Module | None = None,
 ) -> tuple[Optimizer | CPUOffloadOptimizer, GradientOffloadManager | None]:
-    if offload_policy is not None and offload_policy.offload_master_weights and config.type != "adamw":
+    if offload_config is not None and offload_config.master_weights and config.type != "adamw":
         raise ValueError("Master-weight CPU offload currently supports AdamW only")
     if lora:
         # Wait for run 0 to be created in the multi run manager
@@ -504,33 +491,33 @@ def setup_optimizer(
 
     master_weights = None
     optimizer_named_params = named_params
-    if offload_policy is not None and offload_policy.offload_master_weights:
+    if offload_config is not None and offload_config.master_weights:
         if model is None:
             raise ValueError("Master-weight CPU offload requires the model")
         optimizer_named_params, master_weights = _create_cpu_master_weights(
             model,
             named_params,
-            pin_memory=offload_policy.pin_memory,
+            pin_memory=offload_config.pin_memory,
         )
 
     optimizer = _create_optimizer(
         config,
         optimizer_named_params,
         parallel_dims,
-        fused_adamw=offload_policy is not None and offload_policy.offload_master_weights,
+        fused_adamw=offload_config is not None and offload_config.master_weights,
     )
 
-    if offload_policy is not None:
+    if offload_config is not None:
         offload_parts = ["optimizer state"]
-        if offload_policy.offload_gradients:
+        if offload_config.gradients:
             offload_parts.append("gradient")
-        if offload_policy.offload_master_weights:
+        if offload_config.master_weights:
             offload_parts.append("FP32 master weight")
         offload_description = ", ".join(offload_parts)
         get_logger().info(f"Wrapping optimizer for {offload_description} CPU offloading")
         optimizer = CPUOffloadOptimizer(
             optimizer,
-            offload_policy=offload_policy,
+            offload_config=offload_config,
             master_weights=master_weights,
             dp_replicate=parallel_dims.dp_replicate,
         )
