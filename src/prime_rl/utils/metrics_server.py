@@ -201,7 +201,7 @@ class MetricsServer(HealthServer):
         mfu: float = 0.0,
         entropy: float = 0.0,
         mismatch_kl: float = 0.0,
-        zero_grad_ratio: float = 0.0,
+        zero_grad_ratio: float | None = None,
     ) -> None:
         """Update metrics after a training step."""
         self._step.set(step)
@@ -214,7 +214,8 @@ class MetricsServer(HealthServer):
         self._mfu.set(mfu)
         self._entropy.set(entropy)
         self._mismatch_kl.set(mismatch_kl)
-        self._zero_grad_ratio.set(zero_grad_ratio)
+        if zero_grad_ratio is not None:
+            self._zero_grad_ratio.set(zero_grad_ratio)
         if entropy > 0:
             self._kl_ent_ratio.set(mismatch_kl / entropy)
         self._last_step_ts.set(time.time())
