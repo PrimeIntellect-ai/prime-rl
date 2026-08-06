@@ -507,7 +507,7 @@ def setup_optimizer(
         if offload_config.step_on_cpu:
             offload_parts.append("CPU optimizer step")
         offload_description = ", ".join(offload_parts)
-        get_logger().info(f"Wrapping optimizer for {offload_description} CPU offloading")
+        get_logger().info(f"Using CPU offload for {offload_description}")
         optimizer = CPUOffloadOptimizer(
             optimizer,
             offload_config=offload_config,
