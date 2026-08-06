@@ -37,13 +37,15 @@ When bumping a package past the workspace-wide `exclude-newer = "7 days"` window
 
 ### CUDA kernels
 
+No sync installs `prime-kernels` — compiling CUDA is always an explicit, manual step:
+
 ```bash
-uv sync --extra kernels
+uv pip install --no-build-isolation -e kernels
 ```
 
-Builds the `prime-kernels` wheel from `kernels/` — sources are in the repo, but it needs
-`nvcc` whose CUDA major matches torch's. Kept out of `--all-extras` for that reason. See the
-`kernels` skill.
+Needs `nvcc` whose CUDA major matches torch's. Once a release ships `prime_kernels-*.whl`,
+the wheels get pinned in `[tool.uv.sources]` and installs download them. See the `kernels`
+skill.
 
 ### NemotronH (Mamba SSD kernels)
 

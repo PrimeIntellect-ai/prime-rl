@@ -21,8 +21,7 @@ one kernel — its Python surface and the sources compiled into `prime_kernels.<
 
 Sources are committed here, not pulled in as a submodule: a kernel is prime-rl code, so a
 clone builds it and a change to it is one commit and one review alongside the training code
-that calls it. Kernels developed in their own repo get copied in, with the repo recorded as
-`upstream` in the manifest for provenance.
+that calls it. Kernels developed in their own repo get copied in.
 
 ## Using a kernel
 
@@ -41,16 +40,19 @@ if prime_kernels.is_available("flash_moe"):
 
 ## Installing
 
+Building is manual and always explicit — no `uv sync` compiles CUDA:
+
 ```bash
-uv sync --extra kernels                          # from the pinned prebuilt wheel
-uv pip install --no-build-isolation -e kernels   # build locally while iterating
+uv pip install --no-build-isolation -e kernels
 ```
 
-A local build needs `nvcc` (`CUDA_HOME`) whose CUDA major matches torch's and which is new
-enough for the kernel's `min-cuda`. Kernels whose toolkit is unsuitable are skipped with a
-message rather than failing the build; the registry then reports them unavailable.
-`PRIME_KERNELS=a,b` builds a subset, `PRIME_KERNELS_REQUIRE=1` turns a skip into an error
-(the release workflow sets it).
+The build needs `nvcc` (`CUDA_HOME`) whose CUDA major matches torch's. Kernels whose toolkit
+is unsuitable are skipped with a message rather than failing the build; the registry then
+reports them unavailable. `PRIME_KERNELS=a,b` builds a subset, `PRIME_KERNELS_REQUIRE=1`
+turns a skip into an error (the release workflow sets it).
+
+Prebuilt wheels are attached to every release. Once one has them, they get pinned in the root
+`[tool.uv.sources]` so installs download instead of compiling — see the `kernels` skill.
 
 ## Adding a kernel
 
@@ -61,11 +63,9 @@ message rather than failing the build; the registry then reports them unavailabl
 [<name>]
 description = "..."
 ops = "<torch.ops namespace the extension registers>"
-upstream = "<url>"     # optional: where the sources came from
 sources = ["csrc/foo.cu", "csrc/torch_interface.cpp"]
 include-dirs = ["csrc"]
 arch = ["10.0a"]       # compute capabilities to compile for; exact match at runtime
-min-cuda = "12.8"
 cxx-std = 20
 ```
 
