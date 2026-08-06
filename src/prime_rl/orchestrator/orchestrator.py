@@ -66,9 +66,10 @@ from prime_rl.orchestrator.types import (
 from prime_rl.orchestrator.utils import (
     get_weight_dir,
     intercept_vf_logging,
-    save_rollouts,
+    save_episodes,
     set_default_executor,
     setup_policy_inference_pool,
+    to_episode_records,
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -242,8 +243,8 @@ class Orchestrator:
             train_env_names=[env.resolved_name for env in config.train.source],
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
-        # ``RunInfo.id`` is required on the trace: fall back to a run-local uuid
-        # when no external monitor identity (W&B) exists.
+        # ``RunInfo.id`` is required on the episode record: fall back to a run-local
+        # uuid when no external monitor identity (W&B) exists.
         self.run_id = self.monitor.run_id or uuid.uuid4().hex
 
         if config.heartbeat is not None:
@@ -523,10 +524,10 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 continue
 
-            # Every completed rollout — errored, filtered, or never batched — lands in the
+            # Every completed episode — errored, filtered, or never batched — lands in the
             # ``all`` trace file the moment it arrives, so it survives crashes and drains.
-            # Train rollouts belong to the batch window currently collecting (``progress.step``),
-            # eval rollouts to the step whose eval triggered them.
+            # Train episodes belong to the batch window currently collecting (``progress.step``),
+            # eval episodes to the step whose eval triggered them.
             kind = episode[0].kind
             step = episode[0].eval_step if kind == "eval" else self.progress.step
             assert step is not None
@@ -535,19 +536,9 @@ class Orchestrator:
                 if kind == "eval"
                 else vf.TrainRunInfo(id=self.run_id, step=step)
             )
-            # Run identity moved from ``vf.Trace`` onto ``vf.Episode``; prime-rl saves per-trace
-            # records, so stamp it into ``info`` to keep every on-disk record placeable on its own.
-            for rollout in episode:
-                rollout.info.update(
-                    run=run.model_dump(mode="json"),
-                    env_name=rollout.env_name,
-                    group_id=str(rollout.group_id),
-                    episode_id=rollout.episode_id,
-                    policy_version=rollout.policy_version,
-                )
             await asyncio.to_thread(
-                save_rollouts,
-                [rollout.to_record() for rollout in episode],
+                save_episodes,
+                to_episode_records(episode, run),
                 get_trace_path(self.config.output_dir, step, kind, "all"),
             )
 
@@ -566,7 +557,7 @@ class Orchestrator:
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
-        side-effects (ckpt, save_rollouts, reference scoring, sender.send,
+        side-effects (ckpt, save_episodes, reference scoring, sender.send,
         metrics, heartbeat, progress, eval trigger). The sink has already
         done all data-transformation work."""
         config = self.config
@@ -642,10 +633,8 @@ class Orchestrator:
 
         # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
         # at ship time; the full arrival window already streamed into ``all`` on arrival.
-        # to_record drops the per-node training tensors — they're for training, not the rollout
-        # record, and can't round-trip json (raw numpy bytes).
-        records = [r.to_record() for r in effective]
-        await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
+        records = to_episode_records(effective, vf.TrainRunInfo(id=self.run_id, step=step))
+        await asyncio.to_thread(save_episodes, records, get_trace_path(config.output_dir, step, "train", "effective"))
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.progress.step += 1
@@ -849,7 +838,7 @@ class Orchestrator:
         get_logger().success("\n\t\t ".join(lines))
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
-        """Persist + log one completed eval epoch (save_rollouts,
+        """Persist + log one completed eval epoch (save_episodes,
         monitor.log_eval_samples, monitor.log)."""
         if not batch.rollouts:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
@@ -859,9 +848,9 @@ class Orchestrator:
         # completion (multiple eval envs share the step file — each epoch appends its cohort
         # once, and every record carries ``env_name``); the full returned cohort already
         # streamed into ``all`` on arrival.
-        records = [r.to_record() for r in batch.rollouts.effective]
+        records = to_episode_records(batch.rollouts.effective, vf.EvalRunInfo(id=self.run_id, step=batch.step))
         await asyncio.to_thread(
-            save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
+            save_episodes, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
         policy_versions = {r.policy_version for r in batch.rollouts}
