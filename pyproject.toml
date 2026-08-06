@@ -123,13 +123,22 @@ override-dependencies = [
     "openenv-core",
 ]
 
-# Environment packages (research-environments + verifiers) are auto-discovered as
-# workspace members, so new envs need no per-package registration. Install them
-# with `uv sync --all-packages`.
+# research-environments packages are auto-discovered as workspace members, so new
+# envs there need no per-package registration. verifiers' example envs are opt-in:
+# only the ones prime-rl trains or tests on are listed, so an upstream example with
+# conflicting pins can't break the shared lock. Install them with
+# `uv sync --all-packages`.
 [tool.uv.workspace]
 members = [
     "deps/research-environments/environments/*/*",
-    "deps/verifiers/environments/*",
+    "deps/verifiers/environments/alphabet_sort_v1",
+    "deps/verifiers/environments/color_codeword_v1",
+    "deps/verifiers/environments/gsm8k_v1",
+    "deps/verifiers/environments/kuhn_poker_v1",
+    "deps/verifiers/environments/proposer_solver_v1",
+    "deps/verifiers/environments/reverse_text_v1",
+    "deps/verifiers/environments/wiki_search_v1",
+    "deps/verifiers/environments/wordle_v1",
 ]
 # tau2-synth-v1 and tau3-bench-v1 pin `tau2` forks/revs that conflict with the
 # canonical tau2-bench-v1; a workspace shares one lock, so these can't coexist.
