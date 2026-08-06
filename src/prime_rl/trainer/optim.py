@@ -229,6 +229,21 @@ class GradientOffloadManager:
                 else:
                     target_param.grad = local_grad.to(dtype=target_param.dtype)
 
+    def load_cpu_chunk(self, chunk_idx: int, target_params: list[nn.Parameter]) -> None:
+        self.wait()
+        source_params = self._chunks[chunk_idx]
+        if len(source_params) != len(target_params):
+            raise ValueError("Gradient source and target chunks must have the same size")
+        for source_param, target_param in zip(source_params, target_params):
+            buffer = self._buffers.get(id(source_param))
+            if buffer is None or not buffer.initialized:
+                target_param.grad = None
+                continue
+            grad = buffer.accumulator.float()
+            if self._gradient_scale != 1.0:
+                grad.mul_(self._gradient_scale)
+            target_param.grad = grad
+
     def release_chunk(self, chunk_idx: int, target_params: list[nn.Parameter] | None = None) -> None:
         for param in self._chunks[chunk_idx]:
             param.grad = None
@@ -254,6 +269,9 @@ class CPUOffloadOptimizer:
     transfers: while layer *i* computes, layer *i+1* is prefetched and layer *i-1*
     is evicted. The prefetch waits for the eviction to complete, so at most two
     layers' optimizer states are on GPU at any time.
+
+    With master-weight offload, AdamW instead runs on CPU-resident FP32 masters
+    and only refreshed BF16 compute weights are copied to GPU.
     """
 
     def __init__(
@@ -353,35 +371,14 @@ class CPUOffloadOptimizer:
                         state[k] = self._move_tensor(v, device)
 
     @torch.no_grad()
-    def _prefetch_master_weights(self, chunk_idx: int, stream: torch.cuda.Stream) -> None:
-        if self._master_weights is None:
-            return
+    def _update_compute_weights(self, chunk_idx: int, stream: torch.cuda.Stream) -> None:
+        assert self._master_weights is not None
         with torch.cuda.stream(stream):
             for param in self._chunks[chunk_idx]:
                 master = self._master_weights[id(param)]
-                param.data = master.cpu_tensor.to("cuda", non_blocking=True)
-
-    @torch.no_grad()
-    def _update_compute_weights(self, chunk_idx: int) -> None:
-        if self._master_weights is None:
-            return
-        for param in self._chunks[chunk_idx]:
-            model_param = self._master_weights[id(param)].model_param
-            if not isinstance(model_param, DTensor):
-                raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(model_param)}")
-            model_param.to_local().copy_(param.data)
-
-    @torch.no_grad()
-    def _offload_master_weights(self, chunk_idx: int, stream: torch.cuda.Stream) -> None:
-        if self._master_weights is None:
-            return
-        with torch.cuda.stream(stream):
-            for param in self._chunks[chunk_idx]:
-                master = self._master_weights[id(param)]
-                gpu_tensor = param.data
-                master.cpu_tensor.copy_(gpu_tensor, non_blocking=True)
-                gpu_tensor.record_stream(stream)
-                param.data = master.cpu_tensor
+                if not isinstance(master.model_param, DTensor):
+                    raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(master.model_param)}")
+                master.model_param.to_local().copy_(master.cpu_tensor, non_blocking=True)
 
     def _step_chunk(self, chunk_idx: int, closure=None):
         """Run optimizer.step() for a single chunk by temporarily swapping param_groups."""
@@ -411,45 +408,42 @@ class CPUOffloadOptimizer:
             group["step"] = orig_step + 1
 
     def step(self, closure=None):
+        if self._master_weights is not None:
+            assert self._gradient_manager is not None
+            for i in range(len(self._chunks)):
+                self._gradient_manager.load_cpu_chunk(i, self._chunks[i])
+            self.optimizer.step(closure)
+            for i in range(len(self._chunks)):
+                self._gradient_manager.release_chunk(i, self._chunks[i])
+                self._update_compute_weights(i, self._h2d_stream)
+            torch.cuda.current_stream().wait_stream(self._h2d_stream)
+            torch.cuda.synchronize()
+            self._initialized = True
+            return
+
         self._original_param_groups = self.optimizer.param_groups
         original_steps = [g.get("step", 0) for g in self._original_param_groups]
-
         h2d_stream = self._h2d_stream
         d2h_stream = self._d2h_stream
         compute_stream = torch.cuda.current_stream()
         n = len(self._chunks)
 
-        self._prefetch_master_weights(0, h2d_stream)
         self._move_chunk_states(0, "cuda", h2d_stream)
         if self._gradient_manager is not None:
-            self._gradient_manager.prefetch_chunk(
-                0,
-                h2d_stream,
-                self._chunks[0] if self._master_weights is not None else None,
-            )
+            self._gradient_manager.prefetch_chunk(0, h2d_stream)
         for i in range(n):
             compute_stream.wait_stream(h2d_stream)
             if i + 1 < n:
                 # Wait for previous D2H before reusing pinned CPU buffers.
                 h2d_stream.wait_stream(d2h_stream)
-                self._prefetch_master_weights(i + 1, h2d_stream)
                 self._move_chunk_states(i + 1, "cuda", h2d_stream)
                 if self._gradient_manager is not None:
-                    self._gradient_manager.prefetch_chunk(
-                        i + 1,
-                        h2d_stream,
-                        self._chunks[i + 1] if self._master_weights is not None else None,
-                    )
+                    self._gradient_manager.prefetch_chunk(i + 1, h2d_stream)
             self._step_chunk(i, closure if i == 0 else None)
             if self._gradient_manager is not None:
-                self._gradient_manager.release_chunk(
-                    i,
-                    self._chunks[i] if self._master_weights is not None else None,
-                )
-            self._update_compute_weights(i)
+                self._gradient_manager.release_chunk(i)
             d2h_stream.wait_stream(compute_stream)
             self._move_chunk_states(i, "cpu", d2h_stream)
-            self._offload_master_weights(i, d2h_stream)
         torch.cuda.synchronize()
 
         self._sync_step_counters(original_steps)
@@ -564,6 +558,8 @@ def _create_cpu_master_weights(
         master_param = nn.Parameter(cpu_tensor, requires_grad=True)
         master_named_params.append((name, master_param))
         master_weights[id(master_param)] = _MasterWeight(model_param, cpu_tensor)
+    if not master_named_params:
+        raise ValueError("Master-weight CPU offload requires trainable parameters")
     torch.cuda.synchronize()
 
     original_buffers = {name: buffer.detach() for name, buffer in model.named_buffers() if buffer.is_floating_point()}
@@ -571,6 +567,8 @@ def _create_cpu_master_weights(
     for name, buffer in model.named_buffers():
         if name in original_buffers:
             buffer.data = original_buffers[name]
+    del local_param
+    torch.cuda.empty_cache()
 
     allocation = sum(master.cpu_tensor.nbytes for master in master_weights.values())
     get_logger().info(
