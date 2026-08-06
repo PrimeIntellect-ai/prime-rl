@@ -211,8 +211,15 @@ srun --kill-on-bad-exit=1 bash -c '
             echo "$(basename "$dev"):$(basename "$port")"
         done | paste -sd,
     }
-    UCX_NET_DEVICES=$(rdma_ports InfiniBand)
-    [ -n "$UCX_NET_DEVICES" ] || UCX_NET_DEVICES=$(rdma_ports Ethernet)
+    # Pin RDMA devices only when the bundled UCX actually has the IB transport:
+    # a TCP-only build (no libuct_ib) pinned to mlx5 devices has no usable
+    # transport at all -> NIXL_ERR_BACKEND on every rank.
+    if [ -e "$PROJECT_DIR/third_party/ucx/lib/ucx/libuct_ib.so" ]; then
+        UCX_NET_DEVICES=$(rdma_ports InfiniBand)
+        [ -n "$UCX_NET_DEVICES" ] || UCX_NET_DEVICES=$(rdma_ports Ethernet)
+    else
+        UCX_NET_DEVICES=""
+    fi
     export UCX_NET_DEVICES=${UCX_NET_DEVICES:-all}
     export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
 
@@ -247,7 +254,10 @@ srun --kill-on-bad-exit=1 bash -c '
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
     else
         # ── Decode node ──
-        export UCX_NET_DEVICES=mlx5_0:1
+        # Same guard as above: only pin when the UCX build has IB support.
+        if [ -e "$PROJECT_DIR/third_party/ucx/lib/ucx/libuct_ib.so" ]; then
+            export UCX_NET_DEVICES=mlx5_0:1
+        fi
         ROLE="decode"
         RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
         SUB_REPLICA=$((RANK_IN_DECODE / NODES_PER_DECODE_REPLICA))
