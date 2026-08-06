@@ -49,19 +49,19 @@ num_decode_replicas = 1
 "max_num_seqs" = 96
 
 
-[inference.router]
+[inference.deployment.router]
 type = "llm-d"
 
 non_cached_tokens = 128 # if <128 tokens, skip prefill go to decode immediately
 
-[inference.router.scorers] # need some prefix-cache routing, however due to shared mooncake pool do low prio
+[inference.deployment.router.scorers] # need some prefix-cache routing, however due to shared mooncake pool do low prio
 "prefix-cache-scorer" = 3.0
 
-[inference.router.prefill_scorer_overrides] # prefill creates queues quite heavily, queue scorer to 4.0, active request at 5.0 is needed due to burstiness of early pipeline RL fill
+[inference.deployment.router.prefill_scorer_overrides] # prefill creates queues quite heavily, queue scorer to 4.0, active request at 5.0 is needed due to burstiness of early pipeline RL fill
 "queue-scorer" = 4.0
 "active-request-scorer" = 5.0
 
-[inference.router.decode_scorer_overrides] # decode doesn't really create queue, it fills in KV cache fast, give 4.0
+[inference.deployment.router.decode_scorer_overrides] # decode doesn't really create queue, it fills in KV cache fast, give 4.0
 "active-request-scorer" = 5.0
 "kv-cache-utilization-scorer" = 4.0
 "queue-scorer" = 3.0

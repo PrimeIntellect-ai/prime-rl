@@ -1,12 +1,12 @@
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import _is_retryable_lora_error, check_health, load_lora_adapter, setup_clients
+from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter, setup_clients
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -49,13 +49,14 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     )
 
 
-def test_setup_clients_creates_one_renderer_client_per_url():
+def test_setup_clients_assigns_renderer_and_dp_rank_headers():
     from renderers import Qwen3VLRendererConfig
 
     client_config = ClientConfig(
-        base_url=["http://worker-a:8000/v1", "http://worker-b:8000/v1"],
+        base_url=["http://worker-a:8000/v1"],
         api_key_var="PRIME_API_KEY",
         headers={"X-Test": "test"},
+        dp_rank_count=2,
         extra_headers_from_state={"X-Session-ID": "session_id"},
     )
 
@@ -69,25 +70,9 @@ def test_setup_clients_creates_one_renderer_client_per_url():
     assert [client.type for client in clients] == ["train", "train"]
     assert [client.renderer for client in clients] == [renderer_settings, renderer_settings]
     assert [client.renderer_model_name for client in clients] == [None, None]
-    assert [client.base_url for client in clients] == [
-        "http://worker-a:8000/v1",
-        "http://worker-b:8000/v1",
-    ]
-    assert all("X-data-parallel-rank" not in client.headers for client in clients)
+    assert [client.base_url for client in clients] == ["http://worker-a:8000/v1"] * 2
+    assert [client.headers["X-data-parallel-rank"] for client in clients] == ["0", "1"]
     assert clients[0].headers["X-Test"] == "test"
-
-
-def test_check_health_retries_non_success_status():
-    client = AsyncMock()
-    unavailable = httpx.Response(503, request=httpx.Request("GET", "http://worker/health"))
-    healthy = httpx.Response(200, request=httpx.Request("GET", "http://worker/health"))
-    client.get.side_effect = [unavailable, healthy]
-    client.base_url = httpx.URL("http://worker")
-
-    with patch("prime_rl.utils.client.asyncio.sleep", new=AsyncMock()):
-        asyncio.run(check_health([client], interval=1, timeout=2))
-
-    assert client.get.await_count == 2
 
 
 def test_setup_clients_assigns_renderer_model_name():
