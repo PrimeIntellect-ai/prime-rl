@@ -141,28 +141,25 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 ### Traces
 
 ```
-{output_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per episode as it completes
+{output_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per rollout as it completes
 {output_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
 
-JSONL files in verifiers' native format: one `vf.Episode` record per line — the episode's
-`id`, `run` (`{type, id, step}`; for eval, `step` is the trigger step), `ok`, `errors`, and
-`info` (`env_name`, `group_id`, `policy_version`), with the episode's `vf.Trace` records
-(training tensors excluded) inlined under `traces`. A multi-agent env's episode is one line
-holding all its traces; each trace carries `verifiers` (producing build), `agent` (model,
-sampling, harness, `name`, `trainable`), `ok` (the success sentinel — `errors` alone keeps
-retry history even after a recovery), and `runtime` (config + provisioned resource id, e.g.
-the sandbox id). `all` gets every completed episode the moment it arrives — errored,
-filtered, and never-batched ones included — so it's crash-durable; `effective` gets the
-clean trainable subset that went into the step's train batch (eval: the non-errored
-trainable epoch cohort; multiple eval envs share the step file), so an effective episode may
-hold only the trainable subset of its traces — untrainable ones (a frozen judge's) appear
-only in `all`.
+JSONL files of `vf.Trace` records (training tensors excluded), one line per trace — a
+multi-agent env's episode contributes several lines sharing one `info.episode_id`. `all`
+gets every completed rollout the moment it arrives — errored, filtered, and never-batched
+ones included — so it's crash-durable; `effective` gets the clean trainable subset that went
+into the step's train batch (eval: the non-errored trainable epoch cohort; multiple eval envs
+share the step file) — untrainable traces (a frozen judge's) appear only in `all`. Each record carries `run` (`{type, id, step}`; for eval, `step` is the trigger step),
+`verifiers` (producing build), `agent` (model, sampling, harness, `name`, `trainable`), `ok`
+(the success sentinel — `errors` alone keeps retry history even after a recovery), and
+`runtime` (config + provisioned resource id, e.g. the sandbox id), plus `env_name`,
+`group_id`, `episode_id`, and `policy_version` under `info`.
 
 ```bash
-wc -l {output_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl   # episodes, not traces
-jq '.traces[].reward' {output_dir}/rollouts/step_42/train/effective/traces.jsonl
-jq 'select(.ok | not) | {id, env: .info.env_name, errors: [.traces[].errors[]?.type]}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
+wc -l {output_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
+jq '.rewards' {output_dir}/rollouts/step_42/train/effective/traces.jsonl
+jq 'select(.ok | not) | {id, env: .info.env_name, runtime}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
 The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{output_dir}/rollouts/step_N/train_rollouts.bin`, next to the trace subtrees.

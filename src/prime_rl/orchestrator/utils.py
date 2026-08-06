@@ -8,11 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import orjson
-import verifiers.v1 as vf
-from verifiers.v1.trace import EXCLUDE_FIELDS
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.client import setup_inference_pool
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
 from prime_rl.utils.utils import (
@@ -52,36 +49,15 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     return renderer, inference_pool
 
 
-def to_episode_records(rollouts: list[Rollout], run: vf.RunInfo) -> list[dict]:
-    """vf-native ``traces.jsonl`` lines: the rollouts regrouped into their episodes (a
-    marker rollout without one is its own episode), the run and prime-rl's orchestration
-    metadata stamped on each. Trace records drop the raw tensor fields, which remain
-    available on the msgpack wire."""
-    episodes: dict[str, list[Rollout]] = {}
-    for rollout in rollouts:
-        episodes.setdefault(rollout.episode_id or rollout.id, []).append(rollout)
-    records = []
-    for episode_id, traces in episodes.items():
-        episode = vf.Episode.model_construct(id=episode_id, ok=all(t.ok for t in traces), traces=traces)
-        episode.record_run(
-            run,
-            env_name=traces[0].env_name,
-            group_id=str(traces[0].group_id),
-            policy_version=traces[0].policy_version,
-        )
-        records.append(episode.model_dump(mode="json", exclude={"traces": {"__all__": EXCLUDE_FIELDS}}))
-    return records
-
-
-def save_episodes(episodes: list[dict], path: Path) -> None:
-    """Append episode records (JSON-serializable dicts, one per line) to a JSONL file.
-    The trace streams are append-only: ``all`` grows episode by episode as they arrive,
-    ``effective`` one batch at a time on finalize."""
+def save_rollouts(rollouts: list[dict], path: Path) -> None:
+    """Append rollouts (Trace record dicts, already JSON-serializable) to a JSONL file.
+    The trace streams are append-only: ``all`` grows one rollout at a time as they
+    complete, ``effective`` one batch at a time on finalize."""
     path.parent.mkdir(parents=True, exist_ok=True)
     opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
     with open(path, "ab") as f:
-        for episode in episodes:
-            f.write(orjson.dumps(episode, default=str, option=opts))
+        for rollout in rollouts:
+            f.write(orjson.dumps(rollout, default=str, option=opts))
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):

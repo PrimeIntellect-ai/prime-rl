@@ -12,7 +12,7 @@
 
 ``add()`` takes one episode (``list[Rollout]``) and returns
 ``TrainBatch | None``; group accounting counts episodes, never loose traces.
-I/O concerns (ship to trainer, save_episodes, monitor.log) live on the
+I/O concerns (ship to trainer, save_rollouts, monitor.log) live on the
 orchestrator.
 """
 
