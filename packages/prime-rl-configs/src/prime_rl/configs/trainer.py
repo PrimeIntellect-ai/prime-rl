@@ -61,9 +61,6 @@ class OptimizerOffloadingConfig(BaseConfig):
     master_weights: bool = False
     """Keep FP32 master weights and AdamW state on CPU with persistent BF16 compute weights on GPU."""
 
-    pin_memory: bool = True
-    """Use pinned CPU memory for asynchronous CPU↔GPU transfers."""
-
     @model_validator(mode="after")
     def master_weights_require_gradients(self):
         if self.master_weights and not self.gradients:
@@ -198,7 +195,7 @@ class ModelConfig(BaseModelConfig):
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
     optim_cpu_offload: OptimizerOffloading = OptimizerOffloadingConfig()
-    """Configure CPU offloading for optimizer-owned state, or disable it with ``false``. Optimizer states are offloaded whenever configured; gradients and FP32 master weights are optional."""
+    """Configure CPU offloading for optimizer-owned state, or disable it with ``false``. Transfers always use pinned memory and persistent CUDA streams; gradients and FP32 master weights are optional."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
