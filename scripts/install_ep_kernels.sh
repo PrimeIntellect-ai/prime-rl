@@ -8,7 +8,7 @@
 # and looks for it at /usr/local/cuda-X.Y. Fails if not found.
 #
 # Prerequisites:
-#   - Matching CUDA toolkit installed (e.g. `sudo apt install cuda-toolkit-12-8`)
+#   - Matching CUDA toolkit installed (e.g. `sudo apt install cuda-toolkit-13-0`)
 #   - For multi-node: IBGDA driver configured (see --configure-drivers)
 #
 # Usage:
