@@ -22,7 +22,7 @@ from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.runs import Progress, get_multi_run_manager, setup_multi_run_manager
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
-from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim import CPUOptimizerOffloadPolicy, setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
@@ -180,12 +180,19 @@ def train(config: SFTConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
+    offload_policy = (
+        CPUOptimizerOffloadPolicy(
+            offload_gradients=config.model.grad_cpu_offload,
+            offload_master_weights=config.model.master_weight_cpu_offload,
+        )
+        if config.model.optim_cpu_offload
+        else None
+    )
     optimizer, gradient_manager = setup_optimizer(
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
-        cpu_offload=config.model.optim_cpu_offload,
-        grad_cpu_offload=config.model.grad_cpu_offload,
+        offload_policy=offload_policy,
         model=model,
     )
 
@@ -652,6 +659,9 @@ def train(config: SFTConfig):
         logger.info("Writing final weight checkpoint")
         weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
         weight_ckpt_manager.maybe_clean()
+
+    if gradient_manager is not None:
+        gradient_manager.close()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("SFT trainer finished!")

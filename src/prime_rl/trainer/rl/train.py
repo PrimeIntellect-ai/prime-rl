@@ -15,7 +15,7 @@ import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
-from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
+from prime_rl.trainer.optim import CPUOptimizerOffloadPolicy, setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
@@ -167,13 +167,20 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
 
     if config.max_concurrent_runs == 1:
+        offload_policy = (
+            CPUOptimizerOffloadPolicy(
+                offload_gradients=config.model.grad_cpu_offload,
+                offload_master_weights=config.model.master_weight_cpu_offload,
+            )
+            if config.model.optim_cpu_offload
+            else None
+        )
         optimizer, gradient_manager = setup_optimizer(
             config.optim,
             list(model.named_parameters()),
             parallel_dims,
             lora=config.model.lora is not None,
-            cpu_offload=config.model.optim_cpu_offload,
-            grad_cpu_offload=config.model.grad_cpu_offload,
+            offload_policy=offload_policy,
             model=model,
         )
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
@@ -803,6 +810,9 @@ def train(config: TrainerConfig):
         logger.info("Writing final weight checkpoint")
         weight_ckpt_manager.save(progress.step, model, tokenizer)
         weight_ckpt_manager.maybe_clean()
+
+    if gradient_manager is not None:
+        gradient_manager.close()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("RL trainer finished!")
