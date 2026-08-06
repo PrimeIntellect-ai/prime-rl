@@ -259,7 +259,7 @@ class CPUOffloadOptimizer:
                 dp_replicate,
                 cpu_dtype=torch.float32 if master_weights is not None else None,
             )
-            if offload_config.gradients
+            if offload_config.full
             else None
         )
 
@@ -509,8 +509,8 @@ def setup_optimizer(
     offload_config: OptimizerOffloadingConfig | None = None,
     model: nn.Module | None = None,
 ) -> tuple[Optimizer | CPUOffloadOptimizer, GradientOffloadManager | None]:
-    if offload_config is not None and offload_config.gradients and config.type == "muon":
-        raise ValueError("Gradient CPU offload does not support Muon because the optimizer step runs on CPU")
+    if offload_config is not None and offload_config.full and config.type == "muon":
+        raise ValueError("Full optimizer CPU offload does not support Muon because the optimizer step runs on CPU")
     if lora:
         # Wait for run 0 to be created in the multi run manager
         # Otherwise, the creation will reset the parameters
@@ -520,7 +520,7 @@ def setup_optimizer(
 
     master_weights = None
     optimizer_named_params = named_params
-    if offload_config is not None and offload_config.gradients:
+    if offload_config is not None and offload_config.full:
         if model is None:
             raise ValueError("Gradient CPU offload requires the model")
         optimizer_named_params, master_weights = _create_cpu_master_weights(
@@ -532,12 +532,12 @@ def setup_optimizer(
         config,
         optimizer_named_params,
         parallel_dims,
-        fused_adamw=offload_config is not None and offload_config.gradients and config.type == "adamw",
+        fused_adamw=offload_config is not None and offload_config.full and config.type == "adamw",
     )
 
     if offload_config is not None:
         offload_parts = ["optimizer state"]
-        if offload_config.gradients:
+        if offload_config.full:
             offload_parts.extend(("gradient", "CPU optimizer step"))
         offload_description = ", ".join(offload_parts)
         get_logger().info(f"Using CPU offload for {offload_description}")
