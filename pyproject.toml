@@ -82,11 +82,6 @@ disagg = [
 gpt-oss = [
     "kernels",
 ]
-# CUDA kernels under `kernels/` (see kernels/README.md). Built from source, so it needs
-# nvcc; kept out of `all` for that reason.
-kernels = [
-    "prime-kernels",
-]
 quack = [
     "quack-kernels>=0.4.1",
 ]
@@ -118,7 +113,7 @@ dev = [
 # *without* the cooldown — bypassing this security policy.
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
-no-build-isolation-package = ["flash-attn", "prime-kernels"]
+no-build-isolation-package = ["flash-attn"]
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
     "sys_platform == 'linux' and platform_machine == 'aarch64'",
@@ -156,13 +151,6 @@ exclude = [
     "deps/research-environments/environments/tool_use/tau2_synth_v1",
     "deps/research-environments/environments/tool_use/tau3_bench_v1",
 ]
-
-# Declared statically so `uv lock` never has to build the kernels (which needs nvcc) just to
-# read their metadata. Keep in sync with kernels/pyproject.toml.
-[[tool.uv.dependency-metadata]]
-name = "prime-kernels"
-version = "0.1.0"
-requires-dist = ["torch>=2.9.0"]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
 # compatible with protobuf 6. prime-sandboxes requires protobuf>=6.31.1; keep
@@ -207,15 +195,6 @@ torchao = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
-# Builds from source: no release carries `prime_kernels-*.whl` yet. Every release attaches
-# them from now on (tag-and-release.yaml) — once one has, replace this with the per
-# `platform_machine` release-asset URLs the other prebuilt wheels below use, so that
-# `uv sync --extra kernels` downloads instead of needing nvcc. See the `kernels` skill.
-prime-kernels = { path = "kernels" }
-# prime-rl depends on the one `verifiers` package (v0 + v1 + the legacy bridge + the built-in v1
-# harnesses/tasksets, now bundled in verifiers.v1). v0 envs resolve from
-# deps/{verifiers,research-environments}/environments; v1 tasksets (`-v1`) and the `compact`
-# example live under deps/{verifiers,research-environments}/environments.
 verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
@@ -247,9 +226,6 @@ flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attent
 flash_attn_3 = { index = "pytorch-cu128-test" }
 
 [tool.uv.extra-build-dependencies]
-# prime-kernels needs no entry here: `no-build-isolation-package` builds it against the
-# environment's own torch, which is what `match-runtime` achieves for registry packages
-# (uv rejects match-runtime for a source tree — it cannot read its metadata without building).
 flash-attn = [{ requirement = "torch", match-runtime = true }]
 flash-attn-3 = [{ requirement = "torch", match-runtime = true }]
 mamba-ssm = [{ requirement = "torch", match-runtime = true }]
@@ -279,9 +255,6 @@ select = ["F", "I"]
 "src/prime_rl/trainer/sft/data.py" = ["F722", "F821"]
 
 [tool.ruff.lint.isort]
-# `prime_rl` is split across two editable wheels (prime-rl + prime-rl-configs).
-# Without this, ruff classifies prime_rl.configs.* as third-party because it
-# doesn't live under src/.
 known-first-party = ["prime_rl"]
 
 [tool.ruff]

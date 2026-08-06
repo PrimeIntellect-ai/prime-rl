@@ -12,8 +12,7 @@ its C++/CUDA sources at `<kernel>/csrc/`; everything is declared in the single m
 `kernels/prime_kernels/kernels.toml`. See [`kernels/README.md`](../../kernels/README.md).
 
 Sources are committed here, not submoduled — a kernel is prime-rl code, so a clone builds it
-and a change lands as one commit. Kernels developed in their own repo are copied in, with
-that repo recorded as `upstream` in the manifest for provenance only.
+and a change lands as one commit. Kernels developed in their own repo are copied in.
 
 `prime-rl` itself stays a pure-Python wheel — never add compiled extensions to it.
 
@@ -34,13 +33,15 @@ it once at startup rather than failing a run halfway through.
 
 ## Building locally
 
+Building is manual by design: no `uv sync` may compile CUDA, so `prime-kernels` is not an
+extra and not in `[tool.uv.sources]`.
+
 ```bash
-uv sync --extra kernels               # or, while iterating:
 uv pip install --no-build-isolation -e kernels
 ```
 
 Requirements: `nvcc` on `CUDA_HOME` with the **same CUDA major as torch** (torch refuses to
-build extensions otherwise), and new enough for the kernel's `min-cuda`.
+build extensions otherwise).
 
 Kernels whose toolkit is unsuitable are skipped with a message and reported unavailable at
 runtime — the build still succeeds. `PRIME_KERNELS=a,b` builds a subset;
@@ -50,7 +51,7 @@ runtime — the build still succeeds. `PRIME_KERNELS=a,b` builds a subset;
 
 1. Commit the sources into `kernels/prime_kernels/<name>/csrc/`.
 2. Add a `[<name>]` table to `kernels/prime_kernels/kernels.toml` — sources, `arch`,
-   `min-cuda`, `cxx-std`; paths are relative to the kernel folder.
+   `cxx-std`; paths are relative to the kernel folder.
 3. `kernels/prime_kernels/<name>/__init__.py` — `from . import _C`, one wrapper and one
    `torch.library.register_fake` per op.
 4. Nothing else: `setup.py` and the registry both read the manifest.
@@ -67,7 +68,7 @@ Rules the build assumes:
 
 ## Pulling in changes from an upstream repo
 
-For a kernel whose `upstream` is a separate repo, copy the sources over and diff:
+For a kernel copied in from a separate repo, copy the sources over and diff:
 
 ```bash
 git clone <upstream> /tmp/<name> && git -C /tmp/<name> log --oneline -5
@@ -77,8 +78,8 @@ git diff --stat kernels/prime_kernels/<name>/csrc
 
 Then, in order:
 
-- Check `kernels.toml` still lists every source file, and bump the `@ <sha>` comment under
-  `upstream` — without a submodule that comment is the only record of what was copied.
+- Check `kernels.toml` still lists every source file, and record the copied commit in the
+  commit message — without a submodule that is the only trace of what was copied.
 - Read the upstream diff for **host-side contract changes**, not just kernel internals. A
   change to what the caller must pass (weight layout, scale packing, argument order) is
   silently wrong numbers, not a build error, and the Python surface here has to absorb it.
@@ -107,8 +108,10 @@ that exact torch, so the build installs the torch pinned in `uv.lock`, not the n
 
 ### Pinning installs at the prebuilt wheels
 
-So that `uv sync --extra kernels` downloads instead of compiling, `[tool.uv.sources]` names
-the release assets — the pattern deep-ep, deep-gemm and vllm already use:
+No release carries `prime_kernels-*.whl` yet, so `prime-kernels` is installed by hand and has
+no extra. Once one does, add back a `kernels` extra depending on `prime-kernels` and name the
+release assets in `[tool.uv.sources]` — the pattern deep-ep, deep-gemm and vllm already use,
+and the only form the extra may take, since a sync must never compile:
 
 ```toml
 [tool.uv.sources]
@@ -127,11 +130,11 @@ pin whose torch no longer matches the lock fails at import, not at install.
 
 ## Gotchas
 
-- Changing anything about `prime-kernels` in the root `pyproject.toml` needs `uv lock`.
-  Keep `[[tool.uv.dependency-metadata]] name = "prime-kernels"` in sync with
-  `kernels/pyproject.toml`, or `uv lock` will build the kernels just to read metadata.
-- `match-runtime = true` does not work for `prime-kernels`: uv cannot read a source tree's
-  metadata without building it. The build gets the environment's torch through
-  `no-build-isolation-package` instead.
+- `kernels/pyproject.toml` mirrors prime-rl's own `torch>=2.9.0`; keep the two identical, and
+  build against the torch in `uv.lock` (`build_kernels.yaml` reads it) — the wheel imports
+  only under the torch it was compiled against.
+- Never reintroduce `prime-kernels` as a path source: uv cannot read a source tree's metadata
+  without building it, so every `uv lock` would then need nvcc. A release-asset URL has static
+  metadata and does not.
 - Keep vendored-in Python out of the kernel folder — rewrite it as the kernel's own Python
   surface instead. Everything under `kernels/` is normal first-party code that ruff lints.

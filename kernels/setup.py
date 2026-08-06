@@ -40,9 +40,6 @@ def _skip_reason(kernel, cuda: tuple[int, int] | None) -> str | None:
         return f"sources missing ({relative}) — kernels.toml and kernels/{kernel.path.relative_to(ROOT)} disagree"
     if cuda is None:
         return "no CUDA toolkit found (set CUDA_HOME)"
-    if cuda < kernel.min_cuda:
-        wanted = ".".join(map(str, kernel.min_cuda))
-        return f"needs CUDA >= {wanted}, found {cuda[0]}.{cuda[1]}"
     # torch extensions must be compiled with the CUDA major torch itself was built with.
     torch_cuda = torch.version.cuda
     if torch_cuda is None:
