@@ -22,22 +22,21 @@ class CPUOffloadOptimizer:
     activations and optimizer states are never on GPU at the same time, so peak
     memory is max(activations, opt_states) instead of sum.
 
-    The step is performed per-transformer-layer with stream-overlapped H2D/D2H
-    transfers: while layer *i* computes, layer *i+1* is prefetched and layer *i-1*
-    is evicted. The prefetch waits for the eviction to complete, so at most two
-    layers' optimizer states are on GPU at any time.
+    When ``named_params`` is provided, the step is performed per-transformer-layer
+    with stream-overlapped H2D/D2H transfers, keeping at most two layers' optimizer
+    states on GPU at any time. Otherwise, all states are moved to GPU at once.
     """
 
     def __init__(
         self,
         optimizer: Optimizer,
-        named_params: list[tuple[str, nn.Parameter]],
+        named_params: list[tuple[str, nn.Parameter]] | None = None,
         pin_memory: bool = True,
     ):
         self.optimizer = optimizer
         self.pin_memory = pin_memory
         self._initialized = False
-        self._chunks = self._build_chunks(named_params)
+        self._chunks = self._build_chunks(named_params) if named_params is not None else None
 
     @staticmethod
     def _extract_layer_idx(name: str) -> int | None:
@@ -132,6 +131,14 @@ class CPUOffloadOptimizer:
             group["step"] = orig_step + 1
 
     def step(self, closure=None):
+        if self._chunks is None:
+            self._move_states("cuda")
+            result = self.optimizer.step(closure)
+            self._move_states("cpu")
+            torch.cuda.synchronize()
+            self._initialized = True
+            return result
+
         self._original_param_groups = self.optimizer.param_groups
         original_steps = [g.get("step", 0) for g in self._original_param_groups]
 
@@ -198,6 +205,7 @@ def setup_optimizer(
     parallel_dims: ParallelDims,
     lora: bool = False,
     cpu_offload: bool = False,
+    cpu_offload_chunked: bool = False,
 ) -> Optimizer | CPUOffloadOptimizer:
     if lora:
         # Wait for run 0 to be created in the multi run manager
@@ -210,7 +218,7 @@ def setup_optimizer(
 
     if cpu_offload:
         get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
-        return CPUOffloadOptimizer(optimizer, named_params=named_params)
+        return CPUOffloadOptimizer(optimizer, named_params=named_params if cpu_offload_chunked else None)
 
     return optimizer
 

@@ -170,7 +170,10 @@ class ModelConfig(BaseModelConfig):
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
     optim_cpu_offload: bool = True
-    """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory. The optimizer step is performed per-transformer-layer with stream-overlapped H2D/D2H transfers, keeping at most two layers' optimizer states on GPU at a time."""
+    """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
+
+    optim_cpu_offload_chunked: bool = False
+    """When optimizer CPU offload is enabled, perform the optimizer step per-transformer-layer with stream-overlapped H2D/D2H transfers instead of all-at-once. At most two layers' optimizer states are on GPU at any time. Prevents OOM when weight + grad + all_opt_states exceeds VRAM at the cost of slower stepping."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
