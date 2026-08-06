@@ -32,7 +32,7 @@ from verifiers.v1.serve import EnvClient
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.sampler import Sampler
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import Episode, Rollout
 from prime_rl.utils.logger import get_logger
 
 # Every wire trace validates into this type. WireTaskData (extra="allow") keeps the env's task
@@ -41,7 +41,7 @@ from prime_rl.utils.logger import get_logger
 ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 # The env server answers a wire episode; we keep that envelope and only re-type its traces. The
 # dispatcher then mints the Train/Eval episode that carries the dispatch's own facts.
-EPISODE_TYPE = vf.WireEpisode
+EPISODE_TYPE = Episode
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
 # servers concurrently with the orchestrator, and a legacy server loads its dataset
