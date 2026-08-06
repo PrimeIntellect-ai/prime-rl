@@ -170,10 +170,10 @@ class ModelConfig(BaseModelConfig):
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
     optim_cpu_offload: bool = True
-    """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
+    """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory. The optimizer step is performed per-transformer-layer with stream-overlapped H2D/D2H transfers, keeping at most two layers' optimizer states on GPU at a time."""
 
-    optim_cpu_offload_chunked: bool = False
-    """When optimizer CPU offload is enabled, perform the optimizer step per-transformer-layer with stream-overlapped H2D/D2H transfers instead of all-at-once. At most two layers' optimizer states are on GPU at any time. Prevents OOM when weight + grad + all_opt_states exceeds VRAM at the cost of slower stepping."""
+    grad_cpu_offload: bool = False
+    """Offload sharded gradients to pinned CPU memory during backward and stream them back per optimizer chunk. This experimental path requires optim_cpu_offload."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
@@ -279,6 +279,8 @@ class ModelConfig(BaseModelConfig):
     def cpu_offload_mutual_exclusion(self):
         if self.fsdp_cpu_offload and self.optim_cpu_offload:
             raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
+        if self.grad_cpu_offload and not self.optim_cpu_offload:
+            raise ValueError("Gradient CPU offload requires optim_cpu_offload.")
         return self
 
     @model_validator(mode="after")
