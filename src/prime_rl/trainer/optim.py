@@ -46,12 +46,10 @@ class GradientOffloadManager:
         chunks: list[list[nn.Parameter]],
         dp_replicate: int,
         cpu_dtype: torch.dtype | None = None,
-        pin_memory: bool = True,
     ):
         self._chunks = chunks
         self._dp_replicate = dp_replicate
         self._cpu_dtype = cpu_dtype
-        self._pin_memory = pin_memory
         self._optimizer_param_ids = {id(param) for chunk in chunks for param in chunk}
         self._buffers: dict[int, _CPUGradientBuffer] = {}
 
@@ -91,7 +89,7 @@ class GradientOffloadManager:
                 local_grad,
                 dtype=self._cpu_dtype or local_grad.dtype,
                 device="cpu",
-                pin_memory=self._pin_memory,
+                pin_memory=True,
             )
             template = copy.copy(grad)
             template._local_tensor = accumulator
@@ -121,7 +119,7 @@ class GradientOffloadManager:
                 local_grad = param.grad.to_local()
                 accumulate = buffer.initialized
                 if accumulate and buffer.staging is None:
-                    buffer.staging = torch.empty_like(buffer.accumulator, pin_memory=self._pin_memory)
+                    buffer.staging = torch.empty_like(buffer.accumulator, pin_memory=True)
                 destination = buffer.staging if accumulate else buffer.accumulator
                 assert destination is not None
                 destination.copy_(local_grad, non_blocking=True)
@@ -270,7 +268,6 @@ class CPUOffloadOptimizer:
     ):
         self.optimizer = optimizer
         self.offload_config = offload_config
-        self.pin_memory = offload_config.pin_memory
         self._initialized = False
         self._chunks = self._build_chunks()
         # Reuse the transfer streams across steps: fresh streams each step land
@@ -287,7 +284,6 @@ class CPUOffloadOptimizer:
                 gradient_chunks,
                 dp_replicate,
                 cpu_dtype=torch.float32 if master_weights is not None else None,
-                pin_memory=offload_config.pin_memory,
             )
             if offload_config.gradients
             else None
@@ -312,11 +308,9 @@ class CPUOffloadOptimizer:
 
     def _move_tensor(self, v: torch.Tensor, device: str) -> torch.Tensor:
         if device == "cpu":
-            if self.pin_memory:
-                dst = torch.empty_like(v, device="cpu").pin_memory()
-                dst.copy_(v, non_blocking=True)
-                return dst
-            return v.to("cpu")
+            dst = torch.empty_like(v, device="cpu", pin_memory=True)
+            dst.copy_(v, non_blocking=True)
+            return dst
         return v.to(device, non_blocking=True)
 
     def _move_states(self, device: str):
@@ -497,7 +491,6 @@ def setup_optimizer(
         optimizer_named_params, master_weights = _create_cpu_master_weights(
             model,
             named_params,
-            pin_memory=offload_config.pin_memory,
         )
 
     optimizer = _create_optimizer(
@@ -530,7 +523,6 @@ def setup_optimizer(
 def _create_cpu_master_weights(
     model: nn.Module,
     named_params: list[tuple[str, nn.Parameter]],
-    pin_memory: bool,
 ) -> tuple[list[tuple[str, nn.Parameter]], dict[int, _MasterWeight]]:
     master_named_params = []
     master_weights = {}
@@ -540,7 +532,7 @@ def _create_cpu_master_weights(
         if not isinstance(model_param, DTensor):
             raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(model_param)}")
         local_param = model_param.to_local()
-        cpu_tensor = torch.empty_like(local_param, dtype=torch.float32, device="cpu", pin_memory=pin_memory)
+        cpu_tensor = torch.empty_like(local_param, dtype=torch.float32, device="cpu", pin_memory=True)
         cpu_tensor.copy_(local_param, non_blocking=True)
         master_param = nn.Parameter(cpu_tensor, requires_grad=True)
         master_named_params.append((name, master_param))

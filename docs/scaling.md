@@ -86,7 +86,7 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 | `trainer.model.dp_replicate` | Number of dimensions to **replicate** instead of shard. Set to 2 to run 2-way DP replication × FSDP sharding within each replica — useful for very large clusters where pure FSDP communication dominates. |
 | `trainer.model.reshard_after_forward` | If `true` (default), parameters are resharded after the forward pass to free memory; the backward pass re-gathers. Set `false` to keep params resident — faster but more memory. |
 | `trainer.model.fsdp_cpu_offload` | Offload params + grads + optimizer state to CPU. Big memory win, large throughput hit. |
-| `trainer.model.optim_cpu_offload` | Configure optimizer-owned CPU offload. `true` offloads optimizer state; the nested `gradients` and `master_weights` options extend it. |
+| `trainer.model.optim_cpu_offload` | Configure optimizer-owned CPU offload. `true` offloads optimizer state using pinned memory and persistent transfer streams; the nested `gradients` and `master_weights` options extend it. |
 | `trainer.model.optim_cpu_offload.gradients` | Additionally offload gradients during backward. |
 | `trainer.model.optim_cpu_offload.master_weights` | Keep FP32 master weights on CPU and persistent BF16 compute weights on GPU. Experimental AdamW-only mode requiring gradient offload. |
 
