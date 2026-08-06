@@ -2,7 +2,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import BeforeValidator, Field, model_validator
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -52,6 +52,34 @@ class ActivationOffloadingConfig(BaseConfig):
 
     max_inflight_activations: int = Field(5, ge=1)
     """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
+
+
+class OptimizerOffloadingConfig(BaseConfig):
+    gradients: bool = False
+    """Offload sharded gradients to pinned CPU memory during backward."""
+
+    master_weights: bool = False
+    """Keep FP32 master weights and AdamW state on CPU with persistent BF16 compute weights on GPU."""
+
+    pin_memory: bool = True
+    """Use pinned CPU memory for asynchronous CPU↔GPU transfers."""
+
+    @model_validator(mode="after")
+    def master_weights_require_gradients(self):
+        if self.master_weights and not self.gradients:
+            raise ValueError("Master-weight CPU offload requires gradient CPU offload")
+        return self
+
+
+def _normalize_optimizer_offloading(value: Any) -> Any:
+    if value is True:
+        return {}
+    if value is False:
+        return None
+    return value
+
+
+OptimizerOffloading = Annotated[OptimizerOffloadingConfig | None, BeforeValidator(_normalize_optimizer_offloading)]
 
 
 class CompileConfig(BaseConfig):
@@ -169,14 +197,8 @@ class ModelConfig(BaseModelConfig):
     fsdp_cpu_offload: bool = False
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
-    optim_cpu_offload: bool = True
-    """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory. The optimizer step is performed per-transformer-layer with stream-overlapped H2D/D2H transfers, keeping at most two layers' optimizer states on GPU at a time."""
-
-    grad_cpu_offload: bool = False
-    """Offload sharded gradients to pinned CPU memory during backward and stream them back per optimizer chunk. This experimental path requires optim_cpu_offload."""
-
-    master_weight_cpu_offload: bool = False
-    """Keep FP32 master weights and fused AdamW state on CPU with persistent BF16 compute weights on GPU. Gradients are offloaded directly into FP32 buffers, and updated BF16 weights are copied to the GPU once per optimizer step. This experimental path requires optimizer and gradient CPU offload and does not support resumable checkpoints."""
+    optim_cpu_offload: OptimizerOffloading = OptimizerOffloadingConfig()
+    """Configure CPU offloading for optimizer-owned state, or disable it with ``false``. Optimizer states are offloaded whenever configured; gradients and FP32 master weights are optional."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
@@ -282,10 +304,6 @@ class ModelConfig(BaseModelConfig):
     def cpu_offload_mutual_exclusion(self):
         if self.fsdp_cpu_offload and self.optim_cpu_offload:
             raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
-        if self.grad_cpu_offload and not self.optim_cpu_offload:
-            raise ValueError("Gradient CPU offload requires optim_cpu_offload.")
-        if self.master_weight_cpu_offload and not self.grad_cpu_offload:
-            raise ValueError("Master-weight CPU offload requires grad_cpu_offload.")
         return self
 
     @model_validator(mode="after")
@@ -720,7 +738,11 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_master_weight_offload_checkpointing(self):
-        if self.model.master_weight_cpu_offload and self.ckpt is not None:
+        if (
+            self.model.optim_cpu_offload is not None
+            and self.model.optim_cpu_offload.master_weights
+            and self.ckpt is not None
+        ):
             raise ValueError("Master-weight CPU offload does not support resumable checkpoints")
         return self
 

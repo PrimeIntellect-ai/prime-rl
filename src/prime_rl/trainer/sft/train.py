@@ -22,7 +22,7 @@ from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.runs import Progress, get_multi_run_manager, setup_multi_run_manager
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
-from prime_rl.trainer.optim import CPUOptimizerOffloadPolicy, setup_optimizer
+from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
@@ -180,19 +180,11 @@ def train(config: SFTConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    offload_policy = (
-        CPUOptimizerOffloadPolicy(
-            offload_gradients=config.model.grad_cpu_offload,
-            offload_master_weights=config.model.master_weight_cpu_offload,
-        )
-        if config.model.optim_cpu_offload
-        else None
-    )
     optimizer, gradient_manager = setup_optimizer(
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
-        offload_policy=offload_policy,
+        offload_config=config.model.optim_cpu_offload,
         model=model,
     )
 
@@ -485,7 +477,7 @@ def train(config: SFTConfig):
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, parallel_dims.ep_enabled)
         zero_grad_ratio = (
             None
-            if config.model.grad_cpu_offload
+            if config.model.optim_cpu_offload is not None and config.model.optim_cpu_offload.gradients
             else get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
         )
 

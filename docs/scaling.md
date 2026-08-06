@@ -86,9 +86,9 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 | `trainer.model.dp_replicate` | Number of dimensions to **replicate** instead of shard. Set to 2 to run 2-way DP replication × FSDP sharding within each replica — useful for very large clusters where pure FSDP communication dominates. |
 | `trainer.model.reshard_after_forward` | If `true` (default), parameters are resharded after the forward pass to free memory; the backward pass re-gathers. Set `false` to keep params resident — faster but more memory. |
 | `trainer.model.fsdp_cpu_offload` | Offload params + grads + optimizer state to CPU. Big memory win, large throughput hit. |
-| `trainer.model.optim_cpu_offload` | Offload only optimizer state. Mid-ground — small throughput cost, decent memory savings, especially at low GPU count. |
-| `trainer.model.grad_cpu_offload` | Additionally offload gradients during backward. Requires optimizer offload. |
-| `trainer.model.master_weight_cpu_offload` | Keep FP32 master weights on CPU and persistent BF16 compute weights on GPU. Experimental AdamW-only mode requiring optimizer and gradient offload. |
+| `trainer.model.optim_cpu_offload` | Configure optimizer-owned CPU offload. `true` offloads optimizer state; the nested `gradients` and `master_weights` options extend it. |
+| `trainer.model.optim_cpu_offload.gradients` | Additionally offload gradients during backward. |
+| `trainer.model.optim_cpu_offload.master_weights` | Keep FP32 master weights on CPU and persistent BF16 compute weights on GPU. Experimental AdamW-only mode requiring gradient offload. |
 
 Gradient offload attaches public post-accumulate hooks to FSDP's sharded parameters, so each finalized gradient starts its CPU transfer immediately after reduce-scatter without accessing private FSDP state.
 
@@ -156,9 +156,7 @@ For the experimental persistent-BF16 path, enable all three offload options:
 
 ```toml
 [trainer.model]
-optim_cpu_offload = true
-grad_cpu_offload = true
-master_weight_cpu_offload = true
+optim_cpu_offload = { gradients = true, master_weights = true }
 ```
 
 This stores FP32 master weights and gradients in pinned CPU memory, updates them with fused CPU AdamW, and refreshes the persistent BF16 GPU weights after each optimizer step. Gradient accumulation requires two FP32 gradient-sized pinned buffers. It currently supports AdamW and weights-only checkpoints; resumable optimizer checkpoints are rejected.
