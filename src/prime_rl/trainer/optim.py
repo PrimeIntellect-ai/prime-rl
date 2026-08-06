@@ -36,6 +36,9 @@ class CPUOffloadOptimizer:
         self.pin_memory = pin_memory
         self._initialized = False
         self._chunks = self._build_chunks(named_params) if named_params is not None else None
+        if self._chunks is not None:
+            self._h2d_stream = torch.cuda.Stream()
+            self._d2h_stream = torch.cuda.Stream()
 
     @staticmethod
     def _extract_layer_idx(name: str) -> int | None:
@@ -141,8 +144,8 @@ class CPUOffloadOptimizer:
         self._original_param_groups = self.optimizer.param_groups
         original_steps = [g.get("step", 0) for g in self._original_param_groups]
 
-        h2d_stream = torch.cuda.Stream()
-        d2h_stream = torch.cuda.Stream()
+        h2d_stream = self._h2d_stream
+        d2h_stream = self._d2h_stream
         compute_stream = torch.cuda.current_stream()
         n = len(self._chunks)
 
