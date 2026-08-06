@@ -794,7 +794,7 @@ class Orchestrator:
         n_effective = len(effective)
         n_trainable = sum(1 for r in effective if r.is_trainable)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_off_policy = max((e.train_run.off_policy_steps or 0 for e in effective.episodes), default=0)
+        max_off_policy = max((e.train_run.metadata.off_policy_steps or 0 for e in effective.episodes), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
@@ -818,7 +818,7 @@ class Orchestrator:
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Off-Policy {max((e.train_run.off_policy_steps or 0 for e in env_eff_pool.episodes), default=0)} | "
+                f"Max Off-Policy {max((e.train_run.metadata.off_policy_steps or 0 for e in env_eff_pool.episodes), default=0)} | "
                 f"Error {pool.metrics.has_error.mean():.1%} | Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
