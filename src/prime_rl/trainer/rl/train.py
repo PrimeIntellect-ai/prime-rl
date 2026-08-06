@@ -48,8 +48,11 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     Tensors,
+    clip_grad_norm_,
     filter_rl_trainer_tensor_stats_for_wandb,
+    finish_backward,
     get_ckpt_disk_metrics,
+    scale_gradients_,
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
@@ -62,7 +65,6 @@ from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 from ring_flash_attn import substitute_hf_flash_attn
-from torchtitan.distributed.utils import clip_grad_norm_
 
 
 @clean_exit
@@ -149,17 +151,19 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
 
     if config.max_concurrent_runs == 1:
-        optimizer = setup_optimizer(
+        optimizer, gradient_manager = setup_optimizer(
             config.optim,
             list(model.named_parameters()),
             parallel_dims,
             lora=config.model.lora is not None,
             cpu_offload=config.model.optim_cpu_offload,
-            cpu_offload_chunked=config.model.optim_cpu_offload_chunked,
+            grad_cpu_offload=config.model.grad_cpu_offload,
+            model=model,
         )
         scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
     else:
         optimizer = setup_multi_optimizer(config.optim, parallel_dims)
+        gradient_manager = None
         scheduler = setup_multi_scheduler(optimizer, config.scheduler, config.max_steps)
 
         # Register checkpoint loading callback at index 1 (after scheduler creation at index 0)
@@ -473,6 +477,7 @@ def train(config: TrainerConfig):
             # Backward pass
             with maybe_record_function("backward"):
                 loss.backward()
+                finish_backward(gradient_manager, wait_for_copies=micro_step == len(micro_batches) - 1)
 
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
@@ -549,18 +554,12 @@ def train(config: TrainerConfig):
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
-        for param in model.parameters():
-            if param.grad is not None:
-                param.grad.mul_(parallel_dims.fsdp_gradient_divide_factor)
+        scale_gradients_(gradient_manager, model, parallel_dims.fsdp_gradient_divide_factor)
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
-            grad_norm = clip_grad_norm_(
-                model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
-            )
-            if grad_norm.device.type == "cpu":
-                grad_norm = grad_norm.to(torch.device("cuda"))
+            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, parallel_dims.ep_enabled)
 
         # Update the model parameters
         optimizer.step()
@@ -668,6 +667,8 @@ def train(config: TrainerConfig):
             "optim/lr": current_lr,
             "step": progress.step,
         }
+        if zero_grad_ratio is not None:
+            optim_metrics["optim/zero_grad_ratio"] = zero_grad_ratio
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
         monitor.log(optim_metrics, step=progress.step)

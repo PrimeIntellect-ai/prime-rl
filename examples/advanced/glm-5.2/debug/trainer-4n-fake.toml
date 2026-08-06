@@ -1,0 +1,75 @@
+# GLM-5.2 trainer-only smoke test on 4 nodes (32 GPUs): fake data, random
+# weights, 65k seq len, cp8. Exercises gradient CPU offload — without it the
+# 4-node trainer OOMs (bf16 weights + fp32 grads alone exceed an H200).
+#
+# Host RAM budget (2 TiB nodes): grad offload pins ~86.5 GiB/rank of FP32
+# accumulators (~700 GiB/node). Keep gradient accumulation at 1 — with
+# accumulation > 1 an equal-sized staging set is pinned lazily during
+# micro-step 1, which exhausts host RAM and stalls kernel launches until the
+# NCCL watchdog kills the job (it looks like a collective deadlock).
+max_steps = 10
+seq_len = 65536
+
+[log]
+level = "debug"
+
+[wandb]
+project = "glm5-debug"
+name = "trainer-4n-fake-65k-cp8-grad-offload"
+
+[model]
+name = "zai-org/GLM-5.2"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 0
+gpus_per_node = 8
+
+[slurm]
+job_name = "glm52-trainer-4n-fake"
+partition = "cluster"
+
+[trainer]
+dist_timeout_seconds = 36000
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_2"
+fused_lm_head_token_chunk_size = 1024
+cp = 8
+ep = 8
+optim_cpu_offload = true
+grad_cpu_offload = true
+
+[trainer.model.quantization]
+type = "fp8"
+
+[trainer.model.debug]
+random_init = true
+force_balanced_routing = true
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.loss]
+kl_tau = 1e-2
+
+# dp = 32 ranks / cp8 = 4, so 4 micro-batches -> grad accumulation 1 (see note
+# on host RAM above).
+[trainer.data.fake]
+batch_size = 4
+
+[trainer.optim]
+type = "sign_sgd"
+lr = 1e-6
+
+[orchestrator]
+
+# GLM-5.2 isn't in the auto renderer map; the orchestrator doesn't run here
+# (num_infer_nodes=0, fake data) but RLConfig validates it.
+[orchestrator.renderer]
+name = "glm-5.1"

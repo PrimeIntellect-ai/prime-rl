@@ -5,18 +5,24 @@ import time
 from collections import defaultdict
 from datetime import timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.distributed as dist
 from rich import print as rich_print
 from rich.text import Text
-from torch import Tensor
+from torch import Tensor, nn
+from torch.distributed.tensor import DTensor
+from torchtitan.distributed.utils import clip_grad_norm_ as torch_clip_grad_norm_
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
 from prime_rl.utils.utils import get_step_path
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.optim import GradientOffloadManager
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
 
@@ -48,6 +54,32 @@ class GarbageCollection:
         get_logger().info(f"[GC] collection took {time.monotonic() - begin:.2f}s")
 
 
+def finish_backward(manager: "GradientOffloadManager | None", *, wait_for_copies: bool) -> None:
+    if manager is not None:
+        manager.finish_backward(wait_for_copies=wait_for_copies)
+
+
+@torch.no_grad()
+def scale_gradients_(manager: "GradientOffloadManager | None", model: nn.Module, factor: float) -> None:
+    if manager is not None:
+        manager.scale_(factor)
+        return
+    for param in model.parameters():
+        if param.grad is not None:
+            param.grad.mul_(factor)
+
+
+def clip_grad_norm_(
+    manager: "GradientOffloadManager | None",
+    model: nn.Module,
+    max_norm: float,
+    ep_enabled: bool,
+) -> Tensor:
+    if manager is not None:
+        grad_norm = manager.clip_grad_norm_(max_norm)
+    else:
+        grad_norm = torch_clip_grad_norm_(model.parameters(), max_norm=max_norm, ep_enabled=ep_enabled)
+    return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm
 def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
     """
     Disk usage metrics for the checkpoint directory (<output_dir>/checkpoints).

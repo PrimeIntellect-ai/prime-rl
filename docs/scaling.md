@@ -146,6 +146,8 @@ optim_cpu_offload = true   # already the default
 
 Mutually exclusive with `fsdp_cpu_offload`. Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
 
+The optimizer step is performed per-transformer-layer with stream-overlapped H2D/D2H transfers: while layer *i* computes, layer *i+1* is prefetched and layer *i-1* is evicted. The prefetch waits for the eviction to complete, so at most two layers' optimizer states are on GPU at any time. This reduces peak GPU optimizer-state memory from the full model's states to about two layers' worth, preventing OOM when `weight + grad + all_opt_states > VRAM`.
+
 ### LM Head Chunking
 
 The vanilla LM head materializes a `[batch * seq, vocab]` logits tensor on every step — a major memory tax when the vocabulary is large (often >100K). `fused_lm_head_token_chunk_size` swaps in a custom fused linear + logprob/entropy kernel that streams through `chunk_size` tokens at a time, avoiding the materialization. It defaults to `1024` for RL training:
