@@ -58,13 +58,13 @@ class OptimizerOffloadingConfig(BaseConfig):
     gradients: bool = False
     """Offload sharded gradients to pinned CPU memory during backward."""
 
-    master_weights: bool = False
-    """Keep FP32 master weights and AdamW state on CPU with persistent BF16 compute weights on GPU."""
+    cpu_step: bool = False
+    """Run the AdamW update on CPU-resident FP32 master weights, then refresh persistent BF16 GPU weights."""
 
     @model_validator(mode="after")
-    def master_weights_require_gradients(self):
-        if self.master_weights and not self.gradients:
-            raise ValueError("Master-weight CPU offload requires gradient CPU offload")
+    def cpu_step_requires_gradients(self):
+        if self.cpu_step and not self.gradients:
+            raise ValueError("CPU optimizer step requires gradient CPU offload")
         return self
 
 
@@ -195,7 +195,7 @@ class ModelConfig(BaseModelConfig):
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
     optim_cpu_offload: OptimizerOffloading = OptimizerOffloadingConfig()
-    """Configure CPU offloading for optimizer-owned state, or disable it with ``false``. Transfers always use pinned memory and persistent CUDA streams; gradients and FP32 master weights are optional."""
+    """Configure CPU offloading for optimizer-owned state, or disable it with ``false``. Transfers always use pinned memory and persistent CUDA streams; gradients and an AdamW CPU update are optional."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
@@ -735,11 +735,7 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_master_weight_offload_checkpointing(self):
-        if (
-            self.model.optim_cpu_offload is not None
-            and self.model.optim_cpu_offload.master_weights
-            and self.ckpt is not None
-        ):
+        if self.model.optim_cpu_offload is not None and self.model.optim_cpu_offload.cpu_step and self.ckpt is not None:
             raise ValueError("Master-weight CPU offload does not support resumable checkpoints")
         return self
 

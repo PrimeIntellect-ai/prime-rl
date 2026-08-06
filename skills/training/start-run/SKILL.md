@@ -30,10 +30,11 @@ with `inspect.getfile` before launching so the run cannot silently use another c
 - Experimental gradient offload uses `model.optim_cpu_offload = { gradients = true }`.
   Budget pinned CPU RAM for an accumulator plus
   a same-sized staging set when gradient accumulation is greater than one.
-- Experimental master-weight offload additionally requires
-  `model.optim_cpu_offload = { gradients = true, master_weights = true }`. It keeps a persistent BF16 compute
-  model on GPU, stores FP32 master weights and gradients in pinned CPU RAM, uses
-  fused CPU AdamW, and refreshes the BF16 weights once per optimizer step. With
+- The experimental CPU optimizer step uses
+  `model.optim_cpu_offload = { gradients = true, cpu_step = true }`. It keeps a
+  persistent BF16 compute model on GPU, stores FP32 master weights and gradients
+  in pinned CPU RAM, uses fused CPU AdamW, and refreshes the BF16 weights once
+  per optimizer step. With
   gradient accumulation, budget two FP32 gradient-sized buffers. It currently
   supports AdamW and weights-only checkpoints; resumable optimizer checkpoints
   are rejected.
