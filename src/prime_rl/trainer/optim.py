@@ -1,6 +1,7 @@
 import copy
 import queue
 import threading
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable
 
@@ -175,33 +176,6 @@ class GradientOffloadManager:
         self._gradient_scale *= clip_coefficient
         return total_norm
 
-    def prefetch_chunk(
-        self,
-        chunk_idx: int,
-        stream: torch.cuda.Stream,
-        target_params: list[nn.Parameter] | None = None,
-    ) -> None:
-        source_params = self._chunks[chunk_idx]
-        if target_params is None:
-            target_params = source_params
-        if len(source_params) != len(target_params):
-            raise ValueError("Gradient source and target chunks must have the same size")
-        with torch.cuda.stream(stream):
-            for source_param, target_param in zip(source_params, target_params):
-                buffer = self._buffers.get(id(source_param))
-                if buffer is None or not buffer.initialized:
-                    target_param.grad = None
-                    continue
-                local_grad = buffer.accumulator.to("cuda", non_blocking=True)
-                if self._gradient_scale != 1.0:
-                    local_grad.mul_(self._gradient_scale)
-                if target_param is source_param:
-                    grad = copy.copy(buffer.template)
-                    grad._local_tensor = local_grad
-                    target_param.grad = grad
-                else:
-                    target_param.grad = local_grad.to(dtype=target_param.dtype)
-
     def load_cpu_chunk(self, chunk_idx: int, target_params: list[nn.Parameter]) -> None:
         self.wait()
         source_params = self._chunks[chunk_idx]
@@ -248,16 +222,16 @@ class CPUOffloadOptimizer:
     activations and optimizer states are never on GPU at the same time, so peak
     memory is max(activations, opt_states) instead of sum.
 
-    The step is performed per-transformer-layer with stream-overlapped H2D/D2H
-    transfers: while layer *i* computes, layer *i+1* is prefetched and layer *i-1*
-    is evicted. The prefetch waits for the eviction to complete, so at most two
-    layers' optimizer states are on GPU at any time.
+    A GPU step is performed in bounded chunks with stream-overlapped H2D/D2H
+    transfers: while chunk *i* computes, chunk *i+1* is prefetched and chunk *i-1*
+    is evicted.
 
-    With master-weight offload, AdamW instead runs on CPU-resident FP32 masters
+    With gradient offload, the optimizer instead runs on CPU-resident FP32 masters
     and only refreshed BF16 compute weights are copied to GPU.
     """
 
     _TARGET_CHUNK_NUMEL = 128 * 1024**2
+    _MASTER_WEIGHT_STATE = "prime_rl_master_weight"
 
     def __init__(
         self,
@@ -408,19 +382,13 @@ class CPUOffloadOptimizer:
         n = len(self._chunks)
 
         self._move_chunk_states(0, "cuda", h2d_stream)
-        if self._gradient_manager is not None:
-            self._gradient_manager.prefetch_chunk(0, h2d_stream)
         for i in range(n):
             compute_stream.wait_stream(h2d_stream)
             if i + 1 < n:
                 # Wait for previous D2H before reusing pinned CPU buffers.
                 h2d_stream.wait_stream(d2h_stream)
                 self._move_chunk_states(i + 1, "cuda", h2d_stream)
-                if self._gradient_manager is not None:
-                    self._gradient_manager.prefetch_chunk(i + 1, h2d_stream)
             self._step_chunk(i, closure if i == 0 else None)
-            if self._gradient_manager is not None:
-                self._gradient_manager.release_chunk(i)
             d2h_stream.wait_stream(compute_stream)
             self._move_chunk_states(i, "cpu", d2h_stream)
         torch.cuda.synchronize()
@@ -465,6 +433,73 @@ class CPUOffloadOptimizer:
     def base_optimizer(self) -> Optimizer:
         return self.optimizer
 
+    @property
+    def steps_on_cpu(self) -> bool:
+        return self._master_weights is not None
+
+    @torch.no_grad()
+    def _initialize_cpu_optimizer_state(self) -> None:
+        if self.optimizer.state:
+            return
+        lrs = []
+        for group in self.optimizer.param_groups:
+            lrs.append(group["lr"])
+            group["lr"] = 0.0
+            for param in group["params"]:
+                if param.requires_grad:
+                    param.grad = torch.zeros_like(param)
+        self.optimizer.step()
+        self.optimizer.zero_grad(set_to_none=True)
+        for group, lr in zip(self.optimizer.param_groups, lrs):
+            group["lr"] = lr
+
+    @staticmethod
+    def _checkpoint_dtensor(local_tensor: torch.Tensor, model_param: nn.Parameter) -> DTensor:
+        if not isinstance(model_param, DTensor):
+            raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(model_param)}")
+        # Preserve the model parameter's global shape and placements while DCP
+        # reads or writes the optimizer-owned shard directly in CPU memory.
+        return DTensor(local_tensor, model_param._spec, requires_grad=False)
+
+    @torch.no_grad()
+    def checkpoint_optimizer(self) -> Optimizer:
+        """Expose CPU masters and optimizer state under their model parameter FQNs."""
+        if self._master_weights is None:
+            return self.optimizer
+        self._initialize_cpu_optimizer_state()
+
+        checkpoint_optimizer = copy.copy(self.optimizer)
+        checkpoint_optimizer.param_groups = []
+        checkpoint_optimizer.state = defaultdict(dict)
+        for group in self.optimizer.param_groups:
+            checkpoint_group = {key: value for key, value in group.items() if key != "params"}
+            checkpoint_params = []
+            for cpu_param in group["params"]:
+                master = self._master_weights[id(cpu_param)]
+                model_param = master.model_param
+                checkpoint_params.append(model_param)
+                checkpoint_state = {}
+                for key, value in self.optimizer.state[cpu_param].items():
+                    checkpoint_state[key] = (
+                        self._checkpoint_dtensor(value, model_param)
+                        if isinstance(value, torch.Tensor) and value.shape == cpu_param.shape
+                        else value
+                    )
+                checkpoint_state[self._MASTER_WEIGHT_STATE] = self._checkpoint_dtensor(master.cpu_tensor, model_param)
+                checkpoint_optimizer.state[model_param] = checkpoint_state
+            checkpoint_group["params"] = checkpoint_params
+            checkpoint_optimizer.param_groups.append(checkpoint_group)
+        return checkpoint_optimizer
+
+    @torch.no_grad()
+    def finish_checkpoint_load(self) -> None:
+        if self._master_weights is not None:
+            for i in range(len(self._chunks)):
+                self._update_compute_weights(i, self._h2d_stream)
+            torch.cuda.current_stream().wait_stream(self._h2d_stream)
+            torch.cuda.synchronize()
+        self._initialized = True
+
 
 def setup_optimizer(
     config: OptimizerConfig,
@@ -474,8 +509,8 @@ def setup_optimizer(
     offload_config: OptimizerOffloadingConfig | None = None,
     model: nn.Module | None = None,
 ) -> tuple[Optimizer | CPUOffloadOptimizer, GradientOffloadManager | None]:
-    if offload_config is not None and offload_config.step_on_cpu and config.type != "adamw":
-        raise ValueError("CPU optimizer step currently supports AdamW only")
+    if offload_config is not None and offload_config.gradients and config.type == "muon":
+        raise ValueError("Gradient CPU offload does not support Muon because the optimizer step runs on CPU")
     if lora:
         # Wait for run 0 to be created in the multi run manager
         # Otherwise, the creation will reset the parameters
@@ -485,9 +520,9 @@ def setup_optimizer(
 
     master_weights = None
     optimizer_named_params = named_params
-    if offload_config is not None and offload_config.step_on_cpu:
+    if offload_config is not None and offload_config.gradients:
         if model is None:
-            raise ValueError("Master-weight CPU offload requires the model")
+            raise ValueError("Gradient CPU offload requires the model")
         optimizer_named_params, master_weights = _create_cpu_master_weights(
             model,
             named_params,
@@ -497,15 +532,13 @@ def setup_optimizer(
         config,
         optimizer_named_params,
         parallel_dims,
-        fused_adamw=offload_config is not None and offload_config.step_on_cpu,
+        fused_adamw=offload_config is not None and offload_config.gradients and config.type == "adamw",
     )
 
     if offload_config is not None:
         offload_parts = ["optimizer state"]
         if offload_config.gradients:
-            offload_parts.append("gradient")
-        if offload_config.step_on_cpu:
-            offload_parts.append("CPU optimizer step")
+            offload_parts.extend(("gradient", "CPU optimizer step"))
         offload_description = ", ".join(offload_parts)
         get_logger().info(f"Using CPU offload for {offload_description}")
         optimizer = CPUOffloadOptimizer(
@@ -538,7 +571,7 @@ def _create_cpu_master_weights(
         master_named_params.append((name, master_param))
         master_weights[id(master_param)] = _MasterWeight(model_param, cpu_tensor)
     if not master_named_params:
-        raise ValueError("Master-weight CPU offload requires trainable parameters")
+        raise ValueError("Gradient CPU offload requires trainable parameters")
     torch.cuda.synchronize()
 
     original_buffers = {name: buffer.detach() for name, buffer in model.named_buffers() if buffer.is_floating_point()}
@@ -551,7 +584,7 @@ def _create_cpu_master_weights(
 
     allocation = sum(master.cpu_tensor.nbytes for master in master_weights.values())
     get_logger().info(
-        f"Master-weight CPU offload allocated {allocation / 1024**3:.2f} GiB pinned RAM; "
+        f"CPU optimizer step allocated {allocation / 1024**3:.2f} GiB of FP32 masters in pinned RAM; "
         "persistent GPU parameters use BF16"
     )
     return master_named_params, master_weights
