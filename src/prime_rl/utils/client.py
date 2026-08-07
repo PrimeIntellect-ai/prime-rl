@@ -122,6 +122,8 @@ class StaticInferencePool:
         train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
         renderer_config: RendererConfig | None = None,
+        *,
+        admin_clients: list[AsyncClient] | None = None,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
         self._train_clients = setup_clients(
@@ -131,12 +133,12 @@ class StaticInferencePool:
             renderer_model_name=renderer_model_name,
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
-        self._admin_clients = setup_admin_clients(client_config)
+        self._admin_clients = setup_admin_clients(client_config) if admin_clients is None else admin_clients
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
         self._router_clients = (
             setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
-            if client_config.admin_base_url
+            if client_config.admin_base_url or admin_clients is not None
             else []
         )
         self._skip_model_check = client_config.skip_model_check
@@ -199,6 +201,17 @@ async def setup_inference_pool(
         from prime_rl.utils.elastic import ElasticInferencePool
 
         return await ElasticInferencePool.from_config(
+            client_config,
+            model_name=model_name,
+            train_client_type=train_client_type,
+            eval_client_type=eval_client_type,
+            renderer_config=renderer_config,
+        )
+
+    if client_config.is_dynamo:
+        from prime_rl.utils.dynamo import DynamoInferencePool
+
+        return await DynamoInferencePool.from_config(
             client_config,
             model_name=model_name,
             train_client_type=train_client_type,
@@ -396,6 +409,8 @@ async def update_weights(
     weight_dir: Path | None,
     lora_name: str | None = None,
     step: int = 0,
+    *,
+    use_native_collective_rpc: bool = False,
 ) -> None:
     """Update weights on static inference servers.
 
@@ -425,12 +440,18 @@ async def update_weights(
                 nccl_ready_file.touch()
                 logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
+            update_path = "/collective_rpc" if use_native_collective_rpc else "/update_weights"
+            payload = (
+                {"method": "update_weights_from_path", "args": [weight_dir_posix]}
+                if use_native_collective_rpc
+                else {"weight_dir": weight_dir_posix}
+            )
             await asyncio.gather(
                 *[
                     _admin_post(
                         admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
+                        update_path,
+                        json=payload,
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                     )
                     for admin_client in admin_clients

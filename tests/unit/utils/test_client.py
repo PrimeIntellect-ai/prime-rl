@@ -1,12 +1,19 @@
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
+import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import _is_retryable_lora_error, check_health, load_lora_adapter, setup_clients
+from prime_rl.utils.client import (
+    _is_retryable_lora_error,
+    check_health,
+    load_lora_adapter,
+    setup_clients,
+    update_weights,
+)
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -122,4 +129,51 @@ def test_setup_clients_preserves_chat_client_defaults():
             base_url="http://worker-a:8000/v1",
             headers={},
         )
+    ]
+
+
+def test_update_weights_uses_native_collective_rpc_and_always_resumes(tmp_path):
+    admin_client = AsyncMock()
+    weight_dir = tmp_path / "weights"
+    post = AsyncMock()
+
+    async def fail_update(_client, path, **_kwargs):
+        if path == "/collective_rpc":
+            raise RuntimeError("update failed")
+
+    post.side_effect = fail_update
+    with patch("prime_rl.utils.client._admin_post", post):
+        with pytest.raises(RuntimeError, match="update failed"):
+            asyncio.run(update_weights([admin_client], weight_dir, step=2, use_native_collective_rpc=True))
+
+    assert (weight_dir / "NCCL_READY").is_file()
+    assert post.await_args_list == [
+        call(admin_client, "/pause", params={"mode": "keep", "clear_cache": "false"}),
+        call(
+            admin_client,
+            "/collective_rpc",
+            json={"method": "update_weights_from_path", "args": [weight_dir.as_posix()]},
+            timeout_s=720.0,
+        ),
+        call(admin_client, "/resume"),
+    ]
+
+
+def test_update_weights_preserves_legacy_endpoint(tmp_path):
+    admin_client = AsyncMock()
+    weight_dir = tmp_path / "weights"
+    post = AsyncMock()
+
+    with patch("prime_rl.utils.client._admin_post", post):
+        asyncio.run(update_weights([admin_client], weight_dir, step=2))
+
+    assert post.await_args_list == [
+        call(admin_client, "/pause", params={"mode": "keep", "clear_cache": "false"}),
+        call(
+            admin_client,
+            "/update_weights",
+            json={"weight_dir": weight_dir.as_posix()},
+            timeout_s=720.0,
+        ),
+        call(admin_client, "/resume"),
     ]
