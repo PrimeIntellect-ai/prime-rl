@@ -5384,7 +5384,7 @@ requires-dist = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.33"
+version = "0.2.35"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -5394,9 +5394,9 @@ dependencies = [
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/15/a9/880685cefd503aa92d2b49da46b60ba807015f8839c344a83d8c5bc02f30/prime_sandboxes-0.2.33.tar.gz", hash = "sha256:4253a3c345ccf6c07b41a81790f8515763333f094d20bc405a257432461e81d8", size = 81228, upload-time = "2026-07-22T23:23:55.715Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/cc/287c0db192ddbe003bd5882d1aab5461cdb3912d0c92db7b39734a9e828e/prime_sandboxes-0.2.35.tar.gz", hash = "sha256:e716bfccdcb51aefd5e2d48fdfc3a79bea8c6825bce1871f49f095ced03efc94", size = 86226, upload-time = "2026-08-05T14:29:53.33Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f8/1b/10b1044b8aaef561c32a34140f4a13c7310f73f92f9546337e2e8e6a5239/prime_sandboxes-0.2.33-py3-none-any.whl", hash = "sha256:92c9647557e76191ba926ac8ed01708de9ec4450142131b673cd5cf8d9d7ea56", size = 42773, upload-time = "2026-07-22T23:23:54.381Z" },
+    { url = "https://files.pythonhosted.org/packages/25/07/c186395925f780b1a18b350f562ebc4e8a64a182c37bd1e3db3948f297e2/prime_sandboxes-0.2.35-py3-none-any.whl", hash = "sha256:29d7057532b21545be5938d3aee822ae3a54085a45934d5c3ac55190e06c5bbb", size = 47189, upload-time = "2026-08-05T14:29:52.142Z" },
 ]
 
 [[package]]
@@ -6214,10 +6214,12 @@ requires-dist = [
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-harmony", specifier = ">=0.0.4" },
+    { name = "pillow", marker = "extra == 'vision'", specifier = ">=12.2.0" },
     { name = "prime-pydantic-config", specifier = ">=0.3.0.dev83" },
     { name = "tiktoken" },
     { name = "transformers", specifier = ">=4.50.0" },
 ]
+provides-extras = ["vision"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -6225,7 +6227,7 @@ dev = [
     { name = "pre-commit" },
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.21.0" },
-    { name = "ruff" },
+    { name = "ruff", specifier = "==0.15.12" },
     { name = "torch", specifier = ">=2.11.0" },
     { name = "torchvision", specifier = ">=0.26.0" },
     { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
@@ -7945,6 +7947,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.24.0,<2" },
     { name = "modal", marker = "extra == 'modal'", specifier = ">=1.4.0" },
     { name = "msgpack", specifier = ">=1.1.2" },
+    { name = "nemo-gym", marker = "python_full_version >= '3.12' and extra == 'nemo-gym'", specifier = "==0.4.0" },
     { name = "nest-asyncio", marker = "extra == 'notebook'", specifier = ">=1.6.0" },
     { name = "nltk", marker = "extra == 'ta'", specifier = ">=3.9.2" },
     { name = "numpy", specifier = ">=2.1.0" },
@@ -7952,7 +7955,7 @@ requires-dist = [
     { name = "openai-agents", specifier = ">=0.8.2" },
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.2" },
-    { name = "prime-sandboxes", specifier = ">=0.2.33" },
+    { name = "prime-sandboxes", specifier = ">=0.2.35" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
@@ -7969,7 +7972,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.12.2" },
     { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'", specifier = ">=0.21.0" },
 ]
-provides-extras = ["browser", "harbor", "modal", "notebook", "openenv", "rg", "ta"]
+provides-extras = ["browser", "harbor", "modal", "nemo-gym", "notebook", "openenv", "rg", "ta"]
 
 [package.metadata.requires-dev]
 dev = [

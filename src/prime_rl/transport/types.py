@@ -18,6 +18,36 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
     dtype: str
 
 
+class MMImageRef(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    """One raw image reference for trainer-side materialization.
+
+    ``item`` is the JSON-safe renderer descriptor (adapter family + payload,
+    parseable via ``parse_raw_mm_item``), ``hash``/``uri`` identify the raw image
+    file, and ``offset``/``length`` are the image's placeholder range in token
+    space (needed to truncate at image boundaries).
+    """
+
+    item: dict
+    hash: str
+    uri: str
+    offset: int
+    length: int
+
+
+class MMRefs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    """Raw multimodal sidecar references for one sample, in token order.
+
+    The trainer materializes the referenced image files with its own processor.
+    Processed tensors are intentionally not part of this transport.
+    """
+
+    images: list[MMImageRef]
+
+    @property
+    def uris(self) -> list[str]:
+        return [image.uri for image in self.images]
+
+
 # Orchestrator -> Packer
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A single training example — one branch of a rollout as a flat token sequence.
@@ -34,15 +64,10 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     env_name: str
     ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl component)
 
-    # Generic multimodal kwargs: flat dict keyed by the kwarg names the
-    # model's forward expects (e.g. {"pixel_values": ..., "image_grid_thw":
-    # ...} for Qwen3-VL; just {"pixel_values": ...} for Gemma3). The
-    # orchestrator batches per-image renderer items by torch.cat along
-    # dim=0 generically — no model-specific knowledge in prime-rl. The
-    # trainer ``**`` -unpacks this into the model forward, so any VLM
-    # whose HF processor / forward agree on kwarg names works without
-    # touching this transport.
+    # Processed multimodal payloads are rejected by the v1 raw-image-ref path.
     mm_kwargs: dict[str, EncodedTensor] | None = None
+
+    mm_refs: MMRefs | None = None
 
     routed_experts: RoutedExperts | None = None
 
@@ -94,8 +119,9 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None
 
-    # See TrainingSample.mm_kwargs.
+    # Processed multimodal payloads are rejected by the v1 raw-image-ref path.
     mm_kwargs: dict[str, EncodedTensor] | None = None
+    mm_refs: MMRefs | None = None
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 

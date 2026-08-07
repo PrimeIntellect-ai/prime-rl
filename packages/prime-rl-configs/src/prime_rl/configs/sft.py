@@ -249,6 +249,16 @@ class SFTConfig(BaseConfig):
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
     @model_validator(mode="after")
+    def renderer_emits_processed_multimodal(self):
+        """SFT needs processed MM tensors; default ``multimodal_output`` to that and reject ``raw``."""
+        if "multimodal_output" in self.renderer.model_fields_set:
+            if self.renderer.multimodal_output == "raw":
+                raise ValueError("multimodal_output='raw' is unsupported for SFT (defaults to 'processed')")
+        else:
+            self.renderer = self.renderer.model_copy(update={"multimodal_output": "processed"})
+        return self
+
+    @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
         if self.model.ep_comm_backend == "deepep" and self.optim.max_norm is not None:
             warnings.warn(

@@ -21,6 +21,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.shared import (
     EnvVars,
     FileMonitorConfig,
+    MultimodalConfig,
     SlurmConfig,
     TransportConfig,
     VLMConfig,
@@ -261,6 +262,8 @@ class RLConfig(BaseConfig):
 
     weight_broadcast: SharedWeightBroadcastConfig | None = None
 
+    multimodal: MultimodalConfig = MultimodalConfig()
+    """Shared raw multimodal image offload settings. Propagated to trainer, orchestrator, and inference."""
     rollout_transport: TransportConfig | None = None
 
     bench: bool = False

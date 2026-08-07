@@ -1,3 +1,4 @@
+import os
 from functools import partial
 
 from verifiers.v1 import pool_serve_kwargs
@@ -7,11 +8,17 @@ from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.orchestrator.utils import setup_env_server_logging
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.run_assets import IMAGE_OFFLOAD_DIR_ENV, resolve_image_offload_dir
 from prime_rl.utils.utils import clean_exit
 
 
 @clean_exit
 def run_server(config: EnvServerConfig):
+    # Renderers offload images to the dir named by this env var; resolve it from
+    # this server's own config, letting an operator-set env win (multi-node).
+    os.environ.setdefault(
+        IMAGE_OFFLOAD_DIR_ENV, str(resolve_image_offload_dir(config.output_dir, config.multimodal, os.environ))
+    )
     # ``serve.pool`` (static or elastic) sizes the server; a v0/legacy env runs through
     # the bridge, a v1 env is a native env block — both speak the same serve protocol,
     # so the orchestrator is agnostic. serve_env applies the logging setup in this process

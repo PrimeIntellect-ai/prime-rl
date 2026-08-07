@@ -138,9 +138,12 @@ members = [
 ]
 # tau2-synth-v1 and tau3-bench-v1 pin `tau2` forks/revs that conflict with the
 # canonical tau2-bench-v1; a workspace shares one lock, so these can't coexist.
+# nemo-gym-weather-v1 needs verifiers[nemo-gym], whose nemo-gym==0.4.0 pins
+# openai<=2.7.2 against verifiers' own openai>=2.9.0.
 exclude = [
     "deps/research-environments/environments/tool_use/tau2_synth_v1",
     "deps/research-environments/environments/tool_use/tau3_bench_v1",
+    "deps/verifiers/environments/nemo_gym_weather_v1",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
