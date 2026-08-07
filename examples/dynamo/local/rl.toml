@@ -1,0 +1,44 @@
+max_steps = 4
+seq_len = 2048
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[deployment]
+type = "single_node"
+num_train_gpus = 1
+num_infer_gpus = 0
+
+[weight_broadcast]
+type = "nccl"
+host = "127.0.0.1"
+inference_world_size = 1
+
+[trainer]
+
+[orchestrator]
+batch_size = 32
+group_size = 4
+
+[orchestrator.model.client]
+base_url = ["http://127.0.0.1:8000/v1"]
+dynamo_discovery_url = "http://127.0.0.1:8001"
+
+[orchestrator.renderer]
+name = "auto"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.train.source]]
+name = "math"
+
+[orchestrator.train.source.legacy]
+id = "math-env"
+args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
