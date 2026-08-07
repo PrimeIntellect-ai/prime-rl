@@ -4978,7 +4978,7 @@ dependencies = [
 requires-dist = [
     { name = "prime-pydantic-config", specifier = ">=0.4.2" },
     { name = "pydantic", specifier = ">=1.10.13" },
-    { name = "renderers", specifier = ">=0.1.9.dev10" },
+    { name = "renderers", specifier = ">=0.1.9" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomli-w", specifier = ">=1.2.0" },
     { name = "verifiers", specifier = ">=0.3.0" },
