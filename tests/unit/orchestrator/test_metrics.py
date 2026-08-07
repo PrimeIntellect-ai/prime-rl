@@ -1,11 +1,19 @@
 import math
+from dataclasses import replace
 from itertools import count
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 import verifiers.v1 as vf
 
+from prime_rl.orchestrator.eval_sink import eval_step_of
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
+from prime_rl.orchestrator.types import (
+    Episode,
+    InflightEpisode,
+    Rollout,
+)
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 _ids = count()
@@ -29,7 +37,6 @@ def mk(
     metrics: dict | None = None,
     rewards: dict | None = None,
     env_name: str = "env",
-    group_id: str = "g0",
     trainable: bool = True,
     is_trainable: bool = True,
     is_filtered: bool = False,
@@ -61,7 +68,6 @@ def mk(
         stop_condition=stop_condition,
         metrics=metrics or {},
         env_name=env_name,
-        group_id=group_id,
         agent=SimpleNamespace(trainable=trainable, name=agent_name),
         is_trainable=is_trainable,
         is_filtered=is_filtered,
@@ -79,8 +85,28 @@ def mk(
     )
 
 
-def train_wandb(rollouts, subset: str = "all") -> dict:
-    return TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset=subset)
+def ep(*rollouts, env_name: str = "env", errors=(), group_id="g0", cls=Episode):
+    """One episode over these traces, named and grouped the way the dispatcher stamps it.
+    ``model_construct`` skips validation so the duck-typed stand-ins above can stand in for real
+    ones."""
+    return cls.model_construct(
+        id=f"e{next(_ids)}",
+        traces=list(rollouts),
+        env=vf.EnvInfo(name=env_name),
+        group_id=group_id,
+        errors=list(errors),
+    )
+
+
+def solo(rollouts, group_ids=None, cls=Episode):
+    """Each rollout as its own single-trace episode — the single-agent shape. ``group_ids`` gives
+    the example each answers; by default they all answer the same one."""
+    ids = group_ids or ["g0"] * len(rollouts)
+    return [ep(r, group_id=g, cls=cls) for r, g in zip(rollouts, ids, strict=True)]
+
+
+def train_wandb(rollouts, subset: str = "all", group_ids=None) -> dict:
+    return TrainRollouts(solo(rollouts, group_ids)).metrics.to_wandb(prefix="train/agg", subset=subset)
 
 
 def test_stat():
@@ -93,7 +119,12 @@ def test_stat():
 
 def test_container_effective_by_env_and_listlike():
     rc = TrainRollouts(
-        [mk(env_name="a"), mk(env_name="a", has_error=True), mk(env_name="b", is_filtered=True), mk(env_name="b")]
+        [
+            ep(mk(env_name="a"), env_name="a"),
+            ep(mk(env_name="a", has_error=True), env_name="a"),
+            ep(mk(env_name="b", is_filtered=True), env_name="b"),
+            ep(mk(env_name="b"), env_name="b"),
+        ]
     )
     assert len(rc) == 4 and [r.env_name for r in rc] == ["a", "a", "b", "b"]  # sized + iterable
     eff = rc.effective
@@ -101,16 +132,18 @@ def test_container_effective_by_env_and_listlike():
     assert all(not r.has_error and not r.is_filtered and r in rc.rollouts for r in eff)  # view of references
     by_env = rc.by_env()
     assert set(by_env) == {"a", "b"} and len(by_env["a"]) == 2 and isinstance(by_env["a"], TrainRollouts)
-    rc.append(mk())
-    assert len(rc) == 5
+    rc.append(ep(mk()))
+    assert len(rc) == 5  # sized by rollout, appended by episode
 
 
 def test_to_wandb_distributions():
     m = TrainRollouts(
-        [
-            mk(reward=1.0, num_total_tokens=10, num_input_tokens=4),
-            mk(reward=0.0, num_total_tokens=20, num_input_tokens=6),
-        ]
+        solo(
+            [
+                mk(reward=1.0, num_total_tokens=10, num_input_tokens=4),
+                mk(reward=0.0, num_total_tokens=20, num_input_tokens=6),
+            ]
+        )
     ).metrics
     assert m.num_input_tokens.mean() == 5.0  # fluent Stat access
     out = m.to_wandb(prefix="train/agg", subset="all")
@@ -124,15 +157,20 @@ def test_to_wandb_distributions():
 
 def test_episode_and_agent_levels():
     # Two proposer-solver episodes: one proposer + two solvers each (the solver fan-out).
-    rollouts = [
-        mk(reward=1.0, num_turns=1, agent_name="proposer", episode_id="e1"),
-        mk(reward=0.0, num_turns=2, agent_name="solver", episode_id="e1"),
-        mk(reward=1.0, num_turns=4, agent_name="solver", episode_id="e1"),
-        mk(reward=0.0, num_turns=3, agent_name="proposer", episode_id="e2"),
-        mk(reward=1.0, num_turns=6, agent_name="solver", episode_id="e2"),
-        mk(reward=0.0, num_turns=8, agent_name="solver", episode_id="e2"),
-    ]
-    m = TrainRollouts(rollouts).metrics
+    m = TrainRollouts(
+        [
+            ep(
+                mk(reward=1.0, num_turns=1, agent_name="proposer"),
+                mk(reward=0.0, num_turns=2, agent_name="solver"),
+                mk(reward=1.0, num_turns=4, agent_name="solver"),
+            ),
+            ep(
+                mk(reward=0.0, num_turns=3, agent_name="proposer"),
+                mk(reward=1.0, num_turns=6, agent_name="solver"),
+                mk(reward=0.0, num_turns=8, agent_name="solver"),
+            ),
+        ]
+    ).metrics
     assert m.num_turns.mean() == 12.0  # episode-level sums: 1+2+4 and 3+6+8
     assert m.num_total_tokens.values == [30.0, 30.0]  # summed across the episode's traces
     out = m.to_wandb(prefix="train/agg", subset="all")
@@ -150,11 +188,11 @@ def test_agent_metrics_are_flat_over_traces():
     """Inside a seat the trace is the unit of aggregation, so an uneven fan-out (one solver trace
     from this episode, three from that) never reweights anything: every agent-level metric is the
     plain figure over that agent's rollouts."""
-    rollouts = [
-        mk(agent_name="solver", episode_id="e1", is_truncated=True, reward=1.0),
-        *[mk(agent_name="solver", episode_id="e2", is_truncated=False, reward=0.0) for _ in range(3)],
+    episodes = [
+        ep(mk(agent_name="solver", is_truncated=True, reward=1.0)),
+        ep(*[mk(agent_name="solver", is_truncated=False, reward=0.0) for _ in range(3)]),
     ]
-    out = TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset="all")
+    out = TrainRollouts(episodes).metrics.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/solver/is_truncated/mean"] == 0.25  # 1 of 4 traces, not (1.0 + 0.0) / 2
     assert out["train/agg/all/solver/is_completed/mean"] == 1.0
     assert out["train/agg/all/solver/is_trainable/mean"] == 1.0  # sibling rates agree
@@ -162,7 +200,9 @@ def test_agent_metrics_are_flat_over_traces():
 
 
 def test_boolean_rates_and_error_breakdown_all_only():
-    rc = TrainRollouts([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_filtered=True)])
+    rc = TrainRollouts(
+        solo([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_filtered=True)])
+    )
     out = rc.metrics.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/agent/is_truncated/mean"] == 1 / 3
     assert out["train/agg/all/agent/is_completed/mean"] == 1.0
@@ -176,7 +216,9 @@ def test_boolean_rates_and_error_breakdown_all_only():
 
 def test_solve_rates():
     groups = {"A": [1.0, 1.0], "B": [0.0, 0.0], "C": [1.0, 0.0], "D": [1.0, 0.0]}  # all / none / some / some
-    out = train_wandb([mk(reward=r, group_id=g) for g, rs in groups.items() for r in rs])
+    out = train_wandb(
+        [mk(reward=r) for _, rs in groups.items() for r in rs], group_ids=[g for g, rs in groups.items() for _ in rs]
+    )
     rates = (
         out["train/agg/all/agent/solved_all"],
         out["train/agg/all/agent/solved_none"],
@@ -200,7 +242,7 @@ def test_nested_metrics_and_rewards():
         # scoring failed after seeding: unscored (None) entries count as 0.0 on `all`
         mk(has_error=True, metrics={"acc": None}, rewards={"correct": None, "format": None}),
     ]
-    rc = TrainRollouts(rollouts)
+    rc = TrainRollouts(solo(rollouts))
     m = rc.metrics
     agent = m.by_agent()["agent"]
     assert agent.metrics["acc"].mean() == pytest.approx(4 / 3)  # nested group access
@@ -215,13 +257,17 @@ def test_nested_metrics_and_rewards():
     assert eff["train/agg/effective/agent/rewards/format/mean"] == 0.5
     # cross-env agg: another env's unscored trace carries different keys, so it can't dilute these
     other = mk(env_name="other", has_error=True, rewards={"solved": None})
-    agg = TrainRollouts(rollouts + [other]).metrics.to_wandb(prefix="train/agg", subset="all")
+    agg = TrainRollouts(solo(rollouts) + [ep(other, env_name="other")]).metrics.to_wandb(
+        prefix="train/agg", subset="all"
+    )
     assert agg["train/agg/all/agent/rewards/format/mean"] == pytest.approx(1 / 3)
     assert agg["train/agg/all/agent/rewards/solved/mean"] == 0.0
 
 
 def test_nested_timing():
-    m = TrainRollouts([mk(setup=1.0, agent=2.0, agent_model=1.5, agent_harness=0.5, finalize=0.5, scoring=0.5)]).metrics
+    m = TrainRollouts(
+        solo([mk(setup=1.0, agent=2.0, agent_model=1.5, agent_harness=0.5, finalize=0.5, scoring=0.5)])
+    ).metrics
     timing = m.by_agent()["agent"].timing
     assert timing.setup.mean() == 1.0 and timing.total.mean() == 4.0  # total sums all four phases
     assert timing.agent_model.mean() == 1.5 and timing.agent_harness.mean() == 0.5
@@ -242,12 +288,12 @@ def test_train_only_metrics_absent_from_eval():
     assert out["train/agg/all/agent/is_filtered/mean"] == 0.5
     assert out["train/agg/all/agent/filters/gibberish/mean"] == 0.5
     assert "train/agg/all/is_trainable/mean" not in out  # pipeline verdicts are per-trace
-    eval_out = EvalRollouts(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
+    eval_out = EvalRollouts(solo(rollouts)).metrics.to_wandb(prefix="eval/x", subset="all")
     assert not any("is_trainable" in k or "is_filtered" in k or "/filters/" in k for k in eval_out)
 
 
 def test_eval_avg_at_k_and_pass_k():
-    binary = EvalRollouts([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")])
+    binary = EvalRollouts(solo([mk(reward=1.0), mk(reward=0.0)]))
     eff = binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
     assert eff["eval/x/effective/agent/avg@2"] == 0.5  # mean reward under avg@<k> (k from the groups)
     assert "eval/x/effective/avg@2" not in eff  # scores are per-agent, never pooled
@@ -255,7 +301,7 @@ def test_eval_avg_at_k_and_pass_k():
     all_out = binary.metrics.to_wandb(prefix="eval/x", subset="all")
     assert all_out["eval/x/all/agent/avg@2"] == 0.5
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
-    non_binary = EvalRollouts([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
+    non_binary = EvalRollouts(solo([mk(reward=0.5), mk(reward=1.0)]))
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
 
 
@@ -265,3 +311,82 @@ def test_compute_pass_metrics_matches_closed_form():
     assert out["pass@2"] == 1.0 - math.comb(2, 2) / math.comb(4, 2)
     assert out["pass^2"] == math.comb(2, 2) / math.comb(4, 2)
     assert set(out) == {"pass@1", "pass@2", "pass@4", "pass^1", "pass^2", "pass^4"}
+
+
+def test_traceless_episode_keeps_its_reason():
+    """The failure needs no type of its own: ``failed`` is just "no traces", and the reason is the
+    error vf (or the dispatcher) already put on the episode."""
+    episode = ep(errors=[vf.Error(type="Cancelled", message="Off-policy cancel")])
+    assert not episode.traces and episode.rollouts == []
+    assert episode.last_error is not None and episode.last_error.type == "Cancelled"
+    assert ep(mk()).traces
+    # A traceless episode still counts as an episode, but contributes no rollouts.
+    pool = TrainRollouts([ep(mk()), episode])
+    assert len(pool) == 1 and len(pool.episodes) == 2
+    assert len(pool.effective.episodes) == 1  # it survives nothing, so the subset drops it
+
+
+def test_training_state_is_train_only():
+    """Only a train rollout carries trainer-bound state; an eval trace has no field for it.
+    Credit is not among them — it lives on the graph's nodes, which every trace has."""
+    assert {"samples", "is_filtered", "filter_results"} <= set(Rollout.model_fields)
+    assert "advantages" not in Rollout.model_fields  # derived from the nodes
+    # What stays on a trace is only what places a loose one among its peers; the dispatch itself
+    # belongs to the episode that was dispatched.
+    assert not {"kind", "policy_version", "off_policy_steps", "eval_step", "episode_id"} & set(Rollout.model_fields)
+
+
+def test_inflight_episode_stamps_what_lands():
+    """The dispatch and the landed episode are one pair: `stamp` is the only place the facts of a
+    dispatch become facts of an episode, and the run it writes is what tells the rest of the
+    orchestrator which path the episode is on."""
+    wire = Episode.model_construct(id="e", traces=[])
+    inflight = InflightEpisode(kind="train", env_name="rt", group_id=uuid4(), policy_version=3, episodes_owed=1)
+    span = vf.PolicySpan(start=3, end=4)  # an update landed while it was generating
+    train = inflight.stamp(wire, run_id="r", policy=span, eval_step=None)
+    run = train.train_run
+    assert isinstance(run.metadata, vf.TrainMetadata) and run.metadata.policy == span
+    assert run.metadata.step is None  # the batch window it lands in is not known yet
+    assert run.metadata.off_policy_steps is None  # so there is nothing to be behind yet
+    assert train.env.name == "rt" and train.group_id is not None
+
+    run.metadata.step = 6  # the window it landed in, which step 6 trains v5 from
+    assert run.metadata.off_policy_steps == 2 and run.metadata.policy.drift == 1
+
+    evaluation = replace(inflight, kind="eval").stamp(
+        Episode.model_construct(id="e", traces=[]), run_id="r", policy=span, eval_step=12
+    )
+    # An online eval belongs to the same training run — same id, told apart by its metadata. Its
+    # off-policy reading is what drifted under it, not its distance from a step it was dispatched
+    # at: nothing trains on an eval, and a slow one would otherwise look on-policy forever.
+    eval_meta = evaluation.train_run.metadata
+    assert isinstance(eval_meta, vf.EvalMetadata) and eval_meta.step == 12
+    assert evaluation.train_run.id == run.id and eval_meta.off_policy_steps == span.drift == 1
+    with pytest.raises(AssertionError):  # an eval episode without its step is not representable
+        replace(inflight, kind="eval").stamp(wire, run_id="r", policy=span, eval_step=None)
+
+
+def test_eval_sink_reads_the_epoch_a_stamped_episode_landed_in():
+    """The eval sink places an episode by the step on its run. Regression: online eval moved onto
+    the training run (kind="eval"), and nothing unit-tested the sink, so the sink kept asserting on
+    the old record and only a live run caught it."""
+    inflight = InflightEpisode(
+        kind="eval", env_name="rt", group_id=uuid4(), policy_version=3, episodes_owed=1, eval_step=12
+    )
+    landed = inflight.stamp(Episode.model_construct(id="e", traces=[]), run_id="r", policy=None, eval_step=12)
+    assert eval_step_of(landed) == 12
+
+    trained_on = replace(inflight, kind="train").stamp(
+        Episode.model_construct(id="e2", traces=[]), run_id="r", policy=None, eval_step=None
+    )
+    with pytest.raises(AssertionError):  # an episode to train on is not placed by an eval epoch
+        eval_step_of(trained_on)
+
+
+def test_empty_is_not_the_same_as_failed():
+    """An episode can error and still have traces — that failure rides the traces and must not be
+    counted as an episode that produced nothing."""
+    errored = ep(mk(has_error=True), errors=[vf.Error(type="EnvError", message="boom")])
+    assert errored.traces and not errored.ok  # failed, but something came back
+    # the failure rides the trace, where the seat's rate sees it
+    assert errored.rollouts[0].has_error

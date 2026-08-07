@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import pyarrow.parquet as pq
 import verifiers.v1 as vf
+from verifiers.v1.configs.agent import WireAgentConfig
 
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.monitor.prime import PrimeMonitor
@@ -37,15 +38,18 @@ def _build_rollout(*, example_id: int, reward: float, task: str) -> Rollout:
     ]
     rollout = Rollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=example_id, prompt=f"prompt-{example_id}")),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
         nodes=nodes,
         rewards={"reward": vf.Reward(score=reward)},
     )
     rollout.env_name = task
-    # Per-token advantage stream (full-length-N): 0.0 on the 3 prompt tokens,
-    # reward/2 on the 2 completion (mask-True) tokens.
-    rollout.advantages = [0.0, 0.0, 0.0, reward / 2, reward / 2]
+    rollout.assign_advantages(reward / 2)  # over the 2 completion (mask-True) tokens
     return rollout
+
+
+def _episode(*rollouts: Rollout, env_name: str = "task-a") -> vf.WireEpisode:
+    """The unit the monitor uploads: one episode, whose traces become the rows."""
+    return vf.WireEpisode.model_construct(traces=list(rollouts), env=vf.EnvInfo(name=env_name))
 
 
 def test_rollouts_to_parquet_bytes_preserves_all_rollouts_and_ids():
@@ -54,8 +58,8 @@ def test_rollouts_to_parquet_bytes_preserves_all_rollouts_and_ids():
 
     parquet_bytes = monitor._rollouts_to_parquet_bytes(
         [
-            _build_rollout(example_id=101, reward=1.0, task="task-a"),
-            _build_rollout(example_id=202, reward=0.0, task="task-b"),
+            _episode(_build_rollout(example_id=101, reward=1.0, task="task-a")),
+            _episode(_build_rollout(example_id=202, reward=0.0, task="task-b"), env_name="task-b"),
         ],
         step=7,
     )
@@ -83,12 +87,12 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     rollout_with_branches = _build_rollout(example_id=1, reward=1.0, task="task-a")
     rollout_without_branches = Rollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=2, prompt="missing-trajectory")),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
     )
     assert rollout_without_branches.branches == []
 
     parquet_bytes = monitor._rollouts_to_parquet_bytes(
-        [rollout_with_branches, rollout_without_branches],
+        [_episode(rollout_with_branches, rollout_without_branches)],
         step=3,
     )
 

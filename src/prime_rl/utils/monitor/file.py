@@ -12,7 +12,7 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor, drop_non_finite_json_values
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import Episode
 
 
 class FileMonitor(Monitor):
@@ -79,10 +79,10 @@ class FileMonitor(Monitor):
         self._file.write(json.dumps(row))
         self._file.write("\n")
 
-    def log_samples(self, rollouts: list[Rollout], step: int) -> None:
+    def log_samples(self, episodes: list[Episode], step: int) -> None:
         pass
 
-    def log_eval_samples(self, rollouts: list[Rollout], env_name: str, step: int) -> None:
+    def log_eval_samples(self, episodes: list[Episode], env_name: str, step: int) -> None:
         pass
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:

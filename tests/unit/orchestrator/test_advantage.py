@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 import verifiers.v1 as vf
+from verifiers.v1.configs.agent import WireAgentConfig
 
 from prime_rl.configs.algorithm import (
     GRPOAlgoConfig,
@@ -10,8 +11,9 @@ from prime_rl.configs.algorithm import (
 )
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
-from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.algo.routing import stamp_advantages
+from prime_rl.orchestrator.trajectories import iter_trainable_branches, trace_to_samples
+from prime_rl.orchestrator.types import Episode, Rollout
 
 
 def _build_rollout(
@@ -99,7 +101,7 @@ def _build_rollout(
 
     rollout = Rollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
         nodes=nodes,
         calls=calls,
         rewards={"reward": vf.Reward(score=reward)},
@@ -138,24 +140,30 @@ def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[Rollou
     return rollouts
 
 
+def _as_episodes(group: list[Rollout]) -> list[Episode]:
+    """One episode per rollout — the shape a single-agent env produces, and what the
+    algorithms are handed."""
+    return [Episode.model_construct(id=f"e{i}", traces=[rollout]) for i, rollout in enumerate(group)]
+
+
 def _scalar(rollout: Rollout) -> float:
-    """The per-rollout advantage scalar an algorithm assigned — broadcast over
-    the rollout's trainable (mask-True) tokens, so any trainable position holds it."""
-    mask = [m for sample in rollout.samples for m in sample.mask]
-    return rollout.advantages[mask.index(True)]
+    """The per-rollout advantage scalar an algorithm assigned — broadcast over the rollout's
+    trainable tokens, so every assigned position holds it."""
+    assert rollout.advantages is not None
+    return rollout.advantages[0]
 
 
 def _grpo(group: list[Rollout], length_penalty=None) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
     algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), policy_pool=None)
-    asyncio.run(algo.score_group(group))
+    asyncio.run(algo.score_group(_as_episodes(group)))
     return [_scalar(rollout) for rollout in group]
 
 
 def _max_rl(group: list[Rollout]) -> list[float]:
     """Drive ``MaxRLAlgorithm.score_group`` and read back each per-rollout scalar."""
     algo = MaxRLAlgorithm(MaxRLAlgoConfig(), policy_pool=None)
-    asyncio.run(algo.score_group(group))
+    asyncio.run(algo.score_group(_as_episodes(group)))
     return [_scalar(rollout) for rollout in group]
 
 
@@ -217,7 +225,7 @@ def test_linear_context_term_penalizes_more_context():
         _build_rollout(1.0, sampled_lengths=[10], obs_lengths=[]),
         _build_rollout(1.0, sampled_lengths=[10], obs_lengths=[100]),
     ]
-    asyncio.run(GRPOAlgorithm(GRPOAlgoConfig(length_penalty=cfg), policy_pool=None).score_group(group))
+    asyncio.run(GRPOAlgorithm(GRPOAlgoConfig(length_penalty=cfg), policy_pool=None).score_group(_as_episodes(group)))
     advs = [_scalar(rollout) for rollout in group]
     assert advs[0] > advs[1]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
@@ -240,23 +248,66 @@ def test_linear_turns_term_penalizes_more_turns():
 
 
 def test_assign_advantages_broadcasts_scalar():
-    """A scalar broadcasts uniformly over the rollout's trainable (mask-True) tokens."""
-    rollout = _build_rollout(0.0, sampled_lengths=[2])
-    # one user prompt token (masked) + 2 sampled tokens (trainable)
+    """A scalar broadcasts over the trainable tokens, and only those — the credit is stored per
+    node against `mask`, so untrainable positions hold nothing rather than a zero."""
+    rollout = _build_rollout(0.0, sampled_lengths=[2])  # 1 masked prompt token + 2 trainable
     rollout.assign_advantages(0.7)
-    assert rollout.advantages == [0.0, 0.7, 0.7]
+    assert rollout.advantages == [0.7, 0.7]
+    # The branch view widens it back to the token sequence the trainer indexes.
+    (branch, _), *_ = iter_trainable_branches(rollout)
+    assert branch.advantages == [0.0, 0.7, 0.7]
 
 
 def test_assign_advantages_zeros_non_trainable():
-    """Non-trainable (mask=False) positions stay 0.0 under scalar broadcast."""
+    """A non-trainable (mask=False) position reads 0.0 in the branch view."""
     # prompt(1, masked) + sampled(1) + obs(1, masked): mask is [F, T, F]
     rollout = _build_rollout(0.0, sampled_lengths=[1], obs_lengths=[1])
     rollout.assign_advantages(0.7)
-    assert rollout.advantages == [0.0, 0.7, 0.0]
+    (branch, _), *_ = iter_trainable_branches(rollout)
+    assert branch.advantages == [0.0, 0.7, 0.0]
 
 
-def test_assign_advantages_rejects_misaligned():
-    rollout = _build_rollout(0.0, sampled_lengths=[2])
-    # full length is 3 (prompt + 2 sampled); a 1-element list must be rejected
-    with pytest.raises(ValueError, match="align"):
-        rollout.assign_advantages([0.5])
+def test_unassigned_credit_is_not_zero_credit():
+    """An unscored rollout is distinguishable from one scored zero, all the way to the sample."""
+    unscored = _build_rollout(0.0, sampled_lengths=[2])
+    assert unscored.advantages is None and not unscored.is_trainable
+    scored = _build_rollout(0.0, sampled_lengths=[2])
+    scored.assign_advantages(0.0)
+    assert scored.advantages == [0.0, 0.0] and not scored.is_trainable  # scored, but no gradient
+
+
+def test_stamp_advantages_zeros_a_shared_node_in_the_later_branch():
+    """A forked node is trained in the first branch containing it; in the later branch it is
+    context, so its credit must not ride along on that branch's sample."""
+    root = vf.MessageNode(
+        message=vf.AssistantMessage(role="assistant", content=""),
+        sampled=True,
+        token_ids=[1, 2],
+        mask=[True, True],
+        logprobs=[-0.1, -0.2],
+    )
+    leaves = [
+        vf.MessageNode(
+            parent=0,
+            message=vf.AssistantMessage(role="assistant", content=""),
+            sampled=True,
+            token_ids=[3],
+            mask=[True],
+            logprobs=[-0.3],
+        )
+        for _ in range(2)
+    ]
+    rollout = Rollout[vf.TaskData](
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
+        nodes=[root, *leaves],
+        rewards={"reward": vf.Reward(score=0.0)},
+    )
+    rollout.env_name = "test"
+    rollout.samples = trace_to_samples(rollout, env_name="test")
+    rollout.assign_advantages(0.5)
+    stamp_advantages(rollout)
+
+    first, second = rollout.samples
+    assert first.advantages == [0.5, 0.5, 0.5]
+    assert second.advantages == [0.0, 0.0, 0.5]

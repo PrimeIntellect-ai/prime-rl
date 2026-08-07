@@ -7,9 +7,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import orjson
+from verifiers.v1.cli.output import write_episode
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.types import Episode
 from prime_rl.utils.client import setup_inference_pool
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
 from prime_rl.utils.utils import (
@@ -49,15 +50,18 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     return renderer, inference_pool
 
 
-def save_rollouts(rollouts: list[dict], path: Path) -> None:
-    """Append rollouts (Trace record dicts, already JSON-serializable) to a JSONL file.
-    The trace streams are append-only: ``all`` grows one rollout at a time as they
-    complete, ``effective`` one batch at a time on finalize."""
+def save_episode(episode: Episode, path: Path) -> None:
+    """Append one episode to ``path``, one per line — verifiers' own writer, so a prime-rl record
+    reads exactly like one its `read_episodes` produced, and the per-node training tensors it
+    excludes stay out."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
-    with open(path, "ab") as f:
-        for rollout in rollouts:
-            f.write(orjson.dumps(rollout, default=str, option=opts))
+    write_episode(path.parent, episode)
+
+
+def save_episodes(episodes: list[Episode], path: Path) -> None:
+    """Append a batch of episodes, one per line."""
+    for episode in episodes:
+        save_episode(episode, path)
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
