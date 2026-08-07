@@ -2,7 +2,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 # Disable transformers hub kernel interception by default. The `kernels` package, when installed,
 # causes transformers to auto-replace modules (e.g. mamba-ssm) with hub kernel versions that may
@@ -22,7 +22,14 @@ from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.tensor.parallel import parallelize_module
 from torchtitan.distributed.expert_parallel import ExpertParallel
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    GenerationConfig,
+    PretrainedConfig,
+)
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
@@ -528,8 +535,22 @@ def get_load_balance_stats(
     }
 
 
+ModelTask = Literal["causal_lm", "reward_model"]
+
+
+def get_output_head(model: nn.Module, task: ModelTask) -> nn.Module:
+    name = "score" if task == "reward_model" else "lm_head"
+    output_head = getattr(model, name, None)
+    if output_head is None:
+        raise ValueError(f"{type(model).__name__} does not expose the expected {name!r} output head for {task}.")
+    return output_head
+
+
 def get_model(
-    config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
+    config: ModelConfig,
+    device: torch.device = torch.device("cpu"),
+    dtype: torch.dtype = torch.bfloat16,
+    task: ModelTask = "causal_lm",
 ) -> nn.Module:
     logger = get_logger()
     logger.info(
@@ -550,6 +571,9 @@ def get_model(
         ),
     )
     model_config.use_cache = False
+    if task == "reward_model":
+        model_config.num_labels = 1
+        model_config.problem_type = "regression"
     is_vlm_arch = is_vlm_architecture(model_config)
 
     if is_vlm_training:
@@ -673,6 +697,9 @@ def get_model(
     else:
         impl_to_use = config.impl
 
+    if task == "reward_model" and (impl_to_use != "hf" or is_vlm_arch):
+        raise ValueError('Reward models currently require a text-only model with model.impl="hf".')
+
     if config.attn in ("flash_attention_3", "flash_attention_4") and impl_to_use == "hf":
         raise ValueError(
             f"{config.attn} requires model.impl='custom' or 'auto' (resolved to 'custom'), "
@@ -698,6 +725,8 @@ def get_model(
             from transformers import AutoModelForImageTextToText
 
             model_cls = AutoModelForImageTextToText
+        elif task == "reward_model":
+            model_cls = AutoModelForSequenceClassification
         else:
             match impl_to_use:
                 case "hf":
@@ -722,8 +751,11 @@ def get_model(
             )
         logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
 
-    assert model.lm_head.weight.dtype == dtype, (
-        f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
+    if task == "reward_model":
+        model.config.architectures = [type(model).__name__]
+    output_head = get_output_head(model, task)
+    assert output_head.weight.dtype == dtype, (
+        f"Output head dtype was not loaded correctly {output_head.weight.dtype} != {dtype}"
     )
     return model
 
@@ -762,7 +794,12 @@ def setup_processor(config: ModelConfig):
     return processor
 
 
-def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
+def setup_fsdp(
+    model: nn.Module,
+    config: ModelConfig,
+    parallel_dims: ParallelDims,
+    task: ModelTask = "causal_lm",
+):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
 
@@ -819,9 +856,10 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             **fsdp_config,
         )
 
-    shard_norm_and_lm_head = hasattr(model, "config") and not model.config.tie_word_embeddings
+    output_head = get_output_head(model, task)
+    shard_norm_and_output_head = task == "reward_model" or not model.config.tie_word_embeddings
 
-    if shard_norm_and_lm_head:
+    if shard_norm_and_output_head:
         # This optimization breaks weight tying
         embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
         fully_shard(
@@ -830,13 +868,31 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             **fsdp_config,
         )
         norm_module = getattr(language_model, "norm", None) or language_model.norm_f
-        fully_shard(
-            [model.lm_head, norm_module],
-            mesh=hsdp_mesh,
-            mp_policy=mp_policy,
-            offload_policy=offload_policy,
-            reshard_after_forward=False,
-        )
+        if task == "reward_model":
+            # HF reward heads are newly initialized in FP32 while pretrained norms may be BF16.
+            # Separate FSDP units permit those original dtypes without changing causal-LM sharding.
+            fully_shard(
+                output_head,
+                mesh=hsdp_mesh,
+                mp_policy=mp_policy,
+                offload_policy=offload_policy,
+                reshard_after_forward=False,
+            )
+            fully_shard(
+                norm_module,
+                mesh=hsdp_mesh,
+                mp_policy=mp_policy,
+                offload_policy=offload_policy,
+                reshard_after_forward=False,
+            )
+        else:
+            fully_shard(
+                [output_head, norm_module],
+                mesh=hsdp_mesh,
+                mp_policy=mp_policy,
+                offload_policy=offload_policy,
+                reshard_after_forward=False,
+            )
     else:
         get_logger().warning("Model uses tied word embeddings, so skipping the last-layer no-reshard optimization.")
 
@@ -859,7 +915,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
     if embed_module is not None and len(language_model.layers) > 0:
-        if shard_norm_and_lm_head:
+        if shard_norm_and_output_head:
             embed_module.set_modules_to_forward_prefetch([transformer_blocks[0]])
 
     for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
@@ -873,17 +929,17 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_forward_prefetch(prefetch_modules)
             else:
                 transformer_block.set_modules_to_forward_prefetch([next_transformer_block])
-        elif language_model.norm is not None and model.lm_head is not None:
-            if shard_norm_and_lm_head:
-                transformer_block.set_modules_to_forward_prefetch([language_model.norm, model.lm_head])
+        elif language_model.norm is not None and output_head is not None:
+            if shard_norm_and_output_head:
+                transformer_block.set_modules_to_forward_prefetch([language_model.norm, output_head])
 
     # backward
     reversed_transformer_blocks = list(reversed(language_model.layers))
     prev_transformer_blocks = reversed_transformer_blocks[1:] + [None]
 
-    if language_model.norm is not None and model.lm_head is not None and len(language_model.layers) > 0:
-        if shard_norm_and_lm_head:
-            model.lm_head.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
+    if language_model.norm is not None and output_head is not None and len(language_model.layers) > 0:
+        if shard_norm_and_output_head:
+            output_head.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
         else:
             model.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
 
@@ -898,11 +954,16 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             else:
                 transformer_block.set_modules_to_backward_prefetch([prev_transformer_block])
         elif embed_module is not None:
-            if shard_norm_and_lm_head:
+            if shard_norm_and_output_head:
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
-def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
+def load_dcp_from_hf(
+    model: nn.Module,
+    config: ModelConfig,
+    parallel_dims: ParallelDims,
+    task: ModelTask = "causal_lm",
+):
     device = "cpu" if config.fsdp_cpu_offload else "cuda"
     model.to_empty(device=device)
     torch.distributed.barrier()
@@ -976,7 +1037,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
-        state_dict.pop("lm_head.weight")
+        state_dict.pop("lm_head.weight", None)
+    if task == "reward_model":
+        for name, _ in get_output_head(model, task).named_parameters():
+            state_dict.pop(f"score.{name}", None)
     dcp_load(
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
@@ -985,6 +1049,11 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
         model.tie_weights()
     _init_buffers_post_meta()
+
+    if task == "reward_model":
+        with torch.no_grad():
+            for parameter in get_output_head(model, task).parameters():
+                parameter.zero_()
 
     _move_buffers_to_cuda(model, config)
 
@@ -1259,6 +1328,7 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    task: ModelTask = "causal_lm",
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -1273,7 +1343,7 @@ def setup_model(
     logger = get_logger()
 
     # 1. We load to meta device by default
-    model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+    model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype], task=task)
     configure_moe_ep_backend(model, config)
 
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
@@ -1286,14 +1356,15 @@ def setup_model(
     # 1a. We load to CPU if we cannot reinit empty buffers
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
-        model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
+        model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype], task=task)
         configure_moe_ep_backend(model, config)
 
     lm_head_chunk_size: int | None = None
     if isinstance(config.fused_lm_head_token_chunk_size, int):
         lm_head_chunk_size = config.fused_lm_head_token_chunk_size
 
-    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
+    if task == "causal_lm":
+        inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
 
     apply_quantization(model, config)
 
@@ -1332,7 +1403,7 @@ def setup_model(
     if config.compile is not None:
         apply_compile(model, config.compile)
 
-    setup_fsdp(model, config, parallel_dims)
+    setup_fsdp(model, config, parallel_dims, task=task)
 
     if not possible_to_load_to_meta:
         _move_buffers_to_cuda(model, config)
@@ -1358,7 +1429,7 @@ def setup_model(
             _move_buffers_to_cuda(model, config)
         # - or load from HF with dcp
         else:
-            load_dcp_from_hf(model, config, parallel_dims)
+            load_dcp_from_hf(model, config, parallel_dims, task=task)
 
     _reset_runtime_moe_buffers(model)
     return model

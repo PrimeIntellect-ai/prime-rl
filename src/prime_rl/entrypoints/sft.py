@@ -1,23 +1,18 @@
 import os
 import subprocess
 import sys
-import uuid
 from pathlib import Path
-from subprocess import Popen
-from threading import Event, Thread
 
 import tomli_w
 
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.entrypoints.local_trainer import launch_local_trainer
 from prime_rl.utils.config import cli, to_toml_dict
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir, validate_output_dir
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
-    cleanup_processes,
-    cleanup_threads,
-    monitor_process,
     set_proc_title,
 )
 
@@ -109,100 +104,12 @@ def sft_slurm(config: SFTConfig):
 
 def sft_local(config: SFTConfig):
     """Run SFT training locally with process monitoring and cleanup."""
-    assert config.deployment.type == "single_node"
-
-    logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
-
-    config_dir = get_config_dir(config.output_dir)
-    config_path = config_dir / SFT_TOML
-    write_config(config, config_path)
-    logger.info(f"Wrote config to {config_path}")
-
-    if config.dry_run:
-        logger.success("Dry run complete. To start an SFT run locally, remove --dry-run from your command.")
-        return
-
-    log_dir = config.output_dir / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    from prime_rl.utils.utils import get_free_port
-
-    trainer_cmd = [
-        "torchrun",
-        "--role=trainer",
-        f"--rdzv-endpoint=localhost:{get_free_port()}",
-        f"--rdzv-id={uuid.uuid4().hex}",
-        f"--log-dir={config.output_dir / 'logs' / 'trainer' / 'torchrun'}",
-        f"--local-ranks-filter={','.join(map(str, config.log.ranks_filter))}",
-        "--redirect=3",
-        "--tee=3",
-        f"--nproc-per-node={config.deployment.num_gpus}",
-        "-m",
-        "prime_rl.trainer.sft.train",
-        "@",
-        (config_dir / SFT_TOML).as_posix(),
-    ]
-
-    logger.info(f"Starting SFT trainer with {config.deployment.num_gpus} GPU(s)")
-    logger.debug(f"Trainer command: {' '.join(trainer_cmd)}")
-
-    processes: list[Popen] = []
-    monitor_threads: list[Thread] = []
-    error_queue: list[Exception] = []
-
-    try:
-        with open(log_dir / "trainer.log", "w") as log_file:
-            trainer_process = Popen(
-                trainer_cmd,
-                env={
-                    **os.environ,
-                    **DEFAULT_COMMON_ENV_VARS,
-                    **DEFAULT_TRAINER_ENV_VARS,
-                    **config.env_vars,
-                },
-                stdout=log_file,
-                stderr=log_file,
-            )
-        processes.append(trainer_process)
-
-        stop_event = Event()
-        monitor_thread = Thread(
-            target=monitor_process,
-            args=(trainer_process, stop_event, error_queue, "trainer"),
-            daemon=True,
-        )
-        monitor_thread.start()
-        monitor_threads.append(monitor_thread)
-
-        logger.success("Startup complete. Showing trainer logs...")
-        tail_process = Popen(
-            f"tail -F '{log_dir / 'trainer.log'}' | sed -u 's/^\\[[a-zA-Z]*[0-9]*\\]://'",
-            shell=True,
-        )
-        processes.append(tail_process)
-
-        stop_event.wait()
-
-        if trainer_process.returncode != 0:
-            logger.error(f"Trainer failed with exit code {trainer_process.returncode}")
-            cleanup_threads(monitor_threads)
-            cleanup_processes(processes)
-            sys.exit(1)
-
-        logger.success("SFT training finished!")
-        cleanup_threads(monitor_threads)
-        cleanup_processes(processes)
-
-    except KeyboardInterrupt:
-        logger.warning("Received interrupt signal, terminating all processes...")
-        cleanup_threads(monitor_threads)
-        cleanup_processes(processes)
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Error occurred: {e}")
-        cleanup_threads(monitor_threads)
-        cleanup_processes(processes)
-        raise
+    launch_local_trainer(
+        config,
+        config_filename=SFT_TOML,
+        trainer_module="prime_rl.trainer.sft.train",
+        display_name="SFT",
+    )
 
 
 def sft(config: SFTConfig):

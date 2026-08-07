@@ -396,7 +396,7 @@ class WeightCheckpointManager:
 
                 # Save model config, generation arguments and tokenizer
                 model.config.save_pretrained(path)
-                if model.generation_config:
+                if getattr(model, "generation_config", None):
                     # training sets use_cache=False which can conflict with
                     # cache_implementation — save with use_cache=True without
                     # mutating the model's config
@@ -450,7 +450,7 @@ class WeightCheckpointManager:
 
         # Remove tied weight keys to match original model format
         if getattr(model.config, "tie_word_embeddings", False):
-            for key in getattr(model, "_tied_weights_keys", []):
+            for key in getattr(model, "_tied_weights_keys", None) or []:
                 state_dict.pop(key, None)
 
         if has_lora_layers(model) and self.config.save_adapter_separately:
