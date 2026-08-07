@@ -211,6 +211,9 @@ class ModelConfig(BaseModelConfig):
     moe_use_grouped_mm: bool = True
     """Use grouped mm for MoE layers. Requires compute capability ≥ 9.0."""
 
+    gdn_recurrent_forward: bool = False
+    """Run GatedDeltaNet linear-attention layers (e.g. Qwen3.5 hybrid models) with a recurrent forward kernel that matches vLLM's decode kernel bit-for-bit, instead of FLA's chunked kernel. The backward still differentiates through the chunked kernel. Removes the chunked-vs-recurrent trainer/inference logprob mismatch on sampled tokens at the cost of trainer throughput. Only affects the custom implementation; not supported with context parallelism."""
+
     quantization: QuantizationConfig | None = None
 
     index_cache: IndexCacheConfig | None = None
@@ -257,6 +260,8 @@ class ModelConfig(BaseModelConfig):
                 "Context parallelism requires model.impl='custom' or 'auto' "
                 "(resolved to a custom PrimeRL implementation)"
             )
+        if self.cp > 1 and self.gdn_recurrent_forward:
+            raise ValueError("gdn_recurrent_forward is not supported with context parallelism")
         return self
 
     @model_validator(mode="after")

@@ -25,6 +25,7 @@ from prime_rl.trainer.models.layers.attn import (
     flash_attn_4_varlen_func,
     flash_attn_varlen_func,
 )
+from prime_rl.trainer.models.layers.gdn_recurrent import gdn_gate, gdn_recurrent_fwd_chunked_bwd
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
@@ -99,6 +100,7 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         self.conv_kernel_size = config.linear_conv_kernel_dim
         self.activation = config.hidden_act
         self.layer_norm_epsilon = config.rms_norm_eps
+        self.recurrent_forward = bool(getattr(config, "gdn_recurrent_forward", False))
 
         # QKV convolution (depthwise)
         self.conv_dim = self.key_dim * 2 + self.value_dim
@@ -186,21 +188,34 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         key = key.reshape(batch_size, seq_len, -1, self.head_k_dim)
         value = value.reshape(batch_size, seq_len, -1, self.head_v_dim)
 
-        beta = b.sigmoid()
-        g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
-
         if self.num_v_heads // self.num_k_heads > 1:
             query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-        if cp_context is not None:
+        if self.recurrent_forward:
+            if cp_context is not None:
+                raise ValueError("gdn_recurrent_forward is not supported with context parallelism")
+            # Raw a/b go into the kernel: the gate and beta-sigmoid are fused
+            # in fp32 exactly as in vLLM's decode kernel, so the trainer's
+            # forward matches generation bit-for-bit.
+            core_attn_out = gdn_recurrent_fwd_chunked_bwd(
+                q=query,
+                k=key,
+                v=value,
+                a=a,
+                b=b,
+                A_log=self.A_log,
+                dt_bias=self.dt_bias,
+                cu_seqlens=cu_seqlens,
+            )
+        elif cp_context is not None:
             cu_seqlens = cp_context.cu_seqlens
             core_attn_out, _ = chunk_gated_delta_rule(
                 query,
                 key,
                 value,
-                g=g,
-                beta=beta,
+                g=gdn_gate(a, self.A_log, self.dt_bias),
+                beta=b.sigmoid(),
                 use_qk_l2norm_in_kernel=True,
                 cu_seqlens=cu_seqlens,
                 cp_context=cp_context,
@@ -210,8 +225,8 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
                 query,
                 key,
                 value,
-                g=g,
-                beta=beta,
+                g=gdn_gate(a, self.A_log, self.dt_bias),
+                beta=b.sigmoid(),
                 initial_state=None,
                 output_final_state=False,
                 use_qk_l2norm_in_kernel=True,
