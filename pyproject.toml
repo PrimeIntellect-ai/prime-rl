@@ -80,6 +80,10 @@ gpt-oss = [
 quack = [
     "quack-kernels>=0.4.1",
 ]
+dynamo = [
+    "ai-dynamo",
+    "ai-dynamo-runtime",
+]
 all = [
     "prime-rl[flash-attn]",
     "prime-rl[disagg]",
@@ -121,6 +125,8 @@ override-dependencies = [
     "transformers==5.6.2",
     "torch>=2.9.0",
     "openenv-core",
+    "pydantic>=2.13.4",
+    "renderers>=0.1.8.dev10",
 ]
 
 # Environment packages (research-environments + verifiers) are auto-discovered as
