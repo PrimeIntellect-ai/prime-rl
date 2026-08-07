@@ -177,6 +177,41 @@ def test_to_toml_dict_roundtrips_explicit_none(tmp_path):
     assert "max_steps" not in to_toml_dict(cli(TrainerConfig, args=[]))
 
 
+def test_env_server_address_overrides():
+    base = {
+        "train": {"source": [{"legacy": {"id": "a"}}, {"legacy": {"id": "b"}}]},
+        "eval": {"source": [{"legacy": {"id": "c"}}]},
+    }
+
+    # Default: derived loopback addresses, positional ports, train then eval.
+    config = OrchestratorConfig.model_validate(base)
+    assert config.env_addresses == {
+        ("train", "a"): "tcp://127.0.0.1:5000",
+        ("train", "b"): "tcp://127.0.0.1:5001",
+        ("eval", "c"): "tcp://127.0.0.1:5002",
+    }
+
+    # Overriding one source relocates only it; the others keep their positional
+    # ports (indices count ALL sources, so no port shifting).
+    config = OrchestratorConfig.model_validate(
+        {**base, "env_server_addresses": {"train/b": "tcp://env-b.ns.svc.cluster.local:5000"}}
+    )
+    assert config.env_addresses == {
+        ("train", "a"): "tcp://127.0.0.1:5000",
+        ("train", "b"): "tcp://env-b.ns.svc.cluster.local:5000",
+        ("eval", "c"): "tcp://127.0.0.1:5002",
+    }
+
+    # A key matching no source is a typo that would otherwise silently fall back
+    # to loopback and hang the run polling a server nobody runs.
+    with pytest.raises(ValidationError, match="env_server_addresses"):
+        OrchestratorConfig.model_validate({**base, "env_server_addresses": {"train/nope": "tcp://x:1"}})
+
+    # External render paths validate with the source sections stripped; overrides
+    # alone must not trip the unknown-key check.
+    OrchestratorConfig.model_validate({"env_server_addresses": {"train/a": "tcp://x:1"}})
+
+
 def test_env_algo_overrides_top_level():
     config = OrchestratorConfig.model_validate(
         {

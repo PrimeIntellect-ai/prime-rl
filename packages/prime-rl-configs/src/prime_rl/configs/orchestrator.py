@@ -537,6 +537,9 @@ class OrchestratorConfig(BaseConfig):
     env_server_base_port: int = Field(5000, ge=1, le=65535)
     """First port of the env-server port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
 
+    env_server_addresses: dict[str, str] = Field(default_factory=dict)
+    """Launcher-owned overrides of where each source's env server lives, keyed ``<split>/<resolved_name>`` (e.g. ``train/wordle``). A listed source is externally managed: the launchers neither write its env-server TOML nor spawn a server for it, and the orchestrator connects to the given address instead of the derived loopback one. Unlisted sources keep the derived ``tcp://127.0.0.1:<env_server_base_port + index>`` address (indices stay positional across ALL sources, so overriding one source never shifts another's port). Sources themselves stay deployment-agnostic — this block is the launcher recording where it chose to run each server, not user intent: launchers whose orchestrator and env servers cannot share a host (e.g. the k8s chart running env servers in separate pods) inject their addresses here."""
+
     batch_size: int | None = Field(None, ge=1)
     """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
 
@@ -746,11 +749,32 @@ class OrchestratorConfig(BaseConfig):
     @property
     def env_addresses(self) -> dict[tuple[str, str], str]:
         """Where each source's env server lives, keyed by ``(split, resolved_name)``:
+        an ``env_server_addresses`` override when the launcher set one, else
         ``tcp://127.0.0.1:<port>`` with ports from ``env_server_base_port`` in
         ``env_sources`` order. The launcher binds env servers at exactly these addresses
         and the orchestrator connects to them, so both sides agree from the config
         alone."""
         return {
-            (split, source.resolved_name): f"tcp://127.0.0.1:{self.env_server_base_port + index}"
+            (split, source.resolved_name): self.env_server_addresses.get(f"{split}/{source.resolved_name}")
+            or f"tcp://127.0.0.1:{self.env_server_base_port + index}"
             for index, (split, source) in enumerate(self.env_sources)
         }
+
+    @model_validator(mode="after")
+    def validate_env_server_addresses(self):
+        """Reject override keys that match no source — a typo would otherwise silently
+        fall back to the derived loopback address and the run would hang polling a
+        server nobody runs. Skipped when no sources are present: external render
+        paths (e.g. rl-k8s's validator) validate with the source sections stripped."""
+        if not self.env_server_addresses:
+            return self
+        known = {f"{split}/{source.resolved_name}" for split, source in self.env_sources}
+        if not known:
+            return self
+        unknown = sorted(set(self.env_server_addresses) - known)
+        if unknown:
+            raise ValueError(
+                f"env_server_addresses keys {unknown} match no train/eval source "
+                f"(known: {sorted(known)}); overrides are keyed '<split>/<resolved_name>'"
+            )
+        return self
