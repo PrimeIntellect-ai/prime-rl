@@ -49,11 +49,17 @@ ENVS_DIR = "envs"
 
 
 def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig, str]]:
-    """``(split, source, address)`` for every train/eval source. The launcher runs one
-    env server per source at its deterministic address; the orchestrator connects there."""
+    """``(split, source, address)`` for every launcher-managed train/eval source. The
+    launcher runs one env server per source at its deterministic address; the
+    orchestrator connects there. Sources with an ``env_server_addresses`` override are
+    externally managed (another launcher runs their server at the given address) and
+    are skipped — no TOML is written and no server is spawned for them."""
     addresses = config.orchestrator.env_addresses
+    overridden = set(config.orchestrator.env_server_addresses)
     return [
-        (split, source, addresses[(split, source.resolved_name)]) for split, source in config.orchestrator.env_sources
+        (split, source, addresses[(split, source.resolved_name)])
+        for split, source in config.orchestrator.env_sources
+        if f"{split}/{source.resolved_name}" not in overridden
     ]
 
 
@@ -453,10 +459,12 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         else {}
     )
 
-    # Env servers launch next to the orchestrator, one per train/eval source.
-    sources = config.orchestrator.env_sources
-    train_env_names = [source.resolved_name for split, source in sources if split == "train"]
-    eval_env_names = [source.resolved_name for split, source in sources if split == "eval"]
+    # Env servers launch next to the orchestrator, one per launcher-managed
+    # train/eval source (externally-managed sources — env_server_addresses
+    # overrides — are skipped, same as env_servers()).
+    launcher_sources = [(split, source) for split, source, _ in env_servers(config)]
+    train_env_names = [source.resolved_name for split, source in launcher_sources if split == "train"]
+    eval_env_names = [source.resolved_name for split, source in launcher_sources if split == "eval"]
 
     if config.deployment.type == "single_node":
         script = template.render(
