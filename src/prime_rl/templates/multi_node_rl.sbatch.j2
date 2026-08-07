@@ -66,6 +66,7 @@ ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_RUN_ID=${WANDB_SHARED_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
+export WANDB_FULL_CONFIG_PATH={{ config_dir }}/full_config.json
 
 # Networking
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
