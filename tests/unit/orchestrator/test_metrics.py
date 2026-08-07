@@ -1,4 +1,5 @@
 import math
+from itertools import count
 from types import SimpleNamespace
 
 import pytest
@@ -7,10 +8,14 @@ import verifiers.v1 as vf
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
+_ids = count()
+
 
 def mk(
     reward: float = 0.0,
     *,
+    episode_id: str = "",
+    agent_name: str = "agent",
     num_total_tokens: int = 10,
     num_input_tokens: int = 4,
     num_output_tokens: int = 6,
@@ -36,8 +41,12 @@ def mk(
     finalize: float = 0.0,
     scoring: float = 0.0,
 ):
-    """Duck-typed stand-in for ``Rollout``, exposing only the Trace properties the metrics read."""
+    """Duck-typed stand-in for ``Rollout``, exposing only the Trace properties the metrics read.
+    Without an ``episode_id`` each rollout is its own single-trace episode (the unique ``id``
+    is the grouping fallback)."""
     return SimpleNamespace(
+        id=f"t{next(_ids)}",
+        episode_id=episode_id,
         reward=reward,
         rewards=rewards or {},
         num_total_tokens=num_total_tokens,
@@ -53,7 +62,7 @@ def mk(
         metrics=metrics or {},
         env_name=env_name,
         group_id=group_id,
-        agent=SimpleNamespace(trainable=trainable),
+        agent=SimpleNamespace(trainable=trainable, name=agent_name),
         is_trainable=is_trainable,
         is_filtered=is_filtered,
         filter_results=filter_results or {},
@@ -105,20 +114,60 @@ def test_to_wandb_distributions():
     ).metrics
     assert m.num_input_tokens.mean() == 5.0  # fluent Stat access
     out = m.to_wandb(prefix="train/agg", subset="all")
-    assert out["train/agg/all/reward/mean"] == 0.5
+    assert out["train/agg/all/agent/reward/mean"] == 0.5
+    assert "train/agg/all/reward/mean" not in out  # trace-level metrics are agent-only
     assert out["train/agg/all/num_total_tokens/mean"] == 15.0
-    assert out["train/agg/all/num_total_tokens/max"] == 20.0  # flat over rollouts, not per-group
+    assert out["train/agg/all/num_total_tokens/max"] == 20.0  # single-trace episodes: one value per rollout
     assert out["train/agg/all/num_input_tokens/mean"] == 5.0
     assert out["train/agg/all/num_output_tokens/mean"] == 6.0
+
+
+def test_episode_and_agent_levels():
+    # Two proposer-solver episodes: one proposer + two solvers each (the solver fan-out).
+    rollouts = [
+        mk(reward=1.0, num_turns=1, agent_name="proposer", episode_id="e1"),
+        mk(reward=0.0, num_turns=2, agent_name="solver", episode_id="e1"),
+        mk(reward=1.0, num_turns=4, agent_name="solver", episode_id="e1"),
+        mk(reward=0.0, num_turns=3, agent_name="proposer", episode_id="e2"),
+        mk(reward=1.0, num_turns=6, agent_name="solver", episode_id="e2"),
+        mk(reward=0.0, num_turns=8, agent_name="solver", episode_id="e2"),
+    ]
+    m = TrainRollouts(rollouts).metrics
+    assert m.num_turns.mean() == 12.0  # episode-level sums: 1+2+4 and 3+6+8
+    assert m.num_total_tokens.values == [30.0, 30.0]  # summed across the episode's traces
+    out = m.to_wandb(prefix="train/agg", subset="all")
+    assert out["train/agg/all/num_turns/mean"] == 12.0
+    assert out["train/agg/all/proposer/num_turns/mean"] == 2.0  # (1 + 3) / 2
+    assert out["train/agg/all/solver/num_turns/mean"] == 5.0  # flat over the 4 solver traces
+    assert out["train/agg/all/solver/num_turns/max"] == 8.0  # a real trace, not an episode mean
+    assert out["train/agg/all/solver/reward/mean"] == 0.5
+    assert out["train/agg/all/proposer/is_truncated/mean"] == 0.0
+    assert "train/agg/all/proposer/is_truncated/p90" not in out  # rates emit /mean only
+    assert "train/agg/all/reward/mean" not in out  # reward never pools across agents
+
+
+def test_agent_metrics_are_flat_over_traces():
+    """Inside a seat the trace is the unit of aggregation, so an uneven fan-out (one solver trace
+    from this episode, three from that) never reweights anything: every agent-level metric is the
+    plain figure over that agent's rollouts."""
+    rollouts = [
+        mk(agent_name="solver", episode_id="e1", is_truncated=True, reward=1.0),
+        *[mk(agent_name="solver", episode_id="e2", is_truncated=False, reward=0.0) for _ in range(3)],
+    ]
+    out = TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset="all")
+    assert out["train/agg/all/solver/is_truncated/mean"] == 0.25  # 1 of 4 traces, not (1.0 + 0.0) / 2
+    assert out["train/agg/all/solver/is_completed/mean"] == 1.0
+    assert out["train/agg/all/solver/is_trainable/mean"] == 1.0  # sibling rates agree
+    assert out["train/agg/all/solver/reward/mean"] == 0.25  # 1 of 4 traces scored, not (1.0 + 0.0) / 2
 
 
 def test_boolean_rates_and_error_breakdown_all_only():
     rc = TrainRollouts([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_filtered=True)])
     out = rc.metrics.to_wandb(prefix="train/agg", subset="all")
-    assert out["train/agg/all/is_truncated/mean"] == 1 / 3
-    assert out["train/agg/all/is_completed/mean"] == 1.0
-    assert out["train/agg/all/has_error/mean"] == 1 / 3
-    assert out["train/agg/all/error/ProviderError"] == 1  # error-type breakdown by count
+    assert out["train/agg/all/agent/is_truncated/mean"] == 1 / 3
+    assert out["train/agg/all/agent/is_completed/mean"] == 1.0
+    assert out["train/agg/all/agent/has_error/mean"] == 1 / 3
+    assert out["train/agg/all/agent/error/ProviderError"] == 1  # error-type breakdown by count
     assert not any("no_response" in k for k in out)  # removed metric
     # has_error + the error-type counts are structurally empty on effective, so emitted on `all` only
     eff = rc.effective.metrics.to_wandb(prefix="train/agg", subset="effective")
@@ -128,40 +177,59 @@ def test_boolean_rates_and_error_breakdown_all_only():
 def test_solve_rates():
     groups = {"A": [1.0, 1.0], "B": [0.0, 0.0], "C": [1.0, 0.0], "D": [1.0, 0.0]}  # all / none / some / some
     out = train_wandb([mk(reward=r, group_id=g) for g, rs in groups.items() for r in rs])
-    rates = (out["train/agg/all/solved_all"], out["train/agg/all/solved_none"], out["train/agg/all/solved_some"])
+    rates = (
+        out["train/agg/all/agent/solved_all"],
+        out["train/agg/all/agent/solved_none"],
+        out["train/agg/all/agent/solved_some"],
+    )
     assert rates == (0.25, 0.25, 0.5)
 
 
 def test_stop_condition_breakdown():
     truncated = [mk(is_truncated=True, stop_condition=c) for c in ("length", "max_turns", "prompt_too_long")]
     out = train_wandb(truncated + [mk(stop_condition=None)])
-    assert out["train/agg/all/stop_condition/generation_truncated"] == 0.5  # truncated & not prompt_too_long, over all
-    assert out["train/agg/all/stop_condition/length"] == 1 / 3  # over the 3 recorded conditions
-    assert out["train/agg/all/stop_condition/prompt_too_long"] == 1 / 3
+    assert out["train/agg/all/agent/stop_condition/generation_truncated"] == 0.5  # truncated & not prompt_too_long
+    assert out["train/agg/all/agent/stop_condition/length"] == 1 / 3  # over the 3 recorded conditions
+    assert out["train/agg/all/agent/stop_condition/prompt_too_long"] == 1 / 3
 
 
 def test_nested_metrics_and_rewards():
     rollouts = [
         mk(metrics={"acc": 1.0}, rewards={"correct": vf.Reward(score=1.0), "format": vf.Reward(score=0.0)}),
         mk(metrics={"acc": 3.0, "fmt": 5.0}, rewards={"correct": vf.Reward(score=0.0), "format": vf.Reward(score=1.0)}),
+        # scoring failed after seeding: unscored (None) entries count as 0.0 on `all`
+        mk(has_error=True, metrics={"acc": None}, rewards={"correct": None, "format": None}),
     ]
-    m = TrainRollouts(rollouts).metrics
-    assert m.metrics["acc"].mean() == 2.0 and m.rewards["correct"].mean() == 0.5  # nested group access
+    rc = TrainRollouts(rollouts)
+    m = rc.metrics
+    agent = m.by_agent()["agent"]
+    assert agent.metrics["acc"].mean() == pytest.approx(4 / 3)  # nested group access
+    assert agent.rewards["correct"].mean() == pytest.approx(1 / 3)
     out = m.to_wandb(prefix="train/agg", subset="all")
-    assert out["train/agg/all/metrics/acc/mean"] == 2.0  # averaged over reporters
-    assert out["train/agg/all/metrics/fmt/mean"] == 5.0  # single reporter
-    assert out["train/agg/all/rewards/format/mean"] == 0.5
+    assert out["train/agg/all/agent/metrics/acc/mean"] == pytest.approx(4 / 3)
+    assert out["train/agg/all/agent/metrics/fmt/mean"] == 5.0  # single reporter
+    assert out["train/agg/all/agent/rewards/format/mean"] == pytest.approx(1 / 3)
+    # effective drops the errored rollout, so its seeds don't dilute the effective means
+    eff = rc.effective.metrics.to_wandb(prefix="train/agg", subset="effective")
+    assert eff["train/agg/effective/agent/metrics/acc/mean"] == 2.0
+    assert eff["train/agg/effective/agent/rewards/format/mean"] == 0.5
+    # cross-env agg: another env's unscored trace carries different keys, so it can't dilute these
+    other = mk(env_name="other", has_error=True, rewards={"solved": None})
+    agg = TrainRollouts(rollouts + [other]).metrics.to_wandb(prefix="train/agg", subset="all")
+    assert agg["train/agg/all/agent/rewards/format/mean"] == pytest.approx(1 / 3)
+    assert agg["train/agg/all/agent/rewards/solved/mean"] == 0.0
 
 
 def test_nested_timing():
     m = TrainRollouts([mk(setup=1.0, agent=2.0, agent_model=1.5, agent_harness=0.5, finalize=0.5, scoring=0.5)]).metrics
-    assert m.timing.setup.mean() == 1.0 and m.timing.total.mean() == 4.0  # total sums all four phases
-    assert m.timing.agent_model.mean() == 1.5 and m.timing.agent_harness.mean() == 0.5
+    timing = m.by_agent()["agent"].timing
+    assert timing.setup.mean() == 1.0 and timing.total.mean() == 4.0  # total sums all four phases
+    assert timing.agent_model.mean() == 1.5 and timing.agent_harness.mean() == 0.5
     out = m.to_wandb(prefix="train/agg", subset="all")
-    assert out["train/agg/all/timing/setup/mean"] == 1.0
-    assert out["train/agg/all/timing/total/mean"] == 4.0
-    assert out["train/agg/all/timing/agent/model/mean"] == 1.5
-    assert out["train/agg/all/timing/agent/harness/mean"] == 0.5
+    assert out["train/agg/all/agent/timing/setup/mean"] == 1.0
+    assert out["train/agg/all/agent/timing/total/mean"] == 4.0
+    assert out["train/agg/all/agent/timing/agent/model/mean"] == 1.5
+    assert out["train/agg/all/agent/timing/agent/harness/mean"] == 0.5
 
 
 def test_train_only_metrics_absent_from_eval():
@@ -170,9 +238,10 @@ def test_train_only_metrics_absent_from_eval():
         mk(is_trainable=False, filter_results={"gibberish": False}),
     ]
     out = train_wandb(rollouts)
-    assert out["train/agg/all/is_trainable/mean"] == 0.5
-    assert out["train/agg/all/is_filtered/mean"] == 0.5
-    assert out["train/agg/all/filters/gibberish/mean"] == 0.5
+    assert out["train/agg/all/agent/is_trainable/mean"] == 0.5
+    assert out["train/agg/all/agent/is_filtered/mean"] == 0.5
+    assert out["train/agg/all/agent/filters/gibberish/mean"] == 0.5
+    assert "train/agg/all/is_trainable/mean" not in out  # pipeline verdicts are per-trace
     eval_out = EvalRollouts(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
     assert not any("is_trainable" in k or "is_filtered" in k or "/filters/" in k for k in eval_out)
 
@@ -180,11 +249,11 @@ def test_train_only_metrics_absent_from_eval():
 def test_eval_avg_at_k_and_pass_k():
     binary = EvalRollouts([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")])
     eff = binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
-    assert eff["eval/x/effective/avg@2"] == 0.5  # mean reward under avg@<k> (k derived from the groups)
-    assert not any(k.startswith("eval/x/effective/reward") for k in eff)
-    assert eff["eval/x/effective/pass@1"] == 0.5 and eff["eval/x/effective/pass^2"] == 0.0
+    assert eff["eval/x/effective/agent/avg@2"] == 0.5  # mean reward under avg@<k> (k from the groups)
+    assert "eval/x/effective/avg@2" not in eff  # scores are per-agent, never pooled
+    assert eff["eval/x/effective/agent/pass@1"] == 0.5 and eff["eval/x/effective/agent/pass^2"] == 0.0
     all_out = binary.metrics.to_wandb(prefix="eval/x", subset="all")
-    assert all_out["eval/x/all/avg@2"] == 0.5
+    assert all_out["eval/x/all/agent/avg@2"] == 0.5
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
     non_binary = EvalRollouts([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))

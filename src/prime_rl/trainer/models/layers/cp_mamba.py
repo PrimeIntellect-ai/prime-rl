@@ -16,45 +16,8 @@ from __future__ import annotations
 
 import torch
 import torch.distributed as dist
-
-
-def _build_seq_idx(boundaries: list[int], seq_len: int, device: torch.device) -> torch.Tensor:
-    """Return the packed-document id for each token in a full CP sequence."""
-    if boundaries[0] != 0 or boundaries[-1] != seq_len:
-        raise ValueError(f"cu_seqlens must span the full sequence length {seq_len}, got {boundaries}")
-
-    seq_idx = torch.empty(seq_len, dtype=torch.int32, device=device)
-    for sequence_id, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:])):
-        if end <= start:
-            raise ValueError(f"cu_seqlens must be strictly increasing, got {boundaries}")
-        seq_idx[start:end] = sequence_id
-    return seq_idx.unsqueeze(0)
-
-
-def _causal_conv1d_varlen(
-    hidden_states: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor | None,
-    boundaries: list[int],
-) -> torch.Tensor:
-    """Apply a depthwise causal convolution independently to packed documents."""
-    batch_size, _, channels = hidden_states.shape
-    if batch_size != 1:
-        raise ValueError(f"packed CP Mamba expects batch_size=1, got {batch_size}")
-
-    inputs = hidden_states.transpose(1, 2)
-    outputs = []
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        convolved = torch.nn.functional.conv1d(
-            inputs[:, :, start:end],
-            weight,
-            bias,
-            groups=channels,
-            padding=weight.shape[2] - 1,
-        )
-        outputs.append(convolved[:, :, : end - start])
-
-    return torch.cat(outputs, dim=-1).transpose(1, 2)
+from fla.modules.conv import causal_conv1d as fla_causal_conv1d
+from fla.ops.utils import prepare_sequence_ids
 
 
 class _SeqToHeadParallel(torch.autograd.Function):
@@ -180,8 +143,7 @@ def mamba_cp_forward(
     hidden_states_B_C = torch.cat([x_part, B_part, C_part], dim=-1)
 
     full_seq_len = hidden_states_B_C.shape[1]  # S (full sequence)
-    boundaries = cu_seqlens.tolist()
-    seq_idx = _build_seq_idx(boundaries, full_seq_len, hidden_states.device)
+    seq_idx = prepare_sequence_ids(cu_seqlens).to(torch.int32).unsqueeze(0)
 
     # ── 3. Local head dimensions ──
     local_num_heads = mixer.num_heads // cp_size
@@ -216,9 +178,15 @@ def mamba_cp_forward(
     local_conv_weight = mixer.conv1d.weight[conv_indices]
     local_conv_bias = mixer.conv1d.bias[conv_indices] if mixer.conv1d.bias is not None else None
 
-    # ── 4. Conv1d on each packed document, local heads ──
-    hidden_states_B_C = torch.nn.functional.silu(
-        _causal_conv1d_varlen(hidden_states_B_C, local_conv_weight, local_conv_bias, boundaries)
+    # ── 4. Causal conv1d on the full sequence, local heads ──
+    # Must reset at sequence boundaries for packed batches, otherwise the
+    # kernel-1 left pad leaks state across sequences.
+    hidden_states_B_C, _ = fla_causal_conv1d(
+        x=hidden_states_B_C,
+        weight=local_conv_weight.squeeze(1),
+        bias=local_conv_bias,
+        activation=mixer.activation,
+        cu_seqlens=cu_seqlens,
     )
 
     local_groups_time_state_size = local_n_groups * mixer.ssm_state_size

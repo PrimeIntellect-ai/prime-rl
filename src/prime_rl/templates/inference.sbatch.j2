@@ -320,10 +320,14 @@ srun --kill-on-bad-exit=1 bash -c '
     for ((d=0; d<DP_PER_NODE; d++)); do
         RANK_GPUS=$(seq -s, $((d * TP)) $((d * TP + TP - 1)))
         RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
-        if [ "$EP" -eq 1 ]; then
+        if [ "$EP" -eq 1 ] && [ "$DP_PER_NODE" -gt 1 ]; then
             RANK_EXTRA="{\"data_parallel_rank\": $d, \"data_parallel_address\": \"$LOCAL_IP\"}"
             launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$DP_PER_NODE" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
         else
+            # Dense or single-DP-rank EP (dp=1, e.g. EP within one tp=8 group):
+            # independent single-engine servers. vLLM rejects the external-LB DP
+            # args when data_parallel_size == 1; enable_expert_parallel in the
+            # inference config alone shards experts across the TP group.
             launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG"
         fi
     done

@@ -68,11 +68,18 @@ def _replicate_kv_heads(t: torch.Tensor, cp_size: int) -> torch.Tensor:
     return t.repeat_interleave(cp_size // h, dim=1)
 
 
+@torch._dynamo.disable
 def _all_to_all_seq_to_head(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
     """Redistribute [S_local, H, D] -> [S_global, H_local, D].
 
     Splits the head dim into cp_size groups and exchanges them so each rank
     ends up with the full sequence but only H/cp_size heads. Differentiable.
+
+    Disabled for dynamo: the collective must execute eagerly so it is scheduled
+    by the autograd engine in a consistent order across ranks, not reordered by
+    the compiled backward graph. Otherwise FSDP's post_backward reduce-scatter
+    and the all-to-all backward can interleave differently per rank, deadlocking
+    NCCL (see PR #3186 job 1578).
     """
     s_local, h, d = t.shape
     assert h % cp_size == 0, (
@@ -90,6 +97,7 @@ def _all_to_all_seq_to_head(t: torch.Tensor, cp_size: int, cp_group: dist.Proces
     return out.reshape(cp_size * s_local, h_local, d)
 
 
+@torch._dynamo.disable
 def _all_to_all_head_to_seq(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
     """Inverse of `_all_to_all_seq_to_head`: [S_global, H_local, D] -> [S_local, H, D]."""
     s_global, h_local, d = t.shape

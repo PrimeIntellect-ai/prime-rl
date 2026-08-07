@@ -1,10 +1,12 @@
 """Env wrappers over a v1 env server.
 
-Each ``Env`` owns a v1 ``EnvServer`` (spawned as a child process, or an
-external one pinned by ``config.serve.address``) and an ``EnvClient`` to drive it. The
+Each ``Env`` is an ``EnvClient`` onto its source's env server. Each server's address
+is derived from the source's position in the config
+(``OrchestratorConfig.env_addresses``); the launcher runs the servers at
+exactly those addresses, and the orchestrator connects. The
 orchestrator never *runs* an environment — the agents and their runtimes live only
 in the server — but it does own the *taskset*: a v1 env's tasks are loaded here,
-once, and each dispatched env-rollout ships its task's data on the request
+once, and each dispatched episode ships its task's data on the request
 (``task_data``); the server pydantic-validates it into the taskset's declared
 ``TaskData`` type and runs it. That keeps the server (and every worker in its
 pool) stateless about data — no per-worker dataset loads, no idx-addressed task
@@ -12,7 +14,7 @@ cache — and gives the orchestrator real tasks to cycle, shuffle, and filter. O
 the legacy (v0) bridge, whose dataset genuinely lives server-side, is still driven
 by ``task_idx`` (its count comes from ``info``).
 
-The server answers one ``Episode`` per env-rollout, whose traces we validate into
+The server answers one ``Episode`` per run request, whose traces we validate into
 ``Trace[WireTaskData]`` — real ``vf.Trace``\\ s (never loose dicts) whose task
 keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 """
@@ -20,19 +22,12 @@ keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 from __future__ import annotations
 
 import asyncio
-import atexit
-import multiprocessing as mp
-import os
-import queue
-import sys
 from collections.abc import Iterator, Sequence
 from itertools import islice
-from multiprocessing.process import BaseProcess
-from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
-from verifiers.v1.serve import EnvClient, env_config_data
+from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
@@ -45,48 +40,19 @@ from prime_rl.utils.logger import get_logger
 # task.idx + task.model_dump).
 ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 
-# Max wait for a spawned env server to bind and report its address. A legacy
-# child loads its dataset before reporting, so this is generous.
-ENV_SERVER_SPAWN_TIMEOUT = 600.0
-
-
-def _run_env_server(
-    *,
-    log_file: str,
-    log_level: str,
-    json_logging: bool,
-    legacy: bool = False,
-    **kwargs,
-) -> None:
-    """Spawned-process entry point: redirect this process's output to ``log_file`` (the
-    server's logging + any subprocess-runtime output), then serve via ``serve_env``. The
-    worker-pool sizing arrives in ``kwargs`` (``max_workers`` / ``multiplex`` / ``elastic``
-    from the env's ``pool``). ``serve_env`` applies ``log_setup`` here and in every spawned
-    worker; a worker inherits this process's redirected stdout/stderr, so its per-rollout
-    logs reach ``log_file`` too. Top-level so it stays picklable for the ``spawn`` start
-    method. ``legacy`` picks the v0 bridge."""
-    from functools import partial
-
-    from verifiers.v1.serve import serve_env
-
-    from prime_rl.orchestrator.utils import setup_env_server_logging
-
-    fh = open(log_file, "w", buffering=1)
-    os.dup2(fh.fileno(), sys.stdout.fileno())
-    os.dup2(fh.fileno(), sys.stderr.fileno())
-    serve_env(
-        legacy=legacy,
-        log_setup=partial(setup_env_server_logging, log_level, json_logging),
-        **kwargs,
-    )
+# Max wait for the env server to answer health. Generous because the launcher spawns
+# servers concurrently with the orchestrator, and a legacy server loads its dataset
+# before serving.
+ENV_SERVER_STARTUP_TIMEOUT = 600.0
 
 
 class Env:
-    """Wraps a v1 env server + client. The orchestrator owns the taskset (loaded once,
+    """Client onto a v1 env server. The orchestrator owns the taskset (loaded once,
     client-side); the server owns agent/harness execution."""
 
-    def __init__(self, config: EnvConfig):
+    def __init__(self, config: EnvConfig, address: str):
         self.config = config
+        self.address = address
         self.sampling_args: dict = {}
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the taskset is infinite."""
@@ -97,7 +63,6 @@ class Env:
         count) and iterated from there; an infinite one streams off its generator.
         Consumed once — by ``TrainSource`` (train) or ``EvalEnv.start`` (eval)."""
         self._env_client: EnvClient | None = None
-        self._env_server_process: BaseProcess | None = None
 
     @property
     def name(self) -> str:
@@ -109,17 +74,14 @@ class Env:
             raise RuntimeError(f"Env {self.name} not started — call start() first.")
         return self._env_client
 
-    async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
-        """Spawn the env server (if needed), connect, and load the taskset client-side
-        (legacy instead asks the server for ``info`` — its dataset is server-side)."""
-        external = self.config.serve.address is not None
-        address = self.config.serve.address or await self._spawn(log_dir, log_level or "INFO", json_logging)
-        get_logger().debug(f"Connecting {self.name} to env server {address}")
-        self._env_client = EnvClient(address=address)
-        # A spawned server already reported its address *after* binding, so it's up. An
-        # external server has no such handshake, so poll until it answers.
-        if external:
-            await self.env_client.wait_for_server_startup()
+    async def start(self) -> None:
+        """Connect to the env server and load the taskset client-side (legacy instead
+        asks the server for ``info`` — its dataset is server-side)."""
+        get_logger().debug(f"Connecting {self.name} to env server {self.address}")
+        self._env_client = EnvClient(address=self.address)
+        # The server may still be coming up (the launcher spawns it concurrently with
+        # the orchestrator), so poll until it answers.
+        await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
         if self.config.is_legacy:
             info = await self.env_client.info()
             self.num_tasks = info.num_tasks
@@ -136,59 +98,6 @@ class Env:
                 self.num_tasks = len(materialized)
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
         get_logger().info(f"Env {self.name} ready: num_tasks={num_tasks} group_scoring={self.requires_group_scoring}")
-
-    async def _spawn(self, log_dir: Path, log_level: str, json_logging: bool) -> str:
-        """Spawn a v1 EnvServer child process (it runs the agents; the tasks come from
-        us). The server binds an OS-assigned port (``:0``) and reports the concrete
-        address back over a queue — no free-port guess, no TOCTOU race. Its output
-        goes to ``<log_dir>/<name>.log`` (``log_dir`` is already the train/eval-split
-        ``.../logs/envs/{train,eval}`` the orchestrator passes in)."""
-        ctx = mp.get_context("spawn")
-        address_queue: mp.Queue = ctx.Queue()
-        log_file = log_dir / f"{self.name}.log"
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        get_logger().debug(f"Spawning env server {self.name} (id={self.config.env_id}, log={log_file})")
-        server_kwargs = (
-            dict(
-                legacy=True,
-                env_id=self.config.env_id,
-                env_args=self.config.legacy.args,
-                extra_env_kwargs=self.config.legacy.extra_env_kwargs,
-            )
-            if self.config.is_legacy
-            # Picklable dict — the narrowed config class doesn't survive the spawn.
-            # ``max_concurrent`` bounds this worker's episodes in flight — usually unset,
-            # since the dispatcher's ``max_inflight_episodes`` is the run's bound.
-            else dict(
-                legacy=False,
-                config_data=env_config_data(self.config.env),
-                max_concurrent=self.config.serve.max_concurrent,
-            )
-        )
-        process = ctx.Process(
-            target=_run_env_server,
-            kwargs=dict(
-                log_file=str(log_file),
-                log_level=log_level,
-                json_logging=json_logging,
-                **vf.pool_serve_kwargs(self.config.serve.pool),
-                address="tcp://127.0.0.1:0",
-                address_queue=address_queue,
-                **server_kwargs,
-            ),
-            daemon=False,
-        )
-        process.start()
-        self._env_server_process = process
-        try:
-            address = await asyncio.to_thread(address_queue.get, timeout=ENV_SERVER_SPAWN_TIMEOUT)
-        except queue.Empty:
-            raise RuntimeError(f"Env server {self.name} did not report its address within {ENV_SERVER_SPAWN_TIMEOUT}s")
-        finally:
-            address_queue.close()
-            address_queue.join_thread()
-        get_logger().debug(f"Env server {self.name} bound at {address}")
-        return address
 
     def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
         sampling = {**self.sampling_args}
@@ -219,7 +128,7 @@ class Env:
         if not episode.traces:
             error = episode.last_error
             detail = f"{error.type}: {error.message}" if error is not None else "no traces and no error recorded"
-            raise RuntimeError(f"env-rollout failed before any trace was minted — {detail}")
+            raise RuntimeError(f"episode failed before any trace was produced — {detail}")
         rollouts = [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in episode.traces]
         for rollout in rollouts:
             rollout.episode_id = episode.id
@@ -244,18 +153,12 @@ class Env:
         )
         return [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in wires]
 
-    def shutdown(self) -> None:
-        if self._env_server_process is None:
-            return
-        self._env_server_process.terminate()
-        self._env_server_process = None
-
 
 class TrainEnv(Env):
     config: TrainSourceConfig
 
-    def __init__(self, config: TrainSourceConfig, sampler: Sampler, algorithm: Algorithm):
-        super().__init__(config)
+    def __init__(self, config: TrainSourceConfig, address: str, sampler: Sampler, algorithm: Algorithm):
+        super().__init__(config, address)
         self.sampler = sampler
         self.algorithm = algorithm
         self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
@@ -264,13 +167,13 @@ class TrainEnv(Env):
 class EvalEnv(Env):
     config: EvalSourceConfig
 
-    def __init__(self, config: EvalSourceConfig):
-        super().__init__(config)
+    def __init__(self, config: EvalSourceConfig, address: str):
+        super().__init__(config, address)
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples: list[dict] = []
 
-    async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
-        await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
+    async def start(self) -> None:
+        await super().start()
         n = self.config.num_examples
         if self.tasks is None:  # legacy: the dataset lives on the server — address it by row
             count = self.num_tasks if n < 0 else min(n, self.num_tasks)
@@ -308,30 +211,10 @@ class Envs(Generic[EnvT]):
     def __len__(self) -> int:
         return len(self._envs)
 
-    async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
-        """Spawn env servers (where needed) and connect, one at a time. Each server
-        binds an OS-assigned port and reports it back, so there's no port race."""
-        for env in self:
-            await env.start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
-        atexit.register(self.shutdown)
-
-    def shutdown(self) -> None:
-        """Terminate all spawned env server processes."""
-        processes = [env._env_server_process for env in self if env._env_server_process is not None]
-        if not processes:
-            return
-        logger = get_logger()
-        logger.debug(f"Shutting down {len(processes)} env server(s)")
-        for p in processes:
-            p.terminate()
-        for p in processes:
-            p.join(timeout=25)
-            if p.is_alive():
-                logger.warning(f"Env server {p.pid} did not exit after 25s, force killing")
-                p.kill()
-                p.join(timeout=5)
-        for env in self:
-            env._env_server_process = None
+    async def start(self) -> None:
+        """Connect to all env servers in parallel — every address is known up front,
+        so there's nothing to serialize on."""
+        await asyncio.gather(*(env.start() for env in self))
 
 
 class TrainEnvs(Envs[TrainEnv]):
@@ -339,12 +222,20 @@ class TrainEnvs(Envs[TrainEnv]):
     :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
     resolved algorithm config."""
 
-    def __init__(self, configs: Sequence[TrainSourceConfig], *, policy_pool, renderer_config=None):
+    def __init__(
+        self,
+        configs: Sequence[TrainSourceConfig],
+        addresses: dict[tuple[str, str], str],
+        *,
+        policy_pool,
+        renderer_config=None,
+    ):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainSourceConfig.algo must be resolved before env construction"
             env = TrainEnv(
                 config,
+                addresses[("train", config.resolved_name)],
                 Sampler(config.algo.sampling, policy_pool, renderer_config),
                 build_algorithm(config.algo, policy_pool),
             )
@@ -354,8 +245,8 @@ class TrainEnvs(Envs[TrainEnv]):
 class EvalEnvs(Envs[EvalEnv]):
     """Collection of evaluation environments."""
 
-    def __init__(self, configs: Sequence[EvalSourceConfig]):
+    def __init__(self, configs: Sequence[EvalSourceConfig], addresses: dict[tuple[str, str], str]):
         self._envs: dict[str, EvalEnv] = {}
         for config in configs:
-            env = EvalEnv(config)
+            env = EvalEnv(config, addresses[("eval", config.resolved_name)])
             self._envs[env.name] = env
