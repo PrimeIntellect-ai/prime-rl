@@ -176,6 +176,42 @@ class GradientOffloadManager:
         self._gradient_scale *= clip_coefficient
         return total_norm
 
+    def prefetch_chunk(
+        self,
+        chunk_idx: int,
+        stream: torch.cuda.Stream,
+        target_params: list[nn.Parameter] | None = None,
+    ) -> None:
+        source_params = self._chunks[chunk_idx]
+        if target_params is None:
+            target_params = source_params
+        if len(source_params) != len(target_params):
+            raise ValueError("Gradient source and target chunks must have the same size")
+        with torch.cuda.stream(stream):
+            for source_param, target_param in zip(source_params, target_params):
+                buffer = self._buffers.get(id(source_param))
+                if buffer is None or not buffer.initialized:
+                    target_param.grad = None
+                    continue
+                local_grad = buffer.accumulator.to("cuda", non_blocking=True)
+                if self._gradient_scale != 1.0:
+                    local_grad.mul_(self._gradient_scale)
+                if target_param is source_param:
+                    grad = copy.copy(buffer.template)
+                    grad._local_tensor = local_grad
+                    target_param.grad = grad
+                else:
+                    target_param.grad = local_grad.to(dtype=target_param.dtype)
+
+    def record_chunk_gradients(self, chunk_idx: int, stream: torch.cuda.Stream) -> None:
+        """Keep H2D gradient allocations alive until GPU optimizer kernels finish."""
+        for param in self._chunks[chunk_idx]:
+            grad = param.grad
+            if isinstance(grad, DTensor):
+                grad.to_local().record_stream(stream)
+            elif isinstance(grad, torch.Tensor):
+                grad.record_stream(stream)
+
     def load_cpu_chunk(self, chunk_idx: int, target_params: list[nn.Parameter]) -> None:
         self.wait()
         source_params = self._chunks[chunk_idx]
@@ -259,7 +295,7 @@ class CPUOffloadOptimizer:
                 dp_replicate,
                 cpu_dtype=torch.float32 if master_weights is not None else None,
             )
-            if offload_config.full
+            if offload_config.gradients or offload_config.full
             else None
         )
 
@@ -382,13 +418,21 @@ class CPUOffloadOptimizer:
         n = len(self._chunks)
 
         self._move_chunk_states(0, "cuda", h2d_stream)
+        if self._gradient_manager is not None:
+            self._gradient_manager.prefetch_chunk(0, h2d_stream)
         for i in range(n):
             compute_stream.wait_stream(h2d_stream)
             if i + 1 < n:
                 # Wait for previous D2H before reusing pinned CPU buffers.
                 h2d_stream.wait_stream(d2h_stream)
                 self._move_chunk_states(i + 1, "cuda", h2d_stream)
+                if self._gradient_manager is not None:
+                    self._gradient_manager.prefetch_chunk(i + 1, h2d_stream)
+            if self._gradient_manager is not None:
+                self._gradient_manager.record_chunk_gradients(i, compute_stream)
             self._step_chunk(i, closure if i == 0 else None)
+            if self._gradient_manager is not None:
+                self._gradient_manager.release_chunk(i)
             d2h_stream.wait_stream(compute_stream)
             self._move_chunk_states(i, "cpu", d2h_stream)
         torch.cuda.synchronize()
@@ -539,6 +583,8 @@ def setup_optimizer(
         offload_parts = ["optimizer state"]
         if offload_config.full:
             offload_parts.extend(("gradient", "CPU optimizer step"))
+        elif offload_config.gradients:
+            offload_parts.append("gradient")
         offload_description = ", ".join(offload_parts)
         get_logger().info(f"Using CPU offload for {offload_description}")
         optimizer = CPUOffloadOptimizer(
