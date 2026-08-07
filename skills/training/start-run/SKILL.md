@@ -7,6 +7,13 @@ description: How to launch prime-rl training runs — the `rl`, `sft`, and `infe
 
 All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/to.toml` plus CLI overrides.
 
+When running from a fresh git worktree, initialize its pinned dependencies first with
+`git submodule update --init --recursive`. If reusing a synced environment from another
+checkout, set `UV_PROJECT_ENVIRONMENT` to that environment and prepend the worktree's
+`src`, `packages/prime-rl-configs/src`, `deps/renderers`, `deps/verifiers`, and
+`deps/pydantic-config/src` directories to `PYTHONPATH`. Verify representative imports
+with `inspect.getfile` before launching so the run cannot silently use another checkout.
+
 ## Config system at a glance
 
 [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config) — Pydantic-based TOML + CLI loader. Highlights (see the `configs` skill for full mechanics):
@@ -20,6 +27,16 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 - Validation aliases let renamed fields keep working; legacy keys can be remapped in a `model_validator(mode="before")`.
 - Auto-generated `--help` panels from `Field(description=...)` or PEP 224 docstrings.
 - Friendly errors: required-field boxes, validator errors point at the offending flag, unknown flags get a "did you mean" hint.
+- Gradient offload with a GPU optimizer step uses
+  `model.optim_cpu_offload = { gradients = true }`. It accumulates gradients in
+  pinned CPU RAM and streams the final gradient chunks back alongside optimizer
+  state. With gradient accumulation, budget two FP32 gradient-sized buffers.
+- Full optimizer offload uses `model.optim_cpu_offload = { full = true }`.
+  It keeps a persistent BF16 compute model on GPU, stores FP32 master weights and
+  gradients in pinned CPU RAM, runs the optimizer on CPU, and refreshes the BF16
+  weights once per optimizer step. Muon is not supported. Resumable checkpoints
+  include the FP32 masters and optimizer state under the original FSDP parameter
+  names.
 
 ## `rl` — RL training
 

@@ -2,7 +2,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import BeforeValidator, Field, model_validator
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -52,6 +52,25 @@ class ActivationOffloadingConfig(BaseConfig):
 
     max_inflight_activations: int = Field(5, ge=1)
     """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
+
+
+class OptimizerOffloadingConfig(BaseConfig):
+    gradients: bool = False
+    """Offload sharded gradients to pinned CPU memory during backward, then run the optimizer step on GPU."""
+
+    full: bool = False
+    """Offload gradients and run the optimizer step on CPU-resident FP32 master weights."""
+
+
+def _normalize_optimizer_offloading(value: Any) -> Any:
+    if value is True:
+        return {}
+    if value is False:
+        return None
+    return value
+
+
+OptimizerOffloading = Annotated[OptimizerOffloadingConfig | None, BeforeValidator(_normalize_optimizer_offloading)]
 
 
 class CompileConfig(BaseConfig):
@@ -169,8 +188,8 @@ class ModelConfig(BaseModelConfig):
     fsdp_cpu_offload: bool = False
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
-    optim_cpu_offload: bool = True
-    """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
+    optim_cpu_offload: OptimizerOffloading = OptimizerOffloadingConfig()
+    """Configure CPU offloading for optimizer-owned state, or disable it with ``false``. Transfers always use pinned memory and persistent CUDA streams. Gradient offload accumulates gradients on CPU before a GPU optimizer step. Full offload additionally moves FP32 master weights to CPU and runs the optimizer there."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""

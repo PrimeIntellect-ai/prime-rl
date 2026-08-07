@@ -86,7 +86,11 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 | `trainer.model.dp_replicate` | Number of dimensions to **replicate** instead of shard. Set to 2 to run 2-way DP replication × FSDP sharding within each replica — useful for very large clusters where pure FSDP communication dominates. |
 | `trainer.model.reshard_after_forward` | If `true` (default), parameters are resharded after the forward pass to free memory; the backward pass re-gathers. Set `false` to keep params resident — faster but more memory. |
 | `trainer.model.fsdp_cpu_offload` | Offload params + grads + optimizer state to CPU. Big memory win, large throughput hit. |
-| `trainer.model.optim_cpu_offload` | Offload only optimizer state. Mid-ground — small throughput cost, decent memory savings, especially at low GPU count. |
+| `trainer.model.optim_cpu_offload` | Configure optimizer-owned CPU offload. `true` offloads optimizer state using pinned memory and persistent transfer streams. |
+| `trainer.model.optim_cpu_offload.gradients` | Additionally accumulate sharded gradients in pinned CPU memory, then stream them back in chunks for the GPU optimizer step. |
+| `trainer.model.optim_cpu_offload.full` | Additionally offload gradients and FP32 master weights, run the optimizer on CPU, and refresh persistent BF16 GPU weights after each step. Muon is not supported. |
+
+Gradient offload attaches public post-accumulate hooks to FSDP's sharded parameters, so each finalized gradient starts its CPU transfer immediately after reduce-scatter without accessing private FSDP state.
 
 ### Expert Parallelism
 
@@ -144,7 +148,27 @@ Offloading optimizer states to CPU is enabled by default (`optim_cpu_offload = t
 optim_cpu_offload = true   # already the default
 ```
 
-Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_concurrent_runs > 1` (multi-tenant training) — set `optim_cpu_offload = false` for multi-run. Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
+Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_concurrent_runs > 1` (multi-tenant training) — set `optim_cpu_offload = false` for multi-run. Muon supports optimizer-state and gradient offload but not full optimizer offload.
+
+The GPU optimizer step is performed in bounded chunks with stream-overlapped H2D/D2H transfers: while chunk *i* computes, chunk *i+1* is prefetched and chunk *i-1* is evicted. This prevents the full optimizer state from residing on GPU at once.
+
+To also accumulate gradients in pinned CPU memory while keeping the optimizer step on GPU, enable:
+
+```toml
+[trainer.model]
+optim_cpu_offload = { gradients = true }
+```
+
+Each finalized FSDP gradient shard begins its CPU transfer after reduce-scatter. The final accumulated gradient is prefetched back to GPU alongside its optimizer-state chunk. Gradient accumulation requires two FP32 gradient-sized pinned buffers.
+
+For full optimizer offload, including gradients and the FP32 update, enable:
+
+```toml
+[trainer.model]
+optim_cpu_offload = { full = true }
+```
+
+This additionally stores FP32 master weights in pinned CPU memory, runs the optimizer on CPU, and refreshes the persistent BF16 GPU weights after each optimizer step. Muon is not supported. Resumable DCP checkpoints preserve the FP32 masters and optimizer state using the original FSDP parameter names and sharding.
 
 ### LM Head Chunking
 

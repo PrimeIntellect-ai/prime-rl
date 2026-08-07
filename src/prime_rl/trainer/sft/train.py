@@ -39,10 +39,13 @@ from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
+    clip_grad_norm_,
     export_benchmark_json,
+    finish_backward,
     get_zero_gradient_ratio,
     get_ckpt_disk_metrics,
     print_sample,
+    scale_gradients_,
     setup_torch_distributed,
     print_benchmark,
 )
@@ -53,8 +56,6 @@ from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
-
-from torchtitan.distributed.utils import clip_grad_norm_
 
 
 @clean_exit
@@ -179,8 +180,12 @@ def train(config: SFTConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    optimizer = setup_optimizer(
-        config.optim, list(model.named_parameters()), parallel_dims, cpu_offload=config.model.optim_cpu_offload
+    optimizer, gradient_manager = setup_optimizer(
+        config.optim,
+        list(model.named_parameters()),
+        parallel_dims,
+        offload_config=config.model.optim_cpu_offload,
+        model=model,
     )
 
     # Set up the learning rate scheduler
@@ -423,6 +428,7 @@ def train(config: SFTConfig):
 
             with maybe_record_function("backward"):
                 scaled_loss.backward()
+                finish_backward(gradient_manager, wait_for_copies=micro_step == grad_accum_steps - 1)
 
             if is_moe_model:
                 for name, values in get_load_balance_stats(model).items():
@@ -446,9 +452,7 @@ def train(config: SFTConfig):
 
         if global_token_count_val > 0:
             grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-            for param in model.parameters():
-                if param.grad is not None:
-                    param.grad.mul_(grad_scale)
+            scale_gradients_(gradient_manager, model, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -470,12 +474,12 @@ def train(config: SFTConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-            grad_norm = clip_grad_norm_(
-                model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
-            )
-            if grad_norm.device.type == "cpu":
-                grad_norm = grad_norm.to(torch.device("cuda"))
-        zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
+            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, parallel_dims.ep_enabled)
+        zero_grad_ratio = (
+            None
+            if gradient_manager is not None
+            else get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
+        )
 
         logger.debug("Optimizer step")
         optimizer.step()
@@ -583,9 +587,10 @@ def train(config: SFTConfig):
         # Log optimizer metrics
         optim_metrics = {
             "optim/lr": current_lr,
-            "optim/zero_grad_ratio": zero_grad_ratio,
             "step": progress.step,
         }
+        if zero_grad_ratio is not None:
+            optim_metrics["optim/zero_grad_ratio"] = zero_grad_ratio
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
         monitor.log(optim_metrics, step=progress.step)
@@ -646,6 +651,9 @@ def train(config: SFTConfig):
         logger.info("Writing final weight checkpoint")
         weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
         weight_ckpt_manager.maybe_clean()
+
+    if gradient_manager is not None:
+        gradient_manager.close()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("SFT trainer finished!")
