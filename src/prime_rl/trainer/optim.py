@@ -68,19 +68,35 @@ class GradientOffloadManager:
         # peer ranks' NCCL kernels spin waiting for this rank's next collective
         # — a distributed deadlock (deterministic at 78 layers, seen from 30k to
         # 131k tokens). Init-time pinning is the only safe window.
-        for param in params.values():
+        #
+        # Slab-allocate: one pinned block per dtype for accumulators and one for
+        # staging, carved into per-param views. ~800 per-param cudaHostAllocs
+        # (~1.4 TiB/node) took 10-20 min with large node skew; a handful of huge
+        # allocations pins the same bytes in well under a minute.
+        dtensor_params = [p for p in params.values() if isinstance(p.data, DTensor)]
+        ALIGN = 256  # bytes; keeps carved views DMA-friendly
+        slab_numel: dict[torch.dtype, int] = {}
+        offsets: dict[int, tuple[torch.dtype, int, int]] = {}
+        for param in dtensor_params:
+            local = param.data.to_local()
+            dtype = self._cpu_dtype or local.dtype
+            align_elems = max(1, ALIGN // local.element_size())
+            start = slab_numel.get(dtype, 0)
+            offsets[id(param)] = (dtype, start, local.numel())
+            padded = (local.numel() + align_elems - 1) // align_elems * align_elems
+            slab_numel[dtype] = start + padded
+        acc_slabs = {dt: torch.empty(n, dtype=dt, device="cpu", pin_memory=True) for dt, n in slab_numel.items()}
+        stage_slabs = {dt: torch.empty(n, dtype=dt, device="cpu", pin_memory=True) for dt, n in slab_numel.items()}
+        for param in dtensor_params:
             data = param.data
-            if not isinstance(data, DTensor):
-                continue
             local = data.to_local()
-            accumulator = torch.empty(
-                local.shape, dtype=self._cpu_dtype or local.dtype, device="cpu", pin_memory=True
-            )
-            staging = torch.empty_like(accumulator, pin_memory=True)
+            dtype, start, numel = offsets[id(param)]
+            accumulator = acc_slabs[dtype].narrow(0, start, numel).view(local.shape)
+            staging = stage_slabs[dtype].narrow(0, start, numel).view(local.shape)
             template = copy.copy(data.detach())
             template._local_tensor = accumulator
             self._buffers[id(param)] = _CPUGradientBuffer(template, accumulator, staging=staging)
-        preallocated = sum(b.accumulator.nbytes + b.staging.nbytes for b in self._buffers.values())
+        preallocated = sum(s.nbytes for s in acc_slabs.values()) + sum(s.nbytes for s in stage_slabs.values())
         self._hook_handles = [param.register_post_accumulate_grad_hook(self._offload_hook) for param in params.values()]
         self._worker = threading.Thread(target=self._copy_worker, name="grad-offload", daemon=True)
         self._worker.start()
