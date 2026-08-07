@@ -7,6 +7,7 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
+from prime_rl.inference.vllm.ranks import global_inference_rank
 from prime_rl.inference.vllm.worker.weight_transfer import (
     load_weights_checkpoint_layerwise,
     load_weights_kernel,
@@ -101,27 +102,37 @@ class NCCLWeightUpdateWorker(Worker):
         timeout: int,
         quantize_in_weight_transfer: bool = False,
         session_id: str = "default",
+        engine_world_size: int | None = None,
     ) -> None:
         """Initialize the NCCL broadcast receiver.
 
         Args:
             rank_offset: Starting GPU offset for this server in the global inference group.
             inference_world_size: Total number of inference GPUs across all servers.
+            engine_world_size: Number of inference GPUs assigned to this server.
         """
         del session_id
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
-        # Use the worker's device index directly as the local rank.
-        # The previous dp_group-based computation broke in vLLM v1 multiprocess
-        # DP mode where each worker is a separate process with a singleton
-        # DP group (rank_in_group is always 0).
-        local_rank = self.device.index
-        global_rank_inference = rank_offset + local_rank
+        if engine_world_size is None:
+            global_rank_inference = rank_offset + self.device.index
+        else:
+            parallel_config = self.parallel_config
+            global_rank_inference = global_inference_rank(
+                rank_offset=rank_offset,
+                data_parallel_index=parallel_config.data_parallel_index,
+                data_parallel_size=parallel_config.data_parallel_size,
+                worker_rank=self.rank,
+                tensor_parallel_size=parallel_config.tensor_parallel_size,
+                pipeline_parallel_size=parallel_config.pipeline_parallel_size,
+                prefill_context_parallel_size=parallel_config.prefill_context_parallel_size,
+                inference_world_size=inference_world_size,
+                engine_world_size=engine_world_size,
+            )
 
         logger.info(
-            f"Worker [local_rank={local_rank} rank_offset={rank_offset}] "
+            f"Worker [worker_rank={self.rank} rank_offset={rank_offset}] "
             f"-> [global_rank={global_rank_inference} inference_world_size={inference_world_size}]"
         )
-
         self.nccl_broadcast_receiver = NCCLWeightBroadcastReceiver(
             host=host,
             port=port,
