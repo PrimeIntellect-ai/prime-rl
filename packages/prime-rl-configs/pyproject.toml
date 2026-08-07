@@ -7,10 +7,10 @@ requires-python = "~=3.12.0"
 dependencies = [
     "pydantic>=1.10.13",
     "prime-pydantic-config>=0.4.2",
-    "renderers>=0.1.9.dev10",
+    "renderers>=0.1.9",
     "tomli>=2.2.1",
     "tomli-w>=1.2.0",
-    "verifiers>=0.2.2.dev76",
+    "verifiers>=0.3.0",
 ]
 
 [build-system]

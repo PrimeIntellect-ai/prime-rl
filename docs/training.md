@@ -36,7 +36,8 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | `uv run sft` | Supervised fine-tuning on a HF dataset. | Launches torchrun internally; never call torchrun directly. |
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run trainer` | Standalone trainer process group. | Use only when launching the trainer separately from the orchestrator (e.g. multi-node RL without the `rl` wrapper). |
-| `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched trainer + inference. |
+| `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched trainer, inference, and one `env-server` per source. |
+| `uv run env-server` | Standalone env server for one environment. | The `rl` launcher starts these automatically (one per train/eval source, at the source's derived `serve.address`); only needed when running the orchestrator standalone. |
 
 ## RL Trainer
 
@@ -271,12 +272,10 @@ The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The f
 ├── inference/
 │   ├── node_*.log               # per-node inference stdout (multi-node only)
 │   └── router.log               # the single global router (multi-node only)
-└── envs/{train,eval}/<env_name>/
-    ├── env_server.log
-    └── env_worker_<id>.log
+└── envs/{train,eval}/<env_name>.log # one env server process per source (broker + its workers)
 ```
 
-Env worker logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`. For multi-rank trainer debugging, drop into `logs/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
+Env logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`. For multi-rank trainer debugging, drop into `logs/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
 
 Live tailing from a single point (works on the head node for multi-node runs over a shared filesystem):
 

@@ -415,6 +415,26 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     export {{ key }}="{{ value }}"
 {%- endfor %}
 {%- endif %}
+{%- if train_env_names or eval_env_names %}
+
+    # Launch one env server per source next to the orchestrator, which connects to each
+    # source at its deterministic loopback address (so this node), polling until they are
+    # up — the servers and the orchestrator start in parallel.
+    # NOTE: keep this block free of single quotes. The whole srun body is one
+    # single-quoted bash -c string, so a stray quote closes it early and the rest of
+    # the script fails to parse.
+{%- for name in train_env_names %}
+    mkdir -p $OUTPUT_DIR/logs/envs/train
+    uv run env-server @ $CONFIG_DIR/envs/train/{{ name }}.toml \
+        > $OUTPUT_DIR/logs/envs/train/{{ name }}.log 2>&1 &
+{%- endfor %}
+{%- for name in eval_env_names %}
+    mkdir -p $OUTPUT_DIR/logs/envs/eval
+    uv run env-server @ $CONFIG_DIR/envs/eval/{{ name }}.toml \
+        > $OUTPUT_DIR/logs/envs/eval/{{ name }}.log 2>&1 &
+{%- endfor %}
+{%- endif %}
+
     {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
     {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
     {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
