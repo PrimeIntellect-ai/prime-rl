@@ -590,6 +590,8 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
+    # Read by GatedDeltaNet layers in the custom modeling files (e.g. Qwen3.5).
+    model_config.gdn_recurrent_forward = config.gdn_recurrent_forward
     # MoEArgs.fp8 (read via getattr(config, "fp8") in the modeling files) gates the
     # DeepGEMM FP8 grouped GEMM. MXFP8 grouped GEMM is applied by wrapping the expert
     # weights with torchao (see apply_quantization), so it leaves this flag False and
