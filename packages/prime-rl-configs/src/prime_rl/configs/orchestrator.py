@@ -301,6 +301,11 @@ class EvalConfig(BaseConfig):
     """If True, skip the startup eval that otherwise runs before any
     train rollouts."""
 
+    retrigger_on_resume: bool = False
+    """If True, re-trigger evals at the checkpoint step on resume (e.g. after a
+    crash that left in-flight evals unfinished). By default, assumes a clean
+    exit where all evals already completed."""
+
     @model_validator(mode="after")
     def resolve_env_defaults(self):
         """Resolve per-env overrides: inherit group-level sampling, num_examples,

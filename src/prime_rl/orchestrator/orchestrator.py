@@ -470,7 +470,11 @@ class Orchestrator:
         ]
 
         # Base-model eval (policy v0) — fires before any train rollouts, logged at the first
-        # step, unless ``eval.skip_first_step=True`` (or this is a resume)
+        # step, unless ``eval.skip_first_step=True``. On resume, defaults to assuming a clean
+        # exit (evals already completed); set ``eval.retrigger_on_resume=True`` to also re-fire
+        # interval-aligned evals at the checkpoint step (e.g. after a crash).
+        if config.eval is not None and config.eval.retrigger_on_resume and self.resume_step is not None:
+            self.maybe_trigger_eval(self.resume_step)
         self.maybe_trigger_eval(self.progress.step)
 
         # Anchor step-time clock so the first step measures startup → first batch

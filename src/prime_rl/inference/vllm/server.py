@@ -24,7 +24,6 @@ from prime_rl.inference.patches import (
     monkey_patch_nano_v3_reasoning_parser,
     monkey_patch_strip_routed_experts_from_chat,
     monkey_patch_tokenize_params_validation,
-    monkey_patch_vllm_padded_input_scrub,
 )
 
 # NOTE: Fix harmony stop token propagation for GPT-OSS models
@@ -36,9 +35,6 @@ monkey_patch_tokenize_params_validation()
 # NOTE: Register Nano V3 reasoning parser so configs can use
 # `reasoning_parser = "nano_v3"` without a vLLM plugin file.
 monkey_patch_nano_v3_reasoning_parser()
-# NOTE: Optional mitigation for vLLM padded decode inputs until the native fix
-# is available in our pinned runtime.
-monkey_patch_vllm_padded_input_scrub()
 # NOTE: routed_experts are consumed only via the serialized /generate path (router
 # replay). The chat-completions path encodes them as a base64 np.save string the PD
 # router cannot merge, which fails eval rollouts (they use chat completions). Strip

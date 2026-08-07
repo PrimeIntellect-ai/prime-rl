@@ -1,6 +1,6 @@
 [project]
 name = "prime-rl"
-version = "0.7.0"
+version = "0.8.0"
 description = "Async RL Training at Scale"
 readme = "README.md"
 requires-python = "~=3.12.0"
@@ -33,7 +33,7 @@ dependencies = [
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
     "torchtitan",
-    "verifiers[harbor]>=0.2.2.dev76",
+    "verifiers[harbor]>=0.3.0",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
@@ -59,8 +59,13 @@ env-server = "prime_rl.entrypoints.env_server:main"
 prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
 
 [project.optional-dependencies]
+# Both wheels are the same flash-attn 2.8.3 / cu128 / torch 2.11 / cp312 build and carry
+# sm_80 / sm_90 / sm_100 / sm_120 cubins. `attn="auto"` picks FA4 on sm_100 and FA3 on
+# sm_90, so FA2 is the resolved backend on sm_120 (see `_resolve_attn_impl` in
+# trainer/model.py).
 flash-attn = [
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.22/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_aarch64.whl ; platform_machine == 'aarch64'",
 ]
 flash-attn-3 = ["flash_attn_3"]
 
@@ -123,13 +128,22 @@ override-dependencies = [
     "openenv-core",
 ]
 
-# Environment packages (research-environments + verifiers) are auto-discovered as
-# workspace members, so new envs need no per-package registration. Install them
-# with `uv sync --all-packages`.
+# research-environments packages are auto-discovered as workspace members, so new
+# envs there need no per-package registration. verifiers' example envs are opt-in:
+# only the ones prime-rl trains or tests on are listed, so an upstream example with
+# conflicting pins can't break the shared lock. Install them with
+# `uv sync --all-packages`.
 [tool.uv.workspace]
 members = [
     "deps/research-environments/environments/*/*",
-    "deps/verifiers/environments/*",
+    "deps/verifiers/environments/alphabet_sort_v1",
+    "deps/verifiers/environments/color_codeword_v1",
+    "deps/verifiers/environments/gsm8k_v1",
+    "deps/verifiers/environments/kuhn_poker_v1",
+    "deps/verifiers/environments/proposer_solver_v1",
+    "deps/verifiers/environments/reverse_text_v1",
+    "deps/verifiers/environments/wiki_search_v1",
+    "deps/verifiers/environments/wordle_v1",
 ]
 # tau2-synth-v1 and tau3-bench-v1 pin `tau2` forks/revs that conflict with the
 # canonical tau2-bench-v1; a workspace shares one lock, so these can't coexist.

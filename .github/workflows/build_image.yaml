@@ -193,7 +193,11 @@ jobs:
         with:
           context: .
           file: ./Dockerfile.cuda
-          push: true
+          # zstd compresses the multi-GB venv layers several times faster than gzip at a
+          # comparable ratio. No `force-compression`, so base-image layers are reused as-is
+          # rather than needlessly recompressed. Pulling zstd layers needs containerd >= 1.5
+          # or Docker >= 23.
+          outputs: type=image,push=true,compression=zstd,compression-level=3
           platforms: ${{ matrix.platform }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}

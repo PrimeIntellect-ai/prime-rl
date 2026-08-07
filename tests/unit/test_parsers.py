@@ -5,6 +5,11 @@ from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_p
 
 # (model_name, expected_tool_call_parser, expected_reasoning_parser)
 EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
+    # Arcee Trinity
+    ("arcee-ai/Trinity-Large-Thinking", "qwen3_coder", "deepseek_r1"),
+    ("arcee-ai/Trinity-Large-Preview", "hermes", None),
+    ("arcee-ai/Trinity-Mini", "hermes", "deepseek_r1"),
+    ("arcee-ai/Trinity-Nano-Preview", "hermes", "deepseek_r1"),
     # DeepSeek
     ("deepseek-ai/DeepSeek-V3.2", "deepseek_v32", "deepseek_r1"),
     ("deepseek-ai/DeepSeek-V3.2-Exp", "deepseek_v32", "deepseek_r1"),
@@ -33,6 +38,14 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("MiniMaxAI/MiniMax-M2", "minimax_m2", "minimax_m2_append_think"),
     ("MiniMaxAI/MiniMax-M2.1", "minimax_m2", "minimax_m2_append_think"),
     ("MiniMaxAI/MiniMax-M2.5", "minimax_m2", "minimax_m2_append_think"),
+    # gpt-oss (reasoning handled natively by vLLM's harmony path)
+    ("openai/gpt-oss-20b", "openai", None),
+    ("openai/gpt-oss-120b", "openai", None),
+    # Poolside Laguna
+    ("poolside/Laguna-S-2.1", "poolside_v1", "poolside_v1"),
+    ("poolside/Laguna-S-2.1-FP8", "poolside_v1", "poolside_v1"),
+    ("poolside/Laguna-XS-2.1", "poolside_v1", "poolside_v1"),
+    ("poolside/Laguna-M.1", "poolside_v1", "poolside_v1"),
     # INTELLECT-3
     ("PrimeIntellect/INTELLECT-3", "qwen3_coder", "deepseek_r1"),
     ("PrimeIntellect/INTELLECT-3-FP8", "qwen3_coder", "deepseek_r1"),
