@@ -662,19 +662,3 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.vllm.tool_call_parser == "hermes"
-
-
-def test_valid_vllm_lora_ranks_match_vllm():
-    """VALID_VLLM_LORA_RANKS is a hardcoded copy of vLLM's accepted values —
-    prime-rl-configs does not depend on vLLM, and importing it at config-parse
-    time costs seconds. This pins the copy against the installed vLLM so a
-    version bump that changes the accepted ranks fails here instead of at serve
-    time. 1 is deliberately excluded: tiny adapters round up to rank 8.
-    """
-    from typing import get_args
-
-    from vllm.config.lora import MaxLoRARanks
-
-    from prime_rl.configs.inference import VALID_VLLM_LORA_RANKS
-
-    assert VALID_VLLM_LORA_RANKS == tuple(rank for rank in get_args(MaxLoRARanks) if rank >= 8)

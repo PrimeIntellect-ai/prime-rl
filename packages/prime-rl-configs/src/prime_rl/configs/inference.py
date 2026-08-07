@@ -27,7 +27,6 @@ class ServerConfig(BaseConfig):
 # Valid vLLM max_lora_rank values (`vllm.config.lora.MaxLoRARanks`), excluding 1 so
 # tiny adapters round up to 8. Hardcoded rather than imported: prime-rl-configs does
 # not depend on vLLM, and importing it costs seconds in every config-parsing process.
-# Pinned against the installed vLLM by `test_valid_vllm_lora_ranks_match_vllm`.
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
 # vLLM all2all backend options for expert-parallel deployments.

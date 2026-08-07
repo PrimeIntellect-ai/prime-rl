@@ -135,7 +135,9 @@ source .venv/bin/activate
 # all finish. `set -e` above aborts the job if any node's sync fails. Re-source .env
 # inside the task because unexported vars in .env don't cross srun even with normal
 # SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
-srun --ntasks-per-node=1 bash -c 'cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages'
+srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
+cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages
+SYNC_SH
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
 uv sync --all-extras --all-packages
@@ -183,7 +185,13 @@ CLEANUP_SH
 # --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other
 # tasks so a crashed component terminates the SLURM job instead of leaving the
 # surviving ranks holding nodes.
-srun --kill-on-bad-exit=1 bash -c '
+#
+# The body goes to bash on stdin through a quoted heredoc instead of a
+# single-quoted `bash -c` argument: srun broadcasts stdin to every task, and the
+# quoted delimiter passes the script through verbatim, so apostrophes and quotes
+# (including in the shared _launch_*.sh.j2 includes) need no escaping. Nothing in
+# the body reads stdin, which would otherwise eat the rest of the script.
+srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     # pipefail ensures `cmd | tee log` propagates `cmd` failures, and the
     # wait/cleanup block at the end of this script surfaces background
     # process crashes (router, orchestrator) as task failures.
@@ -260,7 +268,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
     # InferenceConfig.to_namespace() from the per-node config, so it is no longer assembled here.
 
-    DECODE_COMPILE_CFG='"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"'
+    DECODE_COMPILE_CFG='{"cudagraph_mode":"FULL_DECODE_ONLY"}'
 
     REPLICA_BASE=$((REPLICA_IDX * NODES_PER_INFER_REPLICA))
 
@@ -461,4 +469,4 @@ for pid in $REMAINING_PIDS; do
     kill -TERM $pid 2>/dev/null || true
 done
 exit $EXIT_CODE
-'
+LAUNCH_SH
