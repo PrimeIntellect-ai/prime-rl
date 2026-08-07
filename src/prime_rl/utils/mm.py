@@ -31,17 +31,6 @@ def file_uri_to_path(uri: str) -> Path:
     return Path(unquote(parsed.path))
 
 
-def missing_file_uris(uris: Iterable[str]) -> list[str]:
-    """Return missing local ``file://`` image refs; non-file refs are ignored."""
-    missing: list[str] = []
-    for uri in uris:
-        if urlparse(uri).scheme != "file":
-            continue
-        if not file_uri_to_path(uri).exists():
-            missing.append(uri)
-    return missing
-
-
 def _validate_modalities(mm_items: Mapping[str, list[Any]]) -> None:
     unsupported = sorted(
         modality for modality, items in mm_items.items() if items and modality not in SUPPORTED_MODALITIES
@@ -166,12 +155,3 @@ class RawImageMaterializer:
         adapter = _single_family_adapter(image_items)
         images = _load_verified_images(refs.images)
         return adapter.materialize_for_trainer(image_processor, image_items, images)
-
-    def synthesize_placeholder(self, refs: MMRefs) -> MaterializedMM | None:
-        """Build zero-valued multimodal tensors via the owning adapter."""
-        image_items = _parse_image_refs(refs)
-        if not image_items:
-            return None
-        image_processor = self.image_processor
-        adapter = _single_family_adapter(image_items)
-        return adapter.synthesize_placeholder(image_processor, image_items)

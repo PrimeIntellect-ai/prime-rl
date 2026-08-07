@@ -1,8 +1,7 @@
 from types import SimpleNamespace
 
-import torch
+import pytest
 
-from prime_rl.multimodal.adapters.base import ForwardPolicy, MaterializedMM
 from prime_rl.multimodal.schema import RAW_MM_ITEM_KIND
 from prime_rl.trainer.rl.data import DataLoader
 from prime_rl.transport.types import MicroBatch, MMImageRef, MMRefs
@@ -12,15 +11,6 @@ from prime_rl.utils.mm import build_mm_refs
 class _MissingMaterializer:
     def materialize(self, refs):
         raise FileNotFoundError("missing image")
-
-    def synthesize_placeholder(self, refs):
-        return MaterializedMM(
-            kwargs={
-                "pixel_values": torch.zeros((1, 24), dtype=torch.float32),
-                "image_grid_thw": torch.tensor([[1, 1, 1]], dtype=torch.long),
-            },
-            forward_policy=ForwardPolicy(pass_position_ids_with_mm=False),
-        )
 
 
 def _qwen_item(grid, uri: str = "file:///tmp/missing-image.png"):
@@ -42,10 +32,8 @@ def _loader() -> DataLoader:
     loader = object.__new__(DataLoader)
     loader.multi_run_manager = SimpleNamespace(max_runs=1)
     loader.mm_materializer = _MissingMaterializer()
-    loader.missing_mm_image_policy = "placeholder_zero_loss"
     loader.last_mm_materialize_time = 0.0
     loader.last_mm_images_materialized = 0
-    loader.last_mm_images_placeholdered = 0
     return loader
 
 
@@ -80,12 +68,6 @@ def test_build_mm_refs_accepts_offloaded_file_uri(tmp_path):
     assert refs == _refs(image_path.as_uri())
 
 
-def test_dataloader_uses_zero_loss_placeholder_for_missing_raw_image():
-    tensor_batch = _loader()._micro_batch_to_tensor(_micro_batch())
-
-    assert tensor_batch["mm_kwargs"] is not None
-    assert tensor_batch["mm_kwargs"]["pixel_values"].shape == (1, 24)
-    assert tensor_batch["mm_forward_policy"] == ForwardPolicy(pass_position_ids_with_mm=False)
-    assert tensor_batch["loss_mask"].tolist() == [[False, False, False]]
-    assert tensor_batch["advantages"].tolist() == [[0.0, 0.0, 0.0]]
-    assert tensor_batch["mm_token_type_ids"].tolist() == [[0, 1, 0]]
+def test_dataloader_raises_on_missing_raw_image():
+    with pytest.raises(FileNotFoundError, match="missing image"):
+        _loader()._micro_batch_to_tensor(_micro_batch())

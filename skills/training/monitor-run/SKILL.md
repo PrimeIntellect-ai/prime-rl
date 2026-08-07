@@ -199,11 +199,9 @@ means ingress was bypassed.
 - The orchestrator raises on placeholder/token drift ("does not cover
   image-typed tokens") before a sample ships — treat any occurrence as a bug,
   not noise.
-- Trainer metrics: `mm/images_materialized`, `time/mm_materialize`, and
-  `mm/images_placeholdered`. A nonzero placeholder count means image files
-  disappeared before materialization (the batch trains with zero-loss
-  placeholders and logs "raw image materialization missing image(s)") — check
-  whether something cleaned the offload directory mid-run.
+- Trainer metrics: `mm/images_materialized` and `time/mm_materialize`. Missing
+  image files fail the trainer hard ("raw image materialization failed") —
+  check whether something cleaned the offload directory mid-run.
 
 ### Process tree
 
