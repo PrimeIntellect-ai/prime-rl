@@ -37,7 +37,6 @@ from prime_rl.utils.process import (
     monitor_process,
     set_proc_title,
 )
-from prime_rl.utils.run_assets import build_run_asset_env
 
 RL_TOML = "rl.toml"
 RL_SBATCH = "rl.sbatch"
@@ -106,6 +105,8 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             "serve": {**source_dict.get("serve", {}), "address": address},
             "legacy": source_dict.get("legacy", {}),
             "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
+            "output_dir": str(config.orchestrator.output_dir),
+            "multimodal": to_toml_dict(config.multimodal),
         }
         with open(env_dir / f"{source.resolved_name}.toml", "wb") as f:
             tomli_w.dump(env_server_dict, f)
@@ -159,7 +160,6 @@ def rl_local(config: RLConfig):
         "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex),
     }
     inherited_env = dict(os.environ)
-    writer_run_asset_env = build_run_asset_env(config.orchestrator.output_dir, multimodal=config.multimodal)
 
     # Validate client port matches inference server port
     if config.inference is not None and not config.orchestrator.model.client.is_elastic:
@@ -264,10 +264,6 @@ def rl_local(config: RLConfig):
                     env_server_cmd,
                     env={
                         **os.environ,
-                        # Env servers render prompts and offload raw images, so they
-                        # need the run's image-asset dir (standalone servers set it
-                        # themselves).
-                        **writer_run_asset_env,
                         **DEFAULT_COMMON_ENV_VARS,
                         **config.env_vars,
                         **config.orchestrator.env_vars,

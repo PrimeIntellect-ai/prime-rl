@@ -41,22 +41,3 @@ def resolve_image_offload_dir(
     if hosted_run_dir is not None:
         return (hosted_run_dir / IMAGE_ASSET_SUBDIR).resolve()
     return (output_dir.resolve() / IMAGE_ASSET_SUBDIR).resolve()
-
-
-def build_run_asset_env(
-    output_dir: Path,
-    multimodal: MultimodalConfig | None = None,
-    base: Mapping[str, str] | None = None,
-) -> dict[str, str]:
-    """Resolve the environment used by subprocesses that share run image assets.
-
-    Prime-RL config owns the multimodal image offload path. Env vars are only the
-    transport used by verifiers/renderers running in subprocesses.
-    """
-
-    env = dict(os.environ if base is None else base)
-    config = multimodal or MultimodalConfig()
-
-    env[IMAGE_OFFLOAD_DIR_ENV] = str(resolve_image_offload_dir(output_dir, config, env))
-
-    return env

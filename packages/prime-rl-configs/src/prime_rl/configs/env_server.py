@@ -3,7 +3,7 @@ from pathlib import Path
 import verifiers.v1 as vf
 from pydantic import SerializeAsAny, model_validator
 
-from prime_rl.configs.shared import LogConfig
+from prime_rl.configs.shared import LogConfig, MultimodalConfig
 from prime_rl.utils.config import BaseConfig
 
 
@@ -25,6 +25,9 @@ class EnvServerConfig(BaseConfig):
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — logs and any generated artifacts are written as subdirectories."""
+
+    multimodal: MultimodalConfig = MultimodalConfig()
+    """Raw multimodal image offload settings; with ``output_dir``, resolves the run image-asset dir this server offloads into."""
 
     @model_validator(mode="before")
     @classmethod
