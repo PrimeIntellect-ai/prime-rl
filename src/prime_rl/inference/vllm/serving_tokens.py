@@ -65,7 +65,7 @@ from vllm.sampling_params import RequestOutputKind, SamplingParams
 from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
 from prime_rl.multimodal.registry import get_multimodal_adapter
 from prime_rl.multimodal.schema import RawMMItem
-from prime_rl.utils.mm import file_uri_to_path
+from prime_rl.utils.mm import load_image_processor, read_verified_image_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -176,49 +176,8 @@ async def _client_set_max_tokens(raw_request: Request | None) -> bool:
 
 @lru_cache(maxsize=8)
 def _load_image_processor(model_name: str, trust_remote_code: bool):
-    from transformers import AutoProcessor
-
-    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
-    image_processor = getattr(processor, "image_processor", None)
-    if image_processor is None:
-        raise ValueError(f"{model_name!r} does not expose an image_processor")
-    return image_processor
-
-
-def _parse_raw_image_ref(raw_ref: str, *, feature_modality: str, mm_hash: str):
-    from renderers.mm_store import split_raw_mm_ref
-
-    try:
-        ref = split_raw_mm_ref(raw_ref)
-    except ValueError as exc:
-        raise _MMImageRefError(str(exc)) from exc
-
-    if ref.modality != feature_modality:
-        raise _MMImageRefError(f"Expected feature modality {feature_modality!r}, got {ref.modality!r}")
-    if ref.mm_hash != mm_hash:
-        raise _MMImageRefError(f"Expected image hash {mm_hash}, got {ref.mm_hash}")
-    return ref
-
-
-def _read_verified_raw_image(ref) -> bytes:
-    try:
-        raw = file_uri_to_path(ref.raw_image_uri).read_bytes()
-    except OSError as exc:
-        raise _MMImageRefError(f"Unable to read raw image asset {ref.raw_image_uri!r}: {exc}") from exc
-
-    actual_hash = hashlib.sha256(raw).hexdigest()[:32]
-    if actual_hash != ref.mm_hash:
-        raise _MMImageRefError(f"Raw image hash mismatch: expected {ref.mm_hash}, got {actual_hash}")
-    return raw
-
-
-def _decode_raw_image(raw: bytes, *, raw_image_uri: str):
-    from PIL import Image
-
-    try:
-        return Image.open(BytesIO(raw)).convert("RGB")
-    except OSError as exc:
-        raise _MMImageRefError(f"Unable to decode raw image asset {raw_image_uri!r}: {exc}") from exc
+    # Named def so tests can monkeypatch ``serving_tokens._load_image_processor``.
+    return load_image_processor(model_name, trust_remote_code)
 
 
 def _materialize_raw_image_ref_sync(
@@ -230,9 +189,30 @@ def _materialize_raw_image_ref_sync(
     processor_model_name: str,
     trust_remote_code: bool,
 ):
-    ref = _parse_raw_image_ref(raw_ref, feature_modality=feature_modality, mm_hash=mm_hash)
-    raw = _read_verified_raw_image(ref)
-    image = _decode_raw_image(raw, raw_image_uri=ref.raw_image_uri)
+    from PIL import Image
+    from renderers.mm_store import split_raw_mm_ref
+
+    try:
+        ref = split_raw_mm_ref(raw_ref)
+    except ValueError as exc:
+        raise _MMImageRefError(str(exc)) from exc
+    if ref.modality != feature_modality:
+        raise _MMImageRefError(f"Expected feature modality {feature_modality!r}, got {ref.modality!r}")
+    if ref.mm_hash != mm_hash:
+        raise _MMImageRefError(f"Expected image hash {mm_hash}, got {ref.mm_hash}")
+
+    try:
+        raw = read_verified_image_bytes(ref.raw_image_uri, ref.mm_hash)
+    except OSError as exc:
+        raise _MMImageRefError(f"Unable to read raw image asset {ref.raw_image_uri!r}: {exc}") from exc
+    except ValueError as exc:
+        raise _MMImageRefError(str(exc)) from exc
+
+    try:
+        image = Image.open(BytesIO(raw)).convert("RGB")
+    except OSError as exc:
+        raise _MMImageRefError(f"Unable to decode raw image asset {ref.raw_image_uri!r}: {exc}") from exc
+
     image_processor = _load_image_processor(processor_model_name, trust_remote_code)
     item = RawMMItem(
         family=ref.family,
@@ -252,9 +232,8 @@ def _materialize_raw_image_ref_sync(
 
 
 # (raw_ref_digest, feature_modality, mm_hash, expected_placeholder_length,
-# processor_model_name, trust_remote_code). The digest keeps keys small while
-# ensuring a distinct descriptor can never alias an already-validated cache
-# entry, even when its outer hash/placeholder metadata is forged or stale.
+# processor_model_name, trust_remote_code). Digest the ref so forged outer
+# hash/placeholder metadata cannot alias a cached entry.
 _MaterializeKey = tuple[str, str, str, int, str, bool]
 
 _MM_MATERIALIZE_CACHE_GB_ENV = "PRIME_RL_MM_MATERIALIZE_CACHE_GB"
@@ -264,21 +243,9 @@ _MM_MATERIALIZE_LOG_EVERY = 1000
 class _MaterializedRefCache:
     """Byte-bounded LRU of materialized raw image refs, with single-flight misses.
 
-    Every request carries a ref for every image in its prompt (prior turns included),
-    so multi-turn rollouts re-materialize the same images once per turn per rollout —
-    this cache turns those repeats into lookups. Keys are content-addressed, so
-    entries can only go cold, never stale: a post-eviction request simply misses and
-    re-materializes from the durable ``file://`` asset.
-
     All mutation happens on the event loop thread (materialization itself runs in a
     worker thread via ``asyncio.to_thread``, but lookup/insertion/eviction happen in
     the async caller) — so no lock is needed. Do not touch this cache from sync code.
-
-    ``max_bytes == 0`` disables caching and single-flight entirely: every call runs
-    the materializer, byte-identical to the uncached path.
-
-    Host-RAM note: this budget is additive to vLLM's own processor cache
-    (``mm_processor_cache_gb × (api_server_count + data_parallel_size)``).
     """
 
     def __init__(self, max_bytes: int) -> None:
@@ -438,14 +405,11 @@ class PrimeRlServingTokens(ServingTokens):
 
     @cached_property
     def _mm_materialize_cache(self) -> _MaterializedRefCache:
-        """Materialized-ref cache, sized by ``PRIME_RL_MM_MATERIALIZE_CACHE_GB``
-        (float GiB, default 2.0, ``0`` disables — the kill switch: disabled is
-        byte-identical to the uncached path).
+        """Sized by ``PRIME_RL_MM_MATERIALIZE_CACHE_GB`` (GiB, default 2.0, ``0`` disables).
 
         A ``cached_property`` because ``custom_init_app_state`` grafts this
         subclass via ``object.__new__`` + ``__dict__.update``, so ``__init__``
-        never runs (see ``_max_tokens_defaults``). One frontend process serves
-        all DP ranks of an engine, so the cache is shared across ranks.
+        never runs (see ``_max_tokens_defaults``).
         """
         gb = float(os.environ.get(_MM_MATERIALIZE_CACHE_GB_ENV, "2.0"))
         return _MaterializedRefCache(max_bytes=int(gb * (1 << 30)))

@@ -101,6 +101,26 @@ def sha256_32(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:32]
 
 
+def read_verified_image_bytes(uri: str, expected_hash: str) -> bytes:
+    """Read a local ``file://`` image and verify its content hash (``sha256_32``)."""
+    raw = file_uri_to_path(uri).read_bytes()
+    actual_hash = sha256_32(raw)
+    if actual_hash != expected_hash:
+        raise ValueError(f"Raw image hash mismatch for {uri}: expected {expected_hash}, got {actual_hash}")
+    return raw
+
+
+def load_image_processor(model_name: str, trust_remote_code: bool = False):
+    """Load the HF ``image_processor`` for ``model_name``."""
+    from transformers import AutoProcessor
+
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+    image_processor = getattr(processor, "image_processor", None)
+    if image_processor is None:
+        raise ValueError(f"{model_name!r} does not expose an image_processor")
+    return image_processor
+
+
 def _parse_image_refs(refs: MMRefs) -> list[RawMMItem]:
     return [parse_raw_mm_item(image.item) for image in refs.images]
 
@@ -117,10 +137,7 @@ def _load_verified_images(image_refs: list[MMImageRef]) -> list[Any]:
 
     images = []
     for ref in image_refs:
-        raw = file_uri_to_path(ref.uri).read_bytes()
-        actual_hash = sha256_32(raw)
-        if actual_hash != ref.hash:
-            raise ValueError(f"Raw image hash mismatch for {ref.uri}: expected {ref.hash}, got {actual_hash}")
+        raw = read_verified_image_bytes(ref.uri, ref.hash)
         with Image.open(BytesIO(raw)) as image:
             images.append(image.convert("RGB"))
     return images
@@ -137,13 +154,7 @@ class RawImageMaterializer:
     @property
     def image_processor(self):
         if self._image_processor is None:
-            from transformers import AutoProcessor
-
-            processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=self.trust_remote_code)
-            image_processor = getattr(processor, "image_processor", None)
-            if image_processor is None:
-                raise ValueError(f"{self.model_name!r} does not expose an image_processor")
-            self._image_processor = image_processor
+            self._image_processor = load_image_processor(self.model_name, self.trust_remote_code)
         return self._image_processor
 
     def materialize(self, refs: MMRefs) -> MaterializedMM | None:
