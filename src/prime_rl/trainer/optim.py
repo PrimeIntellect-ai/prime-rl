@@ -62,10 +62,32 @@ class GradientOffloadManager:
         self._closed = False
 
         params = {id(param): param for chunk in chunks for param in chunk}
+        # Pin every buffer NOW, before the first collective of the job. The
+        # post-accumulate hook runs inside FSDP's foreach_reduce on the autograd
+        # thread; a lazy cudaHostAlloc there stalls against the device while
+        # peer ranks' NCCL kernels spin waiting for this rank's next collective
+        # — a distributed deadlock (deterministic at 78 layers, seen from 30k to
+        # 131k tokens). Init-time pinning is the only safe window.
+        for param in params.values():
+            data = param.data
+            if not isinstance(data, DTensor):
+                continue
+            local = data.to_local()
+            accumulator = torch.empty(
+                local.shape, dtype=self._cpu_dtype or local.dtype, device="cpu", pin_memory=True
+            )
+            staging = torch.empty_like(accumulator, pin_memory=True)
+            template = copy.copy(data.detach())
+            template._local_tensor = accumulator
+            self._buffers[id(param)] = _CPUGradientBuffer(template, accumulator, staging=staging)
+        preallocated = sum(b.accumulator.nbytes + b.staging.nbytes for b in self._buffers.values())
         self._hook_handles = [param.register_post_accumulate_grad_hook(self._offload_hook) for param in params.values()]
         self._worker = threading.Thread(target=self._copy_worker, name="grad-offload", daemon=True)
         self._worker.start()
-        get_logger().info("Gradient CPU offload uses FSDP sharded-parameter post-accumulate hooks")
+        get_logger().info(
+            "Gradient CPU offload uses FSDP sharded-parameter post-accumulate hooks "
+            f"({preallocated / 1024**3:.2f} GiB pinned accumulator+staging preallocated)"
+        )
 
     def _copy_worker(self) -> None:
         while True:
