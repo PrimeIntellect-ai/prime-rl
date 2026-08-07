@@ -285,6 +285,8 @@ class _MaterializedRefCache:
         self.max_bytes = max_bytes
         self._items: OrderedDict[_MaterializeKey, tuple[Any, int]] = OrderedDict()
         self._inflight: dict[_MaterializeKey, asyncio.Future] = {}
+        # asyncio only weakly refs tasks; keep strong refs until they finish.
+        self._tasks: set[asyncio.Task] = set()
         self._bytes = 0
         self.hits = 0
         self.misses = 0
@@ -325,7 +327,9 @@ class _MaterializedRefCache:
         # The work runs as its own task and awaiters shield the shared future:
         # a cancelled request (client disconnect) must neither poison the future
         # for deduped awaiters nor cancel it out from under them.
-        asyncio.get_running_loop().create_task(_materialize_and_resolve())
+        task = asyncio.get_running_loop().create_task(_materialize_and_resolve())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         return await asyncio.shield(future)
 
     def _insert(self, key: _MaterializeKey, item: Any) -> None:
