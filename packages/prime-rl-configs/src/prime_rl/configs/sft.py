@@ -250,17 +250,10 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def renderer_emits_processed_multimodal(self):
-        """SFT consumes processed pixel tensors straight from the renderer — it has no
-        raw-ref materializer, so the renderers-library default of ``multimodal_output='raw'``
-        (built for the RL offload path) would silently ship JSON descriptors into training.
-        Default SFT renderers to ``'processed'`` and reject an explicit ``'raw'``."""
+        """SFT needs processed MM tensors; default ``multimodal_output`` to that and reject ``raw``."""
         if "multimodal_output" in self.renderer.model_fields_set:
             if self.renderer.multimodal_output == "raw":
-                raise ValueError(
-                    "multimodal_output='raw' is unsupported for SFT: the SFT data path materializes "
-                    "images from processed renderer output, not raw refs. Remove the override "
-                    "(SFT defaults to 'processed')."
-                )
+                raise ValueError("multimodal_output='raw' is unsupported for SFT (defaults to 'processed')")
         else:
             self.renderer = self.renderer.model_copy(update={"multimodal_output": "processed"})
         return self
