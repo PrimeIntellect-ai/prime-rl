@@ -109,6 +109,13 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
         get_logger().info("Using Gloo backend for CPU and NCCL backend for GPU")
         backend = "cpu:gloo,cuda:nccl"
 
+    # init_process_group applies `timeout` only to the default PG; device-mesh
+    # sub-groups (dp/cp/ep) are created via new_group without a timeout and fall
+    # back to torch's 10-minute module default — dist_timeout_seconds silently
+    # never reached the PGs doing the real work (watchdogs at 600s). Patch the
+    # module default so every subsequently created PG inherits it.
+    dist.distributed_c10d.default_pg_timeout = timeout
+
     dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
 
 
