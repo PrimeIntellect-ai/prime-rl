@@ -183,8 +183,9 @@ means ingress was bypassed.
 
 - The image directory comes from `[multimodal].offload_dir` in the resolved
   config; unset, it defaults to a run-scoped path (`{output_dir}/assets/images`
-  or the hosted `RUN_ID` path). The launcher exports it to the orchestrator as
-  `VF_RENDERER_IMAGE_OFFLOAD_DIR` (protected — not settable via `env_vars`).
+  or the hosted `RUN_ID` path). Each env-server resolves that into
+  `VF_RENDERER_IMAGE_OFFLOAD_DIR` for verifiers/renderers (protected — set via
+  `[multimodal].offload_dir`, not `env_vars`).
 - While multimodal rollouts are in flight, image files should accumulate under
   that directory. Zero files means the offload path isn't being exercised or
   image preparation failed before request submission.

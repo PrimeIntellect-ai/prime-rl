@@ -6,9 +6,11 @@ from pydantic import AfterValidator, Field, model_validator
 
 from prime_rl.utils.config import BaseConfig
 
-# Launcher-managed env vars that a component's `env_vars` must not set: GPU partitioning
-# and the single shared W&B run. The launcher always sets these last, so allowing them in
-# `env_vars` would be a silent no-op (or, on multi-node, a footgun) — reject them instead.
+# Env vars that a component's `env_vars` must not set:
+# - CUDA_VISIBLE_DEVICES / WANDB_SHARED_*: the launcher always sets these last.
+# - VF_RENDERER_IMAGE_OFFLOAD_DIR: each env-server resolves this from
+#   ``[multimodal].offload_dir`` (operator process env wins via setdefault).
+# Allowing them in ``env_vars`` would be a silent no-op or a footgun — reject instead.
 PROTECTED_ENV_VARS = frozenset(
     {
         "CUDA_VISIBLE_DEVICES",
@@ -24,7 +26,9 @@ def reject_protected_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
     clobbered = sorted(PROTECTED_ENV_VARS & env_vars.keys())
     if clobbered:
         raise ValueError(
-            f"env_vars cannot set launcher-managed vars {clobbered} — set by the launcher, not overridable"
+            f"env_vars cannot set protected vars {clobbered}; "
+            "use [multimodal].offload_dir for VF_RENDERER_IMAGE_OFFLOAD_DIR, "
+            "and leave CUDA_VISIBLE_DEVICES / WANDB_SHARED_* to the launcher"
         )
     return env_vars
 

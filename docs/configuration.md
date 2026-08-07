@@ -226,7 +226,9 @@ The `rl` launcher applies these the same way in both single-node and multi-node 
 1. The launcher's own defaults — **your `env_vars` override these**.
 2. Your top-level `[env_vars]`.
 3. Your `[component.env_vars]`.
-4. Orchestration-critical vars the launcher always sets last — `CUDA_VISIBLE_DEVICES` (GPU partitioning), `WANDB_SHARED_*` (the single shared W&B run), and `VF_RENDERER_IMAGE_OFFLOAD_DIR` (raw multimodal image asset path) — **these cannot be overridden** from `env_vars`.
+4. Orchestration-critical vars the launcher always sets last — `CUDA_VISIBLE_DEVICES` (GPU partitioning) and `WANDB_SHARED_*` (the single shared W&B run) — **these cannot be overridden** from `env_vars`.
+
+`VF_RENDERER_IMAGE_OFFLOAD_DIR` is also rejected in `env_vars`. For v1 multimodal RL, set the shared image-asset directory with top-level `[multimodal].offload_dir` (propagated into trainer / orchestrator / inference / env-server configs). Each env-server resolves that into `VF_RENDERER_IMAGE_OFFLOAD_DIR` for verifiers/renderers (`setdefault`, so an already-exported process env wins — e.g. the multi-node SLURM template). When unset, the default is `{orchestrator.output_dir}/assets/images`, or `/data/outputs/run_${RUN_ID}/assets/images` when `RUN_ID` is set. Inference and the trainer read the `file://` URIs on the refs and do not need the env var.
 
 For standalone `sft` and `inference` configs, `[env_vars]` applies to that entrypoint's process(es). For disaggregated P/D inference, the role-specific [`deployment.{prefill,decode}_env_vars`](inference.md) layer on top of any shared inference env vars.
 
