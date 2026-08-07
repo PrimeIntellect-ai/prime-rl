@@ -40,9 +40,9 @@ from prime_rl.utils.logger import get_logger
 # task.idx + task.model_dump).
 ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 
-# Max wait for a spawned env server to bind and report its address. The child
-# loads the taskset (possibly downloading a dataset) before reporting, so this
-# is generous.
+# Max wait for a spawned env server to bind and report its address, and for the
+# first ``info`` request in ``start()`` to be answered. Env load (possibly
+# downloading a dataset) happens before either, so this is generous.
 ENV_SERVER_SPAWN_TIMEOUT = 600.0
 
 
@@ -105,12 +105,21 @@ class Env:
         address = self.config.address or await self._spawn(log_dir, log_level or "INFO", json_logging)
         get_logger().debug(f"Connecting {self.name} to env server {address}")
         self._env_client = EnvClient(address=address)
-        # A spawned server already reported its address *after* binding + loading,
-        # so it's up — the untimed ``info`` below is enough. An external server has
-        # no such handshake, so poll until it answers before we block on ``info``.
+        # A spawned server reported its address after binding, so it's up; an
+        # external server has no such handshake, so poll until it answers.
         if external:
             await self.env_client.wait_for_server_startup()
-        info = await self.env_client.info()
+        # Bound the first request: a server can accept connections yet never answer
+        # (e.g. its pool worker died loading the env) — without a deadline the run
+        # wedges at "Loading training environments" forever.
+        try:
+            info = await asyncio.wait_for(self.env_client.info(), timeout=ENV_SERVER_SPAWN_TIMEOUT)
+        except TimeoutError:
+            raise RuntimeError(
+                f"Env server {self.name} at {address} accepted connections but never served info "
+                f"within {ENV_SERVER_SPAWN_TIMEOUT}s — it likely failed loading the environment; "
+                "check the env server logs"
+            )
         self.num_tasks = info.num_tasks
         self.requires_group_scoring = info.requires_group_scoring
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
