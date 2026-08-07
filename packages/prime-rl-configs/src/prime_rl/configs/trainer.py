@@ -55,6 +55,9 @@ class ActivationOffloadingConfig(BaseConfig):
 
 
 class OptimizerOffloadingConfig(BaseConfig):
+    gradients: bool = False
+    """Offload sharded gradients to pinned CPU memory during backward, then run the optimizer step on GPU."""
+
     full: bool = False
     """Offload gradients and run the optimizer step on CPU-resident FP32 master weights."""
 
@@ -186,7 +189,7 @@ class ModelConfig(BaseModelConfig):
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
     optim_cpu_offload: OptimizerOffloading = OptimizerOffloadingConfig()
-    """Configure CPU offloading for optimizer-owned state, or disable it with ``false``. Transfers always use pinned memory and persistent CUDA streams. Full offload additionally moves gradients and FP32 master weights to CPU and runs the optimizer there."""
+    """Configure CPU offloading for optimizer-owned state, or disable it with ``false``. Transfers always use pinned memory and persistent CUDA streams. Gradient offload accumulates gradients on CPU before a GPU optimizer step. Full offload additionally moves FP32 master weights to CPU and runs the optimizer there."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
