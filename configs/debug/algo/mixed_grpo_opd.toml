@@ -64,7 +64,7 @@ base_url = ["http://localhost:8001/v1"]
 
 [orchestrator.eval]
 interval = 5
-num_examples = 128
+num_tasks = 128
 
 [orchestrator.eval.sampling]
 max_completion_tokens = 128

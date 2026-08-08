@@ -9,7 +9,7 @@ A rollout container (``TrainRollouts`` / ``EvalRollouts``) owns the rollout list
 The wandb layout mirrors the episode/trace hierarchy, one aggregation per level:
 
 - ``{prefix}/{subset}/<metric>/<stat>`` — episode level, one value per episode summing its traces
-  (matching ``vf.Episode``'s aggregates). Only the count metrics live here.
+  (matching ``vf.Episode``'s aggregates), plus the episode ``has_error`` rate on ``all``.
 - ``{prefix}/{subset}/<agent>/<metric>/<stat>`` — agent level, one value per trace, grouped by agent
   name (``vf.Episode.by_agent``) so agents never mix into one distribution. Everything trace-scoped
   lives here: reward, rates, timing, custom metrics, the pipeline verdicts, the eval scores.
@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import EpisodeResult, Rollout
 
 Subset = Literal["all", "effective"]
 
@@ -260,14 +260,15 @@ class TraceMetrics(StatGroup):
 
 class EpisodeMetrics:
     """Metrics shared by train and eval over a rollout list. The count metrics (tokens/turns/
-    branches) are episode-level — one value per episode, summing its traces — and are the only
-    per-metric keys ``to_wandb`` emits at the env level; every trace-level metric is emitted per
+    branches) are episode-level — one value per episode, summing its traces — alongside the
+    episode failure rate; every trace-level metric is emitted per
     agent via ``by_agent()``. The boolean ``Stat`` properties (0/1 distributions, ``.mean()`` is
     the rate) serve the console log lines. ``TrainMetrics`` / ``EvalMetrics`` extend ``to_wandb``
     with the train pipeline rates and the eval scores."""
 
-    def __init__(self, rollouts: list[Rollout]) -> None:
+    def __init__(self, rollouts: list[Rollout], episode_results: list[EpisodeResult] | None = None) -> None:
         self.rollouts = rollouts
+        self.episode_results = episode_results
 
     def episodes(self) -> list[list[Rollout]]:
         """The subset's rollouts grouped into their episodes. A rollout without an
@@ -275,6 +276,8 @@ class EpisodeMetrics:
         grouped: dict[str, list[Rollout]] = {}
         for r in self.rollouts:
             grouped.setdefault(r.episode_id or r.id, []).append(r)
+        if self.episode_results:
+            return [grouped.get(result.episode.id, []) for result in self.episode_results]
         return list(grouped.values())
 
     def by_agent(self) -> dict[str, TraceMetrics]:
@@ -314,11 +317,13 @@ class EpisodeMetrics:
 
     @property
     def has_error(self) -> Stat:
+        if self.episode_results:
+            return Stat([float(not result.episode.ok) for result in self.episode_results])
         return Stat([float(r.has_error) for r in self.rollouts])
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         """The common metric dict for one ``{prefix}/{subset}`` slice. Empty input → ``{}``."""
-        if not self.rollouts:
+        if not self.rollouts and not self.episode_results:
             return {}
         p = f"{prefix}/{subset}"
         out: dict[str, float] = {}
@@ -327,6 +332,8 @@ class EpisodeMetrics:
         out |= self.num_output_tokens.to_dict(f"{p}/num_output_tokens")
         out |= self.num_turns.to_dict(f"{p}/num_turns")
         out |= self.num_branches.to_dict(f"{p}/num_branches")
+        if subset == "all":
+            out[f"{p}/has_error/mean"] = self.has_error.mean()
         for agent, agent_metrics in self.by_agent().items():
             out |= agent_metrics.to_dict(f"{p}/{agent}", subset=subset)
         return out
@@ -373,13 +380,18 @@ def pass_at_k(rollouts: list[Rollout]) -> dict[str, float]:
 class EvalMetrics(EpisodeMetrics):
     """Common metrics plus the per-agent ``avg@<group_size>`` score and (on the effective subset,
     for binary-reward tasks) pass@k / pass^k. Both score an agent's own traces, so they live in its
-    subtree like every other trace-level metric. ``group_size`` (the ``avg@k`` k, the run's rollouts
-    per example) is supplied by the container so the ``all`` and ``effective`` subsets — and every
-    agent — share one stable key."""
+    subtree like every other trace-level metric. Each agent gets its own stable ``k`` derived from
+    that agent's traces per example in the full epoch, so multi-agent episodes cannot inflate one
+    another's score key."""
 
-    def __init__(self, rollouts: list[Rollout], group_size: int) -> None:
-        super().__init__(rollouts)
-        self.group_size = group_size
+    def __init__(
+        self,
+        rollouts: list[Rollout],
+        group_sizes_by_agent: dict[str, int],
+        episode_results: list[EpisodeResult] | None = None,
+    ) -> None:
+        super().__init__(rollouts, episode_results)
+        self.group_sizes_by_agent = group_sizes_by_agent
 
     @property
     def reward(self) -> Stat:
@@ -389,7 +401,8 @@ class EvalMetrics(EpisodeMetrics):
         out = super().to_wandb(prefix=prefix, subset=subset)
         for agent, traces in self.by_agent().items():
             p = f"{prefix}/{subset}/{agent}"
-            out[f"{p}/avg@{self.group_size}"] = traces.stats()["reward"].mean()
+            k = self.group_sizes_by_agent.get(agent, 0)
+            out[f"{p}/avg@{k}"] = traces.stats()["reward"].mean()
             if subset == "effective":
                 out |= {f"{p}/{k}": v for k, v in pass_at_k(traces.rollouts).items()}
         return out
@@ -400,11 +413,20 @@ class TrainRollouts:
     included). ``effective`` is the clean trainable subset (a view of the same traces);
     ``metrics`` builds ``TrainMetrics`` over them."""
 
-    def __init__(self, rollouts: list[Rollout] | None = None) -> None:
+    def __init__(
+        self,
+        rollouts: list[Rollout] | None = None,
+        episode_results: list[EpisodeResult] | None = None,
+    ) -> None:
         self.rollouts = rollouts if rollouts is not None else []
+        self.episode_results = episode_results if episode_results is not None else []
 
     def append(self, rollout: Rollout) -> None:
         self.rollouts.append(rollout)
+
+    def append_episode(self, result: EpisodeResult) -> None:
+        self.episode_results.append(result)
+        self.rollouts.extend(result.rollouts)
 
     def __len__(self) -> int:
         return len(self.rollouts)
@@ -414,28 +436,44 @@ class TrainRollouts:
 
     @property
     def effective(self) -> TrainRollouts:
-        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered and r.agent.trainable])
+        rollouts = [
+            r for r in self.rollouts if r.episode_ok and not r.has_error and not r.is_filtered and r.agent.trainable
+        ]
+        episode_ids = {r.episode_id for r in rollouts}
+        episodes = [result for result in self.episode_results if result.episode.id in episode_ids]
+        return TrainRollouts(rollouts, episodes)
 
     def by_env(self) -> dict[str, TrainRollouts]:
         grouped: dict[str, list[Rollout]] = {}
         for r in self.rollouts:
             grouped.setdefault(r.env_name, []).append(r)
-        return {env: TrainRollouts(rs) for env, rs in grouped.items()}
+        for result in self.episode_results:
+            grouped.setdefault(result.env_name, [])
+        return {
+            env: TrainRollouts(rs, [result for result in self.episode_results if result.env_name == env])
+            for env, rs in grouped.items()
+        }
 
     @property
     def metrics(self) -> TrainMetrics:
-        return TrainMetrics(self.rollouts)
+        return TrainMetrics(self.rollouts, self.episode_results)
 
 
 class EvalRollouts:
     """A list of eval rollouts (errored + untrainable included). ``effective`` is the
     non-errored trainable subset (a view).
-    ``group_size`` (rollouts per example, the ``avg@k`` k) is derived from the full epoch and carried
-    onto ``effective`` so both subsets share one stable key; ``metrics`` builds ``EvalMetrics``."""
+    Per-agent group sizes are derived from the full epoch and carried onto ``effective`` so each
+    agent's ``avg@k`` key stays stable across subsets."""
 
-    def __init__(self, rollouts: list[Rollout] | None = None, group_size: int | None = None) -> None:
+    def __init__(
+        self,
+        rollouts: list[Rollout] | None = None,
+        group_sizes_by_agent: dict[str, int] | None = None,
+        episode_results: list[EpisodeResult] | None = None,
+    ) -> None:
         self.rollouts = rollouts if rollouts is not None else []
-        self._group_size = group_size
+        self.episode_results = episode_results if episode_results is not None else []
+        self._group_sizes_by_agent = group_sizes_by_agent
 
     def __len__(self) -> int:
         return len(self.rollouts)
@@ -444,25 +482,23 @@ class EvalRollouts:
         return iter(self.rollouts)
 
     @property
-    def group_size(self) -> int:
-        """The largest group in trainable (policy) traces — equals the configured group size
-        whenever one example kept all its rollouts; untrainable traces don't count, so a
-        multi-agent episode doesn't inflate ``k``. A subview carries its parent's value so
-        ``avg@k`` doesn't drift across subsets."""
-        if self._group_size is not None:
-            return self._group_size
-        counts: dict = {}
+    def group_sizes_by_agent(self) -> dict[str, int]:
+        if self._group_sizes_by_agent is not None:
+            return self._group_sizes_by_agent
+        counts: dict[str, dict] = {}
         for r in self.rollouts:
             if r.agent.trainable:
-                counts[r.group_id] = counts.get(r.group_id, 0) + 1
-        return max(counts.values(), default=0)
+                by_group = counts.setdefault(r.agent.name, {})
+                by_group[r.group_id] = by_group.get(r.group_id, 0) + 1
+        return {agent: max(by_group.values(), default=0) for agent, by_group in counts.items()}
 
     @property
     def effective(self) -> EvalRollouts:
-        return EvalRollouts(
-            [r for r in self.rollouts if not r.has_error and r.agent.trainable], group_size=self.group_size
-        )
+        rollouts = [r for r in self.rollouts if r.episode_ok and not r.has_error and r.agent.trainable]
+        episode_ids = {r.episode_id for r in rollouts}
+        episodes = [result for result in self.episode_results if result.episode.id in episode_ids]
+        return EvalRollouts(rollouts, self.group_sizes_by_agent, episodes)
 
     @property
     def metrics(self) -> EvalMetrics:
-        return EvalMetrics(self.rollouts, self.group_size)
+        return EvalMetrics(self.rollouts, self.group_sizes_by_agent, self.episode_results)

@@ -52,7 +52,7 @@ type = "subprocess"
 
 [orchestrator.eval]
 interval = 1
-num_examples = 128
+num_tasks = 128
 
 [orchestrator.eval.sampling]
 max_completion_tokens = 128

@@ -1,11 +1,14 @@
 import math
+import uuid
 from itertools import count
 from types import SimpleNamespace
 
 import pytest
 import verifiers.v1 as vf
 
+from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
+from prime_rl.orchestrator.types import EpisodeResult
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 _ids = count()
@@ -24,6 +27,7 @@ def mk(
     is_truncated: bool = False,
     is_completed: bool = True,
     has_error: bool = False,
+    episode_ok: bool = True,
     error_type: str = "error",
     stop_condition: str | None = None,
     metrics: dict | None = None,
@@ -57,6 +61,7 @@ def mk(
         is_truncated=is_truncated,
         is_completed=is_completed,
         has_error=has_error,
+        episode_ok=episode_ok,
         last_error=SimpleNamespace(type=error_type) if has_error else None,
         stop_condition=stop_condition,
         metrics=metrics or {},
@@ -173,6 +178,11 @@ def test_boolean_rates_and_error_breakdown_all_only():
     eff = rc.effective.metrics.to_wandb(prefix="train/agg", subset="effective")
     assert not any(k.endswith("/has_error/mean") or "/error/" in k for k in eff)
 
+    failed_episode = SimpleNamespace(episode=SimpleNamespace(id="failed", ok=False), env_name="env")
+    zero_trace = TrainRollouts([], [failed_episode]).metrics.to_wandb(prefix="train/agg", subset="all")
+    assert zero_trace["train/agg/all/has_error/mean"] == 1.0
+    assert zero_trace["train/agg/all/num_total_tokens/mean"] == 0.0
+
 
 def test_solve_rates():
     groups = {"A": [1.0, 1.0], "B": [0.0, 0.0], "C": [1.0, 0.0], "D": [1.0, 0.0]}  # all / none / some / some
@@ -258,6 +268,19 @@ def test_eval_avg_at_k_and_pass_k():
     non_binary = EvalRollouts([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
 
+    multi_agent = EvalRollouts(
+        [
+            mk(agent_name="proposer", group_id="g0"),
+            mk(agent_name="solver", group_id="g0"),
+            mk(agent_name="solver", group_id="g0"),
+            mk(agent_name="proposer", group_id="g0"),
+            mk(agent_name="solver", group_id="g0"),
+            mk(agent_name="solver", group_id="g0"),
+        ]
+    ).metrics.to_wandb(prefix="eval/x", subset="all")
+    assert "eval/x/all/proposer/avg@2" in multi_agent
+    assert "eval/x/all/solver/avg@4" in multi_agent
+
 
 def test_compute_pass_metrics_matches_closed_form():
     out = compute_pass_metrics([1.0, 1.0, 0.0, 0.0])  # n=4, c=2
@@ -265,3 +288,31 @@ def test_compute_pass_metrics_matches_closed_form():
     assert out["pass@2"] == 1.0 - math.comb(2, 2) / math.comb(4, 2)
     assert out["pass^2"] == math.comb(2, 2) / math.comb(4, 2)
     assert set(out) == {"pass@1", "pass@2", "pass@4", "pass^1", "pass^2", "pass^4"}
+
+
+def test_zero_trace_episode_survives_eval_sink_and_persistence():
+    task_data = vf.TaskData(idx=3, prompt="prompt")
+    env = SimpleNamespace(config=SimpleNamespace(group_size=1), eval_tasks=[task_data])
+    sink = EvalSink(eval_envs=SimpleNamespace(get=lambda _name: env))
+    result = EpisodeResult(
+        episode=vf.WireEpisode(
+            env={"id": "test-v1"},
+            ok=False,
+            errors=[vf.Error(type="TaskError", message="failed before tracing")],
+        ),
+        kind="eval",
+        env_name="test",
+        group_id=uuid.uuid4(),
+        task_data=task_data,
+        policy_version=2,
+        eval_step=7,
+    )
+
+    batch = sink.add(result)
+    assert batch is not None
+    assert batch.episodes == [result]
+    assert len(batch.rollouts) == 0
+    assert batch.rollouts.metrics.has_error.mean() == 1.0
+    assert result.to_record()["traces"] == []
+    assert result.to_record()["prime_rl"]["group_id"] == str(result.group_id)
+    assert result.to_record()["prime_rl"]["task"] == task_data.model_dump(mode="json")

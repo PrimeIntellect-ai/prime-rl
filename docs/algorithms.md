@@ -481,7 +481,7 @@ Filtered rollouts still appear in W&B distributions, just not in the trainer bat
 
 ## Multi-Turn Trajectories
 
-Multi-turn rollouts (tool use, browser environments, long conversations) used to be stitched into a single fake "single-turn" sample, which silently corrupted the importance ratio when chat templates didn't roundtrip. Since [`verifiers` v0.1.8](https://github.com/PrimeIntellect-ai/verifiers/releases/tag/v0.1.8), `prime-rl` records each LLM request/response as an independent **trajectory step** and merges them at training time using best-effort interleaving — with [renderers](#renderers) as the mechanism that keeps the merge safe by construction.
+Multi-turn rollouts (tool use, browser environments, long conversations) record each LLM request/response as an independent **trajectory step** and merge them at training time using best-effort interleaving — with [renderers](#renderers) as the mechanism that keeps the merge safe by construction.
 
 ### Extension Property
 

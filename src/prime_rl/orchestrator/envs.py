@@ -12,7 +12,7 @@ once, and each dispatched episode ships its task's data on the request
 pool) stateless about data — no per-worker dataset loads, no idx-addressed task
 cache — and gives the orchestrator real tasks to cycle, shuffle, and filter.
 
-The server answers one ``Episode`` per run request, whose traces we validate into
+The server answers one ``Episode`` per run request; the dispatcher validates its traces into
 ``Trace[WireTaskData]`` — real ``vf.Trace``\\ s (never loose dicts) whose task
 keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 """
@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator, Sequence
-from itertools import islice
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
@@ -30,13 +29,7 @@ from verifiers.v1.serve import EnvClient
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.sampler import Sampler
-from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
-
-# Every wire trace validates into this type. WireTaskData (extra="allow") keeps the env's task
-# fields without importing the env package — the orchestrator never reads them typed (only
-# task.idx + task.model_dump).
-ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 
 # Max wait for the env server to answer health. The launcher spawns servers
 # concurrently with the orchestrator.
@@ -53,8 +46,8 @@ class Env:
         self.sampling_args: dict = {}
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the taskset is infinite."""
-        self.tasks: Iterator[vf.Task] = iter(())
-        """The env's tasks, client-side. A finite taskset is materialized at ``start()``
+        self.tasks: Iterator[vf.TaskData] = iter(())
+        """The env's task data, client-side. A finite taskset is materialized at ``start()``
         (``num_tasks`` is its count) and iterated from there; an infinite one streams
         off its generator. Consumed once — by ``TrainSource`` (train) or
         ``EvalEnv.start`` (eval)."""
@@ -77,17 +70,25 @@ class Env:
         # The server may still be coming up (the launcher spawns it concurrently with
         # the orchestrator), so poll until it answers.
         await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
-        taskset = vf.load_taskset(self.config.env.taskset)
-        if type(taskset).INFINITE:
-            self.tasks = iter(taskset.load())
+        taskset = self.load_taskset()
+        if taskset.INFINITE:
+            self.tasks = (task.data for task in taskset)
             self.num_tasks = None
         else:
-            # Materialize off the event loop — load() may pull a dataset.
-            materialized = await asyncio.to_thread(lambda: list(taskset.load()))
-            self.tasks = iter(materialized)
-            self.num_tasks = len(materialized)
+            # Materialize off the event loop — taskset iteration may pull a dataset.
+            tasks = await asyncio.to_thread(lambda: list(taskset))
+            self.tasks = iter(task.data for task in tasks)
+            self.num_tasks = len(tasks)
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
         get_logger().info(f"Env {self.name} ready: num_tasks={num_tasks}")
+
+    def load_taskset(self) -> vf.Taskset:
+        return vf.load_taskset(self.config.env.taskset)
+
+    async def close(self) -> None:
+        if self._env_client is not None:
+            await self._env_client.close()
+            self._env_client = None
 
     def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
         sampling = {**self.sampling_args}
@@ -100,31 +101,15 @@ class Env:
         client: vf.ClientConfig,
         model_name: str,
         cache_salt: str | None,
-        task_data: dict,
-    ) -> list[Rollout]:
-        """Run one episode and return its typed traces. A zero-trace episode raises
-        (the dispatcher synthesizes the error marker); a not-``ok`` episode marks its
-        clean traces failed so partial episodes never train."""
-        episode = await self.env_client.run(
-            task_data=task_data,
+        task_data: vf.TaskData,
+    ) -> vf.WireEpisode:
+        """Run one v1 episode and preserve its episode-level standing."""
+        return await self.env_client.run(
+            task_data=task_data.model_dump(mode="json"),
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        if not episode.traces:
-            error = episode.last_error
-            detail = f"{error.type}: {error.message}" if error is not None else "no traces and no error recorded"
-            raise RuntimeError(f"episode failed before any trace was produced — {detail}")
-        rollouts = [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in episode.traces]
-        for rollout in rollouts:
-            rollout.episode_id = episode.id
-            if not episode.ok and rollout.ok:
-                error = episode.last_error or vf.Error(
-                    type="EpisodeFailed", message="A sibling trace in this episode failed"
-                )
-                rollout.errors = [*rollout.errors, error]
-                rollout.ok = False
-        return rollouts
 
 
 class TrainEnv(Env):
@@ -143,16 +128,23 @@ class EvalEnv(Env):
     def __init__(self, config: EvalSourceConfig, address: str):
         super().__init__(config, address)
         self.sampling_args = config.sampling.to_sampling_args()
-        self.examples: list[dict] = []
+        self.eval_tasks: list[vf.TaskData] = []
+
+    def load_taskset(self) -> vf.Taskset:
+        taskset = super().load_taskset()
+        n = self.config.num_tasks
+        if n < 0:
+            if taskset.INFINITE:
+                raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_tasks to bound it")
+            return taskset
+        return taskset.head(n)
 
     async def start(self) -> None:
         await super().start()
-        n = self.config.num_examples
-        if self.num_tasks is None and n < 0:
-            raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
-        # A fixed eval set, pulled off the tasks once and reused every epoch.
-        tasks = list(self.tasks) if n < 0 else list(islice(self.tasks, n))
-        self.examples = [{"task_idx": task.data.idx, "task": task} for task in tasks]
+        # A fixed eval set, pulled off the bounded taskset view and reused every epoch.
+        self.eval_tasks = list(self.tasks)
+        if not self.eval_tasks:
+            raise ValueError(f"Eval env {self.name} has no tasks to evaluate")
 
 
 EnvT = TypeVar("EnvT", bound=Env)
@@ -184,6 +176,9 @@ class Envs(Generic[EnvT]):
         """Connect to all env servers in parallel — every address is known up front,
         so there's nothing to serialize on."""
         await asyncio.gather(*(env.start() for env in self))
+
+    async def stop(self) -> None:
+        await asyncio.gather(*(env.close() for env in self))
 
 
 class TrainEnvs(Envs[TrainEnv]):

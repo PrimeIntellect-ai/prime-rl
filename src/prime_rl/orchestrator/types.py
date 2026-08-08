@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, Literal, Protocol
+from typing import TYPE_CHECKING, Generic, Literal, Protocol, cast
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
@@ -39,12 +39,13 @@ RolloutKind = Literal["train", "eval"]
 
 
 @dataclass
-class InflightRollout:
-    """Per-task scheduling state in the dispatcher; one entry per in-flight run."""
+class InflightEpisode:
+    """Scheduling metadata for one in-flight v1 episode."""
 
     kind: RolloutKind
     env_name: str
     group_id: uuid.UUID
+    task_data: vf.TaskData
     policy_version: int
     client_config: vf.ClientConfig | None = None
     off_policy_steps: int = 0
@@ -58,11 +59,10 @@ class GroupState:
 
     kind: RolloutKind
     env_name: str
-    task_idx: int
-    task: vf.Task
-    """The group's task; its data is shipped on every dispatch."""
-    rollouts_to_schedule: int
-    target_rollouts: int
+    task_data: vf.TaskData
+    """The v1 wire half of the group's task, shipped on every dispatch."""
+    episodes_to_schedule: int
+    target_episodes: int
     emitted: int = 0
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None
@@ -75,8 +75,8 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
     fields are ``exclude=True``, so dumping a Rollout yields a plain trace on the wire; the
     orchestrator mirrors them onto the trace's own fields via ``vf.Trace.record_run`` (``kind`` as
-    ``run.type``, the run id, the step, and ``env_name``/``group_id``/``policy_version`` into
-    ``info``) when a rollout arrives, so the on-disk records stay fully placeable.
+    ``run.type``, the run id, the step, and prime-rl routing metadata under ``info.prime_rl``)
+    when a rollout arrives, so the on-disk records stay fully placeable.
 
     It is also the single currency the scoring hooks receive: a hook reads the trace
     directly (``rollout.reward``, ``rollout.nodes``, ``rollout.num_turns``) and writes
@@ -91,6 +91,7 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     # Links the traces of one episode; stamped into ``info`` on arrival so
     # saved records keep their grouping.
     episode_id: str = Field(default="", exclude=True)
+    episode_ok: bool = Field(default=True, exclude=True)
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
@@ -137,26 +138,76 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
         return bool(self.advantages) and any(a != 0.0 for a in self.advantages)
 
 
+# Every wire trace validates into this type. WireTaskData preserves task-specific fields without
+# importing the environment package into the orchestrator.
+ROLLOUT_TYPE = Rollout[vf.WireTaskData]
+
+
+@dataclass(frozen=True)
+class TaskItem:
+    """A source item: v1 task data plus prime-rl routing metadata."""
+
+    env_name: str
+    data: vf.TaskData
+    eval_step: int | None = None
+
+
+@dataclass
+class EpisodeResult:
+    """A complete v1 episode with the metadata needed by prime-rl's pipeline."""
+
+    episode: vf.WireEpisode
+    kind: RolloutKind
+    env_name: str
+    group_id: uuid.UUID
+    task_data: vf.TaskData
+    policy_version: int
+    off_policy_steps: int = 0
+    eval_step: int | None = None
+
+    @property
+    def rollouts(self) -> list[Rollout]:
+        """The episode's traces after dispatcher validation and stamping."""
+        return cast(list[Rollout], self.episode.traces)
+
+    def to_record(self) -> dict:
+        """Serialize the canonical episode shell with prime-rl trace records."""
+        record = self.episode.model_dump(mode="json", exclude={"traces"}, exclude_none=True)
+        record["prime_rl"] = {
+            "kind": self.kind,
+            "env_name": self.env_name,
+            "group_id": str(self.group_id),
+            "task": self.task_data.model_dump(mode="json"),
+            "policy_version": self.policy_version,
+            "eval_step": self.eval_step,
+        }
+        record["traces"] = [rollout.to_record() for rollout in self.rollouts]
+        return record
+
+
 @dataclass
 class TrainBatch:
-    """``rollouts`` is the observation window since the last ship — every rollout of every group
+    """``episodes`` is the v1 observation window since the last successful ship;
+    ``rollouts`` is its flattened trace view — every trace of every group
     finalized in that span (errored + filtered included; rollouts of still-incomplete groups wait
     for a later window). Its ``.effective`` / ``.metrics`` views drive logging. ``samples`` is the
     trainer-bound payload (the shipped cohort's post-filter survivors) — an empty list means nothing
     ships, which would stall the trainer. Trainable counts derive from ``rollouts.effective``
     (``r.is_trainable``) and token totals from ``samples``, so neither is carried as a field."""
 
+    episodes: list[EpisodeResult]
     rollouts: TrainRollouts
     samples: list[TrainingSample]
 
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch. ``rollouts`` is the full returned cohort (errored included); its
-    ``.effective`` / ``.metrics`` views drive logging."""
+    """One env's eval epoch. ``episodes`` is the canonical returned cohort and
+    ``rollouts`` its flattened trace view; ``.effective`` / ``.metrics`` drive logging."""
 
     env_name: str
     step: int
+    episodes: list[EpisodeResult]
     rollouts: EvalRollouts
 
 

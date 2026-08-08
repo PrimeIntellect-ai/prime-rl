@@ -3,8 +3,7 @@
 ``Orchestrator`` owns the shared state (policy, progress, ckpt, monitor)
 and drives the pipeline. Components are single-purpose:
 
-- ``RolloutDispatcher`` schedules rollouts; emits ``Rollout`` (train/eval
-  discriminated by ``kind``) on its queue.
+- ``EpisodeDispatcher`` schedules and emits complete v1 episodes.
 - ``TrainSink`` ingests train rollouts (tokenize → advantages → filters)
   and returns a ``TrainBatch`` when the threshold is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
@@ -43,7 +42,7 @@ if TYPE_CHECKING:
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
+from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, EpisodeDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -57,10 +56,10 @@ from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
+    EpisodeResult,
     EvalBatch,
     Policy,
     Progress,
-    Rollout,
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
@@ -133,7 +132,7 @@ class Orchestrator:
     train_envs: TrainEnvs
     train_source: TrainSource
     train_sink: TrainSink
-    dispatcher: RolloutDispatcher
+    dispatcher: EpisodeDispatcher
     watcher: WeightWatcher
     lag_monitor: EventLoopLagMonitor
     periodic_logger: PeriodicLogger
@@ -394,7 +393,7 @@ class Orchestrator:
         assert config.max_inflight_episodes is not None, "max_inflight_episodes must be resolved before dispatcher init"
         log_interval = config.log.interval
         wandb_enabled = config.wandb is not None
-        self.dispatcher = RolloutDispatcher(
+        self.dispatcher = EpisodeDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
             train_source=self.train_source,
@@ -509,7 +508,7 @@ class Orchestrator:
             trim_process_memory()
 
     async def main_loop(self) -> None:
-        """Consume episodes (``list[Rollout]``) from the dispatcher and route them
+        """Consume ``EpisodeResult`` objects from the dispatcher and route them
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
@@ -519,44 +518,46 @@ class Orchestrator:
                 break
 
             try:
-                episode: list[Rollout] = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                result: EpisodeResult = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
 
-            # Every completed rollout — errored, filtered, or never batched — lands in the
-            # ``all`` trace file the moment it arrives, so it survives crashes and drains.
-            # Train rollouts belong to the batch window currently collecting (``progress.step``),
-            # eval rollouts to the step whose eval triggered them.
-            kind = episode[0].kind
-            step = episode[0].eval_step if kind == "eval" else self.progress.step
+            # Every completed episode — failed, filtered, or never batched — lands in the
+            # ``all`` stream the moment it arrives, so zero-trace failures survive crashes
+            # and drains. Train episodes belong to the batch window currently collecting
+            # (``progress.step``); eval episodes use their trigger step.
+            kind = result.kind
+            step = result.eval_step if kind == "eval" else self.progress.step
             assert step is not None
             run: vf.RunInfo = (
                 vf.EvalRunInfo(id=self.run_id, step=step)
                 if kind == "eval"
                 else vf.TrainRunInfo(id=self.run_id, step=step)
             )
-            for rollout in episode:
+            for rollout in result.rollouts:
                 rollout.record_run(
                     run,
-                    env_name=rollout.env_name,
-                    group_id=str(rollout.group_id),
-                    episode_id=rollout.episode_id,
-                    policy_version=rollout.policy_version,
+                    prime_rl={
+                        "env_name": rollout.env_name,
+                        "group_id": str(rollout.group_id),
+                        "episode_id": rollout.episode_id,
+                        "policy_version": rollout.policy_version,
+                    },
                 )
             await asyncio.to_thread(
                 save_rollouts,
-                [rollout.to_record() for rollout in episode],
+                [result.to_record()],
                 get_trace_path(self.config.output_dir, step, kind, "all"),
             )
 
             if kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
-                eval_batch = self.eval_sink.add(episode)
+                eval_batch = self.eval_sink.add(result)
                 if eval_batch is not None:
                     await self.finalize_eval_batch(eval_batch)
                 continue
 
-            train_batch = await self.train_sink.add(episode)
+            train_batch = await self.train_sink.add(result)
             # In drain mode any late-arriving train batch is dropped — we
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
@@ -580,9 +581,9 @@ class Orchestrator:
         if config.max_steps is not None and step > config.max_steps:
             self.draining = True
             self.dispatcher.disable_train_scheduling()
-            n_cancelled = await self.dispatcher.cancel_inflight_train_rollouts()
+            n_cancelled = await self.dispatcher.cancel_inflight_train_episodes()
             get_logger().info(
-                f"Draining pipeline (cancelled {n_cancelled} in-flight train rollout(s); "
+                f"Draining pipeline (cancelled {n_cancelled} in-flight train episode(s); "
                 f"any in-flight evals will complete)"
             )
             return
@@ -668,15 +669,19 @@ class Orchestrator:
         num_input = sum(r.num_input_tokens for r in effective)
         num_output = sum(r.num_output_tokens for r in effective)
         num_rollouts = len(batch.rollouts)
-        num_unique_examples = len({r.group_id for r in batch.rollouts})
+        num_episodes = len(batch.episodes)
+        num_failed_episodes = sum(not episode.episode.ok for episode in batch.episodes)
+        num_unique_examples = len({episode.group_id for episode in batch.episodes})
         metrics |= {
             "progress/tokens": num_tokens,
             "progress/input_tokens": num_input,
             "progress/output_tokens": num_output,
-            "progress/rollouts": num_rollouts,
+            "progress/traces": num_rollouts,
+            "progress/episodes": num_episodes,
+            "progress/failed_episodes": num_failed_episodes,
             "progress/tasks": num_unique_examples,
             "progress/total_tokens": self.progress.total_tokens,
-            "progress/total_rollouts": self.progress.total_samples,
+            "progress/total_traces": self.progress.total_samples,
             "progress/total_tasks": self.progress.total_problems,
             "time/step": step_time,
             "time/save_ckpt": save_ckpt_time,
@@ -737,11 +742,11 @@ class Orchestrator:
         for env_name in fired:
             self.eval_triggered_at[(env_name, step)] = now
         assert self.eval_envs is not None
-        total_rollouts = sum(
-            self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
+        total_episodes = sum(
+            self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).eval_tasks)
             for env_name in fired
         )
-        get_logger().info(f"Starting evals in {', '.join(fired)} ({total_rollouts} total rollouts)")
+        get_logger().info(f"Starting evals in {', '.join(fired)} ({total_episodes} total episodes)")
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:
         """Pipeline view for the orchestrator's ``PeriodicLogger``. Returns
@@ -784,7 +789,7 @@ class Orchestrator:
         # Unified inflight tail: total, then train/eval split, then per-env
         # (only when more than one env of a kind makes the split ambiguous)
         inflight_part = (
-            f"{inflight_train + inflight_eval} inflight rollouts (train={inflight_train}, eval={inflight_eval}"
+            f"{inflight_train + inflight_eval} inflight episodes (train={inflight_train}, eval={inflight_eval}"
         )
         if multi_train or multi_eval:
             env_pairs = [(e.name, inflight_by_env.get(("train", e.name), 0)) for e in self.train_envs]
@@ -808,7 +813,7 @@ class Orchestrator:
 
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
-        ``Error`` is the sink-level rate (errored arrivals / total arrivals, over the full window);
+        ``Error`` is the failed-episode rate over the full window;
         the quality metrics are over the effective (clean, trained-on) subset, as is ``Trainable``."""
         rollouts = batch.rollouts
         effective = rollouts.effective
@@ -849,10 +854,6 @@ class Orchestrator:
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch (save_rollouts,
         monitor.log_eval_samples, monitor.log)."""
-        if not batch.rollouts:
-            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
-            return
-
         # The non-errored subset lands in the per-step ``effective`` trace file on epoch
         # completion (multiple eval envs share the step file — each epoch appends its cohort
         # once, and every record carries ``env_name``); the full returned cohort already
@@ -862,7 +863,7 @@ class Orchestrator:
             save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
-        policy_versions = {r.policy_version for r in batch.rollouts}
+        policy_versions = {episode.policy_version for episode in batch.episodes}
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:
             get_logger().warning(
@@ -879,8 +880,8 @@ class Orchestrator:
         metrics["step"] = float(batch.step)
         self.monitor.log(metrics, step=batch.step)
 
-        # Success line — quality metrics over the effective set, error rate over the full returned
-        # cohort. ``Stat.mean()`` is 0.0 for an empty set.
+        # Success line — quality metrics over the effective traces, failed-episode rate over the
+        # full cohort. ``Stat.mean()`` is 0.0 for an empty set.
         eff, full = effective.metrics, rollouts.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
@@ -983,6 +984,9 @@ class Orchestrator:
                 for env in self.train_envs:
                     for pool in (*env.sampler.connected_pools, *env.algorithm.connected_pools):
                         await pool.stop()
+                await self.train_envs.stop()
+            if self.eval_envs is not None:
+                await self.eval_envs.stop()
             if self.usage_reporter is not None:
                 self.usage_reporter.close()
 
