@@ -10,7 +10,6 @@ from torch import Tensor
 
 from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
-from prime_rl.utils.logger import get_logger
 
 SCHEMA_VERSION = 1
 
@@ -19,7 +18,7 @@ class DisabledTokenExporter:
     def export(self, *args: Any, **kwargs: Any) -> None:
         return
 
-    def mark_stable(self, ready_run_ids: set[str] | None = None) -> None:
+    def mark_stable(self) -> None:
         return
 
     def close(self) -> None:
@@ -35,9 +34,9 @@ class TokenExporter:
         self.rank = rank
         self.output_dir = output_dir / "token_exports"
         self._closed = False
-        self._initialized_files: set[tuple[str | None, int, int]] = set()
-        self._sequences_by_file: dict[tuple[str | None, int, int], int] = {}
-        self._pending_stable_dirs: dict[str | None, set[Path]] = {}
+        self._initialized_files: set[tuple[int, int]] = set()
+        self._sequences_by_file: dict[tuple[int, int], int] = {}
+        self._pending_stable_dirs: set[Path] = set()
         atexit.register(self.close)
 
     def export(
@@ -51,9 +50,7 @@ class TokenExporter:
     ) -> None:
         columns = _export_columns(micro_batch, model_output, loss_config)
         _check_lengths(columns)
-        run_id = micro_batch.get("run_id")
-        export_step = micro_batch.get("run_step") if micro_batch.get("run_step") is not None else step
-        file_key = (run_id, export_step, self.rank)
+        file_key = (step, self.rank)
 
         start = 0
         for micro_sequence_idx, length in enumerate(sequence_lengths):
@@ -64,17 +61,14 @@ class TokenExporter:
                     {
                         "schema_version": SCHEMA_VERSION,
                         "step": step,
-                        "export_step": export_step,
                         "rank": self.rank,
                         "micro_step": micro_step,
                         "micro_sequence_idx": micro_sequence_idx,
                         "export_sequence_idx": self._sequences_by_file.get(file_key, 0),
-                        "run_id": run_id,
                         "env_name": _first_non_empty(columns["env_names"][start:end]),
                         **_slice_columns(columns, start, end),
                     },
-                    run_id,
-                    export_step,
+                    step,
                 )
                 self._sequences_by_file[file_key] = self._sequences_by_file.get(file_key, 0) + 1
             start = raw_end
@@ -84,33 +78,20 @@ class TokenExporter:
             return
         self._closed = True
 
-    def mark_stable(self, ready_run_ids: set[str] | None = None) -> None:
-        # A single run step's sequences can span multiple trainer steps (the packer
-        # splits a run step across packs when it exceeds the token budget). Only
-        # finalize a run's export dir once that run step is fully consumed — the same
-        # `ready_to_update` signal that gates its optimizer step. ``run_id is None``
-        # is single-run export, where a step never spans trainer steps, so mark it now.
+    def mark_stable(self) -> None:
         # The caller barriers first so a STABLE only lands after every rank flushed.
-        ready_run_ids = ready_run_ids or set()
-        for run_id in [rid for rid in self._pending_stable_dirs if rid is None or rid in ready_run_ids]:
-            for stable_dir in self._pending_stable_dirs.pop(run_id):
-                try:
-                    (stable_dir / "STABLE").touch()
-                except FileNotFoundError:
-                    # A multi-run run dir can be deleted while its tail steps are
-                    # still flushing (mirrors the broadcast paths' guard)
-                    get_logger().warning(f"Run dir for {run_id} is deleted, skipping token-export STABLE marker")
+        while self._pending_stable_dirs:
+            stable_dir = self._pending_stable_dirs.pop()
+            (stable_dir / "STABLE").touch()
 
-    def _export_dir(self, export_step: int, run_id: str | None) -> Path:
-        if run_id is not None:
-            return self.output_dir.parent / run_id / "token_exports" / f"step_{export_step}"
-        return self.output_dir / f"step_{export_step}"
+    def _export_dir(self, step: int) -> Path:
+        return self.output_dir / f"step_{step}"
 
-    def _export_file(self, export_step: int, run_id: str | None) -> Path:
+    def _export_file(self, step: int) -> Path:
         if self._closed:
             raise RuntimeError(f"Token exporter is closed for {self.output_dir}")
 
-        step_dir = self._export_dir(export_step, run_id)
+        step_dir = self._export_dir(step)
         try:
             step_dir.mkdir(parents=True, exist_ok=True)
         except FileExistsError:
@@ -118,17 +99,17 @@ class TokenExporter:
                 raise
         return step_dir / f"rank_{self.rank}.jsonl"
 
-    def _write(self, record: dict[str, Any], run_id: str | None, export_step: int) -> None:
+    def _write(self, record: dict[str, Any], step: int) -> None:
         if self._closed:
             raise RuntimeError(f"Token exporter is closed for {self.output_dir}")
 
-        file_key = (run_id, export_step, self.rank)
+        file_key = (step, self.rank)
         mode = "a" if file_key in self._initialized_files else "w"
-        export_file = self._export_file(export_step, run_id)
+        export_file = self._export_file(step)
         with export_file.open(mode, encoding="utf-8") as file:
             file.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
         self._initialized_files.add(file_key)
-        self._pending_stable_dirs.setdefault(run_id, set()).add(export_file.parent)
+        self._pending_stable_dirs.add(export_file.parent)
 
 
 def setup_token_exporter(

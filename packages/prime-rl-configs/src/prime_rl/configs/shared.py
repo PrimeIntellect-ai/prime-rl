@@ -108,23 +108,12 @@ class BaseModelConfig(BaseConfig):
     """VLM configuration. Setting this enables vision-language model support."""
 
 
-class ElasticConfig(BaseConfig):
-    hostname: str
-    """DNS hostname that resolves to inference server IPs."""
-
-    port: int = 8000
-    """Port that inference servers listen on."""
-
-    sync_interval: float = 5.0
-    """Seconds between server discovery checks."""
-
-
 class ClientConfig(BaseConfig):
     wait_for_ready_timeout: int = 1800
-    """Seconds to wait at startup for the inference pool to become ready. Applies to both the static health check and elastic DNS-based discovery."""
+    """Seconds to wait at startup for the inference pool to become ready."""
 
-    base_url: list[str] = ["http://localhost:8000/v1"]
-    """Base URLs for the OpenAI API. With more than one URL, the client round-robins (chat) completion requests across all servers. Ignored when ``elastic`` is set."""
+    base_url: str = "http://localhost:8000/v1"
+    """Base URL for the OpenAI API. For multi-replica deployments, point this at a router in front of the replicas."""
 
     api_key_var: str = "VLLM_API_KEY"
     """Environment variable name containing the API key, resolved via ``os.getenv``. Can be any string when the server is not protected by an API key; the same key is used for every URL."""
@@ -142,18 +131,7 @@ class ClientConfig(BaseConfig):
     """Skip checking that the model is available in the inference pool. Useful for external APIs or keys that do not expose ``/models``."""
 
     admin_base_url: list[str] | None = None
-    """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in disaggregated P/D deployments where the router must not handle admin traffic."""
-
-    elastic: ElasticConfig | None = None
-    """Elastic inference pool config for DNS-based service discovery. When set, ``base_url`` is ignored and inference servers are discovered dynamically via DNS."""
-
-    router_url: str | None = None
-    """vllm-router URL for load-aware inference routing. With elastic mode, inference requests go through the router while admin ops still hit discovered pods directly."""
-
-    @property
-    def is_elastic(self) -> bool:
-        """Check if elastic mode is enabled."""
-        return self.elastic is not None
+    """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
 
 
 class LogConfig(BaseConfig):

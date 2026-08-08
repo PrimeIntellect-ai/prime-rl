@@ -138,21 +138,7 @@ def propagate_shared_fields(data: Any) -> Any:
     # pass (the per-rank inference.toml drops slurm, so each rank still runs locally).
     propagate("slurm", "inference.slurm")
 
-    # output_dir: orchestrator gets a ``/run_default`` subdir so trainer +
-    # orchestrator nest under the same experiment root without colliding.
-    # Conflicts are reported against the *transformed* sub-config value, not
-    # the raw shared path, so the materialized config round-trips cleanly.
-    output_dir = get("output_dir")
-    if output_dir is not None:
-        expected = {
-            "trainer.output_dir": output_dir,
-            "orchestrator.output_dir": f"{output_dir}/run_default",
-        }
-        for sub, expected_value in expected.items():
-            sub_value = get(sub)
-            if sub_value is not None and sub_value != expected_value:
-                conflicts.append(("output_dir", sub))
-            fill(sub, expected_value)
+    propagate("output_dir", "trainer.output_dir", "orchestrator.output_dir")
 
     # Cascade trainer.tokenizer.chat_template → inference.vllm.chat_template
     # (vLLM ``--chat-template``). Read trainer's value *after* the shared
@@ -243,9 +229,10 @@ def validate_shared_output_dir(
     trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if trainer.output_dir != orchestrator.output_dir.parent:
+    if trainer.output_dir != orchestrator.output_dir:
         raise ValueError(
-            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory parent ({orchestrator.output_dir.parent}) are not the same. Please specify the same outputs directory for both."
+            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory ({orchestrator.output_dir}) are not the same. "
+            "Please specify the same outputs directory for both (the orchestrator no longer nests under a run_default subdirectory)."
         )
 
 

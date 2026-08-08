@@ -559,7 +559,7 @@ def test_shared_output_dir_propagates_through_cli(tmp_path):
     shared_out = tmp_path / "shared"
     config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out)])
     assert config.trainer.output_dir == shared_out
-    assert config.orchestrator.output_dir == shared_out / "run_default"
+    assert config.orchestrator.output_dir == shared_out
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():

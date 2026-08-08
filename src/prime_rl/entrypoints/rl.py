@@ -159,9 +159,8 @@ def rl_local(config: RLConfig):
     }
 
     # Validate client port matches inference server port
-    if config.inference is not None and not config.orchestrator.model.client.is_elastic:
-        base_url = config.orchestrator.model.client.base_url[0]
-        parsed = urlparse(base_url)
+    if config.inference is not None:
+        parsed = urlparse(config.orchestrator.model.client.base_url)
         client_port = parsed.port
         expected_port = config.inference.server.port
         if client_port != expected_port:
@@ -227,7 +226,7 @@ def rl_local(config: RLConfig):
                 "No [inference] block configured - the policy inference server will not be started here. "
                 "Every algorithm requires a policy inference pool for evals + weight sync; "
                 "make sure one is running at orchestrator.model.client.base_url "
-                f"({', '.join(config.orchestrator.model.client.base_url)}), otherwise the orchestrator "
+                f"({config.orchestrator.model.client.base_url}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
 
@@ -237,7 +236,7 @@ def rl_local(config: RLConfig):
             assert algo is not None, "TrainSourceConfig.algo must be resolved before launch (inherit_env_algorithms)"
             for ref in (algo.sampling.source, getattr(algo, "teacher", None)):
                 if isinstance(ref, FrozenModelConfig):
-                    frozen_endpoints.append(f"{ref.name} ({', '.join(ref.base_url)})")
+                    frozen_endpoints.append(f"{ref.name} ({ref.base_url})")
         if frozen_endpoints:
             endpoints = ", ".join(dict.fromkeys(frozen_endpoints))
             logger.info(
@@ -473,7 +472,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             is_disaggregated=True,
             config_dir=config_dir,
             output_dir=config.output_dir,
-            orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
             nodes_per_infer_replica=infer_deploy.num_nodes,
@@ -514,7 +512,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             is_disaggregated=False,
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             output_dir=config.output_dir,
-            orchestrator_output_dir=config.orchestrator.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes,
             nodes_per_infer_replica=config.deployment.infer_nodes_per_replica,

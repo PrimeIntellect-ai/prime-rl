@@ -3,7 +3,7 @@ import gc
 import shutil
 import time
 import warnings
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,10 +22,9 @@ from transformers.processing_utils import ProcessorMixin
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
-from prime_rl.trainer.lora import has_lora_layers, save_lora_config
+from prime_rl.trainer.lora import get_lora_state, has_lora_layers, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.optim import CPUOffloadOptimizer
-from prime_rl.trainer.runs import Progress, get_multi_run_manager
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
     save_state_dict,
@@ -33,6 +32,13 @@ from prime_rl.trainer.weights import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path, get_weights_dir
+
+
+@dataclass
+class Progress:
+    step: int = 1
+    total_tokens: int = 0
+    total_samples: int = 0
 
 
 def _try_rmtree(path: Path, logger) -> None:
@@ -363,7 +369,7 @@ class WeightCheckpointManager:
             f"base_model.model.{key}": (value.full_tensor() if isinstance(value, DTensor) else value).to(
                 "cpu", non_blocking=False
             )
-            for key, value in get_multi_run_manager().get_state_dict_for_run(0).items()
+            for key, value in get_lora_state().adapter_state_dict().items()
         }
 
         if not lora_state_dict:

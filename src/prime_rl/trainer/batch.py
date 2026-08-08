@@ -1,16 +1,252 @@
 import copy
+import heapq
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
-from prime_rl.trainer.utils import balanced_partition
 from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
 # means no component (weight 0.0).
 STREAM_FILL = {"rl_weights": 1.0, "ce_weights": 0.0, "ref_kl_weights": 0.0}
+
+
+def _text_config(model_config: Any) -> Any:
+    """Unwrap a multimodal model's text config, else return the config unchanged."""
+    return getattr(model_config, "text_config", model_config)
+
+
+def _is_mla(config: Any) -> bool:
+    return bool(getattr(config, "multi_latent_attention", False) or hasattr(config, "q_lora_rank"))
+
+
+def _kv_channels(config: Any) -> int:
+    return getattr(config, "kv_channels", getattr(config, "head_dim", config.hidden_size // config.num_attention_heads))
+
+
+def _qkv_projection_flops_per_token(config: Any) -> int:
+    """Linear-in-seqlen FLOPs of the Q/K/V projections (per token)."""
+    hidden_size = config.hidden_size
+    num_attention_heads = config.num_attention_heads
+    kv_channels = _kv_channels(config)
+    is_mla = _is_mla(config)
+    qk_head_dim = getattr(config, "qk_head_dim", 0)
+    qk_pos_emb_head_dim = getattr(config, "qk_pos_emb_head_dim", 0)
+
+    if is_mla and getattr(config, "q_lora_rank", None) is not None:
+        q_flops = 2 * config.q_lora_rank * (hidden_size + num_attention_heads * (qk_head_dim + qk_pos_emb_head_dim))
+    else:
+        q_head_dim = (qk_head_dim + qk_pos_emb_head_dim) if is_mla else kv_channels
+        q_flops = 2 * hidden_size * num_attention_heads * q_head_dim
+
+    if is_mla and getattr(config, "kv_lora_rank", None) is not None:
+        v_head_dim = getattr(config, "v_head_dim", 0)
+        kv_flops = 2 * (
+            config.kv_lora_rank * (hidden_size + num_attention_heads * (qk_head_dim + v_head_dim))
+            + hidden_size * qk_pos_emb_head_dim
+        )
+    else:
+        num_query_groups = getattr(
+            config, "num_query_groups", getattr(config, "num_key_value_heads", num_attention_heads)
+        )
+        kv_flops = 4 * hidden_size * num_query_groups * kv_channels
+    return q_flops + kv_flops
+
+
+def _attention_flops_per_token_squared(config: Any) -> int:
+    """Quadratic-in-seqlen FLOPs of the attention scores and values (per token^2)."""
+    num_attention_heads = config.num_attention_heads
+    kv_channels = _kv_channels(config)
+    if _is_mla(config):
+        qk_head_dim = getattr(config, "qk_head_dim", 0)
+        qk_pos_emb_head_dim = getattr(config, "qk_pos_emb_head_dim", 0)
+        v_head_dim = getattr(config, "v_head_dim", kv_channels)
+        return num_attention_heads * (qk_head_dim + qk_pos_emb_head_dim) + num_attention_heads * v_head_dim
+    return 2 * num_attention_heads * kv_channels
+
+
+def _ffn_flops_per_token(hidden_size: int, ffn_hidden_size: int) -> int:
+    return 6 * hidden_size * ffn_hidden_size
+
+
+def _dense_ffn_hidden_size(config: Any) -> int:
+    return getattr(
+        config, "ffn_hidden_size", getattr(config, "intermediate_size", getattr(config, "moe_intermediate_size", 0))
+    )
+
+
+def _moe_ffn_hidden_size(config: Any) -> int:
+    """Effective FFN width of an MoE layer: routed experts (topk) plus shared experts."""
+    dense_ffn = _dense_ffn_hidden_size(config)
+    routed_topk = getattr(config, "moe_router_topk", getattr(config, "num_experts_per_tok", 1))
+    moe_ffn = getattr(config, "moe_ffn_hidden_size", getattr(config, "moe_intermediate_size", dense_ffn))
+    return moe_ffn * routed_topk + (getattr(config, "moe_shared_expert_intermediate_size", None) or 0)
+
+
+def _count_dense_and_moe_layers(config: Any) -> tuple[int, int]:
+    """Split the model's layers into (dense, moe) counts."""
+    num_experts = getattr(config, "num_experts", getattr(config, "n_routed_experts", None))
+    if num_experts is None:
+        return config.num_hidden_layers, 0
+
+    moe_layer_freq = getattr(config, "moe_layer_freq", None)
+    if isinstance(moe_layer_freq, list):
+        num_dense = sum(1 for freq in moe_layer_freq if freq == 0)
+        num_moe = sum(1 for freq in moe_layer_freq if freq > 0)
+    elif isinstance(moe_layer_freq, int):
+        num_dense = sum(1 for i in range(config.num_hidden_layers) if i % moe_layer_freq != 0)
+        num_moe = config.num_hidden_layers - num_dense
+    elif getattr(config, "first_k_dense_replace", None) is not None:
+        num_dense = config.first_k_dense_replace
+        num_moe = config.num_hidden_layers - num_dense
+    else:
+        num_dense = 0
+        num_moe = config.num_hidden_layers
+    return num_dense, num_moe
+
+
+def _packing_cost_coeffs(config: Any) -> tuple[int, int]:
+    """Return the (linear, quadratic) coefficients of the per-sequence forward FLOPs."""
+    hidden_size = config.hidden_size
+    num_dense_layers, num_moe_layers = _count_dense_and_moe_layers(config)
+    qkv_per_token = _qkv_projection_flops_per_token(config)
+    attn_per_token_squared = _attention_flops_per_token_squared(config)
+
+    def layer_linear(ffn_hidden_size: int) -> int:
+        return qkv_per_token + 2 * hidden_size * hidden_size + _ffn_flops_per_token(hidden_size, ffn_hidden_size)
+
+    linear = (
+        num_dense_layers * layer_linear(_dense_ffn_hidden_size(config))
+        + num_moe_layers * layer_linear(_moe_ffn_hidden_size(config))
+        + 2 * hidden_size * config.vocab_size
+    )
+    quadratic = (num_dense_layers + num_moe_layers) * attn_per_token_squared
+    return linear, quadratic
+
+
+def build_bin_cost(model_config: Any | None) -> Callable[[Sequence[int]], int]:
+    """Build a closure scoring a packed bin by estimated forward compute.
+
+    With ``model_config=None`` the linear/quadratic coefficients are ``(1, 0)``, so
+    the cost reduces to the token count and balancing falls back to sequence length.
+    """
+    if model_config is None:
+        linear, quadratic = 1, 0
+    else:
+        linear, quadratic = _packing_cost_coeffs(_text_config(model_config))
+
+    def bin_cost(seqlens: Sequence[int]) -> int:
+        return linear * sum(seqlens) + quadratic * sum(n * n for n in seqlens)
+
+    return bin_cost
+
+
+@dataclass
+class _WeightedSet:
+    total: int = 0
+    items: list[int] = field(default_factory=list)
+
+    def add(self, idx: int, weight: int) -> None:
+        self.items.append(idx)
+        self.total += weight
+
+    def merge(self, other: "_WeightedSet") -> None:
+        self.items.extend(other.items)
+        self.total += other.total
+
+    def __lt__(self, other: "_WeightedSet") -> bool:
+        if self.total != other.total:
+            return self.total < other.total
+        return self.items < other.items
+
+
+class _KKState:
+    def __init__(self, items: list[tuple[int, int]], k: int):
+        self.sets = [_WeightedSet() for _ in range(k)]
+        for set_idx, (idx, weight) in enumerate(items):
+            self.sets[set_idx].add(idx, weight)
+        self.sets.sort(reverse=True)
+
+    @property
+    def spread(self) -> int:
+        return self.sets[0].total - self.sets[-1].total
+
+    def merge(self, other: "_KKState") -> None:
+        k = len(self.sets)
+        for i in range(k):
+            self.sets[i].merge(other.sets[k - 1 - i])
+        self.sets.sort(reverse=True)
+
+    def partitions(self) -> list[list[int]]:
+        return [sorted(weighted_set.items) for weighted_set in self.sets]
+
+    def __lt__(self, other: "_KKState") -> bool:
+        if self.spread != other.spread:
+            return self.spread > other.spread
+        return self.sets[0] > other.sets[0]
+
+
+def _karmarkar_karp(weights: Sequence[int], num_partitions: int) -> list[list[int]]:
+    assert len(weights) >= num_partitions
+    assert len(weights) % num_partitions == 0
+    weighted_indices = sorted((weight, idx) for idx, weight in enumerate(weights))
+    states: list[_KKState] = []
+    for offset in range(0, len(weighted_indices), num_partitions):
+        items = [(idx, weight) for weight, idx in weighted_indices[offset : offset + num_partitions]]
+        heapq.heappush(states, _KKState(items, num_partitions))
+
+    while len(states) > 1:
+        state = heapq.heappop(states)
+        state.merge(heapq.heappop(states))
+        heapq.heappush(states, state)
+
+    return states[0].partitions()
+
+
+def _partition_loads(weights: Sequence[int], partitions: list[list[int]]) -> list[int]:
+    return [sum(weights[i] for i in partition) for partition in partitions]
+
+
+def _refine_by_swapping(weights: Sequence[int], partitions: list[list[int]]) -> list[list[int]]:
+    partitions = [list(partition) for partition in partitions]
+    loads = _partition_loads(weights, partitions)
+
+    while True:
+        best_swap = None
+        best_score = (max(loads), max(loads) - min(loads))
+        for left_rank in range(len(partitions)):
+            for right_rank in range(left_rank + 1, len(partitions)):
+                for left_pos, left_idx in enumerate(partitions[left_rank]):
+                    for right_pos, right_idx in enumerate(partitions[right_rank]):
+                        new_left = loads[left_rank] - weights[left_idx] + weights[right_idx]
+                        new_right = loads[right_rank] - weights[right_idx] + weights[left_idx]
+                        new_loads = list(loads)
+                        new_loads[left_rank] = new_left
+                        new_loads[right_rank] = new_right
+                        score = (max(new_loads), max(new_loads) - min(new_loads))
+                        if score < best_score:
+                            best_score = score
+                            best_swap = (left_rank, right_rank, left_pos, right_pos, new_loads)
+        if best_swap is None:
+            return partitions
+
+        left_rank, right_rank, left_pos, right_pos, loads = best_swap
+        partitions[left_rank][left_pos], partitions[right_rank][right_pos] = (
+            partitions[right_rank][right_pos],
+            partitions[left_rank][left_pos],
+        )
+
+
+def balanced_partition(weights: Sequence[int], num_partitions: int) -> list[list[int]]:
+    """Partition item indices into ``num_partitions`` groups of near-equal total weight.
+
+    Requires ``len(weights)`` to be a positive multiple of ``num_partitions``.
+    """
+    partitions = _karmarkar_karp(weights, num_partitions)
+    return _refine_by_swapping(weights, partitions)
 
 
 def _copy_routed_experts(routed_experts: RoutedExperts) -> RoutedExperts:
@@ -229,32 +465,28 @@ def _is_multimodal_sample(sample: MicroBatch) -> bool:
 
 @dataclass
 class _MicroBatchBin:
-    samples: list[tuple[int, MicroBatch]]
+    samples: list[MicroBatch]
     length: int
 
     @classmethod
-    def from_sample(cls, lora_idx: int, sample: MicroBatch) -> "_MicroBatchBin":
-        return cls(samples=[(lora_idx, sample)], length=len(sample.input_ids))
+    def from_sample(cls, sample: MicroBatch) -> "_MicroBatchBin":
+        return cls(samples=[sample], length=len(sample.input_ids))
 
     @property
     def first_sample(self) -> MicroBatch:
-        return self.samples[0][1]
-
-    @property
-    def first_lora_idx(self) -> int:
-        return self.samples[0][0]
+        return self.samples[0]
 
     @property
     def first_multimodal_sample(self) -> MicroBatch | None:
-        for _, sample in self.samples:
+        for sample in self.samples:
             if _is_multimodal_sample(sample):
                 return sample
         return None
 
-    def can_add(self, sample: MicroBatch, max_seq_len: int, lora_idx: int) -> bool:
+    def can_add(self, sample: MicroBatch, max_seq_len: int) -> bool:
         # Loss routing is per token (component weight streams), so samples of
         # different loss types pack together freely. Multimodal packing is still
-        # constrained by modality sidecars, length, routed experts, and LoRA/run.
+        # constrained by modality sidecars, length, and routed experts.
         first_sample = self.first_sample
         if self.length + len(sample.input_ids) > max_seq_len:
             return False
@@ -263,10 +495,6 @@ class _MicroBatchBin:
 
         sample_is_mm = _is_multimodal_sample(sample)
         existing_mm_sample = self.first_multimodal_sample
-        if existing_mm_sample is None and not sample_is_mm:
-            return True
-        if self.first_lora_idx != lora_idx:
-            return False
         if existing_mm_sample is not None and sample_is_mm:
             dst = existing_mm_sample.mm_kwargs
             src = sample.mm_kwargs
@@ -280,39 +508,39 @@ class _MicroBatchBin:
             )
         return True
 
-    def add(self, lora_idx: int, sample: MicroBatch) -> None:
-        self.samples.append((lora_idx, sample))
+    def add(self, sample: MicroBatch) -> None:
+        self.samples.append(sample)
         self.length += len(sample.input_ids)
 
     def workload(self, bin_cost: Callable[[Sequence[int]], int]) -> int:
-        return bin_cost([len(sample.input_ids) for _, sample in self.samples])
+        return bin_cost([len(sample.input_ids) for sample in self.samples])
 
     def split_by_workload(self, bin_cost: Callable[[Sequence[int]], int]) -> tuple["_MicroBatchBin", "_MicroBatchBin"]:
         # Greedily place the heaviest sample on the currently lighter side (longest-processing-time).
-        ranked = sorted(self.samples, key=lambda pair: -bin_cost([len(pair[1].input_ids)]))
-        left: list[tuple[int, MicroBatch]] = []
-        right: list[tuple[int, MicroBatch]] = []
+        ranked = sorted(self.samples, key=lambda sample: -bin_cost([len(sample.input_ids)]))
+        left: list[MicroBatch] = []
+        right: list[MicroBatch] = []
         left_workload = right_workload = 0
-        for lora_idx, sample in ranked:
+        for sample in ranked:
             sample_workload = bin_cost([len(sample.input_ids)])
             if left_workload <= right_workload:
-                left.append((lora_idx, sample))
+                left.append(sample)
                 left_workload += sample_workload
             else:
-                right.append((lora_idx, sample))
+                right.append(sample)
                 right_workload += sample_workload
         return (
-            _MicroBatchBin(left, sum(len(sample.input_ids) for _, sample in left)),
-            _MicroBatchBin(right, sum(len(sample.input_ids) for _, sample in right)),
+            _MicroBatchBin(left, sum(len(sample.input_ids) for sample in left)),
+            _MicroBatchBin(right, sum(len(sample.input_ids) for sample in right)),
         )
 
 
-def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
-    has_ref_logprobs = any(sample.ref_logprobs is not None for _, sample in bin_content.samples)
-    has_mm_token_type_ids = any(sample.mm_token_type_ids is not None for _, sample in bin_content.samples)
+def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
+    has_ref_logprobs = any(sample.ref_logprobs is not None for sample in bin_content.samples)
+    has_mm_token_type_ids = any(sample.mm_token_type_ids is not None for sample in bin_content.samples)
     # A weight stream materializes as soon as one packed sample carries it; the
     # samples that lack it get the stream's identity fill (STREAM_FILL).
-    has_stream = {name: any(getattr(s, name) is not None for _, s in bin_content.samples) for name in STREAM_FILL}
+    has_stream = {name: any(getattr(s, name) is not None for s in bin_content.samples) for name in STREAM_FILL}
 
     input_ids: list[int] = []
     loss_mask: list[bool] = []
@@ -327,9 +555,8 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
-    lora_num_tokens = [0] * num_loras
 
-    for lora_idx, sample in bin_content.samples:
+    for sample in bin_content.samples:
         sample_len = len(sample.input_ids)
         input_ids.extend(sample.input_ids)
         loss_mask.extend(sample.loss_mask)
@@ -365,9 +592,8 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
                     mm_kwargs[key].data += sample.mm_kwargs[key].data
                     mm_kwargs[key].shape[0] += sample.mm_kwargs[key].shape[0]
         seq_lens.extend(sample.seq_lens)
-        lora_num_tokens[lora_idx] += sample_len
 
-    sequence_lengths = [len(sample.input_ids) for _, sample in bin_content.samples]
+    sequence_lengths = [len(sample.input_ids) for sample in bin_content.samples]
     assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
     assert sum(seq_lens) == len(input_ids), (seq_lens, len(input_ids))
 
@@ -380,7 +606,6 @@ def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
         sequence_lengths=sequence_lengths,
         ref_logprobs=ref_logprobs,
         temperatures=temperatures,
-        lora_num_tokens=lora_num_tokens,
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
@@ -410,9 +635,8 @@ def _expand_bins_by_splitting(
 
 
 def packed_samples_into_micro_bs(
-    samples: list[tuple[int, MicroBatch]],
+    samples: list[MicroBatch],
     max_seq_len: int,
-    num_loras: int,
     num_train_workers: int,
     bin_cost: Callable[[Sequence[int]], int],
 ) -> list[MicroBatch]:
@@ -421,24 +645,24 @@ def packed_samples_into_micro_bs(
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
-    Multimodal samples pack with text spans from the same run/LoRA and with
-    compatible eager ``mm_kwargs`` samples. Packed batches preserve sample
-    boundaries in ``seq_lens``.
+    Multimodal samples pack with text spans and with compatible eager
+    ``mm_kwargs`` samples. Packed batches preserve sample boundaries in
+    ``seq_lens``.
     """
-    # Sort by (lora_idx, -length) for packing efficiency
-    samples.sort(key=lambda x: (x[0], -len(x[1].input_ids)))
+    # Sort by decreasing length for packing efficiency
+    samples.sort(key=lambda sample: -len(sample.input_ids))
 
     bins: list[_MicroBatchBin] = []
 
-    for idx, sample in samples:
+    for sample in samples:
         # Try to find a bin that can fit this sequence. Multimodal samples only
         # pack when their sidecar tensors are compatible.
         for bin_content in bins:
-            if bin_content.can_add(sample, max_seq_len, idx):
-                bin_content.add(idx, sample)
+            if bin_content.can_add(sample, max_seq_len):
+                bin_content.add(sample)
                 break
         else:
-            bins.append(_MicroBatchBin.from_sample(idx, sample))
+            bins.append(_MicroBatchBin.from_sample(sample))
 
     if num_train_workers > 1:
         target_count = max(
@@ -447,7 +671,7 @@ def packed_samples_into_micro_bs(
         )
         _expand_bins_by_splitting(bins, target_count, bin_cost)
 
-    return [_materialize_bin(bin_content, num_loras) for bin_content in bins]
+    return [_materialize_bin(bin_content) for bin_content in bins]
 
 
 def _distribute_group(
@@ -505,10 +729,6 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         stream = getattr(micro_batch, stream_name)
         if stream is not None:
             stream.extend([0.0] * padding_size)
-    if micro_batch.lora_num_tokens is not None:
-        micro_batch.lora_num_tokens[-1] += (
-            padding_size  # We send padding to the last lora so that tokens have ascending lora idx
-        )
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
     if micro_batch.routed_experts is not None:
@@ -577,8 +797,6 @@ def prepare_batch(
     rollouts: list[TrainingSample],
     seq_len: int,
     num_train_workers: int,
-    idxs: list[int],
-    num_loras: int,
     bin_cost: Callable[[Sequence[int]], int],
     pad_to_multiple_of: int = 1,
 ) -> list[list[MicroBatch]]:
@@ -591,9 +809,9 @@ def prepare_batch(
     a text-only batch, the all-gather will hang. We separate micro batches by modality
     and distribute them so that at each step index, all ranks see the same modality.
     """
-    all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
+    all_samples = [prepare_sample(rollout, seq_len) for rollout in rollouts]
 
-    micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras, num_train_workers, bin_cost)
+    micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_train_workers, bin_cost)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
     # Separate by modality so each step index has uniform modality across all ranks

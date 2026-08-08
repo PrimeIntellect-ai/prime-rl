@@ -1,6 +1,6 @@
 # Advanced
 
-This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), multimodal training, LoRA training, multi-tenant training, and disaggregated prefill/decode inference. For developer-side workflows (adding new model architectures, debugging modeling code at small scale), see [Development](development.md).
+This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), multimodal training, LoRA training, and disaggregated prefill/decode inference. For developer-side workflows (adding new model architectures, debugging modeling code at small scale), see [Development](development.md).
 
 ## Table of Contents
 
@@ -11,7 +11,6 @@ This page covers the specialized features layered on top of the core training st
   - [Enabling VLM Mode](#enabling-vlm-mode)
   - [Limitations](#limitations)
 - [LoRA Training](#lora-training)
-- [Multi-Tenant Training](#multi-tenant-training)
 - [Disaggregated Prefill/Decode Inference](#disaggregated-prefilldecode-inference)
 
 ## Custom Modeling
@@ -122,12 +121,6 @@ LoRA is supported across SFT and RL. For RL, NCCL weight broadcast is **not** su
 [ckpt.weights]
 save_adapter_separately = true
 ```
-
-LoRA pairs naturally with [multi-tenant training](#multi-tenant-training) — each tenant gets its own adapter and the backbone is shared across all of them in trainer memory.
-
-## Multi-Tenant Training
-
-Multi-tenant training lets a single trainer + inference deployment serve many concurrent LoRA "tenants" — each a fully isolated run with its own orchestrator, LoRA adapter, optimizer, scheduler, checkpoints, and progress tracking — sharing the same backbone weights and the same vLLM server. This is the topology behind hosted training on the [Prime Intellect platform (Lab)](https://app.primeintellect.ai). The trainer-side implementation is the `MultiRunManager` singleton, enabled by setting `trainer.max_concurrent_runs > 1`. For the full API surface, see [`src/prime_rl/trainer/runs.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/src/prime_rl/trainer/runs.py).
 
 ## Disaggregated Prefill/Decode Inference
 
