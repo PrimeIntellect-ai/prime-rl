@@ -316,21 +316,35 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     DP_PER_NODE={{ dp_per_node }}
     TP=$((GPUS_PER_NODE / DP_PER_NODE))
     EP={{ "1" if enable_expert_parallel else "0" }}
+    NODES_PER_REPLICA={{ nodes_per_replica }}
 
     # Start the single global router on node 0 (balances across per-rank endpoints — no intra-node DP header)
     if [ "$INFER_NODE_RANK" -eq 0 ]; then
         launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log"
     fi
 
+    # Replica geometry: each replica spans NODES_PER_REPLICA consecutive nodes (1 = the
+    # classic replica-per-node shape). For MoE the ranks of a replica form one external-LB
+    # DP group (EP all2all spans them) rooted on the replica-head DP coordinator, matching
+    # the RL and P/D launch paths: ranks on the head reach the coordinator via LOCAL_IP,
+    # ranks on other nodes via the head hostname. NOTE: this whole block lives inside a
+    # single-quoted `srun bash -c` string — apostrophes in comments break the quoting.
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+    REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_REPLICA))
+    RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_REPLICA))
+    REPLICA_HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_REPLICA))]}"
+    GROUP_DP=$((NODES_PER_REPLICA * DP_PER_NODE))
+    if [ "$RANK_IN_REPLICA" -eq 0 ]; then DP_ADDR="$LOCAL_IP"; else DP_ADDR="$REPLICA_HEAD_HOST"; fi
+
     # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + dp_local),
-    # each pinned to its TP slice of GPUs. Each node is an independent replica, so any MoE EP
-    # group is node-local (rendezvous on LOCAL_IP); dense models run independent engines.
+    # each pinned to its TP slice of GPUs; dense models run independent engines.
     for ((d=0; d<DP_PER_NODE; d++)); do
         RANK_GPUS=$(seq -s, $((d * TP)) $((d * TP + TP - 1)))
         RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
-        if [ "$EP" -eq 1 ] && [ "$DP_PER_NODE" -gt 1 ]; then
-            RANK_EXTRA="{\"data_parallel_rank\": $d, \"data_parallel_address\": \"$LOCAL_IP\"}"
-            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$DP_PER_NODE" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
+        if [ "$EP" -eq 1 ] && [ "$GROUP_DP" -gt 1 ]; then
+            GLOBAL_DP_RANK=$((RANK_IN_REPLICA * DP_PER_NODE + d))
+            RANK_EXTRA="{\"data_parallel_rank\": $GLOBAL_DP_RANK, \"data_parallel_address\": \"$DP_ADDR\"}"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$GROUP_DP" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
         else
             # Dense or single-DP-rank EP (dp=1, e.g. EP within one tp=8 group):
             # independent single-engine servers. vLLM rejects the external-LB DP

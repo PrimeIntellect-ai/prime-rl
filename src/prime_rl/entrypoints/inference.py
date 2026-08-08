@@ -113,6 +113,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             data_parallel_rpc_port=config.vllm.data_parallel_rpc_port,
             enable_expert_parallel=config.vllm.enable_expert_parallel,
             infer_nodes_per_replica=config.deployment.num_nodes,
+            nodes_per_replica=config.deployment.nodes_per_replica,
         )
 
     script = template.render(**template_vars)
