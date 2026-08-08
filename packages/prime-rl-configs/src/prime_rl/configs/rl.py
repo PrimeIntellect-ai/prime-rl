@@ -759,7 +759,7 @@ class RLConfig(BaseConfig):
         if not self.orchestrator.any_policy_sourced and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
-            client.base_url = [f"http://{host}:{port}/v1"]
+            client.base_url = f"http://{host}:{port}/v1"
         if (
             self.deployment.type == "single_node"
             and self.inference.router is not None
