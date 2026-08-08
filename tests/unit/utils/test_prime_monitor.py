@@ -162,3 +162,25 @@ def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
     monitor.logger.warning.assert_called_once_with(
         "Dropping 2 non-finite value(s) from Prime monitor metrics payload: metrics.nan, distributions[1]"
     )
+
+
+def test_log_samples_warns_and_skips_upload_when_serialization_fails():
+    monitor = _new_monitor()
+    monitor.is_master = True
+    monitor.enabled = True
+    monitor.config = Mock()
+    monitor.config.log_extras.samples = True
+    monitor.config.log_extras.interval = 1
+    monitor.config.log_extras.sample_ratio = 1.0
+    monitor.last_log_samples_step = -1
+    monitor._pending_sample_steps = set()
+    monitor.logger = Mock()
+    monitor._episodes_to_parquet_bytes = Mock(side_effect=ValueError("invalid episode"))
+    monitor._upload_samples_via_presigned_url = Mock()
+
+    monitor.log_samples([Mock()], step=1)
+
+    monitor.logger.warning.assert_called_once_with(
+        "Failed to build Prime monitor samples at step 1: ValueError: invalid episode"
+    )
+    monitor._upload_samples_via_presigned_url.assert_not_called()

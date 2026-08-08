@@ -276,7 +276,11 @@ class PrimeMonitor(Monitor):
         self.logger.info(f"Logging {len(episodes)} episodes to Prime Intellect API at step {step}")
         start_time = time.perf_counter()
 
-        parquet_bytes = self._episodes_to_parquet_bytes(episodes, step)
+        try:
+            parquet_bytes = self._episodes_to_parquet_bytes(episodes, step)
+        except Exception as e:
+            self.logger.warning(f"Failed to build Prime monitor samples at step {step}: {type(e).__name__}: {e}")
+            return
 
         if not parquet_bytes:
             self.logger.warning(f"No samples to log at step {step}")
