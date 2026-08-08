@@ -49,12 +49,22 @@ ENVS_DIR = "envs"
 
 
 def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig, str]]:
-    """``(split, source, address)`` for every train/eval source. The launcher runs one
-    env server per source at its deterministic address; the orchestrator connects there."""
+    """``(split, source, address)`` for every launcher-managed train/eval source. The
+    launcher runs one env server per source at its deterministic address; the
+    orchestrator connects there. A source with ``serve.address`` set is externally
+    managed — its server runs elsewhere and only the orchestrator connects to it — so
+    the launcher neither writes its TOML nor spawns a server for it."""
     addresses = config.orchestrator.env_addresses
     return [
-        (split, source, addresses[(split, source.resolved_name)]) for split, source in config.orchestrator.env_sources
+        (split, source, addresses[(split, source.resolved_name)])
+        for split, source in config.orchestrator.env_sources
+        if source.serve.address is None
     ]
+
+
+def env_server_names(config: RLConfig, split: str) -> list[str]:
+    """Names of the launcher-managed env servers for one split."""
+    return [source.resolved_name for source_split, source, _ in env_servers(config) if source_split == split]
 
 
 def get_physical_gpu_ids() -> list[int]:
@@ -93,9 +103,10 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         with open(output_dir / INFERENCE_TOML, "wb") as f:
             tomli_w.dump(inference_dict, f)
 
-    # One EnvServerConfig TOML per source: `env-server @ <path>` binds at the source's
-    # deterministic address, where the orchestrator connects. The source's env/serve/legacy
-    # blocks carry over; its other knobs (sampling, algo, name, ...) are orchestrator-side.
+    # One EnvServerConfig TOML per launcher-managed source: `env-server @ <path>` binds
+    # at the source's deterministic address, where the orchestrator connects. The source's
+    # env/serve/legacy blocks carry over; its other knobs (sampling, algo, name, ...) are
+    # orchestrator-side.
     for split, source, address in env_servers(config):
         env_dir = output_dir / ENVS_DIR / split
         env_dir.mkdir(parents=True, exist_ok=True)
@@ -453,10 +464,9 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         else {}
     )
 
-    # Env servers launch next to the orchestrator, one per train/eval source.
-    sources = config.orchestrator.env_sources
-    train_env_names = [source.resolved_name for split, source in sources if split == "train"]
-    eval_env_names = [source.resolved_name for split, source in sources if split == "eval"]
+    # Env servers launch next to the orchestrator, one per launcher-managed train/eval source.
+    train_env_names = env_server_names(config, "train")
+    eval_env_names = env_server_names(config, "eval")
 
     if config.deployment.type == "single_node":
         script = template.render(
@@ -564,10 +574,8 @@ def rl_slurm(config: RLConfig):
         write_config(config, config_dir, exclude={"slurm", "dry_run", "clean_output_dir"})
         logger.info(f"Wrote config to {config_dir / RL_TOML}")
 
-        train_env_names = [env.resolved_name for env in config.orchestrator.train.source]
-        eval_env_names = (
-            [source.resolved_name for source in config.orchestrator.eval.source] if config.orchestrator.eval else []
-        )
+        train_env_names = env_server_names(config, "train")
+        eval_env_names = env_server_names(config, "eval")
 
         log_message = format_log_message(
             log_dir=log_dir,
@@ -581,10 +589,8 @@ def rl_slurm(config: RLConfig):
         write_subconfigs(config, config_dir)
         logger.info(f"Wrote subconfigs to {config_dir}")
 
-        train_env_names = [env.resolved_name for env in config.orchestrator.train.source]
-        eval_env_names = (
-            [source.resolved_name for source in config.orchestrator.eval.source] if config.orchestrator.eval else []
-        )
+        train_env_names = env_server_names(config, "train")
+        eval_env_names = env_server_names(config, "eval")
 
         has_infer = config.deployment.infer_nodes_per_replica > 0
         log_message = format_log_message(

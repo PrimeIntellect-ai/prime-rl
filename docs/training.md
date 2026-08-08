@@ -37,7 +37,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run trainer` | Standalone trainer process group. | Use only when launching the trainer separately from the orchestrator (e.g. multi-node RL without the `rl` wrapper). |
 | `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched trainer, inference, and one `env-server` per source. |
-| `uv run env-server` | Standalone env server for one environment. | The `rl` launcher starts these automatically (one per train/eval source, at the source's derived `serve.address`); only needed when running the orchestrator standalone. |
+| `uv run env-server` | Standalone env server for one environment. | The `rl` launcher starts these automatically (one per train/eval source, at a derived loopback address); only needed when running the orchestrator standalone, or for sources with an explicit `serve.address` — those are externally managed (e.g. their own k8s pod) and the launcher expects the server to already run there. |
 
 ## RL Trainer
 
