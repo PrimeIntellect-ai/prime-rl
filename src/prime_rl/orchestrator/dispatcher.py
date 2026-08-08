@@ -4,7 +4,7 @@
   one episode and one env-server ``run`` request.
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched episode eventually reaches
-  ``out_q`` exactly once as an ``EpisodeResult``. Zero-trace failures and
+  ``out_q`` exactly once as a typed v1 ``Episode``. Zero-trace failures and
   cancellations retain their v1 episode shell and episode-level error.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
@@ -39,7 +39,7 @@ from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     ROLLOUT_TYPE,
-    EpisodeResult,
+    Episode,
     GroupState,
     InflightEpisode,
     Policy,
@@ -117,7 +117,7 @@ class DispatcherMetrics:
 class EpisodeDispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls tasks from ``TrainSource`` / ``EvalSource``, schedules
-    episodes under shared capacity, and emits ``EpisodeResult`` objects to
+    episodes under shared capacity, and emits typed v1 ``Episode`` objects to
     ``out_q``. The watcher drives ``on_version_pending`` for off-policy
     cancellation; the orchestrator triggers eval epochs."""
 
@@ -154,7 +154,7 @@ class EpisodeDispatcher:
 
         # Bounded so the dispatcher backpressures on a slow sink. One entry per
         # episode — the sinks count episodes, never loose traces.
-        self.out_q: asyncio.Queue[EpisodeResult] = asyncio.Queue(maxsize=max(8, self.max_inflight))
+        self.out_q: asyncio.Queue[Episode] = asyncio.Queue(maxsize=max(8, self.max_inflight))
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -471,7 +471,6 @@ class EpisodeDispatcher:
             get_logger().warning(f"Episode task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             episode = self.failed_episode(meta.env_name, type(exc).__name__, str(exc))
 
-        episode.traces = [ROLLOUT_TYPE.model_construct(**dict(trace)) for trace in episode.traces]
         if not episode.ok:
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
             if episode.last_error is not None:
@@ -502,20 +501,24 @@ class EpisodeDispatcher:
             if group.emitted >= group.target_episodes:
                 self.groups.pop(meta.group_id, None)
 
-        for rollout in episode.traces:
-            rollout.kind = meta.kind
-            rollout.env_name = meta.env_name
-            rollout.group_id = meta.group_id
-            rollout.episode_id = episode.id
-            rollout.episode_ok = episode.ok
-            rollout.policy_version = policy_version
-            rollout.off_policy_steps = meta.off_policy_steps
+        traces = [ROLLOUT_TYPE.model_construct(**dict(trace)) for trace in episode.traces]
+        for trace in traces:
+            trace.kind = meta.kind
+            trace.env_name = meta.env_name
+            trace.group_id = meta.group_id
+            trace.episode_id = episode.id
+            trace.policy_version = policy_version
+            trace.off_policy_steps = meta.off_policy_steps
             if meta.kind == "eval":
                 assert eval_step is not None, "eval rollout missing eval_step"
-                rollout.eval_step = eval_step
+                trace.eval_step = eval_step
         await self.out_q.put(
-            EpisodeResult(
-                episode=episode,
+            Episode.model_construct(
+                id=episode.id,
+                env=episode.env,
+                ok=episode.ok,
+                errors=episode.errors,
+                traces=traces,
                 kind=meta.kind,
                 env_name=meta.env_name,
                 group_id=meta.group_id,

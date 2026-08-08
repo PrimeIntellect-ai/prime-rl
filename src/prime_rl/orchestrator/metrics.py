@@ -1,9 +1,7 @@
-"""Train and eval rollout metrics.
+"""Train and eval episode metrics.
 
-A rollout container (``TrainRollouts`` / ``EvalRollouts``) owns the rollout list and exposes
-``.effective`` (the clean subset, as the same container type) and ``.metrics`` (``TrainMetrics`` /
-``EvalMetrics``). The metrics object exposes each distributional / rate metric as a ``Stat`` — so
-``rollouts.metrics.num_input_tokens.mean()`` works — and assembles the full
+An episode collection owns the v1 episodes and derives trace views for training and metrics.
+The metrics object exposes each distributional / rate metric as a ``Stat`` and assembles the full
 ``{prefix}/{subset}/<metric>/<stat>`` wandb dict via ``.to_wandb(...)``.
 
 The wandb layout mirrors the episode/trace hierarchy, one aggregation per level:
@@ -21,12 +19,10 @@ No I/O, no pandas — plain Python over the ``vf.Trace`` properties each rollout
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
+from typing import Any, Callable, Iterator, Literal, Self
 
+from prime_rl.orchestrator.types import Episode, Rollout
 from prime_rl.orchestrator.utils import compute_pass_metrics
-
-if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import EpisodeResult, Rollout
 
 Subset = Literal["all", "effective"]
 
@@ -258,27 +254,49 @@ class TraceMetrics(StatGroup):
         return out
 
 
+TraceFilter = Callable[[Episode, Rollout], bool]
+
+
+class EpisodeCollection:
+    """An episode-owned cohort with an optional derived trace filter."""
+
+    def __init__(self, episodes: list[Episode] | None = None, *, trace_filter: TraceFilter | None = None) -> None:
+        self.items = episodes if episodes is not None else []
+        self._trace_filter = trace_filter
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __iter__(self) -> Iterator[Episode]:
+        return iter(self.items)
+
+    @property
+    def traces_by_episode(self) -> list[list[Rollout]]:
+        if self._trace_filter is None:
+            return [episode.traces for episode in self.items]
+        return [[trace for trace in episode.traces if self._trace_filter(episode, trace)] for episode in self.items]
+
+    @property
+    def traces(self) -> list[Rollout]:
+        return [trace for traces in self.traces_by_episode for trace in traces]
+
+    def _copy(self, episodes: list[Episode]) -> Self:
+        return type(self)(episodes, trace_filter=self._trace_filter)
+
+    def by_env(self) -> dict[str, Self]:
+        grouped: dict[str, list[Episode]] = {}
+        for episode in self.items:
+            grouped.setdefault(episode.env_name, []).append(episode)
+        return {env_name: self._copy(episodes) for env_name, episodes in grouped.items()}
+
+
 class EpisodeMetrics:
-    """Metrics shared by train and eval over a rollout list. The count metrics (tokens/turns/
-    branches) are episode-level — one value per episode, summing its traces — alongside the
-    episode failure rate; every trace-level metric is emitted per
-    agent via ``by_agent()``. The boolean ``Stat`` properties (0/1 distributions, ``.mean()`` is
-    the rate) serve the console log lines. ``TrainMetrics`` / ``EvalMetrics`` extend ``to_wandb``
-    with the train pipeline rates and the eval scores."""
+    """Episode-level counts and failure rate plus per-agent trace metrics."""
 
-    def __init__(self, rollouts: list[Rollout], episode_results: list[EpisodeResult] | None = None) -> None:
-        self.rollouts = rollouts
-        self.episode_results = episode_results
-
-    def episodes(self) -> list[list[Rollout]]:
-        """The subset's rollouts grouped into their episodes. A rollout without an
-        ``episode_id`` (a synthesized error marker) is its own episode."""
-        grouped: dict[str, list[Rollout]] = {}
-        for r in self.rollouts:
-            grouped.setdefault(r.episode_id or r.id, []).append(r)
-        if self.episode_results:
-            return [grouped.get(result.episode.id, []) for result in self.episode_results]
-        return list(grouped.values())
+    def __init__(self, episodes: EpisodeCollection) -> None:
+        self.episodes = episodes
+        self.episode_traces = episodes.traces_by_episode
+        self.rollouts = [trace for traces in self.episode_traces for trace in traces]
 
     def by_agent(self) -> dict[str, TraceMetrics]:
         """Per-agent metric views (``vf.Episode.by_agent`` over the subset's rollouts)."""
@@ -291,23 +309,23 @@ class EpisodeMetrics:
     # aggregation as ``vf.Episode.num_turns`` / ``num_*_tokens``.
     @property
     def num_total_tokens(self) -> Stat:
-        return Stat([float(sum(r.num_total_tokens for r in episode)) for episode in self.episodes()])
+        return Stat([float(sum(r.num_total_tokens for r in traces)) for traces in self.episode_traces])
 
     @property
     def num_input_tokens(self) -> Stat:
-        return Stat([float(sum(r.num_input_tokens for r in episode)) for episode in self.episodes()])
+        return Stat([float(sum(r.num_input_tokens for r in traces)) for traces in self.episode_traces])
 
     @property
     def num_output_tokens(self) -> Stat:
-        return Stat([float(sum(r.num_output_tokens for r in episode)) for episode in self.episodes()])
+        return Stat([float(sum(r.num_output_tokens for r in traces)) for traces in self.episode_traces])
 
     @property
     def num_turns(self) -> Stat:
-        return Stat([float(sum(r.num_turns for r in episode)) for episode in self.episodes()])
+        return Stat([float(sum(r.num_turns for r in traces)) for traces in self.episode_traces])
 
     @property
     def num_branches(self) -> Stat:
-        return Stat([float(sum(r.num_branches for r in episode)) for episode in self.episodes()])
+        return Stat([float(sum(r.num_branches for r in traces)) for traces in self.episode_traces])
 
     # Boolean rate metrics for the console log lines (0/1 distributions — ``.mean()`` is the
     # rate); to_wandb emits their per-agent counterparts instead.
@@ -317,13 +335,11 @@ class EpisodeMetrics:
 
     @property
     def has_error(self) -> Stat:
-        if self.episode_results:
-            return Stat([float(not result.episode.ok) for result in self.episode_results])
-        return Stat([float(r.has_error) for r in self.rollouts])
+        return Stat([float(not episode.ok) for episode in self.episodes])
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         """The common metric dict for one ``{prefix}/{subset}`` slice. Empty input → ``{}``."""
-        if not self.rollouts and not self.episode_results:
+        if not self.episode_traces:
             return {}
         p = f"{prefix}/{subset}"
         out: dict[str, float] = {}
@@ -384,14 +400,9 @@ class EvalMetrics(EpisodeMetrics):
     that agent's traces per example in the full epoch, so multi-agent episodes cannot inflate one
     another's score key."""
 
-    def __init__(
-        self,
-        rollouts: list[Rollout],
-        group_sizes_by_agent: dict[str, int],
-        episode_results: list[EpisodeResult] | None = None,
-    ) -> None:
-        super().__init__(rollouts, episode_results)
-        self.group_sizes_by_agent = group_sizes_by_agent
+    def __init__(self, episodes: EvalEpisodes) -> None:
+        super().__init__(episodes)
+        self.group_sizes_by_agent = episodes.group_sizes_by_agent
 
     @property
     def reward(self) -> Stat:
@@ -408,97 +419,68 @@ class EvalMetrics(EpisodeMetrics):
         return out
 
 
-class TrainRollouts:
-    """A list of train rollouts (everything that came back, errored + filtered + untrainable
-    included). ``effective`` is the clean trainable subset (a view of the same traces);
-    ``metrics`` builds ``TrainMetrics`` over them."""
-
-    def __init__(
-        self,
-        rollouts: list[Rollout] | None = None,
-        episode_results: list[EpisodeResult] | None = None,
-    ) -> None:
-        self.rollouts = rollouts if rollouts is not None else []
-        self.episode_results = episode_results if episode_results is not None else []
-
-    def append(self, rollout: Rollout) -> None:
-        self.rollouts.append(rollout)
-
-    def append_episode(self, result: EpisodeResult) -> None:
-        self.episode_results.append(result)
-        self.rollouts.extend(result.rollouts)
-
-    def __len__(self) -> int:
-        return len(self.rollouts)
-
-    def __iter__(self) -> Iterator[Rollout]:
-        return iter(self.rollouts)
+class TrainEpisodes(EpisodeCollection):
+    """Training episodes and their clean, trainable trace view."""
 
     @property
-    def effective(self) -> TrainRollouts:
-        rollouts = [
-            r for r in self.rollouts if r.episode_ok and not r.has_error and not r.is_filtered and r.agent.trainable
-        ]
-        episode_ids = {r.episode_id for r in rollouts}
-        episodes = [result for result in self.episode_results if result.episode.id in episode_ids]
-        return TrainRollouts(rollouts, episodes)
+    def effective(self) -> TrainEpisodes:
+        def trace_filter(episode: Episode, trace: Rollout) -> bool:
+            return episode.ok and not trace.has_error and not trace.is_filtered and trace.agent.trainable
 
-    def by_env(self) -> dict[str, TrainRollouts]:
-        grouped: dict[str, list[Rollout]] = {}
-        for r in self.rollouts:
-            grouped.setdefault(r.env_name, []).append(r)
-        for result in self.episode_results:
-            grouped.setdefault(result.env_name, [])
-        return {
-            env: TrainRollouts(rs, [result for result in self.episode_results if result.env_name == env])
-            for env, rs in grouped.items()
-        }
+        episodes = [episode for episode in self.items if any(trace_filter(episode, trace) for trace in episode.traces)]
+        return TrainEpisodes(episodes, trace_filter=trace_filter)
 
     @property
     def metrics(self) -> TrainMetrics:
-        return TrainMetrics(self.rollouts, self.episode_results)
+        return TrainMetrics(self)
 
 
-class EvalRollouts:
-    """A list of eval rollouts (errored + untrainable included). ``effective`` is the
-    non-errored trainable subset (a view).
+class EvalEpisodes(EpisodeCollection):
+    """Evaluation episodes and their non-errored, trainable trace view.
+
     Per-agent group sizes are derived from the full epoch and carried onto ``effective`` so each
     agent's ``avg@k`` key stays stable across subsets."""
 
     def __init__(
         self,
-        rollouts: list[Rollout] | None = None,
+        episodes: list[Episode] | None = None,
+        *,
+        trace_filter: TraceFilter | None = None,
         group_sizes_by_agent: dict[str, int] | None = None,
-        episode_results: list[EpisodeResult] | None = None,
     ) -> None:
-        self.rollouts = rollouts if rollouts is not None else []
-        self.episode_results = episode_results if episode_results is not None else []
+        super().__init__(episodes, trace_filter=trace_filter)
         self._group_sizes_by_agent = group_sizes_by_agent
 
-    def __len__(self) -> int:
-        return len(self.rollouts)
-
-    def __iter__(self) -> Iterator[Rollout]:
-        return iter(self.rollouts)
+    def _copy(self, episodes: list[Episode]) -> Self:
+        return type(self)(
+            episodes,
+            trace_filter=self._trace_filter,
+            group_sizes_by_agent=self.group_sizes_by_agent,
+        )
 
     @property
     def group_sizes_by_agent(self) -> dict[str, int]:
         if self._group_sizes_by_agent is not None:
             return self._group_sizes_by_agent
         counts: dict[str, dict] = {}
-        for r in self.rollouts:
+        for r in self.traces:
             if r.agent.trainable:
                 by_group = counts.setdefault(r.agent.name, {})
                 by_group[r.group_id] = by_group.get(r.group_id, 0) + 1
         return {agent: max(by_group.values(), default=0) for agent, by_group in counts.items()}
 
     @property
-    def effective(self) -> EvalRollouts:
-        rollouts = [r for r in self.rollouts if r.episode_ok and not r.has_error and r.agent.trainable]
-        episode_ids = {r.episode_id for r in rollouts}
-        episodes = [result for result in self.episode_results if result.episode.id in episode_ids]
-        return EvalRollouts(rollouts, self.group_sizes_by_agent, episodes)
+    def effective(self) -> EvalEpisodes:
+        def trace_filter(episode: Episode, trace: Rollout) -> bool:
+            return episode.ok and not trace.has_error and trace.agent.trainable
+
+        episodes = [episode for episode in self.items if any(trace_filter(episode, trace) for trace in episode.traces)]
+        return EvalEpisodes(
+            episodes,
+            trace_filter=trace_filter,
+            group_sizes_by_agent=self.group_sizes_by_agent,
+        )
 
     @property
     def metrics(self) -> EvalMetrics:
-        return EvalMetrics(self.rollouts, self.group_sizes_by_agent, self.episode_results)
+        return EvalMetrics(self)

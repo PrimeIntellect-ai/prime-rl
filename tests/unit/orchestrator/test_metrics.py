@@ -7,8 +7,8 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.eval_sink import EvalSink
-from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
-from prime_rl.orchestrator.types import EpisodeResult
+from prime_rl.orchestrator.metrics import EvalEpisodes, Stat, TrainEpisodes
+from prime_rl.orchestrator.types import Episode
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 _ids = count()
@@ -27,7 +27,6 @@ def mk(
     is_truncated: bool = False,
     is_completed: bool = True,
     has_error: bool = False,
-    episode_ok: bool = True,
     error_type: str = "error",
     stop_condition: str | None = None,
     metrics: dict | None = None,
@@ -61,7 +60,6 @@ def mk(
         is_truncated=is_truncated,
         is_completed=is_completed,
         has_error=has_error,
-        episode_ok=episode_ok,
         last_error=SimpleNamespace(type=error_type) if has_error else None,
         stop_condition=stop_condition,
         metrics=metrics or {},
@@ -85,7 +83,32 @@ def mk(
 
 
 def train_wandb(rollouts, subset: str = "all") -> dict:
-    return TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset=subset)
+    return train_episodes(rollouts).metrics.to_wandb(prefix="train/agg", subset=subset)
+
+
+def episode_collection(collection_type, traces):
+    grouped = {}
+    for trace in traces:
+        grouped.setdefault(trace.episode_id or trace.id, []).append(trace)
+    episodes = [
+        SimpleNamespace(
+            id=episode_id,
+            ok=not any(trace.has_error for trace in episode_traces),
+            traces=episode_traces,
+            env_name=episode_traces[0].env_name,
+            group_id=episode_traces[0].group_id,
+        )
+        for episode_id, episode_traces in grouped.items()
+    ]
+    return collection_type(episodes)
+
+
+def train_episodes(traces):
+    return episode_collection(TrainEpisodes, traces)
+
+
+def eval_episodes(traces):
+    return episode_collection(EvalEpisodes, traces)
 
 
 def test_stat():
@@ -96,22 +119,20 @@ def test_stat():
     assert Stat([]).p90() == 0.0 and Stat([]).to_dict("p") == {}
 
 
-def test_container_effective_by_env_and_listlike():
-    rc = TrainRollouts(
+def test_episode_collection_effective_and_by_env():
+    rc = train_episodes(
         [mk(env_name="a"), mk(env_name="a", has_error=True), mk(env_name="b", is_filtered=True), mk(env_name="b")]
     )
-    assert len(rc) == 4 and [r.env_name for r in rc] == ["a", "a", "b", "b"]  # sized + iterable
+    assert len(rc) == 4 and [episode.env_name for episode in rc] == ["a", "a", "b", "b"]
     eff = rc.effective
-    assert isinstance(eff, TrainRollouts) and len(eff) == 2  # same type, errored + filtered dropped
-    assert all(not r.has_error and not r.is_filtered and r in rc.rollouts for r in eff)  # view of references
+    assert isinstance(eff, TrainEpisodes) and len(eff) == 2
+    assert all(not trace.has_error and not trace.is_filtered and trace in rc.traces for trace in eff.traces)
     by_env = rc.by_env()
-    assert set(by_env) == {"a", "b"} and len(by_env["a"]) == 2 and isinstance(by_env["a"], TrainRollouts)
-    rc.append(mk())
-    assert len(rc) == 5
+    assert set(by_env) == {"a", "b"} and len(by_env["a"]) == 2 and isinstance(by_env["a"], TrainEpisodes)
 
 
 def test_to_wandb_distributions():
-    m = TrainRollouts(
+    m = train_episodes(
         [
             mk(reward=1.0, num_total_tokens=10, num_input_tokens=4),
             mk(reward=0.0, num_total_tokens=20, num_input_tokens=6),
@@ -137,7 +158,7 @@ def test_episode_and_agent_levels():
         mk(reward=1.0, num_turns=6, agent_name="solver", episode_id="e2"),
         mk(reward=0.0, num_turns=8, agent_name="solver", episode_id="e2"),
     ]
-    m = TrainRollouts(rollouts).metrics
+    m = train_episodes(rollouts).metrics
     assert m.num_turns.mean() == 12.0  # episode-level sums: 1+2+4 and 3+6+8
     assert m.num_total_tokens.values == [30.0, 30.0]  # summed across the episode's traces
     out = m.to_wandb(prefix="train/agg", subset="all")
@@ -159,7 +180,7 @@ def test_agent_metrics_are_flat_over_traces():
         mk(agent_name="solver", episode_id="e1", is_truncated=True, reward=1.0),
         *[mk(agent_name="solver", episode_id="e2", is_truncated=False, reward=0.0) for _ in range(3)],
     ]
-    out = TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset="all")
+    out = train_episodes(rollouts).metrics.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/solver/is_truncated/mean"] == 0.25  # 1 of 4 traces, not (1.0 + 0.0) / 2
     assert out["train/agg/all/solver/is_completed/mean"] == 1.0
     assert out["train/agg/all/solver/is_trainable/mean"] == 1.0  # sibling rates agree
@@ -167,7 +188,7 @@ def test_agent_metrics_are_flat_over_traces():
 
 
 def test_boolean_rates_and_error_breakdown_all_only():
-    rc = TrainRollouts([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_filtered=True)])
+    rc = train_episodes([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_filtered=True)])
     out = rc.metrics.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/agent/is_truncated/mean"] == 1 / 3
     assert out["train/agg/all/agent/is_completed/mean"] == 1.0
@@ -178,8 +199,8 @@ def test_boolean_rates_and_error_breakdown_all_only():
     eff = rc.effective.metrics.to_wandb(prefix="train/agg", subset="effective")
     assert not any(k.endswith("/has_error/mean") or "/error/" in k for k in eff)
 
-    failed_episode = SimpleNamespace(episode=SimpleNamespace(id="failed", ok=False), env_name="env")
-    zero_trace = TrainRollouts([], [failed_episode]).metrics.to_wandb(prefix="train/agg", subset="all")
+    failed_episode = SimpleNamespace(id="failed", ok=False, traces=[], env_name="env")
+    zero_trace = TrainEpisodes([failed_episode]).metrics.to_wandb(prefix="train/agg", subset="all")
     assert zero_trace["train/agg/all/has_error/mean"] == 1.0
     assert zero_trace["train/agg/all/num_total_tokens/mean"] == 0.0
 
@@ -210,7 +231,7 @@ def test_nested_metrics_and_rewards():
         # scoring failed after seeding: unscored (None) entries count as 0.0 on `all`
         mk(has_error=True, metrics={"acc": None}, rewards={"correct": None, "format": None}),
     ]
-    rc = TrainRollouts(rollouts)
+    rc = train_episodes(rollouts)
     m = rc.metrics
     agent = m.by_agent()["agent"]
     assert agent.metrics["acc"].mean() == pytest.approx(4 / 3)  # nested group access
@@ -225,13 +246,15 @@ def test_nested_metrics_and_rewards():
     assert eff["train/agg/effective/agent/rewards/format/mean"] == 0.5
     # cross-env agg: another env's unscored trace carries different keys, so it can't dilute these
     other = mk(env_name="other", has_error=True, rewards={"solved": None})
-    agg = TrainRollouts(rollouts + [other]).metrics.to_wandb(prefix="train/agg", subset="all")
+    agg = train_episodes(rollouts + [other]).metrics.to_wandb(prefix="train/agg", subset="all")
     assert agg["train/agg/all/agent/rewards/format/mean"] == pytest.approx(1 / 3)
     assert agg["train/agg/all/agent/rewards/solved/mean"] == 0.0
 
 
 def test_nested_timing():
-    m = TrainRollouts([mk(setup=1.0, agent=2.0, agent_model=1.5, agent_harness=0.5, finalize=0.5, scoring=0.5)]).metrics
+    m = train_episodes(
+        [mk(setup=1.0, agent=2.0, agent_model=1.5, agent_harness=0.5, finalize=0.5, scoring=0.5)]
+    ).metrics
     timing = m.by_agent()["agent"].timing
     assert timing.setup.mean() == 1.0 and timing.total.mean() == 4.0  # total sums all four phases
     assert timing.agent_model.mean() == 1.5 and timing.agent_harness.mean() == 0.5
@@ -252,12 +275,12 @@ def test_train_only_metrics_absent_from_eval():
     assert out["train/agg/all/agent/is_filtered/mean"] == 0.5
     assert out["train/agg/all/agent/filters/gibberish/mean"] == 0.5
     assert "train/agg/all/is_trainable/mean" not in out  # pipeline verdicts are per-trace
-    eval_out = EvalRollouts(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
+    eval_out = eval_episodes(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
     assert not any("is_trainable" in k or "is_filtered" in k or "/filters/" in k for k in eval_out)
 
 
 def test_eval_avg_at_k_and_pass_k():
-    binary = EvalRollouts([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")])
+    binary = eval_episodes([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")])
     eff = binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
     assert eff["eval/x/effective/agent/avg@2"] == 0.5  # mean reward under avg@<k> (k from the groups)
     assert "eval/x/effective/avg@2" not in eff  # scores are per-agent, never pooled
@@ -265,10 +288,10 @@ def test_eval_avg_at_k_and_pass_k():
     all_out = binary.metrics.to_wandb(prefix="eval/x", subset="all")
     assert all_out["eval/x/all/agent/avg@2"] == 0.5
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
-    non_binary = EvalRollouts([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
+    non_binary = eval_episodes([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
 
-    multi_agent = EvalRollouts(
+    multi_agent = eval_episodes(
         [
             mk(agent_name="proposer", group_id="g0"),
             mk(agent_name="solver", group_id="g0"),
@@ -294,12 +317,10 @@ def test_zero_trace_episode_survives_eval_sink_and_persistence():
     task_data = vf.TaskData(idx=3, prompt="prompt")
     env = SimpleNamespace(config=SimpleNamespace(group_size=1), eval_tasks=[task_data])
     sink = EvalSink(eval_envs=SimpleNamespace(get=lambda _name: env))
-    result = EpisodeResult(
-        episode=vf.WireEpisode(
-            env={"id": "test-v1"},
-            ok=False,
-            errors=[vf.Error(type="TaskError", message="failed before tracing")],
-        ),
+    episode = Episode(
+        env={"id": "test-v1"},
+        ok=False,
+        errors=[vf.Error(type="TaskError", message="failed before tracing")],
         kind="eval",
         env_name="test",
         group_id=uuid.uuid4(),
@@ -308,11 +329,11 @@ def test_zero_trace_episode_survives_eval_sink_and_persistence():
         eval_step=7,
     )
 
-    batch = sink.add(result)
+    batch = sink.add(episode)
     assert batch is not None
-    assert batch.episodes == [result]
-    assert len(batch.rollouts) == 0
-    assert batch.rollouts.metrics.has_error.mean() == 1.0
-    assert result.to_record()["traces"] == []
-    assert result.to_record()["prime_rl"]["group_id"] == str(result.group_id)
-    assert result.to_record()["prime_rl"]["task"] == task_data.model_dump(mode="json")
+    assert list(batch.episodes) == [episode]
+    assert batch.episodes.traces == []
+    assert batch.episodes.metrics.has_error.mean() == 1.0
+    assert episode.to_record()["traces"] == []
+    assert episode.to_record()["prime_rl"]["group_id"] == str(episode.group_id)
+    assert episode.to_record()["prime_rl"]["task"] == task_data.model_dump(mode="json")

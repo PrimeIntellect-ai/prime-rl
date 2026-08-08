@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Generic, Literal, Protocol
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
@@ -13,7 +13,7 @@ from verifiers.v1.task import DataT
 from prime_rl.transport import TrainingSample
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.metrics import EvalRollouts, TrainRollouts
+    from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
 
 
 @dataclass
@@ -91,7 +91,6 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     # Links the traces of one episode; stamped into ``info`` on arrival so
     # saved records keep their grouping.
     episode_id: str = Field(default="", exclude=True)
-    episode_ok: bool = Field(default=True, exclude=True)
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
@@ -152,27 +151,21 @@ class TaskItem:
     eval_step: int | None = None
 
 
-@dataclass
-class EpisodeResult:
-    """A complete v1 episode with the metadata needed by prime-rl's pipeline."""
+class Episode(vf.WireEpisode):
+    """A v1 episode carrying prime-rl's orchestration metadata."""
 
-    episode: vf.WireEpisode
-    kind: RolloutKind
-    env_name: str
-    group_id: uuid.UUID
-    task_data: vf.TaskData
-    policy_version: int
-    off_policy_steps: int = 0
-    eval_step: int | None = None
-
-    @property
-    def rollouts(self) -> list[Rollout]:
-        """The episode's traces after dispatcher validation and stamping."""
-        return cast(list[Rollout], self.episode.traces)
+    traces: list[ROLLOUT_TYPE] = Field(default_factory=list)
+    kind: RolloutKind = Field(exclude=True)
+    env_name: str = Field(exclude=True)
+    group_id: uuid.UUID = Field(exclude=True)
+    task_data: vf.TaskData = Field(exclude=True)
+    policy_version: int = Field(exclude=True)
+    off_policy_steps: int = Field(default=0, exclude=True)
+    eval_step: int | None = Field(default=None, exclude=True)
 
     def to_record(self) -> dict:
         """Serialize the canonical episode shell with prime-rl trace records."""
-        record = self.episode.model_dump(mode="json", exclude={"traces"}, exclude_none=True)
+        record = self.model_dump(mode="json", exclude={"traces"}, exclude_none=True)
         record["prime_rl"] = {
             "kind": self.kind,
             "env_name": self.env_name,
@@ -181,34 +174,25 @@ class EpisodeResult:
             "policy_version": self.policy_version,
             "eval_step": self.eval_step,
         }
-        record["traces"] = [rollout.to_record() for rollout in self.rollouts]
+        record["traces"] = [trace.to_record() for trace in self.traces]
         return record
 
 
 @dataclass
 class TrainBatch:
-    """``episodes`` is the v1 observation window since the last successful ship;
-    ``rollouts`` is its flattened trace view — every trace of every group
-    finalized in that span (errored + filtered included; rollouts of still-incomplete groups wait
-    for a later window). Its ``.effective`` / ``.metrics`` views drive logging. ``samples`` is the
-    trainer-bound payload (the shipped cohort's post-filter survivors) — an empty list means nothing
-    ships, which would stall the trainer. Trainable counts derive from ``rollouts.effective``
-    (``r.is_trainable``) and token totals from ``samples``, so neither is carried as a field."""
+    """The episode observation window and its trainer-bound sample payload."""
 
-    episodes: list[EpisodeResult]
-    rollouts: TrainRollouts
+    episodes: TrainEpisodes
     samples: list[TrainingSample]
 
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch. ``episodes`` is the canonical returned cohort and
-    ``rollouts`` its flattened trace view; ``.effective`` / ``.metrics`` drive logging."""
+    """One environment's episode-native eval epoch."""
 
     env_name: str
     step: int
-    episodes: list[EpisodeResult]
-    rollouts: EvalRollouts
+    episodes: EvalEpisodes
 
 
 class VersionObserver(Protocol):
