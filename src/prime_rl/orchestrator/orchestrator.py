@@ -670,7 +670,7 @@ class Orchestrator:
                 metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
         self.monitor.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
-        self.monitor.log_samples(effective.rollouts, step=step)
+        self.monitor.log_samples(effective.episodes, step=step)
         self.monitor.log_distributions(
             distributions={
                 "rewards": [r.reward for r in effective],
