@@ -94,8 +94,8 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             tomli_w.dump(inference_dict, f)
 
     # One EnvServerConfig TOML per source: `env-server @ <path>` binds at the source's
-    # deterministic address, where the orchestrator connects. The source's env/serve/legacy
-    # blocks carry over; its other knobs (sampling, algo, name, ...) are orchestrator-side.
+    # deterministic address, where the orchestrator connects. The source's env/serve blocks
+    # carry over; its other knobs (sampling, algo, name, ...) are orchestrator-side.
     for split, source, address in env_servers(config):
         env_dir = output_dir / ENVS_DIR / split
         env_dir.mkdir(parents=True, exist_ok=True)
@@ -103,7 +103,6 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         env_server_dict = {
             "env": source_dict["env"],
             "serve": {**source_dict.get("serve", {}), "address": address},
-            "legacy": source_dict.get("legacy", {}),
             "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
         }
         with open(env_dir / f"{source.resolved_name}.toml", "wb") as f:

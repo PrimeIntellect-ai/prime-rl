@@ -4,9 +4,7 @@ Weights are each env's configured ``ratio`` (default 1, i.e. equal weight
 per env). A v1 env serves the tasks the orchestrator loaded client-side: a
 finite one as a shuffled table (reshuffled with ``seed=epoch`` on cursor
 exhaustion), an infinite one (``num_tasks is None``) straight off its
-generator — every pull is a fresh task and there are no epochs to shuffle.
-A legacy env's dataset lives on its server, so it serves shuffled task
-*indices*."""
+generator — every pull is a fresh task and there are no epochs to shuffle."""
 
 from __future__ import annotations
 
@@ -19,11 +17,9 @@ from prime_rl.orchestrator.envs import TrainEnvs
 
 
 class TrainSource:
-    """``next_example(available_permits)`` picks a weighted-RR env and
-    returns its next example (or ``None`` when the env's per-call permit
-    cost doesn't fit — the dispatch loop retries when permits free up).
-    Returned dicts carry ``env_name`` + ``task_idx`` (+ ``task`` for v1 envs,
-    whose data is shipped to the env server at dispatch).
+    """``next_example(available_permits)`` picks a weighted-RR env and returns its
+    next example. Returned dicts carry ``env_name``, ``task_idx``, and ``task``;
+    the task data is shipped to the env server at dispatch.
 
     The data position round-trips through a checkpoint via ``state_dict()``
     / ``load_state_dict()``: per-env ``{epoch, cursor}`` plus the env-choice
@@ -37,10 +33,6 @@ class TrainSource:
 
     def __init__(self, train_envs: TrainEnvs) -> None:
         self.rng = random.Random(42)
-        # The drawn-but-undispatched env. A draw whose permit cost doesn't fit
-        # is held here (head-of-line) rather than redrawn, so the choice stream
-        # advances exactly once per dispatched example and stays reproducible.
-        self.pending_env: str | None = None
         self.envs = list(train_envs)
         if not self.envs:
             raise ValueError("TrainSource needs at least one train env")
@@ -53,13 +45,8 @@ class TrainSource:
         self.iters: dict[str, Iterator[vf.Task]] = {}
         self.epochs: dict[str, int] = {}
         self.cursors: dict[str, int] = {}
-        # Group-scoring envs reserve ``group_size`` permits up front;
-        # per-rollout envs need 1
-        self.env_costs: dict[str, int] = {}
         for env in self.envs:
-            if env.tasks is None:  # legacy: sample over the index range from info()
-                rows: list[dict] | None = [{"task_idx": i, "env_name": env.name} for i in range(env.num_tasks)]
-            elif env.num_tasks is None:  # infinite: pull the generator per example
+            if env.num_tasks is None:  # infinite: pull the generator per example
                 rows = None
                 self.iters[env.name] = env.tasks
             else:
@@ -68,7 +55,6 @@ class TrainSource:
             self.epochs[env.name] = 1
             self.cursors[env.name] = 0
             self.examples[env.name] = self._shuffle(env.name)
-            self.env_costs[env.name] = env.config.group_size if env.requires_group_scoring else 1
 
         self.env_names = [e.name for e in self.envs]
         self.weights: list[float] = [float(e.config.ratio) for e in self.envs]
@@ -85,17 +71,14 @@ class TrainSource:
         return rows
 
     def state_dict(self) -> dict:
-        """Env-choice RNG state + pending draw + per-env ``{epoch, cursor}``."""
+        """Env-choice RNG state + per-env ``{epoch, cursor}``."""
         return {
             "rng": self.rng.getstate(),
-            "pending_env": self.pending_env,
             "envs": {name: {"epoch": self.epochs[name], "cursor": self.cursors[name]} for name in self.epochs},
         }
 
     def load_state_dict(self, state_dict: dict) -> None:
         self.rng.setstate(state_dict["rng"])
-        pending = state_dict["pending_env"]
-        self.pending_env = pending if pending in self.env_costs else None
         for name, position in state_dict["envs"].items():
             if name not in self.base_rows:
                 continue
@@ -108,12 +91,9 @@ class TrainSource:
                 self.examples[name] = self._shuffle(name)
 
     def next_example(self, available_permits: int) -> dict | None:
-        if self.pending_env is None:
-            self.pending_env = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
-        env_name = self.pending_env
-        if self.env_costs[env_name] > available_permits:
+        if available_permits < 1:
             return None
-        self.pending_env = None
+        env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
         rows = self.examples[env_name]
         cursor = self.cursors[env_name]
         if rows is None:  # infinite env: pull the next generated task
