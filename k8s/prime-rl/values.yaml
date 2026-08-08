@@ -50,6 +50,19 @@ orchestrator:
   nodeSelector: {}
     # nvidia.com/gpu.present: "true"  # Orchestrator doesn't need GPUs
 
+  tolerations: []
+    # - key: "nvidia.com/gpu"
+    #   operator: "Exists"
+    #   effect: "NoSchedule"
+
+  imagePullSecrets: []
+    # - name: regcred
+
+  # Optional: name of an existing ConfigMap to mount at /configs in the
+  # orchestrator container. Useful for shipping TOML configs without rebuilding
+  # the image. Leave empty to skip.
+  configMap: ""
+
 # Inference component
 inference:
   enabled: true
@@ -74,6 +87,9 @@ inference:
     port: 8000
 
   runtimeClassName: nvidia
+
+  tolerations: []
+  imagePullSecrets: []
 
   # Health probes for inference server (/health for startup/readiness, /liveness for engine liveness)
   probes:
@@ -122,6 +138,9 @@ trainer:
   env: []
 
   runtimeClassName: nvidia
+
+  tolerations: []
+  imagePullSecrets: []
 
   # Health probes for trainer (requires metrics_server config)
   probes:
