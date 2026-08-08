@@ -99,15 +99,16 @@ class RepetitionFilter:
 @dataclass
 class ZeroAdvantageFilter:
     """Flags rollouts whose advantage stream is all zero (e.g. all rollouts in
-    a GRPO group earned the same reward, so the centered advantage collapses)."""
+    a GRPO group earned the same reward, so the centered advantage collapses),
+    unless a non-RL loss component still provides supervision."""
 
     name: str
     enforce: bool = True
 
     def check(self, rollout: Rollout) -> FilterResult:
-        if rollout.advantages is not None and all(a == 0.0 for a in rollout.advantages):
-            return FilterResult(detected=True)
-        return FilterResult(detected=False)
+        if rollout.advantages is None or any(a != 0.0 for a in rollout.advantages):
+            return FilterResult(detected=False)
+        return FilterResult(detected=not rollout.has_non_rl_loss_signal)
 
 
 def setup_filter(config: FilterConfig, vocab_size: int) -> RolloutFilter:

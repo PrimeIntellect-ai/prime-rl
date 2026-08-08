@@ -134,6 +134,15 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
         return sum(nonzero) / len(nonzero) if nonzero else 0.0
 
     @property
+    def has_non_rl_loss_signal(self) -> bool:
+        """Whether any sample has nonzero weight in a non-RL loss component."""
+        return any(
+            weights is not None and any(weight != 0.0 for weight in weights)
+            for sample in self.samples
+            for weights in (sample.ce_weights, sample.ref_kl_weights)
+        )
+
+    @property
     def is_trainable(self) -> bool:
         """Whether the rollout carries a training signal — a nonzero advantage on some token. A
         uniform-reward GRPO group (all-zero advantages) or an unscored rollout has no gradient."""
