@@ -2,9 +2,26 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from renderers import Qwen3VLRendererConfig
 
-from prime_rl.orchestrator.utils import setup_policy_inference_pool
+from prime_rl.orchestrator.utils import raise_for_failed_component_tasks, setup_policy_inference_pool
+
+
+def test_raise_for_failed_component_tasks_preserves_cause():
+    async def run() -> None:
+        async def fail_weight_update() -> None:
+            raise ConnectionError("weight update failed")
+
+        task = asyncio.create_task(fail_weight_update(), name="watcher")
+        await asyncio.sleep(0)
+
+        with pytest.raises(RuntimeError, match="component task 'watcher' failed") as exc_info:
+            raise_for_failed_component_tasks([task])
+
+        assert isinstance(exc_info.value.__cause__, ConnectionError)
+
+    asyncio.run(run())
 
 
 def test_setup_policy_inference_pool_uses_renderer_when_enabled():
