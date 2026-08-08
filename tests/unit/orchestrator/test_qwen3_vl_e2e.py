@@ -1,7 +1,7 @@
 """End-to-end integration test for the Qwen3-VL renderer path.
 
-Walks a multimodal request through the full client stack — RendererClient
-→ renderers.client.generate → /inference/v1/generate features payload —
+Walks a multimodal request through the renderer transport used by the v1
+train client — renderers.client.generate → /inference/v1/generate —
 with the HTTP layer mocked, and verifies that vLLM can deserialize the
 features back into engine inputs identical to what its own server-side
 processor would have produced for the same messages.
@@ -14,13 +14,15 @@ sampling tokens, and returning them) is exercised in real rollouts.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+from io import BytesIO
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import httpx
 import pytest
+import verifiers.v1 as vf
 
 _HF_CACHE = Path("~/.cache/huggingface/hub").expanduser()
 _MODEL = "Qwen/Qwen3-VL-4B-Instruct"
@@ -43,7 +45,7 @@ pytestmark = pytest.mark.skipif(
 class _FakeOpenAI:
     """Minimal AsyncOpenAI stand-in that captures POST bodies.
 
-    The renderer client calls ``client.post(absolute_url, body=...)``;
+    The renderer transport calls ``client.post(absolute_url, body=...)``;
     we capture the body for assertions and return a canned generate
     response so the parse-side of the flow runs.
     """
@@ -64,9 +66,9 @@ class _FakeOpenAI:
                     "token_ids": [50, 60, 151645],
                     "logprobs": {
                         "content": [
-                            {"token": "t1", "logprob": -0.1},
-                            {"token": "t2", "logprob": -0.2},
-                            {"token": "t3", "logprob": -0.3},
+                            {"token": "token_id:50", "logprob": -0.1},
+                            {"token": "token_id:60", "logprob": -0.2},
+                            {"token": "token_id:151645", "logprob": -0.3},
                         ]
                     },
                     "finish_reason": "stop",
@@ -76,8 +78,8 @@ class _FakeOpenAI:
         return httpx.Response(200, content=json.dumps(payload).encode())
 
 
-def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm():
-    """Walk a Qwen3-VL multimodal turn through the renderer client and
+def test_v1_train_client_qwen3_vl_features_payload_roundtrips_through_vllm(monkeypatch):
+    """Walk a Qwen3-VL multimodal turn through the v1 renderer transport and
     verify the resulting ``/inference/v1/generate`` body has a valid
     ``features`` payload that:
 
@@ -91,11 +93,8 @@ def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm()
     from renderers.base import load_tokenizer
     from renderers.qwen3_vl import Qwen3VLRenderer
     from transformers import AutoProcessor
-    from verifiers.clients.renderer_client import RendererClient
-    from verifiers.types import (
-        ClientConfig,
-        UserMessage,
-    )
+    from verifiers.v1.clients.train import ElasticRendererPool, RendererSlot, TrainClient
+    from verifiers.v1.dialects import ChatDialect
     from vllm.entrypoints.scale_out.token_in_token_out.mm_serde import decode_mm_kwargs_item
     from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateRequest
 
@@ -106,47 +105,51 @@ def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm()
 
     image_pad_id = tokenizer.convert_tokens_to_ids("<|image_pad|>")
 
-    # ── Manually wire a RendererClient bypassing the pool factory. ──────
-    client_cfg = ClientConfig(client_type="renderer", base_url="http://fake-host:8000/v1")
-    rc = object.__new__(RendererClient)
-    rc._config = client_cfg
-    rc._renderer = renderer
-    rc._pool_size = 1
-    rc._client = _FakeOpenAI()
-    rc.logger = MagicMock()
+    # ── Seed the v1 train client's shared renderer pool. ────────────────
+    monkeypatch.setattr(ElasticRendererPool, "_renderers", {})
+    pool = ElasticRendererPool(_MODEL, None, multiplex=1)
+    pool.renderers.append(RendererSlot(renderer))
 
-    # ── Build a verifiers-shaped user message with an image. ────────────
-    img = Image.new("RGB", (224, 224), color=(64, 128, 255))
-    # The renderer accepts the OpenAI ``image_url`` content-part shape —
-    # the same shape verifiers' UserMessage carries through.
-    user = UserMessage(
-        content=[
-            {"type": "text", "text": "What's in this picture?"},
-            # Embed the PIL image directly. The verifiers→renderer message
-            # converter forwards content unchanged for our purposes.
-            {"type": "image", "image": img},
-        ]
+    config = vf.TrainClientConfig(
+        base_url="http://fake-host:8000/v1",
+        renderer_model_name=_MODEL,
+        multiplex=1,
     )
+    client = object.__new__(TrainClient)
+    client.config = config
+    fake = _FakeOpenAI()
+    client.client = fake
 
-    # to_native_prompt converts to renderer-shaped messages.
-    prompt, _ = asyncio.run(rc.to_native_prompt([user]))
-    sampling = {"max_tokens": 16}
+    # ── Build the OpenAI request body parsed by the v1 ChatDialect. ─────
+    img = Image.new("RGB", (224, 224), color=(64, 128, 255))
+    image_bytes = BytesIO()
+    img.save(image_bytes, format="PNG")
+    image_url = f"data:image/png;base64,{base64.b64encode(image_bytes.getvalue()).decode()}"
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What's in this picture?"},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            }
+        ]
+    }
 
     response = asyncio.run(
-        rc.get_native_response(
-            prompt=prompt,
+        client.get_response(
+            dialect=ChatDialect(),
+            body=body,
             model=_MODEL,
-            sampling_args=sampling,
-            tools=None,
+            sampling_args=vf.SamplingConfig(max_tokens=16),
         )
     )
 
     # ── The HTTP body should carry a features payload. ──────────────────
-    fake = rc.client
-    assert isinstance(fake, _FakeOpenAI)
     assert len(fake.calls) == 1
     body = fake.calls[0]["body"]
-    assert "features" in body, "RendererClient should ship features for image content"
+    assert "features" in body, "TrainClient should ship features for image content"
     features = body["features"]
 
     # ── Pydantic-roundtrip through vLLM's GenerateRequest model. ────────
@@ -184,7 +187,8 @@ def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm()
     assert item["image_grid_thw"].data.tolist() == expected_grid
 
     # ── Response parsed through renderer's parse_response. ──────────────
-    assert response["completion_ids"] == [50, 60, 151645]
-    # multi_modal_data surfaces on the result so the caller can persist it.
-    assert response["multi_modal_data"] is not None
-    assert len(response["multi_modal_data"].mm_items["image"]) == 1
+    assert response.tokens is not None
+    assert response.tokens.completion_ids == [50, 60, 151645]
+    # multi_modal_data surfaces on the result so the v1 client can persist it.
+    assert response.tokens.multi_modal_data is not None
+    assert len(response.tokens.multi_modal_data.mm_items["image"]) == 1
