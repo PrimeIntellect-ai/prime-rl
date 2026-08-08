@@ -38,11 +38,9 @@ id = "null"
 type = "subprocess"
 
 [inference]
-gpu_memory_utilization = 0.7
 
-[inference.model]
+[inference.vllm]
 max_model_len = 2048
-
-# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+gpu_memory_utilization = 0.7
 [orchestrator.renderer]
 name = "default"

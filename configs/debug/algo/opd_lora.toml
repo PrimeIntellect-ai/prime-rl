@@ -1,7 +1,7 @@
 # Start the frozen reference server first (on a separate GPU):
 #   CUDA_VISIBLE_DEVICES=1 uv run inference \
-#     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
-#     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
+#     --vllm.model PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
+#     --server.port 8001 --vllm.gpu-memory-utilization 0.5 --vllm.enforce-eager
 # Then:
 #   uv run rl @ configs/debug/algo/opd_lora.toml
 
@@ -76,4 +76,6 @@ save_adapter_separately = true
 [ckpt]
 
 [inference]
+
+[inference.vllm]
 gpu_memory_utilization = 0.5

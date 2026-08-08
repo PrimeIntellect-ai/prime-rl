@@ -35,8 +35,7 @@ max_completion_tokens = 1024
 
 [trainer]
 
-[inference.parallel]
-dp = 6
-
+[inference.vllm]
+data_parallel_size = 6
 [orchestrator.renderer]
 name = "prime-qwen3"

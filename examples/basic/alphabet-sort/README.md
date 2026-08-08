@@ -32,7 +32,7 @@ We use non-default settings to balance the difficulty: 3 fixed turns (instead of
 Start the inference server:
 ```bash
 # In the `Inference` pane
-uv run inference --enable-lora --model.name Qwen/Qwen3-4B-Instruct-2507
+uv run inference --vllm.enable-lora --vllm.model Qwen/Qwen3-4B-Instruct-2507
 ```
 
 Evaluate the base model:
@@ -110,7 +110,7 @@ We have uploaded the final model as [`PrimeIntellect/Qwen3-4B-Instruct-AlphabetS
 Let's see how our final RL checkpoint performs on the eval set.
 ```bash
 # In the `Inference` pane
-uv run inference --enable-lora --model.name PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL
+uv run inference --vllm.enable-lora --vllm.model PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL
 ```
 
 ```bash
