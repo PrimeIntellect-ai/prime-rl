@@ -1,3 +1,4 @@
+import math
 from collections.abc import Callable
 from typing import Optional, Union
 
@@ -24,6 +25,26 @@ from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
+def _vllm_yarn_attention_scaling(rope_params: dict) -> float | None:
+    """Replicate the YaRN cos/sin scaling that vLLM's `get_rope` applies, so trainer
+    logprobs match vLLM inference.
+
+    HF's yarn init honors the config's `attention_factor` (Laguna sets it to 1.0).
+    vLLM's `get_rope`, however, only forwards `attn_factor` to its YaRN embedding and
+    drops `attention_factor` entirely, so it applies the default mscale
+    `0.1*ln(factor)+1` (≈1.4159 for factor=64). Returns the vLLM scaling for yarn
+    layers, or None for non-yarn layers (which need no override).
+    """
+    if rope_params.get("rope_type") != "yarn":
+        return None
+    attn_factor = float(rope_params.get("attn_factor", 1.0))
+    if not rope_params.get("apply_yarn_scaling", True):
+        return attn_factor
+    factor = rope_params["factor"]
+    mscale = 0.1 * math.log(factor) + 1.0 if factor > 1 else 1.0
+    return mscale * attn_factor
+
+
 class LagunaRotaryEmbedding(nn.Module):
     def __init__(self, config: LagunaConfig, device=None):
         super().__init__()
@@ -40,6 +61,9 @@ class LagunaRotaryEmbedding(nn.Module):
             if self.rope_type[layer_type] != "default":
                 rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type[layer_type]]
             inv_freq, attention_scaling = rope_init_fn(self.config, device, layer_type=layer_type)
+            vllm_scaling = _vllm_yarn_attention_scaling(rope_params)
+            if vllm_scaling is not None:
+                attention_scaling = vllm_scaling
             self.register_buffer(f"{layer_type}_inv_freq", inv_freq, persistent=False)
             self.register_buffer(f"{layer_type}_original_inv_freq", inv_freq.clone(), persistent=False)
             setattr(self, f"{layer_type}_attention_scaling", attention_scaling)
@@ -381,6 +405,9 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
                 getattr(rotary_emb, f"{layer_type}_inv_freq").device,
                 layer_type=layer_type,
             )
+            vllm_scaling = _vllm_yarn_attention_scaling(rotary_emb.config.rope_parameters[layer_type])
+            if vllm_scaling is not None:
+                attention_scaling = vllm_scaling
             getattr(rotary_emb, f"{layer_type}_inv_freq").copy_(inv_freq)
             getattr(rotary_emb, f"{layer_type}_original_inv_freq").copy_(inv_freq)
             setattr(rotary_emb, f"{layer_type}_attention_scaling", attention_scaling)
