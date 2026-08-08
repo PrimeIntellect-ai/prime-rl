@@ -20,9 +20,9 @@ from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
 from prime_rl.trainer.rl.broadcast.nixl.agent import MemDesc, NixlAgent, make_agent_name, set_ucx_env_defaults
-from prime_rl.trainer.rl.broadcast.nixl.cuda_malloc_memory import (
-    size_cuda_buffers,
-    use_cuda_malloc_pool,
+from prime_rl.trainer.rl.broadcast.nixl.device_memory import (
+    size_device_buffers,
+    use_registerable_pool,
 )
 from prime_rl.trainer.rl.broadcast.nixl.graph import (
     Destination,
@@ -328,7 +328,7 @@ class NIXLWeightUpdateWorker(Worker):
         max_receive_buffers = min(2, staging_buffer_count) if peak_growth_bytes else 1
         if peak_growth_bytes or free_bytes < receive_buffer_bytes:
             torch.cuda.empty_cache()
-        return size_cuda_buffers(
+        return size_device_buffers(
             receive_buffer_bytes,
             max_receive_buffers,
             self.device,
@@ -340,7 +340,7 @@ class NIXLWeightUpdateWorker(Worker):
         receive_buffer_elements: dict[torch.dtype, int],
         receive_buffer_count: int,
     ) -> dict[torch.dtype, torch.Tensor]:
-        with use_cuda_malloc_pool():
+        with use_registerable_pool():
             receive_arenas = {
                 dtype: torch.empty(
                     receive_buffer_count * elements,

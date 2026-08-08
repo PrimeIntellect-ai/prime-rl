@@ -24,9 +24,9 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.rl.broadcast.nixl.agent import NixlAgent, make_agent_name, set_ucx_env_defaults
-from prime_rl.trainer.rl.broadcast.nixl.cuda_malloc_memory import (
-    size_cuda_buffers,
-    use_cuda_malloc_pool,
+from prime_rl.trainer.rl.broadcast.nixl.device_memory import (
+    size_device_buffers,
+    use_registerable_pool,
 )
 from prime_rl.trainer.rl.broadcast.nixl.model_express import ModelExpressSession
 from prime_rl.trainer.rl.broadcast.nixl.trainer_tensor_table import (
@@ -189,7 +189,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             max_buffers = local_buffer_count if peak_growth_bytes else 1
             if peak_growth_bytes or free_bytes < largest_group_bytes:
                 torch.cuda.empty_cache()
-            local_buffer_count = size_cuda_buffers(
+            local_buffer_count = size_device_buffers(
                 largest_group_bytes,
                 max_buffers,
                 device,
@@ -209,7 +209,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             return
 
         device = self.staged_shards[0].source_tensor.device
-        with use_cuda_malloc_pool():
+        with use_registerable_pool():
             self.staging_arenas = {
                 dtype: torch.empty(
                     self.staging_buffer_count * elements,
