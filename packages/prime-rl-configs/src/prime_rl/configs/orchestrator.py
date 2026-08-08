@@ -124,14 +124,21 @@ class EvalSamplingConfig(BaseConfig):
 
 
 class ServeConfig(BaseConfig):
-    """The subset of verifiers' ``ServeConfig`` a source configures — the worker pool
-    and the per-worker bound. The launcher materializes it into the env server's full
-    ``[serve]`` block, filling in the source's derived address
-    (``OrchestratorConfig.env_addresses``)."""
+    """Verifiers' ``ServeConfig`` as a source configures it — the worker pool, where the
+    server lives, and the per-worker bound. The launcher materializes it into the env
+    server's full ``[serve]`` block, filling in the source's derived address
+    (``OrchestratorConfig.env_addresses``) when ``address`` is unset."""
 
     pool: PoolConfig = Field(default_factory=vf.ElasticPoolConfig)
     """Worker-pool sizing. ``elastic`` (default) starts at one worker and scales up on
     demand; ``static`` pre-spawns a fixed ``num_workers``."""
+
+    address: str | None = None
+    """Where this source's env server is reachable. Unset (default) means the launcher
+    serves this source at the derived ``tcp://127.0.0.1:<env_server_base_port + index>``
+    address. Setting it marks the server externally managed: the launchers neither write
+    its env-server TOML nor spawn a server for it, and the orchestrator connects to the
+    given address — e.g. a k8s deployment running env servers in their own pods."""
 
     max_concurrent: int | None = Field(None, ge=1)
     """Episodes in flight per worker (None = unbounded; the dispatcher's
@@ -147,7 +154,7 @@ class EnvConfig(BaseConfig):
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
     serve: ServeConfig = ServeConfig()
-    """How this source's env server is sized. Consumed by the launcher (which writes each source's env-server config), not by the orchestrator — the orchestrator only connects."""
+    """How this source's env server is hosted. The sizing knobs are consumed by the launcher (which writes each source's env-server config); ``address`` is read by the orchestrator, which only connects."""
 
     legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()
     """A classic (v0) environment to run through the bridge instead of ``env``."""
@@ -535,7 +542,7 @@ class OrchestratorConfig(BaseConfig):
     """Rate limit per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. With multiple workers, the effective total rate is ``workers × this value``. None disables rate limiting."""
 
     env_server_base_port: int = Field(5000, ge=1, le=65535)
-    """First port of the env-server port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
+    """First port of the env-server port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Sources with an explicit ``serve.address`` keep it instead, without shifting the other sources' ports (indices stay positional). Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
 
     batch_size: int | None = Field(None, ge=1)
     """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
@@ -746,11 +753,13 @@ class OrchestratorConfig(BaseConfig):
     @property
     def env_addresses(self) -> dict[tuple[str, str], str]:
         """Where each source's env server lives, keyed by ``(split, resolved_name)``:
+        the source's own ``serve.address`` when set (an externally managed server), else
         ``tcp://127.0.0.1:<port>`` with ports from ``env_server_base_port`` in
         ``env_sources`` order. The launcher binds env servers at exactly these addresses
         and the orchestrator connects to them, so both sides agree from the config
         alone."""
         return {
-            (split, source.resolved_name): f"tcp://127.0.0.1:{self.env_server_base_port + index}"
+            (split, source.resolved_name): source.serve.address
+            or f"tcp://127.0.0.1:{self.env_server_base_port + index}"
             for index, (split, source) in enumerate(self.env_sources)
         }
