@@ -40,14 +40,12 @@ RolloutKind = Literal["train", "eval"]
 
 @dataclass
 class InflightRollout:
-    """Per-task scheduling state in the dispatcher; one entry per in-flight
-    ``run`` / ``run_group`` task."""
+    """Per-task scheduling state in the dispatcher; one entry per in-flight run."""
 
     kind: RolloutKind
     env_name: str
     group_id: uuid.UUID
     policy_version: int
-    rollout_count: int
     client_config: vf.ClientConfig | None = None
     off_policy_steps: int = 0
     eval_step: int | None = None
@@ -61,11 +59,10 @@ class GroupState:
     kind: RolloutKind
     env_name: str
     task_idx: int
+    task: vf.Task
+    """The group's task; its data is shipped on every dispatch."""
     rollouts_to_schedule: int
     target_rollouts: int
-    task: vf.Task | None = None
-    """The group's task (v1 envs — its data is shipped on every dispatch). ``None`` for
-    legacy envs, which are addressed by ``task_idx`` alone."""
     emitted: int = 0
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None

@@ -24,7 +24,6 @@ class EvalSource:
         *,
         is_resumed: bool = False,
     ) -> None:
-        self.eval_envs = eval_envs
         self.eval_config = eval_config
 
         self.examples_by_env: dict[str, list[dict]] = {}
@@ -69,14 +68,8 @@ class EvalSource:
         return fired
 
     def next_example(self, available_permits: int) -> dict | None:
-        """Pop the next eval example if the head's permit cost fits in
-        ``available_permits``; otherwise leave it for a later call."""
-        if not self.queue:
-            return None
-        head = self.queue[0]
-        env = self.eval_envs.get(head["env_name"])
-        cost = env.config.group_size if env.requires_group_scoring else 1
-        if cost > available_permits:
+        """Pop the next eval example when a rollout permit is available."""
+        if not self.queue or available_permits < 1:
             return None
         return self.queue.popleft()
 
