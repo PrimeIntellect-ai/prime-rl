@@ -122,19 +122,6 @@ class EvalSamplingConfig(BaseConfig):
         return args
 
 
-class ServeConfig(vf.ServeConfig):
-    """Verifiers' ``ServeConfig``, with the address optional: a source that leaves it
-    unset is served by the launcher, which materializes the env server's full ``[serve]``
-    block with the derived address (``OrchestratorConfig.env_addresses``) filled in."""
-
-    address: str | None = None
-    """Where this source's env server is reachable. Unset (default) means the launcher
-    serves this source at the derived ``tcp://127.0.0.1:<env_server_base_port + index>``
-    address. Setting it marks the server externally managed: the launchers neither write
-    its env-server TOML nor spawn a server for it, and the orchestrator connects to the
-    given address — e.g. a k8s deployment running env servers in their own pods."""
-
-
 class EnvConfig(BaseConfig):
     """One environment a run pulls from: the verifiers blocks it composes (``env`` — what
     runs, ``serve`` — how it's hosted, ``legacy`` — a classic v0 env instead) plus this
@@ -143,8 +130,8 @@ class EnvConfig(BaseConfig):
     env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
-    serve: ServeConfig = ServeConfig()
-    """How this source's env server is hosted. The sizing knobs are consumed by the launcher (which writes each source's env-server config); ``address`` is read by the orchestrator, which only connects."""
+    serve: vf.ServeConfig = vf.ServeConfig()
+    """How this source's env server is hosted. The sizing knobs are consumed by the launcher, which writes each source's env-server config with an unset ``address`` filled in as the derived ``tcp://127.0.0.1:<env_server_base_port + index>``. Setting ``address`` marks the server externally managed: the launchers neither write its env-server TOML nor spawn a server for it, and the orchestrator connects to the given address — e.g. a k8s deployment running env servers in their own pods."""
 
     legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()
     """A classic (v0) environment to run through the bridge instead of ``env``."""
