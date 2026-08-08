@@ -78,6 +78,40 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
+## Inference backend A/B benchmark
+
+Before recommending a new inference backend, router, or disaggregated deployment, compare endpoints with the same rollout-like traffic:
+
+```bash
+uv run python benchmarks/scripts/inference_backend_benchmark.py \
+  --backend vllm=http://localhost:8000/v1 \
+  --backend candidate=http://localhost:9000/v1 \
+  --model Qwen/Qwen3-4B-Instruct-2507 \
+  --requests 256 \
+  --concurrency 32 \
+  --sessions 32 \
+  --prompt-words 1024 \
+  --max-tokens 128 \
+  --min-request-throughput-ratio 1.05 \
+  --max-latency-p95-ratio 1.10 \
+  --max-error-rate 0.01
+```
+
+The first backend is the baseline. Inspect the Markdown report for request throughput, output throughput, TTFT, p95 and p99 latency, error rate, and prefix-cache metrics. Use the JSON samples to debug failed requests before wiring the backend into a full RL run. Add regression gates when the benchmark should fail on candidate throughput, latency, or error-rate regressions.
+
+For backend acceptance runs, prefer the multi-scenario suite:
+
+```bash
+uv run python benchmarks/scripts/inference_backend_benchmark.py \
+  --backend vllm=http://localhost:8000/v1 \
+  --backend candidate=http://localhost:9000/v1 \
+  --scenario-json benchmarks/configs/inference_backend_suite.json \
+  --output-json outputs/backend_suite.json \
+  --output-markdown outputs/backend_suite.md
+```
+
+The suite exercises short-rollout latency, long-context prefill, high-concurrency decode, and session-cache reuse in one report.
+
 ## Summary
 
 | Command | Purpose | Typical use |

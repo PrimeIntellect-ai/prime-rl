@@ -1,0 +1,62 @@
+{
+  "model": "Qwen/Qwen3-4B-Instruct-2507",
+  "scenarios": [
+    {
+      "name": "short_rollout_latency",
+      "requests": 256,
+      "warmup_requests": 32,
+      "concurrency": 16,
+      "sessions": 64,
+      "prompt_words": 256,
+      "max_tokens": 64,
+      "gate": {
+        "min_request_throughput_ratio": 1.05,
+        "max_latency_p95_ratio": 1.1,
+        "max_error_rate": 0.01
+      }
+    },
+    {
+      "name": "long_context_prefill",
+      "requests": 128,
+      "warmup_requests": 16,
+      "concurrency": 16,
+      "sessions": 32,
+      "prompt_words": 4096,
+      "max_tokens": 128,
+      "gate": {
+        "min_request_throughput_ratio": 1.0,
+        "max_latency_p95_ratio": 1.15,
+        "max_error_rate": 0.01
+      }
+    },
+    {
+      "name": "high_concurrency_decode",
+      "requests": 512,
+      "warmup_requests": 64,
+      "concurrency": 64,
+      "sessions": 128,
+      "prompt_words": 768,
+      "max_tokens": 256,
+      "gate": {
+        "min_output_throughput_ratio": 1.05,
+        "max_latency_p95_ratio": 1.2,
+        "max_error_rate": 0.01
+      }
+    },
+    {
+      "name": "session_cache_reuse",
+      "requests": 384,
+      "warmup_requests": 64,
+      "concurrency": 32,
+      "sessions": 8,
+      "prompt_words": 2048,
+      "max_tokens": 128,
+      "gate": {
+        "min_request_throughput_ratio": 1.05,
+        "min_output_throughput_ratio": 1.05,
+        "max_latency_p95_ratio": 1.15,
+        "max_error_rate": 0.01
+      }
+    }
+  ]
+}
