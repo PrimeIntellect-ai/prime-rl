@@ -4,7 +4,6 @@ from typing import Annotated, Any, Literal, TypeAlias
 import verifiers.v1 as vf
 from pydantic import Field, SerializeAsAny, model_validator
 from renderers import AutoRendererConfig, RendererConfig
-from verifiers.v1.configs.serve import PoolConfig
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
@@ -123,15 +122,10 @@ class EvalSamplingConfig(BaseConfig):
         return args
 
 
-class ServeConfig(BaseConfig):
-    """Verifiers' ``ServeConfig`` as a source configures it — the worker pool, where the
-    server lives, and the per-worker bound. The launcher materializes it into the env
-    server's full ``[serve]`` block, filling in the source's derived address
-    (``OrchestratorConfig.env_addresses``) when ``address`` is unset."""
-
-    pool: PoolConfig = Field(default_factory=vf.ElasticPoolConfig)
-    """Worker-pool sizing. ``elastic`` (default) starts at one worker and scales up on
-    demand; ``static`` pre-spawns a fixed ``num_workers``."""
+class ServeConfig(vf.ServeConfig):
+    """Verifiers' ``ServeConfig``, with the address optional: a source that leaves it
+    unset is served by the launcher, which materializes the env server's full ``[serve]``
+    block with the derived address (``OrchestratorConfig.env_addresses``) filled in."""
 
     address: str | None = None
     """Where this source's env server is reachable. Unset (default) means the launcher
@@ -139,10 +133,6 @@ class ServeConfig(BaseConfig):
     address. Setting it marks the server externally managed: the launchers neither write
     its env-server TOML nor spawn a server for it, and the orchestrator connects to the
     given address — e.g. a k8s deployment running env servers in their own pods."""
-
-    max_concurrent: int | None = Field(None, ge=1)
-    """Episodes in flight per worker (None = unbounded; the dispatcher's
-    ``max_inflight_episodes`` is the run's bound)."""
 
 
 class EnvConfig(BaseConfig):
