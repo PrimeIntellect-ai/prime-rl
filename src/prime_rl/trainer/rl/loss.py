@@ -7,6 +7,7 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, IPOLossConfig, LossConfig
+from prime_rl.trainer.models.layers.lm_head import kept_replay_mask
 from prime_rl.utils.utils import import_object
 
 
@@ -55,6 +56,27 @@ def selective_log_softmax(
 
 
 @jaxtyped(typechecker=typechecker)
+def selective_log_softmax_with_kept(
+    logits: Float[Tensor, "batch seq vocab"],
+    index: Int[Tensor, "batch seq"],
+    kept_tokens: Int[Tensor, "batch seq kept"],
+) -> Float[Tensor, "batch seq"]:
+    """Per-token logprobs with kept-set (sampling-mask) replay: positions with a
+    usable mask (see ``kept_replay_mask``) get ``logits[index] -
+    logsumexp(logits[kept])``, others full-vocab. Non-replayed rows are zeroed
+    before the logsumexp so the unselected ``where`` branch can't emit NaN grads.
+    """
+    full_logprobs = selective_log_softmax(logits, index)
+    replay = kept_replay_mask(kept_tokens, index)
+    kept_logits = torch.gather(logits, -1, kept_tokens.clamp_min(0).long())
+    kept_logits = torch.where(kept_tokens >= 0, kept_logits, float("-inf"))
+    kept_logits = torch.where(replay.unsqueeze(-1), kept_logits, 0.0)
+    logz_kept = torch.logsumexp(kept_logits, dim=-1)
+    target_logits = torch.gather(logits, -1, index.unsqueeze(-1)).squeeze(-1)
+    return torch.where(replay, target_logits - logz_kept, full_logprobs)
+
+
+@jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
 def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
     with torch.no_grad():
@@ -63,14 +85,15 @@ def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[T
     return entropy
 
 
-def shift_tensor_left(t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch seq"]:
-    """Shifts the tensor one token to the left.
+def shift_tensor_left(t: Tensor, pad_value: float = 0.0) -> Tensor:
+    """Shifts the tensor one position to the left along dim 1.
 
-    Used to create labels from input_ids: labels[i] = input_ids[i+1].
-    The last position is padded with 0 (a valid token index) since this value
-    will be shifted off by shift_tensor_right and never used.
+    Used to create labels from input_ids: labels[i] = input_ids[i+1]. The last
+    position is padded with ``pad_value`` (0 is a valid token index but gets
+    shifted off by shift_tensor_right and never used). Works for [batch, seq]
+    labels and label-aligned [batch, seq, ...] fields like kept_tokens.
     """
-    return torch.cat([t[:, 1:], torch.full((t.shape[0], 1), 0, device=t.device, dtype=t.dtype)], dim=1)
+    return torch.cat([t[:, 1:], torch.full_like(t[:, :1], pad_value)], dim=1)
 
 
 def shift_tensor_right(t: Float[Tensor, "batch seq"], pad_value: float | None = None) -> Float[Tensor, "batch seq"]:

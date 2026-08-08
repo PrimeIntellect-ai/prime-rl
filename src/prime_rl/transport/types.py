@@ -18,6 +18,13 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
     dtype: str
 
 
+# Kept-set sampling masks for top-p/top-k replay: flat int32 id bytes plus an
+# int32 count per token position (0 = no mask); len(ids) == 4 * counts.sum().
+class KeptTokens(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    ids: bytes
+    counts: bytes
+
+
 # Orchestrator -> Packer
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A single training example — one branch of a rollout as a flat token sequence.
@@ -68,6 +75,10 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: list[float] | None = None
 
+    # Last field on purpose: array_like structs encode positionally, so appending
+    # keeps the wire layout of earlier fields stable across versions.
+    kept_tokens: KeptTokens | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
@@ -109,3 +120,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # Packer-derived metadata used for run-local token exports.
     run_id: str | None = None
     run_step: int | None = None
+
+    # See TrainingSample.kept_tokens; appended last for wire-layout stability.
+    kept_tokens: KeptTokens | None = None

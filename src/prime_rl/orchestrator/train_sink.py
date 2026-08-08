@@ -217,6 +217,15 @@ class TrainSink:
         for r in survivors:
             for sample in r.samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
+                if env.requires_kept_masks and sample.kept_tokens is None:
+                    # Rollout logprobs are kept-renormalized; training without the masks
+                    # silently biases every importance ratio.
+                    raise RuntimeError(
+                        f"env '{env_name}' samples with truncation (top_p/top_k) but its rollouts "
+                        "carry no kept-set sampling masks. Set `kept_tokens` on the inference server "
+                        "config (the rl entrypoint derives it automatically) and make sure the server "
+                        "runs prime-rl's vLLM patches."
+                    )
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)
