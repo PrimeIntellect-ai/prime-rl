@@ -40,8 +40,6 @@ _BASE = dict(
     moe_shared_expert_intermediate_size=256,
     moe_latent_size=128,
     num_experts_per_tok=2,
-    n_group=1,
-    topk_group=1,
     norm_topk_prob=True,
     routed_scaling_factor=1.0,
 )
@@ -59,7 +57,6 @@ def get_model_pairs():
     prime_config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     prime_config._attn_implementation = "flash_attention_2"
 
@@ -115,7 +112,6 @@ def test_nemotron_h_reverse():
     prime_config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     prime_config._attn_implementation = "flash_attention_2"
 
@@ -181,7 +177,6 @@ def test_nemotron_h_backward():
     prime_config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = NemotronHForCausalLM(prime_config)
@@ -205,7 +200,6 @@ def test_nemotron_h_weight_conversion_roundtrip():
     prime_config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     model = NemotronHForCausalLM(prime_config).to("cuda")
     original_sd = {k: v.clone() for k, v in model.state_dict().items()}
@@ -232,7 +226,6 @@ def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():
     config = NemotronHConfig(
         **(_BASE | {"mamba_n_groups": 2}),
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     with torch.device("meta"):
         model = NemotronHForCausalLM(config)
@@ -254,7 +247,6 @@ def test_nemotron_h_no_latent_projection():
     prime_config = NemotronHConfig(
         **{**_BASE, "moe_latent_size": None},
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = NemotronHForCausalLM(prime_config)

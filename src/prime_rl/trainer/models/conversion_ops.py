@@ -214,24 +214,6 @@ class SplitConcat(ConvOp):
 
 
 @dataclass
-class Synthetic(ConvOp):
-    """A prime-only tensor with no HF counterpart, created on forward and
-    dropped on backward (e.g. NemotronH's dummy ``experts.w3`` of shape (0,)).
-
-    ``factory`` builds the tensor from the current state dict (so it can match
-    device/dtype of a sibling)."""
-
-    prime: str
-    factory: Callable[[StateDict], Tensor]
-
-    def hf_to_prime(self, sd: StateDict) -> None:
-        sd[self.prime] = self.factory(sd)
-
-    def prime_to_hf(self, sd: StateDict) -> None:
-        sd.pop(self.prime, None)
-
-
-@dataclass
 class MapValue(ConvOp):
     """Apply a value transform to one key. ``forward`` runs HF->prime,
     ``backward`` runs prime->HF. Use for genuinely non-structural conversions

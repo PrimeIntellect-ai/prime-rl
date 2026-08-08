@@ -7,11 +7,9 @@ from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule, get_lora_num_tokens, get_multilora_scaling
 from prime_rl.trainer.models.layers.moe import (
-    GptOssGroupedExperts,
     GroupedExperts,
-    NonGatedGroupedExperts,
-    _broadcast_expert_bias,
-    _gpt_oss_apply_gate,
+    broadcast_expert_bias,
+    interleaved_clamped_swiglu,
     relu2,
 )
 
@@ -353,8 +351,9 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             w3_lora_b = w3_lora_b.to_local()
 
             if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
                 from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+
+                from prime_rl.trainer.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
 
                 experts_per_ep_rank = base_w1.shape[0]
                 num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
@@ -492,15 +491,14 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         )
 
 
-class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
+class MultiLoRAReLU2GroupedExperts(MultiLoRAModule):
     """
-    NonGatedGroupedExperts + multi-LoRA with grouped GEMM.
-    Adapts the two projections (w1: up, w2: down) of NemotronH-style relu2 experts.
+    Multi-LoRA for GroupedExperts configured with NemotronH-style ReLU² projections.
     """
 
     def __init__(
         self,
-        base_layer: NonGatedGroupedExperts,
+        base_layer: GroupedExperts,
         rank: int,
         n_adapters: int,
         alpha: float = 32.0,
@@ -662,8 +660,9 @@ class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
             w2_lora_b = w2_lora_b.to_local()
 
             if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
                 from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+
+                from prime_rl.trainer.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
 
                 experts_per_ep_rank = base_w1.shape[0]
                 num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
@@ -767,17 +766,12 @@ class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
         )
 
 
-class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
-    """
-    GptOssGroupedExperts + multi-LoRA.
-
-    Adapts the two projections of GPT-OSS experts: the fused gate_up projection
-    (hidden_size -> 2*intermediate_size) and the down projection (intermediate_size -> hidden_size).
-    """
+class MultiLoRAInterleavedGroupedExperts(MultiLoRAModule):
+    """Multi-LoRA for fused, interleaved SwiGLU grouped experts with biases."""
 
     def __init__(
         self,
-        base_layer: GptOssGroupedExperts,
+        base_layer: GroupedExperts,
         rank: int,
         n_adapters: int,
         alpha: float = 32.0,
@@ -789,9 +783,9 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             raise ValueError("rank and n_adapters must be > 0")
 
         self.num_experts = base_layer.num_experts
-        self.hidden_size = base_layer.hidden_size
-        self.intermediate_size = base_layer.intermediate_size
-        self.gate_up_out = 2 * self.intermediate_size
+        self.hidden_size = base_layer.input_weight.shape[2]
+        self.intermediate_size = base_layer.w2.shape[2]
+        self.gate_up_out = base_layer.input_weight.shape[1]
 
         if rank % 8 != 0 or self.hidden_size % 8 != 0 or self.intermediate_size % 8 != 0:
             use_grouped_mm = False
@@ -812,8 +806,8 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
                         self.num_experts,
                         rank,
                         self.hidden_size,
-                        device=base_layer.gate_up_proj.device,
-                        dtype=base_layer.gate_up_proj.dtype,
+                        device=base_layer.input_weight.device,
+                        dtype=base_layer.input_weight.dtype,
                     )
                 )
                 for _ in range(n_adapters)
@@ -826,8 +820,8 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
                         self.num_experts,
                         self.gate_up_out,
                         rank,
-                        device=base_layer.gate_up_proj.device,
-                        dtype=base_layer.gate_up_proj.dtype,
+                        device=base_layer.input_weight.device,
+                        dtype=base_layer.input_weight.dtype,
                     )
                 )
                 for _ in range(n_adapters)
@@ -841,8 +835,8 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
                         self.num_experts,
                         rank,
                         self.intermediate_size,
-                        device=base_layer.down_proj.device,
-                        dtype=base_layer.down_proj.dtype,
+                        device=base_layer.w2.device,
+                        dtype=base_layer.w2.dtype,
                     )
                 )
                 for _ in range(n_adapters)
@@ -855,8 +849,8 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
                         self.num_experts,
                         self.hidden_size,
                         rank,
-                        device=base_layer.down_proj.device,
-                        dtype=base_layer.down_proj.dtype,
+                        device=base_layer.w2.device,
+                        dtype=base_layer.w2.dtype,
                     )
                 )
                 for _ in range(n_adapters)
@@ -890,7 +884,7 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             + self.down_lora_A[0].numel()
             + self.down_lora_B[0].numel()
         )
-        adapted_params = self.base_layer.gate_up_proj.numel() + self.base_layer.down_proj.numel()
+        adapted_params = self.base_layer.input_weight.numel() + self.base_layer.w2.numel()
         return adapter_params, adapted_params
 
     def state_dict_for_adapter(self, idx: int) -> dict[str, torch.Tensor]:
@@ -939,10 +933,10 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
 
         scaling = self._scaling_factors[adapter_idx].item()
 
-        base_gu = self.base_layer.gate_up_proj
-        base_gu_bias = self.base_layer.gate_up_proj_bias
-        base_d = self.base_layer.down_proj
-        base_d_bias = self.base_layer.down_proj_bias
+        base_gu = self.base_layer.input_weight.transpose(-2, -1)
+        base_gu_bias = self.base_layer.input_bias
+        base_d = self.base_layer.w2.transpose(-2, -1)
+        base_d_bias = self.base_layer.output_bias
 
         permuted_indices = None
         if isinstance(base_gu, DTensor):
@@ -956,8 +950,9 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             d_b = d_b.to_local()
 
             if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
                 from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+
+                from prime_rl.trainer.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
 
                 experts_per_ep_rank = base_gu.shape[0]
                 num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
@@ -982,17 +977,17 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             gate_up_base = torch._grouped_mm(x.bfloat16(), base_gu.bfloat16(), offs=offsets)
             gate_up_base = (
                 gate_up_base
-                + _broadcast_expert_bias(base_gu_bias, num_tokens_per_expert, gate_up_base.shape[0]).bfloat16()
+                + broadcast_expert_bias(base_gu_bias, num_tokens_per_expert, gate_up_base.shape[0]).bfloat16()
             )
             gate_up_lora = _run_lora_grouped_mm(lora_x, gu_a, gu_b, offsets)
             gate_up = gate_up_base + scaling * gate_up_lora.bfloat16()
 
-            h = _gpt_oss_apply_gate(gate_up)
+            h = interleaved_clamped_swiglu(gate_up)
             lora_h = self.lora_dropout(h)
 
             out_base = torch._grouped_mm(h, base_d.bfloat16(), offs=offsets)
             out_base = (
-                out_base + _broadcast_expert_bias(base_d_bias, num_tokens_per_expert, out_base.shape[0]).bfloat16()
+                out_base + broadcast_expert_bias(base_d_bias, num_tokens_per_expert, out_base.shape[0]).bfloat16()
             )
             out_lora = _run_lora_grouped_mm(lora_h, d_a, d_b, offsets)
             out = out_base + scaling * out_lora.bfloat16()
@@ -1052,7 +1047,7 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             gate_up_lora = gate_up_lora_tmp @ gu_b[e].transpose(-2, -1)
             gate_up = gate_up_base + scaling * gate_up_lora
 
-            h = _gpt_oss_apply_gate(gate_up)
+            h = interleaved_clamped_swiglu(gate_up)
             h_lora = self.lora_dropout(h)
 
             out_base = h @ base_d[e] + base_d_bias[e]

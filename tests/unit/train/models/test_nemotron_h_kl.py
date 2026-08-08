@@ -42,8 +42,6 @@ _BASE = dict(
     moe_shared_expert_intermediate_size=256,
     moe_latent_size=128,
     num_experts_per_tok=2,
-    n_group=1,
-    topk_group=1,
     norm_topk_prob=True,
     routed_scaling_factor=1.0,
 )
@@ -53,7 +51,6 @@ def _make_model(device="cuda"):
     config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     config._attn_implementation = "flash_attention_2"
     with torch.device(device), default_dtype(torch.bfloat16):
@@ -188,7 +185,6 @@ def test_kl_with_fused_lm_head():
     config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     config._attn_implementation = "flash_attention_2"
 
