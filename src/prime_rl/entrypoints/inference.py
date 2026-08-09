@@ -78,6 +78,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         num_nodes=getattr(config.deployment, "num_nodes", 1),
         port=config.server.port,
         router=config.router,
+        router_log_level=config.log.level,
         router_port=config.server.port,
         is_disaggregated=is_disaggregated,
         kv_offload=offload is not None,
@@ -177,6 +178,8 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         "4200",
         "--prometheus-port",
         str(config.server.port + 21000),
+        "--log-level",
+        config.log.level,
     ]
     return subprocess.Popen(cmd)
 

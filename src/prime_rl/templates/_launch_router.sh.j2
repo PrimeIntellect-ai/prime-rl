@@ -74,7 +74,7 @@ LLMD_EOF
     local -a cmd=(vllm-router --policy "$policy" --host 0.0.0.0 --port "$port"
         --request-id-headers x-session-id
         --prometheus-port "$((port + 21000))"
-        --worker-startup-timeout-secs 4200 --log-level debug)
+        --worker-startup-timeout-secs 4200 --log-level {{ router_log_level }})
     if [ "$mode" = pd ]; then
         cmd+=(--vllm-pd-disaggregation $worker_args)
     else

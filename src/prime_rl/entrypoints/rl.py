@@ -480,6 +480,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         script = template.render(
             **config.slurm.template_vars,
             is_disaggregated=True,
+            router_log_level=config.inference.log.level if config.inference else "info",
             config_dir=config_dir,
             output_dir=config.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
@@ -520,6 +521,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         script = template.render(
             **config.slurm.template_vars,
             is_disaggregated=False,
+            router_log_level=config.inference.log.level if config.inference else "info",
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             output_dir=config.output_dir,
             num_train_nodes=config.deployment.num_train_nodes,
