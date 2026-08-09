@@ -105,7 +105,7 @@ idle_timeout = "None"
 labels = ["glm45air-terminal"]
 
 [orchestrator.train.source.env.taskset]
-id = "tmax-v1"
+id = "tmax"
 
 # # Metric-only monitors (weight 0): rlm harness-mechanics + swe code-usage rubrics, judged by GLM-5.2.
 # [[orchestrator.train.source.env.taskset.judges]]
@@ -144,7 +144,7 @@ labels = ["glm45air-terminal"]
 rollout = 3600
 
 [orchestrator.eval.source.env.taskset]
-id = "swebench-verified-v1"
+id = "swebench-verified"
 
 # [[orchestrator.eval.source.env.taskset.judges]]
 # id = "rubric"
@@ -178,7 +178,7 @@ labels = ["glm45air-terminal"]
 rollout = 3600
 
 [orchestrator.eval.source.env.taskset]
-id = "terminal-bench-2-v1"
+id = "terminal-bench-2"
 
 # [[orchestrator.eval.source.env.taskset.judges]]
 # id = "rubric"

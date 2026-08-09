@@ -10,9 +10,7 @@ once, and each dispatched episode ships its task's data on the request
 (``task_data``); the server pydantic-validates it into the taskset's declared
 ``TaskData`` type and runs it. That keeps the server (and every worker in its
 pool) stateless about data — no per-worker dataset loads, no idx-addressed task
-cache — and gives the orchestrator real tasks to cycle, shuffle, and filter. Only
-the legacy (v0) bridge, whose dataset genuinely lives server-side, is still driven
-by ``task_idx`` (its count comes from ``info``).
+cache — and gives the orchestrator real tasks to cycle, shuffle, and filter.
 
 The server answers one ``Episode`` per run request, whose traces we validate into
 ``Trace[WireTaskData]`` — real ``vf.Trace``\\ s (never loose dicts) whose task
@@ -41,7 +39,7 @@ from prime_rl.utils.logger import get_logger
 ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
-# servers concurrently with the orchestrator, and a legacy server loads its dataset
+# servers concurrently with the orchestrator, and a server imports its env package
 # before serving.
 ENV_SERVER_STARTUP_TIMEOUT = 600.0
 
@@ -56,12 +54,11 @@ class Env:
         self.sampling_args: dict = {}
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the taskset is infinite."""
-        self.requires_group_scoring: bool = False
         self.tasks: Iterator[vf.Task] | None = None
-        """The env's tasks, client-side; ``None`` for legacy (its dataset lives on the
-        server). A finite taskset is materialized at ``start()`` (``num_tasks`` is its
-        count) and iterated from there; an infinite one streams off its generator.
-        Consumed once — by ``TrainSource`` (train) or ``EvalEnv.start`` (eval)."""
+        """The env's tasks, client-side, set at ``start()``. A finite taskset is
+        materialized (``num_tasks`` is its count) and iterated from there; an infinite
+        one streams off its generator. Consumed once — by ``TrainSource`` (train) or
+        ``EvalEnv.start`` (eval)."""
         self._env_client: EnvClient | None = None
 
     @property
@@ -75,29 +72,23 @@ class Env:
         return self._env_client
 
     async def start(self) -> None:
-        """Connect to the env server and load the taskset client-side (legacy instead
-        asks the server for ``info`` — its dataset is server-side)."""
+        """Connect to the env server and load the taskset client-side."""
         get_logger().debug(f"Connecting {self.name} to env server {self.address}")
         self._env_client = EnvClient(address=self.address)
         # The server may still be coming up (the launcher spawns it concurrently with
         # the orchestrator), so poll until it answers.
         await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
-        if self.config.is_legacy:
-            info = await self.env_client.info()
-            self.num_tasks = info.num_tasks
-            self.requires_group_scoring = info.requires_group_scoring
+        taskset = vf.load_taskset(self.config.env.taskset)
+        if type(taskset).INFINITE:
+            self.tasks = iter(taskset.load())
+            self.num_tasks = None
         else:
-            taskset = vf.load_taskset(self.config.env.taskset)
-            if type(taskset).INFINITE:
-                self.tasks = iter(taskset.load())
-                self.num_tasks = None
-            else:
-                # Materialize off the event loop — load() may pull a dataset.
-                materialized = await asyncio.to_thread(lambda: list(taskset.load()))
-                self.tasks = iter(materialized)
-                self.num_tasks = len(materialized)
+            # Materialize off the event loop — load() may pull a dataset.
+            materialized = await asyncio.to_thread(lambda: list(taskset.load()))
+            self.tasks = iter(materialized)
+            self.num_tasks = len(materialized)
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
-        get_logger().info(f"Env {self.name} ready: num_tasks={num_tasks} group_scoring={self.requires_group_scoring}")
+        get_logger().info(f"Env {self.name} ready: num_tasks={num_tasks}")
 
     def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
         sampling = {**self.sampling_args}
@@ -110,17 +101,13 @@ class Env:
         client: vf.ClientConfig,
         model_name: str,
         cache_salt: str | None,
-        task_data: dict | None = None,
-        task_idx: int | None = None,
+        task_data: dict,
     ) -> list[Rollout]:
-        """Run one episode; return its typed Traces. A v1 env takes the task itself
-        (``task_data``); the legacy bridge is addressed by dataset row (``task_idx``).
-        A zero-trace episode raises (the dispatcher synthesizes the error marker); a
-        not-``ok`` episode marks its clean traces failed so partial episodes never
-        train."""
+        """Run one episode; return its typed Traces. A zero-trace episode raises (the
+        dispatcher synthesizes the error marker); a not-``ok`` episode marks its clean
+        traces failed so partial episodes never train."""
         episode = await self.env_client.run(
             task_data=task_data,
-            task_idx=task_idx,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
@@ -139,19 +126,6 @@ class Env:
                 rollout.errors = [*rollout.errors, error]
                 rollout.ok = False
         return rollouts
-
-    async def run_group(
-        self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
-    ) -> list[Rollout]:
-        """Run a group of rollouts for ``task_idx`` (group-scoring envs); return typed Traces."""
-        wires = await self.env_client.run_group(
-            task_idx=task_idx,
-            n=group_size,
-            client=client,
-            model=model_name,
-            sampling=self._sampling(cache_salt),
-        )
-        return [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in wires]
 
 
 class TrainEnv(Env):
@@ -175,15 +149,11 @@ class EvalEnv(Env):
     async def start(self) -> None:
         await super().start()
         n = self.config.num_examples
-        if self.tasks is None:  # legacy: the dataset lives on the server — address it by row
-            count = self.num_tasks if n < 0 else min(n, self.num_tasks)
-            self.examples = [{"task_idx": i} for i in range(count)]
-            return
         if self.num_tasks is None and n < 0:
             raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
         # A fixed eval set, pulled off the tasks once and reused every epoch.
         tasks = list(self.tasks) if n < 0 else list(islice(self.tasks, n))
-        self.examples = [{"task_idx": task.data.idx, "task": task} for task in tasks]
+        self.examples = [{"task": task} for task in tasks]
 
 
 EnvT = TypeVar("EnvT", bound=Env)

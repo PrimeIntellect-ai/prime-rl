@@ -15,7 +15,7 @@ class RAEAlgorithm(Algorithm):
     """Role-conditioned advantage estimation (SPIRAL, arXiv:2506.24119):
     credit = reward minus a per-agent EMA baseline of that agent's rewards.
 
-    The advantage estimator for multi-agent self-play envs (kuhn-poker-v1 and
+    The advantage estimator for multi-agent self-play envs (kuhn-poker and
     friends): in a zero-sum game the group mean is ~0 whatever the policy does,
     and centering all agents against it mixes their opposite reward scales — a
     structural first-mover edge would read as permanent credit for one agent.

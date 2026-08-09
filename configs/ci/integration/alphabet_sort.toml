@@ -26,7 +26,7 @@ max_completion_tokens = 384
 name = "alphabet-sort"
 
 [orchestrator.train.source.env.taskset]
-id = "alphabet-sort-v1"
+id = "alphabet-sort"
 min_turns = 2
 max_turns = 2
 min_names_per_turn = 1

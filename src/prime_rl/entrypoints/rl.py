@@ -105,7 +105,7 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
 
     # One EnvServerConfig TOML per launcher-managed source: `env-server @ <path>` binds
     # at the source's deterministic address, where the orchestrator connects. The source's
-    # env/serve/legacy blocks carry over; its other knobs (sampling, algo, name, ...) are
+    # env/serve blocks carry over; its other knobs (sampling, algo, name, ...) are
     # orchestrator-side.
     for split, source, address in env_servers(config):
         env_dir = output_dir / ENVS_DIR / split
@@ -114,7 +114,6 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         env_server_dict = {
             "env": source_dict["env"],
             "serve": {**source_dict.get("serve", {}), "address": address},
-            "legacy": source_dict.get("legacy", {}),
             "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
         }
         with open(env_dir / f"{source.resolved_name}.toml", "wb") as f:

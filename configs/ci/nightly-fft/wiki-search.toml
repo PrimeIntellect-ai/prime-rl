@@ -27,7 +27,7 @@ enforce = true
 name = "wiki-search"
 
 [orchestrator.train.source.env.taskset]
-id = "wiki-search-v1"
+id = "wiki-search"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
