@@ -183,8 +183,8 @@ def train(config: SFTConfig):
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
-        cpu_offload=config.model.optim_cpu_offload,
-        cpu_offload_chunked=config.model.optim_cpu_offload_chunked,
+        cpu_offload=config.optim.cpu_offload.enabled,
+        cpu_offload_chunked=config.optim.cpu_offload.chunked,
     )
 
     # Set up the learning rate scheduler

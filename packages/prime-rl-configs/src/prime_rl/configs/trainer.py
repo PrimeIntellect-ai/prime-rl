@@ -169,12 +169,6 @@ class ModelConfig(BaseModelConfig):
     fsdp_cpu_offload: bool = False
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
-    optim_cpu_offload: bool = True
-    """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
-
-    optim_cpu_offload_chunked: bool = False
-    """When optimizer CPU offload is enabled, perform the optimizer step per-transformer-layer with stream-overlapped H2D/D2H transfers instead of all-at-once. At most two layers' optimizer states are on GPU at any time. Prevents OOM when weight + grad + all_opt_states exceeds VRAM at the cost of slower stepping."""
-
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
 
@@ -277,8 +271,8 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def cpu_offload_mutual_exclusion(self):
-        if self.fsdp_cpu_offload and self.optim_cpu_offload:
-            raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
+        if self.fsdp_cpu_offload and self.optim.cpu_offload.enabled:
+            raise ValueError("Cannot enable both fsdp_cpu_offload and optim.cpu_offload. Use one or the other.")
         return self
 
     @model_validator(mode="after")
@@ -354,6 +348,14 @@ SchedulerConfig: TypeAlias = Annotated[
 ]
 
 
+class CPUOffloadConfig(BaseConfig):
+    enabled: bool = True
+    """Offload optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
+
+    chunked: bool = False
+    """Perform the optimizer step per-transformer-layer with stream-overlapped H2D/D2H transfers. At most two layers' optimizer states are on GPU at any time. Prevents OOM when weight + grad + all_opt_states exceeds VRAM at the cost of slower stepping."""
+
+
 class BaseOptimizerConfig(BaseConfig):
     lr: float = Field(1e-6, ge=0)
     """Peak learning rate."""
@@ -363,6 +365,9 @@ class BaseOptimizerConfig(BaseConfig):
 
     max_norm: float | None = Field(1.0, ge=0)
     """Maximum gradient norm to clip to. If None, gradient clipping is disabled."""
+
+    cpu_offload: CPUOffloadConfig = CPUOffloadConfig()
+    """Optimizer state CPU offloading configuration."""
 
 
 class SGDConfig(BaseOptimizerConfig):
@@ -707,7 +712,7 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_optim_cpu_offload_single_run(self):
-        if self.model.optim_cpu_offload and self.max_concurrent_runs > 1:
+        if self.optim.cpu_offload.enabled and self.max_concurrent_runs > 1:
             raise ValueError("Optimizer CPU offload is not supported with max_concurrent_runs > 1")
         return self
 
