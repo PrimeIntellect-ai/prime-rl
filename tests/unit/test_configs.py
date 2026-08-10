@@ -182,7 +182,16 @@ def test_env_algo_overrides_top_level():
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
             "algo": {"type": "echo"},
-            "train": {"source": [{"legacy": {"id": "a"}, "algo": {"type": "grpo"}}, {"legacy": {"id": "b"}}]},
+            "train": {
+                "source": [
+                    {
+                        "name": "a",
+                        "env": {"taskset": {"id": "reverse-text-v1"}},
+                        "algo": {"type": "grpo"},
+                    },
+                    {"name": "b", "env": {"taskset": {"id": "reverse-text-v1"}}},
+                ]
+            },
         }
     )
     env_a, env_b = config.train.source
@@ -199,7 +208,7 @@ def test_env_algo_overrides_top_level():
         OrchestratorConfig.model_validate(
             {
                 "renderer": {"name": "qwen3"},
-                "train": {"env": [{"legacy": {"id": "removed"}}]},
+                "train": {"env": [{"env": {"taskset": {"id": "reverse-text-v1"}}}]},
             }
         )
 
@@ -207,7 +216,7 @@ def test_env_algo_overrides_top_level():
         OrchestratorConfig.model_validate(
             {
                 "renderer": {"name": "qwen3"},
-                "eval": {"env": [{"legacy": {"id": "removed"}}]},
+                "eval": {"env": [{"env": {"taskset": {"id": "reverse-text-v1"}}}]},
             }
         )
 

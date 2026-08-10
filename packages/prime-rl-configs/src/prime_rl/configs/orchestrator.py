@@ -119,17 +119,13 @@ class EvalSamplingConfig(BaseConfig):
 
 class EnvConfig(BaseConfig):
     """One environment a run pulls from: the verifiers blocks it composes (``env`` — what
-    runs, ``serve`` — how it's hosted, ``legacy`` — a classic v0 env instead) plus this
-    orchestrator's own per-env knobs."""
+    runs, ``serve`` — how it's hosted) plus this orchestrator's own per-env knobs."""
 
     env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
     serve: vf.ServeConfig = vf.ServeConfig()
     """How this source's env server is hosted. The sizing knobs are consumed by the launcher, which writes each source's env-server config with an unset ``address`` filled in as the derived ``tcp://127.0.0.1:<env_server_base_port + index>``. Setting ``address`` marks the server externally managed: the launchers neither write its env-server TOML nor spawn a server for it, and the orchestrator connects to the given address — e.g. a k8s deployment running env servers in their own pods."""
-
-    legacy: vf.LegacyEnvConfig = vf.LegacyEnvConfig()
-    """A classic (v0) environment to run through the bridge instead of ``env``."""
 
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
@@ -144,14 +140,9 @@ class EnvConfig(BaseConfig):
         return vf.resolve_env_field(data, vf.narrowed_env_annotation(cls))
 
     @property
-    def is_legacy(self) -> bool:
-        """A classic (v0) env run through the bridge: a legacy id and no v1 taskset."""
-        return self.legacy.id is not None and not self.env.taskset.id
-
-    @property
     def env_id(self) -> str:
-        """The env's identifier: the v1 env's, else the v0 env id."""
-        return self.env.env_id or self.legacy.id or ""
+        """The environment's identifier."""
+        return self.env.env_id
 
     @property
     def resolved_name(self) -> str:
@@ -159,45 +150,12 @@ class EnvConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_env(self):
-        # A v0 id next to any v1 env identity leaves one of the two going nowhere, and
-        # which one depends on `is_legacy`: a taskset makes it False, so the v0 env never
-        # loads; a bare `env.id` leaves it True, so the v0 env runs under the v1 name.
-        if self.legacy.id is not None and self.env.env_id:
-            if self.env.taskset.id:
-                raise ValueError(
-                    f"legacy.id {self.legacy.id!r} is a classic (v0) env and can't combine with "
-                    f"the v1 taskset {self.env.taskset.id!r}. Pairing a reusable env with a taskset "
-                    f"is env.id = {self.legacy.id!r}; to run the v0 env instead, drop the taskset."
-                )
-            raise ValueError(
-                f"legacy.id {self.legacy.id!r} is a classic (v0) env and can't combine with the "
-                f"v1 env.id {self.env.id!r}: the v0 env is what would run, stamped with the v1 "
-                "env's name. Keep whichever one you meant to run."
-            )
-        if not self.env_id:
-            raise ValueError(
-                'no env configured — set env = { taskset = { id = "<id>" } } (v1) or legacy = { id = "<id>" } (v0)'
-            )
+        if not self.env.taskset.id:
+            raise ValueError('no taskset configured — set env = { taskset = { id = "<id>" } }')
         if self.resolved_name == "agg":
             raise ValueError(
                 'Environment name "agg" is reserved for cross-env metric aggregation. Use a different name or id.'
             )
-        return self
-
-    @model_validator(mode="after")
-    def resolve_legacy_env_kwargs(self):
-        """For a v0/legacy env, surface the v1 knobs the legacy bridge applies via
-        ``legacy.extra_env_kwargs`` (``env.set_kwargs(...)``): the per-rollout wall-clock
-        timeout and the multi-turn completion-token budget, read off ``env.agent``.
-        (``max_seq_len`` is added per train run in ``OrchestratorConfig.resolve_env_config``,
-        which knows ``seq_len``.)"""
-        if self.is_legacy:
-            agent = getattr(self.env, "agent", None)
-            if agent is not None:
-                if agent.timeout.rollout is not None:
-                    self.legacy.extra_env_kwargs["timeout_seconds"] = agent.timeout.rollout
-                if agent.max_output_tokens is not None:
-                    self.legacy.extra_env_kwargs["max_total_completion_tokens"] = agent.max_output_tokens
         return self
 
 
@@ -697,7 +655,7 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_config(self):
-        """Set vLLM sampling defaults + legacy env kwargs on each train env from top-level fields."""
+        """Set vLLM sampling defaults on each train env from top-level fields."""
         for env in self.train.source:
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
@@ -706,10 +664,6 @@ class OrchestratorConfig(BaseConfig):
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)
-            if env.is_legacy:
-                # v0 env: cap per-turn response tokens to the training budget (the legacy
-                # bridge applies legacy.extra_env_kwargs via env.set_kwargs).
-                env.legacy.extra_env_kwargs["max_seq_len"] = self.seq_len
         return self
 
     @property

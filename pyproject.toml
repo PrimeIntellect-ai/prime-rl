@@ -195,10 +195,8 @@ torchao = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
-# prime-rl depends on the one `verifiers` package (v0 + v1 + the legacy bridge + the built-in v1
-# harnesses/tasksets, now bundled in verifiers.v1). v0 envs resolve from
-# deps/{verifiers,research-environments}/environments; v1 tasksets (`-v1`) and the `compact`
-# example live under deps/{verifiers,research-environments}/environments.
+# prime-rl depends on verifiers.v1 and its built-in harnesses/tasksets. Tasksets (`-v1`)
+# and the `compact` example live under deps/{verifiers,research-environments}/environments.
 verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
