@@ -242,7 +242,7 @@ def test_single_node_auto_inference_ports_follow_server_port():
         {
             "trainer": {},
             "orchestrator": {},
-            "inference": {"server": {"port": 8001}, "parallel": {"tp": 1}},
+            "inference": {"server": {"port": 8001}, "vllm": {"tensor_parallel_size": 1}},
             "deployment": {
                 "type": "single_node",
                 "gpus_per_node": 4,
@@ -253,7 +253,7 @@ def test_single_node_auto_inference_ports_follow_server_port():
     )
 
     assert config.inference is not None
-    assert config.inference.parallel.dp == 2
+    assert config.inference.vllm.data_parallel_size == 2
     assert config.inference.backend_port == 8101
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
@@ -263,7 +263,7 @@ def test_multi_node_auto_inference_parallelism():
         {
             "trainer": {},
             "orchestrator": {},
-            "inference": {"parallel": {"tp": 4}},
+            "inference": {"vllm": {"tensor_parallel_size": 4}},
             "deployment": {
                 "type": "multi_node",
                 "gpus_per_node": 8,
@@ -275,8 +275,8 @@ def test_multi_node_auto_inference_parallelism():
     )
 
     assert config.inference is not None
-    assert config.inference.data_parallel_size_local == 2
-    assert config.inference.parallel.dp == 2
+    assert config.inference.vllm.data_parallel_size_local == 2
+    assert config.inference.vllm.data_parallel_size == 2
 
 
 def test_orchestrator_vlm_requires_renderer():
@@ -344,7 +344,7 @@ def test_shared_model_name_propagates_to_subconfigs():
     )
     assert config.trainer.model.name == model_name
     assert config.orchestrator.model.name == model_name
-    assert config.inference is not None and config.inference.model.name == model_name
+    assert config.inference is not None and config.inference.vllm.model == model_name
     assert config.trainer.tokenizer.name == model_name
     assert config.orchestrator.tokenizer.name == model_name
 
@@ -488,7 +488,7 @@ def test_shared_and_sub_max_steps_conflict_raises():
 def test_trainer_chat_template_cascades_to_inference():
     """``[trainer.tokenizer] chat_template`` set directly (no shared
     ``[tokenizer] chat_template``) must still reach
-    ``inference.model.chat_template`` so vLLM's ``--chat-template`` is wired
+    ``inference.vllm.chat_template`` so vLLM's ``--chat-template`` is wired
     up. Regression: the original ``auto_setup_tokenizer`` cascaded this; the
     refactored propagator must keep doing it."""
     config = RLConfig.model_validate(
@@ -502,7 +502,7 @@ def test_trainer_chat_template_cascades_to_inference():
     assert config.trainer.tokenizer.chat_template == "TPL"
     assert config.orchestrator.tokenizer.chat_template == "TPL"
     assert config.inference is not None
-    assert config.inference.model.chat_template == "TPL"
+    assert config.inference.vllm.chat_template == "TPL"
 
 
 def test_shared_wandb_fields_propagate_to_subconfigs():
@@ -579,7 +579,7 @@ def test_shared_output_dir_propagates_through_cli(tmp_path):
     shared_out = tmp_path / "shared"
     config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out)])
     assert config.trainer.output_dir == shared_out
-    assert config.orchestrator.output_dir == shared_out / "run_default"
+    assert config.orchestrator.output_dir == shared_out
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():
@@ -652,7 +652,7 @@ def test_orchestrator_explicit_default_renderer_with_unmapped_model():
 
 
 def test_shared_model_name_resolves_inference_parsers():
-    """Shared [model] name must reach inference.model BEFORE ModelConfig's after-validator
+    """Shared [model] name must reach inference.vllm BEFORE VllmConfig's after-validator
     runs auto_resolve_parsers — i.e. the parsers resolve from the propagated name, not
     from an empty default.
     """
@@ -665,20 +665,20 @@ def test_shared_model_name_resolves_inference_parsers():
         }
     )
     assert config.inference is not None
-    assert config.inference.model.name == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
-    assert config.inference.model.tool_call_parser == "qwen3_coder"
+    assert config.inference.vllm.model == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+    assert config.inference.vllm.tool_call_parser == "qwen3_coder"
 
 
 def test_explicit_inference_parser_wins_over_auto():
-    """Explicit inference.model.tool_call_parser is preserved even when the shared model
+    """Explicit inference.vllm.tool_call_parser is preserved even when the shared model
     name would otherwise auto-resolve to something else."""
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
             "trainer": {},
             "orchestrator": {"renderer": {"name": "default"}},
-            "inference": {"model": {"tool_call_parser": "hermes"}},
+            "inference": {"vllm": {"tool_call_parser": "hermes"}},
         }
     )
     assert config.inference is not None
-    assert config.inference.model.tool_call_parser == "hermes"
+    assert config.inference.vllm.tool_call_parser == "hermes"

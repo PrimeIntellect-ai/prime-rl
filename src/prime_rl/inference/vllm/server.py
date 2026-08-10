@@ -1,6 +1,5 @@
 import asyncio
 from argparse import Namespace
-from typing import Any
 
 import uvloop
 from fastapi import APIRouter, Request
@@ -211,20 +210,18 @@ vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
 # Adapted from vllm/entrypoints/cli/serve.py
 # Only difference we do some config translation (i.e. pass populated namespace
 # to `parse_args`) and additional arg validation
-def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
+def server(config: InferenceConfig):
     import os
 
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
     from vllm.entrypoints.openai.api_server import run_server
 
     # Signal worker processes to disable LoRA on MoE layers when LoRA targets don't include experts
-    if config.lora_target_modules and not any("expert" in m for m in config.lora_target_modules):
+    lora_target_modules = config.vllm.lora_target_modules
+    if lora_target_modules and not any("expert" in m for m in lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
 
-    namespace = config.to_vllm()
-    if vllm_extra:
-        for key, value in vllm_extra.items():
-            setattr(namespace, key, value)
+    namespace = config.to_namespace()
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)

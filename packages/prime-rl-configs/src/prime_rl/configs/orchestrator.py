@@ -4,7 +4,6 @@ from typing import Annotated, Any, Literal, TypeAlias
 import verifiers.v1 as vf
 from pydantic import Field, SerializeAsAny, model_validator
 from renderers import AutoRendererConfig, RendererConfig
-from verifiers.v1.configs.serve import PoolConfig
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
@@ -24,11 +23,6 @@ from prime_rl.configs.shared import (
 )
 from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig
-
-
-class OptimizerConfig(BaseConfig):
-    lr: float = Field(1e-4, ge=0)
-    """Learning rate for this run (per-run override for multi-run training)."""
 
 
 class LoRAConfig(BaseConfig):
@@ -123,21 +117,6 @@ class EvalSamplingConfig(BaseConfig):
         return args
 
 
-class ServeConfig(BaseConfig):
-    """The subset of verifiers' ``ServeConfig`` a source configures — the worker pool
-    and the per-worker bound. The launcher materializes it into the env server's full
-    ``[serve]`` block, filling in the source's derived address
-    (``OrchestratorConfig.env_addresses``)."""
-
-    pool: PoolConfig = Field(default_factory=vf.ElasticPoolConfig)
-    """Worker-pool sizing. ``elastic`` (default) starts at one worker and scales up on
-    demand; ``static`` pre-spawns a fixed ``num_workers``."""
-
-    max_concurrent: int | None = Field(None, ge=1)
-    """Episodes in flight per worker (None = unbounded; the dispatcher's
-    ``max_inflight_episodes`` is the run's bound)."""
-
-
 class EnvConfig(BaseConfig):
     """One environment a run pulls from: the verifiers blocks it composes (``env`` — what
     runs, ``serve`` — how it's hosted) plus this orchestrator's own per-env knobs."""
@@ -145,8 +124,8 @@ class EnvConfig(BaseConfig):
     env: SerializeAsAny[vf.EnvConfig] = vf.SingleAgentEnvConfig()
     """The verifiers environment — which env, its seed taskset, each agent, its knobs. Narrowed to the selected env's config class by the env id, else the taskset id."""
 
-    serve: ServeConfig = ServeConfig()
-    """How this source's env server is sized. Consumed by the launcher (which writes each source's env-server config), not by the orchestrator — the orchestrator only connects."""
+    serve: vf.ServeConfig = vf.ServeConfig()
+    """How this source's env server is hosted. The sizing knobs are consumed by the launcher, which writes each source's env-server config with an unset ``address`` filled in as the derived ``tcp://127.0.0.1:<env_server_base_port + index>``. Setting ``address`` marks the server externally managed: the launchers neither write its env-server TOML nor spawn a server for it, and the orchestrator connects to the given address — e.g. a k8s deployment running env servers in their own pods."""
 
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
@@ -312,7 +291,7 @@ class CheckpointConfig(BaseConfig):
     """Step to resume the orchestrator from. None starts from scratch; ``-1`` resumes from the latest checkpoint available."""
 
     wait_for_weights_timeout: int | None = Field(None, ge=1)
-    """When resuming, wait up to this many seconds for the weight directory to appear. Useful when the orchestrator restarts while the trainer is still saving weights. If None, fail immediately when weights are not found."""
+    """Wait up to this many seconds for the startup weight directory to appear (the trainer broadcasts the incoming policy — v0 from scratch, v{resume_step} on resume — before the first step). If None, fall back to a default timeout. Raise this for large models on slow shared filesystems."""
 
     keep_last: int | None = Field(None, ge=1)
     """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
@@ -435,9 +414,6 @@ class OrchestratorConfig(BaseConfig):
     ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
     client; SFT uses it to backfill tokens for its chat-completions teacher."""
 
-    optim: OptimizerConfig = OptimizerConfig()
-    """Per-run optimizer configuration for multi-run training."""
-
     eval: EvalConfig | None = None
     """Evaluation configuration."""
 
@@ -486,14 +462,14 @@ class OrchestratorConfig(BaseConfig):
     rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
-    output_dir: Path = Path("outputs/run_default")
-    """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
+    output_dir: Path = Path("outputs")
+    """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node."""
 
     tasks_per_minute: int | None = Field(None, ge=1)
     """Rate limit per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. With multiple workers, the effective total rate is ``workers × this value``. None disables rate limiting."""
 
     env_server_base_port: int = Field(5000, ge=1, le=65535)
-    """First port of the env-server port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
+    """First port of the env-server port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Sources with an explicit ``serve.address`` keep it instead, without shifting the other sources' ports (indices stay positional). Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
 
     batch_size: int | None = Field(None, ge=1)
     """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
@@ -513,9 +489,11 @@ class OrchestratorConfig(BaseConfig):
     seq_len: int = 2048
     """Training sequence length. Shorter samples are padded; longer samples are truncated."""
 
-    # TODO(Mika): This should be automatic from the number of ZMQ connections
     num_train_workers: int = Field(1, ge=1)
-    """Training workers to use."""
+    """Trainer data-parallel world size (trainer world size // cp). The orchestrator packs one micro-batch list per DP rank, so this must match the trainer topology. Auto-filled by the ``rl`` entrypoint; set explicitly for standalone orchestrator runs."""
+
+    pad_to_multiple_of: int = Field(1, ge=1)
+    """Pad each packed micro batch to a multiple of this value (the trainer's cp degree). Auto-filled by the ``rl`` entrypoint; set explicitly for standalone orchestrator runs with cp > 1."""
 
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
@@ -700,11 +678,13 @@ class OrchestratorConfig(BaseConfig):
     @property
     def env_addresses(self) -> dict[tuple[str, str], str]:
         """Where each source's env server lives, keyed by ``(split, resolved_name)``:
+        the source's own ``serve.address`` when set (an externally managed server), else
         ``tcp://127.0.0.1:<port>`` with ports from ``env_server_base_port`` in
         ``env_sources`` order. The launcher binds env servers at exactly these addresses
         and the orchestrator connects to them, so both sides agree from the config
         alone."""
         return {
-            (split, source.resolved_name): f"tcp://127.0.0.1:{self.env_server_base_port + index}"
+            (split, source.resolved_name): source.serve.address
+            or f"tcp://127.0.0.1:{self.env_server_base_port + index}"
             for index, (split, source) in enumerate(self.env_sources)
         }

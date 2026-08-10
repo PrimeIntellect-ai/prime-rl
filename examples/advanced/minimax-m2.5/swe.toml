@@ -48,7 +48,6 @@ batch_size = 2048
 oversampling_factor = 2
 max_off_policy_steps = 16
 
-
 [[orchestrator.train.source]]
 name = "swe"
 
@@ -78,9 +77,7 @@ id = "bash"
 type = "prime"
 labels = ["minimax-swe", "swe-bench-verified"]
 
-[inference.parallel]
-tp = 8
-
-# PrimeIntellect/MiniMax-M2.5-bf16 — template-identical to MiniMaxAI/MiniMax-M2.5 (mapped).
+[inference.vllm]
+tensor_parallel_size = 8
 [orchestrator.renderer]
 name = "minimax-m2"

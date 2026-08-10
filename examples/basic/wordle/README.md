@@ -22,7 +22,7 @@ Before training, we want to get a baseline score and test how well `Qwen3-1.7B` 
 
 ```bash
 # Run this in the `Inference` pane
-uv run inference --model.name Qwen/Qwen3-1.7B
+uv run inference --vllm.model Qwen/Qwen3-1.7B
 ```
 
 Then, use the `eval` entrypoint to evaluate the model in the `wordle` environment. We evaluate on the 20 evaluation examples which are distinct words not appearing in the training set of the environment. We constrain the response length to 1024 tokens as this should be more than enough to play a full game.
@@ -98,7 +98,7 @@ Let's see how our final RL checkpoint performs on the eval set.
 
 ```bash
 # Run this in the `Inference` pane
-uv run inference --model.name PrimeIntellect/Qwen3-1.7B-Wordle-RL
+uv run inference --vllm.model PrimeIntellect/Qwen3-1.7B-Wordle-RL
 ```
 
 ```bash

@@ -460,7 +460,7 @@ requires-dist = [
     { name = "datasets" },
     { name = "mcp", specifier = "<2" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
 [[package]]
@@ -584,7 +584,7 @@ dependencies = [
 requires-dist = [
     { name = "bfcl-eval", git = "https://github.com/mikasenghaas/gorilla.git?subdirectory=berkeley-function-call-leaderboard&rev=898763a" },
     { name = "soundfile", specifier = ">=0.13.0" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
 [[package]]
@@ -694,7 +694,7 @@ requires-dist = [
     { name = "openai" },
     { name = "pystemmer" },
     { name = "tokenizers" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
 [[package]]
@@ -1523,7 +1523,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
 [[package]]
@@ -1924,7 +1924,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "pydantic" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.3.0" },
 ]
 
 [[package]]
@@ -3348,7 +3348,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "httpx" },
     { name = "prime-sandboxes", specifier = ">=0.2.19" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
 [[package]]

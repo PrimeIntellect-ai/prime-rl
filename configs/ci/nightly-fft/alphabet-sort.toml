@@ -40,5 +40,5 @@ max_completion_tokens = 768
 
 [trainer]
 
-[inference.parallel]
-dp = 4
+[inference.vllm]
+data_parallel_size = 4

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Literal
@@ -45,7 +45,7 @@ from prime_rl.orchestrator.types import (
     RolloutKind,
 )
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
-from prime_rl.utils.client import InferencePool, client_identity
+from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import get_logger
 
 
@@ -408,20 +408,9 @@ class RolloutDispatcher:
         else:
             pool, model_name, live_sourced = self._train_pool_for(group.env_name)
 
-        # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
-            if group.kind == "eval":
-                client = await pool.get_eval_client()
-            else:
-                load = Counter(
-                    client_identity(m.client_config) for m in self.inflight.values() if m.client_config is not None
-                )
-                client = await pool.select_train_client(load)
-            if group_id not in self.groups:
-                return False
-            group.pinned_client = client
-        else:
-            client = group.pinned_client
+            group.pinned_client = pool.eval_client if group.kind == "eval" else pool.train_client
+        client = group.pinned_client
 
         env_collection = self.train_envs if group.kind == "train" else self.eval_envs
         if env_collection is None:

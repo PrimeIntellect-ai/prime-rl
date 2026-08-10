@@ -6,21 +6,8 @@
 
 output_dir = "/shared/outputs/glm5.2-16node-llmd"
 
-enable_expert_parallel = true
-gpu_memory_utilization = 0.75
-enable_eplb = false
 use_deep_gemm = true
 enable_fp32_lm_head = true
-
-[model]
-name = "zai-org/GLM-5.2-FP8"
-max_model_len = 91000
-tool_call_parser = "glm47"
-reasoning_parser = "glm45"
-
-[vllm_extra]
-enable_ep_weight_filter = true
-safetensors_load_strategy = "prefetch"
 
 [kv_cache_offload]
 type = "mooncake"
@@ -64,3 +51,14 @@ non_cached_tokens = 128
 [slurm]
 job_name = "glm5.2-16node-llmd"
 partition = "all"
+
+[vllm]
+model = "zai-org/GLM-5.2-FP8"
+max_model_len = 91000
+tool_call_parser = "glm47"
+reasoning_parser = "glm45"
+gpu_memory_utilization = 0.75
+enable_expert_parallel = true
+enable_eplb = false
+enable_ep_weight_filter = true
+safetensors_load_strategy = "prefetch"

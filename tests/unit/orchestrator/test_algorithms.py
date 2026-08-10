@@ -13,7 +13,7 @@ from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.transport.types import TrainingSample
 
-FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
+FROZEN = {"name": "org/ref-model", "base_url": "http://ref:8001/v1"}
 
 _ALGO = pydantic.TypeAdapter(AlgoConfig)
 

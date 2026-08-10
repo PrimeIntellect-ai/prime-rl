@@ -58,7 +58,7 @@ class FrozenModelConfig(ClientConfig):
 
     @model_validator(mode="after")
     def require_explicit_endpoint(self):
-        if "base_url" not in self.model_fields_set and not self.is_elastic:
+        if "base_url" not in self.model_fields_set:
             raise ValueError(
                 "a frozen model reference needs base_url — frozen models are externally "
                 "hosted; prime-rl only ever hosts the trainable policy."

@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
 
     from prime_rl.orchestrator.ckpt import CheckpointManager
-    from prime_rl.transport.base import TrainingBatchSender
+    from prime_rl.transport.base import MicroBatchSender
     from prime_rl.utils.client import InferencePool
     from prime_rl.utils.monitor.base import Monitor
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
@@ -49,6 +49,7 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
+from prime_rl.orchestrator.packing import BatchPacker
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
@@ -74,7 +75,7 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.trainer.rl.broadcast.nixl.model_express import ModelExpressSession
-from prime_rl.transport import TrainingBatch, setup_training_batch_sender
+from prime_rl.transport import setup_micro_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.config import to_toml_dict
@@ -129,7 +130,8 @@ class Orchestrator:
     tokenizer: PreTrainedTokenizer
     policy_inference: InferencePool
     monitor: Monitor
-    sender: TrainingBatchSender
+    sender: MicroBatchSender | None
+    packer: BatchPacker
     train_envs: TrainEnvs
     train_source: TrainSource
     train_sink: TrainSink
@@ -218,8 +220,7 @@ class Orchestrator:
         # references are external endpoints — each env's Algorithm builds its
         # own pools in ``setup()`` below.
         get_logger().info(
-            f"Initializing policy inference pool (base_url={', '.join(config.model.client.base_url)}, "
-            f"model={config.model.name})"
+            f"Initializing policy inference pool (base_url={config.model.client.base_url}, model={config.model.name})"
         )
         self.renderer, self.policy_inference = await setup_policy_inference_pool(
             config=config, tokenizer=self.tokenizer
@@ -333,9 +334,6 @@ class Orchestrator:
             self.model_express.publish()
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
-        get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
-        self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
-
         self.lora_name = config.model.lora.name if config.model.lora else None
 
         self.train_source = TrainSource(self.train_envs)
@@ -350,16 +348,31 @@ class Orchestrator:
         else:
             get_logger().info("Training from scratch")
 
-        # Sync inference to the incoming policy before the first step when resuming or when using
-        # an in-memory transport, which rendezvouses with the trainer's startup broadcast.
-        if self.resume_step is not None or config.weight_broadcast.type in ("nccl", "nixl"):
+        self.packer = BatchPacker(config)
+        if config.bench:
+            # Bench runs have no trainer: nothing consumes shipped batches, and the
+            # ZMQ sender's READY barrier would block forever.
+            self.sender = None
+        else:
+            get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
+            self.sender = setup_micro_batch_sender(
+                config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
+            )
+
+        # Sync inference to the incoming policy before the first step, rendezvousing
+        # with the trainer's startup broadcast (v{resume_step} on resume, v0 from
+        # scratch). Bench runs have no trainer, so there is no broadcast to wait for.
+        if not config.bench:
             sync_version = self.resume_step if self.resume_step is not None else 0
             if config.weight_broadcast.type == "nixl":
                 weights_path = None
             else:
                 check_exists = config.weight_broadcast.type == "filesystem"
-                # Without a ckpt block, fall back to a default timeout instead of not waiting at all.
-                wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else STARTUP_WEIGHT_WAIT_TIMEOUT_S
+                # The trainer's startup broadcast is always coming, so wait for it
+                # rather than failing immediately when the directory is not there yet.
+                wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
+                    STARTUP_WEIGHT_WAIT_TIMEOUT_S
+                )
                 weights_path = get_weight_dir(
                     config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
                 )
@@ -645,7 +658,11 @@ class Orchestrator:
         records = [r.to_record() for r in effective]
         await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
 
-        await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
+        pack_start_time = time.perf_counter()
+        micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
+        pack_time = time.perf_counter() - pack_start_time
+        if self.sender is not None:
+            await self.sender.send(micro_batch_grid)
         self.progress.step += 1
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
@@ -679,6 +696,7 @@ class Orchestrator:
             "progress/total_rollouts": self.progress.total_samples,
             "progress/total_tasks": self.progress.total_problems,
             "time/step": step_time,
+            "time/pack": pack_time,
             "time/save_ckpt": save_ckpt_time,
             "time/wait_for_policy": self.wait_for_policy_time,
             "step": step,

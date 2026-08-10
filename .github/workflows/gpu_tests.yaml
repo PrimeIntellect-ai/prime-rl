@@ -84,9 +84,6 @@ jobs:
           - test: reverse_text_moe
             runner: vm
             pytest_args: "tests/integration/test_reverse_text_moe.py"
-          - test: reverse_text_multi_run
-            runner: 4xa6000
-            pytest_args: "tests/integration/test_reverse_text_multi_run.py"
           - test: benchmark_regression
             runner: 4xa6000
             pytest_args: "tests/integration/test_benchmark_regression.py"

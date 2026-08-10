@@ -64,7 +64,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
     template = env.get_template(config.slurm.template_path.name)
 
     is_disaggregated = config.deployment.type == "disaggregated"
-    dp_per_node = config.deployment.gpus_per_node // config.parallel.tp
+    dp_per_node = config.deployment.gpus_per_node // config.vllm.tensor_parallel_size
 
     offload = config.kv_cache_offload
     is_mooncake = offload is not None and offload.type == "mooncake"
@@ -100,7 +100,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             num_decode_replicas=config.deployment.num_decode_replicas,
             prefill_port=config.deployment.prefill_port,
             decode_port=config.deployment.decode_port,
-            data_parallel_rpc_port=config.data_parallel_rpc_port,
+            data_parallel_rpc_port=config.vllm.data_parallel_rpc_port,
             use_deep_gemm=config.use_deep_gemm,
             prefill_env_vars=config.deployment.prefill_env_vars,
             decode_env_vars=config.deployment.decode_env_vars,
@@ -110,8 +110,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
     elif is_multi_node:
         template_vars.update(
             backend_port=config.backend_port,
-            data_parallel_rpc_port=config.data_parallel_rpc_port,
-            enable_expert_parallel=config.enable_expert_parallel,
+            data_parallel_rpc_port=config.vllm.data_parallel_rpc_port,
+            enable_expert_parallel=config.vllm.enable_expert_parallel,
             infer_nodes_per_replica=config.deployment.num_nodes,
         )
 
@@ -170,7 +170,7 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         "--worker-urls",
         f"http://{worker_host}:{config.backend_port}",
         "--intra-node-data-parallel-size",
-        str(config.data_parallel_size_local or config.parallel.dp),
+        str(config.vllm.data_parallel_size_local or config.vllm.data_parallel_size),
         "--request-id-headers",
         "x-session-id",
         "--worker-startup-timeout-secs",
@@ -222,7 +222,7 @@ def inference_local(config: InferenceConfig):
     from prime_rl.inference.vllm.server import server  # pyright: ignore
 
     try:
-        server(config, vllm_extra=config.vllm_extra)
+        server(config)
     finally:
         if router_process is not None:
             router_stopping.set()
