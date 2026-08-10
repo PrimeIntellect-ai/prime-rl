@@ -49,6 +49,10 @@ env:
 jobs:
   build:
     name: Build wheel (${{ matrix.arch }})
+    # Uploading the wheels to a release needs write; on workflow_call the caller
+    # must grant it too (tag-and-release.yaml does).
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -63,7 +67,7 @@ jobs:
       - name: Install build tooling
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git curl ca-certificates build-essential
+          apt-get install -y --no-install-recommends git curl ca-certificates build-essential gh
 
       # Kernel sources live in this repo, so the checkout is all the build needs.
       - name: Checkout
