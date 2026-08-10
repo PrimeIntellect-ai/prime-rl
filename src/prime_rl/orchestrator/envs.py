@@ -130,8 +130,10 @@ class Env:
             detail = f"{error.type}: {error.message}" if error is not None else "no traces and no error recorded"
             raise RuntimeError(f"episode failed before any trace was produced — {detail}")
         rollouts = [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in episode.traces]
+        native_episode = episode.model_copy(update={"traces": rollouts})
         for rollout in rollouts:
             rollout.episode_id = episode.id
+            rollout.native_episode = native_episode
             if not episode.ok and rollout.ok:
                 error = episode.last_error or vf.Error(
                     type="EpisodeFailed", message="A sibling trace in this episode failed"

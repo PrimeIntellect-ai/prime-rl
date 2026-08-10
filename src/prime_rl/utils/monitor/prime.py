@@ -8,14 +8,16 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
+import verifiers.v1 as vf
 from prime_cli.core.config import Config as PrimeConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
-from verifiers.v1.utils.platform import trace_to_sample
+from verifiers.v1.episode import EnvInfo
+from verifiers.v1.utils.platform import build_samples
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import PrimeMonitorConfig
@@ -262,21 +264,25 @@ class PrimeMonitor(Monitor):
         ):
             return
 
-        rollouts = sample_items_for_logging(
-            rollouts,
+        episodes = sample_items_for_logging(
+            self._rollouts_to_episodes(rollouts),
             self.config.log_extras.sample_ratio,
         )
-        if not rollouts:
+        if not episodes:
             return
 
         assert self.last_log_samples_step <= step, "Step must be greater than last logged step"
         assert step not in self._pending_sample_steps, f"Step {step} upload already in progress"
         assert self.logger is not None, "Logger is required for sample logging"
 
-        self.logger.info(f"Logging {len(rollouts)} samples to Prime Intellect API at step {step}")
+        self.logger.info(f"Logging {len(episodes)} episodes to Prime Intellect API at step {step}")
         start_time = time.perf_counter()
 
-        parquet_bytes = self._rollouts_to_parquet_bytes(rollouts, step)
+        try:
+            parquet_bytes = self._episodes_to_parquet_bytes(episodes, step)
+        except Exception as e:
+            self.logger.warning(f"Failed to build Prime monitor samples at step {step}: {type(e).__name__}: {e}")
+            return
 
         if not parquet_bytes:
             self.logger.warning(f"No samples to log at step {step}")
@@ -291,53 +297,86 @@ class PrimeMonitor(Monitor):
             f"Initiated samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
-    def _rollouts_to_parquet_bytes(self, rollouts: list[Rollout], step: int) -> bytes | None:
-        """Convert rollouts to Parquet bytes for upload. One row per rollout. The conversation
-        is the unit (no prompt/completion split — meaningless mid-branch): `completion` is the
-        last branch's messages and `trajectory` is one message list per branch. Shares
-        `verifiers.v1.utils.platform.trace_to_sample` with verifiers' eval `--push`, so a training-run
-        sample and an eval sample land on the platform identically; the RFT-only columns
-        (run/step/advantage/problem_id/env_name) are layered on here."""
+    @staticmethod
+    def _rollouts_to_episodes(rollouts: list[Rollout]) -> list[vf.WireEpisode]:
+        """Recover each rollout's original v1 envelope without changing orchestration.
+
+        Legacy/group paths do not return an Episode envelope, so those remain compatible as
+        one-trace Episodes. Multiple effective traces from one native Episode share the same
+        in-memory envelope and are emitted only once.
+        """
+        episodes: list[vf.WireEpisode] = []
+        seen_native_envelopes: set[int] = set()
+        for rollout in rollouts:
+            episode = rollout.native_episode
+            if episode is None:
+                episodes.append(
+                    vf.WireEpisode.model_construct(
+                        id=rollout.episode_id or rollout.id,
+                        env=EnvInfo(id=rollout.env_name),
+                        ok=rollout.ok,
+                        errors=list(rollout.errors),
+                        traces=[rollout],
+                    )
+                )
+                continue
+            envelope_identity = id(episode)
+            if envelope_identity not in seen_native_envelopes:
+                seen_native_envelopes.add(envelope_identity)
+                episodes.append(episode)
+        return episodes
+
+    def _episodes_to_parquet_bytes(self, episodes: list[vf.WireEpisode], step: int) -> bytes | None:
+        """Convert native Episodes to the existing training sample Parquet schema."""
         now = datetime.now(timezone.utc)
         rows = []
 
-        for sample_id, rollout in enumerate(rollouts):
-            sample = trace_to_sample(rollout, rollout_number=sample_id + 1, episode_id=rollout.episode_id or None)
-            trajectory = sample["trajectory"]
-            if not trajectory:  # no branches (e.g. a rollout that errored before any message)
-                continue
-            advantage = rollout.scalar_advantage()
-            trajectory = [{**branch, "advantage": advantage} for branch in trajectory]
+        for episode in episodes:
+            for sample in build_samples([episode]):
+                info = sample["info"] or {}
+                summary_trace_index = info.get("native_trace_index")
+                if isinstance(summary_trace_index, int):
+                    rollout = cast("Rollout", episode.traces[summary_trace_index])
+                else:
+                    rollout = cast(
+                        "Rollout",
+                        next(trace for trace in episode.traces if trace.id == sample["sample_id"]),
+                    )
 
-            example_id = sample["example_id"]
-            try:
-                problem_id = int(example_id) if example_id is not None else sample_id
-            except (TypeError, ValueError):
-                problem_id = sample_id
+                sample_id = len(rows)
+                trajectory = sample["trajectory"]
+                advantage = rollout.scalar_advantage()
+                trajectory = [{**branch, "advantage": advantage} for branch in trajectory]
 
-            rows.append(
-                {
-                    "run_id": self.run_id,
-                    "step": step,
-                    "tag": "",
-                    "problem_id": problem_id,
-                    "sample_id": sample_id,
-                    "prompt": "",
-                    "completion": json.dumps(sample["completion"]),
-                    "trajectory": json.dumps(trajectory),
-                    "answer": "",
-                    "env_name": rollout.env_name,
-                    "task": json.dumps(sample["task"]),
-                    "info": json.dumps(rollout.info),
-                    "reward": sample["reward"],
-                    "advantage": advantage,
-                    "metrics": json.dumps(sample["metrics"]),
-                    "timing": json.dumps(sample["timing"]),
-                    "num_input_tokens": trajectory[-1]["num_input_tokens"],
-                    "num_output_tokens": trajectory[-1]["num_output_tokens"],
-                    "created_at": now,
-                }
-            )
+                example_id = sample["example_id"]
+                try:
+                    problem_id = int(example_id) if example_id is not None else sample_id
+                except (TypeError, ValueError):
+                    problem_id = sample_id
+
+                rows.append(
+                    {
+                        "run_id": self.run_id,
+                        "step": step,
+                        "tag": "",
+                        "problem_id": problem_id,
+                        "sample_id": sample_id,
+                        "prompt": "",
+                        "completion": json.dumps(sample["completion"]),
+                        "trajectory": json.dumps(trajectory),
+                        "answer": "",
+                        "env_name": rollout.env_name or episode.env.id,
+                        "task": json.dumps(sample["task"]),
+                        "info": json.dumps(info),
+                        "reward": sample["reward"],
+                        "advantage": advantage,
+                        "metrics": json.dumps(sample["metrics"]),
+                        "timing": json.dumps(sample["timing"]),
+                        "num_input_tokens": trajectory[-1]["num_input_tokens"] if trajectory else 0,
+                        "num_output_tokens": trajectory[-1]["num_output_tokens"] if trajectory else 0,
+                        "created_at": now,
+                    }
+                )
 
         if not rows:
             return None
