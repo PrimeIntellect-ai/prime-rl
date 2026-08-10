@@ -23,9 +23,14 @@ launch_inference_rank() {
     mkdir -p "$rpcbase"
     local -a cmd=(uv run inference @ "$CONFIG_PATH"
         --server.host 0.0.0.0 --server.port "$port"
-        --parallel.dp "$dp" --data-parallel-size-local 1 --api-server-count 1)
-    [ -n "$rpc" ] && cmd+=(--data-parallel-rpc-port "$rpc")
-    [ -n "$extra" ] && cmd+=(--vllm-extra "$extra")
+        --vllm.data-parallel-size "$dp" --vllm.data-parallel-size-local 1 --vllm.api-server-count 1)
+    [ -n "$rpc" ] && cmd+=(--vllm.data-parallel-rpc-port "$rpc")
+    # Per-rank vLLM overrides go through a JSON file merged into [inference.vllm]
+    # (dict-valued keys like compilation_config can't be inlined as CLI flags).
+    if [ -n "$extra" ]; then
+        printf '%s' "$extra" > "$rpcbase/vllm-overrides.json"
+        cmd+=(--vllm @ "$rpcbase/vllm-overrides.json")
+    fi
     if [ -n "$nixl" ]; then
         CUDA_VISIBLE_DEVICES="$gpus" VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
     else

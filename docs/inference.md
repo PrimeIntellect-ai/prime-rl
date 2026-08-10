@@ -42,7 +42,7 @@ type = "single_node" # or "multi_node" or "disaggregated"
 To configure the inference server, you can use the `InferenceConfig` field. This is a config-field that allows you to set the inference server-specific knobs. Most of these are supported for all deployment shapes, with few exceptions. These exceptions are rejected on validation.
 
 ```toml
-[inference]
+[inference.vllm]
 model = "PrimeIntellect/INTELLECT-3"
 ...
 ```
@@ -63,12 +63,10 @@ The launcher starts a `vllm-router` on `inference.server.port` (default `8000`) 
 This deployment shape runs the inference server on a single node, if configured with NVLink enabled, it allows you more freedom in terms of parallelism configurations.
 
 ```toml
-[inference]
+[inference.vllm]
 enable_expert_parallel = true # defaults to False
-
-[inference.parallel]
-tp = 2
-dp = 4
+tensor_parallel_size = 2
+data_parallel_size = 4
 
 [inference.deployment]
 type = "single_node"
@@ -76,7 +74,7 @@ type = "single_node"
 
 We reccomend choosing your parallelism based on the expected throughput and latency requirements. High `dp` might create high latency, however it will also give you the highest throughput. This is a tradeoff you need to make based on your use case and required `orchestrator.max_inflight_requests`. Setting `tp` to a higher value will usually give you lower latency, but the inference server also will become saturated faster with lower number of requests.
 
-Another thing to consider, is the memory usage. You need to make sure that the model will fit into the available GPU memory. We will not go into the details on how to do this in this document. Related thing to consider, is the space for the KV cache. This will heavily affect the amount of requests your inference server can handle. You want to shard your model, either using `inference.enable_expert_parallel` or `inference.parallel.tp` to maximize the available GPU memory.
+Another thing to consider, is the memory usage. You need to make sure that the model will fit into the available GPU memory. We will not go into the details on how to do this in this document. Related thing to consider, is the space for the KV cache. This will heavily affect the amount of requests your inference server can handle. You want to shard your model, either using `inference.vllm.enable_expert_parallel` or `inference.vllm.tensor_parallel_size` to maximize the available GPU memory.
 
 You can also increase the available KV cache memory by enabling `inference.kv_cache_offload`. More details in the [Advanced Configuration](#advanced-configuration) section.
 
@@ -86,7 +84,7 @@ You can also increase the available KV cache memory by enabling `inference.kv_ca
 This deployment shape branches into 2 sub-shapes:
 
 - [Multi-replica](#multi-replica) - Runs the inference server on multiple nodes, but each node runs an independent vLLM replica. You can think of this as a for-loop over single-node deployments.
-- [Wide-EP](#wide-ep) - This option is gated behind `inference.enable_expert_parallel = true`. It allows you to run the inference server on multiple nodes, allowing you to use multi-node expert parallelism. This is a more advanced feature that is suitable for high-throughput, high-concurrency workloads.
+- [Wide-EP](#wide-ep) - This option is gated behind `inference.vllm.enable_expert_parallel = true`. It allows you to run the inference server on multiple nodes, allowing you to use multi-node expert parallelism. This is a more advanced feature that is suitable for high-throughput, high-concurrency workloads.
 
 ### Multi-replica
 
@@ -98,35 +96,31 @@ Parallelism configuration is the same as the single-node deployment. The shape i
 type = "multi_node"
 num_nodes = 2
 
-[inference]
+[inference.vllm]
 model = "PrimeIntellect/INTELLECT-3"
-
-[inference.parallel]
-tp = 2
-dp = 4
+tensor_parallel_size = 2
+data_parallel_size = 4
 ```
 
-This configuration will run 2 independent vLLM replicas, each with `tp=2` and `dp=4`. Routing is handled by a single global router running on the first inference node, fronting the per-rank endpoints of all replicas — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via the `[inference.router]` block. You can read more about the supported routing options in the [router](#router) section.
+This configuration will run 2 independent vLLM replicas, each with `tensor_parallel_size=2` and `data_parallel_size=4`. Routing is handled by a single global router running on the first inference node, fronting the per-rank endpoints of all replicas — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via the `[inference.router]` block. You can read more about the supported routing options in the [router](#router) section.
 
 ### Wide-EP
 
-For huge, 200B+ scale models, you might want to use multi-node expert parallelism to maximize the KV-cache space. This deployment shape is defined by setting `inference.deployment.type = "multi_node"` and `inference.enable_expert_parallel = true`.
+For huge, 200B+ scale models, you might want to use multi-node expert parallelism to maximize the KV-cache space. This deployment shape is defined by setting `inference.deployment.type = "multi_node"` and `inference.vllm.enable_expert_parallel = true`.
 
 ```toml
 [inference.deployment]
 type = "multi_node"
 num_nodes = 2
 
-[inference]
+[inference.vllm]
 model = "PrimeIntellect/INTELLECT-3"
 enable_expert_parallel = true
-
-[inference.parallel]
-tp = 2
-dp = 8
+tensor_parallel_size = 2
+data_parallel_size = 8
 ```
 
-This configuration will run 2 vLLM processes, each with `data_parallel_size_local = 4` and `tp = 2` and expert parallelism spanning 2 nodes. The requests are again routed to these processes via the `vllm-router`.
+This configuration will run 2 vLLM processes, each with `data_parallel_size_local = 4` and `tensor_parallel_size = 2` and expert parallelism spanning 2 nodes. The requests are again routed to these processes via the `vllm-router`.
 
 ## P/D Disaggregation
 
@@ -272,24 +266,27 @@ type = "disaggregated"
 These are role-specific and layer on top of [`env_vars`](configuration.md#environment-variables) shared by all inference processes regardless of role.
 
 ### Other vLLM features
-We support various other vLLM features. Some of those, such as `enable_dbo`, `enable_eplb` are exposed as a top-level config fields. For those that are not, you can configure them by setting `inference.vllm_extra` to the desired value.
+The `[inference.vllm]` section is a pass-through: every key is forwarded to the vLLM server under vLLM's own argument name, whether prime-rl types it or not. Anything `vllm serve` accepts can be set here.
 
 ```toml
-[inference.vllm_extra]
+[inference.vllm]
 headless = true
+max_num_seqs = 256
 ```
+
+On the CLI the same keys are available as `--inference.vllm.max-num-seqs 256` (or `--vllm.max-num-seqs 256` for the standalone inference entrypoint); dict-valued arguments take a JSON string, e.g. `--vllm.compilation-config '{"cudagraph_mode": "NONE"}'`.
 
 ### Router Replay
 
 Router replay works by capturing the expert routing decisions into a buffer. This buffer then gets sent to the trainer, which can use it instead of re-computing the routing. This lowers the trainer↔inference mismatch by an order of magnitude, resulting in more stable training.
 
-To enable router replay, you can set `inference.enable_return_routed_experts = true`.
+To enable router replay, you can set `inference.vllm.enable_return_routed_experts = true`.
 
 ```toml
 [trainer]
-enable_router_replay = true # this will also auto-set the inference.enable_return_routed_experts = true
+enable_router_replay = true # this will also auto-set inference.vllm.enable_return_routed_experts = true
 
-[inference]
+[inference.vllm]
 enable_return_routed_experts = true
 ```
 

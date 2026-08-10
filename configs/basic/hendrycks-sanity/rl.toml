@@ -36,10 +36,8 @@ type = "subprocess"
 [trainer.model]
 seq_len = 16384
 
-[inference.model]
+[inference.vllm]
 max_model_len = 8192
-
-# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
 [orchestrator.renderer]
 name = "default"
 reasoning_parser = "think"

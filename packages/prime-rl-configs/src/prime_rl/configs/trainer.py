@@ -625,9 +625,6 @@ class TrainerConfig(BaseConfig):
     metrics_server: MetricsServerConfig | None = None
     """Prometheus metrics server configuration. If set, exposes a ``/metrics`` endpoint for scraping."""
 
-    max_concurrent_runs: int = Field(1, ge=1)
-    """Maximum number of concurrent runs to allow. If 1, only one run may run at a time."""
-
     enable_token_export: bool = False
     """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
 
@@ -700,12 +697,6 @@ class TrainerConfig(BaseConfig):
     def validate_opt_and_fsdp_offload(self):
         if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
             raise ValueError("Muon optimizer does not support FSDP CPU offload")
-        return self
-
-    @model_validator(mode="after")
-    def validate_optim_cpu_offload_single_run(self):
-        if self.model.optim_cpu_offload and self.max_concurrent_runs > 1:
-            raise ValueError("Optimizer CPU offload is not supported with max_concurrent_runs > 1")
         return self
 
     @model_validator(mode="after")

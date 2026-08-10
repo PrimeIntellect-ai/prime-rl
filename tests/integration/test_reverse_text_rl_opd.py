@@ -49,11 +49,11 @@ def ref_inference(output_dir: Path) -> Generator[subprocess.Popen, None, None]:
         "uv",
         "run",
         "inference",
-        "--model.name",
+        "--vllm.model",
         "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL",
         "--server.port",
         str(REF_PORT),
-        "--gpu-memory-utilization",
+        "--vllm.gpu-memory-utilization",
         "0.4",
     ]
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0"}

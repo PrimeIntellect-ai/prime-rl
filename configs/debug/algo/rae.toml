@@ -70,4 +70,6 @@ lr = 3e-6
 [ckpt]
 
 [inference]
+
+[inference.vllm]
 gpu_memory_utilization = 0.5

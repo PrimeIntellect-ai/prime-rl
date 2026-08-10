@@ -35,9 +35,7 @@ max_completion_tokens = 1024
 
 [trainer] # Default trainer config
 
-[inference.parallel]
-dp = 6
-
-# Fine-tune inherits the PrimeIntellect Qwen3 template byte-for-byte.
+[inference.vllm]
+data_parallel_size = 6
 [orchestrator.renderer]
 name = "prime-qwen3"

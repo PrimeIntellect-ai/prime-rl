@@ -38,7 +38,7 @@ The `rl`, `sft`, and `inference` entrypoints all accept a `[deployment]` block (
 uv run rl @ rl.toml \
   --deployment.num-infer-gpus 6 \
   --deployment.num-train-gpus 2 \
-  --inference.parallel.dp 6
+  --inference.vllm.data-parallel-size 6
 ```
 
 The launcher allocates GPUs in order from `CUDA_VISIBLE_DEVICES` (or all visible GPUs): inference first, trainer next. To target a specific physical subset, pin `CUDA_VISIBLE_DEVICES` before launching.
@@ -144,7 +144,7 @@ Offloading optimizer states to CPU is enabled by default (`optim_cpu_offload = t
 optim_cpu_offload = true   # already the default
 ```
 
-Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_concurrent_runs > 1` (multi-tenant training) — set `optim_cpu_offload = false` for multi-run. Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
+Mutually exclusive with `fsdp_cpu_offload`. Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
 
 ### LM Head Chunking
 

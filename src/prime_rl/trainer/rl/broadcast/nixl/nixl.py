@@ -36,7 +36,6 @@ from prime_rl.trainer.rl.broadcast.nixl.trainer_tensor_table import (
     TrainerTensor,
     TrainerTensorTable,
 )
-from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
 
 LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
@@ -74,7 +73,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.config = config
         self.parallel_dims = parallel_dims
         self.world = get_world()
-        self.multi_run_manager = get_multi_run_manager()
         if self.is_serving_rank:
             set_ucx_env_defaults()
             self.nixl_agent = NixlAgent(make_agent_name("trainer", self.world.rank))
@@ -409,7 +407,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
-        ready_runs = list(self.multi_run_manager.ready_to_update_idxs)
         self.initialize_transfer(model)
         start = time.perf_counter()
 
@@ -466,6 +463,4 @@ class NIXLWeightBroadcast(WeightBroadcast):
             )
             self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         dist.barrier()
-        for run_index in ready_runs:
-            self.multi_run_manager.ready_to_update[run_index] = False
         self.logger.info(f"NIXL+ModelExpress policy v{step} synchronized in {time.perf_counter() - start:.2f}s")

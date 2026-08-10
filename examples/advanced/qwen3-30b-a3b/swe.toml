@@ -75,5 +75,5 @@ id = "bash"
 type = "prime"
 labels = ["qwen30b-swe", "swe-bench-verified"]
 
-[inference.parallel]
-tp = 8
+[inference.vllm]
+tensor_parallel_size = 8

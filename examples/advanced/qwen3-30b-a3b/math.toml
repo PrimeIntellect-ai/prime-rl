@@ -75,5 +75,5 @@ id = "null"
 [orchestrator.eval.source.env.agent.runtime]
 type = "subprocess"
 
-[inference.parallel]
-tp = 8
+[inference.vllm]
+tensor_parallel_size = 8

@@ -3,8 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from prime_rl.trainer.batch import pad_micro_batch, prepare_batch, prepare_sample
-from prime_rl.trainer.utils import build_bin_cost
+from prime_rl.trainer.batch import _is_multimodal_sample, build_bin_cost, pad_micro_batch, prepare_batch, prepare_sample
 from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
 
 
@@ -104,8 +103,6 @@ def test_prepare_batch_balances_micro_batches_across_workers(
         rollouts=examples,
         seq_len=4,
         num_train_workers=num_train_workers,
-        idxs=[0] * rollout_count,
-        num_loras=1,
         bin_cost=build_bin_cost(None),
     )
 
@@ -147,8 +144,6 @@ def test_randomized_packing_invariants():
             rollouts=examples,
             seq_len=seq_len,
             num_train_workers=num_train_workers,
-            idxs=[0] * len(examples),
-            num_loras=1,
             bin_cost=bin_cost,
         )
         flat_batches = _flatten_batches(batches_per_gpu)
@@ -162,7 +157,6 @@ def test_randomized_packing_invariants():
             assert len(batch.input_ids) <= seq_len
             assert sum(batch.sequence_lengths) == len(batch.input_ids)
             assert batch.seq_lens == batch.sequence_lengths
-            assert sum(batch.lora_num_tokens) == len(batch.input_ids)
             assert len(batch.env_names) == len(batch.input_ids)
 
         for batch in dummy_batches:
@@ -189,8 +183,6 @@ def test_split_to_align_avoids_dummy_micro_batches():
         rollouts=examples,
         seq_len=12,
         num_train_workers=4,
-        idxs=[0] * len(examples),
-        num_loras=1,
         bin_cost=build_bin_cost(None),
     )
 
@@ -205,8 +197,6 @@ def test_pack_first_then_balance_distributes_micro_batches_by_tokens_without_mod
         rollouts=examples,
         seq_len=100,
         num_train_workers=2,
-        idxs=[0] * len(examples),
-        num_loras=1,
         bin_cost=build_bin_cost(None),
     )
 
@@ -221,8 +211,6 @@ def test_flop_aware_balancing_pairs_long_and_short_sequence_workloads():
         rollouts=examples,
         seq_len=32,
         num_train_workers=2,
-        idxs=[0] * len(examples),
-        num_loras=1,
         bin_cost=bin_cost,
     )
 
@@ -238,8 +226,6 @@ def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
         rollouts=examples,
         seq_len=64,
         num_train_workers=4,
-        idxs=[0] * len(examples),
-        num_loras=1,
         bin_cost=build_bin_cost(make_flops_config()),
     )
 
@@ -258,8 +244,6 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
         rollouts=[example1, example2],
         seq_len=16,
         num_train_workers=1,
-        idxs=[0, 0],
-        num_loras=1,
         bin_cost=build_bin_cost(None),
     )
 
@@ -319,8 +303,6 @@ def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_
         rollouts=[longer, shorter],
         seq_len=16,
         num_train_workers=1,
-        idxs=[0, 0],
-        num_loras=1,
         bin_cost=build_bin_cost(None),
     )
 
@@ -360,8 +342,6 @@ def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, 
         seq_len=16,
         pad_to_multiple_of=1,
         num_train_workers=1,
-        idxs=[0, 0],
-        num_loras=1,
         bin_cost=build_bin_cost(None),
     )
     flat_batches = _flatten_batches(batches_per_gpu)
@@ -475,10 +455,12 @@ def test_prepare_batch_packs_multimodal_with_text():
         rollouts=[mm_sample, text_sample],
         seq_len=8,
         num_train_workers=2,
-        idxs=[0, 0],
-        num_loras=1,
         bin_cost=build_bin_cost(None),
     )
+
+    # FSDP requires uniform modality at each step index across ranks
+    for step_mbs in zip(*batches_per_gpu):
+        assert len({_is_multimodal_sample(mb) for mb in step_mbs}) == 1
 
     real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
     assert len(real_batches) == 1
