@@ -14,12 +14,11 @@ from collections.abc import Iterator
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.envs import TrainEnvs
+from prime_rl.orchestrator.types import TaskItem
 
 
 class TrainSource:
-    """``next_example(available_permits)`` picks a weighted-RR env and returns its
-    next example. Returned dicts carry ``env_name``, ``task_idx``, and ``task``;
-    the task data is shipped to the env server at dispatch.
+    """``next_task()`` picks a weighted-RR env and returns its next v1 task item.
 
     The data position round-trips through a checkpoint via ``state_dict()``
     / ``load_state_dict()``: per-env ``{epoch, cursor}`` plus the env-choice
@@ -37,30 +36,32 @@ class TrainSource:
         if not self.envs:
             raise ValueError("TrainSource needs at least one train env")
 
-        # A finite env's example table in canonical order (each epoch's shuffle
+        # A finite env's task table in canonical order (each epoch's shuffle
         # starts from this); ``None`` for an infinite env, whose generator
-        # (``self.iters``) is pulled per example.
-        self.base_rows: dict[str, list[dict] | None] = {}
-        self.examples: dict[str, list[dict] | None] = {}
-        self.iters: dict[str, Iterator[vf.Task]] = {}
+        # (``self.iters``) is pulled per task.
+        self.base_rows: dict[str, list[TaskItem] | None] = {}
+        self.task_rows: dict[str, list[TaskItem] | None] = {}
+        self.iters: dict[str, Iterator[vf.TaskData]] = {}
         self.epochs: dict[str, int] = {}
         self.cursors: dict[str, int] = {}
         for env in self.envs:
-            if env.num_tasks is None:  # infinite: pull the generator per example
+            if env.num_tasks is None:  # infinite: pull the generator per task
                 rows = None
                 self.iters[env.name] = env.tasks
             else:
-                rows = [{"task_idx": task.data.idx, "task": task, "env_name": env.name} for task in env.tasks]
+                rows = [TaskItem(env_name=env.name, data=data) for data in env.tasks]
+                if not rows:
+                    raise ValueError(f"Train env {env.name} has no tasks")
             self.base_rows[env.name] = rows
             self.epochs[env.name] = 1
             self.cursors[env.name] = 0
-            self.examples[env.name] = self._shuffle(env.name)
+            self.task_rows[env.name] = self._shuffle(env.name)
 
         self.env_names = [e.name for e in self.envs]
         self.weights: list[float] = [float(e.config.ratio) for e in self.envs]
 
-    def _shuffle(self, env_name: str) -> list[dict] | None:
-        """The env's example table shuffled for its current epoch — a pure
+    def _shuffle(self, env_name: str) -> list[TaskItem] | None:
+        """The env's task table shuffled for its current epoch — a pure
         function of (canonical order, epoch), so a restored position replays
         the exact epoch permutation."""
         rows = self.base_rows[env_name]
@@ -88,23 +89,21 @@ class TrainSource:
                 for _ in range(position["cursor"]):
                     next(self.iters[name])
             else:
-                self.examples[name] = self._shuffle(name)
+                self.task_rows[name] = self._shuffle(name)
 
-    def next_example(self, available_permits: int) -> dict | None:
-        if available_permits < 1:
-            return None
+    def next_task(self) -> TaskItem:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
-        rows = self.examples[env_name]
+        rows = self.task_rows[env_name]
         cursor = self.cursors[env_name]
         if rows is None:  # infinite env: pull the next generated task
-            task = next(self.iters[env_name])
+            data = next(self.iters[env_name])
             self.cursors[env_name] = cursor + 1
-            return {"task_idx": task.data.idx, "task": task, "env_name": env_name}
+            return TaskItem(env_name=env_name, data=data)
         if cursor >= len(rows):
             self.epochs[env_name] += 1
             rows = self._shuffle(env_name)
-            self.examples[env_name] = rows
+            self.task_rows[env_name] = rows
             cursor = 0
-        example = rows[cursor]
+        task = rows[cursor]
         self.cursors[env_name] = cursor + 1
-        return example
+        return task

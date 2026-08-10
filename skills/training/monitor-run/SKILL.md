@@ -94,7 +94,7 @@ All metrics print to the console log (and W&B when configured).
 - `{scope}/{subset}/<metric>/<stat>` — episode-level facts only: the token/turn/branch counts, summed over an episode's traces.
 - `{scope}/{subset}/<agent>/<metric>/<stat>` — every trace-level metric (reward, truncation, errors, timing, env metrics, filter verdicts, eval scores), keyed by agent name so seats never mix. Flat over that agent's traces: one sample is one trace, so an in-episode fan-out like n solvers contributes n samples.
 
-`scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (post-filter). Single-agent envs have one agent — usually `agent` — and one trace per episode, so both levels agree; multi-agent envs name each seat (`proposer`, `solver`, `judge`, …).
+`scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every episode and its traces) or `effective` (post-filter traces). Single-agent envs have one agent — usually `agent` — and one trace per episode, so both levels agree; multi-agent envs name each seat (`proposer`, `solver`, `judge`, …).
 
 | Metric | Description |
 |--------|-------------|
@@ -103,7 +103,8 @@ All metrics print to the console log (and W&B when configured).
 | `train/agg/effective/num_turns/mean` | avg turns per episode, summed over its agents |
 | `train/<env>/effective/<agent>/num_turns/mean` | avg turns for that agent alone (also token counts, `num_branches`) |
 | `train/agg/effective/<agent>/is_truncated/mean` | fraction of that agent's rollouts truncated |
-| `train/agg/all/<agent>/has_error/mean` | fraction of that agent's rollouts errored (per-type under `train/agg/all/<agent>/error/<type>`; also `dispatcher/errored/{train,eval}`) |
+| `train/agg/all/has_error/mean` | fraction of episodes that failed, including zero-trace failures (also `dispatcher/errored/{train,eval}`) |
+| `train/agg/all/<agent>/has_error/mean` | fraction of that agent's traces errored (per-type under `train/agg/all/<agent>/error/<type>`) |
 | `train/agg/all/<agent>/is_trainable/mean` | fraction carrying a training signal — 0.0 for a frozen seat like a judge (also `is_filtered`, `filters/<name>`) |
 | `train/<env>/effective/<agent>/metrics/<name>/mean` | env-specific metrics for that agent (e.g. pass rate) |
 | `train/<env>/effective/<agent>/timing/agent/model/mean` | model vs harness share of that agent's phase |
@@ -141,25 +142,28 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 ### Traces
 
 ```
-{output_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per rollout as it completes
+{output_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # one v1 Episode per line, appended as it completes
 {output_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
 
-JSONL files of `vf.Trace` records (training tensors excluded), one line per trace — a
-multi-agent env's episode contributes several lines sharing one `info.episode_id`. `all`
-gets every completed rollout the moment it arrives — errored, filtered, and never-batched
-ones included — so it's crash-durable; `effective` gets the clean trainable subset that went
+The `all` stream contains canonical v1 `Episode` records, one line per episode, with each
+episode's traces nested under `.traces`. This preserves zero-trace failures and keeps a
+multi-agent episode atomic. The episode-level `prime_rl` object carries `env_name`, `group_id`,
+the originating `task`, `policy_version`, and the run kind. `all` gets every completed episode the moment it arrives —
+errored, filtered, and never-batched ones included — so it's crash-durable. `effective` remains
+a derived stream of `vf.Trace` records (training tensors excluded), one line per clean trace that went
 into the step's train batch (eval: the non-errored trainable epoch cohort; multiple eval envs
 share the step file) — untrainable traces (a frozen judge's) appear only in `all`. Each record carries `run` (`{type, id, step}`; for eval, `step` is the trigger step),
 `verifiers` (producing build), `agent` (model, sampling, harness, `name`, `trainable`), `ok`
 (the success sentinel — `errors` alone keeps retry history even after a recovery), and
-`runtime` (config + provisioned resource id, e.g. the sandbox id), plus `env_name`,
-`group_id`, `episode_id`, and `policy_version` under `info`.
+`runtime` (config + provisioned resource id, e.g. the sandbox id). Effective trace records keep
+`env_name`, `group_id`, `episode_id`, and `policy_version` under `info.prime_rl`.
 
 ```bash
 wc -l {output_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
 jq '.rewards' {output_dir}/rollouts/step_42/train/effective/traces.jsonl
-jq 'select(.ok | not) | {id, env: .info.env_name, runtime}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
+jq 'select(.ok | not) | {id, env: .prime_rl.env_name, error: .errors[-1]}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
+jq '.traces[] | select(.ok | not)' {output_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
 The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{output_dir}/rollouts/step_N/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the trace subtrees.

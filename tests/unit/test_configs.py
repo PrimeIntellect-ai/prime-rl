@@ -579,9 +579,23 @@ def test_orchestrator_renderer_auto_rejects_unmapped_model():
 
 def test_orchestrator_renderer_auto_accepts_mapped_model():
     """The default Qwen model is in MODEL_RENDERER_MAP and should validate cleanly."""
-    config = OrchestratorConfig.model_validate({"model": {"name": "Qwen/Qwen3-0.6B"}})
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "batch_size": 5,
+            "group_size": 4,
+            "max_inflight_episodes": 1,
+            "eval": {
+                "num_tasks": 2,
+                "source": [{"env": {"taskset": {"id": "reverse-text-v1"}}}],
+            },
+        }
+    )
     assert config.renderer is not None
     assert config.renderer.name == "auto"
+    assert config.max_inflight_episodes == 1
+    assert config.eval is not None
+    assert config.eval.source[0].num_tasks == 2
 
 
 def test_sft_renderer_auto_accepts_prime_qwen_model():

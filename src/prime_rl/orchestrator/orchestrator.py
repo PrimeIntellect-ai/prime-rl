@@ -3,14 +3,12 @@
 ``Orchestrator`` owns the shared state (policy, progress, ckpt, monitor)
 and drives the pipeline. Components are single-purpose:
 
-- ``RolloutDispatcher`` schedules rollouts; emits ``Rollout`` (train/eval
-  discriminated by ``kind``) on its queue.
-- ``TrainSink`` ingests train rollouts (tokenize → advantages → filters)
+- ``EpisodeDispatcher`` schedules and emits complete v1 episodes.
+- ``TrainSink`` ingests train episodes (tokenize → advantages → filters)
   and returns a ``TrainBatch`` when the threshold is met.
-- ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
+- ``EvalSink`` ingests eval episodes and returns an ``EvalBatch`` (the full
   returned cohort) on epoch completion.
-- ``TrainRollouts`` / ``EvalRollouts`` carry the rollouts and build the per-step W&B metrics
-  (``batch.rollouts.metrics`` / ``.effective.metrics``).
+- ``TrainEpisodes`` / ``EvalEpisodes`` own episodes and derive trace and metric views.
 - ``WeightWatcher`` advances ``Policy`` and notifies observers.
 - ``PeriodicLogger`` polls the components on a shared interval for the
   ``_timestamp``-axis pipeline log.
@@ -43,7 +41,7 @@ if TYPE_CHECKING:
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
+from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, EpisodeDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -58,10 +56,10 @@ from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
+    Episode,
     EvalBatch,
     Policy,
     Progress,
-    Rollout,
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
@@ -135,7 +133,7 @@ class Orchestrator:
     train_envs: TrainEnvs
     train_source: TrainSource
     train_sink: TrainSink
-    dispatcher: RolloutDispatcher
+    dispatcher: EpisodeDispatcher
     watcher: WeightWatcher
     lag_monitor: EventLoopLagMonitor
     periodic_logger: PeriodicLogger
@@ -407,7 +405,7 @@ class Orchestrator:
         assert config.max_inflight_episodes is not None, "max_inflight_episodes must be resolved before dispatcher init"
         log_interval = config.log.interval
         wandb_enabled = config.wandb is not None
-        self.dispatcher = RolloutDispatcher(
+        self.dispatcher = EpisodeDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
             train_source=self.train_source,
@@ -522,7 +520,7 @@ class Orchestrator:
             trim_process_memory()
 
     async def main_loop(self) -> None:
-        """Consume episodes (``list[Rollout]``) from the dispatcher and route them
+        """Consume v1 ``Episode`` objects from the dispatcher and route them
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
@@ -532,38 +530,40 @@ class Orchestrator:
                 break
 
             try:
-                episode: list[Rollout] = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                episode: Episode = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
 
-            # Every completed rollout — errored, filtered, or never batched — lands in the
-            # ``all`` trace file the moment it arrives, so it survives crashes and drains.
-            # Train rollouts belong to the batch window currently collecting (``progress.step``),
-            # eval rollouts to the step whose eval triggered them.
-            kind = episode[0].kind
-            step = episode[0].eval_step if kind == "eval" else self.progress.step
+            # Every completed episode — failed, filtered, or never batched — lands in the
+            # ``all`` stream the moment it arrives, so zero-trace failures survive crashes
+            # and drains. Train episodes belong to the batch window currently collecting
+            # (``progress.step``); eval episodes use their trigger step.
+            kind = episode.kind
+            step = episode.eval_step if kind == "eval" else self.progress.step
             assert step is not None
             run: vf.RunInfo = (
                 vf.EvalRunInfo(id=self.run_id, step=step)
                 if kind == "eval"
                 else vf.TrainRunInfo(id=self.run_id, step=step)
             )
-            for rollout in episode:
-                rollout.record_run(
+            for trace in episode.traces:
+                trace.record_run(
                     run,
-                    env_name=rollout.env_name,
-                    group_id=str(rollout.group_id),
-                    episode_id=rollout.episode_id,
-                    policy_version=rollout.policy_version,
+                    prime_rl={
+                        "env_name": trace.env_name,
+                        "group_id": str(trace.group_id),
+                        "episode_id": trace.episode_id,
+                        "policy_version": trace.policy_version,
+                    },
                 )
             await asyncio.to_thread(
                 save_rollouts,
-                [rollout.to_record() for rollout in episode],
+                [episode.to_record()],
                 get_trace_path(self.config.output_dir, step, kind, "all"),
             )
 
             if kind == "eval":
-                assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
+                assert self.eval_sink is not None  # eval episodes only emit when eval is configured
                 eval_batch = self.eval_sink.add(episode)
                 if eval_batch is not None:
                     await self.finalize_eval_batch(eval_batch)
@@ -582,6 +582,8 @@ class Orchestrator:
         done all data-transformation work."""
         config = self.config
         step = self.progress.step
+        episodes = batch.episodes
+        traces = episodes.traces
 
         # Sink-to-sink cycle time — the actual time between batches, not
         # including the orchestrator's ship I/O (overlapped with the
@@ -593,9 +595,9 @@ class Orchestrator:
         if config.max_steps is not None and step > config.max_steps:
             self.draining = True
             self.dispatcher.disable_train_scheduling()
-            n_cancelled = await self.dispatcher.cancel_inflight_train_rollouts()
+            n_cancelled = await self.dispatcher.cancel_inflight_train_episodes()
             get_logger().info(
-                f"Draining pipeline (cancelled {n_cancelled} in-flight train rollout(s); "
+                f"Draining pipeline (cancelled {n_cancelled} in-flight train episode(s); "
                 f"any in-flight evals will complete)"
             )
             return
@@ -603,7 +605,7 @@ class Orchestrator:
         if not batch.samples:
             self.consecutive_empty_batches += 1
             get_logger().warning(
-                f"Step {step}: empty train batch (0 of {len(batch.rollouts)} generated rollouts shipped — "
+                f"Step {step}: empty train batch (0 of {len(traces)} generated traces shipped — "
                 f"all errored or filtered out) "
                 f"(consecutive empty batches: {self.consecutive_empty_batches}/{MAX_CONSECUTIVE_EMPTY_BATCHES})"
             )
@@ -614,12 +616,13 @@ class Orchestrator:
                 )
             return
         self.consecutive_empty_batches = 0
-        effective = batch.rollouts.effective
-        n_trainable = sum(1 for r in effective if r.is_trainable)
-        if effective and n_trainable / len(effective) <= 0.1:
+        effective = episodes.effective
+        effective_traces = effective.traces
+        n_trainable = sum(1 for trace in effective_traces if trace.is_trainable)
+        if effective_traces and n_trainable / len(effective_traces) <= 0.1:
             get_logger().warning(
-                f"Only {n_trainable}/{len(effective)} effective rollouts are trainable "
-                f"({n_trainable / len(effective):.1%}) — consider reviewing task difficulty / filter config"
+                f"Only {n_trainable}/{len(effective_traces)} effective traces are trainable "
+                f"({n_trainable / len(effective_traces):.1%}) — consider reviewing task difficulty / filter config"
             )
 
         # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}.
@@ -647,15 +650,15 @@ class Orchestrator:
         # off-policy — queue time included, unlike the dispatcher's in-flight
         # counter, which only sees weight updates during generation. Frozen-
         # sourced rollouts stay 0 (their sampler doesn't follow the policy).
-        for r in batch.rollouts:
-            if self.train_envs.get(r.env_name).sampler.samples_from_live_policy:
-                r.off_policy_steps = (step - 1) - r.policy_version
+        for trace in traces:
+            if self.train_envs.get(trace.env_name).sampler.samples_from_live_policy:
+                trace.off_policy_steps = (step - 1) - trace.policy_version
 
         # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
         # at ship time; the full arrival window already streamed into ``all`` on arrival.
         # to_record drops the per-node training tensors — they're for training, not the rollout
         # record, and can't round-trip json (raw numpy bytes).
-        records = [r.to_record() for r in effective]
+        records = [trace.to_record() for trace in effective_traces]
         await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
 
         pack_start_time = time.perf_counter()
@@ -669,10 +672,9 @@ class Orchestrator:
         save_ckpt_time = await self.maybe_save_ckpt(step)
         trim_process_memory()
 
-        # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``batch.rollouts`` is the
-        # full arrival window (errored + filtered included); ``.effective`` is the clean subset.
+        # Episode metrics over the {agg,<env>} × {all,effective} matrix.
         metrics: dict[str, float] = {}
-        for subset, pool in (("all", batch.rollouts), ("effective", effective)):
+        for subset, pool in (("all", episodes), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
             for env_name, env_pool in pool.by_env().items():
                 metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
@@ -681,19 +683,23 @@ class Orchestrator:
         # objects). ``num_tokens`` is over the full arrival window; the input/output breakdown is over
         # the effective (shipped) subset, summing the same ``vf.Trace`` token properties the metric
         # matrix reports.
-        num_tokens = sum(r.num_total_tokens for r in batch.rollouts)
-        num_input = sum(r.num_input_tokens for r in effective)
-        num_output = sum(r.num_output_tokens for r in effective)
-        num_rollouts = len(batch.rollouts)
-        num_unique_examples = len({r.group_id for r in batch.rollouts})
+        num_tokens = sum(trace.num_total_tokens for trace in traces)
+        num_input = sum(trace.num_input_tokens for trace in effective_traces)
+        num_output = sum(trace.num_output_tokens for trace in effective_traces)
+        num_traces = len(traces)
+        num_episodes = len(episodes)
+        num_failed_episodes = sum(not episode.ok for episode in episodes)
+        num_unique_examples = len({episode.group_id for episode in episodes})
         metrics |= {
             "progress/tokens": num_tokens,
             "progress/input_tokens": num_input,
             "progress/output_tokens": num_output,
-            "progress/rollouts": num_rollouts,
+            "progress/traces": num_traces,
+            "progress/episodes": num_episodes,
+            "progress/failed_episodes": num_failed_episodes,
             "progress/tasks": num_unique_examples,
             "progress/total_tokens": self.progress.total_tokens,
-            "progress/total_rollouts": self.progress.total_samples,
+            "progress/total_traces": self.progress.total_samples,
             "progress/total_tasks": self.progress.total_problems,
             "time/step": step_time,
             "time/pack": pack_time,
@@ -701,8 +707,8 @@ class Orchestrator:
             "time/wait_for_policy": self.wait_for_policy_time,
             "step": step,
         }
-        for env_name, env_pool in batch.rollouts.by_env().items():
-            metrics[f"batch/{env_name}"] = len(env_pool) / len(batch.rollouts)
+        for env_name, env_pool in episodes.by_env().items():
+            metrics[f"batch/{env_name}"] = len(env_pool.traces) / len(traces)
         if self.train_sink.pre_filter_seen > 0:
             metrics["pre_filters/all/dropped_rate"] = (
                 self.train_sink.pre_filter_dropped / self.train_sink.pre_filter_seen
@@ -711,11 +717,13 @@ class Orchestrator:
                 metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
         self.monitor.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
-        self.monitor.log_samples(effective.rollouts, step=step)
+        self.monitor.log_samples(effective_traces, step=step)
         self.monitor.log_distributions(
             distributions={
-                "rewards": [r.reward for r in effective],
-                "advantages": [a for r in effective if (a := r.scalar_advantage()) is not None],
+                "rewards": [trace.reward for trace in effective_traces],
+                "advantages": [
+                    advantage for trace in effective_traces if (advantage := trace.scalar_advantage()) is not None
+                ],
             },
             step=step,
         )
@@ -732,7 +740,7 @@ class Orchestrator:
             self.heart.beat()
 
         self.progress.total_tokens += num_tokens
-        self.progress.total_samples += num_rollouts
+        self.progress.total_samples += num_traces
         self.progress.total_problems += num_unique_examples
 
         self.log_train_batch(batch, step=step, step_time=step_time)
@@ -755,11 +763,11 @@ class Orchestrator:
         for env_name in fired:
             self.eval_triggered_at[(env_name, step)] = now
         assert self.eval_envs is not None
-        total_rollouts = sum(
-            self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
+        total_episodes = sum(
+            self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).eval_tasks)
             for env_name in fired
         )
-        get_logger().info(f"Starting evals in {', '.join(fired)} ({total_rollouts} total rollouts)")
+        get_logger().info(f"Starting evals in {', '.join(fired)} ({total_episodes} total episodes)")
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:
         """Pipeline view for the orchestrator's ``PeriodicLogger``. Returns
@@ -802,7 +810,7 @@ class Orchestrator:
         # Unified inflight tail: total, then train/eval split, then per-env
         # (only when more than one env of a kind makes the split ambiguous)
         inflight_part = (
-            f"{inflight_train + inflight_eval} inflight rollouts (train={inflight_train}, eval={inflight_eval}"
+            f"{inflight_train + inflight_eval} inflight episodes (train={inflight_train}, eval={inflight_eval}"
         )
         if multi_train or multi_eval:
             env_pairs = [(e.name, inflight_by_env.get(("train", e.name), 0)) for e in self.train_envs]
@@ -826,40 +834,42 @@ class Orchestrator:
 
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
-        ``Error`` is the sink-level rate (errored arrivals / total arrivals, over the full window);
+        ``Error`` is the failed-episode rate over the full window;
         the quality metrics are over the effective (clean, trained-on) subset, as is ``Trainable``."""
-        rollouts = batch.rollouts
-        effective = rollouts.effective
+        episodes = batch.episodes
+        traces = episodes.traces
+        effective = episodes.effective
+        effective_traces = effective.traces
         eff = effective.metrics
-        n_generated = len(rollouts)
-        n_effective = len(effective)
-        n_trainable = sum(1 for r in effective if r.is_trainable)
+        n_generated = len(traces)
+        n_effective = len(effective_traces)
+        n_trainable = sum(1 for trace in effective_traces if trace.is_trainable)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_off_policy = max((r.off_policy_steps for r in effective), default=0)
+        max_off_policy = max((trace.off_policy_steps for trace in effective_traces), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
             f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Max Off-Policy {max_off_policy} | "
-            f"Error {rollouts.metrics.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
+            f"Error {episodes.metrics.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
             get_logger().success(head)
             return
 
-        by_env = rollouts.by_env()
+        by_env = episodes.by_env()
         name_width = max((len(n) for n in by_env), default=0)
         lines = [head]
         for env_name in sorted(by_env):
             pool = by_env[env_name]
             env_eff_pool = pool.effective
             env_eff = env_eff_pool.metrics
-            ratio = (len(pool) / n_generated) if n_generated else 0.0
+            ratio = (len(pool.traces) / n_generated) if n_generated else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Off-Policy {max((r.off_policy_steps for r in env_eff_pool), default=0)} | "
+                f"Max Off-Policy {max((r.off_policy_steps for r in env_eff_pool.traces), default=0)} | "
                 f"Error {pool.metrics.has_error.mean():.1%} | Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
@@ -867,39 +877,35 @@ class Orchestrator:
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch (save_rollouts,
         monitor.log_eval_samples, monitor.log)."""
-        if not batch.rollouts:
-            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
-            return
-
         # The non-errored subset lands in the per-step ``effective`` trace file on epoch
         # completion (multiple eval envs share the step file — each epoch appends its cohort
         # once, and every record carries ``env_name``); the full returned cohort already
         # streamed into ``all`` on arrival.
-        records = [r.to_record() for r in batch.rollouts.effective]
+        episodes = batch.episodes
+        effective = episodes.effective
+        records = [trace.to_record() for trace in effective.traces]
         await asyncio.to_thread(
             save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
-        self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
-        policy_versions = {r.policy_version for r in batch.rollouts}
+        self.monitor.log_eval_samples(episodes.traces, env_name=batch.env_name, step=batch.step)
+        policy_versions = {episode.policy_version for episode in episodes}
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:
             get_logger().warning(
                 f"Eval {batch.env_name} step {batch.step} had mixed policy versions: {sorted(policy_versions)}"
             )
-        # Rollout metrics over {all,effective} (eval batches are per-env, so no `agg` axis).
+        # Episode metrics over {all,effective} (eval batches are per-env, so no `agg` axis).
         # ``effective`` = non-errored; pass@k / pass^k only over the effective set.
-        rollouts = batch.rollouts
-        effective = rollouts.effective
         metrics: dict[str, float] = {}
-        for subset, pool in (("all", rollouts), ("effective", effective)):
+        for subset, pool in (("all", episodes), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
         self.monitor.log(metrics, step=batch.step)
 
-        # Success line — quality metrics over the effective set, error rate over the full returned
-        # cohort. ``Stat.mean()`` is 0.0 for an empty set.
-        eff, full = effective.metrics, rollouts.metrics
+        # Success line — quality metrics over the effective traces, failed-episode rate over the
+        # full cohort. ``Stat.mean()`` is 0.0 for an empty set.
+        eff, full = effective.metrics, episodes.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
         get_logger().success(
@@ -1001,6 +1007,9 @@ class Orchestrator:
                 for env in self.train_envs:
                     for pool in (*env.sampler.connected_pools, *env.algorithm.connected_pools):
                         await pool.stop()
+                await self.train_envs.stop()
+            if self.eval_envs is not None:
+                await self.eval_envs.stop()
             if self.usage_reporter is not None:
                 self.usage_reporter.close()
 

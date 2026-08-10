@@ -130,9 +130,6 @@ class EnvConfig(BaseConfig):
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
-    ratio: float = Field(1.0, gt=0)
-    """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
-
     @model_validator(mode="before")
     @classmethod
     def _resolve_env(cls, data):
@@ -160,11 +157,14 @@ class EnvConfig(BaseConfig):
 
 
 class TrainSourceConfig(EnvConfig):
+    ratio: float = Field(1.0, gt=0)
+    """Relative sampling weight across training environments."""
+
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
     group_size: int = Field(1, ge=1)
-    """Rollouts generated per example for GRPO group-relative advantages.
+    """Episodes run per task for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
 
     algo: AlgoConfig | None = None
@@ -177,11 +177,11 @@ class EvalSourceConfig(EnvConfig):
     sampling: EvalSamplingConfig = EvalSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level eval sampling config."""
 
-    num_examples: int = -1
-    """Eval examples to sample from the dataset. ``-1`` uses all available examples."""
+    num_tasks: Literal[-1] | Annotated[int, Field(ge=1)] = -1
+    """Tasks to evaluate from the taskset. ``-1`` uses every available task."""
 
     group_size: int = Field(1, ge=1)
-    """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
+    """Episodes run per task. An episode may contain multiple agent traces."""
 
     interval: int = Field(100, ge=1)
     """Per-env eval interval. If unset, inherits from the group-level eval interval."""
@@ -225,11 +225,11 @@ class EvalConfig(BaseConfig):
     sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
     """Shared eval sampling configuration; can differ from training sampling."""
 
-    num_examples: int = -1
-    """Default eval examples per environment. ``-1`` uses all. Can be overridden per env."""
+    num_tasks: Literal[-1] | Annotated[int, Field(ge=1)] = -1
+    """Default eval tasks per environment. ``-1`` uses all. Can be overridden per env."""
 
     group_size: int = Field(1, ge=1)
-    """Default rollouts per example. Can be overridden per env."""
+    """Default episodes per eval task. Can be overridden per env."""
 
     interval: int = Field(100, ge=1)
     """Step interval at which to evaluate the model."""
@@ -245,7 +245,7 @@ class EvalConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_examples,
+        """Resolve per-env overrides: inherit group-level sampling, num_tasks,
         group_size, and interval (the worker ``pool`` is configured per env, default elastic)."""
         group_sampling = self.sampling.model_dump()
         for source in self.source:
@@ -254,8 +254,8 @@ class EvalConfig(BaseConfig):
             else:
                 merged = group_sampling | source.sampling.model_dump(exclude_unset=True)
                 source.sampling = EvalSamplingConfig(**merged)
-            if "num_examples" not in source.model_fields_set:
-                source.num_examples = self.num_examples
+            if "num_tasks" not in source.model_fields_set:
+                source.num_tasks = self.num_tasks
             if "group_size" not in source.model_fields_set:
                 source.group_size = self.group_size
             if "interval" not in source.model_fields_set:
@@ -472,7 +472,8 @@ class OrchestratorConfig(BaseConfig):
     """First port of the env-server port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Sources with an explicit ``serve.address`` keep it instead, without shifting the other sources' ports (indices stay positional). Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
 
     batch_size: int | None = Field(None, ge=1)
-    """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
+    """Target selected traces per training step. Complete task groups remain atomic,
+    so the shipped batch may exceed this target. Set this OR ``token_batch_size``."""
 
     token_batch_size: int | None = Field(None, ge=1)
     """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
@@ -481,10 +482,13 @@ class OrchestratorConfig(BaseConfig):
     """Rollout-mode batching only. Multiplier used to derive ``max_inflight_episodes`` from ``batch_size`` when ``max_inflight_episodes`` is unset. Values below 1.0 intentionally cap in-flight episode capacity below ``batch_size``."""
 
     max_inflight_episodes: int | None = Field(None, ge=1)
-    """Maximum number of episodes kept in-flight — one episode is one agent run at a time, whatever the env's agents are. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
+    """Maximum number of env runs kept in flight. Each run returns one v1 episode,
+    which may contain zero, one, or many agent traces. Required for token-based
+    batching. With ``batch_size`` set, defaults to ``batch_size *
+    oversampling_factor`` (or ``batch_size`` when unset)."""
 
     group_size: int = Field(1, ge=1)
-    """Output sequences returned per example during training."""
+    """Episodes run per task during training."""
 
     seq_len: int = 2048
     """Training sequence length. Shorter samples are padded; longer samples are truncated."""
@@ -499,7 +503,9 @@ class OrchestratorConfig(BaseConfig):
     """Maximum training steps. If None, runs indefinitely."""
 
     max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
+    """Maximum policy updates an in-flight episode may cross before its task group
+    is discarded. Higher values yield better throughput at the cost of off-policy
+    noise."""
 
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
@@ -615,22 +621,14 @@ class OrchestratorConfig(BaseConfig):
                 raise ValueError("max_inflight_episodes must be set when token_batch_size is set")
         else:
             assert self.batch_size is not None
-            if self.batch_size % self.group_size != 0:
-                raise ValueError("Batch size must be divisible by the number of samples per problem")
             oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
-            resolved_max_inflight_episodes = max(
-                self.group_size,
-                int(self.batch_size * oversampling_factor),
-            )
+            resolved_max_inflight_episodes = max(1, int(self.batch_size * oversampling_factor))
             if self.max_inflight_episodes is not None and self.oversampling_factor is not None:
                 expected_max_inflight_episodes = resolved_max_inflight_episodes
                 if self.max_inflight_episodes != expected_max_inflight_episodes:
                     raise ValueError("max_inflight_episodes conflicts with oversampling_factor * batch_size")
             if self.max_inflight_episodes is None:
                 self.max_inflight_episodes = resolved_max_inflight_episodes
-
-        if self.max_inflight_episodes is not None and self.max_inflight_episodes < self.group_size:
-            raise ValueError("max_inflight_episodes must be at least the number of rollouts per example")
 
         # Propagate the top-level ``group_size`` into each train env that didn't set its own.
         for env_cfg in self.train.source:

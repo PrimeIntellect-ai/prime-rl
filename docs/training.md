@@ -57,9 +57,9 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 
 | Knob | What it does |
 |---|---|
-| `orchestrator.batch_size` | Tasks per trainer step. |
-| `orchestrator.group_size` | Rollouts generated per task. |
-| `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
+| `orchestrator.batch_size` | Target selected traces per trainer step. Completed task groups stay atomic, so a batch may exceed the target. |
+| `orchestrator.group_size` | Episodes run per task. A v1 episode may contain multiple agent traces. |
+| `orchestrator.max_off_policy_steps` | How many policy updates an in-flight episode may cross before it's discarded (default 8). The main off-policy dial on long agentic runs — bump for throughput, lower for tighter on-policyness. Watch `train/agg/all/has_error/mean` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
 | `[[orchestrator.eval.source]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
@@ -114,11 +114,11 @@ Pulled from the console logs and mirrored to W&B.
 
 **Progress** (orchestrator):
 
-- `reward/{all,env}/mean` — main signal. Should trend upward over hundreds of steps.
-- `seq_len/{all,env}/mean` and `is_truncated/{all,env}/mean` — rollout length and truncation rate.
-- `num_turns/{all,env}/mean` — for multi-turn envs.
-- `empty_rollouts/{all,env}`, `errored_rollouts/{all,env}` — non-zero is fine in small numbers; sustained > 5% is a smell.
-- `eval/{env}/{avg@k,pass@k}` — eval scores when `[orchestrator.eval]` is set.
+- `train/agg/effective/<agent>/reward/mean` — main signal. Should trend upward over hundreds of steps.
+- `train/agg/effective/<agent>/is_truncated/mean` — trace truncation rate.
+- `train/agg/effective/num_turns/mean` — turns per episode, summed across its agents.
+- `train/agg/all/has_error/mean` — failed-episode rate, including zero-trace failures; sustained > 5% is a smell.
+- `eval/<env>/effective/<agent>/{avg@k,pass@k}` — per-agent eval scores when eval is configured.
 
 **Stability** (trainer):
 

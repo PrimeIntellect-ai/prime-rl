@@ -166,7 +166,7 @@ interval = 20
 
 [[orchestrator.eval.source]]
 name = "browsecomp"
-num_examples = 500 # full set is 1266; cap eval at 500
+num_tasks = 500 # full set is 1266; cap eval at 500
 
 [orchestrator.eval.source.env.agent.harness]
 id = "rlm"
