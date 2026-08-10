@@ -135,6 +135,9 @@ jobs:
         if: inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          # gh must not resolve the repo from the checkout: inside the container the
+          # workspace is owned by another uid, which git rejects as dubious ownership.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.release_tag }}
         run: |
           gh release upload "$TAG" dist/*.whl --clobber
