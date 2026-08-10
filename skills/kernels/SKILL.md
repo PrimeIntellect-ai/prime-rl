@@ -33,8 +33,9 @@ it once at startup rather than failing a run halfway through.
 
 ## Building locally
 
-Building is manual by design: no `uv sync` may compile CUDA, so `prime-kernels` is not an
-extra and not in `[tool.uv.sources]`.
+`uv sync --extra kernels` installs the prebuilt wheel (see "Pinning installs at the prebuilt
+wheels"); building from source is for changing kernels. It is manual by design — no `uv sync`
+may compile CUDA, so the extra resolves to release wheels, never to this source tree:
 
 ```bash
 uv pip install --no-build-isolation -e kernels
@@ -108,20 +109,20 @@ that exact torch, so the build installs the torch pinned in `uv.lock`, not the n
 
 ### Pinning installs at the prebuilt wheels
 
-No release carries `prime_kernels-*.whl` yet, so `prime-kernels` is installed by hand and has
-no extra. Once one does, add back a `kernels` extra depending on `prime-kernels` and name the
-release assets in `[tool.uv.sources]` — the pattern deep-ep, deep-gemm and vllm already use,
-and the only form the extra may take, since a sync must never compile:
+`uv sync --extra kernels` installs `prime-kernels` from the wheels named in
+`[tool.uv.sources]` — the pattern deep-ep, deep-gemm and vllm already use, and the only form
+the extra may take, since a sync must never compile:
 
 ```toml
 [tool.uv.sources]
 prime-kernels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/vX.Y.Z/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/vX.Y.Z/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 ```
 
-The build prints both lines, ready to paste, in its job summary. Then `uv lock`.
+To move the pin, the build prints both lines, ready to paste, in its job summary. Then
+`uv lock`.
 
 The pin necessarily trails by one release: a release's own assets do not exist until that
 release is built, so `vX.Y.Z` can only point at wheels from an already published tag. Move it

@@ -31,6 +31,7 @@ tokenspeed-mla = false
 deep-ep = false
 prime-sandboxes = false
 renderers = false
+prime-kernels = false
 prime = false
 
 [manifest]
@@ -4748,6 +4749,40 @@ wheels = [
 ]
 
 [[package]]
+name = "prime-kernels"
+version = "0.1.0+cu128torch2.11.0"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl" }
+resolution-markers = [
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "torch" },
+]
+wheels = [
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl", hash = "sha256:5de78ebe942dffc424e03555f2f11a9b82fa19a0103286fb05e799eb719e53f7" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "torch", specifier = ">=2.9.0" }]
+
+[[package]]
+name = "prime-kernels"
+version = "0.1.0+cu128torch2.11.0"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "torch" },
+]
+wheels = [
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl", hash = "sha256:aab0776e9a69b79887d25e90512147b24ed9a36427c43ed023272b55bb534b41" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "torch", specifier = ">=2.9.0" }]
+
+[[package]]
 name = "prime-pydantic-config"
 source = { editable = "deps/pydantic-config" }
 dependencies = [
@@ -4864,6 +4899,10 @@ flash-attn-cute = [
 gpt-oss = [
     { name = "kernels" },
 ]
+kernels = [
+    { name = "prime-kernels", version = "0.1.0+cu128torch2.11.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
+    { name = "prime-kernels", version = "0.1.0+cu128torch2.11.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
+]
 quack = [
     { name = "quack-kernels" },
 ]
@@ -4912,6 +4951,9 @@ requires-dist = [
     { name = "orjson", specifier = ">=3.11.0" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "prime", specifier = ">=0.6.19" },
+    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl" },
+    { name = "prime-kernels", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'kernels'" },
+    { name = "prime-kernels", marker = "platform_machine == 'x86_64' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl" },
     { name = "prime-pydantic-config", editable = "deps/pydantic-config" },
     { name = "prime-rl", extras = ["disagg"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn"], marker = "extra == 'all'" },
@@ -4948,7 +4990,7 @@ requires-dist = [
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wandb-workspaces", specifier = ">=0.4.3" },
 ]
-provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "gpt-oss", "quack", "all"]
+provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "gpt-oss", "quack", "kernels", "all"]
 
 [package.metadata.requires-dev]
 dev = [

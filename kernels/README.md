@@ -45,7 +45,9 @@ It picks `fused_moe_mxfp8` when the run also quantizes the experts to MXFP8 and
 
 ## Installing
 
-Building is manual and always explicit — no `uv sync` compiles CUDA:
+`uv sync --extra kernels` installs the prebuilt wheels attached to a release, pinned in the
+root `[tool.uv.sources]` — see the `kernels` skill. Building from source is manual and always
+explicit — no `uv sync` compiles CUDA:
 
 ```bash
 uv pip install --no-build-isolation -e kernels
@@ -55,9 +57,6 @@ The build needs `nvcc` (`CUDA_HOME`) whose CUDA major matches torch's. Kernels w
 is unsuitable are skipped with a message rather than failing the build; the registry then
 reports them unavailable. `PRIME_KERNELS=a,b` builds a subset, `PRIME_KERNELS_REQUIRE=1`
 turns a skip into an error (the release workflow sets it).
-
-Prebuilt wheels are attached to every release. Once one has them, they get pinned in the root
-`[tool.uv.sources]` so installs download instead of compiling — see the `kernels` skill.
 
 ## Adding a kernel
 

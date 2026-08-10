@@ -85,6 +85,11 @@ gpt-oss = [
 quack = [
     "quack-kernels>=0.4.1",
 ]
+# Prebuilt `prime-kernels` wheels from a release (see the `kernels` skill). Compiled for
+# sm_100a; on other GPUs the package installs fine and reports its kernels unavailable.
+kernels = [
+    "prime-kernels",
+]
 all = [
     "prime-rl[flash-attn]",
     "prime-rl[disagg]",
@@ -192,6 +197,7 @@ deep-ep = false
 deep-gemm = false
 nixl-cu12 = false
 torchao = false
+prime-kernels = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
@@ -220,6 +226,10 @@ deep-ep = [
 deep-gemm = [
     { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+]
+prime-kernels = [
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
