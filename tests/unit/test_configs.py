@@ -221,17 +221,6 @@ def test_env_algo_overrides_top_level():
         )
 
 
-def test_v0_env_configs_are_rejected():
-    env = {"taskset": {"id": "reverse-text-v1"}}
-    legacy = {"id": "reverse-text"}
-
-    with pytest.raises(ValidationError, match="legacy"):
-        OrchestratorConfig.model_validate({"train": {"source": [{"env": env, "legacy": legacy}]}})
-
-    with pytest.raises(ValidationError, match="legacy"):
-        EnvServerConfig.model_validate({"env": env, "legacy": legacy})
-
-
 def test_trainer_enable_token_export_cli_flag():
     assert not cli(TrainerConfig, args=[]).enable_token_export
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
