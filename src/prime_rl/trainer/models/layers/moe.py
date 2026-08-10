@@ -245,6 +245,7 @@ def _quantize_mxfp8(t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     from torchao.prototype.moe_training.tensor import TrainingWeightWrapperBaseTensor, unwrap_weight
     from torchao.prototype.mx_formats import ScaleCalculationMode
     from torchao.prototype.mx_formats.mx_tensor import to_mx
+
     if isinstance(t, TrainingWeightWrapperBaseTensor):
         t = unwrap_weight(t)
     scales, data = to_mx(
@@ -377,7 +378,9 @@ def _run_experts_fused_backward_bf16(
     if needs_scores:
         grad_s = (h.float() * g2.float()).sum(dim=-1)[dst]
         grad_scores = (
-            torch.zeros_like(top_scores.reshape(-1)).index_copy(0, order, grad_s.to(top_scores.dtype)).reshape_as(top_scores)
+            torch.zeros_like(top_scores.reshape(-1))
+            .index_copy(0, order, grad_s.to(top_scores.dtype))
+            .reshape_as(top_scores)
         )
     grad_h = (g2.float() * scores_sorted).to(torch.bfloat16)
     grad_a = torch.ops.aten.silu_backward(grad_h * b, a)
