@@ -38,6 +38,9 @@ if prime_kernels.is_available("flash_moe"):
 
 `prime_kernels.status()` maps every kernel to `"available"` or the reason it is not.
 
+`flash_moe` is used by the trainer's MoE layers under `model.moe_fused_kernel=true`, which
+resolves the kernel during model setup so an unusable install fails before training starts.
+
 ## Installing
 
 Building is manual and always explicit — no `uv sync` compiles CUDA:

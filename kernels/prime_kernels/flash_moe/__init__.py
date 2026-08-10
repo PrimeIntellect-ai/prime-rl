@@ -20,7 +20,15 @@ def _moe_align_fake(
     block_m: int,
     bpc: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return ()
+
+    pad_to = block_m * bpc
+    max_padded = (topk_ids.numel() + num_experts * (pad_to - 1) + pad_to - 1) // pad_to * pad_to
+    options = {"dtype": torch.int32, "device": topk_ids.device}
+    return (
+        torch.empty(max_padded, **options),
+        torch.empty(max_padded // block_m, **options),
+        torch.empty(1, **options),
+    )
 
 
 @torch.library.register_fake("prime_moe::fused_moe_bf16")

@@ -4,12 +4,15 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import importlib.util
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Literal
 
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.distributed.tensor import DTensor
 from torchtitan.distributed.expert_parallel import expert_parallel
 
 from prime_rl.configs.trainer import EPCommBackend
@@ -179,6 +182,109 @@ def _run_experts_grouped_mm_impl(
         out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
 
     return out
+
+
+_fused_moe = None
+
+
+def _load_fused_moe_kernel() -> ModuleType:
+    # Load prime_kernels.flash_moe if supported on the current running machine.
+    global _fused_moe
+    if _fused_moe is None:
+        if importlib.util.find_spec("prime_kernels") is None:
+            raise ModuleNotFoundError(
+                "The Prime-Flash-MoE kernel lives in the prime-kernels wheel, which is not available. See kernels/README.md"
+            )
+        import prime_kernels
+
+        _fused_moe = prime_kernels.load("flash_moe")
+    return _fused_moe
+
+
+def _run_experts_fused_kernel(
+    x: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+) -> torch.Tensor:
+    fused_block_m = 128  # The fused kernel indexes the expert blocks in blocks of 128 rows which is a requirement
+    hidden_dim = w1.shape[1]
+    assert hidden_dim % fused_block_m == 0, (
+        f"moe_intermediate_size {hidden_dim} must be a multiple of {fused_block_m} for the fused MoE kernel"
+    )
+    gate_up_weight = torch.cat((w1.to(torch.bfloat16), w3.to(torch.bfloat16)), dim=1)
+    kernel = _load_fused_moe_kernel()  # Try to load the kernel from prime-kernels
+    sorted_token_ids, expert_ids, num_tokens_post_padded = (
+        kernel.moe_align(  # Invoke align kernel first to prepare ids and other inputs
+            selected_experts_indices.to(torch.int32).contiguous(), num_experts, fused_block_m
+        )
+    )
+    out = torch.empty_like(x, dtype=torch.bfloat16)  # Empty, as split=True zeros out the result anyway
+    kernel.fused_moe_bf16(  # Invoke kernel
+        x.to(torch.bfloat16),
+        gate_up_weight,
+        w2.to(torch.bfloat16).contiguous(),
+        sorted_token_ids,
+        expert_ids,
+        num_tokens_post_padded,
+        top_scores.to(torch.float32),
+        out,
+        selected_experts_indices.shape[1],
+        block_m=fused_block_m,
+        split=True,
+    )
+    return out.type_as(x)
+
+
+def _run_experts_fused_reference(
+    x: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+) -> torch.Tensor:
+    """Differentiable equivalent of the fused kernel - this implements the backward pass as the fused kernel itself is forward only."""
+    top_k = selected_experts_indices.shape[1]
+    flat_experts = selected_experts_indices.reshape(-1)
+    num_tokens_per_expert = torch.histc(flat_experts.float(), bins=num_experts, min=0, max=num_experts)
+    order = torch.argsort(flat_experts, stable=True)
+    top_scores_sorted = top_scores.reshape(-1)[order]
+    token_idx = order // top_k
+    routed_output = _run_experts_grouped_mm_impl(w1, w2, w3, x[token_idx], num_tokens_per_expert)
+    routed_output = (routed_output.float() * top_scores_sorted.reshape(-1, 1)).to(x.dtype)
+    return torch.zeros_like(x).index_add(0, token_idx, routed_output)
+
+
+class _FusedMoE(torch.autograd.Function):
+    """Forward runs the fused bf16 MoE kernel, backward recomputes the reference grouped-mm since the kernel is forward only."""
+
+    @staticmethod
+    def forward(ctx, x, w1, w2, w3, selected_experts_indices, top_scores, num_experts):
+        ctx.save_for_backward(x, w1, w2, w3, selected_experts_indices, top_scores)
+        ctx.num_experts = num_experts
+        return _run_experts_fused_kernel(x, w1, w2, w3, selected_experts_indices, top_scores, num_experts)
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x, w1, w2, w3, selected_experts_indices, top_scores = ctx.saved_tensors
+        grad_poses = (0, 1, 2, 3, 5)
+        with torch.enable_grad():
+            leaves = [
+                t.detach().requires_grad_(ctx.needs_input_grad[p])
+                for t, p in zip((x, w1, w2, w3, top_scores), grad_poses)
+            ]
+            out = _run_experts_fused_reference(
+                leaves[0], leaves[1], leaves[2], leaves[3], selected_experts_indices, leaves[4], ctx.num_experts
+            )
+        wanted = [leaf for leaf in leaves if leaf.requires_grad]
+        computed = iter(torch.autograd.grad(out, wanted, grad_out) if wanted else ())
+        grads = {p: (next(computed) if leaf.requires_grad else None) for leaf, p in zip(leaves, grad_poses)}
+        return grads[0], grads[1], grads[2], grads[3], None, grads[5], None
 
 
 class GroupedExperts(nn.Module):
@@ -595,6 +701,8 @@ class MoE(nn.Module):
         )
         self.score_before_experts = moe_args.score_before_experts
         self.deepep_token_chunk_size: int | None = None
+        # Set by model.moe_fused_kernel=true: run the routed experts through the fused kernel.
+        self.fused_kernel = False
 
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert is accumulated in the model forward pass.
@@ -652,6 +760,23 @@ class MoE(nn.Module):
             routed_output = (routed_output.to(torch.float32) * top_scores_experts_sorted.reshape(-1, 1)).to(x.dtype)
 
         return routed_output
+
+    def _run_fused_routed_experts(
+        self,
+        x: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+        top_scores: torch.Tensor,
+    ) -> torch.Tensor:
+        to_local = lambda tensor: tensor.to_local() if isinstance(tensor, DTensor) else tensor
+        return _FusedMoE.apply(
+            x,
+            to_local(self.experts.w1),
+            to_local(self.experts.w2),
+            to_local(self.experts.w3),
+            selected_experts_indices,
+            top_scores,
+            self.experts.num_experts,
+        )
 
     def _run_deepep_routed_experts(
         self,
@@ -749,6 +874,12 @@ class MoE(nn.Module):
 
         if self.ep_comm_backend == "deepep":
             routed_output = self._run_deepep_routed_experts(x, selected_experts_indices, top_scores)
+            return routed_output.reshape(bs, slen, dim)
+
+        if self.fused_kernel:
+            routed_output = self._run_fused_routed_experts(x, selected_experts_indices, top_scores)
+            if self.shared_expert is not None:
+                routed_output = routed_output + self.shared_expert(x)
             return routed_output.reshape(bs, slen, dim)
 
         # top_scores and token_indices_experts_sorted shape (bs*slen*top_k,)
