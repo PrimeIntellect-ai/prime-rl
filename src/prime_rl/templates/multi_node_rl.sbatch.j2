@@ -130,6 +130,7 @@ echo "MASTER_PORT=${MASTER_PORT}"
 # The ZMQ rollout transport binds in the orchestrator process, so both sides must
 # address the orchestrator's node.
 {% if num_infer_nodes > 0 and orchestrator_on_inference %}ORCH_PROCID=$((NUM_INFER_NODES - 1)){% else %}ORCH_PROCID=$NUM_INFER_NODES{% endif %}
+export ORCH_PROCID
 export ORCH_ADDR="${HOSTNAMES[$ORCH_PROCID]}"
 echo "ORCH_ADDR=${ORCH_ADDR}"
 

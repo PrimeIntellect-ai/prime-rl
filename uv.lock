@@ -50,6 +50,7 @@ members = [
     "color-codeword",
     "deepdive",
     "deepseek-prover",
+    "drug-discovery-bench",
     "enterprise-ops-gym",
     "forth-lang",
     "frontierscience",
@@ -68,6 +69,7 @@ members = [
     "ifeval",
     "kimina",
     "kuhn-poker",
+    "lab",
     "livecodebench",
     "longbenchpro",
     "longcot-env",
@@ -460,7 +462,7 @@ requires-dist = [
     { name = "datasets" },
     { name = "mcp", specifier = "<2" },
     { name = "openai" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
 [[package]]
@@ -584,7 +586,7 @@ dependencies = [
 requires-dist = [
     { name = "bfcl-eval", git = "https://github.com/mikasenghaas/gorilla.git?subdirectory=berkeley-function-call-leaderboard&rev=898763a" },
     { name = "soundfile", specifier = ">=0.13.0" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
 [[package]]
@@ -711,7 +713,7 @@ requires-dist = [
     { name = "openai" },
     { name = "pystemmer" },
     { name = "tokenizers" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
 [[package]]
@@ -1472,6 +1474,21 @@ wheels = [
 ]
 
 [[package]]
+name = "drug-discovery-bench"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/science/drug_discovery_bench" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "huggingface-hub", specifier = ">=0.34.0" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.3.0" },
+]
+
+[[package]]
 name = "durationpy"
 version = "0.10"
 source = { registry = "https://pypi.org/simple" }
@@ -1523,7 +1540,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
 [[package]]
@@ -1924,7 +1941,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "pydantic" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.3.0" },
 ]
 
 [[package]]
@@ -2940,6 +2957,17 @@ dependencies = [
 requires-dist = [{ name = "verifiers" }]
 
 [[package]]
+name = "lab"
+version = "0.1.0"
+source = { editable = "deps/research-environments/environments/tool_use/lab" }
+dependencies = [
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.0" }]
+
+[[package]]
 name = "langdetect"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -3348,7 +3376,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "httpx" },
     { name = "prime-sandboxes", specifier = ">=0.2.19" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
 [[package]]
