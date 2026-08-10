@@ -32,6 +32,7 @@ from prime_rl.configs.trainer import (
     FP8Config,
     ModelConfig,
     MXFP8Config,
+    QuantizationConfig,
     TokenizerConfig,
 )
 from prime_rl.trainer.distributed import DeepEPExpertParallel, MXFP8AllToAllExpertParallel
@@ -433,16 +434,17 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
         logger.info(f"Running {num_routers} MoE router gates in fp32")
 
 
-def apply_fused_moe_kernel(model: nn.Module) -> None:
-    """Route MoE routed-expert compute through the vendored fused bf16/mxfp8 MoE CUDA kernel.
-
-    Forward runs the kernel, backward recomputes the reference grouped-mm path. The kernel is
-    loaded here rather than at first forward so an install or device it cannot run on fails
-    the run before it starts.
+def apply_fused_moe_kernel(model: nn.Module, quantization: QuantizationConfig | None) -> None:
+    """
+    Route MoE routed-expert compute through the our fused bf16/mxfp8 MoE CUDA kernel.
+    Forward runs the kernel, backward recomputes the reference grouped-mm path.
     """
     logger = get_logger()
     language_model = get_language_model(model)
     num_moe_layers = 0
+
+    # MXFP8 with grouped GEMM is the one setting that quantizes the experts themselves, so this also picks the MXFP8 kernel."""
+    dtype = "mxfp8" if isinstance(quantization, MXFP8Config) and quantization.enable_grouped_gemm else "bf16"
 
     for layer in language_model.layers:
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
@@ -451,14 +453,14 @@ def apply_fused_moe_kernel(model: nn.Module) -> None:
                 raise ValueError(
                     "model.moe_fused_kernel=true requires MoE layers with score_before_experts=false, because the fused kernel applies the routing scores to the expert outputs."
                 )
-            mlp.fused_kernel = True
+            mlp.fused_kernel = dtype
             num_moe_layers += 1
 
     if num_moe_layers == 0:
         raise ValueError("model.moe_fused_kernel=true but no MoE layers found. Is this a custom-impl MoE model?")
 
     _load_fused_moe_kernel()
-    logger.info(f"Using the fused MoE kernel for {num_moe_layers} MoE layers")
+    logger.info(f"Using the fused {dtype} MoE kernel for {num_moe_layers} MoE layers")
 
 
 def freeze_sparse_indexer(model: nn.Module) -> None:
@@ -1339,7 +1341,7 @@ def setup_model(
                 "model.moe_fused_kernel=true requires ep=1: the fused kernel bypasses the EP "
                 "all-to-all and indexes experts with global ids."
             )
-        apply_fused_moe_kernel(model)
+        apply_fused_moe_kernel(model, config.quantization)
 
     # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
     # never trainable. Freeze it so optimizer state stays symmetric across checkpoint

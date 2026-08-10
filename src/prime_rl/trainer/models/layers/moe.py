@@ -185,6 +185,8 @@ def _run_experts_grouped_mm_impl(
 
 
 _fused_moe = None
+_FUSED_MOE_BLOCK_M = 128  # The fused kernel indexes the expert blocks in blocks of 128 rows which is a requirement
+_FUSED_MOE_MXFP8_BLOCK_SIZE = 32  # mxfp8 carries one e8m0 scale per 32 elements of the reduction dim
 
 
 def _load_fused_moe_kernel() -> ModuleType:
@@ -210,16 +212,15 @@ def _run_experts_fused_kernel(
     top_scores: torch.Tensor,
     num_experts: int,
 ) -> torch.Tensor:
-    fused_block_m = 128  # The fused kernel indexes the expert blocks in blocks of 128 rows which is a requirement
     hidden_dim = w1.shape[1]
-    assert hidden_dim % fused_block_m == 0, (
-        f"moe_intermediate_size {hidden_dim} must be a multiple of {fused_block_m} for the fused MoE kernel"
+    assert hidden_dim % _FUSED_MOE_BLOCK_M == 0, (
+        f"moe_intermediate_size {hidden_dim} must be a multiple of {_FUSED_MOE_BLOCK_M} for the fused MoE kernel"
     )
     gate_up_weight = torch.cat((w1.to(torch.bfloat16), w3.to(torch.bfloat16)), dim=1)
     kernel = _load_fused_moe_kernel()  # Try to load the kernel from prime-kernels
     sorted_token_ids, expert_ids, num_tokens_post_padded = (
         kernel.moe_align(  # Invoke align kernel first to prepare ids and other inputs
-            selected_experts_indices.to(torch.int32).contiguous(), num_experts, fused_block_m
+            selected_experts_indices.to(torch.int32).contiguous(), num_experts, _FUSED_MOE_BLOCK_M
         )
     )
     out = torch.empty_like(x, dtype=torch.bfloat16)  # Empty, as split=True zeros out the result anyway
@@ -233,7 +234,69 @@ def _run_experts_fused_kernel(
         top_scores.to(torch.float32),
         out,
         selected_experts_indices.shape[1],
-        block_m=fused_block_m,
+        block_m=_FUSED_MOE_BLOCK_M,
+        split=True,
+    )
+    return out.type_as(x)
+
+
+def _quantize_mxfp8(t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantize to mxfp8: e4m3 values plus one e8m0 scale per `MX_BLOCK_SIZE` elements of the last dim.
+    RCEIL is what both entries of `MXFP8Recipe` use, so the fused forward quantizes exactly the
+    way the torchao grouped GEMM does on the non-fused path and in this kernel's backward.
+    """
+    from torchao.prototype.moe_training.tensor import TrainingWeightWrapperBaseTensor, unwrap_weight
+    from torchao.prototype.mx_formats import ScaleCalculationMode
+    from torchao.prototype.mx_formats.mx_tensor import to_mx
+
+    # torchao wraps the expert weights to intercept `torch._grouped_mm`; the kernel needs the raw values.
+    if isinstance(t, TrainingWeightWrapperBaseTensor):
+        t = unwrap_weight(t)
+    scales, data = to_mx(
+        t.to(torch.bfloat16), torch.float8_e4m3fn, _FUSED_MOE_MXFP8_BLOCK_SIZE, scaling_mode=ScaleCalculationMode.RCEIL
+    )
+    return data, scales
+
+
+def _run_experts_fused_mxfp8_kernel(
+    x: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+) -> torch.Tensor:
+    hidden_dim, dim = w1.shape[1], w1.shape[2]
+    assert hidden_dim % _FUSED_MOE_BLOCK_M == 0, (
+        f"moe_intermediate_size {hidden_dim} must be a multiple of {_FUSED_MOE_BLOCK_M} for the fused MoE kernel"
+    )
+    # The mxfp8 path tiles 256 columns per MMA on both GEMMs, so it is stricter than bf16 (128).
+    assert dim % 256 == 0, f"model dim {dim} must be a multiple of 256 for the mxfp8 fused MoE kernel"
+    kernel = _load_fused_moe_kernel()  # Try to load the kernel from prime-kernels
+    gate_up_weight, gate_up_scales = _quantize_mxfp8(torch.cat((w1, w3), dim=1))
+    down_weight, down_scales = _quantize_mxfp8(w2)
+    x_data, x_scales = _quantize_mxfp8(x)  # Activation scales stay row major, only the weights are packed
+    sorted_token_ids, expert_ids, num_tokens_post_padded = (
+        kernel.moe_align(  # Invoke align kernel first to prepare ids and other inputs
+            selected_experts_indices.to(torch.int32).contiguous(), num_experts, _FUSED_MOE_BLOCK_M
+        )
+    )
+    out = torch.empty_like(x, dtype=torch.bfloat16)  # Empty, as split=True zeros out the result anyway
+    kernel.fused_moe_mxfp8(  # Invoke kernel
+        x_data,
+        x_scales,
+        gate_up_weight,
+        kernel.pack_scales_blocked(gate_up_scales),
+        down_weight,
+        kernel.pack_scales_blocked(down_scales),
+        sorted_token_ids,
+        expert_ids,
+        num_tokens_post_padded,
+        top_scores.to(torch.float32),
+        out,
+        selected_experts_indices.shape[1],
+        block_m=_FUSED_MOE_BLOCK_M,
         split=True,
     )
     return out.type_as(x)
@@ -261,13 +324,19 @@ def _run_experts_fused_reference(
 
 
 class _FusedMoE(torch.autograd.Function):
-    """Forward runs the fused bf16 MoE kernel, backward recomputes the reference grouped-mm since the kernel is forward only."""
+    """Forward runs the fused MoE kernel, backward recomputes the reference grouped-mm since the kernel is forward only.
+
+    The backward stays on the reference path for both dtypes: under mxfp8 the saved expert
+    weights are still torchao wrapper tensors, so its `torch._grouped_mm` quantizes the same
+    way the non-fused mxfp8 path does.
+    """
 
     @staticmethod
-    def forward(ctx, x, w1, w2, w3, selected_experts_indices, top_scores, num_experts):
+    def forward(ctx, x, w1, w2, w3, selected_experts_indices, top_scores, num_experts, mxfp8):
         ctx.save_for_backward(x, w1, w2, w3, selected_experts_indices, top_scores)
         ctx.num_experts = num_experts
-        return _run_experts_fused_kernel(x, w1, w2, w3, selected_experts_indices, top_scores, num_experts)
+        run_kernel = _run_experts_fused_mxfp8_kernel if mxfp8 else _run_experts_fused_kernel
+        return run_kernel(x, w1, w2, w3, selected_experts_indices, top_scores, num_experts)
 
     @staticmethod
     def backward(ctx, grad_out):
@@ -284,7 +353,7 @@ class _FusedMoE(torch.autograd.Function):
         wanted = [leaf for leaf in leaves if leaf.requires_grad]
         computed = iter(torch.autograd.grad(out, wanted, grad_out) if wanted else ())
         grads = {p: (next(computed) if leaf.requires_grad else None) for leaf, p in zip(leaves, grad_poses)}
-        return grads[0], grads[1], grads[2], grads[3], None, grads[5], None
+        return grads[0], grads[1], grads[2], grads[3], None, grads[5], None, None
 
 
 class GroupedExperts(nn.Module):
@@ -701,8 +770,9 @@ class MoE(nn.Module):
         )
         self.score_before_experts = moe_args.score_before_experts
         self.deepep_token_chunk_size: int | None = None
-        # Set by model.moe_fused_kernel=true: run the routed experts through the fused kernel.
-        self.fused_kernel = False
+        # Set by model.moe_fused_kernel=true: which fused kernel the routed experts run through.
+        # None keeps the ordinary reorderer + grouped-mm path.
+        self.fused_kernel: Literal["bf16", "mxfp8"] | None = None
 
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert is accumulated in the model forward pass.
@@ -776,6 +846,7 @@ class MoE(nn.Module):
             selected_experts_indices,
             top_scores,
             self.experts.num_experts,
+            self.fused_kernel == "mxfp8",
         )
 
     def _run_deepep_routed_experts(

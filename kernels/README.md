@@ -40,6 +40,8 @@ if prime_kernels.is_available("flash_moe"):
 
 `flash_moe` is used by the trainer's MoE layers under `model.moe_fused_kernel=true`, which
 resolves the kernel during model setup so an unusable install fails before training starts.
+It picks `fused_moe_mxfp8` when the run also quantizes the experts to MXFP8 and
+`fused_moe_bf16` otherwise.
 
 ## Installing
 
