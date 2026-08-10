@@ -41,7 +41,7 @@ members = [
     "alphabet-sort",
     "apex-shortlist",
     "arxivmath",
-    "automationbench",
+    "automationbench-env",
     "bfcl-v3",
     "browsecomp",
     "browsecomp-plus",
@@ -445,9 +445,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "automationbench"
+name = "automationbench-env"
 version = "0.1.0"
-source = { editable = "deps/research-environments/environments/tool_use/automationbench" }
+source = { editable = "deps/research-environments/environments/tool_use/automationbench_env" }
 dependencies = [
     { name = "automation-bench" },
     { name = "datasets" },
