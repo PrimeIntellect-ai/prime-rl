@@ -28,6 +28,8 @@ namespace pi {
         int warp_n,
         int stages,
         int bpc,
+        int cpc,
+        bool split,
         cudaStream_t stream
     );
 
@@ -54,6 +56,7 @@ namespace pi {
         int warp_n,
         int stages,
         int bpc,
+        bool split,
         cudaStream_t stream
     );
 
@@ -120,7 +123,9 @@ namespace pi {
         int64_t block_n,
         int64_t warp_n,
         int64_t stages,
-        int64_t bpc
+        int64_t bpc,
+        int64_t cpc,
+        bool split
     ) {
         cudaStream_t stream = at::cuda::getCurrentCUDAStream();
         at::cuda::OptionalCUDAGuard device_guard {device_of(x)};
@@ -129,7 +134,8 @@ namespace pi {
         TORCH_CHECK((x.size(1)&127) == 0, "K dimension must be a multiple of 128");
         TORCH_CHECK((block_n == 64 && warp_n == 4) || (block_n == 32 && warp_n == 8));
         TORCH_CHECK(stages > 0 && stages < 6);
-        TORCH_CHECK(bpc == 1 || bpc == 2);
+        TORCH_CHECK(bpc == 1 && cpc == 1, "bpc=cpc=1 is the only supported configuration");
+        TORCH_CHECK(!split || stages <= 4, "split=True requires stages<=4, got stages="+std::to_string(stages));
         TORCH_CHECK(block_m == 128, "Blackwell tcgen05 fused MoE requires block_m=128.");
         TORCH_CHECK(x.is_contiguous());
         TORCH_CHECK(w.is_contiguous());
@@ -167,6 +173,8 @@ namespace pi {
             warp_n,
             stages,
             bpc,
+            cpc,
+            split,
             stream
         );
     }
@@ -188,7 +196,8 @@ namespace pi {
         int64_t block_n,
         int64_t warp_n,
         int64_t stages,
-        int64_t bpc
+        int64_t bpc,
+        bool split
     ) {
         cudaStream_t stream = at::cuda::getCurrentCUDAStream();
         at::cuda::OptionalCUDAGuard device_guard {device_of(x)};
@@ -253,6 +262,7 @@ namespace pi {
             warp_n,
             stages,
             bpc,
+            split,
             stream
         );
     }
@@ -273,7 +283,9 @@ TORCH_LIBRARY_FRAGMENT(prime_moe, m) {
         "int block_n, "
         "int warp_n, "
         "int stages, "
-        "int bpc"
+        "int bpc, "
+        "int cpc, "
+        "bool split=True"
         ") -> ()"
     );
     m.impl("fused_moe_bf16", torch::kCUDA, &pi::fused_moe_bf16_torch_stub);
@@ -295,7 +307,8 @@ TORCH_LIBRARY_FRAGMENT(prime_moe, m) {
         "int block_n, "
         "int warp_n, "
         "int stages, "
-        "int bpc"
+        "int bpc, "
+        "bool split=True"
         ") -> ()"
     );
     m.impl("fused_moe_mxfp8", torch::kCUDA, &pi::fused_moe_mxfp8_torch_stub);

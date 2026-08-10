@@ -39,6 +39,8 @@ def _fused_moe_bf16_fake(
     warp_n: int,
     stages: int,
     bpc: int,
+    cpc: int,
+    split: bool,
 ) -> None:
     return
 
@@ -62,6 +64,7 @@ def _fused_moe_mxfp8_fake(
     warp_n: int,
     stages: int,
     bpc: int,
+    split: bool,
 ) -> None:
     return
 
@@ -88,14 +91,22 @@ def fused_moe_bf16(
     block_m: int = 128,
     block_n: int = 64,
     warp_n: int = 4,
-    stages: int = 4,
+    stages: int = 2,
     bpc: int = 1,
+    cpc: int = 1,
+    split: bool = True,
 ) -> torch.Tensor:
     """Fused bf16 MoE. Writes into `out` in place and returns it.
 
     `w` is the gate/up projection as plain contiguous `(E, N, K)`, gate in the first half of
     N and up in the second. The kernel interleaves the two halves through its tensor map, so
     do not pre-interleave them on the host.
+
+    `split` materializes the intermediate activation in a scratch buffer and runs the down
+    projection as a second kernel, which removes the split-K reduction over `out` — it zeroes
+    `out` itself and requires `stages <= 4`. With `split=False` the whole thing stays on chip
+    and accumulates into `out` through global reductions, so `out` must be zeroed by the
+    caller.
     """
     torch.ops.prime_moe.fused_moe_bf16(
         x,
@@ -112,6 +123,8 @@ def fused_moe_bf16(
         warp_n,
         stages,
         bpc,
+        cpc,
+        split,
     )
     return out
 
@@ -134,12 +147,16 @@ def fused_moe_mxfp8(
     warp_n: int = 4,
     stages: int = 4,
     bpc: int = 1,
+    split: bool = True,
 ) -> torch.Tensor:
     """Fused mxfp8 MoE. Writes into `out` in place and returns it.
 
     `w` follows the same plain `(E, N, K)` layout as `fused_moe_bf16`. `w_scales` and
     `w2_scales` must be in the blocked layout `pack_scales_blocked` produces; `x_scales`
     stays row major `(M, K // 32)`.
+
+    `split` means the same as in `fused_moe_bf16`: the split pipeline zeroes `out` itself,
+    the single fused kernel needs `out` zeroed by the caller.
     """
     torch.ops.prime_moe.fused_moe_mxfp8(
         x,
@@ -159,5 +176,6 @@ def fused_moe_mxfp8(
         warp_n,
         stages,
         bpc,
+        split,
     )
     return out

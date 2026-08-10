@@ -39,7 +39,7 @@ namespace pi {
             constexpr uint64_t stride_dim = 128;            // stride dim N
             constexpr uint64_t mat_base_offs = 0;           // mat base offset
             constexpr uint64_t lead_dim_stride_mod = 0;     // leading dim stride mode, 0=byte offs rel, 1=byte offs abs
-            constexpr uint64_t swizzling_mode = 0;          // swizzle mode, 0=no swizzling, 1=128B with 32B atomic swizzling, 2=128B swizzling, 4=64B swizzling, 6=32B swizzling
+            constexpr uint64_t swizzling_mode = 0;          // swizzle mode, 0=no swizzling, 2=128B, 4=64B, 6=32B
             static_assert(!swizzling_mode || !(swizzling_mode&(swizzling_mode-1)));
             auto mat_start_addr = static_cast<uint32_t>(__cvta_generic_to_shared(p));
             return
@@ -53,18 +53,32 @@ namespace pi {
                 | ((swizzling_mode & 7)<<61);
         }
 
+        template <int SWB = 128>
+        [[nodiscard]] __device__ __forceinline__ uint64_t encode_smem_desc_swz(const void *p) {
+            static_assert(SWB == 128 || SWB == 64 || SWB == 32);
+            constexpr uint64_t layout = SWB == 128 ? 2 : SWB == 64 ? 4 : 6;
+            auto addr = static_cast<uint32_t>(__cvta_generic_to_shared(p));
+            return ((addr>>4)&((1ull<<14)-1ull))
+                | ((static_cast<uint64_t>(8*SWB)>>4)<<32)   // SBO between 8-row atoms
+                | (0b1ull<<46)                              // descriptor version: Blackwell
+                | (layout<<61);
+        }
+        [[nodiscard]] __device__ __forceinline__ uint64_t encode_smem_desc_sw128(const void *p) {
+            return encode_smem_desc_swz<128>(p);
+        }
+
         [[nodiscard]] constexpr __device__ __forceinline__ uint32_t encode_idesc_format_1(int32_t m, int32_t n) {
-            constexpr uint32_t sparsity_sel = 0;  // ignored
-            constexpr uint32_t sparsity_mode = 0; // 0=dense,1=sparse
-            constexpr uint32_t sat_mode = 0;      // 0=no sat, 1=sat
-            constexpr uint32_t mtype = 1;         // 1=f32
-            constexpr uint32_t atype = 1;         // 1=bf16
-            constexpr uint32_t btype = 1;         // 1=bf16
-            constexpr uint32_t aᵀ = 0;            // 1 = Aᵀ
-            constexpr uint32_t bᵀ = 0;            // 1 = Bᵀ
-            constexpr uint32_t an = 0;            // 1 = -A
-            constexpr uint32_t bn = 0;            // 1 = -B
-            constexpr uint32_t bws_shift = 0;     // no shift = 0 maximum shift of 8 = 1 maximum shift of 16 = 2 maximum shift of 32 = 3
+            constexpr uint32_t sparsity_sel = 0;
+            constexpr uint32_t sparsity_mode = 0;
+            constexpr uint32_t sat_mode = 0;
+            constexpr uint32_t mtype = 1;         // f32
+            constexpr uint32_t atype = 1;         // bf16
+            constexpr uint32_t btype = 1;         // bf16
+            constexpr uint32_t aᵀ = 0;
+            constexpr uint32_t bᵀ = 0;
+            constexpr uint32_t an = 0;
+            constexpr uint32_t bn = 0;
+            constexpr uint32_t bws_shift = 0;
             return
                 (sparsity_sel & 3)
                 | ((sparsity_mode & 1)<<2)
@@ -82,18 +96,18 @@ namespace pi {
         }
 
         [[nodiscard]] constexpr __device__ __forceinline__ uint32_t encode_idesc_block_scaled_e4m3(int32_t m, int32_t n) {
-            constexpr uint32_t sparsity_sel = 0;  // ignored
-            constexpr uint32_t sparsity_mode = 0; // 0=dense, 1=sparse
-            constexpr uint32_t a_sf_id = 0;       // patched per MMA, see idesc_with_sf_id
-            constexpr uint32_t b_sf_id = 0;       // patched per MMA, see idesc_with_sf_id
-            constexpr uint32_t atype = 0;         // mxf8f6f4: 0=e4m3, 1=e5m2, 3=e2m3, 4=e3m2, 5=e2m1
+            constexpr uint32_t sparsity_sel = 0;
+            constexpr uint32_t sparsity_mode = 0;
+            constexpr uint32_t a_sf_id = 0;       // patched per MMA
+            constexpr uint32_t b_sf_id = 0;
+            constexpr uint32_t atype = 0;         // e4m3
             constexpr uint32_t btype = 0;
-            constexpr uint32_t aᵀ = 0;            // 1 = Aᵀ (MN-major)
-            constexpr uint32_t bᵀ = 0;            // 1 = Bᵀ (MN-major)
-            constexpr uint32_t an = 0;            // 1 = -A
-            constexpr uint32_t bn = 0;            // 1 = -B
-            constexpr uint32_t scale_fmt = 1;     // 0=e4m3, 1=e8m0
-            constexpr uint32_t k_size = 0;        // mxf8f6f4 dense: MMA-K = 32
+            constexpr uint32_t aᵀ = 0;
+            constexpr uint32_t bᵀ = 0;
+            constexpr uint32_t an = 0;
+            constexpr uint32_t bn = 0;
+            constexpr uint32_t scale_fmt = 1;     // e8m0
+            constexpr uint32_t k_size = 0;        // MMA-K = 32
             return
                 (sparsity_sel & 3)
                 | ((sparsity_mode & 1)<<2)
@@ -203,6 +217,7 @@ namespace pi {
                 : "r"(static_cast<uint32_t>(__cvta_generic_to_shared(dst_smem))), "r"(cols)
                 : "memory"
             );
+            asm volatile("tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;\n" ::: "memory");
         }
 
         __device__ __forceinline__ void tmem_free(uint32_t taddr, int32_t cols) {
@@ -219,6 +234,24 @@ namespace pi {
                 "tcgen05.ld.sync.aligned.32x32b.x8.b32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];\n"
                 : "=f"(dst[0]), "=f"(dst[1]), "=f"(dst[2]), "=f"(dst[3]),
                   "=f"(dst[4]), "=f"(dst[5]), "=f"(dst[6]), "=f"(dst[7])
+                : "r"(addr)
+                : "memory"
+            );
+        }
+
+        __device__ __forceinline__ void ld_32x32b_x32(float (&dst)[32], uint32_t addr) {
+            asm volatile(
+                "tcgen05.ld.sync.aligned.32x32b.x32.b32 "
+                "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
+                "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, [%32];\n"
+                : "=f"(dst[0]), "=f"(dst[1]), "=f"(dst[2]), "=f"(dst[3]),
+                  "=f"(dst[4]), "=f"(dst[5]), "=f"(dst[6]), "=f"(dst[7]),
+                  "=f"(dst[8]), "=f"(dst[9]), "=f"(dst[10]), "=f"(dst[11]),
+                  "=f"(dst[12]), "=f"(dst[13]), "=f"(dst[14]), "=f"(dst[15]),
+                  "=f"(dst[16]), "=f"(dst[17]), "=f"(dst[18]), "=f"(dst[19]),
+                  "=f"(dst[20]), "=f"(dst[21]), "=f"(dst[22]), "=f"(dst[23]),
+                  "=f"(dst[24]), "=f"(dst[25]), "=f"(dst[26]), "=f"(dst[27]),
+                  "=f"(dst[28]), "=f"(dst[29]), "=f"(dst[30]), "=f"(dst[31])
                 : "r"(addr)
                 : "memory"
             );
@@ -254,6 +287,47 @@ namespace pi {
                     "l"(reinterpret_cast<uint64_t>(tma_map)),
                     "r"(static_cast<uint32_t>(__cvta_generic_to_shared(bar))),
                     "r"(c0), "r"(c1), "r"(c2) : "memory"
+            );
+        }
+
+        __device__ __forceinline__ void gather4(
+            uint32_t dst_smem_addr,
+            const void *tma_map,
+            uint64_t *bar,
+            int32_t col,
+            int32_t r0,
+            int32_t r1,
+            int32_t r2,
+            int32_t r3
+        ) {
+            asm volatile(
+                "cp.async.bulk.tensor.2d.shared::cluster.global.tile::gather4.mbarrier::complete_tx::bytes.L2::cache_hint "
+                "[%0], [%1, {%2, %3, %4, %5, %6}], [%7], %8;\n"
+                :: "r"(dst_smem_addr),
+                    "l"(reinterpret_cast<uint64_t>(tma_map)),
+                    "r"(col), "r"(r0), "r"(r1), "r"(r2), "r"(r3),
+                    "r"(static_cast<uint32_t>(__cvta_generic_to_shared(bar))),
+                    "l"(0x1000000000000000ull)
+                : "memory"
+            );
+        }
+
+        __device__ __forceinline__ void load4d(
+            void *dst,
+            const void *tma_map,
+            uint64_t *bar,
+            int32_t c0,
+            int32_t c1,
+            int32_t c2,
+            int32_t c3
+        ) {
+            asm volatile(
+                "cp.async.bulk.tensor.4d.shared::cta.global.tile.mbarrier::complete_tx::bytes "
+                "[%0], [%1, {%3, %4, %5, %6}], [%2];\n"
+                :: "r"(static_cast<uint32_t>(__cvta_generic_to_shared(dst))),
+                    "l"(reinterpret_cast<uint64_t>(tma_map)),
+                    "r"(static_cast<uint32_t>(__cvta_generic_to_shared(bar))),
+                    "r"(c0), "r"(c1), "r"(c2), "r"(c3) : "memory"
             );
         }
 
@@ -351,6 +425,35 @@ namespace pi {
         return w*(x/(1.f+__expf(-x)));
     }
 
+    __device__ __forceinline__ void red_global_add_bf16x8(__nv_bfloat16 *dst, const float *v, float scale) {
+        uint32_t pk[4];
+        #pragma unroll
+        for (int i=0; i < 4; ++i) {
+            __nv_bfloat162 q = __float22bfloat162_rn({scale*v[2*i], scale*v[2*i+1]});
+            pk[i] = *reinterpret_cast<uint32_t *>(&q);
+        }
+        asm volatile(
+            "{\n"
+            ".reg .b64 policy;\n"
+            "createpolicy.fractional.L2::evict_last.b64 policy, 1.0;\n"
+            "red.global.add.L2::cache_hint.noftz.v4.bf16x2 [%0], {%1, %2, %3, %4}, policy;\n"
+            "}\n"
+            :: "l"(dst), "r"(pk[0]), "r"(pk[1]), "r"(pk[2]), "r"(pk[3])
+            : "memory"
+        );
+    }
+
+    namespace cp_async_extra {
+        __device__ __forceinline__ void store3d(const void *tma_map, const void *src, int32_t c0, int32_t c1, int32_t c2) {
+            asm volatile(
+                "cp.async.bulk.tensor.3d.global.shared::cta.bulk_group [%0, {%2, %3, %4}], [%1];\n"
+                :: "l"(reinterpret_cast<uint64_t>(tma_map)),
+                   "r"(static_cast<uint32_t>(__cvta_generic_to_shared(src))),
+                   "r"(c0), "r"(c1), "r"(c2) : "memory"
+            );
+        }
+    }
+
     template <const size_t Rank>
     [[nodiscard]] inline CUtensorMap init_tmap(
         const char *name,
@@ -435,18 +538,18 @@ namespace pi {
         uint64_t num_experts,
         uint64_t global_height,    // N == 2H, rows per expert
         uint64_t global_width,     // K
-        uint32_t tile_height,      // rows of the packed tile, must be a multiple of 256
+        uint32_t tile_height,      // rows of the packed tile, multiple of 256
         uint32_t tile_width        // BK
     ) {
         const uint64_t vec = 16/elem_size;                   // elements per 16B inner atom
+        const uint64_t half = global_height>>1;              // H
+        const uint64_t row = global_width*elem_size;         // bytes per weight row
         if ((global_width%vec) || (tile_width%vec))
             throw std::runtime_error{std::string{name}+": K-like dim must be a multiple of "+std::to_string(vec)};
         if (255&global_height)
             throw std::runtime_error{std::string{name}+": N must be a multiple of 256 to interleave gate/up"};
         if (255&tile_height)
             throw std::runtime_error{std::string{name}+": tile height must be a multiple of 256 to interleave gate/up"};
-        const uint64_t half = global_height>>1;              // H
-        const uint64_t row = global_width*elem_size;         // bytes per weight row
         return init_tmap<5>(
             name,
             dtype,
