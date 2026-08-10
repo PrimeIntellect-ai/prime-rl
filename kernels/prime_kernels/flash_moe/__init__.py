@@ -17,8 +17,8 @@ __all__ = [
 def _moe_align_fake(
     topk_ids: torch.Tensor,
     num_experts: int,
-    block_m: int,
-    bpc: int,
+    block_m: int = 128,
+    bpc: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
     pad_to = block_m * bpc
@@ -42,13 +42,13 @@ def _fused_moe_bf16_fake(
     topk_weights: torch.Tensor,
     out: torch.Tensor,
     top_k: int,
-    block_m: int,
-    block_n: int,
-    warp_n: int,
-    stages: int,
-    bpc: int,
-    cpc: int,
-    split: bool,
+    block_m: int = 128,
+    block_n: int = 64,
+    warp_n: int = 4,
+    stages: int = 2,
+    bpc: int = 1,
+    cpc: int = 1,
+    split: bool = True,
 ) -> None:
     return
 
@@ -67,12 +67,12 @@ def _fused_moe_mxfp8_fake(
     topk_weights: torch.Tensor,
     out: torch.Tensor,
     top_k: int,
-    block_m: int,
-    block_n: int,
-    warp_n: int,
-    stages: int,
-    bpc: int,
-    split: bool,
+    block_m: int = 128,
+    block_n: int = 64,
+    warp_n: int = 4,
+    stages: int = 4,
+    bpc: int = 1,
+    split: bool = True,
 ) -> None:
     return
 

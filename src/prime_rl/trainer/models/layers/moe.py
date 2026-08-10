@@ -187,6 +187,7 @@ def _run_experts_grouped_mm_impl(
 _fused_moe = None
 _FUSED_MOE_BLOCK_M = 128  # The fused kernel indexes the expert blocks in blocks of 128 rows which is a requirement
 _FUSED_MOE_MXFP8_BLOCK_SIZE = 32  # mxfp8 carries one e8m0 scale per 32 elements of the reduction dim
+_FUSED_MOE_BWD_ALIGN_M = 16  # bf16 wgrad grouped GEMM needs 16-byte-aligned group extents along the token dim
 
 
 def _load_fused_moe_kernel() -> ModuleType:
@@ -241,15 +242,9 @@ def _run_experts_fused_kernel(
 
 
 def _quantize_mxfp8(t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Quantize to mxfp8: e4m3 values plus one e8m0 scale per `MX_BLOCK_SIZE` elements of the last dim.
-    RCEIL is what both entries of `MXFP8Recipe` use, so the fused forward quantizes exactly the
-    way the torchao grouped GEMM does on the non-fused path and in this kernel's backward.
-    """
     from torchao.prototype.moe_training.tensor import TrainingWeightWrapperBaseTensor, unwrap_weight
     from torchao.prototype.mx_formats import ScaleCalculationMode
     from torchao.prototype.mx_formats.mx_tensor import to_mx
-
-    # torchao wraps the expert weights to intercept `torch._grouped_mm`; the kernel needs the raw values.
     if isinstance(t, TrainingWeightWrapperBaseTensor):
         t = unwrap_weight(t)
     scales, data = to_mx(
@@ -302,6 +297,17 @@ def _run_experts_fused_mxfp8_kernel(
     return out.type_as(x)
 
 
+def _aligned_group_layout(
+    counts: torch.Tensor, num_routed: int, num_experts: int, align_m: int
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    aligned_counts = torch.clamp((counts + align_m - 1) // align_m, min=1) * align_m
+    shift = (torch.cumsum(aligned_counts, 0) - aligned_counts) - (torch.cumsum(counts, 0) - counts)
+    dst = torch.arange(num_routed, device=counts.device) + shift.repeat_interleave(counts)
+    buf_rows = -(-(num_routed + align_m * num_experts) // align_m) * align_m
+    aligned_counts[-1] += buf_rows - aligned_counts.sum()
+    return aligned_counts, dst, buf_rows
+
+
 def _run_experts_fused_reference(
     x: torch.Tensor,
     w1: torch.Tensor,
@@ -323,11 +329,7 @@ def _run_experts_fused_reference(
         routed_output = _run_experts_grouped_mm_impl(w1, w2, w3, x[token_idx], num_tokens_per_expert)
     else:
         counts = num_tokens_per_expert.to(torch.int64)
-        aligned_counts = torch.clamp((counts + align_m - 1) // align_m, min=1) * align_m
-        shift = (torch.cumsum(aligned_counts, 0) - aligned_counts) - (torch.cumsum(counts, 0) - counts)
-        dst = torch.arange(order.numel(), device=order.device) + shift.repeat_interleave(counts)
-        buf_rows = -(-(order.numel() + align_m * num_experts) // align_m) * align_m
-        aligned_counts[-1] += buf_rows - aligned_counts.sum()
+        aligned_counts, dst, buf_rows = _aligned_group_layout(counts, order.numel(), num_experts, align_m)
         x_pad = x.new_zeros(buf_rows, x.shape[1])
         x_pad[dst] = x[token_idx]
         routed_output = _run_experts_grouped_mm_impl(w1, w2, w3, x_pad, aligned_counts)[dst]
@@ -335,13 +337,67 @@ def _run_experts_fused_reference(
     return torch.zeros_like(x).index_add(0, token_idx, routed_output)
 
 
+def _run_experts_fused_backward_bf16(
+    grad_out: torch.Tensor,
+    x: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+    needs_input_grad: tuple[bool, ...],
+) -> tuple[torch.Tensor | None, ...]:
+    """Closed-form gradients for the bf16 fused MoE forward."""
+    needs_x, needs_w1, needs_w2, needs_w3, needs_scores = (needs_input_grad[p] for p in (0, 1, 2, 3, 5))
+    top_k = selected_experts_indices.shape[1]
+    flat_experts = selected_experts_indices.reshape(-1)
+    num_tokens_per_expert = torch.histc(flat_experts.float(), bins=num_experts, min=0, max=num_experts)
+    order = torch.argsort(flat_experts, stable=True)
+    token_idx = order // top_k
+    counts = num_tokens_per_expert.to(torch.int64)
+    aligned_counts, dst, buf_rows = _aligned_group_layout(counts, order.numel(), num_experts, _FUSED_MOE_BWD_ALIGN_M)
+    offs = torch.cumsum(aligned_counts, dim=0, dtype=torch.int32)
+
+    w1b, w2b, w3b = w1.bfloat16(), w2.bfloat16(), w3.bfloat16()
+    x_sorted = x.new_zeros(buf_rows, x.shape[1], dtype=torch.bfloat16)
+    x_sorted[dst] = x[token_idx].bfloat16()
+    g_sorted = grad_out.new_zeros(buf_rows, grad_out.shape[1], dtype=torch.bfloat16)
+    g_sorted[dst] = grad_out[token_idx].bfloat16()
+    scores_sorted = top_scores.new_zeros(buf_rows, 1)
+    scores_sorted[dst] = top_scores.reshape(-1)[order].reshape(-1, 1)
+
+    a = torch._grouped_mm(x_sorted, w1b.transpose(-2, -1), offs=offs)
+    b = torch._grouped_mm(x_sorted, w3b.transpose(-2, -1), offs=offs)
+    silu_a = F.silu(a)
+    h = silu_a * b
+
+    g2 = torch._grouped_mm(g_sorted, w2b, offs=offs)
+    grad_scores = None
+    if needs_scores:
+        grad_s = (h.float() * g2.float()).sum(dim=-1)[dst]
+        grad_scores = (
+            torch.zeros_like(top_scores.reshape(-1)).index_copy(0, order, grad_s.to(top_scores.dtype)).reshape_as(top_scores)
+        )
+    grad_h = (g2.float() * scores_sorted).to(torch.bfloat16)
+    grad_a = torch.ops.aten.silu_backward(grad_h * b, a)
+    grad_b = grad_h * silu_a
+
+    grad_x = None
+    if needs_x:
+        grad_rows = torch._grouped_mm(grad_a, w1b, offs=offs) + torch._grouped_mm(grad_b, w3b, offs=offs)
+        grad_x = torch.zeros_like(x).index_add(0, token_idx, grad_rows[dst].type_as(x))
+    grad_w1 = torch._grouped_mm(grad_a.t(), x_sorted, offs=offs).type_as(w1) if needs_w1 else None
+    grad_w3 = torch._grouped_mm(grad_b.t(), x_sorted, offs=offs).type_as(w3) if needs_w3 else None
+    grad_w2 = None
+    if needs_w2:
+        grad_y = (g_sorted.float() * scores_sorted).to(torch.bfloat16)
+        grad_w2 = torch._grouped_mm(grad_y.t(), h, offs=offs).type_as(w2)
+    return grad_x, grad_w1, grad_w2, grad_w3, grad_scores
+
+
 class _FusedMoE(torch.autograd.Function):
-    """
-    Forward runs the fused MoE kernel, backward recomputes the reference grouped-mm since the kernel is forward only.
-    The backward stays on the reference path for both dtypes: under mxfp8 the saved expert
-    weights are still torchao wrapper tensors, so its `torch._grouped_mm` quantizes the same
-    way the non-fused mxfp8 path does.
-    """
+    """Forward runs the fused MoE kernel and as the fused kernel is forward only, backward is done by hand."""
 
     @staticmethod
     def forward(ctx, x, w1, w2, w3, selected_experts_indices, top_scores, num_experts, mxfp8):
@@ -352,8 +408,14 @@ class _FusedMoE(torch.autograd.Function):
         return run_kernel(x, w1, w2, w3, selected_experts_indices, top_scores, num_experts)
 
     @staticmethod
+    @torch.autograd.function.once_differentiable
     def backward(ctx, grad_out):
         x, w1, w2, w3, selected_experts_indices, top_scores = ctx.saved_tensors
+        if not ctx.mxfp8:
+            grad_x, grad_w1, grad_w2, grad_w3, grad_scores = _run_experts_fused_backward_bf16(
+                grad_out, x, w1, w2, w3, selected_experts_indices, top_scores, ctx.num_experts, ctx.needs_input_grad
+            )
+            return grad_x, grad_w1, grad_w2, grad_w3, None, grad_scores, None, None
         grad_poses = (0, 1, 2, 3, 5)
         with torch.enable_grad():
             leaves = [
@@ -368,7 +430,7 @@ class _FusedMoE(torch.autograd.Function):
                 selected_experts_indices,
                 leaves[4],
                 ctx.num_experts,
-                align_m=_FUSED_MOE_MXFP8_BLOCK_SIZE if ctx.mxfp8 else None,
+                align_m=_FUSED_MOE_MXFP8_BLOCK_SIZE,
             )
         wanted = [leaf for leaf in leaves if leaf.requires_grad]
         computed = iter(torch.autograd.grad(out, wanted, grad_out) if wanted else ())
@@ -442,8 +504,6 @@ def _gpt_oss_apply_gate(gate_up: torch.Tensor) -> torch.Tensor:
 
 
 def _broadcast_expert_bias(bias: torch.Tensor, num_tokens_per_expert: torch.Tensor, target_rows: int) -> torch.Tensor:
-    """Repeat per-expert bias to per-token, padding to target_rows if EP added padding rows."""
-    # repeat_interleave on CUDA requires int counts; histc/router output is float.
     bias_per_token = torch.repeat_interleave(bias, num_tokens_per_expert.to(torch.int64), dim=0)
     if bias_per_token.shape[0] < target_rows:
         pad_rows = target_rows - bias_per_token.shape[0]
