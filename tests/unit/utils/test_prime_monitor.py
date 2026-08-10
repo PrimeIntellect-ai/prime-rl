@@ -6,7 +6,7 @@ import pyarrow.parquet as pq
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import WireAgentConfig
 
-from prime_rl.orchestrator.types import Episode, Rollout
+from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.monitor.prime import PrimeMonitor
 
 
@@ -16,11 +16,9 @@ def _new_monitor() -> PrimeMonitor:
     return monitor
 
 
-def _build_rollout(
-    *, example_id: int, reward: float, task: str, agent_name: str = "agent", trainable: bool = True
-) -> Rollout:
+def _build_rollout(*, example_id: int, reward: float, task: str) -> Rollout:
     """Build a v1 ``Rollout`` (message-graph trace). The user node carries the prompt and the
-    assistant node the completion; ``_episodes_to_parquet_bytes`` reads the conversation off the
+    assistant node the completion; ``_rollouts_to_parquet_bytes`` reads the conversation off the
     branches (its ``completion`` column is the last branch's messages, ``trajectory`` is one
     message list per branch)."""
     nodes = [
@@ -40,7 +38,7 @@ def _build_rollout(
     ]
     rollout = Rollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=example_id, prompt=f"prompt-{example_id}")),
-        agent=vf.AgentInfo(config=WireAgentConfig(), name=agent_name, trainable=trainable),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
         nodes=nodes,
         rewards={"reward": vf.Reward(score=reward)},
     )
@@ -49,32 +47,19 @@ def _build_rollout(
     return rollout
 
 
-def _episode(*rollouts: Rollout, episode_id: str, env_name: str = "task-a") -> Episode:
-    """The unit the monitor uploads: one episode, represented by one native row."""
-    return Episode.model_construct(
-        id=episode_id,
-        traces=list(rollouts),
-        env=vf.EnvInfo(id=f"{env_name}-v1", name=env_name),
-        run=vf.TrainRunInfo(id="training-run", metadata=vf.TrainMetadata(step=7)),
-        ok=True,
-    )
+def _episode(*rollouts: Rollout, env_name: str = "task-a") -> vf.WireEpisode:
+    """The unit the monitor uploads: one episode, whose traces become the rows."""
+    return vf.WireEpisode.model_construct(traces=list(rollouts), env=vf.EnvInfo(name=env_name))
 
 
-def test_episodes_to_parquet_bytes_preserves_episode_rows_and_ids():
+def test_rollouts_to_parquet_bytes_preserves_all_rollouts_and_ids():
     monitor = _new_monitor()
     monitor.run_id = "run-123"
 
-    parquet_bytes = monitor._episodes_to_parquet_bytes(
+    parquet_bytes = monitor._rollouts_to_parquet_bytes(
         [
-            _episode(
-                _build_rollout(example_id=101, reward=1.0, task="task-a"),
-                episode_id="episode-101",
-            ),
-            _episode(
-                _build_rollout(example_id=202, reward=0.0, task="task-b"),
-                episode_id="episode-202",
-                env_name="task-b",
-            ),
+            _episode(_build_rollout(example_id=101, reward=1.0, task="task-a")),
+            _episode(_build_rollout(example_id=202, reward=0.0, task="task-b"), env_name="task-b"),
         ],
         step=7,
     )
@@ -93,37 +78,21 @@ def test_episodes_to_parquet_bytes_preserves_episode_rows_and_ids():
     assert json.loads(rows[1]["completion"])[0]["content"] == "completion-202"
     trajectory = json.loads(rows[0]["trajectory"])
     assert trajectory[0]["messages"][0]["content"] == "prompt-101"
-    infos = [json.loads(row["info"]) for row in rows]
-    assert [info["native_wrapper"]["id"] for info in infos] == ["episode-101", "episode-202"]
-    assert all(info["native_trace_index"] == 0 for info in infos)
-    assert all(len(info["native_wrapper"]["traces"]) == 1 for info in infos)
-    assert infos[0]["native_wrapper"]["run"]["id"] == "training-run"
 
 
-def test_episodes_to_parquet_bytes_uses_trainable_summary_and_preserves_all_traces():
+def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     monitor = _new_monitor()
     monitor.run_id = "run-456"
 
-    fixed_trace_without_branches = Rollout[vf.TaskData](
+    rollout_with_branches = _build_rollout(example_id=1, reward=1.0, task="task-a")
+    rollout_without_branches = Rollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=2, prompt="missing-trajectory")),
-        agent=vf.AgentInfo(config=WireAgentConfig(), name="judge", trainable=False),
+        agent=vf.AgentInfo(config=WireAgentConfig()),
     )
-    trainable_trace = _build_rollout(
-        example_id=3,
-        reward=1.0,
-        task="task-a",
-        agent_name="solver",
-    )
-    assert fixed_trace_without_branches.branches == []
+    assert rollout_without_branches.branches == []
 
-    parquet_bytes = monitor._episodes_to_parquet_bytes(
-        [
-            _episode(
-                fixed_trace_without_branches,
-                trainable_trace,
-                episode_id="multi-trace-episode",
-            )
-        ],
+    parquet_bytes = monitor._rollouts_to_parquet_bytes(
+        [_episode(rollout_with_branches, rollout_without_branches)],
         step=3,
     )
 
@@ -133,18 +102,8 @@ def test_episodes_to_parquet_bytes_uses_trainable_summary_and_preserves_all_trac
     rows = table.to_pylist()
 
     assert len(rows) == 1
-    assert rows[0]["problem_id"] == 3
+    assert rows[0]["problem_id"] == 1
     assert rows[0]["sample_id"] == 0
-    assert rows[0]["reward"] == 1.0
-    assert rows[0]["advantage"] == 0.5
-    assert json.loads(rows[0]["completion"])[0]["content"] == "completion-3"
-    info = json.loads(rows[0]["info"])
-    assert info["native_trace_index"] == 1
-    assert [trace["agent"]["name"] for trace in info["native_wrapper"]["traces"]] == [
-        "judge",
-        "solver",
-    ]
-    assert info["native_wrapper"]["traces"][0]["nodes"] == []
 
 
 def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
@@ -162,25 +121,3 @@ def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
     monitor.logger.warning.assert_called_once_with(
         "Dropping 2 non-finite value(s) from Prime monitor metrics payload: metrics.nan, distributions[1]"
     )
-
-
-def test_log_samples_warns_and_skips_upload_when_serialization_fails():
-    monitor = _new_monitor()
-    monitor.is_master = True
-    monitor.enabled = True
-    monitor.config = Mock()
-    monitor.config.log_extras.samples = True
-    monitor.config.log_extras.interval = 1
-    monitor.config.log_extras.sample_ratio = 1.0
-    monitor.last_log_samples_step = -1
-    monitor._pending_sample_steps = set()
-    monitor.logger = Mock()
-    monitor._episodes_to_parquet_bytes = Mock(side_effect=ValueError("invalid episode"))
-    monitor._upload_samples_via_presigned_url = Mock()
-
-    monitor.log_samples([Mock()], step=1)
-
-    monitor.logger.warning.assert_called_once_with(
-        "Failed to build Prime monitor samples at step 1: ValueError: invalid episode"
-    )
-    monitor._upload_samples_via_presigned_url.assert_not_called()
