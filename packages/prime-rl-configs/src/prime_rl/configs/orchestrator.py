@@ -583,6 +583,30 @@ class OrchestratorConfig(BaseConfig):
                 )
         return self
 
+    @property
+    def is_dataset_sft(self) -> bool:
+        """True when this run trains from a static HF dataset (``algo.type =
+        "dataset_sft"``) instead of env rollouts."""
+        return self.algo.type == "dataset_sft"
+
+    @model_validator(mode="after")
+    def validate_dataset_sft(self):
+        """``dataset_sft`` trains straight from its dataset — train envs take
+        no effect and must be empty. It is a run-level algorithm, not a
+        per-env one, so it can't be set on a source either."""
+        if self.is_dataset_sft and self.train.source:
+            raise ValueError(
+                "algorithm 'dataset_sft' trains from its dataset, not from env rollouts — "
+                "remove all [[orchestrator.train.source]] blocks (eval sources may stay)."
+            )
+        for env_cfg in self.train.source:
+            if env_cfg.algo is not None and env_cfg.algo.type == "dataset_sft":
+                raise ValueError(
+                    "algorithm 'dataset_sft' is run-level (it replaces env rollouts entirely) — "
+                    "set it as [orchestrator.algo], not on a train source."
+                )
+        return self
+
     @model_validator(mode="after")
     def inherit_env_algorithms(self):
         """Envs without their own algorithm inherit the top-level one.

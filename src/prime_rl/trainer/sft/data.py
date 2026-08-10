@@ -177,6 +177,96 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     return MultiModalData(mm_hashes=new_hashes, mm_placeholders=new_placeholders, mm_items=new_items)
 
 
+def resolve_example_messages(example: dict) -> list[dict]:
+    """Resolve one SFT example's chat messages. ``messages`` takes precedence
+    over explicit split fields and is interpreted as a whole-chat training
+    sample with an empty prompt. Null-check rather than key-check: Arrow
+    schema union adds ``messages: null`` to prompt/completion rows whenever
+    other rows have a ``messages`` column."""
+    if example.get("messages") is not None:
+        messages = normalize_messages(example["messages"], default_role="assistant")
+    elif example.get("prompt") is not None and example.get("completion") is not None:
+        messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
+            example["completion"], default_role="assistant"
+        )
+    else:
+        raise ValueError(
+            "All examples in the dataset must have either a 'messages' column "
+            "or both 'prompt' and 'completion' columns for SFT"
+        )
+
+    # Strip nulls before deserializing so genuine nulls inside tool-call
+    # argument strings survive.
+    messages = [_drop_null_fields(m) for m in messages]
+    return deserialize_tool_calls(messages)
+
+
+def resolve_example_tools(example: dict) -> list[dict]:
+    """Parse one SFT example's available tools, if present - assumes OAI format.
+    Accepts either ``tools`` or ``tool_defs`` (the verifiers rollout format), as
+    either a JSON-encoded string of a list or a list of dicts; verifiers-shaped
+    tools are converted to OAI form for the chat template."""
+    raw_tools = example.get("tools", example.get("tool_defs"))
+    if not raw_tools:
+        return []
+    if isinstance(raw_tools, str):
+        raw_tools = json.loads(raw_tools)
+    return [
+        t
+        if isinstance(t, dict) and t.get("type") == "function" and "function" in t
+        else {
+            "type": "function",
+            "function": {
+                "name": t.get("name"),
+                "description": t.get("description"),
+                "parameters": t.get("parameters"),
+                **({} if t.get("strict") is None else {"strict": t["strict"]}),
+            },
+        }
+        for t in raw_tools
+    ]
+
+
+def render_example(renderer: Renderer, example: dict, loss_mask_config: LossMaskConfig):
+    """Render one SFT example into an (unshifted) renderer training sample:
+    resolve messages and tools, derive the role loss masking, and tokenize via
+    ``build_training_sample``."""
+    messages = resolve_example_messages(example)
+    tools = resolve_example_tools(example)
+
+    def should_mask(message: dict) -> bool:
+        assert "role" in message, "Message must have a role"
+        match message["role"]:
+            case "user":
+                return loss_mask_config.user
+            case "assistant":
+                return loss_mask_config.assistant
+            case "system":
+                return loss_mask_config.system
+            case "tool":
+                return loss_mask_config.tool
+            case _:
+                raise ValueError(f"Invalid message role: {message['role']}")
+
+    # Defer to the renderer's sampled_mask by default: a role filter would
+    # drop sampled stop markers attributed to the next message (e.g. GLM's
+    # turn-closing <|user|> / <|observation|>).
+    role_to_mask = None if loss_mask_config.assistant else should_mask
+
+    # Non-assistant roles are opted into the loss via the renderer's
+    # body-only path: the message content is trained, not the role
+    # scaffolding (e.g. <|im_start|>assistant) the harness emits.
+    content_sft_roles = {role for role in ("user", "system", "tool") if getattr(loss_mask_config, role)}
+    return build_training_sample(
+        renderer,
+        messages,
+        role_to_mask=role_to_mask,
+        tools=tools,
+        content_sft_roles=content_sft_roles or None,
+        ensure_final_stop=True,
+    )
+
+
 class SFTDataset(StatefulIterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt/completion or raw messages format."""
 
@@ -222,86 +312,7 @@ class SFTDataset(StatefulIterableDataset):
         self.data_world_size = get_world().world_size // non_dp_size * num_workers
 
     def _process(self, example: dict) -> dict | None:
-        def resolve_messages(example: dict) -> list[dict]:
-            # `messages` takes precedence over explicit split fields and is interpreted
-            # as a whole-chat training sample with an empty prompt. Null-check rather
-            # than key-check: Arrow schema union adds `messages: null` to
-            # prompt/completion rows whenever other rows have a `messages` column.
-            if example.get("messages") is not None:
-                messages = normalize_messages(example["messages"], default_role="assistant")
-            elif example.get("prompt") is not None and example.get("completion") is not None:
-                messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
-                    example["completion"], default_role="assistant"
-                )
-            else:
-                raise ValueError(
-                    "All examples in the dataset must have either a 'messages' column "
-                    "or both 'prompt' and 'completion' columns for SFT"
-                )
-
-            # Strip nulls before deserializing so genuine nulls inside tool-call
-            # argument strings survive.
-            messages = [_drop_null_fields(m) for m in messages]
-            return deserialize_tool_calls(messages)
-
-        messages = resolve_messages(example)
-
-        # Parse available tools, if present - assumes OAI format. Accepts either
-        # `tools` or `tool_defs` (the verifiers rollout format), as either a
-        # JSON-encoded string of a list or a list of dicts; verifiers-shaped
-        # tools are converted to OAI form for the chat template.
-        raw_tools = example.get("tools", example.get("tool_defs"))
-        if not raw_tools:
-            tools = []
-        else:
-            if isinstance(raw_tools, str):
-                raw_tools = json.loads(raw_tools)
-            tools = [
-                t
-                if isinstance(t, dict) and t.get("type") == "function" and "function" in t
-                else {
-                    "type": "function",
-                    "function": {
-                        "name": t.get("name"),
-                        "description": t.get("description"),
-                        "parameters": t.get("parameters"),
-                        **({} if t.get("strict") is None else {"strict": t["strict"]}),
-                    },
-                }
-                for t in raw_tools
-            ]
-
-        def should_mask(message: dict) -> bool:
-            assert "role" in message, "Message must have a role"
-            match message["role"]:
-                case "user":
-                    return self.loss_mask_config.user
-                case "assistant":
-                    return self.loss_mask_config.assistant
-                case "system":
-                    return self.loss_mask_config.system
-                case "tool":
-                    return self.loss_mask_config.tool
-                case _:
-                    raise ValueError(f"Invalid message role: {message['role']}")
-
-        # Defer to the renderer's sampled_mask by default: a role filter would
-        # drop sampled stop markers attributed to the next message (e.g. GLM's
-        # turn-closing <|user|> / <|observation|>).
-        role_to_mask = None if self.loss_mask_config.assistant else should_mask
-
-        # Non-assistant roles are opted into the loss via the renderer's
-        # body-only path: the message content is trained, not the role
-        # scaffolding (e.g. <|im_start|>assistant) the harness emits.
-        content_sft_roles = {role for role in ("user", "system", "tool") if getattr(self.loss_mask_config, role)}
-        sample = build_training_sample(
-            self.renderer,
-            messages,
-            role_to_mask=role_to_mask,
-            tools=tools,
-            content_sft_roles=content_sft_roles or None,
-            ensure_final_stop=True,
-        )
+        sample = render_example(self.renderer, example, self.loss_mask_config)
         input_ids = list(sample.token_ids)
         loss_mask = list(sample.loss_mask)
         mm = sample.multi_modal_data

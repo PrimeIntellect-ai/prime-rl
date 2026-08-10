@@ -1,0 +1,49 @@
+# SFT-from-dataset through the RL stack on 2 GPUs (1 trainer + 1 inference):
+# trains the same data as sft.toml via the dataset_sft algorithm, with online
+# evals against the reverse-text eval env. Dev-sized counterpart of sft.toml.
+
+max_steps = 100
+seq_len = 4096
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[orchestrator]
+token_batch_size = 131072 # matches sft.toml: 32 rows x 4096 tokens per step
+max_inflight_episodes = 128
+
+[orchestrator.algo]
+type = "dataset_sft"
+
+[orchestrator.algo.dataset]
+name = "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"
+
+[orchestrator.eval]
+interval = 25
+num_examples = 64
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 2048 # dataset completions average ~700 tokens (thinking + answer)
+
+[[orchestrator.eval.source]]
+name = "reverse-text"
+
+[orchestrator.eval.source.env.taskset]
+id = "reverse-text-v1"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "null"
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "subprocess"
+
+[trainer.optim]
+lr = 2e-5
+
+[ckpt] # Checkpoint at the end of training
+
+[inference]

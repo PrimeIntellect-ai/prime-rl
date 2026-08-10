@@ -39,6 +39,7 @@ import verifiers.v1 as vf
 from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
+from prime_rl.configs.sft import LossMaskConfig
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.config import BaseConfig
 
@@ -366,6 +367,50 @@ class SFTAlgoConfig(BaseAlgoConfig):
         return self
 
 
+class SFTDatasetConfig(BaseConfig):
+    """The HF dataset a ``dataset_sft`` run trains on, plus how it is read:
+    the same example schema as the native SFT trainer (``messages`` or
+    ``prompt``/``completion`` columns, optional ``tools``)."""
+
+    name: str
+    """HF dataset name or path."""
+
+    subsets: list[str] | None = None
+    """Subsets to load from the HF dataset."""
+
+    splits: list[str] | None = None
+    """Splits to load from the HF dataset."""
+
+    probabilities: list[float] | None = None
+    """Sampling probabilities for each subset/split."""
+
+    stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted"
+    """Stopping strategy when interleaving multiple subsets/splits."""
+
+    shuffle: bool = True
+    """Shuffle the dataset at the start of each epoch."""
+
+    seed: int = 0
+    """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
+
+    loss_mask: LossMaskConfig = LossMaskConfig()
+    """Which message roles contribute to the loss."""
+
+
+class DatasetSFTAlgoConfig(BaseAlgoConfig):
+    type: Literal["dataset_sft"] = "dataset_sft"
+    """SFT from a static HF dataset through the RL stack: the orchestrator
+    renders dataset examples into ce-routed training samples and ships them to
+    the trainer directly — no envs, no rollout sampling. Train sources take no
+    effect and must be empty; eval sources still run online evals against the
+    live policy. Epochs cycle indefinitely, so ``max_steps`` bounds the run."""
+
+    action_loss_type: ClassVar[ActionLossType] = "ce"
+
+    dataset: SFTDatasetConfig
+    """The HF dataset to train on."""
+
+
 AlgoConfig: TypeAlias = Annotated[
     GRPOAlgoConfig
     | EchoAlgoConfig
@@ -374,7 +419,8 @@ AlgoConfig: TypeAlias = Annotated[
     | HierarchicalGRPOAlgoConfig
     | OPDAlgoConfig
     | OPSDAlgoConfig
-    | SFTAlgoConfig,
+    | SFTAlgoConfig
+    | DatasetSFTAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -388,6 +434,7 @@ its class defaults are the vetted setting.
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
 - ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
+- ``dataset_sft`` — the policy trains with CE on a static HF dataset; no train envs (must be empty), eval envs optional. Needs ``dataset``.
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
 
 A new credit-assignment scheme is a new named algorithm in code (subclass

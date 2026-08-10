@@ -37,12 +37,14 @@ if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
 
     from prime_rl.orchestrator.ckpt import CheckpointManager
+    from prime_rl.transport import TrainingSample
     from prime_rl.transport.base import MicroBatchSender
     from prime_rl.utils.client import InferencePool
     from prime_rl.utils.monitor.base import Monitor
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
+from prime_rl.orchestrator.dataset_source import DatasetSFTSource
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
@@ -133,7 +135,7 @@ class Orchestrator:
     sender: MicroBatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
-    train_source: TrainSource
+    train_source: TrainSource | DatasetSFTSource
     train_sink: TrainSink
     dispatcher: RolloutDispatcher
     watcher: WeightWatcher
@@ -159,7 +161,9 @@ class Orchestrator:
         # Route the in-process v1 library logging through our handler. The
         # env server runs in a child process, so its logging is separate.
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
-        algorithms = sorted({env.algo.type for env in config.train.source if env.algo is not None})
+        algorithms = sorted({env.algo.type for env in config.train.source if env.algo is not None}) or [
+            config.algo.type
+        ]
         get_logger().info(f"Starting orchestrator (algorithm: {', '.join(algorithms)})")
 
         if config.bench:
@@ -198,6 +202,7 @@ class Orchestrator:
         self.resume_step = None
         self.lag_task = None
         self.model_express = None
+        self.dataset_source: DatasetSFTSource | None = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -336,7 +341,19 @@ class Orchestrator:
 
         self.lora_name = config.model.lora.name if config.model.lora else None
 
-        self.train_source = TrainSource(self.train_envs)
+        if config.is_dataset_sft:
+            assert self.renderer is not None
+            self.dataset_source = DatasetSFTSource(
+                config.algo,
+                renderer=self.renderer,
+                seq_len=config.seq_len,
+                batch_size=config.batch_size,
+                token_batch_size=config.token_batch_size,
+            )
+            await asyncio.to_thread(self.dataset_source.load)
+            self.train_source = self.dataset_source
+        else:
+            self.train_source = TrainSource(self.train_envs)
 
         if self.resume_step is not None and self.ckpt_manager is not None:
             self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step)
@@ -418,6 +435,10 @@ class Orchestrator:
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
         )
+        if self.dataset_source is not None:
+            # Dataset runs produce train batches themselves; the dispatcher
+            # only serves evals.
+            self.dispatcher.disable_train_scheduling()
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
@@ -498,7 +519,14 @@ class Orchestrator:
         # logs a forced-cleanup warning instead of a clean-exit success.
         clean_exit = False
         try:
-            await self.main_loop()
+            if self.dataset_source is not None:
+                # The dataset loop produces train batches while the main loop
+                # keeps consuming eval episodes off the dispatcher.
+                async with asyncio.TaskGroup() as tg:
+                    tg.create_task(self.main_loop(), name="main_loop")
+                    tg.create_task(self.dataset_loop(), name="dataset_loop")
+            else:
+                await self.main_loop()
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
@@ -741,6 +769,82 @@ class Orchestrator:
         self.maybe_trigger_eval(self.progress.step)
         trim_process_memory()
 
+    async def dataset_loop(self) -> None:
+        """Dataset-SFT batch producer: renders the next batch off the event
+        loop and ships it. Paced by the trainer via the policy-version hold in
+        ``finalize_dataset_batch``; ends by draining once ``max_steps`` ship."""
+        assert self.dataset_source is not None
+        while not self.stopped.is_set() and not self.draining:
+            if self.config.max_steps is not None and self.progress.step > self.config.max_steps:
+                self.draining = True
+                get_logger().info("Draining pipeline (any in-flight evals will complete)")
+                return
+            samples = await asyncio.to_thread(self.dataset_source.next_batch)
+            await self.finalize_dataset_batch(samples)
+
+    async def finalize_dataset_batch(self, samples: list[TrainingSample]) -> None:
+        """Ship one dataset-SFT batch to the trainer: the env-rollout ship path
+        (``finalize_train_batch``) minus everything rollout-shaped — no trace
+        persistence, no rollout metrics, no filters."""
+        config = self.config
+        assert self.dataset_source is not None
+        step = self.progress.step
+
+        now = time.perf_counter()
+        step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
+        self.last_batch_at = now
+
+        # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}
+        # (see ``finalize_train_batch``) — this is what paces the loop to the trainer.
+        required_version = step - 1 - TARGET_LAG
+        if not config.bench and self.policy.version < required_version:
+            hold_start = time.perf_counter()
+            while True:
+                self.version_advanced.clear()
+                if self.policy.version >= required_version:
+                    break
+                await self.version_advanced.wait()
+            self.wait_for_policy_time += time.perf_counter() - hold_start
+
+        pack_start_time = time.perf_counter()
+        micro_batch_grid = await asyncio.to_thread(self.packer.pack, samples)
+        pack_time = time.perf_counter() - pack_start_time
+        if self.sender is not None:
+            await self.sender.send(micro_batch_grid)
+        self.progress.step += 1
+        save_ckpt_time = await self.maybe_save_ckpt(step)
+
+        num_tokens = sum(len(sample.token_ids) for sample in samples)
+        num_trainable = sum(sum(sample.mask) for sample in samples)
+        self.progress.total_tokens += num_tokens
+        self.progress.total_samples += len(samples)
+        self.progress.total_problems += len(samples)
+        metrics = {
+            "progress/tokens": num_tokens,
+            "progress/trainable_tokens": num_trainable,
+            "progress/samples": len(samples),
+            "progress/epoch": self.dataset_source.epoch,
+            "progress/total_tokens": self.progress.total_tokens,
+            "progress/total_samples": self.progress.total_samples,
+            "time/step": step_time,
+            "time/pack": pack_time,
+            "time/save_ckpt": save_ckpt_time,
+            "time/wait_for_policy": self.wait_for_policy_time,
+            "step": step,
+        }
+        self.monitor.log(metrics, step=step)
+        self.wait_for_policy_time = 0.0
+        if self.heart is not None:
+            self.heart.beat()
+
+        get_logger().success(
+            f"Step {step} | {format_time(step_time):>7} | Samples {len(samples)} | "
+            f"Tokens {num_tokens} ({num_trainable} trainable) | Epoch {self.dataset_source.epoch}"
+        )
+
+        self.maybe_trigger_eval(self.progress.step)
+        trim_process_memory()
+
     def maybe_trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything
         fires. No-op when eval is not configured."""
@@ -934,6 +1038,10 @@ class Orchestrator:
         here, policy update in ``on_new_version``) share one lead formula. Steps
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
         count is ``progress.step - 1``."""
+        if self.dataset_source is not None:
+            # Dataset runs schedule no train rollouts; the ship hold in
+            # ``finalize_dataset_batch`` is what paces them.
+            return
         lead = (self.progress.step - 1) - self.policy.version
         # The trainer skips the final in-memory weight broadcasts, so policy.version never
         # reaches the last step. Let the final batch through instead of waiting for it.
