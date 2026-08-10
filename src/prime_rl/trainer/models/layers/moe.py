@@ -310,6 +310,7 @@ def _run_experts_fused_reference(
     selected_experts_indices: torch.Tensor,
     top_scores: torch.Tensor,
     num_experts: int,
+    align_m: int | None = None,
 ) -> torch.Tensor:
     """Differentiable equivalent of the fused kernel - this implements the backward pass as the fused kernel itself is forward only."""
     top_k = selected_experts_indices.shape[1]
@@ -318,14 +319,25 @@ def _run_experts_fused_reference(
     order = torch.argsort(flat_experts, stable=True)
     top_scores_sorted = top_scores.reshape(-1)[order]
     token_idx = order // top_k
-    routed_output = _run_experts_grouped_mm_impl(w1, w2, w3, x[token_idx], num_tokens_per_expert)
+    if align_m is None:
+        routed_output = _run_experts_grouped_mm_impl(w1, w2, w3, x[token_idx], num_tokens_per_expert)
+    else:
+        counts = num_tokens_per_expert.to(torch.int64)
+        aligned_counts = torch.clamp((counts + align_m - 1) // align_m, min=1) * align_m
+        shift = (torch.cumsum(aligned_counts, 0) - aligned_counts) - (torch.cumsum(counts, 0) - counts)
+        dst = torch.arange(order.numel(), device=order.device) + shift.repeat_interleave(counts)
+        buf_rows = -(-(order.numel() + align_m * num_experts) // align_m) * align_m
+        aligned_counts[-1] += buf_rows - aligned_counts.sum()
+        x_pad = x.new_zeros(buf_rows, x.shape[1])
+        x_pad[dst] = x[token_idx]
+        routed_output = _run_experts_grouped_mm_impl(w1, w2, w3, x_pad, aligned_counts)[dst]
     routed_output = (routed_output.float() * top_scores_sorted.reshape(-1, 1)).to(x.dtype)
     return torch.zeros_like(x).index_add(0, token_idx, routed_output)
 
 
 class _FusedMoE(torch.autograd.Function):
-    """Forward runs the fused MoE kernel, backward recomputes the reference grouped-mm since the kernel is forward only.
-
+    """
+    Forward runs the fused MoE kernel, backward recomputes the reference grouped-mm since the kernel is forward only.
     The backward stays on the reference path for both dtypes: under mxfp8 the saved expert
     weights are still torchao wrapper tensors, so its `torch._grouped_mm` quantizes the same
     way the non-fused mxfp8 path does.
@@ -335,6 +347,7 @@ class _FusedMoE(torch.autograd.Function):
     def forward(ctx, x, w1, w2, w3, selected_experts_indices, top_scores, num_experts, mxfp8):
         ctx.save_for_backward(x, w1, w2, w3, selected_experts_indices, top_scores)
         ctx.num_experts = num_experts
+        ctx.mxfp8 = mxfp8
         run_kernel = _run_experts_fused_mxfp8_kernel if mxfp8 else _run_experts_fused_kernel
         return run_kernel(x, w1, w2, w3, selected_experts_indices, top_scores, num_experts)
 
@@ -348,7 +361,14 @@ class _FusedMoE(torch.autograd.Function):
                 for t, p in zip((x, w1, w2, w3, top_scores), grad_poses)
             ]
             out = _run_experts_fused_reference(
-                leaves[0], leaves[1], leaves[2], leaves[3], selected_experts_indices, leaves[4], ctx.num_experts
+                leaves[0],
+                leaves[1],
+                leaves[2],
+                leaves[3],
+                selected_experts_indices,
+                leaves[4],
+                ctx.num_experts,
+                align_m=_FUSED_MOE_MXFP8_BLOCK_SIZE if ctx.mxfp8 else None,
             )
         wanted = [leaf for leaf in leaves if leaf.requires_grad]
         computed = iter(torch.autograd.grad(out, wanted, grad_out) if wanted else ())
