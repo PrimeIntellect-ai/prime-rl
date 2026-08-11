@@ -14,7 +14,6 @@ TOOL_CALL_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^openai/gpt-oss"), "openai"),
     (re.compile(r"^poolside/Laguna"), "poolside_v1"),
     (re.compile(r"^PrimeIntellect/INTELLECT-3"), "qwen3_coder"),
-    # Covers Nemotron 3 and 3.5 — both use the same <tool_call> XML format.
     (re.compile(r"^nvidia/NVIDIA-Nemotron-3"), "qwen3_coder"),
     (re.compile(r"^stepfun-ai/Step-3\.5"), "step3p5"),
     # Qwen3.5 and Qwen3-Coder use qwen3_coder — must be before the Qwen3 catch-all.
@@ -33,9 +32,6 @@ REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^poolside/Laguna"), "poolside_v1"),
     (re.compile(r"^PrimeIntellect/INTELLECT-3"), "deepseek_r1"),
     (re.compile(r"^nvidia/NVIDIA-Nemotron-3-Super"), "nemotron_v3"),
-    # Nemotron 3 Nano and 3.5 Lightning prefill <think>\n in the generation
-    # prompt; nano_v3 (patched DeepSeekR1 parser) handles that plus the
-    # enable_thinking=False content swap.
     (re.compile(r"^nvidia/NVIDIA-Nemotron-3-Nano"), "nano_v3"),
     (re.compile(r"^nvidia/NVIDIA-Nemotron-3\.5"), "nano_v3"),
     (re.compile(r"^stepfun-ai/Step-3\.5"), "step3p5"),
