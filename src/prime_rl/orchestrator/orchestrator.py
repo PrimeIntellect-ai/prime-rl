@@ -298,10 +298,10 @@ class Orchestrator:
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
-        if config.wandb is not None and config.inference_metrics is not None:
+        if config.wandb is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(
                 self.policy_inference.admin_clients,
-                config.inference_metrics,
+                roles=config.inference_metrics_roles,
             )
             await self.inference_metrics.start()
 

@@ -10,9 +10,9 @@ import wandb
 from httpx import AsyncClient
 from prometheus_client.parser import text_string_to_metric_families
 
-from prime_rl.configs.orchestrator import InferenceMetricsConfig
 from prime_rl.utils.logger import get_logger
 
+POLL_INTERVAL = 5.0
 FETCH_TIMEOUT = 5.0
 METRIC_PREFIX = "vllm:"
 PD_ROLES = {"prefill", "decode"}
@@ -204,7 +204,6 @@ def build_scope_metrics(
     values_per_engine: list[dict[str, float]],
     bucket_deltas_per_engine: list[dict[str, dict[float, float]]],
     counter_deltas: dict[str, float],
-    aggregations: list[str],
 ) -> dict[str, float]:
     """Aggregate per-engine values into ``inference/{scope}/{metric}/{agg}`` series."""
     prefix = f"inference/{scope}"
@@ -213,8 +212,8 @@ def build_scope_metrics(
     names = {name for values in values_per_engine for name in values}
     for name in sorted(names):
         engine_values_for_name = [values[name] for values in values_per_engine if name in values]
-        for aggregation in aggregations:
-            metrics[f"{prefix}/{name}/{aggregation}"] = AGGREGATIONS[aggregation](engine_values_for_name)
+        for aggregation, fn in AGGREGATIONS.items():
+            metrics[f"{prefix}/{name}/{aggregation}"] = fn(engine_values_for_name)
 
     histogram_names = {name for deltas in bucket_deltas_per_engine for name in deltas}
     for name in sorted(histogram_names):
@@ -247,9 +246,8 @@ class InferenceMetricsCollector:
     disaggregated deployments).
     """
 
-    def __init__(self, admin_clients: list[AsyncClient], config: InferenceMetricsConfig):
-        self.config = config
-        self.endpoints = build_metrics_endpoints(admin_clients, roles=config.roles)
+    def __init__(self, admin_clients: list[AsyncClient], roles: list[str | None] | None = None):
+        self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
         self.previous: dict[tuple[str, str], TimedSnapshot] = {}
         self.task: asyncio.Task | None = None
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
@@ -267,7 +265,7 @@ class InferenceMetricsCollector:
                     await self.collect_and_log()
                 except Exception as e:
                     get_logger().debug(f"Inference metrics poll failed: {e!r}")
-                await asyncio.sleep(self.config.interval)
+                await asyncio.sleep(POLL_INTERVAL)
 
         self.task = asyncio.create_task(poll_loop())
 
@@ -306,10 +304,9 @@ class InferenceMetricsCollector:
         bucket_deltas_per_engine = [bucket_deltas(sample, self.previous.get(sample.key)) for sample in samples]
 
         metrics: dict[str, float] = {}
-        if self.config.per_engine:
-            for sample, values in zip(samples, values_per_engine):
-                for name, value in values.items():
-                    metrics[f"inference/engine/{sample.engine_id}/{name}"] = value
+        for sample, values in zip(samples, values_per_engine):
+            for name, value in values.items():
+                metrics[f"inference/engine/{sample.engine_id}/{name}"] = value
 
         scopes: list[tuple[str, list[int]]] = [("agg", list(range(len(samples))))]
         if self.has_pd_roles:
@@ -334,7 +331,6 @@ class InferenceMetricsCollector:
                     [values_per_engine[i] for i in indices],
                     [bucket_deltas_per_engine[i] for i in indices],
                     counter_deltas,
-                    self.config.aggregations,
                 )
             )
         return metrics

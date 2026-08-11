@@ -727,8 +727,7 @@ class RLConfig(BaseConfig):
             )
 
         total_infer_gpus = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
-        metrics = self.orchestrator.inference_metrics
-        if metrics is not None and "roles" not in metrics.model_fields_set:
+        if "inference_metrics_roles" not in self.orchestrator.model_fields_set:
             # External-LB: one admin client per DP rank, so roles expand per rank
             # (stride = dp_local = gpus_per_node / tp). ADMIN_URLS lists all prefill
             # ranks, then all decode ranks, per replica — match that order.
@@ -736,7 +735,7 @@ class RLConfig(BaseConfig):
             role_order = ["prefill"] * (infer_deploy.num_prefill_nodes * stride) + ["decode"] * (
                 infer_deploy.num_decode_nodes * stride
             )
-            metrics.roles = role_order * self.deployment.num_infer_replicas
+            self.orchestrator.inference_metrics_roles = role_order * self.deployment.num_infer_replicas
         if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
             assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
