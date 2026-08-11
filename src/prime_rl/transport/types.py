@@ -18,6 +18,13 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
     dtype: str
 
 
+# Kept-set sampling masks for top-p/top-k replay: flat int32 id bytes plus an
+# int32 count per token position (0 = no mask); len(ids) == 4 * counts.sum().
+class KeptTokens(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    ids: bytes
+    counts: bytes
+
+
 # Produced by the orchestrator's train sink; consumed in-process by
 # ``prepare_batch``, which packs samples into per-rank ``MicroBatch``es.
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -69,6 +76,10 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples without live rl member tokens (the trainer raises otherwise).
     advantages: list[float] | None = None
 
+    # Last field on purpose: array_like structs encode positionally, so appending
+    # keeps the wire layout of earlier fields stable across versions.
+    kept_tokens: KeptTokens | None = None
+
 
 # Orchestrator -> Trainer
 class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -97,3 +108,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     rl_weights: list[float] | None = None
     ce_weights: list[float] | None = None
     ref_kl_weights: list[float] | None = None
+
+    # See TrainingSample.kept_tokens; appended last for wire-layout stability.
+    kept_tokens: KeptTokens | None = None

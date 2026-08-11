@@ -21,7 +21,7 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.transport import TrainingSample
-from prime_rl.transport.types import EncodedTensor, RoutedExperts
+from prime_rl.transport.types import EncodedTensor, KeptTokens, RoutedExperts
 from prime_rl.utils.logger import get_logger
 
 
@@ -64,6 +64,26 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
         pad = np.zeros((num_tokens - arr.shape[0], *arr.shape[1:]), dtype=arr.dtype)
         arr = np.concatenate([arr, pad], axis=0)
     return RoutedExperts(data=arr.tobytes(), shape=list(arr.shape), dtype=str(arr.dtype))
+
+
+def _encode_kept_tokens(kept: vf.KeptTokens | None, num_tokens: int) -> KeptTokens | None:
+    """The branch's kept-set sampling masks (`Branch.kept_tokens`) -> the transport
+    `KeptTokens` the trainer replays. Realigns `counts` to `num_tokens`
+    (truncating drops the tail's ids too) as a backstop — `Branch.kept_tokens` already
+    guarantees alignment, mirroring `_encode_routed_experts`. A 0 count just means no
+    replay for that position, so partial coverage stays safe."""
+    if kept is None:
+        return None
+    ids, counts = kept.ids, kept.counts
+    if len(counts) > num_tokens:
+        counts = counts[:num_tokens]
+        ids = ids[: int(counts.sum())]
+    elif len(counts) < num_tokens:
+        counts = np.concatenate([counts, np.zeros(num_tokens - len(counts), dtype=np.int32)])
+    return KeptTokens(
+        ids=np.ascontiguousarray(ids, dtype=np.int32).tobytes(),
+        counts=np.ascontiguousarray(counts, dtype=np.int32).tobytes(),
+    )
 
 
 def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[bool]]]:
@@ -126,6 +146,7 @@ def trace_to_samples(
                 mm_kwargs=mm_kwargs,
                 mm_token_type_ids=mm_token_type_ids,
                 routed_experts=_encode_routed_experts(branch.routed_experts, len(token_ids)),
+                kept_tokens=_encode_kept_tokens(branch.kept_tokens, len(token_ids)),
             )
         )
     if not samples:

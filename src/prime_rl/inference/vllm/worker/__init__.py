@@ -7,6 +7,7 @@ from prime_rl.inference.patches import (
     monkey_patch_minimax_m2_for_lora,
     monkey_patch_no_moe_lora,
 )
+from prime_rl.inference.vllm.kept_tokens import monkey_patch_kept_tokens_sampler
 
 logger = logging.getLogger(__name__)
 
@@ -24,3 +25,7 @@ monkey_patch_fp32_lm_head()
 
 # Install fp32 router logits patch; self-gates on additional_config["fp32_router_logits"]
 monkey_patch_fp32_router_logits()
+
+# Install kept-tokens sampler patch (sampling replay); no-op unless
+# PRIME_RETURN_KEPT_TOKENS=1
+monkey_patch_kept_tokens_sampler()
