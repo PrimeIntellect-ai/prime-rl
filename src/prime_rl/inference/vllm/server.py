@@ -25,7 +25,7 @@ from prime_rl.inference.patches import (
     monkey_patch_strip_routed_experts_from_chat,
     monkey_patch_tokenize_params_validation,
 )
-from prime_rl.inference.vllm.kept_tokens import kept_tokens_enabled, monkey_patch_kept_tokens_output_capture
+from prime_rl.inference.vllm.kept_tokens import monkey_patch_kept_tokens_output_capture
 
 # NOTE: Fix harmony stop token propagation for GPT-OSS models
 # Upstream issue still open: https://github.com/vllm-project/vllm/issues/22519
@@ -44,10 +44,9 @@ monkey_patch_nano_v3_reasoning_parser()
 monkey_patch_strip_routed_experts_from_chat()
 # NOTE: Kept-set sampling masks (top-p/top-k replay) ride the logprobs rows as a
 # -1-separated extension; split it off before vLLM builds per-position logprob
-# dicts and attach it to the finished CompletionOutput. No-op without
-# PRIME_RETURN_KEPT_TOKENS=1 (set by setup_vllm_env before this module loads).
-if kept_tokens_enabled():
-    monkey_patch_kept_tokens_output_capture()
+# dicts and attach it to the finished CompletionOutput. Data-driven off the
+# separator id, so rows without extensions pass through untouched.
+monkey_patch_kept_tokens_output_capture()
 # NOTE: vLLM hard-codes a 120s DP coordinator startup timeout, which the rank-0
 # API server blows through when all engine-core ranks on the node are loading
 # weights concurrently (multi-node disaggregated deployments).
@@ -236,21 +235,26 @@ def server(config: InferenceConfig):
     assert args is not None
     validate_parsed_serve_args(args)
 
-    if config.kept_tokens is not None:
-        # Both would leave the sampler patch silently inert (no kept sets ever
-        # emitted) while the trainer keeps replaying nothing — exactly the
+    if config.enable_return_sampling_mask:
+        # All three would leave the sampler patch silently inert (no kept sets
+        # ever emitted) while the trainer keeps replaying nothing — exactly the
         # top-p bias the feature exists to fix. Fail fast instead.
         if getattr(args, "speculative_config", None):
             raise ValueError(
-                "kept_tokens capture is incompatible with speculative decoding: vLLM's "
+                "enable_return_sampling_mask is incompatible with speculative decoding: vLLM's "
                 "RejectionSampler builds logprobs via gather_logprobs, bypassing the patched "
-                "Sampler.forward. Disable speculative_config or the kept-set capture."
+                "Sampler.forward. Disable speculative_config or the sampling-mask capture."
             )
         if getattr(args, "logprobs_mode", None) != "processed_logprobs":
             raise ValueError(
-                "kept_tokens capture requires logprobs_mode='processed_logprobs' (the "
+                "enable_return_sampling_mask requires logprobs_mode='processed_logprobs' (the "
                 "default): the kept set is recovered from the truncation-masked logprobs. "
                 f"Got logprobs_mode={getattr(args, 'logprobs_mode', None)!r} (inference.vllm override?)."
+            )
+        if os.environ.get("VLLM_USE_V2_MODEL_RUNNER") == "1":
+            raise ValueError(
+                "enable_return_sampling_mask does not support VLLM_USE_V2_MODEL_RUNNER=1: the V2 "
+                "runner samples through a separate Sampler class the capture patch never sees."
             )
 
     # Set the worker extension class based on the broadcast backend

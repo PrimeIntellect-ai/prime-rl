@@ -429,10 +429,13 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
-# Top-k injected on truncated policy sampling that has none: large enough that a
-# 0.95-0.99 nucleus rarely reaches it (the sampling policy is essentially unchanged),
-# small enough to bound the kept-set capture width and trainer mask tensors.
-DEFAULT_TRAIN_TOP_K = 512
+# Top-k injected on truncated policy sampling that has none, and the hard upper
+# bound for explicit top-k: it equals the inference server's fixed kept-set
+# capture width (SAMPLING_MASK_MAX in prime_rl/inference/vllm/kept_tokens.py),
+# so kept sets never overflow and replay stays exact. Large enough that a
+# 0.95-0.99 nucleus rarely reaches it (the sampling policy is essentially
+# unchanged), small enough to bound the trainer mask tensors.
+TRAIN_TOP_K_BOUND = 512
 
 
 class OrchestratorConfig(BaseConfig):
@@ -618,15 +621,24 @@ class OrchestratorConfig(BaseConfig):
         if not truncating:
             return self
 
+        oversized = [sampling.top_k for sampling in truncating if (sampling.top_k or 0) > TRAIN_TOP_K_BOUND]
+        if oversized:
+            raise ValueError(
+                f"Truncated train sampling with top_k = {max(oversized)} exceeds the inference server's "
+                f"fixed kept-set capture width ({TRAIN_TOP_K_BOUND}): overflowing kept sets would be "
+                "dropped and silently bias the replayed importance ratios. Use top_k <= "
+                f"{TRAIN_TOP_K_BOUND}."
+            )
+
         unbounded = [sampling for sampling in truncating if sampling.top_k is None]
         if unbounded:
             warnings.warn(
-                f"Truncated train sampling: defaulting top_k = {DEFAULT_TRAIN_TOP_K} so every kept set is "
+                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_BOUND} so every kept set is "
                 "bounded and sampling replay stays exact. Set top_k explicitly to override.",
                 stacklevel=2,
             )
             for sampling in unbounded:
-                sampling.top_k = DEFAULT_TRAIN_TOP_K
+                sampling.top_k = TRAIN_TOP_K_BOUND
 
         algos = [env.algo for env in self.train.source if env.algo is not None] or [self.algo]
         if any(algo.type in ("opd", "opsd") for algo in algos):

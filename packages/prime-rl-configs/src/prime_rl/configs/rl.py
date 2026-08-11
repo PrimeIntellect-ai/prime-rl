@@ -575,33 +575,26 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_kept_tokens_capture(self):
-        """Size the inference server's kept-set capture to cover the largest train
-        sampling top-k (OrchestratorConfig guarantees truncating configs have one)."""
+    def auto_setup_sampling_mask_capture(self):
+        """Truncated train sampling needs the inference server to return the kept-set
+        sampling masks the trainer replays (OrchestratorConfig guarantees truncating
+        configs are bounded by the fixed capture width)."""
         policy_samplings = [
             env.sampling
             for env in self.orchestrator.train.source
             if env.algo is not None and env.algo.sampling.source == "policy"
         ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
-        top_ks = [sampling.top_k for sampling in policy_samplings if sampling.top_k is not None]
-        if not top_ks:
+        if not any(sampling.truncates_distribution() for sampling in policy_samplings):
             return self
         if self.inference is None:
             warnings.warn(
                 "Truncated train sampling with no managed inference server: set "
-                f"`kept_tokens = {max(top_ks)}` on the standalone server's config so it returns "
-                "the sampling masks the trainer replays.",
+                "`enable_return_sampling_mask = true` on the standalone server's config so it "
+                "returns the sampling masks the trainer replays.",
                 stacklevel=2,
             )
             return self
-        derived = max(top_ks)
-        if "kept_tokens" in self.inference.model_fields_set and self.inference.kept_tokens != derived:
-            warnings.warn(
-                f"Overriding inference.kept_tokens = {self.inference.kept_tokens} with {derived}, "
-                "derived from the largest train sampling top_k (keeps sampling replay exact).",
-                stacklevel=2,
-            )
-        self.inference.kept_tokens = derived
+        self.inference.enable_return_sampling_mask = True
         return self
 
     @model_validator(mode="after")

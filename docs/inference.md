@@ -304,6 +304,6 @@ top_p = 0.95
 top_k = 512   # optional, defaults to 512 under truncation (bounds the kept sets)
 ```
 
-That's all — there are no replay flags. Truncated train sampling makes the inference server return kept sets (`inference.kept_tokens`, derived from the largest configured top_k) and the trainer replays whatever masks arrive. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd`, the gibberish/repetition filters (removed from the defaults, rejected if explicitly configured), truncation knobs smuggled via `extra_body`, speculative decoding, and Gemma-family (softcapped) lm_heads. Frozen-source envs are exempt.
+That's all — there are no replay flags. Truncated train sampling makes the inference server return kept sets (`inference.enable_return_sampling_mask`, auto-enabled; the capture width is fixed at 512, so train-sampling `top_k` above 512 is rejected) and the trainer replays whatever masks arrive. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd`, the gibberish/repetition filters (removed from the defaults, rejected if explicitly configured), truncation knobs smuggled via `extra_body`, speculative decoding, and Gemma-family (softcapped) lm_heads. Frozen-source envs are exempt.
 
-When launching the inference server standalone, set `inference.kept_tokens` yourself to cover the clients' top_k.
+When launching the inference server standalone, set `inference.enable_return_sampling_mask = true` yourself; clients must sample with `top_k <= 512`.

@@ -47,7 +47,7 @@ from vllm.entrypoints.serve.utils.api_utils import get_max_tokens
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
-from prime_rl.inference.vllm.kept_tokens import KeptTokensCapture, kept_tokens_enabled
+from prime_rl.inference.vllm.kept_tokens import KeptTokensCapture
 from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
 
 
@@ -329,10 +329,10 @@ class PrimeRlServingTokens(ServingTokens):
             result_generator = capture
 
         # Capture kept-set sampling masks (top-p/top-k replay) the same way.
-        kept_capture: KeptTokensCapture | None = None
-        if kept_tokens_enabled():
-            kept_capture = KeptTokensCapture(result_generator)
-            result_generator = kept_capture
+        # Unconditional: outputs only carry kept rows when the engine's
+        # sampling-mask capture is enabled, so this is a no-op otherwise.
+        kept_capture = KeptTokensCapture(result_generator)
+        result_generator = kept_capture
 
         # Always capture the final ``RequestOutput`` so we can attach a
         # ``usage`` block to the response. The router parses ``usage`` for
@@ -360,9 +360,8 @@ class PrimeRlServingTokens(ServingTokens):
                 kv_transfer_params=response.kv_transfer_params,
             )
 
-        if kept_capture is not None:
-            for choice in response.choices:
-                choice.kept_tokens = kept_capture.kept_tokens.get(choice.index)
+        for choice in response.choices:
+            choice.kept_tokens = kept_capture.kept_tokens.get(choice.index)
 
         if final_capture.final_res is not None:
             response.usage = _build_usage(final_capture.final_res)

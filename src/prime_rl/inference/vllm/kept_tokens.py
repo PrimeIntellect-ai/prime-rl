@@ -10,26 +10,31 @@ msgspec/dataclass schemas — so the kept ids ride the existing logprobs channel
 1. Engine-core worker: append ``[-1 separator | kept ids, -1 padded]`` columns
    to each ``LogprobsTensors`` id row (ids only — nothing between sampler and
    API process pairs ids and logprobs column-wise); everything downstream is
-   width-agnostic.
+   width-agnostic. Gated per engine on ``additional_config
+   ["enable_return_sampling_mask"]``, snapshotted at ``Sampler.__init__``
+   (fp32_lm_head-style) — no env vars.
 2. API process: split the extension back off before vLLM builds logprob dicts
    (stock consumers see stock columns), accumulate the ragged rows per request,
-   attach to the finished ``CompletionOutput``.
-
-vLLM is growing native support — ``enable_return_sampling_mask``
-(vllm-project/vllm#49577, unreleased) — with the same semantics and
-constraints; once it ships in a released version this module reduces to the
-``routed_experts``-style API-layer glue (``KeptTokensCapture`` + serializer).
+   attach to the finished ``CompletionOutput``. Purely data-driven off the
+   separator id, so it installs unconditionally.
 3. ``/inference/v1/generate``: serialize as base64
    ``{"ids": int32 concat, "counts": int32 per completion token}``. Kept sets
    are decode-only, so PD-disaggregated serving needs no router changes.
 
 A count of 0 means no usable kept set (above the capture width, or the
 position wasn't truncated); the trainer falls back to full-vocab logprobs.
+The orchestrator therefore bounds train-sampling ``top_k`` to
+``SAMPLING_MASK_MAX`` so kept sets never overflow the capture width.
+
+vLLM is growing native support under the same flag name —
+``enable_return_sampling_mask`` (vllm-project/vllm#49577, unreleased) — with
+the same semantics and constraints; once it ships in a released version this
+module reduces to the ``routed_experts``-style API-layer glue
+(``KeptTokensCapture`` + serializer).
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -37,21 +42,21 @@ import numpy as np
 import pybase64
 from vllm.outputs import RequestOutput
 
-KEPT_TOKENS_ENV = "PRIME_RETURN_KEPT_TOKENS"
-KEPT_TOKENS_MAX_ENV = "PRIME_KEPT_TOKENS_MAX"
-# Fallback only — setup_vllm_env always stamps the env var from inference.kept_tokens.
-KEPT_TOKENS_MAX_DEFAULT = 512
+# Enable flag in vLLM's additional_config, named after the in-flight native
+# vLLM flag (vllm-project/vllm#49577); set from inference.enable_return_sampling_mask.
+SAMPLING_MASK_KEY = "enable_return_sampling_mask"
+
+# Fixed kept-set capture width. Not configurable: the orchestrator rejects
+# train-sampling top_k above this, so capture never overflows and replay is
+# exact at every position.
+SAMPLING_MASK_MAX = 512
 
 # Separator/padding token id in the widened logprobs rows. Never a valid
 # vocab id, and stock vLLM never emits it (top-k indices and requested
 # logprob_token_ids are always >= 0).
-_SEPARATOR = -1
+SEPARATOR = -1
 
-_EMPTY_KEPT_ROW = np.empty(0, dtype=np.int32)
-
-
-def kept_tokens_enabled() -> bool:
-    return os.environ.get(KEPT_TOKENS_ENV) == "1"
+EMPTY_KEPT_ROW = np.empty(0, dtype=np.int32)
 
 
 def serialize_kept_tokens(kept_token_ids: list[np.ndarray] | None, num_tokens: int) -> dict[str, Any] | None:
@@ -99,32 +104,43 @@ class KeptTokensCapture:
 def monkey_patch_kept_tokens_sampler():
     """Widen sampler logprobs rows with the kept-set extension (engine-core process).
 
-    Intercepts ``self.sample`` for the duration of ``Sampler.forward`` to grab
-    the full processed logprobs the stock forward discards; the kept set per
-    row is their finite entries. Requires ``logprobs_mode="processed_logprobs"``,
-    which also forces the sampling path that materializes the mask (FlashInfer's
-    fused sampler doesn't). Speculative decoding bypasses this patch entirely —
-    the server launcher rejects that combination.
+    Self-gates on ``additional_config["enable_return_sampling_mask"]``,
+    snapshotted at ``Sampler.__init__`` where vLLM guarantees a
+    ``set_current_vllm_config()`` context (same mechanism as fp32_lm_head).
+    When enabled, intercepts ``self.sample`` for the duration of
+    ``Sampler.forward`` to grab the full processed logprobs the stock forward
+    discards; the kept set per row is their finite entries. Requires
+    ``logprobs_mode="processed_logprobs"``, which also forces the sampling path
+    that materializes the mask (FlashInfer's fused sampler doesn't).
+    Speculative decoding bypasses this patch entirely, and the V2 model
+    runner's separate Sampler class would leave it inert — the server launcher
+    rejects both combinations.
     """
     import torch
-    from vllm import envs
+    from vllm.config import get_current_vllm_config
     from vllm.logger import init_logger
     from vllm.v1.outputs import LogprobsTensors
     from vllm.v1.sample.sampler import Sampler
 
-    if not kept_tokens_enabled():
-        return
-    if envs.VLLM_USE_V2_MODEL_RUNNER:
-        # The V2 runner samples through a separate Sampler class; capture would be inert.
-        raise ValueError("VLLM_USE_V2_MODEL_RUNNER does not yet support: kept-tokens capture")
     if getattr(Sampler.forward, "_prime_rl_kept_tokens", False):
         return
 
     logger = init_logger(__name__)
-    cap = int(os.environ.get(KEPT_TOKENS_MAX_ENV, str(KEPT_TOKENS_MAX_DEFAULT)))
+    cap = SAMPLING_MASK_MAX
+    original_init = Sampler.__init__
     original_forward = Sampler.forward
 
-    def _forward(self, logits, sampling_metadata, predict_bonus_token=False, logprobs_mode_override=None):
+    def patched_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        additional_config = get_current_vllm_config().additional_config or {}
+        self._prime_return_sampling_mask = bool(additional_config.get(SAMPLING_MASK_KEY, False))
+        if self._prime_return_sampling_mask:
+            logger.warning("Kept-set sampling-mask capture ENABLED for this Sampler instance (cap=%d).", cap)
+
+    def patched_forward(self, logits, sampling_metadata, predict_bonus_token=False, logprobs_mode_override=None):
+        if not getattr(self, "_prime_return_sampling_mask", False):
+            return original_forward(self, logits, sampling_metadata, predict_bonus_token, logprobs_mode_override)
+
         captured: dict[str, torch.Tensor | None] = {}
         original_sample = self.sample
 
@@ -170,12 +186,12 @@ def monkey_patch_kept_tokens_sampler():
         ext_logprobs, ext_ids = processed_logprobs.topk(width, dim=-1)
         finite = ext_logprobs > float("-inf")
         valid = finite & ~finite[:, -1:]
-        ext_ids = ext_ids.to(ids_dtype).masked_fill_(~valid, _SEPARATOR)
+        ext_ids = ext_ids.to(ids_dtype).masked_fill_(~valid, SEPARATOR)
 
         # Only the id tensor grows: the splitter reads ids alone, nothing between
         # sampler and API process pairs the two tensors column-wise (LogprobsLists
         # slices rows), and skipping a float extension halves the IPC overhead.
-        separator_ids = torch.full((num_rows, 1), _SEPARATOR, dtype=ids_dtype, device=device)
+        separator_ids = torch.full((num_rows, 1), SEPARATOR, dtype=ids_dtype, device=device)
         output.logprobs_tensors = LogprobsTensors(
             logprob_token_ids=torch.cat([stock.logprob_token_ids, separator_ids, ext_ids], dim=1),
             logprobs=stock.logprobs,
@@ -184,9 +200,10 @@ def monkey_patch_kept_tokens_sampler():
         )
         return output
 
-    _forward._prime_rl_kept_tokens = True
-    Sampler.forward = _forward
-    logger.warning("Installed kept-tokens sampler patch (cap=%d).", cap)
+    patched_forward._prime_rl_kept_tokens = True
+    Sampler.__init__ = patched_init
+    Sampler.forward = patched_forward
+    logger.info("Installed kept-tokens sampler patch (self-gates on additional_config[%r]).", SAMPLING_MASK_KEY)
 
 
 def monkey_patch_kept_tokens_output_capture():
@@ -209,7 +226,7 @@ def monkey_patch_kept_tokens_output_capture():
     original_update = LogprobsProcessor._update_sample_logprobs
     original_new_completion_output = RequestState._new_completion_output
 
-    def _update_sample_logprobs(self, logprobs_lists: LogprobsLists) -> None:
+    def patched_update_sample_logprobs(self, logprobs_lists: LogprobsLists) -> None:
         token_ids, logprobs, ranks, cu_num_generated_tokens = logprobs_lists
         # Append one kept row per position even on extension-less steps, so rows
         # stay position-aligned if steps start (or stop) carrying separators.
@@ -218,9 +235,9 @@ def monkey_patch_kept_tokens_output_capture():
             kept_rows = self._prime_kept_token_ids = []
 
         # Rows in one update come from one step's batch tensor: same separator column.
-        separators = np.nonzero(token_ids[0] == _SEPARATOR)[0] if token_ids.size else np.empty(0, dtype=np.int64)
+        separators = np.nonzero(token_ids[0] == SEPARATOR)[0] if token_ids.size else np.empty(0, dtype=np.int64)
         if not separators.size:
-            kept_rows.extend([_EMPTY_KEPT_ROW] * len(token_ids))
+            kept_rows.extend([EMPTY_KEPT_ROW] * len(token_ids))
             return original_update(self, logprobs_lists)
 
         split = int(separators[0])
@@ -237,7 +254,7 @@ def monkey_patch_kept_tokens_output_capture():
             ),
         )
 
-    def _new_completion_output(self, *args, **kwargs):
+    def patched_new_completion_output(self, *args, **kwargs):
         output = original_new_completion_output(self, *args, **kwargs)
         if output.finish_reason is not None and self.logprobs_processor is not None:
             kept_rows = getattr(self.logprobs_processor, "_prime_kept_token_ids", None)
@@ -245,7 +262,7 @@ def monkey_patch_kept_tokens_output_capture():
                 output.kept_token_ids = kept_rows
         return output
 
-    _update_sample_logprobs._prime_rl_kept_tokens = True
-    LogprobsProcessor._update_sample_logprobs = _update_sample_logprobs
-    RequestState._new_completion_output = _new_completion_output
+    patched_update_sample_logprobs._prime_rl_kept_tokens = True
+    LogprobsProcessor._update_sample_logprobs = patched_update_sample_logprobs
+    RequestState._new_completion_output = patched_new_completion_output
     logger.info("Installed kept-tokens output capture patch (splits -1-separated logprobs extensions).")
