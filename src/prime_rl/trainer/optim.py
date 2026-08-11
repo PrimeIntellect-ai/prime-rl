@@ -303,6 +303,10 @@ class GradientOffloadManager:
     def optimizer_overlapped(self) -> bool:
         return self._overlap_optimizer
 
+    @property
+    def gradient_scale(self) -> float:
+        return self._gradient_scale
+
     @torch.no_grad()
     def scale_(self, factor: float) -> None:
         self.wait()
@@ -362,7 +366,14 @@ class GradientOffloadManager:
             elif isinstance(grad, torch.Tensor):
                 grad.record_stream(stream)
 
-    def load_cpu_chunk(self, chunk_idx: int, target_params: list[nn.Parameter], *, wait: bool = True) -> None:
+    def load_cpu_chunk(
+        self,
+        chunk_idx: int,
+        target_params: list[nn.Parameter],
+        *,
+        wait: bool = True,
+        apply_scale: bool = True,
+    ) -> None:
         if wait:
             self.wait()
         source_params = self._chunks[chunk_idx]
@@ -374,7 +385,7 @@ class GradientOffloadManager:
                 target_param.grad = None
                 continue
             grad = buffer.accumulator.float()
-            if self._gradient_scale != 1.0:
+            if apply_scale and self._gradient_scale != 1.0:
                 grad.mul_(self._gradient_scale)
             target_param.grad = grad
 
@@ -441,6 +452,13 @@ class CPUOffloadOptimizer:
         self._d2h_stream = torch.cuda.Stream()
         self._cuda_device = torch.cuda.current_device()
         self._all_param_groups = self.optimizer.param_groups
+        self._fused_cpu_adamw = (
+            master_weights is not None
+            and isinstance(optimizer, AdamW)
+            and all(group["fused"] for group in optimizer.param_groups)
+        )
+        self._adamw_grad_scale = torch.ones((), dtype=torch.float32) if self._fused_cpu_adamw else None
+        self._adamw_found_inf = torch.zeros((), dtype=torch.float32) if self._fused_cpu_adamw else None
         gradient_chunks = self._chunks
         if master_weights is not None:
             gradient_chunks = [[master_weights[id(param)].model_param for param in chunk] for chunk in self._chunks]
@@ -548,11 +566,27 @@ class CPUOffloadOptimizer:
 
     def _step_cpu_chunk(self, chunk_idx: int) -> None:
         assert self._gradient_manager is not None
-        self._gradient_manager.load_cpu_chunk(chunk_idx, self._chunks[chunk_idx], wait=False)
+        self._prepare_fused_cpu_adamw()
+        self._gradient_manager.load_cpu_chunk(
+            chunk_idx,
+            self._chunks[chunk_idx],
+            wait=False,
+            apply_scale=not self._fused_cpu_adamw,
+        )
         self._step_chunk(chunk_idx)
         self._gradient_manager.release_chunk(chunk_idx, self._chunks[chunk_idx])
         with torch.cuda.device(self._cuda_device):
             self._update_compute_weights(chunk_idx, self._h2d_stream)
+
+    def _prepare_fused_cpu_adamw(self) -> None:
+        if not self._fused_cpu_adamw:
+            return
+        assert self._gradient_manager is not None
+        assert self._adamw_grad_scale is not None
+        assert self._adamw_found_inf is not None
+        self._adamw_grad_scale.fill_(1.0 / self._gradient_manager.gradient_scale)
+        self.optimizer.grad_scale = self._adamw_grad_scale
+        self.optimizer.found_inf = self._adamw_found_inf
 
     def _sync_step_counters(self, original_steps: list):
         """Increment the original param_groups' step counters by one.
@@ -575,8 +609,13 @@ class CPUOffloadOptimizer:
                 torch.cuda.current_stream().wait_stream(self._h2d_stream)
                 self._initialized = True
                 return
+            self._prepare_fused_cpu_adamw()
             for i in range(len(self._chunks)):
-                self._gradient_manager.load_cpu_chunk(i, self._chunks[i])
+                self._gradient_manager.load_cpu_chunk(
+                    i,
+                    self._chunks[i],
+                    apply_scale=not self._fused_cpu_adamw,
+                )
             self.optimizer.step(closure)
             for i in range(len(self._chunks)):
                 self._gradient_manager.release_chunk(i, self._chunks[i])
