@@ -8,10 +8,17 @@ logprobs) but never returns it, and its inter-process output structs are fixed
 msgspec/dataclass schemas — so the kept ids ride the existing logprobs channel:
 
 1. Engine-core worker: append ``[-1 separator | kept ids, -1 padded]`` columns
-   to each ``LogprobsTensors`` row; everything downstream is width-agnostic.
+   to each ``LogprobsTensors`` id row (ids only — nothing between sampler and
+   API process pairs ids and logprobs column-wise); everything downstream is
+   width-agnostic.
 2. API process: split the extension back off before vLLM builds logprob dicts
    (stock consumers see stock columns), accumulate the ragged rows per request,
    attach to the finished ``CompletionOutput``.
+
+vLLM is growing native support — ``enable_return_sampling_mask``
+(vllm-project/vllm#49577, unreleased) — with the same semantics and
+constraints; once it ships in a released version this module reduces to the
+``routed_experts``-style API-layer glue (``KeptTokensCapture`` + serializer).
 3. ``/inference/v1/generate``: serialize as base64
    ``{"ids": int32 concat, "counts": int32 per completion token}``. Kept sets
    are decode-only, so PD-disaggregated serving needs no router changes.
@@ -165,12 +172,13 @@ def monkey_patch_kept_tokens_sampler():
         valid = finite & ~finite[:, -1:]
         ext_ids = ext_ids.to(ids_dtype).masked_fill_(~valid, _SEPARATOR)
 
-        # The splitter reads only id columns; the logprob extension is -inf filler.
+        # Only the id tensor grows: the splitter reads ids alone, nothing between
+        # sampler and API process pairs the two tensors column-wise (LogprobsLists
+        # slices rows), and skipping a float extension halves the IPC overhead.
         separator_ids = torch.full((num_rows, 1), _SEPARATOR, dtype=ids_dtype, device=device)
-        extension_logprobs = torch.full((num_rows, width + 1), float("-inf"), device=device)
         output.logprobs_tensors = LogprobsTensors(
             logprob_token_ids=torch.cat([stock.logprob_token_ids, separator_ids, ext_ids], dim=1),
-            logprobs=torch.cat([stock.logprobs, extension_logprobs], dim=1),
+            logprobs=stock.logprobs,
             selected_token_ranks=stock.selected_token_ranks,
             cu_num_generated_tokens=stock.cu_num_generated_tokens,
         )

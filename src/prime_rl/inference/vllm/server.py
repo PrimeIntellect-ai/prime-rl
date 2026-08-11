@@ -250,7 +250,7 @@ def server(config: InferenceConfig):
             raise ValueError(
                 "kept_tokens capture requires logprobs_mode='processed_logprobs' (the "
                 "default): the kept set is recovered from the truncation-masked logprobs. "
-                f"Got logprobs_mode={getattr(args, 'logprobs_mode', None)!r} (vllm_extra override?)."
+                f"Got logprobs_mode={getattr(args, 'logprobs_mode', None)!r} (inference.vllm override?)."
             )
 
     # Set the worker extension class based on the broadcast backend
