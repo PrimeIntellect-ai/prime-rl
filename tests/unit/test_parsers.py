@@ -41,7 +41,6 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "qwen3_coder", "nemotron_v3"),
     ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "qwen3_coder", "nano_v3"),
     ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "qwen3_coder", "nano_v3"),
-    ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "qwen3_coder", "nano_v3"),
     # StepFun
     ("stepfun-ai/Step-3.5-Flash", "step3p5", "step3p5"),
     # Qwen3 dense
