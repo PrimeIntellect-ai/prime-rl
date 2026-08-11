@@ -260,6 +260,17 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def optimizer_offload_disables_grad_clipping(self):
+        if self.model.optim_cpu_offload and self.model.optim_cpu_offload.full and self.optim.max_norm is not None:
+            warnings.warn(
+                "Gradient clipping prevents optimizer-in-backward overlap with full optimizer CPU offload. "
+                "Automatically setting optim.max_norm to None (disabled).",
+                stacklevel=1,
+            )
+            self.optim.max_norm = None
+        return self
+
+    @model_validator(mode="after")
     def validate_deployment(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")

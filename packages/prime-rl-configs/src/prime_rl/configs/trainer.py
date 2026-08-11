@@ -59,7 +59,7 @@ class OptimizerOffloadingConfig(BaseConfig):
     """Offload sharded gradients to pinned CPU memory during backward, then run the optimizer step on GPU."""
 
     full: bool = False
-    """Offload gradients and run the optimizer step on CPU-resident FP32 master weights."""
+    """Offload gradients and overlap CPU optimizer chunks and BF16 weight refreshes with backward."""
 
 
 def _normalize_optimizer_offloading(value: Any) -> Any:
@@ -658,6 +658,17 @@ class TrainerConfig(BaseConfig):
         if self.model.ep_comm_backend == "deepep" and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping is not compatible with DeepEP. "
+                "Automatically setting optim.max_norm to None (disabled).",
+                stacklevel=1,
+            )
+            self.optim.max_norm = None
+        return self
+
+    @model_validator(mode="after")
+    def optimizer_offload_disables_grad_clipping(self):
+        if self.model.optim_cpu_offload and self.model.optim_cpu_offload.full and self.optim.max_norm is not None:
+            warnings.warn(
+                "Gradient clipping prevents optimizer-in-backward overlap with full optimizer CPU offload. "
                 "Automatically setting optim.max_norm to None (disabled).",
                 stacklevel=1,
             )

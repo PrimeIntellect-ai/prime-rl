@@ -39,11 +39,13 @@ from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
+    begin_backward,
     clip_grad_norm_,
     export_benchmark_json,
     finish_backward,
     get_zero_gradient_ratio,
     get_ckpt_disk_metrics,
+    prepare_gradient_offload,
     print_sample,
     scale_gradients_,
     setup_torch_distributed,
@@ -394,7 +396,6 @@ def train(config: SFTConfig):
         forward_backward_start_time = time.perf_counter()
 
         step_loss_sum = torch.tensor(0.0, device="cuda")
-        step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_loss_count = torch.tensor(0, device="cuda")
         is_moe_model = is_tt_moe_model(model)
         moe_stats = (
@@ -405,18 +406,41 @@ def train(config: SFTConfig):
             if is_moe_model
             else {}
         )
-        for micro_step in range(grad_accum_steps):
-            micro_batch = next(dataiter)
+        run_validation_this_step = config.val is not None and (
+            (is_first_step and config.val.eval_on_start)
+            or (not is_first_step and progress.step % config.val.interval == 0)
+        )
+        if gradient_manager is None:
+            micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
+            step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+        else:
+            micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
+            local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
+            global_step_token_count = torch.tensor(local_token_count, dtype=torch.int64, device="cuda")
+            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_token_count_val = global_step_token_count.item() // cp_size
+            grad_scale = (
+                parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+                if global_token_count_val > 0
+                else 1.0
+            )
+            prepare_gradient_offload(
+                gradient_manager,
+                grad_scale,
+                overlap_optimizer=not run_validation_this_step,
+            )
 
+        for micro_step, micro_batch in enumerate(micro_batches):
             if config.log.log_data:
                 print_sample(
                     micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
                 )
 
             with maybe_record_function("forward"):
-                local_loss_sum, local_token_count = compute_loss(micro_batch)
+                local_loss_sum, batch_token_count = compute_loss(micro_batch)
 
-            step_local_token_count += local_token_count
+            if gradient_manager is None:
+                step_local_token_count += batch_token_count
 
             if torch.isnan(local_loss_sum.detach()):
                 nan_loss_count += 1
@@ -427,8 +451,9 @@ def train(config: SFTConfig):
                 scaled_loss = local_loss_sum / grad_accum_steps
 
             with maybe_record_function("backward"):
+                begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
                 scaled_loss.backward()
-                finish_backward(gradient_manager, wait_for_copies=micro_step == grad_accum_steps - 1)
+                finish_backward(gradient_manager)
 
             if is_moe_model:
                 for name, values in get_load_balance_stats(model).items():
@@ -443,23 +468,17 @@ def train(config: SFTConfig):
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
-        # All-reduce token counts and rescale gradients to get a global token-weighted mean.
-        # FSDP already divided grads by fsdp_gradient_divide_factor, so we undo that and
-        # divide by the true global token count instead.
-        global_step_token_count = step_local_token_count.clone()
-        dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        global_token_count_val = global_step_token_count.item()
-
-        if global_token_count_val > 0:
-            grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-            scale_gradients_(gradient_manager, model, grad_scale)
+        if gradient_manager is None:
+            global_step_token_count = step_local_token_count.clone()
+            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_token_count_val = global_step_token_count.item()
+            if global_token_count_val > 0:
+                grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+                scale_gradients_(None, model, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
-        if config.val is not None and (
-            (is_first_step and config.val.eval_on_start)
-            or (not is_first_step and progress.step % config.val.interval == 0)
-        ):
+        if run_validation_this_step:
             run_validation(progress.step)
 
         # Compute the global mean loss for logging.

@@ -33,10 +33,13 @@ with `inspect.getfile` before launching so the run cannot silently use another c
   state. With gradient accumulation, budget two FP32 gradient-sized buffers.
 - Full optimizer offload uses `model.optim_cpu_offload = { full = true }`.
   It keeps a persistent BF16 compute model on GPU, stores FP32 master weights and
-  gradients in pinned CPU RAM, runs the optimizer on CPU, and refreshes the BF16
-  weights once per optimizer step. Muon is not supported. Resumable checkpoints
-  include the FP32 masters and optimizer state under the original FSDP parameter
-  names.
+  gradients in pinned CPU RAM, runs each optimizer chunk when its final gradient
+  arrives, and overlaps the BF16 weight refresh with the remaining backward.
+  Full optimizer offload disables gradient clipping because a global clipping norm
+  would serialize the update after backward. Validation steps drain gradients and
+  update synchronously after validation. Muon is not supported. Resumable
+  checkpoints include the FP32 masters and optimizer state under the original
+  FSDP parameter names.
 
 ## `rl` — RL training
 

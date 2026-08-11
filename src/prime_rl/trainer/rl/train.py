@@ -50,12 +50,14 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     Tensors,
+    begin_backward,
     clip_grad_norm_,
     export_benchmark_json,
     filter_rl_trainer_tensor_stats_for_wandb,
     finish_backward,
     get_zero_gradient_ratio,
     get_ckpt_disk_metrics,
+    prepare_gradient_offload,
     scale_gradients_,
     setup_torch_distributed,
     print_benchmark,
@@ -336,6 +338,11 @@ def train(config: TrainerConfig):
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
         dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
         rl_scale, ce_scale, ref_kl_scale = (max(scale, 1) for scale in global_scales.tolist())
+        prepare_gradient_offload(
+            gradient_manager,
+            parallel_dims.fsdp_gradient_divide_factor,
+            overlap_optimizer=True,
+        )
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -485,8 +492,9 @@ def train(config: TrainerConfig):
 
             # Backward pass
             with maybe_record_function("backward"):
+                begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
                 loss.backward()
-                finish_backward(gradient_manager, wait_for_copies=micro_step == len(micro_batches) - 1)
+                finish_backward(gradient_manager)
 
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
@@ -568,7 +576,8 @@ def train(config: TrainerConfig):
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
-        scale_gradients_(gradient_manager, model, parallel_dims.fsdp_gradient_divide_factor)
+        if gradient_manager is None:
+            scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor)
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
