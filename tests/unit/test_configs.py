@@ -168,16 +168,27 @@ def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
 
 
 @pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
-def test_full_optimizer_offload_accepts_torch_cpu_optimizer_backend(config_cls):
+def test_full_optimizer_offload_accepts_backend_and_pipeline_tuning(config_cls):
     config = config_cls.model_validate(
         {
-            "model": {"optim_cpu_offload": {"full": True, "cpu_optimizer_backend": "torch"}},
+            "model": {
+                "optim_cpu_offload": {
+                    "full": True,
+                    "cpu_optimizer_backend": "torch",
+                    "transfer_buffer_count": 6,
+                    "max_inflight_backwards": 24,
+                    "timeout_seconds": 30.0,
+                }
+            },
             "optim": {"max_norm": None},
         }
     )
 
     assert config.model.optim_cpu_offload is not None
     assert config.model.optim_cpu_offload.cpu_optimizer_backend == "torch"
+    assert config.model.optim_cpu_offload.transfer_buffer_count == 6
+    assert config.model.optim_cpu_offload.max_inflight_backwards == 24
+    assert config.model.optim_cpu_offload.timeout_seconds == 30.0
 
 
 def test_to_toml_dict_roundtrips_explicit_none(tmp_path):

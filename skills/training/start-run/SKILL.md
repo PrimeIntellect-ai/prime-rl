@@ -34,17 +34,23 @@ selected environment before starting the run.
   pinned CPU RAM and streams the final gradient chunks back alongside optimizer
   state. With gradient accumulation, budget two FP32 gradient-sized buffers.
 - Full optimizer offload uses `model.optim_cpu_offload = { full = true }`.
-  It keeps a persistent BF16 compute model on GPU, stores FP32 master weights and
-  gradients in pinned CPU RAM, runs each optimizer chunk when its final gradient
-  arrives, and overlaps the BF16 weight refresh with the remaining backward.
+  It keeps a persistent BF16 compute model on GPU, stores FP32 master weights,
+  moments, and accumulated gradients in pageable CPU RAM, and moves BF16 values
+  through bounded pinned D2H/H2D rings. Pinned allocation therefore depends on
+  `transfer_buffer_count` and the largest local tensor/chunk rather than total model
+  size. It runs each optimizer chunk when its final gradient arrives and overlaps
+  the BF16 weight refresh with the remaining backward.
   Full optimizer offload disables gradient clipping because a global clipping norm
   would serialize the update after backward. Validation steps drain gradients and
   update synchronously after validation. Muon is not supported. Resumable
   checkpoints include the FP32 masters and optimizer state under the original
   FSDP parameter names. Full-offload AdamW uses the native multi-tensor CPU kernel
-  by default. The native path transports BF16 model gradients and BF16 compute-weight
-  shadows over PCIe while retaining FP32 masters, moments, optimizer arithmetic, and gradient
-  accumulation. Set `cpu_optimizer_backend = "torch"` inside the offload table to use fused
+  by default. The native path transports BF16 model gradients and BF16 compute
+  weights over PCIe while retaining FP32 masters, moments, optimizer arithmetic,
+  and gradient accumulation. It preallocates a bounded CUDA-event window and uses
+  finite diagnostic waits; tune `max_inflight_backwards` and `timeout_seconds` only
+  when the defaults are insufficient. It does not create a Gloo process group.
+  Set `cpu_optimizer_backend = "torch"` inside the offload table to use fused
   PyTorch AdamW for debugging or parity checks.
 
 ## `rl` — RL training

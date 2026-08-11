@@ -64,6 +64,15 @@ class OptimizerOffloadingConfig(BaseConfig):
     cpu_optimizer_backend: Literal["native", "torch"] = "native"
     """CPU AdamW implementation used by full offload. ``native`` uses PrimeRL's read-only-gradient multi-tensor kernel; ``torch`` uses fused ``torch.optim.AdamW`` for debugging and parity checks."""
 
+    transfer_buffer_count: int = Field(4, ge=2)
+    """Number of bounded pinned BF16 buffers per transfer direction for native full offload."""
+
+    max_inflight_backwards: int = Field(16, ge=2)
+    """Preallocated per-parameter CUDA event window for queued gradient-accumulation backwards."""
+
+    timeout_seconds: float = Field(120.0, gt=0)
+    """Maximum host-side wait before offload aborts with pipeline diagnostics."""
+
 
 def _normalize_optimizer_offloading(value: Any) -> Any:
     if value is True:
