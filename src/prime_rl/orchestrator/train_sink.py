@@ -108,13 +108,9 @@ class TrainSink:
         return self.pending_tokens, self.token_batch_size, "tokens"
 
     def buffered_count(self) -> int:
-        """Episodes that have arrived but sit in not-yet-complete groups
-        (non-group-scoring envs) — buffered in the sink ahead of the batch."""
-        return sum(
-            self.pending_group_episodes.get(group_id, 0)
-            for group_id, rollouts in self.pending_groups.items()
-            if rollouts and not self.train_envs.get(rollouts[0].env_name).requires_group_scoring
-        )
+        """Episodes that have arrived but sit in not-yet-complete groups —
+        buffered in the sink ahead of the batch."""
+        return sum(self.pending_group_episodes.values())
 
     def pending_batch_by_env(self) -> dict[str, int]:
         """Per-env breakdown of ``batch_progress()`` (``pending_batch`` only);
@@ -170,8 +166,7 @@ class TrainSink:
         await self.train_envs.get(rollout.env_name).algorithm.finalize_rollout(rollout)
 
     async def process_group(self, group_id: uuid.UUID) -> None:
-        """Finalize one GRPO group: drop errored rollouts (the whole group
-        when ``requires_group_scoring`` and any failed), assign advantages,
+        """Finalize one GRPO group: drop errored rollouts, assign advantages,
         run pre-batch filters, append survivors to ``pending_batch``."""
         group = self.pending_groups.pop(group_id, [])
         self.pending_group_episodes.pop(group_id, None)
@@ -188,15 +183,7 @@ class TrainSink:
         survivors = [r for r in group if not r.has_error]
         num_errored = len(group) - len(survivors)
 
-        # Group-scoring envs: any failure makes survivors' rewards unsafe
-        # (computed relative to the missing ones)
         env = self.train_envs.get(env_name)
-        if num_errored > 0 and env.requires_group_scoring:
-            get_logger().debug(
-                f"Finished group | env={env_name} task_idx={task_idx} | "
-                f"rollouts={len(group)} (errored={num_errored}) | dropped: group-scored partial"
-            )
-            return
         # Untrainable traces carry no samples and must not skew the group baseline.
         survivors = [r for r in survivors if r.agent.trainable]
         if not survivors:

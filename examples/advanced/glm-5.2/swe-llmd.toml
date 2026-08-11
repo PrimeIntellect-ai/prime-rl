@@ -131,7 +131,7 @@ clear_thinking = false
 name = "r2e"
 
 [orchestrator.train.source.env.taskset]
-id = "r2e-gym-v1"
+id = "r2e-gym"
 
 [orchestrator.train.source.env.agent.harness]
 id = "rlm"

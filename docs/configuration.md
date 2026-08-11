@@ -155,7 +155,7 @@ name = "gsm8k"
 ratio = 3  # 75% of batches
 
 [orchestrator.train.source.env.taskset]
-id = "gsm8k-v1"
+id = "gsm8k"
 split = "train"
 
 [orchestrator.train.source.env.agent.harness]
@@ -169,7 +169,7 @@ name = "reverse-text"
 ratio = 1  # default — 25% of batches
 
 [orchestrator.train.source.env.taskset]
-id = "reverse-text-v1"
+id = "reverse-text"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
@@ -181,7 +181,7 @@ type = "subprocess"
 name = "gsm8k-eval"
 
 [orchestrator.eval.source.env.taskset]
-id = "gsm8k-v1"
+id = "gsm8k"
 split = "test"
 
 [orchestrator.eval.source.env.agent.harness]

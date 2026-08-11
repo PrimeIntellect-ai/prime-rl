@@ -24,7 +24,7 @@ max_completion_tokens = 64
 name = "color-codeword"
 
 [orchestrator.train.source.env.taskset]
-id = "color-codeword-v1"
+id = "color-codeword"
 images_per_turn = 1
 
 [orchestrator.train.source.env.agent.harness]

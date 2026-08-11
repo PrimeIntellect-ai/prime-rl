@@ -52,7 +52,7 @@ max_completion_tokens = 32768
 name = "math"
 
 [orchestrator.train.source.env.taskset]
-id = "i3_math_v1"
+id = "i3_math"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
@@ -67,7 +67,7 @@ interval = 25
 name = "aime2025"
 
 [orchestrator.eval.source.env.taskset]
-id = "aime25-v1"
+id = "aime25"
 
 [orchestrator.eval.source.env.agent.harness]
 id = "null"

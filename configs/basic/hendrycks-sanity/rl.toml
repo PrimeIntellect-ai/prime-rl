@@ -23,7 +23,7 @@ seq_len = 8192
 name = "hendrycks-math"
 
 [orchestrator.train.source.env.taskset]
-id = "math-env-v1"
+id = "math-env"
 dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B"
 dataset_subset = "default"
 

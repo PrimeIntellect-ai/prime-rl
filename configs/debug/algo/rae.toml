@@ -25,7 +25,7 @@ max_completion_tokens = 512
 name = "kuhn-poker"
 
 [orchestrator.train.source.env.taskset]
-id = "kuhn-poker-v1"
+id = "kuhn-poker"
 
 [orchestrator.train.source.env.player0.harness]
 id = "null"
@@ -50,7 +50,7 @@ max_completion_tokens = 512
 name = "kuhn-poker"
 
 [orchestrator.eval.source.env.taskset]
-id = "kuhn-poker-v1"
+id = "kuhn-poker"
 
 [orchestrator.eval.source.env.player0.harness]
 id = "null"

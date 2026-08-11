@@ -109,7 +109,7 @@ idle_timeout = "None"
 labels = ["glm45air-search"]
 
 [orchestrator.train.source.env.taskset]
-id = "openseeker-v1"
+id = "openseeker"
 
 [[orchestrator.train.source.env.taskset.task.judges]]
 id = "reference"
@@ -142,7 +142,7 @@ idle_timeout = "None"
 labels = ["glm45air-search"]
 
 [orchestrator.train.source.env.taskset]
-id = "redsearcher-v1" # optional `difficulty` filter (easy/medium/hard)
+id = "redsearcher" # optional `difficulty` filter (easy/medium/hard)
 
 [[orchestrator.train.source.env.taskset.task.judges]]
 id = "reference"
@@ -184,7 +184,7 @@ labels = ["glm45air-search"]
 rollout = 3600
 
 [orchestrator.eval.source.env.taskset]
-id = "browsecomp-v1"
+id = "browsecomp"
 
 [orchestrator.eval.source.env.taskset.task.judge]
 model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
