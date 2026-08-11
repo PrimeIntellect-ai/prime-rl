@@ -409,6 +409,7 @@ else
         @ $CONFIG_DIR/trainer.toml \
         {% if use_zmq_transport %}--rollout_transport.host $ORCH_ADDR \
         {% endif %}2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log &
+    TORCHRUN_PID=$!
 {% if num_infer_nodes > 0 %}    fi{% endif %}
 {% if num_infer_nodes > 0 %}
 # Launch the orchestrator on the node ORCH_ADDR points at (see the ORCH_PROCID
@@ -448,15 +449,28 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
     {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
         2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
+    ORCH_PID=$!
 fi
 {% endif %}
 
-# Wait for the first background job to exit and propagate its exit code. This
-# turns background process crashes (router, orchestrator) into task failures
-# that --kill-on-bad-exit=1 can broadcast to the other nodes so the whole job
-# tears down instead of leaving zombies holding the allocation.
-wait -n
-EXIT_CODE=$?
+# Wait for background jobs and propagate the exit code. A non-zero exit (crash)
+# tears down immediately, so --kill-on-bad-exit=1 can broadcast the failure. A
+# clean (zero) exit only tears down once every principal process on this node —
+# torchrun and the orchestrator — has finished: the orchestrator legitimately
+# outlives the trainer (draining final-step evals) and the trainer legitimately
+# outlives the orchestrator (consuming pre-shipped dataset_sft batches), and
+# either way the clean early exit must not kill the survivor mid-work.
+EXIT_CODE=0
+while true; do
+    wait -n -p EXITED_PID
+    EXIT_CODE=$?
+    [ "$EXIT_CODE" -ne 0 ] && break
+    principal_alive=0
+    for p in ${TORCHRUN_PID:-} ${ORCH_PID:-}; do
+        kill -0 "$p" 2>/dev/null && principal_alive=1
+    done
+    [ "$principal_alive" -eq 0 ] && break
+done
 REMAINING_PIDS=$(jobs -p)
 {%- if cleanup_grace_period %}
 # Cross-node teardown is driven by `srun --kill-on-bad-exit=1`, which reaps peer
