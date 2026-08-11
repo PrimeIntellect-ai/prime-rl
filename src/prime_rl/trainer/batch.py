@@ -1,5 +1,6 @@
 import copy
 import heapq
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -652,17 +653,25 @@ def packed_samples_into_micro_bs(
     # Sort by decreasing length for packing efficiency
     samples.sort(key=lambda sample: -len(sample.input_ids))
 
-    bins: list[_MicroBatchBin] = []
+    bins = _pack_first_fit_decreasing(samples, max_seq_len)
 
-    for sample in samples:
-        # Try to find a bin that can fit this sequence. Multimodal samples only
-        # pack when their sidecar tensors are compatible.
-        for bin_content in bins:
-            if bin_content.can_add(sample, max_seq_len):
-                bin_content.add(sample)
-                break
-        else:
-            bins.append(_MicroBatchBin.from_sample(sample))
+    if num_train_workers > 1 and samples:
+        # The bin count is rounded up to a multiple of num_train_workers below, so
+        # within that granularity a packing with fewer bins is strictly better and
+        # one with equal bins is free to optimize balance. First-fit-decreasing
+        # co-locates the longest samples in the earliest bins, which concentrates
+        # attention cost (quadratic in sample length) on one rank — with few bins
+        # per rank, the hottest rank gates every FSDP step. Try a cost-balanced
+        # packing at the bin count the token total forces anyway and keep it
+        # unless it needs more (rounded) bins than first-fit.
+        def rounded(num_bins: int) -> int:
+            return max(-(-num_bins // num_train_workers) * num_train_workers, num_train_workers)
+
+        total_tokens = sum(len(sample.input_ids) for sample in samples)
+        target_bins = rounded(math.ceil(total_tokens / max_seq_len))
+        balanced_bins = _pack_cost_balanced(samples, max_seq_len, target_bins, bin_cost)
+        if rounded(len(balanced_bins)) <= rounded(len(bins)):
+            bins = balanced_bins
 
     if num_train_workers > 1:
         target_count = max(
@@ -782,6 +791,52 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.ce_weights = None
     dummy.ref_kl_weights = None
     return dummy
+
+
+def _pack_first_fit_decreasing(samples: list[MicroBatch], max_seq_len: int) -> list[_MicroBatchBin]:
+    """First-fit over length-sorted samples: minimizes the bin count. Multimodal
+    samples only pack when their sidecar tensors are compatible."""
+    bins: list[_MicroBatchBin] = []
+    for sample in samples:
+        for bin_content in bins:
+            if bin_content.can_add(sample, max_seq_len):
+                bin_content.add(sample)
+                break
+        else:
+            bins.append(_MicroBatchBin.from_sample(sample))
+    return bins
+
+
+def _pack_cost_balanced(
+    samples: list[MicroBatch],
+    max_seq_len: int,
+    num_bins: int,
+    bin_cost: Callable[[Sequence[int]], int],
+) -> list[_MicroBatchBin]:
+    """Balance estimated compute across ``num_bins`` bins: place each sample
+    (longest first) into the cheapest compatible bin with room, opening bins
+    while fewer than ``num_bins`` exist. ``bin_cost`` is additive over a bin's
+    samples, so per-bin costs are tracked incrementally. Overflows past
+    ``num_bins`` open extra bins rather than dropping samples."""
+    bins: list[_MicroBatchBin] = []
+    costs: list[int] = []
+    for sample in samples:
+        cost = bin_cost([len(sample.input_ids)])
+        if len(bins) < num_bins:
+            bins.append(_MicroBatchBin.from_sample(sample))
+            costs.append(cost)
+            continue
+        best = None
+        for index, bin_content in enumerate(bins):
+            if (best is None or costs[index] < costs[best]) and bin_content.can_add(sample, max_seq_len):
+                best = index
+        if best is None:
+            bins.append(_MicroBatchBin.from_sample(sample))
+            costs.append(cost)
+        else:
+            bins[best].add(sample)
+            costs[best] += cost
+    return bins
 
 
 def _pad_group_for_distribution(group: list[MicroBatch], num_train_workers: int) -> list[MicroBatch]:

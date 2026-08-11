@@ -219,20 +219,30 @@ def test_flop_aware_balancing_pairs_long_and_short_sequence_workloads():
     assert bin_cost([32]) > bin_cost([16, 16])
 
 
-def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
+def test_flop_aware_packing_balances_flop_cost_across_workers():
     examples = [make_sized_training_example(length) for length in [20, 18, 9, 9, 8, 8, 8]]
+    bin_cost = build_bin_cost(make_flops_config())
 
     batches_per_gpu = prepare_batch(
         rollouts=examples,
         seq_len=64,
         num_train_workers=4,
-        bin_cost=build_bin_cost(make_flops_config()),
+        bin_cost=bin_cost,
     )
 
     real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
     assert len(real_batches) == 4
     assert sorted(length for batch in real_batches for length in batch.sequence_lengths) == [8, 8, 8, 9, 9, 18, 20]
-    assert sum(len(batch.sequence_lengths) > 1 for batch in real_batches) == 3
+    # The longest samples land in separate bins (cost-balanced placement), so
+    # no bin carries more than one of the two quadratic-cost-dominant samples.
+    for batch in real_batches:
+        assert sum(1 for length in batch.sequence_lengths if length >= 18) <= 1
+    # Worker FLOP costs are within 2x of each other end to end.
+    worker_costs = [
+        sum(bin_cost(batch.sequence_lengths) for batch in batches if _has_loss_tokens(batch))
+        for batches in batches_per_gpu
+    ]
+    assert max(worker_costs) <= 2 * min(cost for cost in worker_costs if cost > 0)
 
 
 def test_prepare_batch_packs_different_temperatures(make_training_example):
@@ -451,10 +461,13 @@ def test_prepare_batch_packs_multimodal_with_text():
         env_name="text-env",
     )
 
+    # One worker, so both samples must share a bin — this pins the co-packing
+    # of multimodal and text samples (with >1 workers the packer prefers one
+    # real bin per worker over co-packing plus a dummy).
     batches_per_gpu = prepare_batch(
         rollouts=[mm_sample, text_sample],
         seq_len=8,
-        num_train_workers=2,
+        num_train_workers=1,
         bin_cost=build_bin_cost(None),
     )
 
