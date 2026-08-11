@@ -1,0 +1,71 @@
+# SFT: GLM-4.5-Air (106B A12B MoE) on INTELLECT-3-SFT at 131k context, cp=4, 4 H200 nodes.
+# The native `uv run sft` entrypoint — the A-side of the dataset_sft comparison whose
+# B-side is sft-rl.toml (same model, data, token budget per step, and trainer knobs,
+# trained through the RL stack instead).
+#
+# Memory recipe at this context (mirrors the GLM-4.5-Air RL run in swe.toml):
+# - cp=4 via ulysses; ep defaults to `auto` -> 8 for this MoE
+# - muon + optim_cpu_offload (optimizer state on CPU, weights stay on GPU)
+# - chunked LM head (fused_lm_head_token_chunk_size) — logprobs without
+#   materializing the full [N, V] logits
+# - activation checkpointing (freq=1) + activation offloading (max_inflight=1)
+#
+# Token budget: batch_size 8 x seq_len 131072 = 1,048,576 tokens/step, one 131k row per
+# DP rank (32 GPUs / cp=4 = 8 DP). Examples are concatenated into full-length rows.
+
+max_steps = 20
+output_dir = "/home/mikasenghaas/outputs/glm45air-sft-native"
+clean_output_dir = true
+
+# Redirect compile/JIT caches to node-local /tmp to avoid contended shared-FS caches. Paths are
+# user-scoped: a bare /tmp/.triton-cache is a PermissionError on any node where another user
+# created it first.
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/mika-triton-cache"
+
+[slurm]
+job_name = "glm45air-sft-native"
+partition = "all"
+
+[deployment]
+type = "multi_node"
+num_nodes = 4
+
+[wandb]
+project = "dataset-sft"
+name = "glm45air-sft-native"
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+impl = "custom"
+attn = "flash_attention_3"
+cp = 4
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+
+[model.ac]
+freq = 1
+
+[model.ac_offloading]
+max_inflight_activations = 1
+
+[model.compile]
+
+[data]
+type = "sft"
+name = "PrimeIntellect/INTELLECT-3-SFT"
+subsets = ["swe_swiss", "am_if", "toucan_tool"]
+seq_len = 131072
+batch_size = 8
+micro_batch_size = 1
+
+[optim]
+type = "muon"
+lr = 1e-5
+
+[scheduler]
+type = "constant"
+
+[log]
+level = "info"

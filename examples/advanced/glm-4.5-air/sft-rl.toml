@@ -1,0 +1,111 @@
+# SFT-from-dataset through the RL stack: GLM-4.5-Air (106B A12B MoE) on INTELLECT-3-SFT
+# at 131k context, cp=4, 4 training nodes + 1 inference node.
+#
+# The B-side of the dataset_sft comparison whose A-side is sft.toml: same model, same
+# dataset, same token budget per step (1,048,576 = 8 x 131072), same trainer knobs. The
+# difference is the path — the orchestrator renders the dataset into ce-routed samples,
+# bin-packs them, and ships them to the RL trainer, while an inference server holds the
+# live policy and runs AIME'25 evals every 10 steps.
+
+max_steps = 20
+seq_len = 131072
+output_dir = "/home/mikasenghaas/outputs/glm45air-sft-rl"
+
+# Redirect compile/JIT caches to node-local /tmp to avoid contended shared-FS caches. Paths are
+# user-scoped: a bare /tmp/.triton-cache is a PermissionError on any node where another user
+# created it first.
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/mika-triton-cache"
+
+[slurm]
+job_name = "glm45air-sft-rl"
+partition = "all"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 1
+
+[wandb]
+project = "dataset-sft"
+name = "glm45air-sft-rl"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+
+# --- Trainer (identical to sft.toml's [model]/[optim]) ---
+
+[trainer]
+dist_timeout_seconds = 3600
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 4
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.optim]
+type = "muon"
+lr = 1e-5
+
+[trainer.scheduler]
+type = "constant"
+
+# --- Orchestrator: dataset_sft, no train envs ---
+
+[orchestrator]
+token_batch_size = 1048576 # matches sft.toml: 8 rows x 131072 tokens per step
+max_inflight_episodes = 32 # eval episodes only; dataset batches bypass the dispatcher
+
+[orchestrator.algo]
+type = "dataset_sft"
+
+[orchestrator.algo.dataset]
+name = "PrimeIntellect/INTELLECT-3-SFT"
+subsets = ["swe_swiss", "am_if", "toucan_tool"]
+
+# --- Eval: AIME'25 at step 0 and every 10 steps ---
+
+[orchestrator.eval]
+interval = 10
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 32768
+
+[[orchestrator.eval.source]]
+name = "aime25"
+
+[orchestrator.eval.source.env.taskset]
+id = "aime25-v1"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "null"
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "subprocess"
+
+# --- Inference ---
+
+[inference]
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/mika-vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/mika-flashinfer-cache"
+
+[inference.vllm]
+max_model_len = 131072
+tensor_parallel_size = 8
