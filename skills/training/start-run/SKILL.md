@@ -78,6 +78,10 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
+## Node-local caches on shared clusters
+
+Configs that redirect JIT/compile caches to node-local disk (`[env_vars] TRITON_CACHE_DIR`, `[inference.env_vars] VLLM_CACHE_ROOT` / `FLASHINFER_WORKSPACE_BASE`) must use **user-scoped** paths (e.g. `/tmp/$USER-triton-cache`), not shared ones like `/tmp/.triton-cache`. On multi-tenant nodes the first user to run creates the directory mode 755, and every other user's job then dies at startup with `PermissionError` (vLLM/FlashInfer crash before the engine comes up).
+
 ## Summary
 
 | Command | Purpose | Typical use |
