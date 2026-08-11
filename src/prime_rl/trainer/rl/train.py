@@ -69,6 +69,51 @@ from torchtitan.distributed.utils import clip_grad_norm_
 
 
 @clean_exit
+def _log_memory_breakdown(model, tag: str, logger) -> None:
+    """Attribute GPU memory by parameter group and report the ACTUAL shard factor.
+
+    Debug instrumentation: Laguna-M allocates ~135GB/rank, and that number did not move
+    when train nodes went 2 -> 4, so the dominant term is not sharded across the mesh.
+    Printing local vs global bytes per group makes a replicated group obvious.
+    """
+    from torch.distributed.tensor import DTensor as _DT
+
+    buckets: dict[str, list] = {}
+    for name, prm in model.named_parameters():
+        local = prm.to_local().numel() if isinstance(prm, _DT) else prm.numel()
+        glob = prm.numel()
+        es = prm.element_size()
+        if "expert" in name:
+            kind = "experts"
+        elif "embed" in name or "lm_head" in name:
+            kind = "embed/lm_head"
+        elif "self_attn" in name:
+            kind = "attention"
+        else:
+            kind = "other"
+        b = buckets.setdefault(kind, [0, 0, 0])
+        b[0] += local * es
+        b[1] += glob * es
+        b[2] += 1
+
+    tl = sum(b[0] for b in buckets.values())
+    tg = sum(b[1] for b in buckets.values())
+    logger.info(
+        f"[mem:{tag}] cuda_alloc={torch.cuda.memory_allocated() / 1e9:.1f}GB "
+        f"reserved={torch.cuda.memory_reserved() / 1e9:.1f}GB "
+        f"max_alloc={torch.cuda.max_memory_allocated() / 1e9:.1f}GB"
+    )
+    logger.info(
+        f"[mem:{tag}] params local={tl / 1e9:.1f}GB global={tg / 1e9:.1f}GB "
+        f"overall_shard={tg / max(tl, 1):.1f}x dtype={next(model.parameters()).dtype}"
+    )
+    for kind, (loc, glo, n) in sorted(buckets.items()):
+        logger.info(
+            f"[mem:{tag}]   {kind:<14s} n={n:<5d} local={loc / 1e9:7.1f}GB "
+            f"global={glo / 1e9:7.1f}GB shard={glo / max(loc, 1):.1f}x"
+        )
+
+
 def train(config: TrainerConfig):
     # Setup world and logger
     world = get_world()
@@ -137,6 +182,7 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    _log_memory_breakdown(model, "after-setup_model", logger)
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
@@ -257,6 +303,7 @@ def train(config: TrainerConfig):
         # and so a broken broadcast path fails at startup instead of after the first
         # optimizer step.
         if progress.step == start_step and weight_broadcast is not None:
+            _log_memory_breakdown(model, "before-broadcast", logger)
             logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
             weight_broadcast.broadcast_weights(model, step=progress.step - 1)
 
