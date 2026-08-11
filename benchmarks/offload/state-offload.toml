@@ -1,0 +1,2 @@
+# Overlay: optimizer-state-only offload (optimizer step stays on GPU).
+[model.optim_cpu_offload]

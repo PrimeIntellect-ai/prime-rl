@@ -1,0 +1,53 @@
+# GLM-5 four-node proxy on one 8-GPU node (see handover.md): 22 layers keep the
+# 3 dense + 19 MoE structure, approximating one quarter of the full model's
+# expert state. CP2 leaves four-way DP/FSDP sharding, matching the intended
+# 32-GPU CP8 job.
+#
+# Host-RAM feasibility (measured on meta device from the HF config):
+#   22 layers = 190.8B trainable params -> 2.78 TiB CPU optimizer state at
+#   16 B/param (FP32 master + moments + accumulated gradient), before ring,
+#   framework, and dataloader overhead. This DOES NOT fit a 2 TiB node; it
+#   needs a >=3 TiB host. On a 2 TiB node, truncate further:
+#   --model.debug.num-layers 14 (3 dense + 11 MoE, 111.8B params, 1.63 TiB).
+#   Note the full 743.9B model needs 2.71 TiB/node across four 2 TiB nodes,
+#   so the four-node full-offload target is equally RAM-bound (see README).
+#
+#   uv run sft @ benchmarks/offload/glm5-proxy.toml
+max_steps = 7
+
+[model]
+name = "zai-org/GLM-5"
+impl = "custom"
+attn = "flash_attention_2"
+cp = 2
+ep = 8
+compile = "None"
+
+[model.debug]
+num_layers = 22
+random_init = true
+force_balanced_routing = true
+
+[model.optim_cpu_offload]
+full = true
+cpu_optimizer_backend = "native"
+transfer_buffer_count = 4
+max_inflight_backwards = 16
+timeout_seconds = 600
+
+# Activation recompute so the 190B proxy's activations fit next to the BF16
+# weights; drop for the final matrix point if memory allows.
+[model.ac]
+freq = 1
+
+# dp = 8 GPUs / cp2 = 4 ranks -> accumulation 1. CP requires micro_batch_size 1.
+[data]
+type = "fake"
+length = "fixed"
+batch_size = 4
+micro_batch_size = 1
+seq_len = 8192
+
+[optim]
+type = "adamw"
+max_norm = "None"

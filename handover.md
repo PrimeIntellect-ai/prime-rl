@@ -68,6 +68,8 @@ Why CP2: on eight GPUs it leaves four-way DP/FSDP sharding, while the intended 3
 
 Before launching, check host-RAM feasibility. Native full offload needs approximately 16 bytes per local trainable parameter for FP32 master, first moment, second moment, and accumulated gradient, plus ring, framework, checkpoint, and dataloader overhead. The 22-layer proxy intentionally approximates one quarter of the full model and may require roughly the same aggregate CPU state as one target node. Use measured parameter counts rather than assuming a 2 TiB node is sufficient.
 
+Measured counts (meta-device instantiation of the custom `GlmMoeDsaForCausalLM` from the `zai-org/GLM-5` HF config): the 22-layer proxy has 190.8B trainable parameters, or 2.78 TiB of CPU state at 16 B/param — it does not fit a 2 TiB node and needs a ≥3 TiB host. A 14-layer truncation (3 dense + 11 MoE, 111.8B parameters, 1.63 TiB) fits a 2 TiB node with headroom. The full 743.9B model on four 2 TiB nodes needs 2.71 TiB/node, so the intended four-node full-offload job is itself RAM-infeasible at 16 B/param; it requires six or more such nodes or a per-parameter state reduction (dropping the FP32 gradient slab via ring-direct native Adam at accumulation 1 gives 12 B/param, 2.03 TiB/node — still too tight for overhead). Ready-to-launch configs for both baselines live in `benchmarks/offload/`.
+
 Use fake fixed-length data and forced balanced routing throughout. Random initialization avoids weight-download and load-time noise and prevents an untrained router from concentrating tokens on a few experts.
 
 ## Sequence length and CP matrix

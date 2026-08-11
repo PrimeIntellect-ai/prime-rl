@@ -1,0 +1,4 @@
+# Overlay: full offload with fused PyTorch AdamW — correctness/parity reference.
+[model.optim_cpu_offload]
+full = true
+cpu_optimizer_backend = "torch"
