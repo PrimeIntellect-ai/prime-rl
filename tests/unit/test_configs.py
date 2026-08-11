@@ -169,6 +169,19 @@ def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
     assert config.optim.max_norm is None
 
 
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+def test_full_optimizer_offload_accepts_torch_cpu_optimizer_backend(config_cls):
+    config = config_cls.model_validate(
+        {
+            "model": {"optim_cpu_offload": {"full": True, "cpu_optimizer_backend": "torch"}},
+            "optim": {"max_norm": None},
+        }
+    )
+
+    assert config.model.optim_cpu_offload is not None
+    assert config.model.optim_cpu_offload.cpu_optimizer_backend == "torch"
+
+
 def test_resolved_json_roundtrips_explicit_none(tmp_path):
     """An explicit None override survives the write/re-parse round-trip used by launches:
     resolved configs are JSON, which keeps nulls (TOML cannot)."""

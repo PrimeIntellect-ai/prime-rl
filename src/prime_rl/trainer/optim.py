@@ -13,6 +13,8 @@ from torch.distributed.tensor import DTensor
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerOffloadingConfig
+from prime_rl.trainer.cpu_adam import adamw_step as native_cpu_adamw_step
+from prime_rl.trainer.cpu_adam import load_cpu_adamw_kernel
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
@@ -452,13 +454,23 @@ class CPUOffloadOptimizer:
         self._d2h_stream = torch.cuda.Stream()
         self._cuda_device = torch.cuda.current_device()
         self._all_param_groups = self.optimizer.param_groups
+        self._chunk_groups = self._build_chunk_groups()
+        self._native_cpu_adamw = (
+            master_weights is not None
+            and isinstance(optimizer, AdamW)
+            and offload_config.cpu_optimizer_backend == "native"
+        )
         self._fused_cpu_adamw = (
             master_weights is not None
             and isinstance(optimizer, AdamW)
             and all(group["fused"] for group in optimizer.param_groups)
+            and not self._native_cpu_adamw
         )
         self._adamw_grad_scale = torch.ones((), dtype=torch.float32) if self._fused_cpu_adamw else None
         self._adamw_found_inf = torch.zeros((), dtype=torch.float32) if self._fused_cpu_adamw else None
+        if self._native_cpu_adamw:
+            get_logger().info("Loading native read-only-gradient multi-tensor CPU AdamW kernel")
+            load_cpu_adamw_kernel()
         gradient_chunks = self._chunks
         if master_weights is not None:
             gradient_chunks = [[master_weights[id(param)].model_param for param in chunk] for chunk in self._chunks]
@@ -494,6 +506,17 @@ class CPUOffloadOptimizer:
         if chunk:
             chunks.append(chunk)
         return chunks
+
+    def _build_chunk_groups(self) -> list[list[tuple[dict, list[nn.Parameter]]]]:
+        chunk_by_param_id = {id(param): chunk_idx for chunk_idx, chunk in enumerate(self._chunks) for param in chunk}
+        chunk_groups: list[list[tuple[dict, list[nn.Parameter]]]] = [[] for _ in self._chunks]
+        for group in self.optimizer.param_groups:
+            params_by_chunk: dict[int, list[nn.Parameter]] = defaultdict(list)
+            for param in group["params"]:
+                params_by_chunk[chunk_by_param_id[id(param)]].append(param)
+            for chunk_idx, params in params_by_chunk.items():
+                chunk_groups[chunk_idx].append((group, params))
+        return chunk_groups
 
     def _move_tensor(self, v: torch.Tensor, device: str) -> torch.Tensor:
         if device == "cpu":
@@ -550,19 +573,37 @@ class CPUOffloadOptimizer:
 
     def _step_chunk(self, chunk_idx: int, closure=None):
         """Run optimizer.step() for a single chunk by temporarily swapping param_groups."""
-        chunk_ids = {id(p) for p in self._chunks[chunk_idx]}
         chunk_groups = []
-        for group in self._all_param_groups:
-            filtered = [p for p in group["params"] if id(p) in chunk_ids]
-            if not filtered:
-                continue
+        for group, params in self._chunk_groups[chunk_idx]:
             new_group = {k: v for k, v in group.items() if k != "params"}
-            new_group["params"] = filtered
+            new_group["params"] = params
             chunk_groups.append(new_group)
         self.optimizer.param_groups = chunk_groups
         result = self.optimizer.step(closure)
         self.optimizer.param_groups = self._all_param_groups
         return result
+
+    def _step_native_cpu_adamw_chunk(self, chunk_idx: int) -> None:
+        assert self._gradient_manager is not None
+        for group, params in self._chunk_groups[chunk_idx]:
+            params_with_grad = [param for param in params if param.grad is not None]
+            if not params_with_grad:
+                continue
+            states = [self.optimizer.state[param] for param in params_with_grad]
+            beta1, beta2 = group["betas"]
+            native_cpu_adamw_step(
+                params_with_grad,
+                [param.grad for param in params_with_grad],
+                [state["exp_avg"] for state in states],
+                [state["exp_avg_sq"] for state in states],
+                [state["step"] for state in states],
+                lr=group["lr"],
+                beta1=beta1,
+                beta2=beta2,
+                weight_decay=group["weight_decay"],
+                eps=group["eps"],
+                gradient_scale=self._gradient_manager.gradient_scale,
+            )
 
     def _step_cpu_chunk(self, chunk_idx: int) -> None:
         assert self._gradient_manager is not None
@@ -571,9 +612,12 @@ class CPUOffloadOptimizer:
             chunk_idx,
             self._chunks[chunk_idx],
             wait=False,
-            apply_scale=not self._fused_cpu_adamw,
+            apply_scale=not (self._native_cpu_adamw or self._fused_cpu_adamw),
         )
-        self._step_chunk(chunk_idx)
+        if self._native_cpu_adamw:
+            self._step_native_cpu_adamw_chunk(chunk_idx)
+        else:
+            self._step_chunk(chunk_idx)
         self._gradient_manager.release_chunk(chunk_idx, self._chunks[chunk_idx])
         with torch.cuda.device(self._cuda_device):
             self._update_compute_weights(chunk_idx, self._h2d_stream)
@@ -587,6 +631,11 @@ class CPUOffloadOptimizer:
         self._adamw_grad_scale.fill_(1.0 / self._gradient_manager.gradient_scale)
         self.optimizer.grad_scale = self._adamw_grad_scale
         self.optimizer.found_inf = self._adamw_found_inf
+
+    def _record_native_optimizer_step(self) -> None:
+        if self._native_cpu_adamw:
+            # LRScheduler normally sets this marker through its optimizer.step wrapper.
+            self.optimizer._opt_called = True
 
     def _sync_step_counters(self, original_steps: list):
         """Increment the original param_groups' step counters by one.
@@ -607,6 +656,7 @@ class CPUOffloadOptimizer:
                     raise ValueError("Optimizer closures are not supported with optimizer-in-backward")
                 self._gradient_manager.wait_for_optimizer()
                 torch.cuda.current_stream().wait_stream(self._h2d_stream)
+                self._record_native_optimizer_step()
                 self._initialized = True
                 return
             self._prepare_fused_cpu_adamw()
@@ -614,14 +664,21 @@ class CPUOffloadOptimizer:
                 self._gradient_manager.load_cpu_chunk(
                     i,
                     self._chunks[i],
-                    apply_scale=not self._fused_cpu_adamw,
+                    apply_scale=not (self._native_cpu_adamw or self._fused_cpu_adamw),
                 )
-            self.optimizer.step(closure)
+            if self._native_cpu_adamw:
+                if closure is not None:
+                    raise ValueError("Optimizer closures are not supported with native CPU AdamW")
+                for i in range(len(self._chunks)):
+                    self._step_native_cpu_adamw_chunk(i)
+            else:
+                self.optimizer.step(closure)
             for i in range(len(self._chunks)):
                 self._gradient_manager.release_chunk(i, self._chunks[i])
                 self._update_compute_weights(i, self._h2d_stream)
             torch.cuda.current_stream().wait_stream(self._h2d_stream)
             torch.cuda.synchronize()
+            self._record_native_optimizer_step()
             self._initialized = True
             return
 
@@ -700,6 +757,9 @@ class CPUOffloadOptimizer:
     def _initialize_cpu_optimizer_state(self) -> None:
         if self.optimizer.state:
             return
+        if self._native_cpu_adamw:
+            self._initialize_native_cpu_adamw_state()
+            return
         lrs = []
         for group in self.optimizer.param_groups:
             lrs.append(group["lr"])
@@ -719,6 +779,25 @@ class CPUOffloadOptimizer:
             group["lr"] = lr
             if "step" in group:
                 group["step"] = 0
+
+    def _initialize_native_cpu_adamw_state(self) -> None:
+        alignment = 256 // torch.empty((), dtype=torch.float32).element_size()
+        offsets = {}
+        slab_numel = 0
+        for group in self.optimizer.param_groups:
+            for param in group["params"]:
+                offsets[id(param)] = slab_numel
+                slab_numel += (param.numel() + alignment - 1) // alignment * alignment
+        exp_avg_slab = torch.zeros(slab_numel, dtype=torch.float32, device="cpu")
+        exp_avg_sq_slab = torch.zeros_like(exp_avg_slab)
+        for group in self.optimizer.param_groups:
+            for param in group["params"]:
+                offset = offsets[id(param)]
+                self.optimizer.state[param] = {
+                    "step": torch.zeros((), dtype=torch.float32, device="cpu"),
+                    "exp_avg": exp_avg_slab.narrow(0, offset, param.numel()).view_as(param),
+                    "exp_avg_sq": exp_avg_sq_slab.narrow(0, offset, param.numel()).view_as(param),
+                }
 
     @staticmethod
     def _checkpoint_dtensor(local_tensor: torch.Tensor, model_param: nn.Parameter) -> DTensor:
@@ -829,21 +908,28 @@ def _create_cpu_master_weights(
     model: nn.Module,
     named_params: list[tuple[str, nn.Parameter]],
 ) -> tuple[list[tuple[str, nn.Parameter]], dict[int, _MasterWeight]]:
-    master_named_params = []
-    master_weights = {}
-    for name, model_param in named_params:
-        if not model_param.requires_grad:
-            continue
+    trainable_params = [(name, model_param) for name, model_param in named_params if model_param.requires_grad]
+    if not trainable_params:
+        raise ValueError("Gradient CPU offload requires trainable parameters")
+    alignment = 256 // torch.empty((), dtype=torch.float32).element_size()
+    offsets = {}
+    slab_numel = 0
+    for name, model_param in trainable_params:
         if not isinstance(model_param, DTensor):
             raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(model_param)}")
+        offsets[name] = slab_numel
+        local_numel = model_param.to_local().numel()
+        slab_numel += (local_numel + alignment - 1) // alignment * alignment
+    master_slab = torch.empty(slab_numel, dtype=torch.float32, device="cpu", pin_memory=True)
+    master_named_params = []
+    master_weights = {}
+    for name, model_param in trainable_params:
         local_param = model_param.to_local()
-        cpu_tensor = torch.empty_like(local_param, dtype=torch.float32, device="cpu", pin_memory=True)
+        cpu_tensor = master_slab.narrow(0, offsets[name], local_param.numel()).view(local_param.shape)
         cpu_tensor.copy_(local_param, non_blocking=True)
         master_param = nn.Parameter(cpu_tensor, requires_grad=True)
         master_named_params.append((name, master_param))
         master_weights[id(master_param)] = _MasterWeight(model_param, cpu_tensor)
-    if not master_named_params:
-        raise ValueError("Gradient CPU offload requires trainable parameters")
     torch.cuda.synchronize()
 
     original_buffers = {name: buffer.detach() for name, buffer in model.named_buffers() if buffer.is_floating_point()}
