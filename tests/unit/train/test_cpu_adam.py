@@ -1,6 +1,11 @@
 import torch
 
-from prime_rl.trainer.cpu_adam import adamw_step, add_bfloat16_
+from prime_rl.trainer.cpu_adam import (
+    adamw_step,
+    add_bfloat16_,
+    copy_bfloat16_,
+    copy_or_add_bfloat16_multi_,
+)
 
 
 def test_native_cpu_adamw_matches_fused_torch_and_preserves_gradients():
@@ -10,6 +15,14 @@ def test_native_cpu_adamw_matches_fused_torch_and_preserves_gradients():
     expected_accumulation = accumulated + contribution.float()
     add_bfloat16_(accumulated, contribution)
     torch.testing.assert_close(accumulated, expected_accumulation, rtol=0, atol=0)
+    copy_bfloat16_(accumulated, contribution)
+    torch.testing.assert_close(accumulated, contribution.float(), rtol=0, atol=0)
+    destinations = [torch.randn(1025), torch.randn(513)]
+    sources = [torch.randn(1025).bfloat16(), torch.randn(513).bfloat16()]
+    expected = [destinations[0] + sources[0].float(), sources[1].float()]
+    copy_or_add_bfloat16_multi_(destinations, sources, [True, False])
+    for actual, expected_tensor in zip(destinations, expected):
+        torch.testing.assert_close(actual, expected_tensor, rtol=0, atol=0)
 
     shapes = [(17,), (33, 65), (257, 129)]
     initial = [torch.randn(shape) for shape in shapes]

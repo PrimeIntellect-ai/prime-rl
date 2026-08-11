@@ -1,8 +1,9 @@
 import copy
 import queue
 import threading
+import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import torch
@@ -14,7 +15,7 @@ from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerOffloadingConfig
 from prime_rl.trainer.cpu_adam import adamw_step as native_cpu_adamw_step
-from prime_rl.trainer.cpu_adam import add_bfloat16_ as native_add_bfloat16_
+from prime_rl.trainer.cpu_adam import copy_or_add_bfloat16_multi_ as native_copy_or_add_bfloat16_multi_
 from prime_rl.trainer.cpu_adam import load_cpu_adamw_kernel
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.sign_sgd import SignSGD
@@ -29,6 +30,10 @@ class _CPUGradientBuffer:
     initialized: bool = False
     pending: bool = False
     staging_holds_final: bool = False
+    pending_step: int = -1
+    pending_backward: int = -1
+    last_enqueued_backward: int = -1
+    pending_generations: set[tuple[int, int]] = field(default_factory=set)
 
 
 @dataclass
@@ -44,10 +49,40 @@ class _OptimizerChunkTask:
 
 
 @dataclass
+class _PinnedTransferSlot:
+    index: int
+    tensor: torch.Tensor
+    event: torch.cuda.Event
+
+
+@dataclass
+class _GradientTransferRequest:
+    param_id: int
+    local_grad: torch.Tensor
+    ready_event: torch.cuda.Event
+    step: int
+    backward: int
+    final_backward: bool
+
+
+@dataclass
+class _BoundedGradientCopyTask:
+    request: _GradientTransferRequest
+    slot: _PinnedTransferSlot
+
+
+@dataclass
+class _BackwardBoundaryTask:
+    step: int
+    backward: int
+    final_backward: bool
+    missing_param_ids: set[int]
+
+
+@dataclass
 class _MasterWeight:
     model_param: nn.Parameter
     cpu_tensor: torch.Tensor
-    compute_tensor: torch.Tensor | None = None
 
 
 class GradientOffloadManager:
@@ -467,6 +502,513 @@ class GradientOffloadManager:
         self._closed = True
 
 
+class BoundedGradientOffloadManager(GradientOffloadManager):
+    """Native full-offload pipeline with pageable state and bounded pinned transfer buffers."""
+
+    def __init__(
+        self,
+        chunks: list[list[nn.Parameter]],
+        dp_replicate: int,
+        buffer_count: int,
+        max_inflight_backwards: int,
+        timeout_seconds: float,
+        target_chunk_numel: int,
+        chunk_ready_callback: Callable[[int], None],
+    ):
+        self._chunks = chunks
+        self._dp_replicate = dp_replicate
+        self._cpu_dtype = torch.float32
+        self._preserve_staging_dtype = False
+        self._chunk_ready_callback = chunk_ready_callback
+        self._timeout_seconds = timeout_seconds
+        self._cuda_device = torch.cuda.current_device()
+        self._optimizer_param_ids = {id(param) for chunk in chunks for param in chunk}
+        self._chunk_param_ids = [{id(param) for param in chunk} for chunk in chunks]
+        self._chunk_by_param_id = {
+            param_id: chunk_idx for chunk_idx, param_ids in enumerate(self._chunk_param_ids) for param_id in param_ids
+        }
+        params = {id(param): param for chunk in chunks for param in chunk}
+        dtensor_params = [param for param in params.values() if isinstance(param.data, DTensor)]
+        if len(dtensor_params) != len(params):
+            raise TypeError("Bounded gradient offload requires FSDP2 DTensor parameters")
+
+        alignment = 256 // torch.empty((), dtype=torch.float32).element_size()
+        offsets: dict[int, int] = {}
+        slab_numel = 0
+        max_param_numel = 0
+        for param in dtensor_params:
+            local = param.data.to_local()
+            offsets[id(param)] = slab_numel
+            slab_numel += (local.numel() + alignment - 1) // alignment * alignment
+            max_param_numel = max(max_param_numel, local.numel())
+        accumulator_slab = torch.empty(slab_numel, dtype=torch.float32, device="cpu")
+        self._buffers: dict[int, _CPUGradientBuffer] = {}
+        self._ready_events: dict[int, list[torch.cuda.Event]] = {}
+        for param in dtensor_params:
+            data = param.data
+            local = data.to_local()
+            accumulator = accumulator_slab.narrow(0, offsets[id(param)], local.numel()).view(local.shape)
+            template = copy.copy(data.detach())
+            template._local_tensor = accumulator
+            self._buffers[id(param)] = _CPUGradientBuffer(template, accumulator)
+            self._ready_events[id(param)] = [torch.cuda.Event() for _ in range(max_inflight_backwards)]
+
+        chunk_numels = [sum(param.to_local().numel() for param in chunk) for chunk in chunks]
+        max_chunk_numel = max(chunk_numels)
+        self._input_normal_capacity = min(max_param_numel, target_chunk_numel)
+        self._output_normal_capacity = min(max_chunk_numel, target_chunk_numel)
+        self._input_slots, self._free_input_slots = self._allocate_slots(
+            buffer_count,
+            self._input_normal_capacity,
+            max_param_numel,
+        )
+        self._output_slots, self._free_output_slots = self._allocate_slots(
+            buffer_count,
+            self._output_normal_capacity,
+            max_chunk_numel,
+        )
+
+        self._d2h_stream = torch.cuda.Stream()
+        self._transfer_requests: queue.SimpleQueue[_GradientTransferRequest | _BackwardBoundaryTask | None] = (
+            queue.SimpleQueue()
+        )
+        self._tasks: queue.SimpleQueue[_BoundedGradientCopyTask | _BackwardBoundaryTask | None] = queue.SimpleQueue()
+        self._release_tasks: queue.SimpleQueue[_PinnedTransferSlot | None] = queue.SimpleQueue()
+        self._condition = threading.Condition()
+        self._gradient_scale = 1.0
+        self._final_backward = False
+        self._overlap_optimizer = False
+        self._step_generation = 0
+        self._backward_generation = 0
+        self._backward_open = False
+        self._backward_enqueued_param_ids: set[int] = set()
+        self._pending_chunk_param_ids: list[set[int]] = []
+        self._scheduled_chunks: set[int] = set()
+        self._completed_chunks = 0
+        self._worker_error: BaseException | None = None
+        self._closed = False
+
+        self._hook_handles = [param.register_post_accumulate_grad_hook(self._offload_hook) for param in params.values()]
+        self._transfer_worker = threading.Thread(
+            target=self._worker_entry,
+            args=(self._transfer_loop, "gradient transfer scheduler"),
+            name="grad-transfer",
+            daemon=True,
+        )
+        self._worker = threading.Thread(
+            target=self._worker_entry,
+            args=(self._copy_worker_loop, "gradient copy worker"),
+            name="grad-offload",
+            daemon=True,
+        )
+        self._release_worker = threading.Thread(
+            target=self._worker_entry,
+            args=(self._release_loop, "weight transfer reclaimer"),
+            name="weight-transfer-reclaimer",
+            daemon=True,
+        )
+        self._transfer_worker.start()
+        self._worker.start()
+        self._release_worker.start()
+
+        pinned_bytes = sum(slot.tensor.nbytes for slot in self._input_slots + self._output_slots)
+        get_logger().info(
+            "Native full offload uses pageable FP32 gradients and bounded BF16 transfer rings "
+            f"({len(self._input_slots)} D2H slots, {len(self._output_slots)} H2D slots, "
+            f"{pinned_bytes / 1024**3:.2f} GiB pinned, "
+            f"{accumulator_slab.nbytes / 1024**3:.2f} GiB pageable accumulator)"
+        )
+
+    @staticmethod
+    def _allocate_slots(
+        count: int,
+        normal_numel: int,
+        max_numel: int,
+    ) -> tuple[list[_PinnedTransferSlot], dict[str, queue.Queue[_PinnedTransferSlot]]]:
+        slots = [
+            _PinnedTransferSlot(
+                index=index,
+                tensor=torch.empty(normal_numel, dtype=torch.bfloat16, device="cpu", pin_memory=True),
+                event=torch.cuda.Event(),
+            )
+            for index in range(count)
+        ]
+        if max_numel > normal_numel:
+            slots.append(
+                _PinnedTransferSlot(
+                    index=count,
+                    tensor=torch.empty(max_numel, dtype=torch.bfloat16, device="cpu", pin_memory=True),
+                    event=torch.cuda.Event(),
+                )
+            )
+        free_slots = {"normal": queue.Queue(), "oversized": queue.Queue()}
+        for slot in slots:
+            free_slots["normal" if slot.tensor.numel() == normal_numel else "oversized"].put(slot)
+        return slots, free_slots
+
+    @staticmethod
+    def _free_slot_count(slots: dict[str, queue.Queue[_PinnedTransferSlot]]) -> int:
+        return sum(slot_queue.qsize() for slot_queue in slots.values())
+
+    def _worker_entry(self, target: Callable[[], None], name: str) -> None:
+        try:
+            with torch.cuda.device(self._cuda_device):
+                target()
+        except BaseException as error:
+            with self._condition:
+                if self._worker_error is None:
+                    self._worker_error = RuntimeError(f"{name} failed: {error}")
+                    self._worker_error.__cause__ = error
+                self._condition.notify_all()
+
+    def _diagnostics(self) -> str:
+        pending = [
+            f"chunk={self._chunk_by_param_id[param_id]} step={buffer.pending_step} backward={buffer.pending_backward}"
+            for param_id, buffer in self._buffers.items()
+            if buffer.pending_generations
+        ]
+        return (
+            f"step={self._step_generation}, backward={self._backward_generation}, "
+            f"pending_gradients={len(pending)}, pending_sample={pending[:8]}, "
+            f"completed_chunks={self._completed_chunks}/{len(self._chunks)}, "
+            f"scheduled_chunks={len(self._scheduled_chunks)}, "
+            f"free_d2h_slots={self._free_slot_count(self._free_input_slots)}/{len(self._input_slots)}, "
+            f"free_h2d_slots={self._free_slot_count(self._free_output_slots)}/{len(self._output_slots)}"
+        )
+
+    def _raise_worker_error(self) -> None:
+        if self._worker_error is not None:
+            raise RuntimeError(f"Native CPU offload pipeline failed ({self._diagnostics()})") from self._worker_error
+
+    def _wait_for(self, predicate: Callable[[], bool], description: str) -> None:
+        deadline = time.monotonic() + self._timeout_seconds
+        with self._condition:
+            while not predicate():
+                self._raise_worker_error()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"Timed out waiting for {description} ({self._diagnostics()})")
+                self._condition.wait(timeout=min(1.0, remaining))
+            self._raise_worker_error()
+
+    def _acquire_slot(
+        self,
+        slots: dict[str, queue.Queue[_PinnedTransferSlot]],
+        direction: str,
+        numel: int,
+        normal_capacity: int,
+    ) -> _PinnedTransferSlot:
+        slot_class = "normal" if numel <= normal_capacity else "oversized"
+        slot_queue = slots[slot_class]
+        deadline = time.monotonic() + self._timeout_seconds
+        while True:
+            self._raise_worker_error()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"Timed out acquiring a {direction} slot ({self._diagnostics()})")
+            try:
+                return slot_queue.get(timeout=min(1.0, remaining))
+            except queue.Empty:
+                continue
+
+    def _transfer_loop(self) -> None:
+        while True:
+            task = self._transfer_requests.get()
+            if task is None:
+                return
+            if isinstance(task, _BackwardBoundaryTask):
+                self._tasks.put(task)
+                continue
+            slot = self._acquire_slot(
+                self._free_input_slots,
+                "D2H",
+                task.local_grad.numel(),
+                self._input_normal_capacity,
+            )
+            if task.local_grad.numel() > slot.tensor.numel():
+                raise RuntimeError(
+                    f"Gradient with {task.local_grad.numel()} elements exceeds transfer slot capacity "
+                    f"{slot.tensor.numel()}"
+                )
+            destination = slot.tensor.narrow(0, 0, task.local_grad.numel()).view(task.local_grad.shape)
+            with torch.cuda.stream(self._d2h_stream):
+                self._d2h_stream.wait_event(task.ready_event)
+                destination.copy_(task.local_grad, non_blocking=True)
+                task.local_grad.record_stream(self._d2h_stream)
+                slot.event.record(self._d2h_stream)
+            self._tasks.put(_BoundedGradientCopyTask(task, slot))
+
+    def _copy_worker_loop(self) -> None:
+        deferred: _BoundedGradientCopyTask | _BackwardBoundaryTask | None = None
+        stop_after_batch = False
+        while True:
+            task = deferred if deferred is not None else self._tasks.get()
+            deferred = None
+            if task is None:
+                return
+            if isinstance(task, _BackwardBoundaryTask):
+                if task.final_backward:
+                    for param_id in task.missing_param_ids:
+                        self._mark_final_param_ready(param_id)
+                continue
+            batch = [task]
+            batch_param_ids = {task.request.param_id}
+            while len(batch) < len(self._input_slots):
+                try:
+                    next_task = self._tasks.get_nowait()
+                except queue.Empty:
+                    break
+                if next_task is None:
+                    stop_after_batch = True
+                    break
+                if isinstance(next_task, _BackwardBoundaryTask):
+                    deferred = next_task
+                    break
+                if next_task.request.param_id in batch_param_ids:
+                    deferred = next_task
+                    break
+                batch.append(next_task)
+                batch_param_ids.add(next_task.request.param_id)
+
+            batch[-1].slot.event.synchronize()
+            buffers = [self._buffers[item.request.param_id] for item in batch]
+            sources = [
+                item.slot.tensor.narrow(0, 0, item.request.local_grad.numel()).view(item.request.local_grad.shape)
+                for item in batch
+            ]
+            native_copy_or_add_bfloat16_multi_(
+                [buffer.accumulator for buffer in buffers],
+                sources,
+                [buffer.initialized for buffer in buffers],
+            )
+            for item in batch:
+                slot_class = "normal" if item.slot.tensor.numel() == self._input_normal_capacity else "oversized"
+                self._free_input_slots[slot_class].put(item.slot)
+            with self._condition:
+                for item, buffer in zip(batch, buffers):
+                    request = item.request
+                    generation = (request.step, request.backward)
+                    if generation not in buffer.pending_generations:
+                        raise RuntimeError(
+                            f"Gradient generation {generation} disappeared before its transfer completed"
+                        )
+                    buffer.pending_generations.remove(generation)
+                    buffer.initialized = True
+                    buffer.pending = bool(buffer.pending_generations)
+                    if buffer.pending_generations:
+                        buffer.pending_step, buffer.pending_backward = min(buffer.pending_generations)
+                    else:
+                        buffer.pending_step = -1
+                        buffer.pending_backward = -1
+                self._condition.notify_all()
+            for item in batch:
+                if item.request.final_backward:
+                    self._mark_final_param_ready(item.request.param_id)
+            if stop_after_batch:
+                return
+
+    def _release_loop(self) -> None:
+        while True:
+            slot = self._release_tasks.get()
+            if slot is None:
+                return
+            slot.event.synchronize()
+            slot_class = "normal" if slot.tensor.numel() == self._output_normal_capacity else "oversized"
+            self._free_output_slots[slot_class].put(slot)
+            with self._condition:
+                self._condition.notify_all()
+
+    def _mark_final_param_ready(self, param_id: int) -> None:
+        chunk_idx = self._chunk_by_param_id[param_id]
+        should_run = False
+        with self._condition:
+            pending = self._pending_chunk_param_ids[chunk_idx]
+            if param_id not in pending:
+                raise RuntimeError(
+                    f"Parameter in chunk {chunk_idx} became ready more than once "
+                    f"at step {self._step_generation}, backward {self._backward_generation}"
+                )
+            pending.remove(param_id)
+            if not pending and chunk_idx not in self._scheduled_chunks:
+                self._scheduled_chunks.add(chunk_idx)
+                should_run = True
+        if should_run:
+            self._run_optimizer_chunk(chunk_idx)
+
+    def _run_optimizer_chunk(self, chunk_idx: int) -> None:
+        self._chunk_ready_callback(chunk_idx)
+        with self._condition:
+            self._completed_chunks += 1
+            self._condition.notify_all()
+
+    def begin_step(self, gradient_scale: float, *, overlap_optimizer: bool) -> None:
+        self.wait()
+        with self._condition:
+            self._raise_worker_error()
+            if self._backward_open:
+                raise RuntimeError("Cannot begin an optimizer step while a backward is open")
+            self._step_generation += 1
+            self._gradient_scale = gradient_scale
+            self._overlap_optimizer = overlap_optimizer
+            self._final_backward = False
+            self._pending_chunk_param_ids = []
+            self._scheduled_chunks.clear()
+            self._completed_chunks = 0
+
+    def begin_backward(self, *, final_backward: bool) -> None:
+        with self._condition:
+            self._raise_worker_error()
+            if self._backward_open:
+                raise RuntimeError("begin_backward called before the previous backward finished")
+            self._backward_generation += 1
+            self._backward_open = True
+            self._final_backward = final_backward
+            self._backward_enqueued_param_ids.clear()
+            if final_backward and self._overlap_optimizer:
+                self._pending_chunk_param_ids = [set(param_ids) for param_ids in self._chunk_param_ids]
+                self._scheduled_chunks.clear()
+                self._completed_chunks = 0
+
+    @torch.no_grad()
+    def _offload_params(self, params: list[nn.Parameter]) -> None:
+        for param in params:
+            param_id = id(param)
+            if param_id not in self._optimizer_param_ids or param.grad is None:
+                continue
+            if not isinstance(param.grad, DTensor):
+                raise TypeError(f"Expected FSDP2 DTensor gradient, got {type(param.grad)}")
+            local_grad = param.grad.to_local()
+            if local_grad.dtype != torch.bfloat16:
+                raise TypeError(f"Bounded native offload requires BF16 gradients, got {local_grad.dtype}")
+            buffer = self._buffers[param_id]
+            with self._condition:
+                self._raise_worker_error()
+                if not self._backward_open:
+                    raise RuntimeError("Gradient hook ran outside begin_backward/finish_backward")
+                if buffer.last_enqueued_backward == self._backward_generation:
+                    raise RuntimeError(
+                        f"Parameter in chunk {self._chunk_by_param_id[param_id]} produced more than one gradient "
+                        f"in backward {self._backward_generation}"
+                    )
+                generation = (self._step_generation, self._backward_generation)
+                event_index = (self._backward_generation - 1) % len(self._ready_events[param_id])
+                if any(
+                    (pending_backward - 1) % len(self._ready_events[param_id]) == event_index
+                    for _, pending_backward in buffer.pending_generations
+                ):
+                    raise RuntimeError(
+                        "Gradient event window exhausted before an older contribution drained; "
+                        f"increase max_inflight_backwards ({self._diagnostics()})"
+                    )
+                buffer.pending = True
+                buffer.pending_generations.add(generation)
+                buffer.pending_step, buffer.pending_backward = min(buffer.pending_generations)
+                buffer.last_enqueued_backward = self._backward_generation
+                self._backward_enqueued_param_ids.add(param_id)
+            ready_event = self._ready_events[param_id][event_index]
+            ready_event.record(torch.cuda.current_stream())
+            self._transfer_requests.put(
+                _GradientTransferRequest(
+                    param_id=param_id,
+                    local_grad=local_grad,
+                    ready_event=ready_event,
+                    step=self._step_generation,
+                    backward=self._backward_generation,
+                    final_backward=self._final_backward and self._overlap_optimizer,
+                )
+            )
+            param.grad = None
+
+    def _offload_hook(self, param: torch.Tensor) -> None:
+        if not isinstance(param, nn.Parameter):
+            raise TypeError(f"Expected parameter in post-accumulate hook, got {type(param)}")
+        self._offload_params([param])
+
+    def finish_backward(self, *, wait_for_copies: bool = True) -> None:
+        remaining = [param for chunk in self._chunks for param in chunk if param.grad is not None]
+        self._offload_params(remaining)
+        with self._condition:
+            if not self._backward_open:
+                raise RuntimeError("finish_backward called without begin_backward")
+            missing = (
+                self._optimizer_param_ids - self._backward_enqueued_param_ids
+                if self._final_backward and self._overlap_optimizer
+                else set()
+            )
+            boundary = _BackwardBoundaryTask(
+                step=self._step_generation,
+                backward=self._backward_generation,
+                final_backward=self._final_backward and self._overlap_optimizer,
+                missing_param_ids=missing,
+            )
+            self._backward_open = False
+        self._transfer_requests.put(boundary)
+        if wait_for_copies:
+            self.wait()
+
+    def wait(self) -> None:
+        self._wait_for(
+            lambda: not any(buffer.pending_generations for buffer in self._buffers.values()),
+            "gradient transfers",
+        )
+
+    def wait_for_optimizer(self) -> None:
+        if self._overlap_optimizer:
+            self._wait_for(lambda: self._completed_chunks == len(self._chunks), "CPU optimizer chunks")
+
+    def acquire_output_chunk(self, chunk_idx: int) -> tuple[_PinnedTransferSlot, list[torch.Tensor]]:
+        chunk_numel = sum(param.to_local().numel() for param in self._chunks[chunk_idx])
+        slot = self._acquire_slot(
+            self._free_output_slots,
+            "H2D",
+            chunk_numel,
+            self._output_normal_capacity,
+        )
+        views = []
+        offset = 0
+        for param in self._chunks[chunk_idx]:
+            local = param.to_local()
+            views.append(slot.tensor.narrow(0, offset, local.numel()).view(local.shape))
+            offset += local.numel()
+        return slot, views
+
+    def release_output_chunk(self, slot: _PinnedTransferSlot, stream: torch.cuda.Stream) -> None:
+        slot.event.record(stream)
+        self._release_tasks.put(slot)
+
+    def wait_for_output_slots(self) -> None:
+        self._wait_for(
+            lambda: self._free_slot_count(self._free_output_slots) == len(self._output_slots),
+            "H2D transfer slots",
+        )
+
+    def zero_grad(self) -> None:
+        self.wait()
+        for buffer in self._buffers.values():
+            buffer.initialized = False
+            buffer.staging_holds_final = False
+            buffer.pending_generations.clear()
+        self._gradient_scale = 1.0
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self.wait_for_optimizer()
+        self.wait()
+        self.wait_for_output_slots()
+        for handle in self._hook_handles:
+            handle.remove()
+        self._transfer_requests.put(None)
+        self._transfer_worker.join(timeout=self._timeout_seconds)
+        self._tasks.put(None)
+        self._worker.join(timeout=self._timeout_seconds)
+        self._release_tasks.put(None)
+        self._release_worker.join(timeout=self._timeout_seconds)
+        if self._transfer_worker.is_alive() or self._worker.is_alive() or self._release_worker.is_alive():
+            raise TimeoutError(f"Timed out closing native CPU offload workers ({self._diagnostics()})")
+        self._closed = True
+
+
 class CPUOffloadOptimizer:
     """Keeps optimizer states on CPU, moving them to GPU only for step().
 
@@ -525,17 +1067,25 @@ class CPUOffloadOptimizer:
         gradient_chunks = self._chunks
         if master_weights is not None:
             gradient_chunks = [[master_weights[id(param)].model_param for param in chunk] for chunk in self._chunks]
-        self._gradient_manager = (
-            GradientOffloadManager(
+        if self._native_cpu_adamw:
+            self._gradient_manager = BoundedGradientOffloadManager(
+                gradient_chunks,
+                dp_replicate,
+                buffer_count=offload_config.transfer_buffer_count,
+                max_inflight_backwards=offload_config.max_inflight_backwards,
+                timeout_seconds=offload_config.timeout_seconds,
+                target_chunk_numel=self._TARGET_CPU_CHUNK_NUMEL,
+                chunk_ready_callback=self._step_cpu_chunk,
+            )
+        elif offload_config.gradients or offload_config.full:
+            self._gradient_manager = GradientOffloadManager(
                 gradient_chunks,
                 dp_replicate,
                 cpu_dtype=torch.float32 if master_weights is not None else None,
-                preserve_staging_dtype=self._native_cpu_adamw,
                 chunk_ready_callback=self._step_cpu_chunk if master_weights is not None else None,
             )
-            if offload_config.gradients or offload_config.full
-            else None
-        )
+        else:
+            self._gradient_manager = None
         if master_weights is not None:
             self._initialize_cpu_optimizer_state()
 
@@ -614,14 +1164,21 @@ class CPUOffloadOptimizer:
                         state[k] = self._move_tensor(v, device)
 
     @torch.no_grad()
-    def _update_compute_weights(self, chunk_idx: int, stream: torch.cuda.Stream) -> None:
+    def _update_compute_weights(
+        self,
+        chunk_idx: int,
+        stream: torch.cuda.Stream,
+        sources: list[torch.Tensor] | None = None,
+    ) -> None:
         assert self._master_weights is not None
+        if sources is not None and len(sources) != len(self._chunks[chunk_idx]):
+            raise ValueError("Compute-weight sources must match the optimizer chunk")
         with torch.cuda.stream(stream):
-            for param in self._chunks[chunk_idx]:
+            for param_idx, param in enumerate(self._chunks[chunk_idx]):
                 master = self._master_weights[id(param)]
                 if not isinstance(master.model_param, DTensor):
                     raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(master.model_param)}")
-                source = master.compute_tensor if master.compute_tensor is not None else master.cpu_tensor
+                source = sources[param_idx] if sources is not None else master.cpu_tensor
                 master.model_param.to_local().copy_(source, non_blocking=True)
 
     def _step_chunk(self, chunk_idx: int, closure=None):
@@ -640,23 +1197,25 @@ class CPUOffloadOptimizer:
         self,
         chunk_idx: int,
         gradients: list[torch.Tensor | None],
+        compute_params: list[torch.Tensor],
     ) -> None:
         assert self._gradient_manager is not None
         assert self._master_weights is not None
         gradient_by_param_id = {
             id(param): gradient for param, gradient in zip(self._chunks[chunk_idx], gradients) if gradient is not None
         }
+        compute_by_param_id = {
+            id(param): compute_param for param, compute_param in zip(self._chunks[chunk_idx], compute_params)
+        }
+        for param, gradient, compute_param in zip(self._chunks[chunk_idx], gradients, compute_params):
+            if gradient is None:
+                compute_param.copy_(self._master_weights[id(param)].cpu_tensor)
         for group, params in self._chunk_groups[chunk_idx]:
             params_with_grad = [param for param in params if id(param) in gradient_by_param_id]
             if not params_with_grad:
                 continue
             states = [self.optimizer.state[param] for param in params_with_grad]
-            compute_params = []
-            for param in params_with_grad:
-                compute_param = self._master_weights[id(param)].compute_tensor
-                if compute_param is None:
-                    raise RuntimeError("Native CPU AdamW requires BF16 compute-weight shadows")
-                compute_params.append(compute_param)
+            group_compute_params = [compute_by_param_id[id(param)] for param in params_with_grad]
             beta1, beta2 = group["betas"]
             native_cpu_adamw_step(
                 params_with_grad,
@@ -664,7 +1223,7 @@ class CPUOffloadOptimizer:
                 [state["exp_avg"] for state in states],
                 [state["exp_avg_sq"] for state in states],
                 [state["step"] for state in states],
-                compute_params,
+                group_compute_params,
                 lr=group["lr"],
                 beta1=beta1,
                 beta2=beta2,
@@ -681,16 +1240,24 @@ class CPUOffloadOptimizer:
             self._chunks[chunk_idx],
             wait=False,
             apply_scale=not (self._native_cpu_adamw or self._fused_cpu_adamw),
-            allow_staging_gradient=self._native_cpu_adamw,
             assign_grad=not self._native_cpu_adamw,
         )
         if self._native_cpu_adamw:
-            self._step_native_cpu_adamw_chunk(chunk_idx, gradients)
+            if not isinstance(self._gradient_manager, BoundedGradientOffloadManager):
+                raise TypeError("Native CPU AdamW requires bounded gradient offload")
+            slot, compute_params = self._gradient_manager.acquire_output_chunk(chunk_idx)
+            self._step_native_cpu_adamw_chunk(chunk_idx, gradients, compute_params)
         else:
             self._step_chunk(chunk_idx)
         self._gradient_manager.release_chunk(chunk_idx, self._chunks[chunk_idx])
         with torch.cuda.device(self._cuda_device):
-            self._update_compute_weights(chunk_idx, self._h2d_stream)
+            self._update_compute_weights(
+                chunk_idx,
+                self._h2d_stream,
+                compute_params if self._native_cpu_adamw else None,
+            )
+            if self._native_cpu_adamw:
+                self._gradient_manager.release_output_chunk(slot, self._h2d_stream)
 
     def _prepare_fused_cpu_adamw(self) -> None:
         if not self._fused_cpu_adamw:
@@ -737,20 +1304,25 @@ class CPUOffloadOptimizer:
                         i,
                         self._chunks[i],
                         apply_scale=not (self._native_cpu_adamw or self._fused_cpu_adamw),
-                        allow_staging_gradient=self._native_cpu_adamw,
                         assign_grad=not self._native_cpu_adamw,
                     )
                 )
             if self._native_cpu_adamw:
                 if closure is not None:
                     raise ValueError("Optimizer closures are not supported with native CPU AdamW")
+                if not isinstance(self._gradient_manager, BoundedGradientOffloadManager):
+                    raise TypeError("Native CPU AdamW requires bounded gradient offload")
                 for i in range(len(self._chunks)):
-                    self._step_native_cpu_adamw_chunk(i, gradients_by_chunk[i])
+                    slot, compute_params = self._gradient_manager.acquire_output_chunk(i)
+                    self._step_native_cpu_adamw_chunk(i, gradients_by_chunk[i], compute_params)
+                    self._gradient_manager.release_chunk(i, self._chunks[i])
+                    self._update_compute_weights(i, self._h2d_stream, compute_params)
+                    self._gradient_manager.release_output_chunk(slot, self._h2d_stream)
             else:
                 self.optimizer.step(closure)
-            for i in range(len(self._chunks)):
-                self._gradient_manager.release_chunk(i, self._chunks[i])
-                self._update_compute_weights(i, self._h2d_stream)
+                for i in range(len(self._chunks)):
+                    self._gradient_manager.release_chunk(i, self._chunks[i])
+                    self._update_compute_weights(i, self._h2d_stream)
             torch.cuda.current_stream().wait_stream(self._h2d_stream)
             torch.cuda.synchronize()
             self._record_native_optimizer_step()
@@ -915,13 +1487,22 @@ class CPUOffloadOptimizer:
     @torch.no_grad()
     def finish_checkpoint_load(self) -> None:
         if self._master_weights is not None:
-            for master in self._master_weights.values():
-                if master.compute_tensor is not None:
-                    master.compute_tensor.copy_(master.cpu_tensor)
-            for i in range(len(self._chunks)):
-                self._update_compute_weights(i, self._h2d_stream)
+            if self._native_cpu_adamw:
+                if not isinstance(self._gradient_manager, BoundedGradientOffloadManager):
+                    raise TypeError("Native CPU AdamW requires bounded gradient offload")
+                for i in range(len(self._chunks)):
+                    slot, compute_params = self._gradient_manager.acquire_output_chunk(i)
+                    for param, compute_param in zip(self._chunks[i], compute_params):
+                        compute_param.copy_(self._master_weights[id(param)].cpu_tensor)
+                    self._update_compute_weights(i, self._h2d_stream, compute_params)
+                    self._gradient_manager.release_output_chunk(slot, self._h2d_stream)
+            else:
+                for i in range(len(self._chunks)):
+                    self._update_compute_weights(i, self._h2d_stream)
             torch.cuda.current_stream().wait_stream(self._h2d_stream)
             torch.cuda.synchronize()
+            if isinstance(self._gradient_manager, BoundedGradientOffloadManager):
+                self._gradient_manager.wait_for_output_slots()
         self._initialized = True
 
 
@@ -953,7 +1534,7 @@ def setup_optimizer(
         optimizer_named_params, master_weights = _create_cpu_master_weights(
             model,
             named_params,
-            create_compute_shadow=(config.type == "adamw" and offload_config.cpu_optimizer_backend == "native"),
+            pin_memory=not (config.type == "adamw" and offload_config.cpu_optimizer_backend == "native"),
         )
 
     optimizer = _create_optimizer(
@@ -987,13 +1568,12 @@ def _create_cpu_master_weights(
     model: nn.Module,
     named_params: list[tuple[str, nn.Parameter]],
     *,
-    create_compute_shadow: bool = False,
+    pin_memory: bool = True,
 ) -> tuple[list[tuple[str, nn.Parameter]], dict[int, _MasterWeight]]:
     trainable_params = [(name, model_param) for name, model_param in named_params if model_param.requires_grad]
     if not trainable_params:
         raise ValueError("Gradient CPU offload requires trainable parameters")
-    alignment_dtype = torch.bfloat16 if create_compute_shadow else torch.float32
-    alignment = 256 // torch.empty((), dtype=alignment_dtype).element_size()
+    alignment = 256 // torch.empty((), dtype=torch.float32).element_size()
     offsets = {}
     slab_numel = 0
     for name, model_param in trainable_params:
@@ -1002,26 +1582,16 @@ def _create_cpu_master_weights(
         offsets[name] = slab_numel
         local_numel = model_param.to_local().numel()
         slab_numel += (local_numel + alignment - 1) // alignment * alignment
-    master_slab = torch.empty(slab_numel, dtype=torch.float32, device="cpu", pin_memory=True)
-    compute_slab = (
-        torch.empty(slab_numel, dtype=torch.bfloat16, device="cpu", pin_memory=True) if create_compute_shadow else None
-    )
+    master_slab = torch.empty(slab_numel, dtype=torch.float32, device="cpu", pin_memory=pin_memory)
     master_named_params = []
     master_weights = {}
     for name, model_param in trainable_params:
         local_param = model_param.to_local()
         cpu_tensor = master_slab.narrow(0, offsets[name], local_param.numel()).view(local_param.shape)
         cpu_tensor.copy_(local_param, non_blocking=True)
-        compute_tensor = (
-            compute_slab.narrow(0, offsets[name], local_param.numel()).view(local_param.shape)
-            if compute_slab is not None
-            else None
-        )
-        if compute_tensor is not None:
-            compute_tensor.copy_(local_param, non_blocking=True)
         master_param = nn.Parameter(cpu_tensor, requires_grad=True)
         master_named_params.append((name, master_param))
-        master_weights[id(master_param)] = _MasterWeight(model_param, cpu_tensor, compute_tensor)
+        master_weights[id(master_param)] = _MasterWeight(model_param, cpu_tensor)
     torch.cuda.synchronize()
 
     original_buffers = {name: buffer.detach() for name, buffer in model.named_buffers() if buffer.is_floating_point()}
@@ -1033,13 +1603,9 @@ def _create_cpu_master_weights(
     torch.cuda.empty_cache()
 
     master_allocation = sum(master.cpu_tensor.nbytes for master in master_weights.values())
-    shadow_allocation = sum(
-        master.compute_tensor.nbytes for master in master_weights.values() if master.compute_tensor is not None
-    )
     get_logger().info(
-        f"CPU optimizer step allocated {master_allocation / 1024**3:.2f} GiB of FP32 masters"
-        f"{f' and {shadow_allocation / 1024**3:.2f} GiB of BF16 compute shadows' if shadow_allocation else ''} "
-        "in pinned RAM; persistent GPU parameters use BF16"
+        f"CPU optimizer step allocated {master_allocation / 1024**3:.2f} GiB of "
+        f"{'pinned' if pin_memory else 'pageable'} FP32 masters; persistent GPU parameters use BF16"
     )
     return master_named_params, master_weights
 

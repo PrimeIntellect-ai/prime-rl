@@ -22,6 +22,14 @@ struct TensorSpan {
   float bias_correction2_sqrt;
 };
 
+struct BFloat16CopySpan {
+  float* destination;
+  const at::BFloat16* source;
+  bool add;
+  int64_t begin;
+  int64_t end;
+};
+
 void check_tensor(const torch::Tensor& tensor, const char* name) {
   TORCH_CHECK(tensor.device().is_cpu(), name, " must be on CPU");
   TORCH_CHECK(tensor.scalar_type() == torch::kFloat32, name, " must be float32");
@@ -36,33 +44,84 @@ void check_grad(const torch::Tensor& tensor) {
   TORCH_CHECK(tensor.is_contiguous(), "grad must be contiguous");
 }
 
-void add_bfloat16_(torch::Tensor destination, const torch::Tensor& source) {
-  check_tensor(destination, "destination");
-  TORCH_CHECK(source.device().is_cpu(), "source must be on CPU");
-  TORCH_CHECK(source.scalar_type() == torch::kBFloat16, "source must be bfloat16");
-  TORCH_CHECK(source.is_contiguous(), "source must be contiguous");
-  TORCH_CHECK(destination.numel() == source.numel(), "source shape must match destination shape");
-
-  float* destination_data = destination.data_ptr<float>();
-  const at::BFloat16* source_data = source.const_data_ptr<at::BFloat16>();
-  const int64_t numel = destination.numel();
-  constexpr int64_t grain_size = 32 * 1024;
-  at::parallel_for(0, numel, grain_size, [&](int64_t begin, int64_t end) {
-    using Vec = at::vec::Vectorized<float>;
-    using BVec = at::vec::Vectorized<at::BFloat16>;
-    constexpr int64_t block_size = 2 * Vec::size();
-    int64_t i = begin;
-    for (; i <= end - block_size; i += block_size) {
-      const BVec source_vec = BVec::loadu(source_data + i);
-      auto [source0, source1] = at::vec::convert_to_float<at::BFloat16>(source_vec);
+void copy_or_add_bfloat16_span(const BFloat16CopySpan& span, int64_t begin, int64_t end) {
+  float* destination_data = span.destination + begin;
+  const at::BFloat16* source_data = span.source + begin;
+  using Vec = at::vec::Vectorized<float>;
+  using BVec = at::vec::Vectorized<at::BFloat16>;
+  constexpr int64_t block_size = 2 * Vec::size();
+  int64_t i = 0;
+  const int64_t size = end - begin;
+  for (; i <= size - block_size; i += block_size) {
+    const BVec source_vec = BVec::loadu(source_data + i);
+    auto [source0, source1] = at::vec::convert_to_float<at::BFloat16>(source_vec);
+    if (span.add) {
       (Vec::loadu(destination_data + i) + source0).store(destination_data + i);
       (Vec::loadu(destination_data + i + Vec::size()) + source1)
           .store(destination_data + i + Vec::size());
+    } else {
+      source0.store(destination_data + i);
+      source1.store(destination_data + i + Vec::size());
     }
-    for (; i < end; ++i) {
-      destination_data[i] += static_cast<float>(source_data[i]);
+  }
+  for (; i < size; ++i) {
+    const float source_value = static_cast<float>(source_data[i]);
+    destination_data[i] = span.add ? destination_data[i] + source_value : source_value;
+  }
+}
+
+void copy_or_add_bfloat16_multi_(
+    const std::vector<torch::Tensor>& destinations,
+    const std::vector<torch::Tensor>& sources,
+    const std::vector<bool>& add) {
+  const auto count = destinations.size();
+  TORCH_CHECK(sources.size() == count, "sources and destinations must have the same length");
+  TORCH_CHECK(add.size() == count, "add and destinations must have the same length");
+
+  std::vector<BFloat16CopySpan> spans;
+  spans.reserve(count);
+  int64_t total_numel = 0;
+  for (size_t i = 0; i < count; ++i) {
+    check_tensor(destinations[i], "destination");
+    TORCH_CHECK(sources[i].device().is_cpu(), "source must be on CPU");
+    TORCH_CHECK(sources[i].scalar_type() == torch::kBFloat16, "source must be bfloat16");
+    TORCH_CHECK(sources[i].is_contiguous(), "source must be contiguous");
+    TORCH_CHECK(destinations[i].numel() == sources[i].numel(), "source shape must match destination shape");
+    const int64_t numel = destinations[i].numel();
+    spans.push_back(BFloat16CopySpan{
+        destinations[i].data_ptr<float>(),
+        sources[i].const_data_ptr<at::BFloat16>(),
+        add[i],
+        total_numel,
+        total_numel + numel,
+    });
+    total_numel += numel;
+  }
+
+  constexpr int64_t grain_size = 32 * 1024;
+  at::parallel_for(0, total_numel, grain_size, [&](int64_t begin, int64_t end) {
+    auto span_it = std::upper_bound(
+        spans.begin(),
+        spans.end(),
+        begin,
+        [](int64_t offset, const BFloat16CopySpan& span) { return offset < span.end; });
+    while (begin < end) {
+      TORCH_INTERNAL_ASSERT(span_it != spans.end());
+      const int64_t span_begin = begin - span_it->begin;
+      const int64_t span_end = std::min(end, span_it->end) - span_it->begin;
+      copy_or_add_bfloat16_span(*span_it, span_begin, span_end);
+      begin = std::min(end, span_it->end);
+      ++span_it;
     }
   });
+}
+
+void add_bfloat16_(torch::Tensor destination, const torch::Tensor& source) {
+  copy_or_add_bfloat16_multi_({destination}, {source}, {true});
+}
+
+void copy_bfloat16_(torch::Tensor destination, const torch::Tensor& source) {
+  copy_or_add_bfloat16_multi_({destination}, {source}, {false});
 }
 
 void adamw_span(
@@ -255,6 +314,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
       "add_bfloat16_",
       &add_bfloat16_,
       "Add a BF16 tensor into an FP32 tensor",
+      pybind11::call_guard<pybind11::gil_scoped_release>());
+  module.def(
+      "copy_bfloat16_",
+      &copy_bfloat16_,
+      "Copy a BF16 tensor into an FP32 tensor",
+      pybind11::call_guard<pybind11::gil_scoped_release>());
+  module.def(
+      "copy_or_add_bfloat16_multi_",
+      &copy_or_add_bfloat16_multi_,
+      "Copy or add BF16 tensors into FP32 tensors",
       pybind11::call_guard<pybind11::gil_scoped_release>());
   module.def(
       "adamw_step",

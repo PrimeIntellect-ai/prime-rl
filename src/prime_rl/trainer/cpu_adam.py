@@ -51,6 +51,20 @@ def add_bfloat16_(destination: torch.Tensor, source: torch.Tensor) -> None:
 
 
 @torch.no_grad()
+def copy_bfloat16_(destination: torch.Tensor, source: torch.Tensor) -> None:
+    _extension().copy_bfloat16_(destination, source)
+
+
+@torch.no_grad()
+def copy_or_add_bfloat16_multi_(
+    destinations: list[torch.Tensor],
+    sources: list[torch.Tensor],
+    add: list[bool],
+) -> None:
+    _extension().copy_or_add_bfloat16_multi_(destinations, sources, add)
+
+
+@torch.no_grad()
 def adamw_step(
     params: list[torch.Tensor],
     grads: list[torch.Tensor],
