@@ -234,7 +234,7 @@ The knobs (under `[trainer.loss]` with `type = "default"`):
 
 | Knob | Default | What it does |
 |---|---|---|
-| `dppo_mask_low` / `dppo_mask_high` | 0.2 / 0.2 | Lower / upper thresholds for DPPO-style token-level masking. |
+| `dppo_mask_low` / `dppo_mask_high` | 0.1 / 0.1 | Lower / upper thresholds for DPPO-style token-level masking. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 to drop the policy-gradient term, leaving only the KL regularizer. |
 | `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
 

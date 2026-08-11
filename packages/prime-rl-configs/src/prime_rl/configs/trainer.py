@@ -459,10 +459,10 @@ class CheckpointConfig(BaseConfig):
 class DefaultLossConfig(BaseConfig):
     type: Literal["default"] = "default"
 
-    dppo_mask_low: float = Field(0.2, ge=0)
+    dppo_mask_low: float = Field(0.1, ge=0)
     """Lower DPPO masking threshold."""
 
-    dppo_mask_high: float = Field(0.2, ge=0)
+    dppo_mask_high: float = Field(0.1, ge=0)
     """Upper DPPO masking threshold."""
 
     adv_tau: float = Field(1.0, ge=0)
