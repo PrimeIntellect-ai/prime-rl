@@ -37,8 +37,10 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
   update synchronously after validation. Muon is not supported. Resumable
   checkpoints include the FP32 masters and optimizer state under the original
   FSDP parameter names. Full-offload AdamW uses the native multi-tensor CPU kernel
-  by default. Set `cpu_optimizer_backend = "torch"` inside the offload table to use
-  fused PyTorch AdamW for debugging or parity checks.
+  by default. The native path transports BF16 model gradients and BF16 compute-weight
+  shadows over PCIe while retaining FP32 masters, moments, optimizer arithmetic, and gradient
+  accumulation. Set `cpu_optimizer_backend = "torch"` inside the offload table to use fused
+  PyTorch AdamW for debugging or parity checks.
 
 ## `rl` — RL training
 

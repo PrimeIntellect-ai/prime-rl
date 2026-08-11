@@ -14,6 +14,7 @@ from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerOffloadingConfig
 from prime_rl.trainer.cpu_adam import adamw_step as native_cpu_adamw_step
+from prime_rl.trainer.cpu_adam import add_bfloat16_ as native_add_bfloat16_
 from prime_rl.trainer.cpu_adam import load_cpu_adamw_kernel
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.sign_sgd import SignSGD
@@ -27,12 +28,13 @@ class _CPUGradientBuffer:
     staging: torch.Tensor | None = None
     initialized: bool = False
     pending: bool = False
+    staging_holds_final: bool = False
 
 
 @dataclass
 class _GradientCopyTask:
     event: torch.cuda.Event
-    buffers: list[tuple[int, _CPUGradientBuffer, bool]]
+    buffers: list[tuple[int, _CPUGradientBuffer, bool, bool]]
     final_backward: bool
 
 
@@ -45,6 +47,7 @@ class _OptimizerChunkTask:
 class _MasterWeight:
     model_param: nn.Parameter
     cpu_tensor: torch.Tensor
+    compute_tensor: torch.Tensor | None = None
 
 
 class GradientOffloadManager:
@@ -55,11 +58,13 @@ class GradientOffloadManager:
         chunks: list[list[nn.Parameter]],
         dp_replicate: int,
         cpu_dtype: torch.dtype | None = None,
+        preserve_staging_dtype: bool = False,
         chunk_ready_callback: Callable[[int], None] | None = None,
     ):
         self._chunks = chunks
         self._dp_replicate = dp_replicate
         self._cpu_dtype = cpu_dtype
+        self._preserve_staging_dtype = preserve_staging_dtype
         self._optimizer_param_ids = {id(param) for chunk in chunks for param in chunk}
         self._chunk_param_ids = [{id(param) for param in chunk} for chunk in chunks]
         self._chunk_by_param_id = {
@@ -96,24 +101,36 @@ class GradientOffloadManager:
         # allocations pins the same bytes in well under a minute.
         dtensor_params = [p for p in params.values() if isinstance(p.data, DTensor)]
         ALIGN = 256  # bytes; keeps carved views DMA-friendly
-        slab_numel: dict[torch.dtype, int] = {}
-        offsets: dict[int, tuple[torch.dtype, int, int]] = {}
+        acc_slab_numel: dict[torch.dtype, int] = {}
+        stage_slab_numel: dict[torch.dtype, int] = {}
+        offsets: dict[int, tuple[torch.dtype, int, torch.dtype, int, int]] = {}
         for param in dtensor_params:
             local = param.data.to_local()
-            dtype = self._cpu_dtype or local.dtype
-            align_elems = max(1, ALIGN // local.element_size())
-            start = slab_numel.get(dtype, 0)
-            offsets[id(param)] = (dtype, start, local.numel())
-            padded = (local.numel() + align_elems - 1) // align_elems * align_elems
-            slab_numel[dtype] = start + padded
-        acc_slabs = {dt: torch.empty(n, dtype=dt, device="cpu", pin_memory=True) for dt, n in slab_numel.items()}
-        stage_slabs = {dt: torch.empty(n, dtype=dt, device="cpu", pin_memory=True) for dt, n in slab_numel.items()}
+            acc_dtype = self._cpu_dtype or local.dtype
+            stage_dtype = local.dtype if preserve_staging_dtype else acc_dtype
+            acc_align = max(1, ALIGN // torch.empty((), dtype=acc_dtype).element_size())
+            stage_align = max(1, ALIGN // torch.empty((), dtype=stage_dtype).element_size())
+            acc_start = acc_slab_numel.get(acc_dtype, 0)
+            stage_start = stage_slab_numel.get(stage_dtype, 0)
+            offsets[id(param)] = (acc_dtype, acc_start, stage_dtype, stage_start, local.numel())
+            acc_slab_numel[acc_dtype] = acc_start + ((local.numel() + acc_align - 1) // acc_align * acc_align)
+            stage_slab_numel[stage_dtype] = stage_start + (
+                (local.numel() + stage_align - 1) // stage_align * stage_align
+            )
+        acc_slabs = {
+            dtype: torch.empty(numel, dtype=dtype, device="cpu", pin_memory=True)
+            for dtype, numel in acc_slab_numel.items()
+        }
+        stage_slabs = {
+            dtype: torch.empty(numel, dtype=dtype, device="cpu", pin_memory=True)
+            for dtype, numel in stage_slab_numel.items()
+        }
         for param in dtensor_params:
             data = param.data
             local = data.to_local()
-            dtype, start, numel = offsets[id(param)]
-            accumulator = acc_slabs[dtype].narrow(0, start, numel).view(local.shape)
-            staging = stage_slabs[dtype].narrow(0, start, numel).view(local.shape)
+            acc_dtype, acc_start, stage_dtype, stage_start, numel = offsets[id(param)]
+            accumulator = acc_slabs[acc_dtype].narrow(0, acc_start, numel).view(local.shape)
+            staging = stage_slabs[stage_dtype].narrow(0, stage_start, numel).view(local.shape)
             template = copy.copy(data.detach())
             template._local_tensor = accumulator
             self._buffers[id(param)] = _CPUGradientBuffer(template, accumulator, staging=staging)
@@ -143,10 +160,19 @@ class GradientOffloadManager:
                 self._run_optimizer_chunk(task.chunk_idx)
                 continue
             task.event.synchronize()
-            for param_id, buffer, accumulate in task.buffers:
-                if accumulate:
-                    assert buffer.staging is not None
-                    buffer.accumulator.add_(buffer.staging)
+            for param_id, buffer, accumulate, copied_to_staging in task.buffers:
+                assert buffer.staging is not None
+                if task.final_backward and not accumulate and copied_to_staging:
+                    buffer.staging_holds_final = True
+                elif accumulate:
+                    if buffer.accumulator.dtype == torch.float32 and buffer.staging.dtype == torch.bfloat16:
+                        native_add_bfloat16_(buffer.accumulator, buffer.staging)
+                    else:
+                        buffer.accumulator.add_(buffer.staging)
+                    buffer.staging_holds_final = False
+                elif copied_to_staging:
+                    buffer.accumulator.copy_(buffer.staging)
+                    buffer.staging_holds_final = False
                 with self._condition:
                     buffer.initialized = True
                     buffer.pending = False
@@ -211,7 +237,13 @@ class GradientOffloadManager:
             )
             template = copy.copy(grad)
             template._local_tensor = accumulator
-            self._buffers[param_id] = _CPUGradientBuffer(template, accumulator)
+            staging = torch.empty_like(
+                local_grad,
+                dtype=local_grad.dtype if self._preserve_staging_dtype else accumulator.dtype,
+                device="cpu",
+                pin_memory=True,
+            )
+            self._buffers[param_id] = _CPUGradientBuffer(template, accumulator, staging)
         return self._buffers[param_id]
 
     def _wait_buffer(self, buffer: _CPUGradientBuffer) -> None:
@@ -224,7 +256,7 @@ class GradientOffloadManager:
         self,
         params: list[nn.Parameter],
     ) -> None:
-        copies: list[tuple[int, _CPUGradientBuffer, bool]] = []
+        copies: list[tuple[int, _CPUGradientBuffer, bool, bool]] = []
         current_stream = torch.cuda.current_stream()
         self._d2h_stream.wait_stream(current_stream)
         with torch.cuda.stream(self._d2h_stream):
@@ -237,15 +269,21 @@ class GradientOffloadManager:
                 self._wait_buffer(buffer)
                 local_grad = param.grad.to_local()
                 accumulate = buffer.initialized
-                if accumulate and buffer.staging is None:
+                if buffer.staging is None:
                     buffer.staging = torch.empty_like(buffer.accumulator, pin_memory=True)
-                destination = buffer.staging if accumulate else buffer.accumulator
+                copied_to_staging = accumulate or (
+                    self._preserve_staging_dtype
+                    and self._final_backward
+                    and self._overlap_optimizer
+                    and buffer.staging.dtype != buffer.accumulator.dtype
+                )
+                destination = buffer.staging if copied_to_staging else buffer.accumulator
                 assert destination is not None
                 destination.copy_(local_grad, non_blocking=True)
                 local_grad.record_stream(self._d2h_stream)
                 buffer.pending = True
                 param_id = id(param)
-                copies.append((param_id, buffer, accumulate))
+                copies.append((param_id, buffer, accumulate, copied_to_staging))
                 if self._final_backward and self._overlap_optimizer:
                     self._final_enqueued_param_ids.add(param_id)
                 param.grad = None
@@ -375,21 +413,33 @@ class GradientOffloadManager:
         *,
         wait: bool = True,
         apply_scale: bool = True,
-    ) -> None:
+        allow_staging_gradient: bool = False,
+        assign_grad: bool = True,
+    ) -> list[torch.Tensor | None]:
         if wait:
             self.wait()
         source_params = self._chunks[chunk_idx]
         if len(source_params) != len(target_params):
             raise ValueError("Gradient source and target chunks must have the same size")
+        gradients: list[torch.Tensor | None] = []
         for source_param, target_param in zip(source_params, target_params):
             buffer = self._buffers.get(id(source_param))
             if buffer is None or not buffer.initialized:
-                target_param.grad = None
+                gradients.append(None)
+                if assign_grad:
+                    target_param.grad = None
                 continue
-            grad = buffer.accumulator.float()
+            grad = (
+                buffer.staging
+                if allow_staging_gradient and buffer.staging_holds_final and buffer.staging is not None
+                else buffer.accumulator.float()
+            )
             if apply_scale and self._gradient_scale != 1.0:
                 grad.mul_(self._gradient_scale)
-            target_param.grad = grad
+            gradients.append(grad)
+            if assign_grad:
+                target_param.grad = grad
+        return gradients
 
     def release_chunk(self, chunk_idx: int, target_params: list[nn.Parameter] | None = None) -> None:
         for param in self._chunks[chunk_idx]:
@@ -402,6 +452,7 @@ class GradientOffloadManager:
         self.wait()
         for buffer in self._buffers.values():
             buffer.initialized = False
+            buffer.staging_holds_final = False
         self._gradient_scale = 1.0
 
     def close(self) -> None:
@@ -479,6 +530,7 @@ class CPUOffloadOptimizer:
                 gradient_chunks,
                 dp_replicate,
                 cpu_dtype=torch.float32 if master_weights is not None else None,
+                preserve_staging_dtype=self._native_cpu_adamw,
                 chunk_ready_callback=self._step_cpu_chunk if master_weights is not None else None,
             )
             if offload_config.gradients or offload_config.full
@@ -569,7 +621,8 @@ class CPUOffloadOptimizer:
                 master = self._master_weights[id(param)]
                 if not isinstance(master.model_param, DTensor):
                     raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(master.model_param)}")
-                master.model_param.to_local().copy_(master.cpu_tensor, non_blocking=True)
+                source = master.compute_tensor if master.compute_tensor is not None else master.cpu_tensor
+                master.model_param.to_local().copy_(source, non_blocking=True)
 
     def _step_chunk(self, chunk_idx: int, closure=None):
         """Run optimizer.step() for a single chunk by temporarily swapping param_groups."""
@@ -583,20 +636,35 @@ class CPUOffloadOptimizer:
         self.optimizer.param_groups = self._all_param_groups
         return result
 
-    def _step_native_cpu_adamw_chunk(self, chunk_idx: int) -> None:
+    def _step_native_cpu_adamw_chunk(
+        self,
+        chunk_idx: int,
+        gradients: list[torch.Tensor | None],
+    ) -> None:
         assert self._gradient_manager is not None
+        assert self._master_weights is not None
+        gradient_by_param_id = {
+            id(param): gradient for param, gradient in zip(self._chunks[chunk_idx], gradients) if gradient is not None
+        }
         for group, params in self._chunk_groups[chunk_idx]:
-            params_with_grad = [param for param in params if param.grad is not None]
+            params_with_grad = [param for param in params if id(param) in gradient_by_param_id]
             if not params_with_grad:
                 continue
             states = [self.optimizer.state[param] for param in params_with_grad]
+            compute_params = []
+            for param in params_with_grad:
+                compute_param = self._master_weights[id(param)].compute_tensor
+                if compute_param is None:
+                    raise RuntimeError("Native CPU AdamW requires BF16 compute-weight shadows")
+                compute_params.append(compute_param)
             beta1, beta2 = group["betas"]
             native_cpu_adamw_step(
                 params_with_grad,
-                [param.grad for param in params_with_grad],
+                [gradient_by_param_id[id(param)] for param in params_with_grad],
                 [state["exp_avg"] for state in states],
                 [state["exp_avg_sq"] for state in states],
                 [state["step"] for state in states],
+                compute_params,
                 lr=group["lr"],
                 beta1=beta1,
                 beta2=beta2,
@@ -608,14 +676,16 @@ class CPUOffloadOptimizer:
     def _step_cpu_chunk(self, chunk_idx: int) -> None:
         assert self._gradient_manager is not None
         self._prepare_fused_cpu_adamw()
-        self._gradient_manager.load_cpu_chunk(
+        gradients = self._gradient_manager.load_cpu_chunk(
             chunk_idx,
             self._chunks[chunk_idx],
             wait=False,
             apply_scale=not (self._native_cpu_adamw or self._fused_cpu_adamw),
+            allow_staging_gradient=self._native_cpu_adamw,
+            assign_grad=not self._native_cpu_adamw,
         )
         if self._native_cpu_adamw:
-            self._step_native_cpu_adamw_chunk(chunk_idx)
+            self._step_native_cpu_adamw_chunk(chunk_idx, gradients)
         else:
             self._step_chunk(chunk_idx)
         self._gradient_manager.release_chunk(chunk_idx, self._chunks[chunk_idx])
@@ -660,17 +730,22 @@ class CPUOffloadOptimizer:
                 self._initialized = True
                 return
             self._prepare_fused_cpu_adamw()
+            gradients_by_chunk = []
             for i in range(len(self._chunks)):
-                self._gradient_manager.load_cpu_chunk(
-                    i,
-                    self._chunks[i],
-                    apply_scale=not (self._native_cpu_adamw or self._fused_cpu_adamw),
+                gradients_by_chunk.append(
+                    self._gradient_manager.load_cpu_chunk(
+                        i,
+                        self._chunks[i],
+                        apply_scale=not (self._native_cpu_adamw or self._fused_cpu_adamw),
+                        allow_staging_gradient=self._native_cpu_adamw,
+                        assign_grad=not self._native_cpu_adamw,
+                    )
                 )
             if self._native_cpu_adamw:
                 if closure is not None:
                     raise ValueError("Optimizer closures are not supported with native CPU AdamW")
                 for i in range(len(self._chunks)):
-                    self._step_native_cpu_adamw_chunk(i)
+                    self._step_native_cpu_adamw_chunk(i, gradients_by_chunk[i])
             else:
                 self.optimizer.step(closure)
             for i in range(len(self._chunks)):
@@ -840,6 +915,9 @@ class CPUOffloadOptimizer:
     @torch.no_grad()
     def finish_checkpoint_load(self) -> None:
         if self._master_weights is not None:
+            for master in self._master_weights.values():
+                if master.compute_tensor is not None:
+                    master.compute_tensor.copy_(master.cpu_tensor)
             for i in range(len(self._chunks)):
                 self._update_compute_weights(i, self._h2d_stream)
             torch.cuda.current_stream().wait_stream(self._h2d_stream)
@@ -875,6 +953,7 @@ def setup_optimizer(
         optimizer_named_params, master_weights = _create_cpu_master_weights(
             model,
             named_params,
+            create_compute_shadow=(config.type == "adamw" and offload_config.cpu_optimizer_backend == "native"),
         )
 
     optimizer = _create_optimizer(
@@ -907,11 +986,14 @@ def setup_optimizer(
 def _create_cpu_master_weights(
     model: nn.Module,
     named_params: list[tuple[str, nn.Parameter]],
+    *,
+    create_compute_shadow: bool = False,
 ) -> tuple[list[tuple[str, nn.Parameter]], dict[int, _MasterWeight]]:
     trainable_params = [(name, model_param) for name, model_param in named_params if model_param.requires_grad]
     if not trainable_params:
         raise ValueError("Gradient CPU offload requires trainable parameters")
-    alignment = 256 // torch.empty((), dtype=torch.float32).element_size()
+    alignment_dtype = torch.bfloat16 if create_compute_shadow else torch.float32
+    alignment = 256 // torch.empty((), dtype=alignment_dtype).element_size()
     offsets = {}
     slab_numel = 0
     for name, model_param in trainable_params:
@@ -921,15 +1003,25 @@ def _create_cpu_master_weights(
         local_numel = model_param.to_local().numel()
         slab_numel += (local_numel + alignment - 1) // alignment * alignment
     master_slab = torch.empty(slab_numel, dtype=torch.float32, device="cpu", pin_memory=True)
+    compute_slab = (
+        torch.empty(slab_numel, dtype=torch.bfloat16, device="cpu", pin_memory=True) if create_compute_shadow else None
+    )
     master_named_params = []
     master_weights = {}
     for name, model_param in trainable_params:
         local_param = model_param.to_local()
         cpu_tensor = master_slab.narrow(0, offsets[name], local_param.numel()).view(local_param.shape)
         cpu_tensor.copy_(local_param, non_blocking=True)
+        compute_tensor = (
+            compute_slab.narrow(0, offsets[name], local_param.numel()).view(local_param.shape)
+            if compute_slab is not None
+            else None
+        )
+        if compute_tensor is not None:
+            compute_tensor.copy_(local_param, non_blocking=True)
         master_param = nn.Parameter(cpu_tensor, requires_grad=True)
         master_named_params.append((name, master_param))
-        master_weights[id(master_param)] = _MasterWeight(model_param, cpu_tensor)
+        master_weights[id(master_param)] = _MasterWeight(model_param, cpu_tensor, compute_tensor)
     torch.cuda.synchronize()
 
     original_buffers = {name: buffer.detach() for name, buffer in model.named_buffers() if buffer.is_floating_point()}
@@ -940,10 +1032,14 @@ def _create_cpu_master_weights(
     del local_param
     torch.cuda.empty_cache()
 
-    allocation = sum(master.cpu_tensor.nbytes for master in master_weights.values())
+    master_allocation = sum(master.cpu_tensor.nbytes for master in master_weights.values())
+    shadow_allocation = sum(
+        master.compute_tensor.nbytes for master in master_weights.values() if master.compute_tensor is not None
+    )
     get_logger().info(
-        f"CPU optimizer step allocated {allocation / 1024**3:.2f} GiB of FP32 masters in pinned RAM; "
-        "persistent GPU parameters use BF16"
+        f"CPU optimizer step allocated {master_allocation / 1024**3:.2f} GiB of FP32 masters"
+        f"{f' and {shadow_allocation / 1024**3:.2f} GiB of BF16 compute shadows' if shadow_allocation else ''} "
+        "in pinned RAM; persistent GPU parameters use BF16"
     )
     return master_named_params, master_weights
 
