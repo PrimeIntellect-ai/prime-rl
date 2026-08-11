@@ -36,7 +36,7 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
 - Environment packages: before launching a config with a non-core verifier env id,
   verify the package imports under `uv run` (for example
   `uv run python -c "import importlib.util; print(importlib.util.find_spec('r2e_gym'))"`).
-  If a local env exists under `deps/research-environments/environments/` or
+  If a local env exists under `deps/prime-envs/environments/` or
   `deps/verifiers/environments/` but does not import, install the env workspace
   members with `uv sync --all-packages` (all) or `uv sync --package prime-rl
   --package <env>` (one) — they're auto-discovered, no `pyproject.toml` edit needed.

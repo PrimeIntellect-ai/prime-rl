@@ -95,7 +95,7 @@ cd prime-rl
 2. Initialize submodules
 
 ```bash
-git submodule update --init -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
+git submodule update --init -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
 ```
 
 3. Install [uv](https://docs.astral.sh/uv/)
