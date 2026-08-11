@@ -154,11 +154,24 @@ class NCCLWeightBroadcastSender:
         else:
             preprocess_fn = preprocess_layer_checkpoint
 
+        _mem = lambda: (torch.cuda.memory_allocated() / 1e9, torch.cuda.max_memory_allocated() / 1e9)
+        _a0, _m0 = _mem()
+        self.logger.info(f"[bcast:mem] entering loop alloc={_a0:.1f}GB peak={_m0:.1f}GB")
         for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
+            _a_pre, _ = _mem()
             layer_state_dict = self._resolve_dtensors(layer_state_dict)
+            _a_gath, _m_gath = _mem()
             layer_state_dict = preprocess_fn(model, layer_state_dict, layer_id)
+            _a_prep, _m_prep = _mem()
             if self.world.is_master:
                 broadcast_state_dict(layer_state_dict, self.communicator)
+            _a_sent, _m_sent = _mem()
+            if layer_id < 6 or layer_id % 10 == 0:
+                self.logger.info(
+                    f"[bcast:mem] layer {layer_id:>3} n={len(layer_state_dict):<3} "
+                    f"pre={_a_pre:6.1f} gathered={_a_gath:6.1f} (+{_a_gath - _a_pre:5.1f}) "
+                    f"prep={_a_prep:6.1f} sent={_a_sent:6.1f} peak={_m_sent:6.1f} GB"
+                )
 
     def _resolve_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         for key, value in list(state_dict.items()):
