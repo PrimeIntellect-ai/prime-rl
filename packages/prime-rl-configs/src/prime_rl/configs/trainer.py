@@ -61,6 +61,9 @@ class OptimizerOffloadingConfig(BaseConfig):
     full: bool = False
     """Offload gradients and overlap CPU optimizer chunks and BF16 weight refreshes with backward."""
 
+    cpu_optimizer_backend: Literal["native", "torch"] = "native"
+    """CPU AdamW implementation used by full offload. ``native`` uses PrimeRL's read-only-gradient multi-tensor kernel; ``torch`` uses fused ``torch.optim.AdamW`` for debugging and parity checks."""
+
 
 def _normalize_optimizer_offloading(value: Any) -> Any:
     if value is True:

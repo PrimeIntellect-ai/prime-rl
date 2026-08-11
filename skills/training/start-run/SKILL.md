@@ -39,7 +39,9 @@ with `inspect.getfile` before launching so the run cannot silently use another c
   would serialize the update after backward. Validation steps drain gradients and
   update synchronously after validation. Muon is not supported. Resumable
   checkpoints include the FP32 masters and optimizer state under the original
-  FSDP parameter names.
+  FSDP parameter names. Full-offload AdamW uses the native multi-tensor CPU kernel
+  by default. Set `cpu_optimizer_backend = "torch"` inside the offload table to use
+  fused PyTorch AdamW for debugging or parity checks.
 
 ## `rl` — RL training
 

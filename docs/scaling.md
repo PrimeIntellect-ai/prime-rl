@@ -89,6 +89,7 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 | `trainer.model.optim_cpu_offload` | Configure optimizer-owned CPU offload. `true` offloads optimizer state using pinned memory and persistent transfer streams. |
 | `trainer.model.optim_cpu_offload.gradients` | Additionally accumulate sharded gradients in pinned CPU memory, then stream them back in chunks for the GPU optimizer step. |
 | `trainer.model.optim_cpu_offload.full` | Additionally offload gradients and FP32 master weights, run optimizer chunks on CPU as their final gradients arrive, and refresh persistent BF16 GPU weights during backward. Muon is not supported. |
+| `trainer.model.optim_cpu_offload.cpu_optimizer_backend` | CPU AdamW backend for full offload. `native` (default) uses a read-only-gradient multi-tensor kernel; `torch` uses fused PyTorch AdamW for debugging and parity checks. |
 
 Gradient offload attaches public post-accumulate hooks to FSDP's sharded parameters, so each finalized gradient starts its CPU transfer immediately after reduce-scatter without accessing private FSDP state.
 
@@ -168,7 +169,9 @@ For full optimizer offload, including gradients and the FP32 update, enable:
 optim_cpu_offload = { full = true }
 ```
 
-This additionally stores FP32 master weights in pinned CPU memory. During the final backward, each completed gradient chunk runs through the CPU optimizer and immediately starts refreshing its persistent BF16 GPU weights. `optimizer.step()` only drains the remaining pipeline. Full offload automatically disables `optim.max_norm`; a global clipping norm would serialize every update after backward. Validation steps use a synchronous update after validation so evaluation still sees the pre-update model. Muon is not supported. Resumable DCP checkpoints preserve the FP32 masters and optimizer state using the original FSDP parameter names and sharding.
+This additionally stores FP32 master weights in pinned CPU memory. During the final backward, each completed gradient chunk runs through the CPU optimizer and immediately starts refreshing its persistent BF16 GPU weights. `optimizer.step()` only drains the remaining pipeline. Full-offload AdamW defaults to a native multi-tensor CPU kernel that keeps gradients read-only and stores masters and moments in aligned slabs. Set `cpu_optimizer_backend = "torch"` in the offload table to use fused PyTorch AdamW for debugging or numerical comparisons. The native kernel is compiled and cached for the current CPU capability when the optimizer is created.
+
+Full offload automatically disables `optim.max_norm`; a global clipping norm would serialize every update after backward. Validation steps use a synchronous update after validation so evaluation still sees the pre-update model. Muon is not supported. Resumable DCP checkpoints preserve the FP32 masters and optimizer state using the original FSDP parameter names and sharding.
 
 ### LM Head Chunking
 
