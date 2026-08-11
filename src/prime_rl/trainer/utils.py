@@ -54,7 +54,22 @@ class GarbageCollection:
         get_logger().info(f"[GC] collection took {time.monotonic() - begin:.2f}s")
 
 
-def finish_backward(manager: "GradientOffloadManager | None", *, wait_for_copies: bool) -> None:
+def prepare_gradient_offload(
+    manager: "GradientOffloadManager | None",
+    gradient_scale: float,
+    *,
+    overlap_optimizer: bool,
+) -> None:
+    if manager is not None:
+        manager.begin_step(gradient_scale, overlap_optimizer=overlap_optimizer)
+
+
+def begin_backward(manager: "GradientOffloadManager | None", *, final_backward: bool) -> None:
+    if manager is not None:
+        manager.begin_backward(final_backward=final_backward)
+
+
+def finish_backward(manager: "GradientOffloadManager | None", *, wait_for_copies: bool = False) -> None:
     if manager is not None:
         manager.finish_backward(wait_for_copies=wait_for_copies)
 

@@ -30,7 +30,13 @@ class _CPUGradientBuffer:
 @dataclass
 class _GradientCopyTask:
     event: torch.cuda.Event
-    buffers: list[tuple[_CPUGradientBuffer, bool]]
+    buffers: list[tuple[int, _CPUGradientBuffer, bool]]
+    final_backward: bool
+
+
+@dataclass
+class _OptimizerChunkTask:
+    chunk_idx: int
 
 
 @dataclass
@@ -47,17 +53,30 @@ class GradientOffloadManager:
         chunks: list[list[nn.Parameter]],
         dp_replicate: int,
         cpu_dtype: torch.dtype | None = None,
+        chunk_ready_callback: Callable[[int], None] | None = None,
     ):
         self._chunks = chunks
         self._dp_replicate = dp_replicate
         self._cpu_dtype = cpu_dtype
         self._optimizer_param_ids = {id(param) for chunk in chunks for param in chunk}
+        self._chunk_param_ids = [{id(param) for param in chunk} for chunk in chunks]
+        self._chunk_by_param_id = {
+            param_id: chunk_idx for chunk_idx, param_ids in enumerate(self._chunk_param_ids) for param_id in param_ids
+        }
         self._buffers: dict[int, _CPUGradientBuffer] = {}
+        self._chunk_ready_callback = chunk_ready_callback
 
         self._d2h_stream = torch.cuda.Stream()
-        self._tasks: queue.SimpleQueue[_GradientCopyTask | None] = queue.SimpleQueue()
+        self._tasks: queue.SimpleQueue[_GradientCopyTask | _OptimizerChunkTask | None] = queue.SimpleQueue()
         self._condition = threading.Condition()
         self._gradient_scale = 1.0
+        self._final_backward = False
+        self._overlap_optimizer = False
+        self._final_enqueued_param_ids: set[int] = set()
+        self._pending_chunk_param_ids: list[set[int]] = []
+        self._scheduled_chunks: set[int] = set()
+        self._completed_chunks = 0
+        self._worker_error: BaseException | None = None
         self._logged_cpu_allocation = 0
         self._closed = False
 
@@ -106,12 +125,23 @@ class GradientOffloadManager:
         )
 
     def _copy_worker(self) -> None:
+        try:
+            self._copy_worker_loop()
+        except BaseException as error:
+            with self._condition:
+                self._worker_error = error
+                self._condition.notify_all()
+
+    def _copy_worker_loop(self) -> None:
         while True:
             task = self._tasks.get()
             if task is None:
                 return
+            if isinstance(task, _OptimizerChunkTask):
+                self._run_optimizer_chunk(task.chunk_idx)
+                continue
             task.event.synchronize()
-            for buffer, accumulate in task.buffers:
+            for param_id, buffer, accumulate in task.buffers:
                 if accumulate:
                     assert buffer.staging is not None
                     buffer.accumulator.add_(buffer.staging)
@@ -119,6 +149,53 @@ class GradientOffloadManager:
                     buffer.initialized = True
                     buffer.pending = False
                     self._condition.notify_all()
+                if task.final_backward:
+                    self._mark_final_param_ready(param_id)
+
+    def _raise_worker_error(self) -> None:
+        if self._worker_error is not None:
+            raise RuntimeError("Gradient offload worker failed") from self._worker_error
+
+    def _mark_final_param_ready(self, param_id: int) -> None:
+        chunk_idx = self._chunk_by_param_id[param_id]
+        should_run = False
+        with self._condition:
+            pending = self._pending_chunk_param_ids[chunk_idx]
+            pending.discard(param_id)
+            if not pending and chunk_idx not in self._scheduled_chunks:
+                self._scheduled_chunks.add(chunk_idx)
+                should_run = True
+        if should_run:
+            self._run_optimizer_chunk(chunk_idx)
+
+    def _run_optimizer_chunk(self, chunk_idx: int) -> None:
+        if self._chunk_ready_callback is None:
+            return
+        self._chunk_ready_callback(chunk_idx)
+        with self._condition:
+            self._completed_chunks += 1
+            self._condition.notify_all()
+
+    def begin_step(self, gradient_scale: float, *, overlap_optimizer: bool) -> None:
+        self.wait()
+        with self._condition:
+            self._raise_worker_error()
+            self._gradient_scale = gradient_scale
+            self._overlap_optimizer = overlap_optimizer and self._chunk_ready_callback is not None
+            self._final_backward = False
+            self._final_enqueued_param_ids.clear()
+            self._pending_chunk_param_ids = []
+            self._scheduled_chunks.clear()
+            self._completed_chunks = 0
+
+    def begin_backward(self, *, final_backward: bool) -> None:
+        self._final_backward = final_backward
+        if final_backward and self._overlap_optimizer:
+            with self._condition:
+                self._final_enqueued_param_ids.clear()
+                self._pending_chunk_param_ids = [set(param_ids) for param_ids in self._chunk_param_ids]
+                self._scheduled_chunks.clear()
+                self._completed_chunks = 0
 
     def _get_buffer(self, param: nn.Parameter, grad: DTensor) -> _CPUGradientBuffer:
         param_id = id(param)
@@ -137,14 +214,15 @@ class GradientOffloadManager:
 
     def _wait_buffer(self, buffer: _CPUGradientBuffer) -> None:
         with self._condition:
-            self._condition.wait_for(lambda: not buffer.pending)
+            self._condition.wait_for(lambda: self._worker_error is not None or not buffer.pending)
+            self._raise_worker_error()
 
     @torch.no_grad()
     def _offload_params(
         self,
         params: list[nn.Parameter],
     ) -> None:
-        copies: list[tuple[_CPUGradientBuffer, bool]] = []
+        copies: list[tuple[int, _CPUGradientBuffer, bool]] = []
         current_stream = torch.cuda.current_stream()
         self._d2h_stream.wait_stream(current_stream)
         with torch.cuda.stream(self._d2h_stream):
@@ -164,11 +242,14 @@ class GradientOffloadManager:
                 destination.copy_(local_grad, non_blocking=True)
                 local_grad.record_stream(self._d2h_stream)
                 buffer.pending = True
-                copies.append((buffer, accumulate))
+                param_id = id(param)
+                copies.append((param_id, buffer, accumulate))
+                if self._final_backward and self._overlap_optimizer:
+                    self._final_enqueued_param_ids.add(param_id)
                 param.grad = None
             if copies:
                 event = self._d2h_stream.record_event()
-                self._tasks.put(_GradientCopyTask(event, copies))
+                self._tasks.put(_GradientCopyTask(event, copies, self._final_backward and self._overlap_optimizer))
 
     def _offload_hook(self, param: torch.Tensor) -> None:
         if not isinstance(param, nn.Parameter):
@@ -178,6 +259,19 @@ class GradientOffloadManager:
     def finish_backward(self, *, wait_for_copies: bool = True) -> None:
         remaining = [param for chunk in self._chunks for param in chunk if param.grad is not None]
         self._offload_params(remaining)
+        if self._final_backward and self._overlap_optimizer:
+            missing_param_ids = self._optimizer_param_ids - self._final_enqueued_param_ids
+            ready_chunks = []
+            with self._condition:
+                for param_id in missing_param_ids:
+                    chunk_idx = self._chunk_by_param_id[param_id]
+                    pending = self._pending_chunk_param_ids[chunk_idx]
+                    pending.discard(param_id)
+                    if not pending and chunk_idx not in self._scheduled_chunks:
+                        self._scheduled_chunks.add(chunk_idx)
+                        ready_chunks.append(chunk_idx)
+            for chunk_idx in ready_chunks:
+                self._tasks.put(_OptimizerChunkTask(chunk_idx))
         if wait_for_copies:
             self.wait()
         if wait_for_copies:
@@ -191,7 +285,23 @@ class GradientOffloadManager:
 
     def wait(self) -> None:
         with self._condition:
-            self._condition.wait_for(lambda: not any(buffer.pending for buffer in self._buffers.values()))
+            self._condition.wait_for(
+                lambda: self._worker_error is not None or not any(buffer.pending for buffer in self._buffers.values())
+            )
+            self._raise_worker_error()
+
+    def wait_for_optimizer(self) -> None:
+        if not self._overlap_optimizer:
+            return
+        with self._condition:
+            self._condition.wait_for(
+                lambda: self._worker_error is not None or self._completed_chunks == len(self._chunks)
+            )
+            self._raise_worker_error()
+
+    @property
+    def optimizer_overlapped(self) -> bool:
+        return self._overlap_optimizer
 
     @torch.no_grad()
     def scale_(self, factor: float) -> None:
@@ -200,6 +310,8 @@ class GradientOffloadManager:
 
     @torch.no_grad()
     def clip_grad_norm_(self, max_norm: float) -> torch.Tensor:
+        if self._overlap_optimizer:
+            raise RuntimeError("Gradient clipping cannot run after optimizer-in-backward has started")
         self.wait()
         local_squared_norm = sum(
             torch.linalg.vector_norm(buffer.accumulator, dtype=torch.float32).square().item()
@@ -250,8 +362,9 @@ class GradientOffloadManager:
             elif isinstance(grad, torch.Tensor):
                 grad.record_stream(stream)
 
-    def load_cpu_chunk(self, chunk_idx: int, target_params: list[nn.Parameter]) -> None:
-        self.wait()
+    def load_cpu_chunk(self, chunk_idx: int, target_params: list[nn.Parameter], *, wait: bool = True) -> None:
+        if wait:
+            self.wait()
         source_params = self._chunks[chunk_idx]
         if len(source_params) != len(target_params):
             raise ValueError("Gradient source and target chunks must have the same size")
@@ -281,6 +394,7 @@ class GradientOffloadManager:
     def close(self) -> None:
         if self._closed:
             return
+        self.wait_for_optimizer()
         self.wait()
         for handle in self._hook_handles:
             handle.remove()
@@ -304,7 +418,8 @@ class CPUOffloadOptimizer:
     and only refreshed BF16 compute weights are copied to GPU.
     """
 
-    _TARGET_CHUNK_NUMEL = 128 * 1024**2
+    _TARGET_GPU_CHUNK_NUMEL = 128 * 1024**2
+    _TARGET_CPU_CHUNK_NUMEL = 16 * 1024**2
     _MASTER_WEIGHT_STATE = "prime_rl_master_weight"
 
     def __init__(
@@ -317,13 +432,15 @@ class CPUOffloadOptimizer:
         self.optimizer = optimizer
         self.offload_config = offload_config
         self._initialized = False
+        self._master_weights = master_weights
         self._chunks = self._build_chunks()
         # Reuse the transfer streams across steps: fresh streams each step land
         # their H2D/D2H staging in new per-stream allocator pools, growing
         # reserved memory every step and starving the default stream.
         self._h2d_stream = torch.cuda.Stream()
         self._d2h_stream = torch.cuda.Stream()
-        self._master_weights = master_weights
+        self._cuda_device = torch.cuda.current_device()
+        self._all_param_groups = self.optimizer.param_groups
         gradient_chunks = self._chunks
         if master_weights is not None:
             gradient_chunks = [[master_weights[id(param)].model_param for param in chunk] for chunk in self._chunks]
@@ -332,19 +449,25 @@ class CPUOffloadOptimizer:
                 gradient_chunks,
                 dp_replicate,
                 cpu_dtype=torch.float32 if master_weights is not None else None,
+                chunk_ready_callback=self._step_cpu_chunk if master_weights is not None else None,
             )
             if offload_config.gradients or offload_config.full
             else None
         )
+        if master_weights is not None:
+            self._initialize_cpu_optimizer_state()
 
     def _build_chunks(self) -> list[list[nn.Parameter]]:
         """Group optimizer parameters into bounded, model-independent chunks."""
+        target_numel = (
+            self._TARGET_CPU_CHUNK_NUMEL if self._master_weights is not None else self._TARGET_GPU_CHUNK_NUMEL
+        )
         chunks: list[list[nn.Parameter]] = []
         chunk: list[nn.Parameter] = []
         chunk_numel = 0
         for group in self.optimizer.param_groups:
             for param in group["params"]:
-                if chunk and chunk_numel + param.numel() > self._TARGET_CHUNK_NUMEL:
+                if chunk and chunk_numel + param.numel() > target_numel:
                     chunks.append(chunk)
                     chunk = []
                     chunk_numel = 0
@@ -411,7 +534,7 @@ class CPUOffloadOptimizer:
         """Run optimizer.step() for a single chunk by temporarily swapping param_groups."""
         chunk_ids = {id(p) for p in self._chunks[chunk_idx]}
         chunk_groups = []
-        for group in self._original_param_groups:
+        for group in self._all_param_groups:
             filtered = [p for p in group["params"] if id(p) in chunk_ids]
             if not filtered:
                 continue
@@ -420,8 +543,16 @@ class CPUOffloadOptimizer:
             chunk_groups.append(new_group)
         self.optimizer.param_groups = chunk_groups
         result = self.optimizer.step(closure)
-        self.optimizer.param_groups = self._original_param_groups
+        self.optimizer.param_groups = self._all_param_groups
         return result
+
+    def _step_cpu_chunk(self, chunk_idx: int) -> None:
+        assert self._gradient_manager is not None
+        self._gradient_manager.load_cpu_chunk(chunk_idx, self._chunks[chunk_idx], wait=False)
+        self._step_chunk(chunk_idx)
+        self._gradient_manager.release_chunk(chunk_idx, self._chunks[chunk_idx])
+        with torch.cuda.device(self._cuda_device):
+            self._update_compute_weights(chunk_idx, self._h2d_stream)
 
     def _sync_step_counters(self, original_steps: list):
         """Increment the original param_groups' step counters by one.
@@ -431,12 +562,19 @@ class CPUOffloadOptimizer:
         optimizers (AdamW, SGD, SignSGD) keep step in ``state[p]['step']`` which is
         per-parameter and already correct.
         """
-        for group, orig_step in zip(self._original_param_groups, original_steps):
+        for group, orig_step in zip(self._all_param_groups, original_steps):
             group["step"] = orig_step + 1
 
     def step(self, closure=None):
         if self._master_weights is not None:
             assert self._gradient_manager is not None
+            if self._gradient_manager.optimizer_overlapped:
+                if closure is not None:
+                    raise ValueError("Optimizer closures are not supported with optimizer-in-backward")
+                self._gradient_manager.wait_for_optimizer()
+                torch.cuda.current_stream().wait_stream(self._h2d_stream)
+                self._initialized = True
+                return
             for i in range(len(self._chunks)):
                 self._gradient_manager.load_cpu_chunk(i, self._chunks[i])
             self.optimizer.step(closure)
@@ -448,8 +586,9 @@ class CPUOffloadOptimizer:
             self._initialized = True
             return
 
-        self._original_param_groups = self.optimizer.param_groups
-        original_steps = [g.get("step", 0) for g in self._original_param_groups]
+        original_steps = [g.get("step", 0) for g in self._all_param_groups]
+        if self._gradient_manager is not None:
+            self._gradient_manager.wait()
         h2d_stream = self._h2d_stream
         d2h_stream = self._d2h_stream
         compute_stream = torch.cuda.current_stream()
@@ -476,7 +615,6 @@ class CPUOffloadOptimizer:
         torch.cuda.synchronize()
 
         self._sync_step_counters(original_steps)
-        self._original_param_groups = None
         self._initialized = True
 
     def zero_grad(self, set_to_none: bool = True):
@@ -532,8 +670,16 @@ class CPUOffloadOptimizer:
                     param.grad = torch.zeros_like(param)
         self.optimizer.step()
         self.optimizer.zero_grad(set_to_none=True)
+        for state in self.optimizer.state.values():
+            step = state.get("step")
+            if isinstance(step, torch.Tensor):
+                step.zero_()
+            elif step is not None:
+                state["step"] = 0
         for group, lr in zip(self.optimizer.param_groups, lrs):
             group["lr"] = lr
+            if "step" in group:
+                group["step"] = 0
 
     @staticmethod
     def _checkpoint_dtensor(local_tensor: torch.Tensor, model_param: nn.Parameter) -> DTensor:
@@ -593,6 +739,9 @@ def setup_optimizer(
 ) -> tuple[Optimizer | CPUOffloadOptimizer, GradientOffloadManager | None]:
     if offload_config is not None and offload_config.full and config.type == "muon":
         raise ValueError("Full optimizer CPU offload does not support Muon because the optimizer step runs on CPU")
+    if offload_config is not None and offload_config.full and config.max_norm is not None:
+        get_logger().warning("Disabling gradient clipping because full optimizer CPU offload updates during backward")
+        config.max_norm = None
     if lora:
         # Wait for run 0 to be created in the multi run manager
         # Otherwise, the creation will reset the parameters

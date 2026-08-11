@@ -161,6 +161,14 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
+    with pytest.warns(UserWarning, match="Gradient clipping prevents optimizer-in-backward"):
+        config = config_cls.model_validate({"model": {"optim_cpu_offload": {"full": True}}, "optim": {"max_norm": 1.0}})
+
+    assert config.optim.max_norm is None
+
+
 def test_resolved_json_roundtrips_explicit_none(tmp_path):
     """An explicit None override survives the write/re-parse round-trip used by launches:
     resolved configs are JSON, which keeps nulls (TOML cannot)."""
