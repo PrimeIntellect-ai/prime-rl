@@ -322,11 +322,11 @@ PERFORMANCE_METRICS = [
     "time/step",
     "time/wait_for_batch",
     "time/wait_for_policy",
-    "inference/agg/throughput",
-    "inference/agg/running_requests",
-    "inference/agg/waiting_requests",
-    "inference/agg/kv_cache_usage_mean",
-    "inference/agg/prefix_cache_hit_rate",
+    "inference/agg/vllm:generation_tokens_total:rate/sum",
+    "inference/agg/vllm:num_requests_running/sum",
+    "inference/agg/vllm:num_requests_waiting/sum",
+    "inference/agg/vllm:kv_cache_usage_perc/mean",
+    "inference/agg/vllm:prefix_cache_hit_rate",
 ]
 
 # Dense grid: more, smaller panels per row and enough rows that sections don't paginate.

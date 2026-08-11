@@ -390,6 +390,25 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
+Aggregation: TypeAlias = Literal["min", "max", "mean", "median", "sum"]
+
+
+class InferenceMetricsConfig(BaseConfig):
+    """Configures pass-through logging of vLLM engine metrics to W&B."""
+
+    interval: Annotated[float, Field(gt=0)] = 5.0
+    """Seconds between scrapes of the engines' Prometheus ``/metrics`` endpoints."""
+
+    per_engine: bool = True
+    """Log each engine's metrics individually under ``inference/engine/{id}/...``."""
+
+    aggregations: list[Aggregation] = ["min", "max", "mean", "median", "sum"]
+    """Cross-engine aggregations logged under ``inference/{scope}/{metric}/{agg}``."""
+
+    roles: list[Literal["prefill", "decode"]] | None = None
+    """Role for each policy admin client. Auto-derived for disaggregated deployments."""
+
+
 class OrchestratorConfig(BaseConfig):
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm: sampling plus the per-token training signal (credit
@@ -446,11 +465,8 @@ class OrchestratorConfig(BaseConfig):
     file_monitor: FileMonitorConfig | None = None
     """Local JSONL metric sink. If set, orchestrator metrics are appended to ``<output_dir>/metrics.jsonl``."""
 
-    collect_inference_metrics: bool = True
-    """Collect inference-server metrics (requires wandb)."""
-
-    inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
-    """Role for each policy admin client when collecting P/D inference metrics."""
+    inference_metrics: InferenceMetricsConfig | None = InferenceMetricsConfig()
+    """Inference-server metrics collection (requires wandb). Set to null to disable."""
 
     ckpt: CheckpointConfig | None = None
     """Checkpoint configuration."""
