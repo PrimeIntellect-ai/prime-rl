@@ -106,7 +106,16 @@ class LagunaFlashAttention(FlashAttention):
         self.attention_dropout = config.attention_dropout
         self.is_local_attention = config.layer_types[layer_idx] == "sliding_attention"
         self.sliding_window = config.sliding_window if self.is_local_attention else None
-        self.g_proj = nn.Linear(config.hidden_size, num_heads, bias=False)
+        # Attention output gating, mirroring the upstream Laguna implementation:
+        #   True / "per-element" (Laguna M): one gate per (head, head_dim) channel
+        #   "per-head"           (Laguna S): one gate per head, broadcast across head_dim
+        #   False:                           no gating
+        gating = getattr(config, "gating", True)
+        self.gating = bool(gating)
+        self.gate_per_head = gating == "per-head"
+        if self.gating:
+            gate_size = num_heads if self.gate_per_head else num_heads * self.head_dim
+            self.g_proj = nn.Linear(config.hidden_size, gate_size, bias=False)
         self.o_proj = nn.Linear(num_heads * self.head_dim, config.hidden_size, bias=config.attention_bias)
 
     def forward(
@@ -127,8 +136,13 @@ class LagunaFlashAttention(FlashAttention):
         )
         input_shape = hidden_states.shape[:-1]
         attn_output = attn_output.view(*input_shape, self.num_heads, self.head_dim)
-        gate = F.softplus(self.g_proj(hidden_states).float()).to(attn_output.dtype)
-        attn_output = (attn_output * gate.unsqueeze(-1)).view(*input_shape, -1)
+        if self.gating:
+            gate = F.softplus(self.g_proj(hidden_states).float()).to(attn_output.dtype)
+            # per-head gates broadcast across head_dim; per-element gates are already
+            # one-per-channel and line up with the [..., num_heads, head_dim] view.
+            gate = gate.unsqueeze(-1) if self.gate_per_head else gate.view(*attn_output.shape)
+            attn_output = attn_output * gate
+        attn_output = attn_output.view(*input_shape, -1)
         return self.o_proj(attn_output), None
 
 

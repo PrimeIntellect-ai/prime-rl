@@ -47,7 +47,7 @@ Incompatible combinations (e.g. CP requires flash attention) must raise in a `mo
 name = "reverse-text"
 
 [orchestrator.train.source.env.taskset]
-id = "reverse-text-v1"
+id = "reverse-text"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
@@ -59,7 +59,7 @@ type = "subprocess"
 name = "reverse-text-eval"
 
 [orchestrator.eval.source.env.taskset]
-id = "reverse-text-v1"
+id = "reverse-text"
 split = "test"
 
 [orchestrator.eval.source.env.agent.harness]
@@ -69,7 +69,7 @@ id = "null"
 type = "subprocess"
 ```
 
-CLI: `--orchestrator.train.source.0.env.taskset.id reverse-text-v1` or `--orchestrator.eval.source.0.env.taskset.id reverse-text-v1`.
+CLI: `--orchestrator.train.source.0.env.taskset.id reverse-text` or `--orchestrator.eval.source.0.env.taskset.id reverse-text`.
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--trainer.env-vars '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `algo`) reject JSON strings; use dotted keys (`--orchestrator.algo.type max_rl`) or a TOML overlay file.
 

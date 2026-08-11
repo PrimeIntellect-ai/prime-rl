@@ -22,7 +22,7 @@ group_size = 16
 name = "wordle"
 
 [orchestrator.train.source.env.taskset]
-id = "wordle-v1"
+id = "wordle"
 
 [orchestrator.train.source.env.player.harness]
 id = "null"

@@ -52,7 +52,7 @@ name = "swe"
 ratio = 0.3
 
 [orchestrator.train.source.env.taskset]
-id = "r2e-gym-v1"
+id = "r2e-gym"
 
 [orchestrator.train.source.env.agent.harness]
 id = "bash"
@@ -66,7 +66,7 @@ name = "deepdive"
 ratio = 0.2
 
 [orchestrator.train.source.env.taskset]
-id = "deepdive-v1"
+id = "deepdive"
 
 [orchestrator.train.source.env.agent.harness]
 id = "rlm"
@@ -82,7 +82,7 @@ name = "math"
 ratio = 0.3
 
 [orchestrator.train.source.env.taskset]
-id = "i3_math_v1"
+id = "i3_math"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
@@ -95,7 +95,7 @@ name = "logic"
 ratio = 0.2
 
 [orchestrator.train.source.env.taskset]
-id = "i3_logic_v1"
+id = "i3_logic"
 
 [orchestrator.train.source.env.taskset.filter]
 max = 0.874
@@ -111,7 +111,7 @@ name = "code"
 ratio = 0.2
 
 [orchestrator.train.source.env.taskset]
-id = "i3_code_v1"
+id = "i3_code"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
@@ -130,7 +130,7 @@ interval = 25
 name = "swe-bench-verified"
 
 [orchestrator.eval.source.env.taskset]
-id = "swebench-verified-v1"
+id = "swebench-verified"
 
 [orchestrator.eval.source.env.agent.harness]
 id = "bash"
@@ -143,7 +143,7 @@ labels = ["intellect-3.1", "swe-bench-verified"]
 name = "aime2025"
 
 [orchestrator.eval.source.env.taskset]
-id = "aime25-v1"
+id = "aime25"
 
 [orchestrator.eval.source.env.agent.harness]
 id = "null"

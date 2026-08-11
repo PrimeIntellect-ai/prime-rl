@@ -85,7 +85,7 @@ truncate_history_thinking = false
 name = "scaleswe"
 
 [orchestrator.train.source.env.taskset]
-id = "scaleswe-v1"
+id = "scaleswe"
 
 [orchestrator.train.source.env.agent.harness]
 id = "rlm"
@@ -106,7 +106,7 @@ interval = 20
 name = "swebench-verified"
 
 [orchestrator.eval.source.env.taskset]
-id = "swebench-verified-v1"
+id = "swebench-verified"
 
 [orchestrator.eval.source.env.agent.harness]
 id = "rlm"

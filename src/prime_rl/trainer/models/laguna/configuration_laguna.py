@@ -64,6 +64,7 @@ class LagunaConfig(PretrainedConfig):
         eos_token_id: int | list[int] | None = None,
         head_dim: int = 128,
         attention_bias: bool = False,
+        gating: bool | str = True,
         partial_rotary_factor: float | None = None,
         num_attention_heads_per_layer: list[int] | None = None,
         mlp_layer_types: list[str] | None = None,
@@ -98,6 +99,7 @@ class LagunaConfig(PretrainedConfig):
         self.layer_types = layer_types or ["full_attention"] * num_hidden_layers
         self.head_dim = head_dim
         self.attention_bias = attention_bias
+        self.gating = gating
         self.partial_rotary_factor = partial_rotary_factor
         self.num_attention_heads_per_layer = num_attention_heads_per_layer or [num_attention_heads] * num_hidden_layers
         self.mlp_layer_types = mlp_layer_types or ["dense"] + ["sparse"] * (num_hidden_layers - 1)

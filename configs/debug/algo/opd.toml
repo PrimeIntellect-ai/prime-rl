@@ -37,7 +37,7 @@ max_completion_tokens = 128
 name = "reverse-text"
 
 [orchestrator.train.source.env.taskset]
-id = "reverse-text-v1"
+id = "reverse-text"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
@@ -56,7 +56,7 @@ max_completion_tokens = 128
 name = "reverse-text"
 
 [orchestrator.eval.source.env.taskset]
-id = "reverse-text-v1"
+id = "reverse-text"
 
 [orchestrator.eval.source.env.agent.harness]
 id = "null"

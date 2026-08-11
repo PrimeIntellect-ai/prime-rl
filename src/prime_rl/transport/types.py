@@ -2,8 +2,8 @@ import msgspec
 
 
 # Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
-# Mirrors verifiers.utils.serve_utils.msgpack_encoder so the same wire
-# shape is used end-to-end from renderer → orchestrator → trainer.
+# Mirrors verifiers' env-serve msgpack encoder so the same wire shape is
+# used end-to-end from renderer → orchestrator → trainer.
 class EncodedTensor(msgspec.Struct, array_like=True, gc=False):
     dtype: str
     shape: list[int]
