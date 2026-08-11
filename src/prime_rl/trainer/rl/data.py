@@ -51,6 +51,10 @@ class TensorMicroBatch(TypedDict):
     ce_weights: Float[Tensor, "batch seq"] | None
     ref_kl_weights: Float[Tensor, "batch seq"] | None
 
+    # The orchestrator's weight-sync request: broadcast the weights this step
+    # produces to inference (see MicroBatch.sync_weights).
+    sync_weights: bool
+
 
 class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
@@ -127,6 +131,7 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "sync_weights": False,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -156,7 +161,11 @@ class FakeDataLoader:
             "rl_weights": None,
             "ce_weights": None,
             "ref_kl_weights": None,
+            "sync_weights": False,
         }
+
+    def ack(self, step: int) -> None:
+        return
 
 
 class DataLoader:
@@ -182,6 +191,11 @@ class DataLoader:
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+
+    def ack(self, step: int) -> None:
+        """Announce that training step ``step`` finished consuming its batch,
+        letting the orchestrator pace its producer loop."""
+        self.receiver.ack(step)
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
@@ -235,6 +249,7 @@ class DataLoader:
             ref_kl_weights=torch.tensor(micro_batch.ref_kl_weights, dtype=torch.float).unsqueeze(0)
             if micro_batch.ref_kl_weights is not None
             else None,
+            sync_weights=micro_batch.sync_weights,
         )
 
 

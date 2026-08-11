@@ -556,18 +556,20 @@ def train(config: TrainerConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
-        # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
-        # sample its next step from it. In-memory transports retain their two-step shutdown
-        # window; filesystem broadcast still writes every version for resume.
+        # Broadcast the model just produced (policy v{progress.step}) when inference will
+        # consume it. The orchestrator marks the batches whose resulting weights it needs
+        # (every live-sampling step for rollouts, eval-active steps for dataset SFT), so
+        # in-memory broadcasts happen exactly on demand — including mid-eval: long-running
+        # inference keeps receiving fresh weights at the trainer's cadence. Filesystem
+        # broadcast still writes every version for resume.
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
-            broadcast_unused = (
-                config.weight_broadcast.type in ("nccl", "nixl")
-                and config.max_steps is not None
-                and progress.step >= config.max_steps - 1
-            )
-            if not broadcast_unused:
+            if config.weight_broadcast.type == "filesystem":
+                sync_requested = True
+            else:
+                sync_requested = any(micro_batch.get("sync_weights", False) for micro_batch in micro_batches)
+            if sync_requested:
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
@@ -577,6 +579,9 @@ def train(config: TrainerConfig):
                     weight_broadcast.maybe_clean(progress.step, interval_to_keep)
             else:
                 broadcast_weights_time = 0
+
+        # Ack the consumed batch so the orchestrator can pace its producer loop.
+        dataloader.ack(progress.step)
 
         # Checkpoint the step we just finished (model = policy v{progress.step}).
         if (

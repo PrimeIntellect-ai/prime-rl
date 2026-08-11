@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
 
     from prime_rl.orchestrator.ckpt import CheckpointManager
-    from prime_rl.transport import TrainingSample
+    from prime_rl.transport import MicroBatch, TrainingSample
     from prime_rl.transport.base import MicroBatchSender
     from prime_rl.utils.client import InferencePool
     from prime_rl.utils.monitor.base import Monitor
@@ -183,6 +183,9 @@ class Orchestrator:
         self.eval_triggered_at = {}
         self.consecutive_empty_batches = 0
         self.gate_closed_at = None
+        # Highest step whose batch was marked for a weight sync (see
+        # ``_request_weight_sync``); shutdown holds until this version lands.
+        self._last_sync_step = 0
         # Pulsed by the version hooks so a held ship can re-check ``policy.version``
         self.version_advanced = asyncio.Event()
         self.wait_for_policy_time = 0.0
@@ -527,6 +530,7 @@ class Orchestrator:
                     tg.create_task(self.dataset_loop(), name="dataset_loop")
             else:
                 await self.main_loop()
+            await self.await_final_weight_sync()
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
@@ -689,6 +693,15 @@ class Orchestrator:
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
         pack_time = time.perf_counter() - pack_start_time
+        # Rollout sampling consumes every policy version, except the final
+        # TARGET_LAG+1 versions no batch will ever be sampled from.
+        broadcast_unused = (
+            config.weight_broadcast.type in ("nccl", "nixl")
+            and config.max_steps is not None
+            and step >= config.max_steps - 1
+        )
+        if not broadcast_unused:
+            self._request_weight_sync(micro_batch_grid, step)
         if self.sender is not None:
             await self.sender.send(micro_batch_grid)
         self.progress.step += 1
@@ -771,7 +784,7 @@ class Orchestrator:
 
     async def dataset_loop(self) -> None:
         """Dataset-SFT batch producer: renders the next batch off the event
-        loop and ships it. Paced by the trainer via the policy-version hold in
+        loop and ships it. Paced by the trainer via the consumption-ack hold in
         ``finalize_dataset_batch``; ends by draining once ``max_steps`` ship."""
         assert self.dataset_source is not None
         while not self.stopped.is_set() and not self.draining:
@@ -794,21 +807,26 @@ class Orchestrator:
         step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
         self.last_batch_at = now
 
-        # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}
-        # (see ``finalize_train_batch``) — this is what paces the loop to the trainer.
-        required_version = step - 1 - TARGET_LAG
-        if not config.bench and self.policy.version < required_version:
+        # Ship batch ``step`` only once the trainer has consumed batch
+        # {step-1-TARGET_LAG} — consumption acks flow back on the transport's
+        # control channel, pacing the producer without coupling it to weight
+        # broadcasts (which happen on demand, see ``sync_weights``).
+        required_step = step - 1 - TARGET_LAG
+        if not config.bench and self.sender is not None and required_step > 0:
             hold_start = time.perf_counter()
-            while True:
-                self.version_advanced.clear()
-                if self.policy.version >= required_version:
-                    break
-                await self.version_advanced.wait()
+            await self.sender.wait_for_consumed(required_step)
             self.wait_for_policy_time += time.perf_counter() - hold_start
 
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, samples)
         pack_time = time.perf_counter() - pack_start_time
+        # Dataset SFT consumes weights only for evals: request a sync when an
+        # eval fires right after this batch ships, or while evals are running —
+        # in-flight evals sample the live policy, so they keep receiving fresh
+        # weights at the trainer's cadence even when a single eval outlasts
+        # many training steps.
+        if self._evals_need_weights(step + 1):
+            self._request_weight_sync(micro_batch_grid, step)
         if self.sender is not None:
             await self.sender.send(micro_batch_grid)
         self.progress.step += 1
@@ -844,6 +862,43 @@ class Orchestrator:
 
         self.maybe_trigger_eval(self.progress.step)
         trim_process_memory()
+
+    def _request_weight_sync(self, micro_batch_grid: list[list[MicroBatch]], step: int) -> None:
+        """Mark every micro batch of this step so the trainer broadcasts the
+        weights the step produces (see ``MicroBatch.sync_weights``). A mark is
+        a promise that the broadcast will find its receiving side up — the
+        orchestrator must outlive every requested sync
+        (``await_final_weight_sync``)."""
+        for micro_batch_list in micro_batch_grid:
+            for micro_batch in micro_batch_list:
+                micro_batch.sync_weights = True
+        self._last_sync_step = max(self._last_sync_step, step)
+
+    async def await_final_weight_sync(self) -> None:
+        """Hold shutdown until the last requested weight sync has landed: the
+        trainer broadcasts marked steps whenever it reaches them (possibly long
+        after the last eval finished), and a mid-broadcast orchestrator exit
+        strands the trainer in the NCCL rendezvous."""
+        if self.config.bench or self.policy.version >= self._last_sync_step:
+            return
+        get_logger().info(f"Waiting for the final requested weight sync (v{self._last_sync_step}) before shutdown")
+        while self.policy.version < self._last_sync_step:
+            self.version_advanced.clear()
+            if self.policy.version >= self._last_sync_step:
+                break
+            await self.version_advanced.wait()
+
+    def _evals_need_weights(self, step: int) -> bool:
+        """Whether inference consumes the policy the trainer produces next: an
+        eval fires at ``step``, or evals are queued or in flight (they sample
+        the live policy)."""
+        if self.eval_source is None:
+            return False
+        return (
+            self.eval_source.due_at(step)
+            or len(self.eval_source.queue) > 0
+            or self.dispatcher.inflight_eval_count > 0
+        )
 
     def maybe_trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything

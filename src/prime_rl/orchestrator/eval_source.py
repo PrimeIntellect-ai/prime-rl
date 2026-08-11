@@ -44,6 +44,11 @@ class EvalSource:
         # trigger fires every env (subject to ``skip_first_step``)
         self.first_trigger = not is_resumed
 
+    def due_at(self, step: int) -> bool:
+        """Whether any env's interval fires at ``step``. The startup eval is
+        excluded: it runs against the trainer's startup (v0) broadcast."""
+        return any(step % interval == 0 for interval in self.intervals.values())
+
     def trigger(self, step: int) -> list[str]:
         """Fire eligible envs for ``step`` and return their names. On resume
         ``first_trigger`` is False, so the startup/base eval doesn't re-run."""

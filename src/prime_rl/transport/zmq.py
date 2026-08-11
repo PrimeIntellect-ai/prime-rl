@@ -28,12 +28,18 @@ class ZMQMicroBatchSender(MicroBatchSender):
         self.socket.setsockopt(zmq.SNDHWM, transport.hwm)
         self.socket.bind(f"tcp://{transport.host}:{transport.port}")
 
-        # ready barrier socket, to avoid slow joiners dropping for step 0 (and generally at startup)
+        # Control channel (PULL): READY announcements at startup and per-step
+        # consumption acks, both pushed by the receivers.
         self.ready_socket: zmq.asyncio.Socket = self.context.socket(zmq.PULL)
         self.ready_socket.setsockopt(zmq.RCVHWM, transport.hwm)
         self.ready_socket.bind(f"tcp://{transport.host}:{transport.port + 1}")
 
         self._ready = False
+        self._ready_ranks: set[int] = set()
+        # Consumption acks per data rank. ``current_step`` floors the map so a
+        # resumed run doesn't wait for acks of pre-resume steps.
+        self._acked_step: dict[int, int] = {}
+        self._ack_floor = current_step
 
         self.logger.info(
             f"ZMQ micro batch sender initialized: endpoint=tcp://{transport.host}:{transport.port} "
@@ -44,21 +50,43 @@ class ZMQMicroBatchSender(MicroBatchSender):
 
         self._current_step = current_step
 
+    def _handle_control(self, msg: bytes) -> None:
+        """Parse one control message: a READY announcement (``<rank>``) or a
+        consumption ack (``ack|<rank>|<step>``)."""
+        try:
+            text = msg.decode("utf-8")
+            if text.startswith("ack|"):
+                _, rank, step = text.split("|")
+                data_rank = int(rank)
+                self._acked_step[data_rank] = max(self._acked_step.get(data_rank, 0), int(step))
+            else:
+                self._ready_ranks.add(int(text))
+        except Exception:
+            return
+
+    @property
+    def min_consumed_step(self) -> int:
+        """The highest training step every data rank has acked (the start step
+        before any acks)."""
+        return min(
+            (self._acked_step.get(rank, self._ack_floor) for rank in range(self.data_world_size)),
+            default=self._ack_floor,
+        )
+
+    async def wait_for_consumed(self, step: int) -> None:
+        """Block until every data rank has acked training step ``step``."""
+        while self.min_consumed_step < step:
+            self._handle_control(await self.ready_socket.recv())
+
     async def _wait_for_ready(self) -> None:
         if self._ready:
             return
 
         self.logger.debug(f"Waiting for {self.data_world_size} READY messages")
-        ready_ranks: set[int] = set()
 
         # Block until all ranks have announced readiness
-        while len(ready_ranks) < self.data_world_size:
-            msg = await self.ready_socket.recv()
-            try:
-                rank = int(msg.decode("utf-8"))
-            except Exception:
-                continue
-            ready_ranks.add(rank)
+        while len(self._ready_ranks) < self.data_world_size:
+            self._handle_control(await self.ready_socket.recv())
 
         self.logger.debug(f"All {self.data_world_size} ranks READY, starting PUB")
         self._ready = True
@@ -103,7 +131,8 @@ class ZMQMicroBatchReceiver(MicroBatchReceiver):
         self.poller = zmq.Poller()
         self.poller.register(self.socket, zmq.POLLIN)
 
-        # ready barrier socket, to avoid slow joiners dropping for step 0 (and generally at startup)
+        # Control channel (PUSH): READY announcement at startup, per-step
+        # consumption acks afterwards.
         self.ready_socket: zmq.Socket = self.context.socket(zmq.PUSH)
         self.ready_socket.setsockopt(zmq.SNDHWM, transport.hwm)
         self.ready_socket.connect(f"tcp://{transport.host}:{transport.port + 1}")
@@ -132,6 +161,10 @@ class ZMQMicroBatchReceiver(MicroBatchReceiver):
         self.logger.debug(f"Received {len(micro_batches)} micro batches for step {self._current_step}")
         self._current_step += 1
         return micro_batches
+
+    def ack(self, step: int) -> None:
+        """Announce that training step ``step`` finished consuming its batch."""
+        self.ready_socket.send(f"ack|{self.data_rank}|{step}".encode("utf-8"))
 
     def close(self) -> None:
         try:

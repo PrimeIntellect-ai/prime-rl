@@ -97,3 +97,10 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     rl_weights: list[float] | None = None
     ce_weights: list[float] | None = None
     ref_kl_weights: list[float] | None = None
+
+    # The orchestrator's weight-sync request, stamped on every micro batch of a
+    # step: after training this step, broadcast the resulting weights to
+    # inference. The orchestrator knows which policy versions it will consume
+    # (every step for rollout sampling, eval-trigger steps for dataset SFT), so
+    # the trainer broadcasts exactly on demand instead of unconditionally.
+    sync_weights: bool = False

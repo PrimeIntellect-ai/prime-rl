@@ -21,6 +21,16 @@ class MicroBatchSender(ABC):
         """Send grid of micro batches to the trainers."""
         pass
 
+    async def wait_for_consumed(self, step: int) -> None:
+        """Block until every data rank has acked training step ``step``.
+
+        Default no-op: transports without a feedback channel (filesystem —
+        batches persist on disk, so an unbounded producer lead is safe) impose
+        no pacing. In-memory transports override this to bound the producer's
+        lead over the trainer.
+        """
+        return
+
     def close(self) -> None:
         """Clean up any resources. Override if needed."""
         pass
@@ -49,6 +59,14 @@ class MicroBatchReceiver(ABC):
     def receive(self) -> list[MicroBatch]:
         """Receive a micro batch from the orchestrator."""
         pass
+
+    def ack(self, step: int) -> None:
+        """Announce that training step ``step`` finished consuming its batch.
+
+        Default no-op; transports with a feedback channel override this so the
+        sender can pace the producer (see ``MicroBatchSender.wait_for_consumed``).
+        """
+        return
 
     def close(self) -> None:
         """Clean up any resources. Override if needed."""
