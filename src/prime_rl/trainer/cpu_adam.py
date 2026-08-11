@@ -46,12 +46,18 @@ def load_cpu_adamw_kernel() -> None:
 
 
 @torch.no_grad()
+def add_bfloat16_(destination: torch.Tensor, source: torch.Tensor) -> None:
+    _extension().add_bfloat16_(destination, source)
+
+
+@torch.no_grad()
 def adamw_step(
     params: list[torch.Tensor],
     grads: list[torch.Tensor],
     exp_avgs: list[torch.Tensor],
     exp_avg_sqs: list[torch.Tensor],
     state_steps: list[torch.Tensor],
+    compute_params: list[torch.Tensor] | None = None,
     *,
     lr: float,
     beta1: float,
@@ -66,6 +72,7 @@ def adamw_step(
         exp_avgs,
         exp_avg_sqs,
         state_steps,
+        compute_params or [],
         lr,
         beta1,
         beta2,
