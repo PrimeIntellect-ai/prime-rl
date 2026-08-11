@@ -31,8 +31,9 @@ class DatasetSFTSource:
 
     ``load()`` and ``next_batch()`` block on dataset I/O / tokenization — call
     them off the event loop. Batching matches the orchestrator's train sink:
-    ``batch_size`` counts samples per step, ``token_batch_size`` accumulates
-    payload tokens past the threshold."""
+    ``batch_size`` counts samples per step; ``token_batch_size`` takes the
+    largest whole-sample prefix that stays within the budget (the first
+    overflowing sample carries over to the next step)."""
 
     def __init__(
         self,
@@ -56,6 +57,8 @@ class DatasetSFTSource:
         self.num_examples = 0
         self._dataset: Dataset | None = None
         self._epoch_view: Dataset | None = None
+        self._pending: TrainingSample | None = None
+        self._pending_position: tuple[int, int] | None = None
 
     def load(self) -> None:
         """Load (and interleave) the raw HF dataset. Blocking I/O."""
@@ -83,13 +86,17 @@ class DatasetSFTSource:
 
     def state_dict(self) -> dict:
         # The empty ``envs`` table keeps the checkpoint payload compatible with
-        # the manager's ``TrainSource`` resume logging.
-        return {"envs": {}, "dataset": {"epoch": self.epoch, "cursor": self.cursor}}
+        # the manager's ``TrainSource`` resume logging. A held-back sample rolls
+        # the position back to its example so a resume re-renders it.
+        epoch, cursor = self._pending_position if self._pending is not None else (self.epoch, self.cursor)
+        return {"envs": {}, "dataset": {"epoch": epoch, "cursor": cursor}}
 
     def load_state_dict(self, state_dict: dict) -> None:
         position = state_dict["dataset"]
         self.epoch = position["epoch"]
         self.cursor = position["cursor"]
+        self._pending = None
+        self._pending_position = None
         self._epoch_view = self._shuffle()
         get_logger().info(f"Resumed dataset position - epoch={self.epoch}, cursor={self.cursor}/{self.num_examples}")
 
@@ -129,9 +136,20 @@ class DatasetSFTSource:
         return sample
 
     def next_batch(self) -> list[TrainingSample]:
-        """Render the next step's batch. Blocking (tokenizes examples)."""
+        """Render the next step's batch. Blocking (tokenizes examples).
+
+        Token batching stops *before* the budget: overshooting a
+        ``token_batch_size`` that is a multiple of ``seq_len × dp`` (the
+        natural choice) pushes the packer past a bin-count multiple of the
+        trainer's DP size, doubling every rank's micro-batch count for a
+        fraction of a percent of extra tokens."""
         samples: list[TrainingSample] = []
         num_tokens = 0
+        if self._pending is not None:
+            samples.append(self._pending)
+            num_tokens += len(self._pending.token_ids)
+            self._pending = None
+            self._pending_position = None
         while True:
             if self.batch_size is not None:
                 if len(samples) >= self.batch_size:
@@ -141,5 +159,13 @@ class DatasetSFTSource:
             sample = self._render(self._next_example())
             if sample is None:
                 continue
+            if (
+                self.token_batch_size is not None
+                and samples
+                and num_tokens + len(sample.token_ids) > self.token_batch_size
+            ):
+                self._pending = sample
+                self._pending_position = (self.epoch, self.cursor - 1)
+                return samples
             samples.append(sample)
             num_tokens += len(sample.token_ids)
