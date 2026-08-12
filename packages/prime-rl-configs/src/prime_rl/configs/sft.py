@@ -1,18 +1,21 @@
 import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
+from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
+from prime_rl.configs.evaluator import OnlineEvalConfig
+from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.shared import (
     EnvVars,
     FileMonitorConfig,
     HeartbeatConfig,
     SlurmConfig,
     TrainerLogConfig,
-    WandbConfig,
+    WandbWithExtrasConfig,
 )
 from prime_rl.configs.trainer import (
     AdamWConfig,
@@ -142,7 +145,10 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
     type: Literal["single_node"] = "single_node"
 
     num_gpus: int = 1
-    """GPUs to use."""
+    """GPUs to use for training."""
+
+    num_infer_gpus: int = 1
+    """GPUs allocated to inference. Only used when an ``[inference]`` block is configured for online evals."""
 
     @model_validator(mode="after")
     def validate_gpu_count(self):
@@ -182,6 +188,15 @@ class SFTConfig(BaseConfig):
     val: SFTValConfig | None = None
     """Validation configuration. If None, no validation runs."""
 
+    eval: OnlineEvalConfig | None = None
+    """Online evaluation configuration: rollout-based evals against a live inference
+    server that reloads the trainer's HF weight checkpoints from disk. If None, no
+    online evals run."""
+
+    inference: InferenceConfig | None = None
+    """Inference server for online evals. If None (with ``eval`` set), the launcher
+    does not start a server and evals connect to ``eval.client.base_url``."""
+
     optim: OptimizerConfig = AdamWConfig()
 
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
@@ -190,7 +205,7 @@ class SFTConfig(BaseConfig):
 
     log: TrainerLogConfig = TrainerLogConfig()
 
-    wandb: WandbConfig | None = None
+    wandb: WandbWithExtrasConfig | None = None
 
     file_monitor: FileMonitorConfig | None = None
     """Local JSONL metric sink. If set, metrics are appended to ``<output_dir>/metrics.jsonl``."""
@@ -242,8 +257,24 @@ class SFTConfig(BaseConfig):
             return data
         deployment = data.get("deployment")
         if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
-            for key in ("num_gpus",):
+            for key in ("num_gpus", "num_infer_gpus"):
                 deployment.pop(key, None)
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def propagate_model_to_inference(cls, data):
+        """Fill ``inference.vllm.model`` from ``model.name`` before InferenceConfig
+        construction, so its parser auto-resolution sees the right model name."""
+        if not isinstance(data, dict):
+            return data
+        inference = data.get("inference")
+        model = data.get("model")
+        name = model.get("name") if isinstance(model, dict) else None
+        if isinstance(inference, dict) and name:
+            vllm = inference.setdefault("vllm", {})
+            if isinstance(vllm, dict):
+                vllm.setdefault("model", name)
         return data
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
@@ -263,6 +294,70 @@ class SFTConfig(BaseConfig):
     def validate_deployment(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_online_eval(self):
+        """Wire online evals: require weight checkpoints (the disk handoff to
+        inference) and connect the eval client to the launcher-managed server."""
+        if self.eval is None:
+            if self.inference is not None:
+                raise ValueError("[inference] is only used for online evals — add an [eval] block or remove it.")
+            return self
+
+        if self.deployment.type == "multi_node":
+            raise ValueError("Online evals are not supported for multi-node SFT deployments yet.")
+
+        # The trainer's HF weight checkpoints are how inference picks up new policies.
+        if self.ckpt is None:
+            self.ckpt = CheckpointConfig()
+        if self.ckpt.weights is None or self.ckpt.skip_gather_master_weights:
+            raise ValueError(
+                "Online evals require HF weight checkpoints. Enable ckpt.weights and "
+                "disable ckpt.skip_gather_master_weights."
+            )
+
+        if self.inference is None:
+            warnings.warn(
+                "Online evals are configured without an [inference] block - the launcher will not "
+                f"start an inference server. Make sure one is running at eval.client.base_url "
+                f"({self.eval.client.base_url}) with weight_broadcast.type = 'filesystem', "
+                "otherwise the evaluator will hang waiting for it.",
+                stacklevel=2,
+            )
+            return self
+
+        total_gpus = self.deployment.num_gpus + self.deployment.num_infer_gpus
+        if total_gpus > self.deployment.gpus_per_node:
+            raise ValueError(
+                f"Total GPU count ({total_gpus} = {self.deployment.num_gpus} train + "
+                f"{self.deployment.num_infer_gpus} infer) exceeds gpus_per_node "
+                f"({self.deployment.gpus_per_node})."
+            )
+
+        if self.inference.vllm.model != self.model.name:
+            raise ValueError(
+                f"inference.vllm.model ({self.inference.vllm.model}) does not match model.name "
+                f"({self.model.name}). Remove inference.vllm.model to inherit it."
+            )
+        if self.inference.weight_broadcast.type != "filesystem":
+            raise ValueError(
+                "Online evals reload weights from disk — inference.weight_broadcast.type must be 'filesystem'."
+            )
+
+        host = self.inference.server.host or "localhost"
+        client = self.eval.client
+        if "base_url" not in client.model_fields_set:
+            client.base_url = f"http://{host}:{self.inference.server.port}/v1"
+        elif urlparse(client.base_url).port != self.inference.server.port:
+            raise ValueError(
+                f"eval.client.base_url port ({urlparse(client.base_url).port}) does not match "
+                f"inference.server.port ({self.inference.server.port})."
+            )
+        if self.inference.router is not None and "admin_base_url" not in client.model_fields_set:
+            # Admin ops (pause/update_weights/resume) must bypass the router and hit
+            # the engine directly.
+            client.admin_base_url = [f"http://{host}:{self.inference.backend_port}/v1"]
         return self
 
     @model_validator(mode="after")
@@ -371,6 +466,9 @@ class SFTConfig(BaseConfig):
             self.max_steps = 4  # 1 Warmup + 3 Benchmark
             if self.ckpt:  # Do not checkpoint
                 self.ckpt = None
+            # No checkpoints means nothing to evaluate
+            self.eval = None
+            self.inference = None
         return self
 
     @model_validator(mode="after")

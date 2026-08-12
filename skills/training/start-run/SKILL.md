@@ -54,6 +54,11 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 - Config: `SFTConfig` (`packages/prime-rl-configs/src/prime_rl/configs/sft.py`)
 - Entrypoint: `src/prime_rl/entrypoints/sft.py`
 - SLURM: single- and multi-node
+- Online evals: an `[eval]` block (same shape as `[orchestrator.eval]`) plus `[inference]`
+  makes the launcher also start the inference server, one env server per eval source, and
+  an `evaluator` process. The trainer writes HF weight checkpoints at eval steps; the
+  evaluator reloads them into the server from disk and runs the evals (single-node only).
+  GPUs split via `deployment.num_gpus` (trainer) + `deployment.num_infer_gpus` (inference).
 
 ## `inference` — vLLM server
 

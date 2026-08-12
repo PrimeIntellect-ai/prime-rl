@@ -81,7 +81,7 @@ class WandbMonitor(Monitor):
         if shared_mode:
             run_id = os.environ.get("WANDB_SHARED_RUN_ID")
             label = os.environ.get("WANDB_SHARED_LABEL")
-            primary = label == "orchestrator"
+            primary = label == os.environ.get("WANDB_SHARED_PRIMARY", "orchestrator")
             settings = wandb.Settings(
                 mode="shared",
                 x_label=label,

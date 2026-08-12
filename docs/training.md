@@ -175,6 +175,38 @@ uv run sft @ examples/basic/reverse-text/sft.toml --wandb
 
 Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and Torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
 
+### Online Evals
+
+`uv run sft` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[eval]` block — the same shape as `[orchestrator.eval]`: multiple `[[eval.source]]` envs with per-source `interval` / `num_examples` / `group_size` / sampling overrides — plus an `[inference]` block for the vLLM server:
+
+```toml
+[eval]
+interval = 25
+num_examples = 32
+
+[[eval.source]]
+name = "reverse-text"
+
+[eval.source.env.taskset]
+id = "reverse-text"
+
+[eval.source.env.agent.harness]
+id = "null"
+
+[eval.source.env.agent.runtime]
+type = "subprocess"
+
+[inference]
+
+[deployment]
+num_gpus = 1        # trainer
+num_infer_gpus = 1  # inference
+```
+
+The launcher starts the inference server, one env server per eval source, and an `evaluator` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evaluator watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env.
+
+Eval metrics log exactly like RL evals — `eval/{env}/{all,effective}/...` plus `eval/{env}/policy_version` (the checkpoint step) — into the same W&B run as the trainer, and traces land under `rollouts/step_{n}/eval/`. Online evals require HF weight checkpoints (`[ckpt]` is auto-enabled) and are currently single-node only. Without an `[inference]` block the launcher starts no server and the evaluator connects to `eval.client.base_url`; the server must run with `weight_broadcast.type = "filesystem"`. The evaluator also runs standalone against any weights directory: `uv run evaluator @ <config>` (`EvaluatorConfig`).
+
 ### SFT-Specific Knobs
 
 | Knob | What it controls |
@@ -184,6 +216,7 @@ Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manag
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
+| `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 
 ### Important Metrics
 
@@ -193,6 +226,7 @@ Pulled from the console log and mirrored to W&B.
 
 - `loss/mean` — main signal. Should decrease through the run.
 - `val/loss` — validation loss when `[val]` is set, logged every `val.interval` steps.
+- `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
 

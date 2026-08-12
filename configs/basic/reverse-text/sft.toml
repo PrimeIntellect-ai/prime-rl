@@ -1,9 +1,11 @@
-# SFT warmup for reverse-text on 2 GPUs. Dev-sized mirror of examples/basic/reverse-text/sft.toml.
+# SFT warmup for reverse-text on 2 GPUs (1 train + 1 infer for online evals).
+# Dev-sized mirror of examples/basic/reverse-text/sft.toml.
 
 max_steps = 100
 
 [deployment]
-num_gpus = 2
+num_gpus = 1
+num_infer_gpus = 1
 
 [ckpt] # Checkpoint at the end of training
 
@@ -17,3 +19,24 @@ batch_size = 32
 
 [optim]
 lr = 2e-5
+
+[eval]
+interval = 25
+num_examples = 32
+
+[eval.sampling]
+max_completion_tokens = 1024
+
+[[eval.source]]
+name = "reverse-text"
+
+[eval.source.env.taskset]
+id = "reverse-text"
+
+[eval.source.env.agent.harness]
+id = "null"
+
+[eval.source.env.agent.runtime]
+type = "subprocess"
+
+[inference]

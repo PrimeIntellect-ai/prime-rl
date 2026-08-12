@@ -10,7 +10,6 @@ from subprocess import Popen
 from threading import Event, Thread
 from urllib.parse import urlparse
 
-import pynvml
 import tomli_w
 
 from prime_rl.configs.algorithm import FrozenModelConfig
@@ -34,6 +33,7 @@ from prime_rl.utils.process import (
     DEFAULT_TRAINER_ENV_VARS,
     cleanup_processes,
     cleanup_threads,
+    get_physical_gpu_ids,
     monitor_process,
     set_proc_title,
 )
@@ -65,15 +65,6 @@ def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig, str]]:
 def env_server_names(config: RLConfig, split: str) -> list[str]:
     """Names of the launcher-managed env servers for one split."""
     return [source.resolved_name for source_split, source, _ in env_servers(config) if source_split == split]
-
-
-def get_physical_gpu_ids() -> list[int]:
-    """Return physical GPU IDs visible to the launcher."""
-    raw_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if raw_visible is None:
-        pynvml.nvmlInit()
-        return list(range(pynvml.nvmlDeviceGetCount()))
-    return [int(token.strip()) for token in raw_visible.split(",") if token.strip()]
 
 
 def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
