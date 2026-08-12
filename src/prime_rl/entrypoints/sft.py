@@ -211,7 +211,7 @@ def sft(config: SFTConfig):
     validate_output_dir(config.output_dir, resuming=resuming, clean=clean)
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    if not config.dry_run:
+    if not config.dry_run and not config.model.debug.random_init:
         from prime_rl.trainer.model import pre_download_model
 
         pre_download_model(config.model.name)

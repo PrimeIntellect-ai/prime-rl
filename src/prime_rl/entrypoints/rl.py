@@ -644,7 +644,7 @@ def rl(config: RLConfig):
         get_logger().info("Training from scratch, cleaning any stale rollouts and broadcasts")
         clean_future_steps(config.output_dir, -1)
 
-    if not config.dry_run:
+    if not config.dry_run and not config.trainer.model.debug.random_init:
         from prime_rl.trainer.model import pre_download_model
 
         pre_download_model(config.trainer.model.name)
