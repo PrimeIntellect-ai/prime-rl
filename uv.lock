@@ -18,10 +18,9 @@ exclude-newer-span = "P7D"
 vllm = false
 verifiers = false
 prime-pydantic-config = false
-vllm-router = false
 dion = false
-nixl-cu12 = false
 fastokens = false
+nixl-cu12 = false
 flash-attn-3 = false
 prime-tunnel = false
 deep-gemm = false
@@ -4866,8 +4865,7 @@ all = [
     { name = "nixl" },
     { name = "nixl-cu12", version = "0.10.1", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "quack-kernels" },
-    { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
-    { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
+    { name = "vllm-router" },
 ]
 disagg = [
     { name = "deep-ep", version = "1.1.0+1fd57b0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
@@ -4876,8 +4874,7 @@ disagg = [
     { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
     { name = "nixl" },
     { name = "nixl-cu12", version = "0.10.1", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
-    { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
-    { name = "vllm-router", version = "0.1.26", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
+    { name = "vllm-router" },
 ]
 flash-attn = [
     { name = "flash-attn", version = "2.8.3+cu128torch2.11", source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.22/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
@@ -4970,9 +4967,7 @@ requires-dist = [
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.26.0" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.26.0/vllm-0.26.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl" },
     { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.26.0/vllm-0.26.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" },
-    { name = "vllm-router", marker = "platform_machine == 'aarch64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_aarch64.whl" },
-    { name = "vllm-router", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'disagg'" },
-    { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "vllm-router", marker = "extra == 'disagg'", specifier = ">=0.1.15" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wandb-workspaces", specifier = ">=0.4.3" },
 ]
@@ -7925,11 +7920,8 @@ provides-extras = ["zen", "bench", "tensorizer", "fastsafetensors", "instanttens
 
 [[package]]
 name = "vllm-router"
-version = "0.1.26"
-source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_aarch64.whl" }
-resolution-markers = [
-    "platform_machine == 'aarch64' and sys_platform == 'linux'",
-]
+version = "0.1.15"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "fastapi" },
@@ -7938,56 +7930,11 @@ dependencies = [
     { name = "setproctitle" },
     { name = "uvicorn" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/f6/ec/ece6b9ea89faa9cd5b7f0447f05fa053d7f78177acd320f2306b278ee6c4/vllm_router-0.1.15.tar.gz", hash = "sha256:af8efa64a97d58f13f37f73ca8216057cab806dff2b822f96c68386ecec9ffd4", size = 248820, upload-time = "2026-07-13T11:03:58.364Z" }
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:ab8d0da61faa588fd5a7ed947bd58ddb31f5836cf55518bdd0122cfbc83989f4" },
+    { url = "https://files.pythonhosted.org/packages/96/dc/62a45ba798a435706631614197427548f40cdc5c403b1214f029e693668b/vllm_router-0.1.15-cp38-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:c30070b2f8559fc33da4b114e58d28881775585dd6f6e1ac173ea494c8fbe20e", size = 8050336, upload-time = "2026-07-13T11:03:55.311Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/8f/ea7aced147c8c2e50271550765470bdb5d5342b4422fe1114aa76aa65584/vllm_router-0.1.15-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:2f268b001a546d7921c2e87b510869134a212f0ab2faf138b78eb554c93a2241", size = 8435363, upload-time = "2026-07-13T11:03:56.857Z" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp" },
-    { name = "fastapi" },
-    { name = "orjson" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
-    { name = "requests", specifier = ">=2.25.0" },
-    { name = "setproctitle" },
-    { name = "uvicorn" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "vllm-router"
-version = "0.1.26"
-source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }
-resolution-markers = [
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
-]
-dependencies = [
-    { name = "aiohttp" },
-    { name = "fastapi" },
-    { name = "orjson" },
-    { name = "requests" },
-    { name = "setproctitle" },
-    { name = "uvicorn" },
-]
-wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:db0c9410a4c130da8ffeea22f569faca7c85c58c5e183be1ebf758076361a6ec" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp" },
-    { name = "fastapi" },
-    { name = "orjson" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
-    { name = "requests", specifier = ">=2.25.0" },
-    { name = "setproctitle" },
-    { name = "uvicorn" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "wadler-lindig"
