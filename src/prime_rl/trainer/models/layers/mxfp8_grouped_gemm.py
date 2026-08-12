@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import torch
+import triton
+import triton.language as tl
 from torch import nn
 from torchao.prototype.moe_training import conversion_utils as cu
 from torchao.prototype.moe_training import mxfp8_grouped_mm as tao_mxfp8_gmm
 from torchao.prototype.moe_training.config import MXFP8TrainingOpConfig, MXFP8TrainingRecipe
+from torchao.prototype.moe_training.kernels.mxfp8 import quant as tao_mxfp8_quant
 from torchao.prototype.moe_training.kernels.mxfp8 import triton_mx_block_rearrange_2d_M_groups
 from torchao.prototype.moe_training.tensor import MXFP8TrainingWeightWrapperTensor
 from torchao.quantization.quant_api import quantize_
@@ -71,10 +74,43 @@ def _align_permute_indices_buffer() -> None:
     tt_indices.generate_permute_indices = generate_permute_indices
 
 
+@triton.jit
+def _start_index_after_padding_pow2(
+    group_pid,
+    orig_offsets,
+    num_groups: tl.constexpr,
+    padding_size: tl.constexpr,
+):
+    """Prefix sum to compute the start index of a given group. Unlike the torchao original,
+    this rounds the arange up to a power of 2 and masks, so non-power-of-2 group counts work."""
+    NUM_GROUPS_POW2: tl.constexpr = triton.next_power_of_2(num_groups)
+    idx = tl.arange(0, NUM_GROUPS_POW2)
+    valid = idx < num_groups
+    offsets = tl.load(orig_offsets + idx, mask=valid, other=0)
+    prev_offsets = tl.load(orig_offsets + idx - 1, mask=valid & (idx > 0), other=0)
+    group_sizes = tl.where(idx > 0, offsets - prev_offsets, offsets)
+    padded_sizes = tl.cdiv(group_sizes, padding_size) * padding_size
+    prefix_mask = valid & (idx < group_pid)
+    group_start_idx = tl.sum(tl.where(prefix_mask, padded_sizes, 0))
+    return group_start_idx
+
+
+def _support_non_pow2_expert_groups() -> None:
+    """torchao's scale-swizzle kernels compute per-group prefix sums with
+    ``tl.arange(0, num_groups)``, which triton rejects when the local expert count is not a
+    power of 2 (e.g. GLM-4.5: 160 experts / EP=8 = 20 per rank). The swizzle kernels resolve
+    the helper through their module globals at first launch, so replacing it is enough."""
+    if getattr(tao_mxfp8_quant._start_index_after_padding, "_prime_rl_non_pow2", False):
+        return
+    _start_index_after_padding_pow2._prime_rl_non_pow2 = True
+    tao_mxfp8_quant._start_index_after_padding = _start_index_after_padding_pow2
+
+
 def apply_mxfp8_moe_grouped_gemm(model: nn.Module, recipe: MXFP8Recipe) -> None:
     _relax_torchao_mxfp8_version_gate()
     _align_permute_indices_buffer()
     _fallback_to_triton_rearrange_for_wide_moes()
+    _support_non_pow2_expert_groups()
     set_token_group_alignment_size_m(_MXFP8_TOKEN_GROUP_ALIGN)
     op_config = MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe(recipe))
 
