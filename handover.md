@@ -138,6 +138,10 @@ Same shape as the Qwen matrix: below the pipeline floor's crossover full offload
 
 Note for fake-data debug runs: the entrypoints now skip the weight pre-download under `debug.random_init` (previously a GLM-5 run tried to pull ~1.4 TB of weights into the shared HF cache).
 
+## Gradient numerics vs the no-offload baseline
+
+Full offload is not gradient-bit-identical to no-offload, by construction: gradients reduce across ranks in FP32 (`reduce_dtype` is respected), but FSDP2 materializes `.grad` in the sharded parameter's dtype (`orig_dtype`), which is BF16 for the full-offload compute model. Each reduced gradient is therefore rounded to BF16 once before the FP32 CPU update; masters, moments, accumulation, and Adam arithmetic stay FP32, and the BF16 weight refresh is exact (both paths round FP32 masters to BF16 for compute). An FP32-transport toggle is structurally blocked — FSDP2 exposes no way to keep FP32 gradients on BF16 sharded params — so the baseline-faithful option is optimizer-state-only offload. Paired runs matched losses to display precision; a long paired run with a production learning rate would bound the drift empirically.
+
 ## Robustness gates
 
 Before optimizing further:

@@ -60,7 +60,15 @@ class OptimizerOffloadingConfig(BaseConfig):
     """Offload sharded gradients to pinned CPU memory during backward, then run the optimizer step on GPU."""
 
     full: bool = False
-    """Offload gradients and overlap CPU optimizer chunks and BF16 weight refreshes with backward."""
+    """Offload gradients and overlap CPU optimizer chunks and BF16 weight refreshes with backward.
+
+    Gradient numerics: gradients are reduced across ranks in FP32 (``reduce_dtype``) but FSDP2
+    materializes them in the sharded parameter's dtype, which is BF16 for the full-offload compute
+    model — so each gradient is rounded to BF16 once before the FP32 CPU update. Masters, moments,
+    accumulation, and Adam arithmetic remain FP32. For gradient numerics bit-faithful to the
+    no-offload path, use optimizer-state-only offload (``gradients``/default mode) instead; full
+    offload cannot keep FP32 gradients without keeping FP32 sharded masters on the GPU.
+    """
 
     cpu_optimizer_backend: Literal["native", "torch"] = "native"
     """CPU AdamW implementation used by full offload. ``native`` uses PrimeRL's read-only-gradient multi-tensor kernel; ``torch`` uses fused ``torch.optim.AdamW`` for debugging and parity checks."""
