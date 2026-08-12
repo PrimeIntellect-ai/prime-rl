@@ -34,7 +34,7 @@ target_modules = [
 ]
 
 [orchestrator]
-batch_size = 128
+token_batch_size = 196608 # 128 rollouts x ~1.5k avg tokens
 group_size = 16
 
 [orchestrator.train.sampling]

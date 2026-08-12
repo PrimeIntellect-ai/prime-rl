@@ -8,7 +8,6 @@ class SFTDistillAlgorithm(Algorithm):
     rollouts (``sampling.source``); the policy trains with CE on its tokens.
 
     Assigns no advantage — the ``ce`` loss ignores credit, and SFT trains on
-    every sampled token. Reward-based filtering, if wanted, is an explicit
-    filter, not smuggled through an unused advantage stream."""
+    every sampled token (the zero-advantage drop never fires)."""
 
     action_loss_type = "ce"

@@ -44,8 +44,8 @@ lr = 1e-6
 weight_decay = 0.01
 
 [orchestrator]
-batch_size = 2048
-oversampling_factor = 2
+token_batch_size = 41943040 # 2048 rollouts x ~20k avg tokens
+max_inflight_episodes = 4096
 max_off_policy_steps = 16
 
 [[orchestrator.train.source]]

@@ -20,8 +20,8 @@ class MaxRLAlgorithm(Algorithm):
     likelihood as it grows).
 
     Assumes non-negative (canonically binary) rewards; a group with mean reward
-    <= 0 carries no signal and gets zero advantages (the zero-advantage filter
-    drops it, matching the paper's no-success convention)."""
+    <= 0 carries no signal and gets zero advantages (the zero-advantage drop
+    removes it, matching the paper's no-success convention)."""
 
     async def score_group(self, group: list[Rollout]) -> None:
         rewards = torch.tensor([rollout.reward for rollout in group], dtype=torch.float32)

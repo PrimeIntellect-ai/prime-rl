@@ -19,8 +19,9 @@ I/O); a hook that only does advantage math never awaits:
   I/O against another model — an inference pool the algorithm connected in
   ``setup()`` (a frozen teacher) or the live policy (opsd's self-distillation),
   queried with bounded concurrency. No siblings.
-- ``score_group(group)`` — the cohort, on group completion, *before* filtering
-  (filters read the streams): group-relative credit (GRPO/MaxRL baselines).
+- ``score_group(group)`` — the cohort, on group completion, *before* the
+  zero-advantage drop (the check reads the streams): group-relative credit
+  (GRPO/MaxRL baselines).
 
 How rollouts are *produced* is not the algorithm's concern: that is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`, and sample construction
@@ -95,21 +96,21 @@ class Algorithm:
       directly — read the trace, write credit via
       :meth:`Rollout.assign_advantages`. They are
       async so either stage may do I/O — e.g. a process-reward model or a
-      teacher at arrival, or a judge at group time whose signal a pre-batch
-      filter then reads; a hook that only does advantage math simply never
-      awaits.
+      teacher at arrival, or a judge at group time whose signal the
+      zero-advantage drop then reads; a hook that only does advantage math
+      simply never awaits.
 
       - :meth:`score_rollout` — one rollout, on arrival: rollout-local credit,
         observation ce weights, or per-token results from a model the algorithm
         connected in :meth:`setup` (e.g. teacher reference logprobs). Default:
         nothing.
-      - :meth:`score_group` — the cohort, *before* filtering (filters read the
-        streams): group-relative credit. Default: nothing — rollouts keep
-        ``advantages=None``, so advantage-based filters skip them.
+      - :meth:`score_group` — the cohort, *before* the zero-advantage drop
+        (the check reads the streams): group-relative credit. Default:
+        nothing — rollouts keep ``advantages=None``, so the drop skips them.
 
     Model I/O lives in :meth:`score_rollout`: it runs at arrival, *before* the
-    pre-batch filters, so it pays compute on rollouts that may then be filtered
-    out — accepted for the simpler one-rollout-at-a-time shape.
+    zero-advantage drop, so it pays compute on rollouts that may then be
+    dropped — accepted for the simpler one-rollout-at-a-time shape.
 
     Constructed with the algorithm config it interprets plus the live policy
     pool (``self.policy_pool`` — always available, never closed by the
@@ -118,6 +119,12 @@ class Algorithm:
     renderer is not threaded in."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    trains_on_zero_advantage: ClassVar[bool] = False
+    """True when the algorithm still extracts training signal from a rollout
+    whose advantage stream is all zero (echo trains observation tokens through
+    the ``ce`` component regardless of credit). Such rollouts bypass the
+    pipeline's zero-advantage drop and ship to the trainer."""
 
     def __init__(self, config: AlgoConfig, policy_pool: InferencePool):
         self.policy_pool = policy_pool
@@ -145,8 +152,8 @@ class Algorithm:
         group stats."""
 
     async def score_group(self, group: list[Rollout]) -> None:
-        """Group phase, the finalized cohort, before filtering: write
-        group-relative credit."""
+        """Group phase, the finalized cohort, before the zero-advantage drop:
+        write group-relative credit."""
 
     async def finalize_rollout(self, rollout: Rollout) -> None:
         """Arrival phase (non-virtual): rollout-local scoring as each rollout is

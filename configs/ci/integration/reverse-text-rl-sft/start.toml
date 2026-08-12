@@ -21,7 +21,7 @@ project = "reverse-text-ci"
 name = "ci-rl-sft"
 
 [orchestrator]
-batch_size = 128
+token_batch_size = 16384 # 128 rollouts x ~128 avg tokens
 group_size = 16
 
 [orchestrator.algo]

@@ -16,7 +16,7 @@ project = "algorithms-debug"
 name = "debug-opd-lora"
 
 [orchestrator]
-batch_size = 128
+token_batch_size = 16384 # 128 rollouts x ~128 avg tokens
 group_size = 16
 
 [orchestrator.algo]

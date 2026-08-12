@@ -44,8 +44,8 @@ lr = 1e-6
 weight_decay = 0.01
 
 [orchestrator]
-batch_size = 2048
-oversampling_factor = 2
+token_batch_size = 33554432 # 2048 rollouts x ~16k avg tokens
+max_inflight_episodes = 4096
 
 [[orchestrator.train.source]]
 name = "swe"
@@ -118,10 +118,6 @@ id = "null"
 
 [orchestrator.train.source.env.agent.runtime]
 type = "subprocess"
-
-[[orchestrator.pre_batch_filters]]
-type = "zero_advantage"
-enforce = true
 
 [orchestrator.eval]
 interval = 25

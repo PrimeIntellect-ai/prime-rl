@@ -79,7 +79,7 @@ type = "muon"
 # --- Orchestrator ---
 
 [orchestrator]
-batch_size = 256
+token_batch_size = 5242880 # 256 rollouts x ~20k avg tokens
 group_size = 16
 max_off_policy_steps = 32
 max_inflight_episodes = 512

@@ -557,7 +557,7 @@ def test_shared_output_dir_propagates_through_cli(tmp_path):
             "seq_len": 128,
             "model": {"name": "Qwen/Qwen3-0.6B"},
             "trainer": {},
-            "orchestrator": {"batch_size": 16, "group_size": 1},
+            "orchestrator": {"token_batch_size": 2048, "group_size": 1},
             "inference": {},
         },
     )

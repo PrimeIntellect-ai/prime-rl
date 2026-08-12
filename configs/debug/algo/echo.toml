@@ -13,7 +13,8 @@ project = "algorithms-debug"
 name = "debug-echo"
 
 [orchestrator]
-batch_size = 32
+token_batch_size = 32768 # 32 rollouts x ~1k avg tokens
+max_inflight_episodes = 32
 group_size = 4
 
 # alphabet-sort's feedback arrives as user messages, so train the user role
@@ -43,12 +44,6 @@ type = "subprocess"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 512
-
-# ECHO learns from observation tokens even when the GRPO advantage collapses
-# to zero — keep zero-advantage rollouts in the batch.
-[[orchestrator.post_batch_filters]]
-type = "zero_advantage"
-enforce = false
 
 # Fine-tune inherits the PrimeIntellect Qwen3 template byte-for-byte.
 [orchestrator.renderer]

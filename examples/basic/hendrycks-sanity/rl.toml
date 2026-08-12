@@ -12,7 +12,8 @@ num_infer_gpus = 4
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
 [orchestrator]
-batch_size = 512
+token_batch_size = 2097152 # 512 rollouts x ~4k avg tokens
+max_inflight_episodes = 512
 group_size = 8
 seq_len = 8192
 

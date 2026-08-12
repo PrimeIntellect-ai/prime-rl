@@ -30,9 +30,9 @@ target_modules = [
 ]
 
 [orchestrator]
-batch_size = 512
+token_batch_size = 786432 # 512 rollouts x ~1.5k avg tokens
+max_inflight_episodes = 1024
 group_size = 16
-oversampling_factor = 2.0
 
 [orchestrator.model.lora]
 name = "qwen3-4b-wiki-search"
@@ -51,10 +51,6 @@ id = "null"
 
 [orchestrator.train.source.env.agent.runtime]
 type = "subprocess"
-
-[[orchestrator.pre_batch_filters]]
-type = "zero_advantage"
-enforce = true
 
 [ckpt] # Checkpoint at the end of training
 

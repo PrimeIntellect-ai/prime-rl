@@ -15,7 +15,7 @@ project = "hendrycks-sanity"
 name = "hendrycks-sanity"
 
 [orchestrator]
-batch_size = 128
+token_batch_size = 524288 # 128 rollouts x ~4k avg tokens
 group_size = 8
 seq_len = 8192
 

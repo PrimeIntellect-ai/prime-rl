@@ -57,7 +57,8 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 
 | Knob | What it does |
 |---|---|
-| `orchestrator.batch_size` | Tasks per trainer step. |
+| `orchestrator.token_batch_size` | Tokens to train on per step. Size it as (target rollouts per step) x (average tokens per rollout). |
+| `orchestrator.max_inflight_episodes` | Concurrent episodes kept in-flight. Tune together with `token_batch_size`: roughly `token_batch_size / (average tokens per rollout)`, higher to oversample ahead of the next batch. |
 | `orchestrator.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |

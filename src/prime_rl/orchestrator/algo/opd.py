@@ -19,8 +19,8 @@ class OPDAlgorithm(Algorithm):
     The policy samples its own rollouts; at ship time each sample's full
     context is prefill-scored under the teacher (``ref_logprobs`` on the
     wire), and the trainer evaluates the KL against the live policy. No
-    credit is assigned — rollouts keep ``advantages=None`` (advantage-based
-    filters never fire) and samples ship no advantage stream; ``group_size``
+    credit is assigned — rollouts keep ``advantages=None`` (the
+    zero-advantage drop never fires) and samples ship no advantage stream; ``group_size``
     only fans out sampling."""
 
     action_loss_type = "ref_kl"

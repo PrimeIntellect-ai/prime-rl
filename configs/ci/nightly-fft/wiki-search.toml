@@ -15,13 +15,9 @@ name = "wiki-search"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-batch_size = 512
+token_batch_size = 786432 # 512 rollouts x ~1.5k avg tokens
+max_inflight_episodes = 1024
 group_size = 16
-oversampling_factor = 2.0
-
-[[orchestrator.pre_batch_filters]]
-type = "zero_advantage"
-enforce = true
 
 [[orchestrator.train.source]]
 name = "wiki-search"

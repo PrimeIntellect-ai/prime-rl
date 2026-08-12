@@ -5,8 +5,8 @@ and drives the pipeline. Components are single-purpose:
 
 - ``RolloutDispatcher`` schedules rollouts; emits ``Rollout`` (train/eval
   discriminated by ``kind``) on its queue.
-- ``TrainSink`` ingests train rollouts (tokenize → advantages → filters)
-  and returns a ``TrainBatch`` when the threshold is met.
+- ``TrainSink`` ingests train rollouts (tokenize → advantages → zero-advantage
+  drop) and returns a ``TrainBatch`` when the token budget is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
   returned cohort) on epoch completion.
 - ``TrainRollouts`` / ``EvalRollouts`` carry the rollouts and build the per-step W&B metrics
@@ -46,7 +46,6 @@ from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, 
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.packing import BatchPacker
 from prime_rl.orchestrator.patches import (
@@ -95,9 +94,9 @@ monkey_patch_chat_completion_logprobs()
 # shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
-# Abort after this many consecutive train batches drop all rollouts to
-# post-batch filters — usually a misconfigured filter or homogeneous-reward
-# dataset; fail loudly instead of spinning
+# Abort after this many consecutive train batches ship no samples (possible
+# when ``count_zero_advantage_in_batch`` lets zero-advantage rollouts fill the
+# budget) — usually a homogeneous-reward dataset; fail loudly instead of spinning
 MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
 # Maximum batches the orchestrator may run ahead of the trainer. The
@@ -247,10 +246,6 @@ class Orchestrator:
         if usage_base_url and usage_api_key:
             self.usage_reporter = UsageReporter()
 
-        # Filters apply to train rollouts only
-        pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="pre-batch")
-        post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
-
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
             config.train.source,
@@ -396,7 +391,6 @@ class Orchestrator:
             else None
         )
 
-        assert config.max_inflight_episodes is not None, "max_inflight_episodes must be resolved before dispatcher init"
         log_interval = config.log.interval
         wandb_enabled = config.wandb is not None
         self.dispatcher = RolloutDispatcher(
@@ -415,10 +409,6 @@ class Orchestrator:
             tokenizer=self.tokenizer,
             train_envs=self.train_envs,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
-            batch_size=config.batch_size,
-            token_batch_size=config.token_batch_size,
-            pre_filters=pre_filters,
-            post_filters=post_filters,
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -601,8 +591,7 @@ class Orchestrator:
             )
             if self.consecutive_empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
                 raise RuntimeError(
-                    f"{self.consecutive_empty_batches} consecutive empty train batches — "
-                    "check filter config (pre_batch_filters / post_batch_filters) or task difficulty."
+                    f"{self.consecutive_empty_batches} consecutive empty train batches — check task difficulty."
                 )
             return
         self.consecutive_empty_batches = 0
@@ -611,7 +600,7 @@ class Orchestrator:
         if effective and n_trainable / len(effective) <= 0.1:
             get_logger().warning(
                 f"Only {n_trainable}/{len(effective)} effective rollouts are trainable "
-                f"({n_trainable / len(effective):.1%}) — consider reviewing task difficulty / filter config"
+                f"({n_trainable / len(effective):.1%}) — consider reviewing task difficulty"
             )
 
         # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}.
@@ -669,7 +658,7 @@ class Orchestrator:
             for env_name, env_pool in pool.by_env().items():
                 metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
 
-        # Progress / timing / env-share / pre-filter accounting (assembled here, not in the metrics
+        # Progress / timing / env-share accounting (assembled here, not in the metrics
         # objects). ``num_tokens`` is over the full arrival window; the input/output breakdown is over
         # the effective (shipped) subset, summing the same ``vf.Trace`` token properties the metric
         # matrix reports.
@@ -695,12 +684,6 @@ class Orchestrator:
         }
         for env_name, env_pool in batch.rollouts.by_env().items():
             metrics[f"batch/{env_name}"] = len(env_pool) / len(batch.rollouts)
-        if self.train_sink.pre_filter_seen > 0:
-            metrics["pre_filters/all/dropped_rate"] = (
-                self.train_sink.pre_filter_dropped / self.train_sink.pre_filter_seen
-            )
-            for name, count in self.train_sink.pre_filter_dropped_by_name.items():
-                metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
         self.monitor.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
         self.monitor.log_samples(effective.rollouts, step=step)
@@ -729,7 +712,6 @@ class Orchestrator:
 
         self.log_train_batch(batch, step=step, step_time=step_time)
 
-        self.train_sink.reset_pre_filter_stats()
         self.maybe_trigger_eval(self.progress.step)
         trim_process_memory()
 
@@ -769,7 +751,7 @@ class Orchestrator:
         inflight_by_env = self.dispatcher.inflight_by_env
         inflight_train = self.dispatcher.inflight_train_count
         inflight_eval = self.dispatcher.inflight_eval_count
-        train_batch, train_target, _train_unit = self.train_sink.batch_progress()
+        train_batch, train_target = self.train_sink.batch_progress()
         train_buffered = self.train_sink.buffered_count()
         train_batch_by_env = self.train_sink.pending_batch_by_env()
         eval_batches = self.eval_sink.batch_progress() if self.eval_sink is not None else []
@@ -779,7 +761,7 @@ class Orchestrator:
         # Train batch: finalized-group survivors only (0→target). Partial-group
         # arrivals are surfaced as a separate ``(+N buffered)`` addendum
         train_pct = train_batch / train_target if train_target else 0.0
-        train_batch_part = f"Train batch {train_batch}/{train_target} ({train_pct:.1%})"
+        train_batch_part = f"Train batch {train_batch}/{train_target} tokens ({train_pct:.1%})"
         if multi_train:
             pairs = [(e.name, train_batch_by_env.get(e.name, 0)) for e in self.train_envs]
             train_batch_part += " (" + ", ".join(f"{n}={v}" for n, v in pairs) + ")"

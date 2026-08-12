@@ -96,8 +96,8 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
     # Per-token rl advantage stream, full-length-N (= len(token_ids)) per
     # sample, concatenated across the rollout's samples in order; 0.0 on
-    # non-trainable positions. None = no credit assigned (advantage-based
-    # filters skip it; the wire ships no advantage stream).
+    # non-trainable positions. None = no credit assigned (the zero-advantage
+    # drop skips it; the wire ships no advantage stream).
     advantages: list[float] | None = Field(default=None, exclude=True)
     is_filtered: bool = Field(default=False, exclude=True)
     filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)

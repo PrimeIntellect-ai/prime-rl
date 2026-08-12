@@ -31,7 +31,8 @@ freq = 1
 [trainer.model.compile]
 
 [orchestrator]
-batch_size = 512
+token_batch_size = 2097152 # 512 rollouts x ~4k avg tokens
+max_inflight_episodes = 512
 group_size = 16
 max_off_policy_steps = 32
 

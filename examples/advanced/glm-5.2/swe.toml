@@ -64,9 +64,9 @@ lr = 1e-6
 weight_decay = 0.1
 
 [orchestrator]
-batch_size = 4096
+token_batch_size = 83886080 # 4096 rollouts x ~20k avg tokens
+max_inflight_episodes = 12288
 group_size = 16
-oversampling_factor = 3
 max_off_policy_steps = 16
 
 [orchestrator.model]
@@ -87,10 +87,6 @@ id = "bash"
 [orchestrator.eval.source.env.agent.runtime]
 type = "prime"
 labels = ["glm5-pd-disag", "swe-bench-verified"]
-
-[[orchestrator.post_batch_filters]]
-type = "gibberish"
-enforce = true
 
 [inference]
 # we need <0.85 bc glm5 layers are too large for 0.85

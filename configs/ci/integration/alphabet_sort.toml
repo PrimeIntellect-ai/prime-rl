@@ -16,7 +16,7 @@ name = "Qwen/Qwen3-0.6B"
 lr = 1e-5
 
 [orchestrator]
-batch_size = 128
+token_batch_size = 131072 # 128 rollouts x ~1k avg tokens
 group_size = 8
 
 [orchestrator.train.sampling]

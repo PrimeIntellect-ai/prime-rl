@@ -41,8 +41,8 @@ type = "adamw"
 lr = 1e-6
 
 [orchestrator]
-batch_size = 512
-oversampling_factor = 2
+token_batch_size = 4194304 # 512 rollouts x ~8k avg tokens
+max_inflight_episodes = 1024
 max_off_policy_steps = 8
 
 [orchestrator.train.sampling]

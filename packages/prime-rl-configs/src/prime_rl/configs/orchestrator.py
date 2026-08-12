@@ -302,50 +302,6 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the progress from checkpoint."""
 
 
-# Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
-class GibberishFilterConfig(BaseConfig):
-    type: Literal["gibberish"] = "gibberish"
-
-    enforce: bool = False
-    """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
-
-    token_id_threshold: int = 100_000
-    """Token IDs above this are candidates for gibberish. BPE tokens are sorted by merge order."""
-
-    logprob_offset: float = 2.0
-    """Offset from uniform-distribution logprob. Threshold = ``-log(vocab_size) - logprob_offset``."""
-
-
-# Flags rollouts stuck in a repetition loop: emits high-confidence tokens for an extended stretch.
-# Flagged when `window` consecutive tokens are each sampled with probability above `prob_threshold`.
-# (Section 3.2, https://arxiv.org/abs/2506.13585)
-class RepetitionFilterConfig(BaseConfig):
-    type: Literal["repetition"] = "repetition"
-
-    enforce: bool = False
-    """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
-
-    window: int = Field(3_000, ge=1)
-    """Consecutive high-probability steps required to flag the rollout."""
-
-    prob_threshold: float = Field(0.99, gt=0, le=1)
-    """Tokens sampled with probability above this are considered repetitive. Consecutive such tokens count toward the window."""
-
-
-# Flags rollouts with zero advantage.
-class ZeroAdvantageFilterConfig(BaseConfig):
-    type: Literal["zero_advantage"] = "zero_advantage"
-
-    enforce: bool = True
-    """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
-
-
-FilterConfig: TypeAlias = Annotated[
-    GibberishFilterConfig | RepetitionFilterConfig | ZeroAdvantageFilterConfig,
-    Field(discriminator="type"),
-]
-
-
 class FileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
@@ -416,24 +372,6 @@ class OrchestratorConfig(BaseConfig):
     eval: EvalConfig | None = None
     """Evaluation configuration."""
 
-    pre_batch_filters: list[FilterConfig] = [
-        GibberishFilterConfig(enforce=False),
-        RepetitionFilterConfig(enforce=False),
-        ZeroAdvantageFilterConfig(enforce=False),
-    ]
-    """Filters applied *before* a rollout enters the training batch buffer.
-    All three filter types are registered in monitor mode by default; flip ``enforce=true`` per type
-    to drop matching rollouts before they consume a slot in the batch (e.g. a zero-advantage group
-    never makes it into a training batch)."""
-
-    post_batch_filters: list[FilterConfig] = [
-        GibberishFilterConfig(),
-        RepetitionFilterConfig(),
-        ZeroAdvantageFilterConfig(),
-    ]
-    """Filters applied *after* a batch has been assembled. Each filter annotates each rollout;
-    rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer."""
-
     log: LogConfig = LogConfig()
 
     env_vars: EnvVars = {}
@@ -470,17 +408,14 @@ class OrchestratorConfig(BaseConfig):
     env_server_base_port: int = Field(5000, ge=1, le=65535)
     """First port of the env-server port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Sources with an explicit ``serve.address`` keep it instead, without shifting the other sources' ports (indices stay positional). Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
 
-    batch_size: int | None = Field(None, ge=1)
-    """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
+    token_batch_size: int = Field(131_072, ge=1)
+    """Tokens to train on per step. A batch ships once the pending rollouts' trainer-bound payload reaches this many tokens. Size it as (target rollouts per step) x (average tokens per rollout); the default matches the old 128-rollout default at ~1k tokens per rollout."""
 
-    token_batch_size: int | None = Field(None, ge=1)
-    """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
+    count_zero_advantage_in_batch: bool = False
+    """Count zero-advantage rollouts toward ``token_batch_size`` (they are still not shipped to the trainer). By default the batch fills with informative samples only, which keeps the trained-on batch predictable but makes the per-step sampling time vary with the zero-advantage rate. Opt in to recover a fixed sampling budget per step at the cost of a variable number of trained-on tokens."""
 
-    oversampling_factor: float | None = Field(None, gt=0)
-    """Rollout-mode batching only. Multiplier used to derive ``max_inflight_episodes`` from ``batch_size`` when ``max_inflight_episodes`` is unset. Values below 1.0 intentionally cap in-flight episode capacity below ``batch_size``."""
-
-    max_inflight_episodes: int | None = Field(None, ge=1)
-    """Maximum number of episodes kept in-flight — one episode is one agent run at a time, whatever the env's agents are. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
+    max_inflight_episodes: int = Field(128, ge=1)
+    """Maximum number of episodes kept in-flight — one episode is one agent run at a time, whatever the env's agents are. Tune together with ``token_batch_size``: roughly ``token_batch_size / (average tokens per rollout)``, higher to oversample ahead of the next batch."""
 
     group_size: int = Field(1, ge=1)
     """Output sequences returned per example during training."""
@@ -528,16 +463,6 @@ class OrchestratorConfig(BaseConfig):
             return self
         if self.wandb is not None and self.wandb.name:
             self.prime_monitor.run_name = self.wandb.name
-        return self
-
-    @model_validator(mode="after")
-    def validate_unique_filter_types(self):
-        for slot_name in ("pre_batch_filters", "post_batch_filters"):
-            types = [f.type for f in getattr(self, slot_name)]
-            if len(types) != len(set(types)):
-                raise ValueError(
-                    f"Duplicate filter types in {slot_name}: {types}. Each filter type may only appear once per slot."
-                )
         return self
 
     @model_validator(mode="after")
@@ -598,37 +523,7 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_batching(self):
-        has_rollout_batch = self.batch_size is not None
-        has_token_batch = self.token_batch_size is not None
-
-        if has_rollout_batch and has_token_batch:
-            raise ValueError("Set exactly one of batch_size or token_batch_size")
-
-        if not has_rollout_batch and not has_token_batch:
-            self.batch_size = 128
-
-        if has_token_batch:
-            if self.oversampling_factor is not None:
-                raise ValueError("oversampling_factor can only be set when batch_size is set")
-            if self.max_inflight_episodes is None:
-                raise ValueError("max_inflight_episodes must be set when token_batch_size is set")
-        else:
-            assert self.batch_size is not None
-            if self.batch_size % self.group_size != 0:
-                raise ValueError("Batch size must be divisible by the number of samples per problem")
-            oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
-            resolved_max_inflight_episodes = max(
-                self.group_size,
-                int(self.batch_size * oversampling_factor),
-            )
-            if self.max_inflight_episodes is not None and self.oversampling_factor is not None:
-                expected_max_inflight_episodes = resolved_max_inflight_episodes
-                if self.max_inflight_episodes != expected_max_inflight_episodes:
-                    raise ValueError("max_inflight_episodes conflicts with oversampling_factor * batch_size")
-            if self.max_inflight_episodes is None:
-                self.max_inflight_episodes = resolved_max_inflight_episodes
-
-        if self.max_inflight_episodes is not None and self.max_inflight_episodes < self.group_size:
+        if self.max_inflight_episodes < self.group_size:
             raise ValueError("max_inflight_episodes must be at least the number of rollouts per example")
 
         # Propagate the top-level ``group_size`` into each train env that didn't set its own.
