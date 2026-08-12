@@ -521,6 +521,8 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
         self._preserve_staging_dtype = False
         self._chunk_ready_callback = chunk_ready_callback
         self._timeout_seconds = timeout_seconds
+        # Per-step wall-time accumulators; each key is written by exactly one pipeline thread.
+        self._timings: dict[str, float] = {}
         self._cuda_device = torch.cuda.current_device()
         self._optimizer_param_ids = {id(param) for chunk in chunks for param in chunk}
         self._chunk_param_ids = [{id(param) for param in chunk} for chunk in chunks]
@@ -719,11 +721,15 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
             if isinstance(task, _BackwardBoundaryTask):
                 self._tasks.put(task)
                 continue
+            acquire_start = time.perf_counter()
             slot = self._acquire_slot(
                 self._free_input_slots,
                 "D2H",
                 task.local_grad.numel(),
                 self._input_normal_capacity,
+            )
+            self._timings["d2h_slot_wait"] = (
+                self._timings.get("d2h_slot_wait", 0.0) + time.perf_counter() - acquire_start
             )
             if task.local_grad.numel() > slot.tensor.numel():
                 raise RuntimeError(
@@ -770,7 +776,10 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
                 batch.append(next_task)
                 batch_param_ids.add(next_task.request.param_id)
 
+            sync_start = time.perf_counter()
             batch[-1].slot.event.synchronize()
+            materialize_start = time.perf_counter()
+            self._timings["d2h_wait"] = self._timings.get("d2h_wait", 0.0) + materialize_start - sync_start
             buffers = [self._buffers[item.request.param_id] for item in batch]
             sources = [
                 item.slot.tensor.narrow(0, 0, item.request.local_grad.numel()).view(item.request.local_grad.shape)
@@ -780,6 +789,9 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
                 [buffer.accumulator for buffer in buffers],
                 sources,
                 [buffer.initialized for buffer in buffers],
+            )
+            self._timings["materialize"] = (
+                self._timings.get("materialize", 0.0) + time.perf_counter() - materialize_start
             )
             for item in batch:
                 slot_class = "normal" if item.slot.tensor.numel() == self._input_normal_capacity else "oversized"
@@ -836,10 +848,16 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
             self._run_optimizer_chunk(chunk_idx)
 
     def _run_optimizer_chunk(self, chunk_idx: int) -> None:
+        chunk_start = time.perf_counter()
         self._chunk_ready_callback(chunk_idx)
+        self._timings["optimizer_chunk"] = self._timings.get("optimizer_chunk", 0.0) + time.perf_counter() - chunk_start
         with self._condition:
             self._completed_chunks += 1
             self._condition.notify_all()
+
+    def consume_timings(self) -> dict[str, float]:
+        timings, self._timings = self._timings, {}
+        return timings
 
     def begin_step(self, gradient_scale: float, *, overlap_optimizer: bool) -> None:
         self.wait()
@@ -1245,8 +1263,13 @@ class CPUOffloadOptimizer:
         if self._native_cpu_adamw:
             if not isinstance(self._gradient_manager, BoundedGradientOffloadManager):
                 raise TypeError("Native CPU AdamW requires bounded gradient offload")
+            timings = self._gradient_manager._timings
+            acquire_start = time.perf_counter()
             slot, compute_params = self._gradient_manager.acquire_output_chunk(chunk_idx)
+            adam_start = time.perf_counter()
+            timings["output_slot_wait"] = timings.get("output_slot_wait", 0.0) + adam_start - acquire_start
             self._step_native_cpu_adamw_chunk(chunk_idx, gradients, compute_params)
+            timings["adam_kernel"] = timings.get("adam_kernel", 0.0) + time.perf_counter() - adam_start
         else:
             self._step_chunk(chunk_idx)
         self._gradient_manager.release_chunk(chunk_idx, self._chunks[chunk_idx])
@@ -1291,8 +1314,15 @@ class CPUOffloadOptimizer:
             if self._gradient_manager.optimizer_overlapped:
                 if closure is not None:
                     raise ValueError("Optimizer closures are not supported with optimizer-in-backward")
+                drain_start = time.perf_counter()
                 self._gradient_manager.wait_for_optimizer()
                 torch.cuda.current_stream().wait_stream(self._h2d_stream)
+                if isinstance(self._gradient_manager, BoundedGradientOffloadManager):
+                    timings = self._gradient_manager.consume_timings()
+                    timings["drain"] = time.perf_counter() - drain_start
+                    get_logger().debug(
+                        "Offload pipeline: " + " ".join(f"{key}={value:.3f}s" for key, value in sorted(timings.items()))
+                    )
                 self._record_native_optimizer_step()
                 self._initialized = True
                 return
