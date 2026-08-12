@@ -68,14 +68,23 @@ from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
 
 
-def pre_download_model(model_name: str) -> None:
-    """Pre-download model from HuggingFace Hub so all nodes have cached weights before training."""
+def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
+    """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
+
+    With ``skip_weights`` (random-init debug runs), only config and tokenizer files are fetched.
+    """
     if Path(model_name).exists():
         get_logger().info(f"Model {model_name} found at local path, skipping download")
         return
-    get_logger().info(f"Pre-downloading model {model_name}")
     t0 = time.perf_counter()
-    path = snapshot_download(repo_id=model_name, repo_type="model")
+    if skip_weights:
+        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (random init, skipping weights)")
+        path = snapshot_download(
+            repo_id=model_name, repo_type="model", allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"]
+        )
+    else:
+        get_logger().info(f"Pre-downloading model {model_name}")
+        path = snapshot_download(repo_id=model_name, repo_type="model")
     get_logger().debug(
         f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
     )

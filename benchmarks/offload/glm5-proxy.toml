@@ -3,14 +3,14 @@
 # expert state. CP2 leaves four-way DP/FSDP sharding, matching the intended
 # 32-GPU CP8 job.
 #
-# Host-RAM feasibility (measured on meta device from the HF config):
-#   22 layers = 190.8B trainable params -> 2.78 TiB CPU optimizer state at
-#   16 B/param (FP32 master + moments + accumulated gradient), before ring,
-#   framework, and dataloader overhead. This DOES NOT fit a 2 TiB node; it
-#   needs a >=3 TiB host. On a 2 TiB node, truncate further:
-#   --model.debug.num-layers 14 (3 dense + 11 MoE, 111.8B params, 1.63 TiB).
-#   Note the full 743.9B model needs 2.71 TiB/node across four 2 TiB nodes,
-#   so the four-node full-offload target is equally RAM-bound (see README).
+# Host-RAM feasibility (measured on meta device from the HF config, at
+# 16 B/param of CPU optimizer state):
+#   22 layers = 190.8B params -> 2.78 TiB: does not fit a 2.95 TiB H200 node
+#   (~2.6 TiB available after kernel/driver overhead).
+#   20 layers = 171.0B params -> 2.49 TiB: fits with slim headroom (default).
+#   19 layers = 161.1B params -> 2.35 TiB: safe fallback.
+#   14 layers = 111.8B params -> 1.63 TiB: fits a 2 TiB node.
+#   The full 743.9B model needs 2.71 TiB/node across four nodes (see README).
 #
 #   uv run sft @ benchmarks/offload/glm5-proxy.toml
 max_steps = 7
@@ -32,7 +32,7 @@ ep = 8
 compile = "None"
 
 [model.debug]
-num_layers = 22
+num_layers = 20
 random_init = true
 force_balanced_routing = true
 

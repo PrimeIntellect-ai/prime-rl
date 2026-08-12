@@ -214,7 +214,7 @@ def sft(config: SFTConfig):
     if not config.dry_run:
         from prime_rl.trainer.model import pre_download_model
 
-        pre_download_model(config.model.name)
+        pre_download_model(config.model.name, skip_weights=config.model.debug.random_init)
 
     if config.slurm is not None:
         sft_slurm(config)
