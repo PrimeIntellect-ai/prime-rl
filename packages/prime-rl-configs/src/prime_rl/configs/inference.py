@@ -308,8 +308,17 @@ class VllmRouterConfig(BaseConfig):
 
     type: Literal["vllm-router"] = "vllm-router"
 
-    policy: str = "consistent_hash"
-    """Routing policy, e.g. ``consistent_hash`` or ``round_robin``."""
+    policy: str = "cache_aware"
+    """Routing policy: ``cache_aware`` (prefix affinity, falls back to shortest-queue when engine load is imbalanced), ``consistent_hash`` (sticky per X-Session-ID, no load awareness), ``round_robin``, ``power_of_two``, or ``random``."""
+
+    cache_threshold: float | None = Field(None, ge=0.0, le=1.0)
+    """``cache_aware`` only: minimum prefix-match rate to route by cache affinity; below it, routes to the worker with the most available cache space. ``None`` uses the router default."""
+
+    balance_abs_threshold: int | None = Field(None, ge=0)
+    """``cache_aware`` only: switch to shortest-queue routing when (max - min) in-flight requests across workers exceeds this. ``None`` uses the router default."""
+
+    balance_rel_threshold: float | None = Field(None, ge=1.0)
+    """``cache_aware`` only: switch to shortest-queue routing when max in-flight > rel * min in-flight (combined with ``balance_abs_threshold``). ``None`` uses the router default."""
 
 
 class LlmdRouterConfig(BaseConfig):

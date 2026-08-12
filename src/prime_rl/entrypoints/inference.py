@@ -178,6 +178,12 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         "--prometheus-port",
         str(config.server.port + 21000),
     ]
+    if config.router.cache_threshold is not None:
+        cmd += ["--cache-threshold", str(config.router.cache_threshold)]
+    if config.router.balance_abs_threshold is not None:
+        cmd += ["--balance-abs-threshold", str(config.router.balance_abs_threshold)]
+    if config.router.balance_rel_threshold is not None:
+        cmd += ["--balance-rel-threshold", str(config.router.balance_rel_threshold)]
     return subprocess.Popen(cmd)
 
 

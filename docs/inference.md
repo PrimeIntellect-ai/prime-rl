@@ -181,7 +181,7 @@ non_cached_tokens = 16          # llm-d only: below this many non-cached prompt 
 "kv-cache-utilization-scorer" = 2.0
 ```
 
-- **`vllm-router`** (default) — our fork of [vllm-router](https://github.com/PrimeIntellect-ai/router). Knob: `policy`. The only backend supported for single-node (local) deployments.
+- **`vllm-router`** (default) — our fork of [vllm-router](https://github.com/PrimeIntellect-ai/router). Knobs: `policy` plus the `cache_aware` thresholds (`cache_threshold`, `balance_abs_threshold`, `balance_rel_threshold`). The only backend supported for single-node (local) deployments.
 - **`llm-d`** — the upstream [llm-d](https://llm-d.ai) Endpoint Picker (EPP) + Envoy proxy (multi-node / disaggregated SLURM deployments only). Routing combines **prefix-cache affinity** (grouped rollouts reuse a cached prefix and skip prefill) with the **`active-request-scorer`** — an in-flight load balancer that spreads requests across ranks immediately, unlike the metrics-scraped `queue-scorer` / `kv-cache-utilization-scorer` / `load-aware-scorer` (which lag and concentrate bursts of same-prefix requests). The scorer weights follow the upstream llm-d P/D guide; tune via `scorers` (base) + `prefill_scorer_overrides` / `decode_scorer_overrides` (per-profile, P/D). Does not support `enable_return_routed_experts` (router replay).
 
 Both backends support the 2 most important things:
@@ -189,18 +189,16 @@ Both backends support the 2 most important things:
 - P/D disaggregation - handling the prefill and decode stages separately
 
 ### Routing policies
-The 2 policies you might want to configure are:
-- `consistent_hash` - this is the default policy that optimizes for KV cache re-use across turns - this works by hashing a request header to determine where to route the request to. You can configure what to hash by setting
-`orchestrator.model.client.extra_headers_from_state` to the header the `router` expects to be set.
-
-We set it to a sensible default, that works with all verifiers environments.
+Set the policy via `inference.router.policy`. The policies you might want to configure are:
+- `cache_aware` (default) - routes by prefix affinity: requests whose token prefix matches a worker's recent traffic go to that worker, so a rollout's turns stay on one engine and re-use its KV cache. When engine load is imbalanced (in-flight spread exceeds `balance_abs_threshold` and `balance_rel_threshold`), it switches to shortest-queue routing until load evens out - this prevents a saturated engine from hoarding sticky sessions while the others idle. Tune via `inference.router.cache_threshold` / `balance_abs_threshold` / `balance_rel_threshold` (unset fields use the router defaults).
+- `consistent_hash` - sticky routing by request header hash: all requests with the same `X-Session-ID` go to the same engine, with no load awareness. The orchestrator sends each rollout's `trajectory_id` in this header by default; configure what to hash by setting `orchestrator.model.client.extra_headers_from_state`.
 
 ```toml
 [orchestrator.model.client.extra_headers_from_state]
 X-Session-ID = "trajectory_id" # this is the default - each rollout has a unique trajectory_id and router expects X-Session-ID
 ```
 
-- `round_robin` - this policy will round-robin the requests between the available replicas. This is useful if you want to balance the load between the replicas. This might give you better results if you don't have enough rollouts to make `consistent_hash` hashing saturated.
+- `round_robin` - this policy will round-robin the requests between the available replicas. This is useful if you want to balance the load between the replicas.
 
 
 ## Advanced Configuration

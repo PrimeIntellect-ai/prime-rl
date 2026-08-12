@@ -75,6 +75,15 @@ LLMD_EOF
         --request-id-headers x-session-id
         --prometheus-port "$((port + 21000))"
         --worker-startup-timeout-secs 4200 --log-level debug)
+{%- if router.cache_threshold is not none %}
+    cmd+=(--cache-threshold {{ router.cache_threshold }})
+{%- endif %}
+{%- if router.balance_abs_threshold is not none %}
+    cmd+=(--balance-abs-threshold {{ router.balance_abs_threshold }})
+{%- endif %}
+{%- if router.balance_rel_threshold is not none %}
+    cmd+=(--balance-rel-threshold {{ router.balance_rel_threshold }})
+{%- endif %}
     if [ "$mode" = pd ]; then
         cmd+=(--vllm-pd-disaggregation $worker_args)
     else
