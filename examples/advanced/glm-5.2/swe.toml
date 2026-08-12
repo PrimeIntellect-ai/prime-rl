@@ -64,8 +64,8 @@ lr = 1e-6
 weight_decay = 0.1
 
 [orchestrator]
-token_batch_size = 83886080 # 4096 rollouts x ~20k avg tokens
-max_inflight_episodes = 12288
+token_batch_size = 67_108_864
+max_inflight_episodes = 12_288
 group_size = 16
 max_off_policy_steps = 16
 

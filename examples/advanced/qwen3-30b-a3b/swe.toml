@@ -42,7 +42,7 @@ type = "adamw"
 lr = 1e-6
 
 [orchestrator]
-token_batch_size = 10485760 # 512 rollouts x ~20k avg tokens
+token_batch_size = 8_388_608
 max_inflight_episodes = 1024
 max_off_policy_steps = 16
 

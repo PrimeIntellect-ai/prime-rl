@@ -16,7 +16,7 @@ rank = 8
 save_adapter_separately = true
 
 [orchestrator]
-token_batch_size = 16384 # 128 rollouts x ~128 avg tokens
+token_batch_size = 16_384
 group_size = 16
 
 [orchestrator.model.lora]

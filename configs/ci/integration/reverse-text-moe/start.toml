@@ -19,7 +19,7 @@ lr = 3e-6
 impl = "custom"
 
 [orchestrator]
-token_batch_size = 16384 # 128 rollouts x ~128 avg tokens
+token_batch_size = 16_384
 group_size = 16
 
 [orchestrator.train.sampling]

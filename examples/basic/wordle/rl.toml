@@ -15,7 +15,7 @@ name = "wordle"
 name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 
 [orchestrator]
-token_batch_size = 1572864 # 512 rollouts x ~3k avg tokens
+token_batch_size = 1_048_576
 max_inflight_episodes = 512
 group_size = 16
 

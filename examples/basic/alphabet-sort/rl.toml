@@ -25,7 +25,7 @@ alpha = 64
 lr = 1e-5
 
 [orchestrator]
-token_batch_size = 262144 # 256 rollouts x ~1k avg tokens
+token_batch_size = 262_144
 max_inflight_episodes = 256
 group_size = 16
 
