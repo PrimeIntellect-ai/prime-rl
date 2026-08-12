@@ -351,7 +351,7 @@ class TrainMetrics(EpisodeMetrics):
             out[f"{p}/is_filtered/mean"] = sum(float(r.is_filtered) for r in rollouts) / len(rollouts)
             names = sorted({name for r in rollouts for name in r.filter_results})
             out |= {
-                f"{p}/filters/{name}/mean": sum(1 for r in rollouts if r.filter_results.get(name)) / len(rollouts)
+                f"{p}/{name}/mean": sum(1 for r in rollouts if r.filter_results.get(name)) / len(rollouts)
                 for name in names
             }
         return out

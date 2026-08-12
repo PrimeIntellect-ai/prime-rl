@@ -104,7 +104,7 @@ All metrics print to the console log (and W&B when configured).
 | `train/<env>/effective/<agent>/num_turns/mean` | avg turns for that agent alone (also token counts, `num_branches`) |
 | `train/agg/effective/<agent>/is_truncated/mean` | fraction of that agent's rollouts truncated |
 | `train/agg/all/<agent>/has_error/mean` | fraction of that agent's rollouts errored (per-type under `train/agg/all/<agent>/error/<type>`; also `dispatcher/errored/{train,eval}`) |
-| `train/agg/all/<agent>/is_trainable/mean` | fraction carrying a training signal — 0.0 for a frozen seat like a judge (also `is_filtered`, `filters/<name>`) |
+| `train/agg/all/<agent>/is_trainable/mean` | fraction carrying a training signal — 0.0 for a frozen seat like a judge (also `is_filtered`, and the check verdicts `gibberish`, `repetition`, `zero_advantage`) |
 | `train/<env>/effective/<agent>/metrics/<name>/mean` | env-specific metrics for that agent (e.g. pass rate) |
 | `train/<env>/effective/<agent>/timing/agent/model/mean` | model vs harness share of that agent's phase |
 | `eval/<env>/effective/<agent>/{avg@k,pass@k}` | eval scores for that agent, when configured |

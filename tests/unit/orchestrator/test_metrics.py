@@ -240,10 +240,10 @@ def test_train_only_metrics_absent_from_eval():
     out = train_wandb(rollouts)
     assert out["train/agg/all/agent/is_trainable/mean"] == 0.5
     assert out["train/agg/all/agent/is_filtered/mean"] == 0.5
-    assert out["train/agg/all/agent/filters/gibberish/mean"] == 0.5
+    assert out["train/agg/all/agent/gibberish/mean"] == 0.5
     assert "train/agg/all/is_trainable/mean" not in out  # pipeline verdicts are per-trace
     eval_out = EvalRollouts(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
-    assert not any("is_trainable" in k or "is_filtered" in k or "/filters/" in k for k in eval_out)
+    assert not any("is_trainable" in k or "is_filtered" in k or "gibberish" in k for k in eval_out)
 
 
 def test_eval_avg_at_k_and_pass_k():
