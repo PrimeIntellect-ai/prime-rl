@@ -87,6 +87,17 @@ Capture step time, TPS, MFU, peak HBM, process RSS, pinned bytes and allocation 
 
 ## One-node 8xH200 baseline results (2026-08-12)
 
+**Correction (later the same day): the repo default silently enables optimizer-state CPU offload** (`optim_cpu_offload` defaults to an enabled config), so every "no offload" row below actually measured the default state-offload path. A true GPU-resident baseline requires `--model.optim-cpu-offload None`. Measured true baseline vs native full offload (paired runs, zero-grad metric removed, #3248 threads):
+
+| Seq | No offload (GPU-resident) | Full offload (native) | TPS retained | Peak HBM |
+| ---: | --- | --- | ---: | ---: |
+| 8K | 1.75 s | 3.96 s | 44% | 63.1 → 17.5 GiB |
+| 16K | 5.17 s | 5.73 s | 90% | 67.0 → 21.5 GiB |
+| 32K | 16–21 s (noisy) | 15.4–16.7 s | ~100% | 73.7 → 29.0 GiB |
+| 64K (ac) | 38.7 s | 34.1 s | 114% | 90.3 → 44.9 GiB |
+
+The tables below are kept as recorded; read their "no offload" columns as "state offload (repo default)".
+
 Qwen3-30B-A3B, custom impl, EP8, fake fixed data, random init, balanced routing, AdamW, no clipping, compile/quantization off. Node: 8xH200 SXM, 2x Xeon Platinum (240 hw threads, 2 NUMA nodes), 2.95 TiB RAM. Median over steps 3-7; configs in `benchmarks/offload/`.
 
 Four variants at seq 8192, accumulation 1, `OMP_NUM_THREADS=28`:
