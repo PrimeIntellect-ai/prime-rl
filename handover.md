@@ -126,6 +126,16 @@ GLM-5 20-layer proxy (171B params, CP2, EP8, native full offload, numa_bind, rec
 
 At this parameter scale the CPU pipeline costs ~18 s of Adam per step (21.4B params/rank); 32K is faster end-to-end than 16K because the pipeline unhides. No no-offload reference exists — optimizer states (257 GiB/GPU) cannot fit on H200s, so full offload is what makes this model trainable on one node at all. The per-rank load matches the four-node full-model target (23.2B params/rank), so expect a similar ~7 s exposed drain at 64K there, shrinking further at the 128K endpoint. 64K runs at 95% HBM and 16 GiB free host RAM: 20 layers is the ceiling for this node class, and 128K will need activation offloading.
 
+A direct no-offload comparison requires shrinking to 8 layers (53.2B params) — 10 layers already OOMs an H200 with resident optimizer state at 16K. At 8 layers (same protocol, median steps 2-5, loss identical at 11.9504):
+
+| Seq | No offload | Full native | TPS retained | Peak HBM |
+| ---: | ---: | ---: | ---: | ---: |
+| 16K | 2.1 s / 28.0k TPS | 6.0 s / 10.7k TPS | 38% | 122.9 → 53.9 GiB |
+| 32K | 7.7 s / 15.9k TPS | 7.1 s / 18.6k TPS | 117% | 134.1 → 67.0 GiB |
+| 64K | OOM | 10.7 s / 24.5k TPS | — | 91.6 GiB |
+
+Same shape as the Qwen matrix: below the pipeline floor's crossover full offload pays (16K), just above it full offload is faster outright (32K), and beyond that no-offload cannot run at all (64K) — full offload halves HBM and extends the trainable regime.
+
 Note for fake-data debug runs: the entrypoints now skip the weight pre-download under `debug.random_init` (previously a GLM-5 run tried to pull ~1.4 TB of weights into the shared HF cache).
 
 ## Robustness gates
