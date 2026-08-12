@@ -48,9 +48,12 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
   (default true) pins each rank to its GPU's NUMA node. It does not create a
   Gloo process group. Set `cpu_optimizer_backend = "torch"` inside the offload
   table to use fused PyTorch AdamW for debugging or parity checks.
-- Enabling `optim_cpu_offload` raises the trainer's intra-op thread count at
-  startup so the bandwidth-bound CPU AdamW kernels do not run on the launcher's
-  single-thread default.
+- Any `optim_cpu_offload` mode raises the trainer's intra-op thread count at
+  startup. Launchers export `OMP_NUM_THREADS=1`, which would otherwise leave the
+  bandwidth-bound CPU AdamW kernels on a single core. Each rank claims
+  `cpu_count / local_world_size` threads, capped by its affinity mask, so the
+  ranks on a node never oversubscribe it. This overrides `OMP_NUM_THREADS`, so
+  setting it in `env_vars` does not change the offloaded optimizer's thread count.
 
 ## `rl` — RL training
 

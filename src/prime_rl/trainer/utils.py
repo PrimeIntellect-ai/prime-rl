@@ -1,4 +1,5 @@
 import gc
+import os
 import pickle
 import shutil
 import time
@@ -123,8 +124,6 @@ def bind_process_to_gpu_numa_node() -> None:
     GPU hangs off. Must run before CPU optimizer state allocation and before the
     OMP thread pool spins up.
     """
-    import os
-
     import pynvml
 
     logger = get_logger()
@@ -151,6 +150,17 @@ def bind_process_to_gpu_numa_node() -> None:
             cpus.add(int(part))
     os.sched_setaffinity(0, cpus)
     logger.info(f"Bound rank with GPU {device_id} to NUMA node {numa_node} ({len(cpus)} CPUs)")
+
+
+def configure_cpu_optimizer_threads() -> None:
+    available = os.sched_getaffinity(0)
+    fair_share = (os.cpu_count() or len(available)) // get_world().local_world_size
+    threads = max(1, min(len(available), fair_share))
+    torch.set_num_threads(threads)
+    get_logger().info(
+        f"CPU optimizer uses {threads} intra-op threads "
+        f"({len(available)} CPUs in this rank's affinity mask, {get_world().local_world_size} local ranks)"
+    )
 
 
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
