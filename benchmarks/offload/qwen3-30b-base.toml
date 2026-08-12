@@ -1,10 +1,9 @@
-# Qwen3-30B-A3B optimizer-offload baseline on one 8-GPU node (see handover.md).
+# Qwen3-30B-A3B optimizer-offload baseline on one 8-GPU node (see docs/scaling.md).
 # Fake fixed-length data, random weights, forced balanced routing, EP8, AdamW,
 # no clipping, compile and quantization disabled.
 #
-# Run alone for the no-offload reference, or compose with one overlay:
+# Run alone for the no-offload baseline (the default), or compose with one overlay:
 #   uv run sft @ benchmarks/offload/qwen3-30b-base.toml
-#   uv run sft @ benchmarks/offload/qwen3-30b-base.toml @ benchmarks/offload/state-offload.toml
 #   uv run sft @ benchmarks/offload/qwen3-30b-base.toml @ benchmarks/offload/full-torch.toml
 #   uv run sft @ benchmarks/offload/qwen3-30b-base.toml @ benchmarks/offload/full-native.toml
 #

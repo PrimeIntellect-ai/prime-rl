@@ -1,22 +1,20 @@
 # Optimizer-offload baseline matrix
 
-Ready-to-launch configs for the production baseline described in `handover.md`.
+Ready-to-launch configs for the production baseline described in the PR.
 All runs use the SFT entrypoint with fake fixed-length data, random weights,
 forced balanced routing, AdamW, no gradient clipping, and compile/quantization
 disabled. Requires an 8-GPU node.
 
 ## Qwen3-30B-A3B (step 1)
 
-Four variants, in comparison order:
+Three variants, in comparison order:
 
 ```bash
-# 1. no optimizer offload
+# 1. no optimizer offload (the default)
 uv run sft @ benchmarks/offload/qwen3-30b-base.toml
-# 2. optimizer-state-only offload
-uv run sft @ benchmarks/offload/qwen3-30b-base.toml @ benchmarks/offload/state-offload.toml
-# 3. full offload, fused PyTorch AdamW (correctness reference)
+# 2. full offload, fused PyTorch AdamW (correctness reference)
 uv run sft @ benchmarks/offload/qwen3-30b-base.toml @ benchmarks/offload/full-torch.toml
-# 4. full offload, native CPU AdamW (production candidate)
+# 3. full offload, native CPU AdamW (production candidate)
 uv run sft @ benchmarks/offload/qwen3-30b-base.toml @ benchmarks/offload/full-native.toml
 ```
 

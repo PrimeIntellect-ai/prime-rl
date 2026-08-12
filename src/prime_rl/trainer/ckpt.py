@@ -79,14 +79,6 @@ class AppState(Stateful):
         return any(isinstance(opt, CPUOffloadOptimizer) for opt in self.optimizers)
 
     def state_dict(self) -> dict[str, Any]:
-        # get_state_dict requires optimizer states to live on param.device. For an
-        # already-initialized CPU-offload optimizer that means staging back to GPU
-        # before the call; the matching offload happens after the dict is built.
-        for opt in self.optimizers:
-            if isinstance(opt, CPUOffloadOptimizer) and opt._initialized and not opt.steps_on_cpu:
-                opt._move_states("cuda")
-                torch.cuda.synchronize()
-
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
         checkpoint_optimizers = self._get_checkpoint_optimizers()
         model_state_dict, optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
@@ -101,21 +93,7 @@ class AppState(Stateful):
             progress_state_dict = asdict(self.progress)
             state_dict["progress"] = progress_state_dict
 
-        # Offload optimizer states to CPU for every CPUOffloadOptimizer, including
-        # ones that were uninitialized on entry. dcp_load calls this method to build
-        # a template, and get_state_dict's internal _init_optim_state populates an
-        # empty optim.state with GPU tensors. Optimizer.state_dict() returns those
-        # values via shallow copy, so optimizer_state_dict["state"][fqn] is the same
-        # dict object as optim.state[param]. Replacing the entries with CPU tensors
-        # in place therefore flips the template too — dcp_load reads bytes from disk
-        # straight into CPU storage and optim.state is loaded by the time the load
-        # returns, without GPU optimizer state ever existing for the duration of the
-        # read.
-        has_cpu_offload = self._has_cpu_offload()
-        for opt in self.optimizers:
-            if isinstance(opt, CPUOffloadOptimizer) and not opt.steps_on_cpu:
-                opt._move_states("cpu")
-        if has_cpu_offload:
+        if self._has_cpu_offload():
             torch.cuda.synchronize()
             gc.collect()
             torch.cuda.empty_cache()

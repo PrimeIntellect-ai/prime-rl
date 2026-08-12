@@ -1,4 +1,4 @@
-# GLM-5 four-node proxy on one 8-GPU node (see handover.md): 22 layers keep the
+# GLM-5 four-node proxy on one 8-GPU node (see docs/scaling.md): 22 layers keep the
 # 3 dense + 19 MoE structure, approximating one quarter of the full model's
 # expert state. CP2 leaves four-way DP/FSDP sharding, matching the intended
 # 32-GPU CP8 job.
@@ -37,12 +37,10 @@ random_init = true
 force_balanced_routing = true
 
 [model.optim_cpu_offload]
-full = true
 cpu_optimizer_backend = "native"
 transfer_buffer_count = 4
 max_inflight_backwards = 16
 timeout_seconds = 600
-numa_bind = true
 
 # Activation recompute so the 190B proxy's activations fit next to the BF16
 # weights; drop for the final matrix point if memory allows.

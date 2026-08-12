@@ -56,18 +56,15 @@ class ActivationOffloadingConfig(BaseConfig):
 
 
 class OptimizerOffloadingConfig(BaseConfig):
-    gradients: bool = False
-    """Offload sharded gradients to pinned CPU memory during backward, then run the optimizer step on GPU."""
-
-    full: bool = False
-    """Offload gradients and overlap CPU optimizer chunks and BF16 weight refreshes with backward.
+    """Full CPU optimizer offload: FP32 masters, moments, and accumulated gradients live in
+    CPU RAM, each optimizer chunk runs on CPU as soon as its last gradient arrives, and the
+    refreshed BF16 weights stream back while backward is still executing.
 
     Gradient numerics: gradients are reduced across ranks in FP32 (``reduce_dtype``) but FSDP2
-    materializes them in the sharded parameter's dtype, which is BF16 for the full-offload compute
-    model — so each gradient is rounded to BF16 once before the FP32 CPU update. Masters, moments,
-    accumulation, and Adam arithmetic remain FP32. For gradient numerics bit-faithful to the
-    no-offload path, use optimizer-state-only offload (``gradients``/default mode) instead; full
-    offload cannot keep FP32 gradients without keeping FP32 sharded masters on the GPU.
+    materializes them in the sharded parameter's dtype, which is BF16 for the offload compute
+    model — so each gradient is rounded to BF16 once before the FP32 CPU update. Masters,
+    moments, accumulation, and Adam arithmetic remain FP32. For gradient numerics bit-faithful
+    to that path, disable offloading.
     """
 
     cpu_optimizer_backend: Literal["native", "torch"] = "native"
@@ -82,8 +79,8 @@ class OptimizerOffloadingConfig(BaseConfig):
     timeout_seconds: float = Field(120.0, gt=0)
     """Maximum host-side wait before offload aborts with pipeline diagnostics."""
 
-    numa_bind: bool = False
-    """Pin each rank's CPUs to its GPU's NUMA node so offloaded optimizer state and OMP threads stay memory-local. The CPU pipeline is DRAM-bandwidth-bound on multi-socket hosts; binding avoids cross-socket traffic."""
+    numa_bind: bool = True
+    """Pin each rank's CPUs to its GPU's NUMA node so offloaded optimizer state and OMP threads stay memory-local. The CPU pipeline is DRAM-bandwidth-bound on multi-socket hosts; binding avoids cross-socket traffic. No-op on single-socket hosts."""
 
 
 def _normalize_optimizer_offloading(value: Any) -> Any:
@@ -207,8 +204,8 @@ class ModelConfig(BaseModelConfig):
     fsdp_cpu_offload: bool = False
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
-    optim_cpu_offload: OptimizerOffloading = OptimizerOffloadingConfig()
-    """Configure CPU offloading for optimizer-owned state, or disable it with ``false``. Transfers always use pinned memory and persistent CUDA streams. Gradient offload accumulates gradients on CPU before a GPU optimizer step. Full offload additionally moves FP32 master weights to CPU and runs the optimizer there."""
+    optim_cpu_offload: OptimizerOffloading = None
+    """Full CPU optimizer offload: FP32 masters, moments, and gradients live in CPU RAM and the optimizer runs on CPU, overlapped with backward. Enable with ``true`` or an ``[model.optim_cpu_offload]`` section; disabled by default (optimizer state stays on GPU)."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
@@ -679,9 +676,9 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def optimizer_offload_disables_grad_clipping(self):
-        if self.model.optim_cpu_offload and self.model.optim_cpu_offload.full and self.optim.max_norm is not None:
+        if self.model.optim_cpu_offload and self.optim.max_norm is not None:
             warnings.warn(
-                "Gradient clipping prevents optimizer-in-backward overlap with full optimizer CPU offload. "
+                "Gradient clipping prevents optimizer-in-backward overlap with CPU optimizer offload. "
                 "Automatically setting optim.max_norm to None (disabled).",
                 stacklevel=1,
             )

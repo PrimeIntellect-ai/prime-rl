@@ -24,34 +24,33 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 - Validation aliases let renamed fields keep working; legacy keys can be remapped in a `model_validator(mode="before")`.
 - Auto-generated `--help` panels from `Field(description=...)` or PEP 224 docstrings.
 - Friendly errors: required-field boxes, validator errors point at the offending flag, unknown flags get a "did you mean" hint.
-- Gradient offload with a GPU optimizer step uses
-  `model.optim_cpu_offload = { gradients = true }`. It accumulates gradients in
-  pinned CPU RAM and streams the final gradient chunks back alongside optimizer
-  state. With gradient accumulation, budget two FP32 gradient-sized buffers.
-- Full optimizer offload uses `model.optim_cpu_offload = { full = true }`.
+- CPU optimizer offload (disabled by default) uses `model.optim_cpu_offload = true`.
   It keeps a persistent BF16 compute model on GPU, stores FP32 master weights,
   moments, and accumulated gradients in pageable CPU RAM, and moves BF16 values
   through bounded pinned D2H/H2D rings. Pinned allocation therefore depends on
   `transfer_buffer_count` and the largest local tensor/chunk rather than total model
   size. It runs each optimizer chunk when its final gradient arrives and overlaps
   the BF16 weight refresh with the remaining backward.
-  Full optimizer offload disables gradient clipping because a global clipping norm
-  would serialize the update after backward. Validation steps drain gradients and
+  Offload disables gradient clipping because a global clipping norm would
+  serialize the update after backward. Validation steps drain gradients and
   update synchronously after validation. Muon is not supported. Resumable
   checkpoints include the FP32 masters and optimizer state under the original
-  FSDP parameter names. Full-offload AdamW uses the native multi-tensor CPU kernel
+  FSDP parameter names. Offloaded AdamW uses the native multi-tensor CPU kernel
   by default. The native path transports BF16 model gradients and BF16 compute
   weights over PCIe while retaining FP32 masters, moments, optimizer arithmetic,
   and gradient accumulation. Numerics caveat: gradients reduce across ranks in
-  FP32 but FSDP2 materializes them in the BF16 compute model's dtype, so full
-  offload rounds each reduced gradient to BF16 once — this is not bit-identical
-  to the no-offload gradient path (the H2D weight refresh is exact: both paths
-  round FP32 masters to BF16 for compute). For bit-faithful gradient numerics,
-  use optimizer-state-only offload. It preallocates a bounded CUDA-event window and uses
-  finite diagnostic waits; tune `max_inflight_backwards` and `timeout_seconds` only
-  when the defaults are insufficient. It does not create a Gloo process group.
-  Set `cpu_optimizer_backend = "torch"` inside the offload table to use fused
-  PyTorch AdamW for debugging or parity checks.
+  FP32 but FSDP2 materializes them in the BF16 compute model's dtype, so offload
+  rounds each reduced gradient to BF16 once — not bit-identical to the
+  no-offload gradient path (the H2D weight refresh is exact: both paths round
+  FP32 masters to BF16 for compute). It preallocates a bounded CUDA-event
+  window and uses finite diagnostic waits; tune `max_inflight_backwards` and
+  `timeout_seconds` only when the defaults are insufficient. `numa_bind`
+  (default true) pins each rank to its GPU's NUMA node. It does not create a
+  Gloo process group. Set `cpu_optimizer_backend = "torch"` inside the offload
+  table to use fused PyTorch AdamW for debugging or parity checks.
+- Enabling `optim_cpu_offload` raises the trainer's intra-op thread count at
+  startup so the bandwidth-bound CPU AdamW kernels do not run on the launcher's
+  single-thread default.
 
 ## `rl` — RL training
 

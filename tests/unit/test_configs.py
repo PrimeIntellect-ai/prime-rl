@@ -164,7 +164,7 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 @pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
 def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
     with pytest.warns(UserWarning, match="Gradient clipping prevents optimizer-in-backward"):
-        config = config_cls.model_validate({"model": {"optim_cpu_offload": {"full": True}}, "optim": {"max_norm": 1.0}})
+        config = config_cls.model_validate({"model": {"optim_cpu_offload": True}, "optim": {"max_norm": 1.0}})
 
     assert config.optim.max_norm is None
 
@@ -175,7 +175,6 @@ def test_full_optimizer_offload_accepts_backend_and_pipeline_tuning(config_cls):
         {
             "model": {
                 "optim_cpu_offload": {
-                    "full": True,
                     "cpu_optimizer_backend": "torch",
                     "transfer_buffer_count": 6,
                     "max_inflight_backwards": 24,
