@@ -317,12 +317,22 @@ class SFTConfig(BaseConfig):
                 "disable ckpt.skip_gather_master_weights."
             )
 
+        if self.ckpt.keep_last is not None or self.ckpt.keep_interval is not None:
+            warnings.warn(
+                "ckpt.keep_last / ckpt.keep_interval can delete a weight checkpoint before the "
+                "evaluator consumes it when evals run slower than training - such steps are "
+                "skipped with a warning instead of evaluated.",
+                stacklevel=2,
+            )
+
         if self.inference is None:
             warnings.warn(
                 "Online evals are configured without an [inference] block - the launcher will not "
                 f"start an inference server. Make sure one is running at eval.client.base_url "
                 f"({self.eval.client.base_url}) with weight_broadcast.type = 'filesystem', "
-                "otherwise the evaluator will hang waiting for it.",
+                "otherwise the evaluator will hang waiting for it. If a router fronts the "
+                "deployment, set eval.client.admin_base_url to the engine URLs - admin ops "
+                "(pause/update_weights/resume) must bypass the router.",
                 stacklevel=2,
             )
             return self
@@ -340,6 +350,19 @@ class SFTConfig(BaseConfig):
                 f"inference.vllm.model ({self.inference.vllm.model}) does not match model.name "
                 f"({self.model.name}). Remove inference.vllm.model to inherit it."
             )
+
+        # Fill inference capacity with DP ranks (mirrors RLConfig.auto_setup_deployment).
+        num_infer_gpus = self.deployment.num_infer_gpus
+        vllm = self.inference.vllm
+        if num_infer_gpus != vllm.data_parallel_size * vllm.tensor_parallel_size:
+            if num_infer_gpus % vllm.tensor_parallel_size != 0:
+                raise ValueError(
+                    f"deployment.num_infer_gpus ({num_infer_gpus}) must be divisible by "
+                    f"inference.vllm.tensor_parallel_size ({vllm.tensor_parallel_size})."
+                )
+            vllm.data_parallel_size = num_infer_gpus // vllm.tensor_parallel_size
+        if vllm.api_server_count < vllm.data_parallel_size:
+            vllm.api_server_count = vllm.data_parallel_size
         if self.inference.weight_broadcast.type != "filesystem":
             raise ValueError(
                 "Online evals reload weights from disk — inference.weight_broadcast.type must be 'filesystem'."

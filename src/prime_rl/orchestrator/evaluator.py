@@ -140,7 +140,17 @@ class Evaluator:
 
         if reload_weights:
             get_logger().info(f"Updating inference weights to checkpoint step {step} ({weight_dir})")
-            await self.pool.update_weights(weight_dir, step=step)
+            try:
+                await self.pool.update_weights(weight_dir, step=step)
+            except Exception as exc:
+                # Evals are auxiliary to training: a failed reload (checkpoint cleaned
+                # under us, misconfigured admin endpoint) skips this step's evals
+                # instead of killing the run. Drain the queued examples so they don't
+                # leak into a later step's epoch with the wrong eval_step.
+                while self.eval_source.next_example() is not None:
+                    pass
+                get_logger().error(f"Failed to update inference weights to step {step} - skipping evals: {exc!r}")
+                return
 
         get_logger().info(f"Starting evals in {', '.join(fired)} at step {step} ({total_rollouts} total rollouts)")
         await self.run_evals(step)

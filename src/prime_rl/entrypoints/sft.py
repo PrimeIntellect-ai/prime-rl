@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import uuid
@@ -17,9 +19,11 @@ from prime_rl.utils.config import cli, to_toml_dict
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     format_log_message,
+    get_all_ckpt_steps,
     get_ckpt_dir,
     get_config_dir,
     get_log_dir,
+    get_step_path,
     get_weights_dir,
     resolve_latest_ckpt_step,
     validate_output_dir,
@@ -216,17 +220,21 @@ def sft_local(config: SFTConfig):
     log_dir = get_log_dir(config.output_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Derive launcher-local GPU IDs: inference first, then the trainer
-    num_infer_gpus = config.deployment.num_infer_gpus if config.inference is not None else 0
-    total_requested_gpus = num_infer_gpus + config.deployment.num_gpus
-    physical_gpu_ids = get_physical_gpu_ids()
-    if total_requested_gpus > len(physical_gpu_ids):
-        raise ValueError(
-            f"Requested {total_requested_gpus} GPUs via deployment settings, but only "
-            f"{len(physical_gpu_ids)} physical GPU(s) are available: {physical_gpu_ids}"
-        )
-    infer_gpu_ids = physical_gpu_ids[:num_infer_gpus]
-    trainer_gpu_ids = physical_gpu_ids[num_infer_gpus:total_requested_gpus]
+    # Derive launcher-local GPU IDs (inference first, then the trainer) only when the
+    # launcher must partition GPUs between processes; plain SFT leaves them to torchrun.
+    infer_gpu_ids: list[int] = []
+    trainer_gpu_ids: list[int] = []
+    if config.inference is not None:
+        num_infer_gpus = config.deployment.num_infer_gpus
+        total_requested_gpus = num_infer_gpus + config.deployment.num_gpus
+        physical_gpu_ids = get_physical_gpu_ids()
+        if total_requested_gpus > len(physical_gpu_ids):
+            raise ValueError(
+                f"Requested {total_requested_gpus} GPUs via deployment settings, but only "
+                f"{len(physical_gpu_ids)} physical GPU(s) are available: {physical_gpu_ids}"
+            )
+        infer_gpu_ids = physical_gpu_ids[:num_infer_gpus]
+        trainer_gpu_ids = physical_gpu_ids[num_infer_gpus:total_requested_gpus]
 
     # Trainer and evaluator log to a single shared W&B run, one label per process.
     wandb_shared_env: dict[str, str] = {}
@@ -234,7 +242,7 @@ def sft_local(config: SFTConfig):
         wandb_shared_env = {
             "WANDB_SHARED_MODE": "1",
             "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex),
-            "WANDB_SHARED_PRIMARY": "trainer",
+            "WANDB_SHARED_PRIMARY": "evaluator",
             "WANDB_PROGRAM": "uv run sft",
             "WANDB_ARGS": json.dumps(sys.argv),
         }
@@ -243,6 +251,14 @@ def sft_local(config: SFTConfig):
     monitor_threads: list[Thread] = []
     error_queue: list[Exception] = []
     stop_events: dict[str, Event] = {}
+
+    def sigterm_handler(signum, frame):
+        logger.warning("Received SIGTERM, terminating all processes...")
+        cleanup_threads(monitor_threads)
+        cleanup_processes(processes)
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, sigterm_handler)
 
     def start_process(name: str, cmd: list[str], env: dict[str, str], log_path: Path) -> Popen:
         logger.debug(f"{name.capitalize()} command: {' '.join(cmd)}")
@@ -320,7 +336,8 @@ def sft_local(config: SFTConfig):
             "@",
             config_path.as_posix(),
         ]
-        logger.info(f"Starting SFT trainer on GPU(s) {' '.join(map(str, trainer_gpu_ids))}")
+        gpus_suffix = f" on GPU(s) {' '.join(map(str, trainer_gpu_ids))}" if trainer_gpu_ids else ""
+        logger.info(f"Starting SFT trainer with {config.deployment.num_gpus} GPU(s){gpus_suffix}")
         trainer_env = {
             **os.environ,
             **DEFAULT_COMMON_ENV_VARS,
@@ -331,6 +348,7 @@ def sft_local(config: SFTConfig):
         if config.eval is not None:
             trainer_env["LOGURU_FORCE_COLORS"] = "1"
             trainer_env["WANDB_SHARED_LABEL"] = "trainer"
+        if trainer_gpu_ids:
             trainer_env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, trainer_gpu_ids))
         trainer_process = start_process("trainer", trainer_cmd, env=trainer_env, log_path=log_dir / "trainer.log")
 
@@ -346,20 +364,17 @@ def sft_local(config: SFTConfig):
         terminal_events = [stop_events["trainer"]]
         if "evaluator" in stop_events:
             terminal_events.append(stop_events["evaluator"])
-        while not all(event.is_set() for event in terminal_events):
+        while True:
+            pending = [event for event in terminal_events if not event.is_set()]
             if error_queue:
                 logger.error(f"Error: {error_queue[0]}")
                 logger.error("Terminating all processes...")
                 cleanup_threads(monitor_threads)
                 cleanup_processes(processes)
                 sys.exit(1)
-            terminal_events[0].wait(timeout=1)
-
-        if error_queue:
-            logger.error(f"Error: {error_queue[0]}")
-            cleanup_threads(monitor_threads)
-            cleanup_processes(processes)
-            sys.exit(1)
+            if not pending:
+                break
+            pending[0].wait(timeout=1)
 
         if trainer_process.returncode != 0:
             logger.error(f"Trainer failed with exit code {trainer_process.returncode}")
@@ -383,11 +398,31 @@ def sft_local(config: SFTConfig):
         raise
 
 
+def clean_stale_weights(config: SFTConfig) -> None:
+    """Remove weight checkpoints a previous run left behind: everything on a fresh
+    start, steps past the resume step on resume. Without this the evaluator would
+    replay stale checkpoints (and then skip the re-trained ones at the same steps)."""
+    ckpt_base = (config.ckpt.output_dir if config.ckpt else None) or config.output_dir
+    weights_dir = get_weights_dir(ckpt_base)
+    resume_step = resolve_resume_step(config)
+    stale_steps = [step for step in get_all_ckpt_steps(weights_dir) if resume_step is None or step > resume_step]
+    if not stale_steps:
+        return
+    setup_logger(config.log.level or "info").info(
+        f"Deleting {len(stale_steps)} stale weight checkpoint(s) in {weights_dir} ({','.join(map(str, stale_steps))})"
+    )
+    for step in stale_steps:
+        shutil.rmtree(get_step_path(weights_dir, step), ignore_errors=True)
+
+
 def sft(config: SFTConfig):
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
     clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
     validate_output_dir(config.output_dir, resuming=resuming, clean=clean)
     config.output_dir.mkdir(parents=True, exist_ok=True)
+
+    if config.eval is not None and not config.dry_run:
+        clean_stale_weights(config)
 
     if not config.dry_run:
         from prime_rl.trainer.model import pre_download_model
