@@ -85,6 +85,39 @@ For every point, compare the same model/CP configuration with and without native
 
 Capture step time, TPS, MFU, peak HBM, process RSS, pinned bytes and allocation time, CPU Adam time, BF16-to-FP32 materialization time, achieved D2H/H2D bandwidth, CPU utilization, NUMA locality, and ring occupancy/stalls. Record the exact GPU, CPU, RAM, PCIe/NVLink topology, thread count, affinity, and environment variables with every result.
 
+## One-node 8xH200 baseline results (2026-08-12)
+
+Qwen3-30B-A3B, custom impl, EP8, fake fixed data, random init, balanced routing, AdamW, no clipping, compile/quantization off. Node: 8xH200 SXM, 2x Xeon Platinum (240 hw threads, 2 NUMA nodes), 2.95 TiB RAM. Median over steps 3-7; configs in `benchmarks/offload/`.
+
+Four variants at seq 8192, accumulation 1, `OMP_NUM_THREADS=28`:
+
+| Variant | Step med | TPS | Peak HBM |
+| --- | ---: | ---: | ---: |
+| no offload | 4.57 s | 14.1k | 35.3 GiB |
+| optimizer-state-only offload | 4.41 s | 13.2k | 35.3 GiB |
+| full offload, torch backend | 6.93 s | 9.4k | 14.5 GiB |
+| full offload, native backend | 6.75 s | 9.9k | 19.4 GiB |
+
+Losses were bit-identical across all variants at every step. Sequence sweep, no offload vs native full offload (64K adds activation recompute to both):
+
+| Seq | No offload | Full native | TPS retained | Peak HBM |
+| ---: | ---: | ---: | ---: | ---: |
+| 2K | 3.48 s | 6.77 s | 51% | 32.9 → 16.5 GiB |
+| 8K | 4.57 s | 6.75 s | 68% | 35.3 → 19.4 GiB |
+| 16K | 9.35 s | 10.28 s | 91% | 39.3 → 22.6 GiB |
+| 32K | 19.84 s | 18.45 s | 108% | 46.9 → 29.9 GiB |
+| 64K | 35.29 s | 34.62 s | 102% | 58.7 → 45.6 GiB |
+
+Findings from the pipeline timing diagnostics (now built in, debug level):
+
+- The launcher defaults trainer processes to `OMP_NUM_THREADS=1`, which serializes the CPU optimizer (15.7 s/step at 8K). The benchmark configs set 28 threads/rank; anything ≥14 is equivalent (below).
+- The short-sequence floor (~6.1-6.8 s for 30.5B params) is host-DRAM-bandwidth-bound, not core-bound: the native Adam call measures ~2.9-3.4 s/step against a ~0.4 s isolated-compute estimate, is invariant to OMP 14/28/40, and ring depth 8 is slightly worse than 4. Eight ranks jointly move roughly 1 TB of host DRAM traffic per step (Adam state + materialization); PCIe waits are negligible (d2h_wait ≈ 0.05 s).
+- `optim_cpu_offload.numa_bind = true` pins each rank to its GPU's socket before state allocation (first-touch locality). At 8K it trims the floor 6.39 → 6.13 s; at 16K it moves full offload from 10.28 s to 7.89 s — faster than the 9.35 s no-offload baseline. With binding, full offload is a net throughput win from 16K per-GPU sequence upward while roughly halving peak HBM.
+
+Given production per-GPU sequence lengths sit at or above the crossover, the measured data supports the existing guidance: keep the bounded implementation and use `numa_bind`; the chunk-owned-D2H redesign (ring-direct BF16 consume, ~29% less DRAM traffic) is only warranted if short-sequence full offload becomes a production requirement.
+
+The GLM-5 proxy remains to be run. Measured on this hardware class the 22-layer proxy needs 2.78 TiB of CPU state against 2.95 TiB node RAM (~2.6 TiB available) — use 20 layers (2.49 TiB, tight) or 19 layers (2.35 TiB, safe) on these nodes.
+
 ## Robustness gates
 
 Before optimizing further:
