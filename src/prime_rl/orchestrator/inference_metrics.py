@@ -183,6 +183,18 @@ def engine_values(sample: EngineSample, previous: TimedSnapshot | None) -> dict[
             values[f"{name}:rate"] = count_delta / dt
         if count_delta > 0 and sum_delta >= 0:
             values[f"{name}:mean"] = sum_delta / count_delta
+    # Per-engine ratios so the scope aggregations include min/max — the pooled
+    # scope-level ratio alone hides a single engine's collapse (e.g. one engine
+    # thrashing at a 5% prefix hit rate inside a healthy fleet average).
+    for name, (numerator_names, denominator_names) in RATIO_METRICS.items():
+        numerator = sum(
+            sample.snapshot.counters.get(c, 0.0) - previous.snapshot.counters.get(c, 0.0) for c in numerator_names
+        )
+        denominator = sum(
+            sample.snapshot.counters.get(c, 0.0) - previous.snapshot.counters.get(c, 0.0) for c in denominator_names
+        )
+        if numerator >= 0 and denominator > 0:
+            values[name] = numerator / denominator
     return values
 
 
