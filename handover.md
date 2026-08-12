@@ -116,7 +116,17 @@ Findings from the pipeline timing diagnostics (now built in, debug level):
 
 Given production per-GPU sequence lengths sit at or above the crossover, the measured data supports the existing guidance: keep the bounded implementation and use `numa_bind`; the chunk-owned-D2H redesign (ring-direct BF16 consume, ~29% less DRAM traffic) is only warranted if short-sequence full offload becomes a production requirement.
 
-The GLM-5 proxy remains to be run. Measured on this hardware class the 22-layer proxy needs 2.78 TiB of CPU state against 2.95 TiB node RAM (~2.6 TiB available) — use 20 layers (2.49 TiB, tight) or 19 layers (2.35 TiB, safe) on these nodes.
+GLM-5 20-layer proxy (171B params, CP2, EP8, native full offload, numa_bind, recompute, accumulation 1) on the same node — 22 layers (2.78 TiB CPU state) does not fit this node's 2.95 TiB, 20 layers does. Median of steps 2-5, loss constant at 11.9504 across all lengths:
+
+| Seq | Step med | TPS | MFU | Peak HBM | Exposed drain | Host RAM free |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16K | 25.6 s | 2.6k | 2.7% | 102 GiB | 17.4 s | 76 GiB |
+| 32K | 23.1 s | 5.8k | 8.0% | 115 GiB | 11.8 s | 61 GiB |
+| 64K | 37.2 s | 7.3k | 14.5% | 134 GiB | 6.9 s | 16 GiB |
+
+At this parameter scale the CPU pipeline costs ~18 s of Adam per step (21.4B params/rank); 32K is faster end-to-end than 16K because the pipeline unhides. No no-offload reference exists — optimizer states (257 GiB/GPU) cannot fit on H200s, so full offload is what makes this model trainable on one node at all. The per-rank load matches the four-node full-model target (23.2B params/rank), so expect a similar ~7 s exposed drain at 64K there, shrinking further at the 128K endpoint. 64K runs at 95% HBM and 16 GiB free host RAM: 20 layers is the ceiling for this node class, and 128K will need activation offloading.
+
+Note for fake-data debug runs: the entrypoints now skip the weight pre-download under `debug.random_init` (previously a GLM-5 run tried to pull ~1.4 TB of weights into the shared HF cache).
 
 ## Robustness gates
 
