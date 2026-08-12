@@ -414,6 +414,45 @@ def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
     }
 
 
+def bind_process_to_gpu_numa_node() -> None:
+    """Pin this rank's CPUs to its GPU's NUMA node.
+
+    Offloaded optimizer state is pageable host memory placed by first-touch, and the
+    CPU optimizer pipeline is DRAM-bandwidth-bound; binding before the state is
+    allocated keeps slabs, OMP threads, and pinned rings local to the socket the
+    GPU hangs off. Must run before CPU optimizer state allocation and before the
+    OMP thread pool spins up.
+    """
+    import os
+
+    import pynvml
+
+    logger = get_logger()
+    device_id = torch.cuda.current_device()
+    pynvml.nvmlInit()
+    try:
+        bus_id = pynvml.nvmlDeviceGetPciInfo(pynvml.nvmlDeviceGetHandleByIndex(device_id)).busId
+    finally:
+        pynvml.nvmlShutdown()
+    if isinstance(bus_id, bytes):
+        bus_id = bus_id.decode()
+    domain, rest = bus_id.split(":", 1)
+    sysfs_bus_id = f"{int(domain, 16):04x}:{rest}".lower()
+    numa_node = int(Path(f"/sys/bus/pci/devices/{sysfs_bus_id}/numa_node").read_text())
+    if numa_node < 0:
+        logger.warning(f"GPU {device_id} ({sysfs_bus_id}) reports no NUMA node; skipping NUMA binding")
+        return
+    cpus: set[int] = set()
+    for part in Path(f"/sys/devices/system/node/node{numa_node}/cpulist").read_text().strip().split(","):
+        if "-" in part:
+            start, end = part.split("-")
+            cpus.update(range(int(start), int(end) + 1))
+        else:
+            cpus.add(int(part))
+    os.sched_setaffinity(0, cpus)
+    logger.info(f"Bound rank with GPU {device_id} to NUMA node {numa_node} ({len(cpus)} CPUs)")
+
+
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
     device_id = get_world().local_rank
     torch.cuda.set_device(device_id)

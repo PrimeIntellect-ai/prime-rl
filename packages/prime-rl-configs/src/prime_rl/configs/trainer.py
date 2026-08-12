@@ -73,6 +73,9 @@ class OptimizerOffloadingConfig(BaseConfig):
     timeout_seconds: float = Field(120.0, gt=0)
     """Maximum host-side wait before offload aborts with pipeline diagnostics."""
 
+    numa_bind: bool = False
+    """Pin each rank's CPUs to its GPU's NUMA node so offloaded optimizer state and OMP threads stay memory-local. The CPU pipeline is DRAM-bandwidth-bound on multi-socket hosts; binding avoids cross-socket traffic."""
+
 
 def _normalize_optimizer_offloading(value: Any) -> Any:
     if value is True:

@@ -40,6 +40,7 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     begin_backward,
+    bind_process_to_gpu_numa_node,
     clip_grad_norm_,
     export_benchmark_json,
     finish_backward,
@@ -90,6 +91,8 @@ def train(config: SFTConfig):
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
     )
+    if config.model.optim_cpu_offload and config.model.optim_cpu_offload.numa_bind:
+        bind_process_to_gpu_numa_node()
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
