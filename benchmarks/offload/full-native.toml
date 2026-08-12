@@ -1,4 +1,11 @@
 # Overlay: full offload with the native CPU AdamW kernel — production candidate.
+#
+# The launcher defaults trainer processes to OMP_NUM_THREADS=1, which serializes
+# the CPU optimizer (measured 15.7 s/step vs 6.5 s at 28 threads on 8xH200 with
+# 224 usable cores). Budget roughly cores/ranks threads per rank for your host.
+[env_vars]
+OMP_NUM_THREADS = "28"
+
 [model.optim_cpu_offload]
 full = true
 cpu_optimizer_backend = "native"

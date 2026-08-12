@@ -15,6 +15,14 @@
 #   uv run sft @ benchmarks/offload/glm5-proxy.toml
 max_steps = 7
 
+[deployment]
+num_gpus = 8
+
+# See full-native.toml: the launcher default of OMP_NUM_THREADS=1 serializes
+# the CPU optimizer. Budget roughly cores/ranks threads per rank.
+[env_vars]
+OMP_NUM_THREADS = "28"
+
 [model]
 name = "zai-org/GLM-5"
 impl = "custom"
