@@ -22,9 +22,9 @@ AGGREGATIONS = {"min": min, "max": max, "sum": sum, "mean": mean, "median": medi
 # Scope-level ratios derived from counter deltas; each operand lists legacy and
 # OpenMetrics sample names, whichever the running vLLM version emits.
 RATIO_METRICS = {
-    "vllm:prefix_cache_hit_rate": (
-        ("vllm:prefix_cache_hits", "vllm:prefix_cache_hits_total"),
-        ("vllm:prefix_cache_queries", "vllm:prefix_cache_queries_total"),
+    "prefix_cache_hit_rate": (
+        ("prefix_cache_hits", "prefix_cache_hits_total"),
+        ("prefix_cache_queries", "prefix_cache_queries_total"),
     ),
 }
 
@@ -90,12 +90,13 @@ def parse_prometheus_text(text: str) -> dict[str, EngineSnapshot]:
             if sample.name.endswith("_created") or not math.isfinite(sample.value):
                 continue
             engine = engines.setdefault(sample.labels.get("engine", "0"), EngineSnapshot())
+            name = sample.name.removeprefix(METRIC_PREFIX)
             if family.type == "gauge":
-                engine.gauges[sample.name] = engine.gauges.get(sample.name, 0.0) + sample.value
+                engine.gauges[name] = engine.gauges.get(name, 0.0) + sample.value
             elif family.type == "counter":
-                engine.counters[sample.name] = engine.counters.get(sample.name, 0.0) + sample.value
+                engine.counters[name] = engine.counters.get(name, 0.0) + sample.value
             else:
-                histogram = engine.histograms.setdefault(family.name, HistogramSnapshot())
+                histogram = engine.histograms.setdefault(family.name.removeprefix(METRIC_PREFIX), HistogramSnapshot())
                 if sample.name.endswith("_sum"):
                     histogram.sum += sample.value
                 elif sample.name.endswith("_count"):
@@ -236,13 +237,13 @@ def build_scope_metrics(
         for label, quantile in QUANTILES.items():
             value = histogram_quantile(pooled, quantile)
             if value is not None:
-                metrics[f"{prefix}/{name}:{label}"] = value
+                metrics[f"{prefix}/{name}/{label}"] = value
 
     for name, (numerator_names, denominator_names) in RATIO_METRICS.items():
         numerator = sum(counter_deltas.get(candidate, 0.0) for candidate in numerator_names)
         denominator = sum(counter_deltas.get(candidate, 0.0) for candidate in denominator_names)
         if denominator > 0:
-            metrics[f"{prefix}/{name}"] = numerator / denominator
+            metrics[f"{prefix}/{name}/pooled"] = numerator / denominator
 
     return metrics
 
@@ -250,12 +251,15 @@ def build_scope_metrics(
 class InferenceMetricsCollector:
     """Polls vLLM Prometheus /metrics and mirrors every engine metric to W&B.
 
-    All ``vllm:*`` families are passed through dynamically: gauges and counters
-    verbatim, histograms as ``_sum``/``_count`` plus derived ``:rate``/``:mean``
-    and scope-level quantiles. Per-engine series are logged under
-    ``inference/engine/{id}/...`` and cross-engine aggregations under
-    ``inference/agg/...`` (plus ``inference/prefill|decode/...`` for
-    disaggregated deployments).
+    All ``vllm:*`` families are passed through dynamically (the ``vllm:``
+    prefix is stripped): gauges and counters verbatim, histograms as
+    ``_sum``/``_count`` plus derived ``:rate``/``:mean`` and scope-level
+    quantiles. Keys are ``inference/{scope}/{metric}/{stat}``: per-engine
+    series under ``inference/{engine_id}/{metric}`` and cross-engine
+    aggregations under ``inference/agg/{metric}/{stat}`` (plus
+    ``inference/prefill|decode/...`` for disaggregated deployments). Engine
+    ids (``server0.0``, ``prefill0.1``, ...) never collide with the scope
+    names.
     """
 
     def __init__(self, admin_clients: list[AsyncClient], roles: list[str | None] | None = None):
@@ -318,7 +322,7 @@ class InferenceMetricsCollector:
         metrics: dict[str, float] = {}
         for sample, values in zip(samples, values_per_engine):
             for name, value in values.items():
-                metrics[f"inference/engine/{sample.engine_id}/{name}"] = value
+                metrics[f"inference/{sample.engine_id}/{name}"] = value
 
         scopes: list[tuple[str, list[int]]] = [("agg", list(range(len(samples))))]
         if self.has_pd_roles:
