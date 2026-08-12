@@ -308,7 +308,7 @@ class VllmRouterConfig(BaseConfig):
 
     type: Literal["vllm-router"] = "vllm-router"
 
-    policy: str = "cache_aware"
+    policy: Literal["cache_aware", "consistent_hash", "round_robin", "power_of_two", "random"] = "cache_aware"
     """Routing policy: ``cache_aware`` (prefix affinity, falls back to shortest-queue when engine load is imbalanced), ``consistent_hash`` (sticky per X-Session-ID, no load awareness), ``round_robin``, ``power_of_two``, or ``random``."""
 
     cache_threshold: float | None = Field(None, ge=0.0, le=1.0)
