@@ -1,0 +1,24 @@
+# Profiling base config: Qwen3-30B-A3B SFT, reduced depth, EP=8 on 8 GPUs.
+# seq_len, quantization, output_dir and trace_path are set per run by the campaign runner.
+
+max_steps = 8        # steps 0..8: 2 skipped (compile/warmup) + 1 profiler warmup + 6 recorded
+trace_skip_steps = 2
+trace_ranks = [0]
+dist_timeout_seconds = 600  # short benchmark steps; don't let a single-rank crash stall the sweep for an hour
+
+[model]
+name = "Qwen/Qwen3-30B-A3B"
+ep = 8
+
+[model.debug]
+num_layers = 12      # reduced depth (full model: 48); per-step bottleneck profile is layer-repetitive
+
+[data]
+type = "sft"
+name = "allenai/tulu-3-sft-mixture"
+batch_size = 8
+micro_batch_size = 1
+seq_len = 8192
+
+[deployment]
+num_gpus = 8
