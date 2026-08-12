@@ -178,7 +178,9 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         "--prometheus-port",
         str(config.server.port + 21000),
     ]
-    return subprocess.Popen(cmd)
+    # New session so a terminal Ctrl-C only signals the server process: the
+    # engine drains first, then inference_local's finally terminates the router.
+    return subprocess.Popen(cmd, start_new_session=True)
 
 
 def inference_local(config: InferenceConfig):
@@ -211,9 +213,14 @@ def inference_local(config: InferenceConfig):
 
         def watch_router():
             router_process.wait()
-            if not router_stopping.is_set():
-                logger.error(f"Router exited with code {router_process.returncode} - shutting down")
-                os.kill(os.getpid(), signal.SIGTERM)
+            if router_stopping.is_set():
+                return
+            # A zero exit is an external shutdown racing ours (e.g. the rl
+            # launcher SIGTERMs the whole tree, router first) - not a crash.
+            code = router_process.returncode
+            log = logger.warning if code == 0 else logger.error
+            log(f"Router exited with code {code} - shutting down")
+            os.kill(os.getpid(), signal.SIGTERM)
 
         Thread(target=watch_router, daemon=True).start()
     else:
