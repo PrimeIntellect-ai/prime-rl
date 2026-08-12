@@ -13,8 +13,7 @@ project = "algorithms-debug"
 name = "debug-echo"
 
 [orchestrator]
-token_batch_size = 32_768
-max_inflight_episodes = 32
+batch_size = 32
 group_size = 4
 
 # alphabet-sort's feedback arrives as user messages, so train the user role

@@ -18,7 +18,7 @@ name = "wordle"
 name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 
 [orchestrator]
-token_batch_size = 262_144
+batch_size = 128
 group_size = 8
 
 [[orchestrator.train.source]]

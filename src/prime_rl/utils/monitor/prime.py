@@ -164,6 +164,7 @@ class PrimeMonitor(Monitor):
             "max_steps": (run_config.max_steps if run_config else None) or 0,
         }
         if run_config:
+            payload["batch_size"] = run_config.batch_size
             payload["rollouts_per_example"] = run_config.group_size
             payload["seq_len"] = run_config.seq_len
             payload["environments"] = [{"id": env.env_id} for env in run_config.train.source]

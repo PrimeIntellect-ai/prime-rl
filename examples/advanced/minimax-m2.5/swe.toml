@@ -44,7 +44,7 @@ lr = 1e-6
 weight_decay = 0.01
 
 [orchestrator]
-token_batch_size = 33_554_432
+batch_size = 2048
 max_inflight_episodes = 4096
 max_off_policy_steps = 16
 

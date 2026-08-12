@@ -1,6 +1,6 @@
 max_steps = 20
 seq_len = 2048
-token_batch_size = 16_384
+batch_size = 128
 group_size = 16
 
 [model]

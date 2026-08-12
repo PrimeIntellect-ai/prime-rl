@@ -19,7 +19,7 @@ lr = 3e-6
 impl = "custom"
 
 [orchestrator]
-token_batch_size = 16_384
+batch_size = 128
 group_size = 16
 
 [orchestrator.train.sampling]

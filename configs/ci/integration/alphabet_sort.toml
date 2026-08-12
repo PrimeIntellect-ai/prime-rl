@@ -16,7 +16,7 @@ name = "Qwen/Qwen3-0.6B"
 lr = 1e-5
 
 [orchestrator]
-token_batch_size = 131_072
+batch_size = 128
 group_size = 8
 
 [orchestrator.train.sampling]

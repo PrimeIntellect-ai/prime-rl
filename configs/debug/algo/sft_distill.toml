@@ -16,7 +16,7 @@ project = "algorithms-debug"
 name = "debug-sft"
 
 [orchestrator]
-token_batch_size = 16_384
+batch_size = 128
 group_size = 4
 
 [orchestrator.algo]

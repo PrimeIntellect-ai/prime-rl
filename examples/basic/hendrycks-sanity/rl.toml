@@ -12,8 +12,7 @@ num_infer_gpus = 4
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
 [orchestrator]
-token_batch_size = 2_097_152
-max_inflight_episodes = 512
+batch_size = 512
 group_size = 8
 seq_len = 8192
 

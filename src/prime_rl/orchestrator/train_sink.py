@@ -8,8 +8,8 @@
    survivors to the env algorithm's ``finalize_group`` (advantages +
    per-sample wire stamping), annotates degeneration detections, and drops
    zero-advantage rollouts before they consume batch budget.
-3. ``process_batch`` — assembles the trainer-bound ``TrainingSample`` list.
-   Returns a ``TrainBatch``.
+3. ``process_batch`` — pops a ``batch_size`` cohort and assembles the
+   trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
 ``add()`` takes one episode (``list[Rollout]``) and returns
 ``TrainBatch | None``; group accounting counts episodes, never loose traces.
@@ -43,19 +43,6 @@ from prime_rl.utils.logger import get_logger
 ZERO_ADVANTAGE_STALL_WARN_GROUPS = 25
 
 
-def payload_tokens(rollout: Rollout) -> int:
-    """Token cost of the rollout's trainer-bound payload — the samples built by
-    ``process_rollout``. This is what actually ships: forked traces can drop
-    branches with no trainable tokens, so ``Trace.num_total_tokens`` (which sums
-    over all branches) may overcount. For linear traces the two agree.
-
-    Zero-payload rollouts (no trainable samples at all) fall back to the trace
-    total so they still advance token batching — a degenerate all-zero-payload
-    stream then ships empty batches and trips the orchestrator's
-    consecutive-empty-batch abort instead of stalling the readiness check."""
-    return sum(len(sample.token_ids) for sample in rollout.samples) or rollout.num_total_tokens
-
-
 class TrainSink:
     """Three-level train sink. Constructed once, fed via ``add(rollout)``."""
 
@@ -71,7 +58,7 @@ class TrainSink:
         self.tokenizer = tokenizer
         self.train_envs = train_envs
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
-        self.token_batch_size = config.token_batch_size
+        self.batch_size = config.batch_size
         self.count_zero_advantage_in_batch = config.count_zero_advantage_in_batch
         self.gibberish_logprob_threshold = gibberish_logprob_threshold(tokenizer.vocab_size)
 
@@ -87,9 +74,6 @@ class TrainSink:
         # add several traces to ``pending_groups`` but counts once here).
         self.pending_group_episodes: dict[uuid.UUID, int] = defaultdict(int)
         self.pending_batch: list[Rollout] = []
-        # Running payload-token total of ``pending_batch``, kept in sync on
-        # append/pop so the readiness check never re-sums per arrival.
-        self.pending_tokens: int = 0
         # Consecutive finalized groups that contributed nothing to
         # ``pending_batch`` because every survivor was zero-advantage
         self.consecutive_zero_advantage_groups = 0
@@ -98,11 +82,11 @@ class TrainSink:
         return self.train_envs.get(env_name).config.group_size
 
     def batch_progress(self) -> tuple[int, int]:
-        """``(current, target)`` payload tokens for the train batch — counts
-        only ``pending_batch`` (survivors of finalized groups, queued for the
+        """``(current, target)`` rollouts for the train batch — counts only
+        ``pending_batch`` (survivors of finalized groups, queued for the
         trainer), so it's an honest 0→target fill. Partial-group arrivals are
         reported separately by ``buffered_count()``."""
-        return self.pending_tokens, self.token_batch_size
+        return len(self.pending_batch), self.batch_size
 
     def buffered_count(self) -> int:
         """Episodes that have arrived but sit in not-yet-complete groups —
@@ -110,11 +94,11 @@ class TrainSink:
         return sum(self.pending_group_episodes.values())
 
     def pending_batch_by_env(self) -> dict[str, int]:
-        """Per-env payload-token breakdown of ``batch_progress()``
-        (``pending_batch`` only); values sum to the aggregate."""
+        """Per-env breakdown of ``batch_progress()`` (``pending_batch`` only);
+        values sum to the aggregate."""
         counts: dict[str, int] = defaultdict(int)
         for r in self.pending_batch:
-            counts[r.env_name] += payload_tokens(r)
+            counts[r.env_name] += 1
         return dict(counts)
 
     async def add(self, episode: list[Rollout]) -> TrainBatch | None:
@@ -134,7 +118,7 @@ class TrainSink:
         # ``pending_batch`` only grows on group finalization, so readiness is
         # only re-checked here — the window of a shipped batch then always
         # contains at least the group that finalized it.
-        if self.pending_tokens >= self.token_batch_size:
+        if len(self.pending_batch) >= self.batch_size:
             return self.process_batch()
         return None
 
@@ -212,13 +196,12 @@ class TrainSink:
             r.is_filtered = r.filter_results["zero_advantage"] and not env.algorithm.trains_on_zero_advantage
             if r.is_filtered:
                 num_zero_advantage += 1
-                # Opt-in: a dropped rollout still consumes batch budget, so the
+                # Opt-in: a dropped rollout still occupies a batch slot, so the
                 # per-step sampling effort stays fixed while the trained-on
-                # token count varies with the zero-advantage rate.
+                # sample count varies with the zero-advantage rate.
                 if not self.count_zero_advantage_in_batch:
                     continue
             self.pending_batch.append(r)
-            self.pending_tokens += payload_tokens(r)
             appended += 1
 
         if appended:
@@ -241,19 +224,11 @@ class TrainSink:
         )
 
     def process_batch(self) -> TrainBatch:
-        """Pop the cohort whose payload tokens reach ``token_batch_size`` off
-        ``pending_batch`` and assemble the trainer-bound ``TrainingSample``
-        list. Overflow stays for the next batch."""
-        cut = 0
-        running = 0
-        for i, r in enumerate(self.pending_batch):
-            running += payload_tokens(r)
-            cut = i + 1
-            if running >= self.token_batch_size:
-                break
-        cohort = self.pending_batch[:cut]
-        self.pending_batch = self.pending_batch[cut:]
-        self.pending_tokens -= running
+        """Pop a ``batch_size`` cohort off ``pending_batch`` and assemble the
+        trainer-bound ``TrainingSample`` list. Overflow stays for the next
+        batch."""
+        cohort = self.pending_batch[: self.batch_size]
+        self.pending_batch = self.pending_batch[self.batch_size :]
 
         # Samples are pre-built by ``process_rollout``; ``process_group`` already stamped the
         # advantage stream and loss routing on each sample. Zero-advantage rollouts kept in the

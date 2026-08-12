@@ -15,8 +15,7 @@ name = "wordle"
 name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 
 [orchestrator]
-token_batch_size = 1_048_576
-max_inflight_episodes = 512
+batch_size = 512
 group_size = 16
 
 [[orchestrator.train.source]]

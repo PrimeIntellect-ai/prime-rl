@@ -15,7 +15,7 @@ project = "hendrycks-sanity"
 name = "hendrycks-sanity"
 
 [orchestrator]
-token_batch_size = 524_288
+batch_size = 128
 group_size = 8
 seq_len = 8192
 

@@ -408,14 +408,14 @@ class OrchestratorConfig(BaseConfig):
     env_server_base_port: int = Field(5000, ge=1, le=65535)
     """First port of the env-server port range: the source at position ``i`` (train, then eval) is served at ``tcp://127.0.0.1:<base + i>``. Sources with an explicit ``serve.address`` keep it instead, without shifting the other sources' ports (indices stay positional). Give concurrent runs on one host distinct bases (e.g. one per multi-run orchestrator)."""
 
-    token_batch_size: int = Field(131_072, ge=1)
-    """Tokens to train on per step. A batch ships once the pending rollouts' trainer-bound payload reaches this many tokens. Size it as (target rollouts per step) x (average tokens per rollout); the default matches the old 128-rollout default at ~1k tokens per rollout."""
+    batch_size: int = Field(128, ge=1)
+    """Rollouts to train on per step. Must be divisible by ``group_size``."""
 
     count_zero_advantage_in_batch: bool = False
-    """Count zero-advantage rollouts toward ``token_batch_size`` (they are still not shipped to the trainer). By default the batch fills with informative samples only, which keeps the trained-on batch predictable but makes the per-step sampling time vary with the zero-advantage rate. Opt in to recover a fixed sampling budget per step at the cost of a variable number of trained-on tokens."""
+    """Count zero-advantage rollouts toward ``batch_size`` (they are still not shipped to the trainer). By default the batch fills with informative samples only, which keeps the trained-on batch predictable but makes the per-step sampling time vary with the zero-advantage rate. Opt in to recover a fixed sampling budget per step at the cost of a variable number of trained-on samples."""
 
-    max_inflight_episodes: int = Field(128, ge=1)
-    """Maximum number of episodes kept in-flight — one episode is one agent run at a time, whatever the env's agents are. Tune together with ``token_batch_size``: roughly ``token_batch_size / (average tokens per rollout)``, higher to oversample ahead of the next batch."""
+    max_inflight_episodes: int | None = Field(None, ge=1)
+    """Maximum number of episodes kept in-flight — one episode is one agent run at a time, whatever the env's agents are. Defaults to ``batch_size``; raise above it to oversample ahead of the next batch."""
 
     group_size: int = Field(1, ge=1)
     """Output sequences returned per example during training."""
@@ -523,6 +523,10 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_batching(self):
+        if self.batch_size % self.group_size != 0:
+            raise ValueError("batch_size must be divisible by group_size")
+        if self.max_inflight_episodes is None:
+            self.max_inflight_episodes = self.batch_size
         if self.max_inflight_episodes < self.group_size:
             raise ValueError("max_inflight_episodes must be at least the number of rollouts per example")
 

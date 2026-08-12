@@ -6,7 +6,7 @@ and drives the pipeline. Components are single-purpose:
 - ``RolloutDispatcher`` schedules rollouts; emits ``Rollout`` (train/eval
   discriminated by ``kind``) on its queue.
 - ``TrainSink`` ingests train rollouts (tokenize → advantages → zero-advantage
-  drop) and returns a ``TrainBatch`` when the token budget is met.
+  drop) and returns a ``TrainBatch`` when the batch is full.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
   returned cohort) on epoch completion.
 - ``TrainRollouts`` / ``EvalRollouts`` carry the rollouts and build the per-step W&B metrics
@@ -391,6 +391,7 @@ class Orchestrator:
             else None
         )
 
+        assert config.max_inflight_episodes is not None  # resolved at config validation
         log_interval = config.log.interval
         wandb_enabled = config.wandb is not None
         self.dispatcher = RolloutDispatcher(
@@ -761,7 +762,7 @@ class Orchestrator:
         # Train batch: finalized-group survivors only (0→target). Partial-group
         # arrivals are surfaced as a separate ``(+N buffered)`` addendum
         train_pct = train_batch / train_target if train_target else 0.0
-        train_batch_part = f"Train batch {train_batch}/{train_target} tokens ({train_pct:.1%})"
+        train_batch_part = f"Train batch {train_batch}/{train_target} ({train_pct:.1%})"
         if multi_train:
             pairs = [(e.name, train_batch_by_env.get(e.name, 0)) for e in self.train_envs]
             train_batch_part += " (" + ", ".join(f"{n}={v}" for n, v in pairs) + ")"

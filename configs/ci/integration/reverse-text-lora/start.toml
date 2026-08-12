@@ -16,7 +16,7 @@ rank = 8
 save_adapter_separately = true
 
 [orchestrator]
-token_batch_size = 16_384
+batch_size = 128
 group_size = 16
 
 [orchestrator.model.lora]

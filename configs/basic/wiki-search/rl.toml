@@ -34,7 +34,7 @@ target_modules = [
 ]
 
 [orchestrator]
-token_batch_size = 262_144
+batch_size = 128
 group_size = 16
 
 [orchestrator.train.sampling]

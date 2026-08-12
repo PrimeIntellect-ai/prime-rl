@@ -30,9 +30,9 @@ target_modules = [
 ]
 
 [orchestrator]
-token_batch_size = 1_048_576
-max_inflight_episodes = 1024
+batch_size = 512
 group_size = 16
+max_inflight_episodes = 1024
 
 [orchestrator.model.lora]
 name = "qwen3-4b-wiki-search"

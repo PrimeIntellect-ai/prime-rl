@@ -17,7 +17,7 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 lr = 3e-6
 
 [orchestrator]
-token_batch_size = 16_384
+batch_size = 128
 group_size = 16
 
 [orchestrator.train.sampling]

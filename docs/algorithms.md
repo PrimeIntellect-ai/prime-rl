@@ -466,7 +466,7 @@ Between scoring and training the sink runs three hardcoded checks on every train
 | `repetition` | Detects long high-confidence loops. Monitor-only: tracked in metrics (`filters/repetition`), never dropped. |
 | `zero_advantage` | A rollout whose advantage stream is all zero (its whole group earned the same reward) carries no learning signal — dropped before it consumes batch budget, so the trainer never wastes tokens on it. |
 
-Zero-advantage rollouts are exempt when the env's algorithm declares `trains_on_zero_advantage` (echo: the `ce` component trains observation tokens regardless of credit); algorithms that assign no advantage at all (opd/opsd) never match. `orchestrator.count_zero_advantage_in_batch = true` makes dropped rollouts still count toward `token_batch_size` — a fixed sampling budget per step, at the cost of a variable number of trained-on tokens.
+Zero-advantage rollouts are exempt when the env's algorithm declares `trains_on_zero_advantage` (echo: the `ce` component trains observation tokens regardless of credit); algorithms that assign no advantage at all (opd/opsd) never match. `orchestrator.count_zero_advantage_in_batch = true` makes dropped rollouts still count toward `batch_size` — a fixed sampling budget per step, at the cost of a variable number of trained-on samples.
 
 Dropped rollouts still appear in W&B distributions and metrics (`is_filtered`, `filters/zero_advantage`), just not in the trainer batch.
 

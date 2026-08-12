@@ -14,8 +14,7 @@ vision_encoder_attr = "model.visual"
 language_model_attr = "model.language_model"
 
 [orchestrator]
-token_batch_size = 262_144
-max_inflight_episodes = 256
+batch_size = 256
 group_size = 16
 
 [orchestrator.train.sampling]

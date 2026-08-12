@@ -469,7 +469,7 @@ class RLConfig(BaseConfig):
             self.trainer.bench = BenchConfig()
             self.orchestrator.bench = True
             self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=max(1, self.orchestrator.token_batch_size // self.orchestrator.seq_len),
+                batch_size=self.orchestrator.batch_size,
             )
 
         trainer_bench_enabled = self.trainer.bench is not None
