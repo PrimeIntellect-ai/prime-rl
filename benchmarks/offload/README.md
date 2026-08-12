@@ -27,6 +27,12 @@ Sweeps compose on top:
 --data.batch-size 64                 # accumulation 8 (global batch / dp ranks)
 ```
 
+The launcher defaults every trainer process to `OMP_NUM_THREADS=1`, which
+serializes the CPU optimizer and roughly doubles full-offload step time
+(measured 15.7 s → 6.5 s at 28 threads/rank on 8×H200). The full-offload
+configs here set `env_vars.OMP_NUM_THREADS = "28"`; budget roughly
+cores/ranks for other hosts.
+
 Report median and p95 step time over steps 3–7 (two warm-up steps). Capture
 step time, TPS, MFU, peak HBM, process RSS, pinned bytes, CPU Adam time,
 BF16-to-FP32 materialization time, D2H/H2D bandwidth, CPU utilization, and

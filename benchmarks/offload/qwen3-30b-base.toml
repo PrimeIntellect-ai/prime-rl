@@ -13,6 +13,9 @@
 # dp = 8, so batch_size 16 -> accumulation 2, 64 -> accumulation 8).
 max_steps = 7
 
+[deployment]
+num_gpus = 8
+
 [model]
 name = "Qwen/Qwen3-30B-A3B"
 impl = "custom"
