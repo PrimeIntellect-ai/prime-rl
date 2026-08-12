@@ -53,6 +53,7 @@ from prime_rl.trainer.utils import (
     begin_backward,
     clip_grad_norm_,
     bind_process_to_gpu_numa_node,
+    configure_cpu_optimizer_threads,
     export_benchmark_json,
     filter_rl_trainer_tensor_stats_for_wandb,
     finish_backward,
@@ -118,8 +119,10 @@ def train(config: TrainerConfig):
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
     )
-    if config.model.optim_cpu_offload and config.model.optim_cpu_offload.numa_bind:
-        bind_process_to_gpu_numa_node()
+    if config.model.optim_cpu_offload:
+        if config.model.optim_cpu_offload.numa_bind:
+            bind_process_to_gpu_numa_node()
+        configure_cpu_optimizer_threads()
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
