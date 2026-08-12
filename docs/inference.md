@@ -181,7 +181,7 @@ non_cached_tokens = 16          # llm-d only: below this many non-cached prompt 
 "kv-cache-utilization-scorer" = 2.0
 ```
 
-- **`vllm-router`** (default) — our fork of [vllm-router](https://github.com/PrimeIntellect-ai/router). Knob: `policy`. The only backend supported for single-node (local) deployments.
+- **`vllm-router`** (default) — [vllm-router](https://github.com/vllm-project/router). Knob: `policy`. The only backend supported for single-node (local) deployments.
 - **`llm-d`** — the upstream [llm-d](https://llm-d.ai) Endpoint Picker (EPP) + Envoy proxy (multi-node / disaggregated SLURM deployments only). Routing combines **prefix-cache affinity** (grouped rollouts reuse a cached prefix and skip prefill) with the **`active-request-scorer`** — an in-flight load balancer that spreads requests across ranks immediately, unlike the metrics-scraped `queue-scorer` / `kv-cache-utilization-scorer` / `load-aware-scorer` (which lag and concentrate bursts of same-prefix requests). The scorer weights follow the upstream llm-d P/D guide; tune via `scorers` (base) + `prefill_scorer_overrides` / `decode_scorer_overrides` (per-profile, P/D). Does not support `enable_return_routed_experts` (router replay).
 
 Both backends support the 2 most important things:
