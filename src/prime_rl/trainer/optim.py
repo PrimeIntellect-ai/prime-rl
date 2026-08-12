@@ -43,6 +43,12 @@ class CPUOffloadOptimizer:
                     new_dtensor._local_tensor = new_local
                     state[k] = new_dtensor
                 elif isinstance(v, torch.Tensor):
+                    if v.dim() == 0:
+                        # Scalar step counters stay on CPU: on CUDA the optimizer's
+                        # per-parameter `.item()` read becomes a device sync.
+                        if v.is_cuda:
+                            state[k] = v.cpu()
+                        continue
                     if device == "cpu":
                         non_blocking = not self.pin_memory
                         cpu_tensor = v.to("cpu", non_blocking=non_blocking)
