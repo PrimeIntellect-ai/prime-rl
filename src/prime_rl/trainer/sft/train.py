@@ -365,9 +365,33 @@ def train(config: SFTConfig):
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True
+    prof = None
     if config.trace_path:
         logger.info(f"Tracing to {config.trace_path}")
-        prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
+
+        def export_trace(prof: profile) -> None:
+            rank = dist.get_rank()
+            if config.trace_ranks is not None and rank not in config.trace_ranks:
+                return
+            config.trace_path.mkdir(parents=True, exist_ok=True)
+            trace_file = str(config.trace_path / f"trace_{rank}.json.gz")
+            logger.info(f"Saving trace to {trace_file}")
+            prof.export_chrome_trace(trace_file)
+            logger.info(f"Saved trace to {trace_file}")
+
+        # The loop runs steps 0..max_steps inclusive. Skip the first steps (compile/warmup),
+        # spend one step in profiler warmup, and record every remaining step as its own
+        # ProfilerStep# frame (prof.step() is called once per training step).
+        num_recorded_steps = config.max_steps - config.trace_skip_steps
+        prof = profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            record_shapes=True,
+            with_stack=True,
+            schedule=torch.profiler.schedule(
+                skip_first=config.trace_skip_steps, wait=0, warmup=1, active=num_recorded_steps, repeat=1
+            ),
+            on_trace_ready=export_trace,
+        ).__enter__()
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     while True:
         # Reset peak memory stats
@@ -617,17 +641,16 @@ def train(config: SFTConfig):
         if heart is not None:
             heart.beat()
 
+        if prof is not None:
+            prof.step()
+
         if is_last_step:
             break
         progress.step += 1
 
-    if config.trace_path:
+    if prof is not None:
+        # Export happens in on_trace_ready when the schedule's active window completes.
         prof.__exit__(None, None, None)
-        config.trace_path.mkdir(parents=True, exist_ok=True)
-        trace_file = str(config.trace_path / f"trace_{dist.get_rank()}.json.gz")
-        logger.info(f"Saving trace to {trace_file}")
-        prof.export_chrome_trace(trace_file)
-        logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
     if ckpt_manager is not None:

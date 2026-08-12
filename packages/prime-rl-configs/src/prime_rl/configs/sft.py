@@ -219,6 +219,13 @@ class SFTConfig(BaseConfig):
     trace_path: Path | None = None
     """Path to write the PyTorch profiler trace to."""
 
+    trace_skip_steps: int = Field(2, ge=0)
+    """Training steps to exclude from the start of the trace (compile/warmup). One additional
+    non-recorded profiler warmup step runs after the skipped steps before recording starts."""
+
+    trace_ranks: list[int] | None = None
+    """Ranks that export a trace. If None, all ranks export."""
+
     dist_timeout_seconds: int = 3600
     """Timeout in seconds for torch distributed ops."""
 
@@ -336,6 +343,11 @@ class SFTConfig(BaseConfig):
             if self.max_steps >= 10:
                 raise ValueError(
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
+                )
+            if self.max_steps < self.trace_skip_steps + 2:
+                raise ValueError(
+                    f"Tracing needs at least one recorded step: max_steps ({self.max_steps}) must be >= "
+                    f"trace_skip_steps ({self.trace_skip_steps}) + 2 (one warmup step + one recorded step)."
                 )
         return self
 

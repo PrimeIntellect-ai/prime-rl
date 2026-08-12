@@ -78,6 +78,16 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
+## Profiling an SFT run
+
+Set `trace_path` (requires `max_steps < 10`) to capture a PyTorch profiler chrome trace
+with Python stacks and per-step `ProfilerStep#` frames. `trace_skip_steps` (default 2)
+excludes compile/warmup steps, one more step is profiler warmup, every remaining step is
+recorded. `trace_ranks = [0]` limits which ranks export (default: all). Post-process with
+`benchmarks/profiling/trace_tools.py` to get per-step + averaged-step perfetto traces;
+`benchmarks/profiling/run_campaign.py` sweeps model/dtype/seq-len matrices (see
+`benchmarks/profiling/README.md`).
+
 ## Summary
 
 | Command | Purpose | Typical use |
