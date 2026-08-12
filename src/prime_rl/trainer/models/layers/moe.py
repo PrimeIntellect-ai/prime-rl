@@ -896,8 +896,11 @@ class NonGatedGroupedExperts(nn.Module):
         self.num_experts = num_experts
         self.w1 = nn.Parameter(torch.empty(num_experts, intermediate_dim, input_dim))
         self.w2 = nn.Parameter(torch.empty(num_experts, input_dim, intermediate_dim))
-        # Dummy w3 for @expert_parallel decorator compatibility (expects w1, w2, w3 signature)
-        self.w3 = nn.Parameter(torch.empty(0))
+        # Dummy w3 for @expert_parallel decorator compatibility (expects w1, w2, w3 signature).
+        # Frozen: a 0-element param must stay out of the optimizer, or strict checkpoint
+        # resume fails — the save only has state for stepped params, while DCP load
+        # materializes state for every optimizer param, demanding keys that don't exist.
+        self.w3 = nn.Parameter(torch.empty(0), requires_grad=False)
         self.use_grouped_mm = use_grouped_mm
         self.fp8 = fp8
         self.ep_comm_backend: EPCommBackend = "torch"

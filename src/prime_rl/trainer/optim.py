@@ -133,8 +133,11 @@ def _create_optimizer(
     # Only hand trainable params to the optimizer. Frozen params (e.g. the DSA sparse
     # indexer, which runs under no_grad) carry no optimizer state, and including them
     # breaks strict checkpoint resume (DCP materializes state for every requires_grad
-    # param at load time, mismatching the saved state). Muon filters internally below.
-    trainable_params = [p for _, p in named_params if p.requires_grad]
+    # param at load time, mismatching the saved state). Zero-element params (e.g. the
+    # dummy expert w3 that NonGatedGroupedExperts registers for the @expert_parallel
+    # signature) break resume the same way: they never step, so the save has no state
+    # for them. Muon filters internally below.
+    trainable_params = [p for _, p in named_params if p.requires_grad and p.numel() > 0]
     match config.type:
         case "sgd":
             return SGD(
@@ -181,6 +184,9 @@ def _create_muon_optimizer(
     router_params = []
     adamw_params = []
     for n, p in named_params:
+        if p.numel() == 0:
+            # Zero-element dummies (see _create_optimizer) carry no optimizer state.
+            continue
         if p.requires_grad and muon_enabled(n, p):
             if "mlp.experts" in n:
                 expert_params.append(p)
