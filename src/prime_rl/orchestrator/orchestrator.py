@@ -5,7 +5,7 @@ and drives the pipeline. Components are single-purpose:
 
 - ``RolloutDispatcher`` schedules rollouts; emits ``Rollout`` (train/eval
   discriminated by ``kind``) on its queue.
-- ``TrainSink`` ingests train rollouts (tokenize → advantages → filters)
+- ``TrainSink`` ingests train rollouts (tokenize → advantages → admission)
   and returns a ``TrainBatch`` when the threshold is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
   returned cohort) on epoch completion.
@@ -46,7 +46,6 @@ from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, 
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.packing import BatchPacker
 from prime_rl.orchestrator.patches import (
@@ -95,9 +94,7 @@ monkey_patch_chat_completion_logprobs()
 # shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
-# Abort after this many consecutive train batches drop all rollouts to
-# post-batch filters — usually a misconfigured filter or homogeneous-reward
-# dataset; fail loudly instead of spinning
+# Abort after this many consecutive train batches contain no samples.
 MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
 # Maximum batches the orchestrator may run ahead of the trainer. The
@@ -246,10 +243,6 @@ class Orchestrator:
         usage_api_key = os.environ.get("PI_USAGE_API_KEY")
         if usage_base_url and usage_api_key:
             self.usage_reporter = UsageReporter()
-
-        # Filters apply to train rollouts only
-        pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="pre-batch")
-        post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
@@ -417,8 +410,7 @@ class Orchestrator:
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
-            pre_filters=pre_filters,
-            post_filters=post_filters,
+            on_result=self.train_source.on_result,
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -528,7 +520,7 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 continue
 
-            # Every completed rollout — errored, filtered, or never batched — lands in the
+            # Every completed rollout — errored, rejected, or never batched — lands in the
             # ``all`` trace file the moment it arrives, so it survives crashes and drains.
             # Train rollouts belong to the batch window currently collecting (``progress.step``),
             # eval rollouts to the step whose eval triggered them.
@@ -596,13 +588,13 @@ class Orchestrator:
             self.consecutive_empty_batches += 1
             get_logger().warning(
                 f"Step {step}: empty train batch (0 of {len(batch.rollouts)} generated rollouts shipped — "
-                f"all errored or filtered out) "
+                f"all errored, rejected, or empty) "
                 f"(consecutive empty batches: {self.consecutive_empty_batches}/{MAX_CONSECUTIVE_EMPTY_BATCHES})"
             )
             if self.consecutive_empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
                 raise RuntimeError(
                     f"{self.consecutive_empty_batches} consecutive empty train batches — "
-                    "check filter config (pre_batch_filters / post_batch_filters) or task difficulty."
+                    "check the curriculum admission policy and task difficulty."
                 )
             return
         self.consecutive_empty_batches = 0
@@ -611,7 +603,7 @@ class Orchestrator:
         if effective and n_trainable / len(effective) <= 0.1:
             get_logger().warning(
                 f"Only {n_trainable}/{len(effective)} effective rollouts are trainable "
-                f"({n_trainable / len(effective):.1%}) — consider reviewing task difficulty / filter config"
+                f"({n_trainable / len(effective):.1%}) — consider reviewing task difficulty"
             )
 
         # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}.
@@ -662,14 +654,14 @@ class Orchestrator:
         trim_process_memory()
 
         # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``batch.rollouts`` is the
-        # full arrival window (errored + filtered included); ``.effective`` is the clean subset.
+        # full arrival window (errored + rejected included); ``.effective`` is the clean subset.
         metrics: dict[str, float] = {}
         for subset, pool in (("all", batch.rollouts), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
             for env_name, env_pool in pool.by_env().items():
                 metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
 
-        # Progress / timing / env-share / pre-filter accounting (assembled here, not in the metrics
+        # Progress / timing / env-share accounting (assembled here, not in the metrics
         # objects). ``num_tokens`` is over the full arrival window; the input/output breakdown is over
         # the effective (shipped) subset, summing the same ``vf.Trace`` token properties the metric
         # matrix reports.
@@ -695,12 +687,7 @@ class Orchestrator:
         }
         for env_name, env_pool in batch.rollouts.by_env().items():
             metrics[f"batch/{env_name}"] = len(env_pool) / len(batch.rollouts)
-        if self.train_sink.pre_filter_seen > 0:
-            metrics["pre_filters/all/dropped_rate"] = (
-                self.train_sink.pre_filter_dropped / self.train_sink.pre_filter_seen
-            )
-            for name, count in self.train_sink.pre_filter_dropped_by_name.items():
-                metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
+        metrics |= self.train_source.metrics()
         self.monitor.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
         self.monitor.log_samples(effective.rollouts, step=step)
@@ -729,7 +716,6 @@ class Orchestrator:
 
         self.log_train_batch(batch, step=step, step_time=step_time)
 
-        self.train_sink.reset_pre_filter_stats()
         self.maybe_trigger_eval(self.progress.step)
         trim_process_memory()
 

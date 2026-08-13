@@ -1,5 +1,4 @@
-"""Checkpoint manager for the orchestrator state (``Progress`` counters +
-``TrainSource`` data position). Layout:
+"""Checkpoint manager for orchestrator progress and train-source state. Layout:
 ``<output_dir>/checkpoints/step_N/orchestrator/progress.pt``."""
 
 from __future__ import annotations
@@ -55,7 +54,7 @@ class CheckpointManager:
         get_logger().debug(f"Loading checkpoint from {state_file}")
         start = time.perf_counter()
         if self.config.skip_progress:
-            get_logger().info("Skipping progress and data position loading from checkpoint")
+            get_logger().info("Skipping progress and train source loading from checkpoint")
         else:
             with open(state_file, "rb") as f:
                 state = torch.load(f, weights_only=False)
@@ -64,15 +63,9 @@ class CheckpointManager:
                 if hasattr(progress, key):
                     setattr(progress, key, value)
             train_source.load_state_dict(state["train_source"])
-            for name, position in state["train_source"]["envs"].items():
-                if name not in train_source.base_rows:
-                    continue
-                rows = train_source.base_rows[name]
-                num_tasks = len(rows) if rows is not None else "infinite"
-                get_logger().info(
-                    f"Resumed data position for env {name} - epoch={position['epoch']}, "
-                    f"cursor={position['cursor']}/{num_tasks}"
-                )
+            for name in state["train_source"]["envs"]:
+                if name in train_source.curricula:
+                    get_logger().info(f"Resumed curriculum state for env {name}")
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
 
 

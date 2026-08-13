@@ -119,10 +119,6 @@ id = "null"
 [orchestrator.train.source.env.agent.runtime]
 type = "subprocess"
 
-[[orchestrator.pre_batch_filters]]
-type = "zero_advantage"
-enforce = true
-
 [orchestrator.eval]
 interval = 25
 

@@ -113,6 +113,18 @@ class DispatcherMetrics:
         return keys
 
 
+def error_trace_task(group: GroupState | None) -> vf.TraceTask:
+    """Preserve task identity on a synthetic error trace."""
+    if group is None:
+        return vf.TraceTask(type="Task", data=vf.TaskData(idx=-1, prompt=None))
+    return vf.TraceTask(
+        type=type(group.task).__name__,
+        data=vf.TaskData(idx=group.task.data.idx, prompt=None),
+        key=group.task.key,
+        hash=group.task.hash,
+    )
+
+
 class RolloutDispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules
@@ -476,10 +488,9 @@ class RolloutDispatcher:
             return
         except Exception as exc:
             get_logger().warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
-            task_idx = group.task.data.idx if group is not None else -1
             rollouts = [
                 Rollout(
-                    task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
+                    task=error_trace_task(group),
                     agent=vf.AgentInfo(config=vf.AgentConfig()),
                 )
             ]
@@ -532,8 +543,6 @@ class RolloutDispatcher:
         (both in-flight and not-yet-scheduled). Returns the count for
         off-policy metrics."""
         group = self.groups.pop(group_id, None)
-        task_idx = group.task.data.idx if group is not None else -1
-
         # Sync claim phase: pop matching tasks from ``self.inflight`` and
         # release their permits in one non-yielding sweep. After this loop
         # the dropped tasks are no longer reachable from ``self.inflight``,
@@ -552,7 +561,7 @@ class RolloutDispatcher:
         last_meta: InflightRollout | None = claimed[-1][1] if claimed else None
         for _, meta in claimed:
             trace = Rollout(
-                task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
+                task=error_trace_task(group),
                 agent=vf.AgentInfo(config=vf.AgentConfig()),
                 ok=False,
                 errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
@@ -579,7 +588,7 @@ class RolloutDispatcher:
             unscheduled_cancelled = group.rollouts_to_schedule
             for _ in range(unscheduled_cancelled):
                 trace = Rollout(
-                    task=vf.TraceTask(type="Task", data=vf.TaskData(idx=task_idx, prompt=None)),
+                    task=error_trace_task(group),
                     agent=vf.AgentInfo(config=vf.AgentConfig()),
                     ok=False,
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],

@@ -7500,17 +7500,21 @@ dev = [
 ]
 examples = [
     { name = "alphabet-sort", editable = "deps/verifiers/environments/alphabet_sort" },
+    { name = "bash-interception", editable = "deps/verifiers/environments/bash_interception" },
     { name = "code-golf", editable = "deps/verifiers/environments/code_golf" },
     { name = "color-codeword", editable = "deps/verifiers/environments/color_codeword" },
     { name = "compact", editable = "deps/verifiers/environments/compact" },
     { name = "deepwiki", editable = "deps/verifiers/environments/deepwiki" },
     { name = "glossary", editable = "deps/verifiers/environments/glossary" },
+    { name = "grayscale-interception", editable = "deps/verifiers/environments/grayscale_interception" },
     { name = "gsm8k", editable = "deps/verifiers/environments/gsm8k" },
+    { name = "interception", editable = "deps/verifiers/environments/interception" },
     { name = "kuhn-poker", editable = "deps/verifiers/environments/kuhn_poker" },
     { name = "openenv-wordle", editable = "deps/verifiers/environments/openenv_wordle" },
     { name = "proposer-solver", editable = "deps/verifiers/environments/proposer_solver" },
     { name = "reverse-text", editable = "deps/verifiers/environments/reverse_text" },
     { name = "scratchpad", editable = "deps/verifiers/environments/scratchpad" },
+    { name = "web-search-interception", editable = "deps/verifiers/environments/web_search_interception" },
     { name = "wiki-search", editable = "deps/verifiers/environments/wiki_search" },
     { name = "wordle", editable = "deps/verifiers/environments/wordle" },
 ]

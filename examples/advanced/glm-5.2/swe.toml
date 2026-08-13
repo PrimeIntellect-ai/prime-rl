@@ -88,11 +88,6 @@ id = "bash"
 type = "prime"
 labels = ["glm5-pd-disag", "swe-bench-verified"]
 
-[[orchestrator.post_batch_filters]]
-type = "gibberish"
-enforce = true
-
 [inference]
 # we need <0.85 bc glm5 layers are too large for 0.85
 use_deep_gemm = true
-

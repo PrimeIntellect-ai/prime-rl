@@ -19,8 +19,8 @@ I/O); a hook that only does advantage math never awaits:
   I/O against another model — an inference pool the algorithm connected in
   ``setup()`` (a frozen teacher) or the live policy (opsd's self-distillation),
   queried with bounded concurrency. No siblings.
-- ``score_group(group)`` — the cohort, on group completion, *before* filtering
-  (filters read the streams): group-relative credit (GRPO/MaxRL baselines).
+- ``score_group(group)`` — the cohort, on group completion: group-relative
+  credit (GRPO/MaxRL baselines).
 
 How rollouts are *produced* is not the algorithm's concern: that is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`, and sample construction
@@ -95,21 +95,18 @@ class Algorithm:
       directly — read the trace, write credit via
       :meth:`Rollout.assign_advantages`. They are
       async so either stage may do I/O — e.g. a process-reward model or a
-      teacher at arrival, or a judge at group time whose signal a pre-batch
-      filter then reads; a hook that only does advantage math simply never
-      awaits.
+      teacher at arrival, or a judge at group time; a hook that only does
+      advantage math simply never awaits.
 
       - :meth:`score_rollout` — one rollout, on arrival: rollout-local credit,
         observation ce weights, or per-token results from a model the algorithm
         connected in :meth:`setup` (e.g. teacher reference logprobs). Default:
         nothing.
-      - :meth:`score_group` — the cohort, *before* filtering (filters read the
-        streams): group-relative credit. Default: nothing — rollouts keep
-        ``advantages=None``, so advantage-based filters skip them.
+      - :meth:`score_group` — the cohort: group-relative credit. Default:
+        nothing — rollouts keep ``advantages=None``.
 
-    Model I/O lives in :meth:`score_rollout`: it runs at arrival, *before* the
-    pre-batch filters, so it pays compute on rollouts that may then be filtered
-    out — accepted for the simpler one-rollout-at-a-time shape.
+    Model I/O lives in :meth:`score_rollout`: it runs at arrival, so it pays
+    compute on rollouts that the curriculum may later reject.
 
     Constructed with the algorithm config it interprets plus the live policy
     pool (``self.policy_pool`` — always available, never closed by the
@@ -145,8 +142,7 @@ class Algorithm:
         group stats."""
 
     async def score_group(self, group: list[Rollout]) -> None:
-        """Group phase, the finalized cohort, before filtering: write
-        group-relative credit."""
+        """Group phase over the finalized cohort: write group-relative credit."""
 
     async def finalize_rollout(self, rollout: Rollout) -> None:
         """Arrival phase (non-virtual): rollout-local scoring as each rollout is
