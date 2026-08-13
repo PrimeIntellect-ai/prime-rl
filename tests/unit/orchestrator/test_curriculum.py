@@ -5,16 +5,36 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import CurriculumConfig
+from prime_rl.orchestrator.curricula import AdvantageRangeGate, DifficultyPools
 from prime_rl.orchestrator.curriculum import Curriculum, CurriculumResult
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import Rollout
+from prime_rl.transport import TrainingSample
 
 
 def make_task(idx: int) -> vf.Task:
     return vf.Task(vf.TaskData(idx=idx, prompt=f"task {idx}"))
 
 
-def make_rollout(task: vf.Task, *, env_name: str = "test") -> Rollout:
+def make_rollout(
+    task: vf.Task,
+    *,
+    env_name: str = "test",
+    reward: float = 0.0,
+    advantages: list[float] | None = None,
+) -> Rollout:
+    samples = []
+    if advantages is not None:
+        samples = [
+            TrainingSample(
+                token_ids=list(range(len(advantages))),
+                mask=[True] * len(advantages),
+                logprobs=[0.0] * len(advantages),
+                temperatures=[1.0] * len(advantages),
+                advantages=advantages,
+                env_name=env_name,
+            )
+        ]
     return Rollout(
         task=vf.TraceTask(
             type=type(task).__name__,
@@ -24,6 +44,10 @@ def make_rollout(task: vf.Task, *, env_name: str = "test") -> Rollout:
         ),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         env_name=env_name,
+        rewards={"reward": vf.Reward(score=reward)},
+        advantages=advantages,
+        samples=samples,
+        ok=True,
     )
 
 
@@ -100,3 +124,43 @@ def test_train_source_hosts_user_curriculum_admission_state_and_metrics() -> Non
     restored = TrainSource([SimpleNamespace(name="test", tasks=iter(tasks), num_tasks=len(tasks), config=config)])
     restored.load_state_dict(state)
     assert restored.curricula["test"].state_dict()["seen"] == 1
+
+
+def test_difficulty_pools_track_group_reward_and_resume_sampling() -> None:
+    tasks = [make_task(i) for i in range(3)]
+    pools = DifficultyPools(tasks, seed=7)
+    rewards = {0: 0.1, 1: 0.5, 2: 0.9}
+    for _ in tasks:
+        task = pools.sample()
+        pools.on_result(CurriculumResult.from_rollouts([make_rollout(task, reward=rewards[task.data.idx])]))
+
+    assert pools.metrics() == {
+        "pool/unseen": 0.0,
+        "pool/hard": 1.0,
+        "pool/medium": 1.0,
+        "pool/easy": 1.0,
+    }
+    state = pools.state_dict()
+    expected = [pools.sample().key for _ in range(10)]
+    restored = DifficultyPools(tasks, seed=7)
+    restored.load_state_dict(state)
+    assert [restored.sample().key for _ in range(10)] == expected
+
+
+def test_advantage_range_gate_generalizes_zero_advantage_rejection() -> None:
+    task = make_task(0)
+    zero_gate = AdvantageRangeGate([task])
+    assert zero_gate.on_result(CurriculumResult.from_rollouts([make_rollout(task, advantages=[0.0, 0.0])])) is False
+    assert zero_gate.on_result(CurriculumResult.from_rollouts([make_rollout(task, advantages=[0.0, 0.2])])) is True
+    assert zero_gate.on_result(CurriculumResult.from_rollouts([make_rollout(task)])) is True
+
+    tolerance_gate = AdvantageRangeGate([task], reject_min=-0.1, reject_max=0.1)
+    assert (
+        tolerance_gate.on_result(CurriculumResult.from_rollouts([make_rollout(task, advantages=[-0.05, 0.0, 0.05])]))
+        is False
+    )
+
+    masked = make_rollout(task, advantages=[0.0, 0.5])
+    masked.samples[0].mask = [False, True]
+    positive_gate = AdvantageRangeGate([task], reject_min=0.5, reject_max=0.5)
+    assert positive_gate.on_result(CurriculumResult.from_rollouts([masked])) is False

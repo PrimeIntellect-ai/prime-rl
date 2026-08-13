@@ -483,6 +483,30 @@ curriculum = { import_path = "my_package.MyCurriculum", kwargs = { seed = 7 } }
 
 Override `state_dict` and `load_state_dict` for additional mutable state, calling the base implementations when using its RNG or iteration state. `metrics` returns unprefixed metric names.
 
+Two small implementations are included as examples:
+
+- `DifficultyPools` samples every finite task once, tracks its latest mean group reward, then samples a named reward pool by weight and a task uniformly within that pool.
+- `AdvantageRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Its default `[0, 0]` range rejects zero-advantage groups. Groups without an advantage stream are admitted.
+
+```toml
+[orchestrator.train.source.curriculum]
+import_path = "prime_rl.orchestrator.curricula.DifficultyPools"
+
+[orchestrator.train.source.curriculum.kwargs.thresholds]
+hard = 0.25
+medium = 0.75
+easy = 1.0
+
+[orchestrator.train.source.curriculum.kwargs.weights]
+hard = 0.2
+medium = 0.6
+easy = 0.2
+```
+
+```toml
+curriculum = { import_path = "prime_rl.orchestrator.curricula.AdvantageRangeGate", kwargs = { reject_min = -0.05, reject_max = 0.05 } }
+```
+
 ## Multi-Turn Trajectories
 
 For multi-turn rollouts (tool use, browser environments, long conversations), `prime-rl` records each LLM request/response as an independent **trajectory step** and merges them at training time using best-effort interleaving — with [renderers](#renderers) as the mechanism that keeps the merge safe by construction.

@@ -50,6 +50,7 @@ oversampling_factor = 2
 [[orchestrator.train.source]]
 name = "swe"
 ratio = 0.3
+curriculum = { import_path = "prime_rl.orchestrator.curricula.AdvantageRangeGate" }
 
 [orchestrator.train.source.env.taskset]
 id = "r2e-gym"
@@ -64,6 +65,7 @@ labels = ["intellect-3.1", "swe"]
 [[orchestrator.train.source]]
 name = "deepdive"
 ratio = 0.2
+curriculum = { import_path = "prime_rl.orchestrator.curricula.AdvantageRangeGate" }
 
 [orchestrator.train.source.env.taskset]
 id = "deepdive"
@@ -80,6 +82,7 @@ labels = ["intellect-3.1", "deepdive"]
 [[orchestrator.train.source]]
 name = "math"
 ratio = 0.3
+curriculum = { import_path = "prime_rl.orchestrator.curricula.AdvantageRangeGate" }
 
 [orchestrator.train.source.env.taskset]
 id = "i3_math"
@@ -93,6 +96,7 @@ type = "subprocess"
 [[orchestrator.train.source]]
 name = "logic"
 ratio = 0.2
+curriculum = { import_path = "prime_rl.orchestrator.curricula.AdvantageRangeGate" }
 
 [orchestrator.train.source.env.taskset]
 id = "i3_logic"
@@ -109,6 +113,7 @@ type = "subprocess"
 [[orchestrator.train.source]]
 name = "code"
 ratio = 0.2
+curriculum = { import_path = "prime_rl.orchestrator.curricula.AdvantageRangeGate" }
 
 [orchestrator.train.source.env.taskset]
 id = "i3_code"
