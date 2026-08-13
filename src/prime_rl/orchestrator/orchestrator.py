@@ -54,8 +54,8 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
+from prime_rl.orchestrator.task_sampler import TaskSampler
 from prime_rl.orchestrator.train_sink import TrainSink
-from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     EvalBatch,
     Policy,
@@ -131,7 +131,7 @@ class Orchestrator:
     sender: MicroBatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
-    train_source: TrainSource
+    task_sampler: TaskSampler
     train_sink: TrainSink
     dispatcher: RolloutDispatcher
     watcher: WeightWatcher
@@ -328,10 +328,10 @@ class Orchestrator:
 
         self.lora_name = config.model.lora.name if config.model.lora else None
 
-        self.train_source = TrainSource(self.train_envs)
+        self.task_sampler = TaskSampler(self.train_envs)
 
         if self.resume_step is not None and self.ckpt_manager is not None:
-            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step)
+            self.ckpt_manager.load(self.progress, self.task_sampler, step=self.resume_step)
             # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
             # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
             # trainer even when ``ckpt.skip_progress`` left the counter unrestored.
@@ -402,7 +402,7 @@ class Orchestrator:
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
-            train_source=self.train_source,
+            task_sampler=self.task_sampler,
             eval_source=self.eval_source,
             policy_pool=self.policy_inference,
             policy=self.policy,
@@ -419,6 +419,7 @@ class Orchestrator:
             token_batch_size=config.token_batch_size,
             pre_filters=pre_filters,
             post_filters=post_filters,
+            on_group_finalized=self.task_sampler.observe,
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -505,7 +506,7 @@ class Orchestrator:
             if self.ckpt_manager is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info("Writing final checkpoint")
-                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
+                self.ckpt_manager.save(self.progress, self.task_sampler, step=self.progress.step)
             await self.stop()
             if clean_exit:
                 get_logger().success("Orchestrator finished.")
@@ -701,6 +702,7 @@ class Orchestrator:
             )
             for name, count in self.train_sink.pre_filter_dropped_by_name.items():
                 metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
+        metrics |= self.task_sampler.metrics()
         self.monitor.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
         self.monitor.log_samples(effective.rollouts, step=step)
@@ -915,8 +917,8 @@ class Orchestrator:
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
         # Synchronous on purpose: the payload is tiny, and snapshotting on the
-        # event loop keeps the dispatcher from mutating TrainSource mid-save
-        self.ckpt_manager.save(self.progress, self.train_source, step)
+        # event loop keeps the dispatcher from mutating TaskSampler mid-save
+        self.ckpt_manager.save(self.progress, self.task_sampler, step)
         return time.perf_counter() - t
 
     def update_dispatch_gate(self) -> None:

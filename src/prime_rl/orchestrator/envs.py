@@ -57,7 +57,7 @@ class Env:
         self.tasks: Iterator[vf.Task] | None = None
         """The env's tasks, client-side, set at ``start()``. A finite taskset is
         materialized (``num_tasks`` is its count) and iterated from there; an infinite
-        one streams off its generator. Consumed once — by ``TrainSource`` (train) or
+        one streams off its generator. Consumed once — by ``TaskSampler`` (train) or
         ``EvalEnv.start`` (eval)."""
         self._env_client: EnvClient | None = None
 

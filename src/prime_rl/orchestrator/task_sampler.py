@@ -1,29 +1,42 @@
-"""TrainSource: weighted round-robin across train envs, infinite pull.
+"""TaskSampler: picks what to roll out next, remembers how it went.
 
-Weights are each env's configured ``ratio`` (default 1, i.e. equal weight
-per env). An env serves the tasks the orchestrator loaded client-side: a
-finite one as a shuffled table (reshuffled with ``seed=epoch`` on cursor
-exhaustion), an infinite one (``num_tasks is None``) straight off its
-generator — every pull is a fresh task and there are no epochs to shuffle."""
+The pick side is weighted round-robin across train envs by their configured
+``ratio`` (default 1), then the env's next task: a finite taskset as a
+shuffled table (reshuffled with ``seed=epoch`` on cursor exhaustion), an
+infinite one (``num_tasks is None``) straight off its generator — every pull
+is a fresh task and there are no epochs to shuffle.
+
+The observe side is the sink's group-finalization hook: every finalized train
+group updates the per-task outcome stats (:mod:`.task_stats`), always on, so
+difficulty estimates are warm before anything reads them. Nothing consults the
+stats when sampling yet — picks are identical to the pre-stats behavior —
+and the sampler stays advisory either way: it returns tasks and consumes
+outcomes, never tokens or training samples."""
 
 from __future__ import annotations
 
 import random
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.envs import TrainEnvs
+from prime_rl.orchestrator.task_stats import TaskStats
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import Rollout
 
 
-class TrainSource:
+class TaskSampler:
     """``next_example()`` picks a weighted-RR env and returns its next
     example. Returned dicts carry ``env_name`` + ``task``, whose data is
     shipped to the env server at dispatch.
 
-    The data position round-trips through a checkpoint via ``state_dict()``
-    / ``load_state_dict()``: per-env ``{epoch, cursor}`` plus the env-choice
-    RNG state, making the dispatch sequence reproducible across resumes. For
+    The data position and the task stats round-trip through a checkpoint via
+    ``state_dict()`` / ``load_state_dict()``: per-env ``{epoch, cursor}`` plus
+    the env-choice RNG state, making the dispatch sequence reproducible across
+    resumes. For
     a finite env, epochs are 1-indexed and seed that epoch's shuffle; for an
     infinite env the epoch stays 1 and the cursor counts generator pulls,
     replayed on restore by fast-forwarding the generator (exact iff it's
@@ -35,7 +48,8 @@ class TrainSource:
         self.rng = random.Random(42)
         self.envs = list(train_envs)
         if not self.envs:
-            raise ValueError("TrainSource needs at least one train env")
+            raise ValueError("TaskSampler needs at least one train env")
+        self.task_stats = TaskStats()
 
         # A finite env's example table in canonical order (each epoch's shuffle
         # starts from this); ``None`` for an infinite env, whose generator
@@ -71,15 +85,29 @@ class TrainSource:
         random.Random(self.epochs[env_name]).shuffle(rows)
         return rows
 
+    def observe(self, group: list[Rollout]) -> None:
+        """The sink's group-finalization hook: fold one finalized train group
+        into the per-task stats."""
+        self.task_stats.observe(group)
+
+    def metrics(self) -> dict[str, float]:
+        """Drain the sampler metric family (pool occupancy, coverage,
+        realized signal rate, wasted tokens) for the step log."""
+        return self.task_stats.metrics({env.name: env.num_tasks for env in self.envs})
+
     def state_dict(self) -> dict:
-        """Env-choice RNG state + per-env ``{epoch, cursor}``."""
+        """Env-choice RNG state + per-env ``{epoch, cursor}`` + task stats."""
         return {
             "rng": self.rng.getstate(),
             "envs": {name: {"epoch": self.epochs[name], "cursor": self.cursors[name]} for name in self.epochs},
+            "stats": self.task_stats.state_dict(),
         }
 
     def load_state_dict(self, state_dict: dict) -> None:
         self.rng.setstate(state_dict["rng"])
+        # Checkpoints written before task stats existed load with empty stats
+        # and warm back up from live groups.
+        self.task_stats.load_state_dict(state_dict.get("stats", {}))
         for name, position in state_dict["envs"].items():
             if name not in self.base_rows:
                 continue

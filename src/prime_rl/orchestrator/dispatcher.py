@@ -36,7 +36,7 @@ from aiolimiter import AsyncLimiter
 
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.train_source import TrainSource
+from prime_rl.orchestrator.task_sampler import TaskSampler
 from prime_rl.orchestrator.types import (
     GroupState,
     InflightRollout,
@@ -115,7 +115,7 @@ class DispatcherMetrics:
 
 class RolloutDispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
-    Pulls examples from ``TrainSource`` / ``EvalSource``, schedules
+    Pulls examples from ``TaskSampler`` / ``EvalSource``, schedules
     rollouts under shared capacity, and emits ``Rollout``\\ s to
     ``out_q``. The watcher drives ``on_version_pending`` for off-policy
     cancellation; the orchestrator triggers eval epochs."""
@@ -125,7 +125,7 @@ class RolloutDispatcher:
         *,
         train_envs: TrainEnvs,
         eval_envs: EvalEnvs | None,
-        train_source: TrainSource,
+        task_sampler: TaskSampler,
         eval_source: EvalSource | None,
         policy_pool: InferencePool,
         policy: Policy,
@@ -139,7 +139,7 @@ class RolloutDispatcher:
         # Train rollouts go to the env's rollout-source pool; eval always
         # evaluates the policy.
         self.policy_pool = policy_pool
-        self.train_source = train_source
+        self.task_sampler = task_sampler
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
 
@@ -367,7 +367,7 @@ class RolloutDispatcher:
         """Pop the next example from the corresponding source and wrap it in
         a ``GroupState``. Returns ``None`` if the source is empty."""
         if kind == "train":
-            source = self.train_source
+            source = self.task_sampler
         else:
             assert self.eval_source is not None
             source = self.eval_source

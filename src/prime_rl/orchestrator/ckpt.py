@@ -1,6 +1,7 @@
 """Checkpoint manager for the orchestrator state (``Progress`` counters +
-``TrainSource`` data position). Layout:
-``<output_dir>/checkpoints/step_N/orchestrator/progress.pt``."""
+``TaskSampler`` data position and task stats). The sampler state is saved
+under the ``"train_source"`` key so checkpoints stay loadable across the
+rename. Layout: ``<output_dir>/checkpoints/step_N/orchestrator/progress.pt``."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from pathlib import Path
 import torch
 
 from prime_rl.configs.orchestrator import CheckpointConfig
-from prime_rl.orchestrator.train_source import TrainSource
+from prime_rl.orchestrator.task_sampler import TaskSampler
 from prime_rl.orchestrator.types import Progress
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir, get_step_path
@@ -28,7 +29,7 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    def save(self, progress: Progress, train_source: TrainSource, step: int) -> None:
+    def save(self, progress: Progress, task_sampler: TaskSampler, step: int) -> None:
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
@@ -37,7 +38,7 @@ class CheckpointManager:
         fd, tmp_name = tempfile.mkstemp(dir=ckpt_path, prefix="progress.pt.", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as f:
-                torch.save({"progress": progress, "train_source": train_source.state_dict()}, f)
+                torch.save({"progress": progress, "train_source": task_sampler.state_dict()}, f)
             os.replace(tmp_name, ckpt_path / "progress.pt")
         except BaseException:
             with contextlib.suppress(OSError):
@@ -47,7 +48,7 @@ class CheckpointManager:
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
         )
 
-    def load(self, progress: Progress, train_source: TrainSource, step: int) -> None:
+    def load(self, progress: Progress, task_sampler: TaskSampler, step: int) -> None:
         ckpt_path = self.get_ckpt_path(step)
         state_file = ckpt_path / "progress.pt"
         if not state_file.exists():
@@ -63,11 +64,11 @@ class CheckpointManager:
             for key, value in asdict(saved).items():
                 if hasattr(progress, key):
                     setattr(progress, key, value)
-            train_source.load_state_dict(state["train_source"])
+            task_sampler.load_state_dict(state["train_source"])
             for name, position in state["train_source"]["envs"].items():
-                if name not in train_source.base_rows:
+                if name not in task_sampler.base_rows:
                     continue
-                rows = train_source.base_rows[name]
+                rows = task_sampler.base_rows[name]
                 num_tasks = len(rows) if rows is not None else "infinite"
                 get_logger().info(
                     f"Resumed data position for env {name} - epoch={position['epoch']}, "

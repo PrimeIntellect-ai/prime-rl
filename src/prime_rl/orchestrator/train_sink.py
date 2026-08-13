@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.envs import TrainEnvs
@@ -59,6 +60,7 @@ class TrainSink:
         token_batch_size: int | None,
         pre_filters: list[RolloutFilter],
         post_filters: list[RolloutFilter],
+        on_group_finalized: Callable[[list[Rollout]], None] | None = None,
     ) -> None:
         assert (batch_size is None) != (token_batch_size is None), (
             "Exactly one of batch_size / token_batch_size must be set"
@@ -71,6 +73,10 @@ class TrainSink:
         self.token_batch_size = token_batch_size
         self.pre_filters = pre_filters
         self.post_filters = post_filters
+        # Fired once per finalized group with the full cohort (errored +
+        # filtered + survivors) — the task sampler's outcome feedback. The
+        # sink stays sampler-blind; the callback stays token-blind.
+        self.on_group_finalized = on_group_finalized
 
         # Observation window for the next shipped batch: rollouts of groups
         # finalized since the last ship (errored + filtered + survivors).
@@ -191,6 +197,10 @@ class TrainSink:
                 f"Finished group | env={env_name} task_idx={task_idx} | "
                 f"rollouts={len(group)} (errored={num_errored}) | dropped: no trainable survivors"
             )
+            # Still an outcome: an all-errored/untrainable group is pure waste
+            # and the sampler should know.
+            if self.on_group_finalized is not None:
+                self.on_group_finalized(group)
             return
 
         # Advantages + per-sample wire stamping (advantage stream, loss
@@ -236,6 +246,9 @@ class TrainSink:
             f"rollouts={len(group)} (errored={num_errored}, filtered={num_filtered}) | "
             f"reward={avg_reward:.4f} | filters: {filter_str}"
         )
+        # Advantages and filter flags are stamped — the group is now evidence.
+        if self.on_group_finalized is not None:
+            self.on_group_finalized(group)
 
     def process_batch(self) -> TrainBatch:
         """Pop a cohort off ``pending_batch`` (by rollout count when
