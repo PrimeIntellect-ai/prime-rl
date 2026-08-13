@@ -472,6 +472,9 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             config_path=config_dir / RL_TOML,
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
+            dynamo=config.dynamo,
+            inference=config.inference,
+            inference_env_vars=inference_env_vars,
         )
     elif config.inference is not None and config.inference.deployment.type == "disaggregated":
         infer_deploy = config.inference.deployment
@@ -514,6 +517,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
+            dynamo=config.dynamo,
         )
     else:
         script = template.render(
@@ -550,6 +554,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_env_vars=inference_env_vars,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
+            dynamo=config.dynamo,
+            inference=config.inference,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -565,6 +571,18 @@ def rl_slurm(config: RLConfig):
 
     config_dir = config.output_dir / "configs"
     log_dir = get_log_dir(config.output_dir)
+
+    if config.dynamo.enabled and not config.dry_run:
+        dynamo_python = config.slurm.project_dir / config.dynamo.env_path / "bin" / "python"
+        vllm_rs = config.slurm.project_dir / config.dynamo.env_path / "bin" / "vllm-rs"
+        sidecar = config.slurm.project_dir / config.dynamo.sidecar_path
+        missing = [path for path in (dynamo_python, vllm_rs, sidecar) if not path.exists()]
+        if missing:
+            paths = ", ".join(map(str, missing))
+            raise FileNotFoundError(
+                f"Missing Dynamo SLURM artifacts: {paths}. Run examples/dynamo/scripts/build_vllm_wheel.sh, "
+                "build_dynamo_artifacts.sh, and install_artifacts.sh first."
+            )
 
     if config.deployment.type == "single_node":
         write_config(config, config_dir, exclude={"slurm", "dry_run", "clean_output_dir"})

@@ -1,4 +1,6 @@
+import base64
 import json
+import shlex
 from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -551,6 +553,39 @@ class InferenceConfig(BaseConfig):
             if templates_dir is not None:
                 self.slurm.template_path = templates_dir / "inference.sbatch.j2"
         return self
+
+    @property
+    def dynamo_vllm_args(self) -> str:
+        """Shell-quoted managed-engine arguments for the pinned Dynamo vLLM launcher."""
+        args: list[str] = []
+        values = self.to_namespace()
+        skip = {
+            "model",
+            "host",
+            "port",
+            "liveness_timeout_seconds",
+            "max_model_len",
+            "tensor_parallel_size",
+            "data_parallel_size",
+            "data_parallel_size_local",
+            "data_parallel_rpc_port",
+            "api_server_count",
+            "worker_extension_cls",
+        }
+        for key, value in vars(values).items():
+            if key in skip or value is None or value is False:
+                continue
+            flag = f"--{key.replace('_', '-')}"
+            if value is True:
+                args.append(flag)
+            else:
+                encoded = json.dumps(value, separators=(",", ":")) if isinstance(value, (dict, list)) else str(value)
+                args.extend((flag, encoded))
+        return " ".join(shlex.quote(arg) for arg in args)
+
+    @property
+    def dynamo_vllm_args_b64(self) -> str:
+        return base64.b64encode(self.dynamo_vllm_args.encode()).decode()
 
     def build_kv_transfer_config(self) -> dict[str, Any] | None:
         """Build the single vLLM ``kv_transfer_config`` from the transfer + offload connectors.

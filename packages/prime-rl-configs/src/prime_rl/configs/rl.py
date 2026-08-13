@@ -225,6 +225,57 @@ DeploymentConfig: TypeAlias = Annotated[
 ]
 
 
+class DynamoSlurmConfig(BaseConfig):
+    """SLURM-managed Dynamo frontend, sidecar, and native-gRPC vLLM engines."""
+
+    enabled: bool = False
+    """Launch Dynamo instead of Prime-RL's vLLM router and inference entrypoint."""
+
+    env_path: Path = Path(".venv-dynamo")
+    """Inference environment created by examples/dynamo/scripts/install_artifacts.sh."""
+
+    sidecar_path: Path = Path("dist/dynamo/dynamo-vllm-sidecar")
+    """Pinned Dynamo sidecar executable built by examples/dynamo/scripts/build_dynamo_artifacts.sh."""
+
+    etcd_path: str = "etcd"
+    """etcd executable available on inference nodes."""
+
+    discovery_port: int = Field(8001, ge=1, le=65535)
+    """Dynamo RL worker discovery port."""
+
+    etcd_port: int = Field(2379, ge=1, le=65535)
+    """Dynamo etcd client port."""
+
+    etcd_peer_port: int = Field(2380, ge=1, le=65535)
+    """Node-local etcd peer port."""
+
+    engine_port: int = Field(8100, ge=1, le=65535)
+    """Base vLLM HTTP/admin port; local DP ranks use consecutive ports."""
+
+    grpc_port: int = Field(50051, ge=1, le=65535)
+    """Base native vLLM gRPC port; local DP ranks use consecutive ports."""
+
+    system_port: int = Field(9000, ge=1, le=65535)
+    """Base Dynamo sidecar system port; local DP ranks use consecutive ports."""
+
+    namespace: str = "prime-rl"
+    """Dynamo discovery namespace; the SLURM job ID is appended at launch time."""
+
+    @model_validator(mode="after")
+    def validate_ports(self):
+        ports = [
+            self.discovery_port,
+            self.etcd_port,
+            self.etcd_peer_port,
+            self.engine_port,
+            self.grpc_port,
+            self.system_port,
+        ]
+        if len(set(ports)) != len(ports):
+            raise ValueError("Dynamo SLURM ports must be distinct")
+        return self
+
+
 class RLConfig(BaseConfig):
     trainer: TrainerConfig
 
@@ -280,10 +331,39 @@ class RLConfig(BaseConfig):
     slurm: SlurmConfig | None = None
     """SLURM configuration. If None, runs locally."""
 
+    dynamo: DynamoSlurmConfig = DynamoSlurmConfig()
+    """Optional SLURM-managed Dynamo inference stack."""
+
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
+
+    @model_validator(mode="after")
+    def validate_dynamo_slurm(self):
+        if not self.dynamo.enabled:
+            return self
+        if self.slurm is None:
+            raise ValueError("dynamo.enabled requires [slurm]")
+        if self.deployment.type != "multi_node":
+            raise ValueError("Dynamo SLURM launch currently requires deployment.type = 'multi_node'")
+        if not self.slurm.shared_fs:
+            raise ValueError("Dynamo SLURM launch currently requires slurm.shared_fs = true")
+        if "template_path" in self.slurm.model_fields_set:
+            raise ValueError("Dynamo SLURM launch requires the default multi-node template")
+        if self.inference is None:
+            raise ValueError("dynamo.enabled requires [inference] for the managed vLLM topology")
+        if self.inference.deployment.type == "disaggregated":
+            raise ValueError("Dynamo SLURM launch currently supports aggregated inference only")
+        if self.deployment.gpus_per_node % self.inference.vllm.tensor_parallel_size:
+            raise ValueError("deployment.gpus_per_node must be divisible by inference.vllm.tensor_parallel_size")
+        if self.inference.vllm.enable_expert_parallel:
+            raise ValueError("Dynamo SLURM launch does not yet support cross-engine expert parallelism")
+        if self.inference.router is not None and "router" in self.inference.model_fields_set:
+            raise ValueError("Dynamo replaces inference.router; remove the explicit [inference.router] block")
+        if self.orchestrator.model.client.admin_base_url is not None:
+            raise ValueError("Dynamo discovers admin endpoints; remove orchestrator.model.client.admin_base_url")
+        return self
 
     @model_validator(mode="after")
     def auto_setup_infer_nodes(self):
@@ -768,12 +848,16 @@ class RLConfig(BaseConfig):
         if self.inference is None:
             return self
         client = self.orchestrator.model.client
+        if self.dynamo.enabled:
+            client.dynamo_discovery_url = f"http://localhost:{self.dynamo.discovery_port}"
+            client.admin_base_url = None
         if not self.orchestrator.any_policy_sourced and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
             client.base_url = f"http://{host}:{port}/v1"
         if (
             self.deployment.type == "single_node"
+            and not self.dynamo.enabled
             and self.inference.router is not None
             and "admin_base_url" not in client.model_fields_set
         ):

@@ -87,6 +87,7 @@ launched.
 
 - [`local`](local): single-node 2-GPU smoke test with a real Dynamo stack
   (etcd + frontend + sidecar + vLLM engine).
+- [`slurm-managed`](slurm-managed): launcher-managed aggregated Dynamo deployment on dedicated inference nodes.
 - [`qwen3_06b_math`](qwen3_06b_math): single-GPU trainer and aggregate Dynamo
   inference smoke test.
 - [`qwen3_30b_Thinking`](qwen3_30b_Thinking): Qwen3-30B Thinking math with an

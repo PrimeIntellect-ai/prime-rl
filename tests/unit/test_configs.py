@@ -760,3 +760,50 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.vllm.tool_call_parser == "hermes"
+
+
+def test_dynamo_slurm_configures_discovery_and_external_topology():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"data": {"fake": {}}},
+            "orchestrator": {},
+            "inference": {
+                "deployment": {"type": "multi_node", "num_nodes": 1},
+                "vllm": {"model": "Qwen/Qwen3-0.6B"},
+            },
+            "deployment": {
+                "type": "multi_node",
+                "num_train_nodes": 1,
+                "num_infer_nodes": 1,
+                "gpus_per_node": 1,
+            },
+            "slurm": {},
+            "dynamo": {"enabled": True},
+            "weight_broadcast": {"type": "nccl", "inference_world_size": 1},
+            "bench": True,
+        }
+    )
+
+    assert config.orchestrator.model.client.dynamo_discovery_url == "http://localhost:8001"
+    assert config.orchestrator.model.client.admin_base_url is None
+    assert config.inference.dynamo_vllm_args_b64
+
+
+def test_dynamo_slurm_rejects_disaggregated_inference():
+    with pytest.raises(ValueError, match="aggregated inference"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"data": {"fake": {}}},
+                "orchestrator": {},
+                "inference": {"deployment": {"type": "disaggregated"}},
+                "deployment": {
+                    "type": "multi_node",
+                    "num_train_nodes": 1,
+                    "num_infer_nodes": 2,
+                },
+                "slurm": {},
+                "dynamo": {"enabled": True},
+                "weight_broadcast": {"type": "nccl", "inference_world_size": 16},
+                "bench": True,
+            }
+        )
