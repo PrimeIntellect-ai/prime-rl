@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import wait_for_path
 
 
 class PrefillScorer:
@@ -86,8 +88,14 @@ class InferencePool:
         )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+    async def update_weights(
+        self,
+        weight_dir: Path | None,
+        lora_name: str | None = None,
+        step: int = 0,
+        native_nccl: bool = False,
+    ) -> None:
+        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step, native_nccl=native_nccl)
 
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this pool's model (one logprob per
@@ -203,6 +211,11 @@ async def check_health(
 
 
 NCCL_READY_MARKER = "NCCL_READY"
+NCCL_MANIFEST = "NCCL_MANIFEST.json"
+
+
+def get_nccl_chunk_manifest(weight_dir: Path, chunk_id: int) -> Path:
+    return weight_dir / f"NCCL_CHUNK_{chunk_id}.json"
 
 
 def _is_retryable_admin_error(exception: BaseException) -> bool:
@@ -250,6 +263,16 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
             response.raise_for_status()
 
 
+async def _admin_post_once(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+    """POST a non-idempotent admin operation exactly once."""
+    response = await client.post(
+        path,
+        timeout=httpx.Timeout(connect=10.0, read=timeout_s, write=60.0, pool=10.0),
+        **kwargs,
+    )
+    response.raise_for_status()
+
+
 async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
@@ -271,11 +294,42 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     logger.debug("All inference engines resumed")
 
 
+async def _receive_native_nccl_weights(admin_clients: list[AsyncClient], weight_dir: Path) -> None:
+    """Drive vLLM's native worker update lifecycle while the trainer broadcasts chunks."""
+    (weight_dir / NCCL_MANIFEST).unlink(missing_ok=True)
+    for chunk_manifest in weight_dir.glob("NCCL_CHUNK_*.json"):
+        chunk_manifest.unlink()
+    await asyncio.gather(*[_admin_post_once(client, "/start_weight_update") for client in admin_clients])
+    nccl_ready_file = weight_dir / NCCL_READY_MARKER
+    nccl_ready_file.touch()
+    get_logger().debug(f"Created NCCL_READY marker at {nccl_ready_file}")
+    manifest_path = weight_dir / NCCL_MANIFEST
+    await wait_for_path(manifest_path, interval=0.1, log_interval=10)
+    num_chunks = int(json.loads(manifest_path.read_text())["num_chunks"])
+    for chunk_id in range(num_chunks):
+        chunk_path = get_nccl_chunk_manifest(weight_dir, chunk_id)
+        await wait_for_path(chunk_path, interval=0.1, log_interval=10)
+        update_info = json.loads(chunk_path.read_text())
+        await asyncio.gather(
+            *[
+                _admin_post_once(
+                    client,
+                    "/update_weights",
+                    json={"update_info": update_info},
+                    timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                )
+                for client in admin_clients
+            ]
+        )
+    await asyncio.gather(*[_admin_post_once(client, "/finish_weight_update") for client in admin_clients])
+
+
 async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
     lora_name: str | None = None,
     step: int = 0,
+    native_nccl: bool = False,
 ) -> None:
     """Update weights on static inference servers.
 
@@ -297,27 +351,35 @@ async def update_weights(
         # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
         await _pause_engines(admin_clients, step=step)
 
+        update_succeeded = False
         try:
-            # Create ready marker before servers enter receive path (used by NCCL broadcast)
-            if weight_dir is not None:
-                nccl_ready_file = weight_dir / NCCL_READY_MARKER
-                nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
-                nccl_ready_file.touch()
-                logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
-
-            await asyncio.gather(
-                *[
-                    _admin_post(
-                        admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
-                        timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-                    )
-                    for admin_client in admin_clients
-                ]
-            )
+            if native_nccl:
+                assert weight_dir is not None
+                await _receive_native_nccl_weights(admin_clients, weight_dir)
+            else:
+                # The custom NCCL path uses this marker to release the trainer sender.
+                if weight_dir is not None:
+                    nccl_ready_file = weight_dir / NCCL_READY_MARKER
+                    nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+                    nccl_ready_file.touch()
+                    logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
+                await asyncio.gather(
+                    *[
+                        _admin_post(
+                            admin_client,
+                            "/update_weights",
+                            json={"weight_dir": weight_dir_posix},
+                            timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                        )
+                        for admin_client in admin_clients
+                    ]
+                )
+            update_succeeded = True
         finally:
-            await _resume_engines(admin_clients)
+            # A failed native update can leave partially applied weights and an active
+            # reload session. Keep inference paused rather than serving a mixed model.
+            if update_succeeded or not native_nccl:
+                await _resume_engines(admin_clients)
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:

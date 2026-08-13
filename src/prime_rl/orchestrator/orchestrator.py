@@ -371,7 +371,12 @@ class Orchestrator:
             )
         if self.model_express is not None:
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
-        await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
+        await self.policy_inference.update_weights(
+            weights_path,
+            lora_name=self.lora_name,
+            step=sync_version,
+            native_nccl=config.weight_broadcast.type == "nccl",
+        )
         if self.model_express is not None:
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
             # Complete the startup rendezvous before the watcher begins its next cycle.
