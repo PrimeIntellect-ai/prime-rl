@@ -271,7 +271,7 @@ known-first-party = ["prime_rl"]
 
 [tool.ruff]
 line-length = 120
-extend-exclude = ["deps"]
+extend-exclude = ["deps", "kernels/prime_kernels/flash_moe/prime-flash-moe"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"

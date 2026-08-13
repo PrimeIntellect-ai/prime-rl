@@ -69,12 +69,17 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends git curl ca-certificates build-essential gh
 
-      # Kernel sources live in this repo, so the checkout is all the build needs.
       - name: Checkout
         uses: actions/checkout@v5
         with:
           submodules: false
           ref: ${{ inputs.ref }}
+
+      # Kernel sources come from public submodules under kernels/; only those are needed.
+      - name: Init kernel submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule update --init --recursive -- kernels/prime_kernels/flash_moe/prime-flash-moe
 
       - name: Install uv
         run: |

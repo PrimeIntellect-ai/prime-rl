@@ -8,11 +8,15 @@ description: How prime-rl vendors, builds, and ships CUDA kernels (the `kernels/
 CUDA kernels live in `kernels/` and ship as one wheel, `prime-kernels`. `kernels/` is the
 wheel root (`setup.py`, `pyproject.toml`); `kernels/prime_kernels/` inside it is the
 importable package. One folder per kernel under it, holding the kernel's Python surface and
-its C++/CUDA sources at `<kernel>/csrc/`; everything is declared in the single manifest
+its C++/CUDA sources; everything is declared in the single manifest
 `kernels/prime_kernels/kernels.toml`. See [`kernels/README.md`](../../kernels/README.md).
 
-Sources are committed here, not submoduled — a kernel is prime-rl code, so a clone builds it
-and a change lands as one commit. Kernels developed in their own repo are copied in.
+The Python surface is prime-rl code and lives in the kernel folder; the C++/CUDA sources of
+a kernel developed in its own repo come in as a git submodule checked out inside that folder.
+`flash_moe` builds from the
+[prime-flash-moe](https://github.com/PrimeIntellect-ai/prime-flash-moe) submodule at
+`kernels/prime_kernels/flash_moe/prime-flash-moe` — only its `csrc/` is compiled; its Python
+packaging is ignored and excluded from ruff (`tool.ruff.extend-exclude` in `pyproject.toml`).
 
 `prime-rl` itself stays a pure-Python wheel — never add compiled extensions to it.
 
@@ -38,6 +42,7 @@ wheels"); building from source is for changing kernels. It is manual by design �
 may compile CUDA, so the extra resolves to release wheels, never to this source tree:
 
 ```bash
+git submodule update --init --recursive kernels/prime_kernels/flash_moe/prime-flash-moe
 uv pip install --no-build-isolation -e kernels
 ```
 
@@ -50,7 +55,8 @@ runtime — the build still succeeds. `PRIME_KERNELS=a,b` builds a subset;
 
 ## Adding a kernel
 
-1. Commit the sources into `kernels/prime_kernels/<name>/csrc/`.
+1. Bring in the sources: `git submodule add <upstream-url> kernels/prime_kernels/<name>/<repo>`
+   (kernels without their own repo commit sources into `kernels/prime_kernels/<name>/csrc/`).
 2. Add a `[<name>]` table to `kernels/prime_kernels/kernels.toml` — sources, `arch`,
    `cxx-std`; paths are relative to the kernel folder.
 3. `kernels/prime_kernels/<name>/__init__.py` — `from . import _C`, one wrapper and one
@@ -69,24 +75,26 @@ Rules the build assumes:
 
 ## Pulling in changes from an upstream repo
 
-For a kernel copied in from a separate repo, copy the sources over and diff:
+Sources are pinned by the submodule commit — pulling in changes is a submodule bump:
 
 ```bash
-git clone <upstream> /tmp/<name> && git -C /tmp/<name> log --oneline -5
-cp -r /tmp/<name>/<path>/csrc/. kernels/prime_kernels/<name>/csrc/
-git diff --stat kernels/prime_kernels/<name>/csrc
+git -C kernels/prime_kernels/flash_moe/prime-flash-moe fetch origin
+git -C kernels/prime_kernels/flash_moe/prime-flash-moe log --oneline HEAD..origin/main
+git -C kernels/prime_kernels/flash_moe/prime-flash-moe checkout origin/main
+git add kernels/prime_kernels/flash_moe/prime-flash-moe
 ```
 
 Then, in order:
 
-- Check `kernels.toml` still lists every source file, and record the copied commit in the
-  commit message — without a submodule that is the only trace of what was copied.
+- Check `kernels.toml` still lists every source file (new upstream files do not add
+  themselves to the manifest).
 - Read the upstream diff for **host-side contract changes**, not just kernel internals. A
   change to what the caller must pass (weight layout, scale packing, argument order) is
   silently wrong numbers, not a build error, and the Python surface here has to absorb it.
 - Rebuild and re-run whatever exercises the kernel — the ABI is not checked for you.
 
-Changes made here are the source of truth; port them back upstream if that repo is alive.
+Local changes to the kernel sources land upstream in prime-flash-moe first, then the
+submodule pin moves here.
 
 ## Prebuilt wheels
 
@@ -137,5 +145,9 @@ pin whose torch no longer matches the lock fails at import, not at install.
 - Never reintroduce `prime-kernels` as a path source: uv cannot read a source tree's metadata
   without building it, so every `uv lock` would then need nvcc. A release-asset URL has static
   metadata and does not.
-- Keep vendored-in Python out of the kernel folder — rewrite it as the kernel's own Python
-  surface instead. Everything under `kernels/` is normal first-party code that ruff lints.
+- Don't import Python from a kernel's submodule — write the kernel's own Python surface in
+  its folder instead. Outside the submodules (which ruff excludes), everything under
+  `kernels/` is normal first-party code that ruff lints.
+- A fresh clone without submodules still builds — the affected kernels are skipped with a
+  message pointing at `git submodule update --init`, and `PRIME_KERNELS_REQUIRE=1` (set in
+  `build_kernels.yaml`, which inits the submodule itself) turns that into a hard error.

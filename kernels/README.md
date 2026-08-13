@@ -12,16 +12,22 @@ kernels/
     └── flash_moe/            # one folder per kernel
         ├── __init__.py       # Python surface: op wrappers, fake tensors
         ├── mxfp8.py
-        └── csrc/             # the C++/CUDA sources
+        └── prime-flash-moe/  # submodule: the C++/CUDA sources (prime_moe/csrc/)
 ```
 
 `kernels/` is the wheel: `setup.py` and `pyproject.toml` sit at its root, and
 `prime_kernels/` inside it is the package you import. A kernel folder holds both halves of
 one kernel — its Python surface and the sources compiled into `prime_kernels.<name>._C`.
 
-Sources are committed here, not pulled in as a submodule: a kernel is prime-rl code, so a
-clone builds it and a change to it is one commit and one review alongside the training code
-that calls it. Kernels developed in their own repo get copied in.
+The Python surface is prime-rl code and lives here; the C++/CUDA sources of a kernel
+developed in its own repo come in as a git submodule checked out inside the kernel folder
+(`flash_moe` builds from [prime-flash-moe](https://github.com/PrimeIntellect-ai/prime-flash-moe)).
+Only the submodule's sources are compiled — its Python packaging is ignored. Initialize
+before building from source:
+
+```bash
+git submodule update --init --recursive kernels/prime_kernels/flash_moe/prime-flash-moe
+```
 
 ## Using a kernel
 
@@ -60,15 +66,17 @@ turns a skip into an error (the release workflow sets it).
 
 ## Adding a kernel
 
-1. Commit the sources into `kernels/prime_kernels/<name>/csrc/`.
-2. Add a table to `prime_kernels/kernels.toml`:
+1. Bring in the sources: add the kernel's repo as a git submodule inside
+   `kernels/prime_kernels/<name>/` (kernels without their own repo commit sources into
+   `kernels/prime_kernels/<name>/csrc/`).
+2. Add a table to `prime_kernels/kernels.toml` (paths relative to the kernel folder):
 
 ```toml
 [<name>]
 description = "..."
 ops = "<torch.ops namespace the extension registers>"
-sources = ["csrc/foo.cu", "csrc/torch_interface.cpp"]
-include-dirs = ["csrc"]
+sources = ["<submodule>/csrc/foo.cu", "<submodule>/csrc/torch_interface.cpp"]
+include-dirs = ["<submodule>/csrc"]
 arch = ["10.0a"]       # compute capabilities to compile for; exact match at runtime
 cxx-std = 20
 ```

@@ -44,9 +44,11 @@ uv sync --extra kernels
 ```
 
 No plain sync compiles CUDA — building from source stays an explicit, manual step (needs
-`nvcc` whose CUDA major matches torch's), and overrides the wheel until the next sync:
+`nvcc` whose CUDA major matches torch's and the `prime-flash-moe` submodule initialized),
+and overrides the wheel until the next sync:
 
 ```bash
+git submodule update --init --recursive kernels/prime_kernels/flash_moe/prime-flash-moe
 uv pip install --no-build-isolation -e kernels
 ```
 
