@@ -17,7 +17,6 @@ name = "base"
 type = "nccl"
 port = 29502
 timeout = 12000
-quantize_in_weight_transfer = true
 
 [deployment]
 type = "multi_node"
@@ -69,7 +68,8 @@ non_cached_tokens = 128 # if <128 tokens, skip prefill go to decode immediately
 "queue-scorer" = 3.0
 
 [inference.vllm]
-model = "zai-org/GLM-5.1-FP8"
+model = "zai-org/GLM-5.1"
+quantization = "fp8_per_block"
 max_model_len = 131072
 tool_call_parser = "glm47"
 reasoning_parser = "glm45"
@@ -118,7 +118,7 @@ max_inflight_episodes = 2048
 max_off_policy_steps = 8 # 16/32 can be better, 8 is more CPU stable
 
 [orchestrator.model]
-name = "zai-org/GLM-5.1-FP8"
+name = "zai-org/GLM-5.1"
 
 [orchestrator.renderer]
 name = "glm-5.1"

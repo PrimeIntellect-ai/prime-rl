@@ -153,26 +153,26 @@ async def liveness(raw_request: Request):
 @router.post("/init_broadcaster")
 async def init_broadcaster(request: Request):
     data = await request.json()
-    host = data.get("host")
-    port = data.get("port")
-    timeout = data.get("timeout")
-    rank_offset = data.get("rank_offset")
-    inference_world_size = data.get("inference_world_size")
-    quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
-    session_id = data.get("session_id", "default")
-    if quantize_in_weight_transfer:
+    if data.get("backend") == "nixl":
         await engine_client(request).collective_rpc(
             "init_broadcaster",
-            args=(host, port, rank_offset, inference_world_size, timeout, True, session_id),
+            args=(
+                data.get("host"),
+                data.get("port"),
+                data.get("rank_offset"),
+                data.get("inference_world_size"),
+                data.get("timeout"),
+                data.get("session_id", "default"),
+            ),
         )
     else:
         await engine_client(request).init_weight_transfer_engine(
             WeightTransferInitRequest(
                 init_info={
-                    "master_address": host,
-                    "master_port": port,
-                    "rank_offset": rank_offset + 1,
-                    "world_size": inference_world_size + 1,
+                    "master_address": data.get("host"),
+                    "master_port": data.get("port"),
+                    "rank_offset": data.get("rank_offset") + 1,
+                    "world_size": data.get("inference_world_size") + 1,
                 }
             )
         )

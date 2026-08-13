@@ -140,10 +140,7 @@ class WeightWatcher:
                 weights_path,
                 lora_name=self.lora_name,
                 step=next_step,
-                native_nccl=(
-                    self.config.weight_broadcast.type == "nccl"
-                    and not self.config.weight_broadcast.quantize_in_weight_transfer
-                ),
+                native_nccl=self.config.weight_broadcast.type == "nccl",
             )
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
