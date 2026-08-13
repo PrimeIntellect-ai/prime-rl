@@ -102,11 +102,23 @@ class Evaluator:
         get_logger().info(f"Watching {config.weights_dir} for new weight checkpoints (max_steps={config.max_steps})")
         while True:
             assert config.weights_dir is not None  # resolved by the config validator
-            for step in get_all_ckpt_steps(config.weights_dir):
+            steps = get_all_ckpt_steps(config.weights_dir)
+            stable = {step: (get_step_path(config.weights_dir, step) / "STABLE").exists() for step in steps}
+            for step in steps:
                 if step <= self.last_step:
                     continue
-                if not (get_step_path(config.weights_dir, step) / "STABLE").exists():
-                    break  # still being written — later steps can't be ready either
+                if not stable[step]:
+                    # The trainer writes checkpoints in ascending order, so a marker-less
+                    # step below a stable one is an abandoned partial write (e.g. a crash
+                    # mid-save), not one in progress — skip it instead of wedging on it.
+                    if not any(stable[s] for s in steps if s > step):
+                        break  # still being written — later steps can't be ready either
+                    get_logger().warning(
+                        f"Weight checkpoint step {step} has no STABLE marker but newer stable "
+                        "checkpoints exist - treating it as abandoned and skipping its evals"
+                    )
+                    self.last_step = max(self.last_step, step)
+                    continue
                 is_final = config.max_steps is not None and step >= config.max_steps
                 await self.maybe_run_evals(step=step, reload_weights=True, force=is_final)
             if config.max_steps is not None and self.last_step >= config.max_steps:

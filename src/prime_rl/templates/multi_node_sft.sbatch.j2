@@ -36,6 +36,14 @@ export OUTPUT_DIR={{ output_dir }}
 mkdir -p $OUTPUT_DIR/logs/trainer
 ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 
+{% if wandb_shared_run_id %}
+# Trainer and evaluator (separate SLURM job) log to a single shared W&B run.
+export WANDB_SHARED_MODE=1
+export WANDB_SHARED_RUN_ID={{ wandb_shared_run_id }}
+export WANDB_SHARED_PRIMARY=evaluator
+export WANDB_SHARED_LABEL=trainer
+export WANDB_PROGRAM="uv run sft"
+{% endif %}
 # Networking
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 echo "HOSTNAMES=${HOSTNAMES[@]}"

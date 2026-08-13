@@ -205,7 +205,26 @@ num_infer_gpus = 1  # inference
 
 The launcher starts the inference server, one env server per eval source, and an `evaluator` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evaluator watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env.
 
-Eval metrics log exactly like RL evals — `eval/{env}/{all,effective}/...` plus `eval/{env}/policy_version` (the checkpoint step) — into the same W&B run as the trainer, and traces land under `rollouts/step_{n}/eval/`. Online evals require HF weight checkpoints (`[ckpt]` is auto-enabled) and are currently single-node only. Eval-step weight checkpoints follow the usual `ckpt.keep_last` / `ckpt.keep_interval` retention; if cleaning outpaces the evaluator, the deleted steps are skipped with a warning instead of evaluated. Without an `[inference]` block the launcher starts no server and the evaluator connects to `eval.client.base_url`; the server must run with `weight_broadcast.type = "filesystem"`, and if a router fronts it, set `eval.client.admin_base_url` to the engine URLs (admin ops bypass routers). The evaluator also runs standalone against any weights directory: `uv run evaluator @ <config>` (`EvaluatorConfig`).
+Eval metrics log exactly like RL evals — `eval/{env}/{all,effective}/...` plus `eval/{env}/policy_version` (the checkpoint step) — into the same W&B run as the trainer, and traces land under `rollouts/step_{n}/eval/`. Online evals require HF weight checkpoints (`[ckpt]` is auto-enabled). Eval-step weight checkpoints follow the usual `ckpt.keep_last` / `ckpt.keep_interval` retention; if cleaning outpaces the evaluator, the deleted steps are skipped with a warning instead of evaluated. Without an `[inference]` block the launcher starts no server and the evaluator connects to `eval.client.base_url`; the server must run with `weight_broadcast.type = "filesystem"`, and if a router fronts it, set `eval.client.admin_base_url` to the engine URLs (admin ops bypass routers). The evaluator also runs standalone against any weights directory: `uv run evaluator @ <config>` (`EvaluatorConfig`).
+
+#### Multi-Node (Decoupled Trainer and Inference Pool)
+
+On a `multi_node` deployment (SLURM), the trainer and the eval deployment are **two independent SLURM jobs**. `deployment.num_nodes` sizes the trainer job; `deployment.num_infer_nodes` sizes the eval job, which runs the inference pool (one vLLM engine per DP rank behind a single router, `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node), one env server per eval source, and the evaluator:
+
+```toml
+[deployment]
+type = "multi_node"
+num_nodes = 2        # trainer job
+num_infer_nodes = 1  # eval job (inference pool + evaluator)
+
+[inference.vllm]
+tensor_parallel_size = 8
+
+[slurm]
+job_name = "my-run"
+```
+
+The only coupling is weight checkpoints on the shared filesystem, so the jobs' lifetimes are independent: when training finishes, the trainer job exits and releases its nodes even while evals are still running; the eval job keeps draining pending checkpoints and exits after evaluating the final one (`max_steps` — without it the eval job never sees a final checkpoint and holds its allocation until walltime). Trainer and evaluator log to a single shared W&B run across both jobs. Any train × inference layout works: `num_nodes` and `num_infer_nodes` are fully independent.
 
 ### SFT-Specific Knobs
 

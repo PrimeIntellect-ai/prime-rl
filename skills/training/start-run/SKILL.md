@@ -57,8 +57,12 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 - Online evals: an `[eval]` block (same shape as `[orchestrator.eval]`) plus `[inference]`
   makes the launcher also start the inference server, one env server per eval source, and
   an `evaluator` process. The trainer writes HF weight checkpoints at eval steps; the
-  evaluator reloads them into the server from disk and runs the evals (single-node only).
-  GPUs split via `deployment.num_gpus` (trainer) + `deployment.num_infer_gpus` (inference).
+  evaluator reloads them into the server from disk and runs the evals.
+  Single-node: GPUs split via `deployment.num_gpus` (trainer) + `deployment.num_infer_gpus`
+  (inference). Multi-node (SLURM): `deployment.num_nodes` (trainer job) +
+  `deployment.num_infer_nodes` (separate eval job: inference pool + router + evaluator) —
+  two decoupled sbatch jobs handing off weights over the shared filesystem, so the eval
+  job outlives the trainer job and exits after evaluating the `max_steps` checkpoint.
 
 ## `inference` — vLLM server
 

@@ -160,8 +160,14 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
 class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     type: Literal["multi_node"] = "multi_node"
 
-    num_nodes: int = 2
+    num_nodes: int = Field(2, ge=1)
     """Training nodes."""
+
+    num_infer_nodes: int = Field(0, ge=0)
+    """Inference nodes for online evals. Submitted as a separate SLURM job, decoupled
+    from the trainer job: the handoff is weight checkpoints on the shared filesystem,
+    so the eval job can outlive the trainer job (evals drain after training ends) and
+    exits after evaluating the final checkpoint."""
 
     nodes_per_fsdp_group: int | None = None
     """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_nodes / nodes_per_fsdp_group``."""
@@ -305,9 +311,6 @@ class SFTConfig(BaseConfig):
                 raise ValueError("[inference] is only used for online evals — add an [eval] block or remove it.")
             return self
 
-        if self.deployment.type == "multi_node":
-            raise ValueError("Online evals are not supported for multi-node SFT deployments yet.")
-
         # The trainer's HF weight checkpoints are how inference picks up new policies.
         if self.ckpt is None:
             self.ckpt = CheckpointConfig()
@@ -324,6 +327,45 @@ class SFTConfig(BaseConfig):
                 "skipped with a warning instead of evaluated.",
                 stacklevel=2,
             )
+
+        if self.deployment.type == "multi_node":
+            # Decoupled deployment: the launcher submits a dedicated SLURM job running the
+            # inference pool (one engine per DP rank behind a router) plus the evaluator.
+            if self.inference is None:
+                raise ValueError(
+                    "Multi-node online evals require an [inference] block - the launcher submits "
+                    "a dedicated SLURM job running the inference pool and the evaluator."
+                )
+            if self.deployment.num_infer_nodes < 1:
+                raise ValueError("Online evals on a multi-node deployment require deployment.num_infer_nodes >= 1.")
+            if self.inference.router is None:
+                raise ValueError(
+                    "Multi-node online evals require an inference router - the eval job starts one "
+                    "router in front of the per-rank engines. Remove inference.router = 'None'."
+                )
+            if self.inference.vllm.model != self.model.name:
+                raise ValueError(
+                    f"inference.vllm.model ({self.inference.vllm.model}) does not match model.name "
+                    f"({self.model.name}). Remove inference.vllm.model to inherit it."
+                )
+            if self.deployment.gpus_per_node % self.inference.vllm.tensor_parallel_size != 0:
+                raise ValueError(
+                    f"deployment.gpus_per_node ({self.deployment.gpus_per_node}) must be divisible by "
+                    f"inference.vllm.tensor_parallel_size ({self.inference.vllm.tensor_parallel_size})."
+                )
+            if self.inference.weight_broadcast.type != "filesystem":
+                raise ValueError(
+                    "Online evals reload weights from disk — inference.weight_broadcast.type must be 'filesystem'."
+                )
+            if self.max_steps is None:
+                warnings.warn(
+                    "Online evals without max_steps: the evaluator never sees a final checkpoint, "
+                    "so the eval SLURM job holds its allocation until its walltime.",
+                    stacklevel=2,
+                )
+            # The client is wired at runtime by the eval sbatch script (the router and
+            # per-rank admin URLs are only known once SLURM assigns hosts).
+            return self
 
         if self.inference is None:
             warnings.warn(

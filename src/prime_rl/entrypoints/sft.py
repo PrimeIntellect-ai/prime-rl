@@ -15,7 +15,7 @@ from prime_rl.configs.evaluator import EvaluatorConfig
 from prime_rl.configs.orchestrator import EvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import BaseModelConfig, LogConfig
-from prime_rl.utils.config import cli, to_toml_dict
+from prime_rl.utils.config import cli, find_package_resource, to_toml_dict
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     format_log_message,
@@ -41,6 +41,8 @@ from prime_rl.utils.process import (
 
 SFT_TOML = "sft.toml"
 SFT_SBATCH = "sft.sbatch"
+EVAL_SBATCH = "eval.sbatch"
+EVAL_TEMPLATE = "multi_node_sft_eval.sbatch.j2"
 
 INFERENCE_TOML = "inference.toml"
 EVALUATOR_TOML = "evaluator.toml"
@@ -95,15 +97,19 @@ def write_config(config: SFTConfig, config_path: Path, exclude: set[str] | None 
         tomli_w.dump(to_toml_dict(config, exclude=exclude), f)
 
 
-def write_eval_subconfigs(config: SFTConfig, config_dir: Path) -> None:
+def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: bool = False) -> None:
     """Write the inference, evaluator, and env-server TOMLs for online evals."""
     config_dir.mkdir(parents=True, exist_ok=True)
 
     if config.inference is not None:
         # Exclude launcher-only fields that are not needed by the vLLM server
         exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
+        inference_dict = to_toml_dict(config.inference, exclude=exclude_inference)
+        if strip_router:
+            # Per-rank processes run bare engines; the sbatch starts the single global router.
+            inference_dict["router"] = "None"
         with open(config_dir / INFERENCE_TOML, "wb") as f:
-            tomli_w.dump(to_toml_dict(config.inference, exclude=exclude_inference), f)
+            tomli_w.dump(inference_dict, f)
 
     with open(config_dir / EVALUATOR_TOML, "wb") as f:
         tomli_w.dump(to_toml_dict(build_evaluator_config(config)), f)
@@ -123,7 +129,7 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path) -> None:
             tomli_w.dump(env_server_dict, f)
 
 
-def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path) -> None:
+def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, wandb_shared_run_id: str | None = None) -> None:
     """Write the SLURM script to disk."""
     from jinja2 import Environment, FileSystemLoader
 
@@ -155,17 +161,75 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path) 
             num_nodes=config.deployment.num_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
             ranks_filter=",".join(map(str, config.log.ranks_filter)),
+            wandb_shared_run_id=wandb_shared_run_id,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
 
 
+def write_eval_slurm_script(
+    config: SFTConfig, config_dir: Path, script_path: Path, wandb_shared_run_id: str | None
+) -> None:
+    """Write the SLURM script for the decoupled online-eval job (inference pool +
+    env servers + evaluator) to disk."""
+    from jinja2 import Environment, FileSystemLoader
+
+    assert config.slurm is not None
+    assert config.slurm.template_path is not None
+    assert config.deployment.type == "multi_node"
+    assert config.inference is not None
+
+    # The eval template is bundled next to the trainer templates; a custom
+    # slurm.template_path directory takes precedence so both can be overridden.
+    template_dirs = [config.slurm.template_path.parent]
+    bundled_templates = find_package_resource("templates")
+    if bundled_templates is not None:
+        template_dirs.append(bundled_templates)
+    env = Environment(loader=FileSystemLoader(template_dirs), keep_trailing_newline=True)
+    template = env.get_template(EVAL_TEMPLATE)
+
+    inference_env_vars = {
+        **DEFAULT_COMMON_ENV_VARS,
+        **DEFAULT_INFERENCE_ENV_VARS,
+        **config.env_vars,
+        **config.inference.env_vars,
+    }
+    evaluator_env_vars = {**DEFAULT_COMMON_ENV_VARS, "LOGURU_FORCE_COLORS": "1", **config.env_vars}
+
+    script = template.render(
+        **config.slurm.template_vars,
+        config_dir=config_dir,
+        output_dir=config.output_dir,
+        num_infer_nodes=config.deployment.num_infer_nodes,
+        gpus_per_node=config.deployment.gpus_per_node,
+        router=config.inference.router,
+        router_port=config.inference.server.port,
+        backend_port=config.inference.backend_port,
+        data_parallel_rpc_port=config.inference.vllm.data_parallel_rpc_port,
+        dp_per_node=config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
+        enable_expert_parallel=config.inference.vllm.enable_expert_parallel,
+        inference_env_vars=inference_env_vars,
+        evaluator_env_vars=evaluator_env_vars,
+        eval_env_names=[source.resolved_name for source, _ in eval_env_servers(config)],
+        wandb_shared_run_id=wandb_shared_run_id,
+    )
+
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script)
+
+
 def sft_slurm(config: SFTConfig):
-    """Run SFT training via SLURM."""
+    """Run SFT training via SLURM. With online evals on a multi-node deployment, the
+    trainer and the eval deployment (inference pool + evaluator) are two independent
+    SLURM jobs: the handoff is weight checkpoints on the shared filesystem, so the
+    trainer job releases its allocation when training finishes while the eval job
+    keeps draining evals and exits after the final checkpoint."""
     assert config.slurm is not None
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
+
+    decoupled_eval = config.deployment.type == "multi_node" and config.eval is not None
 
     config_dir = get_config_dir(config.output_dir)
     config_path = config_dir / SFT_TOML
@@ -174,28 +238,73 @@ def sft_slurm(config: SFTConfig):
         if config.deployment.type == "multi_node"
         else {"slurm", "dry_run", "clean_output_dir"}
     )
+    if decoupled_eval:
+        # The trainer job only needs [eval] for the weight-checkpoint cadence; the
+        # inference pool lives in the eval job.
+        exclude = exclude | {"inference"}
     write_config(config, config_path, exclude=exclude)
     logger.info(f"Wrote config to {config_path}")
 
+    # Trainer and evaluator processes log to a single shared W&B run across both jobs.
+    wandb_shared_run_id: str | None = None
+    if decoupled_eval and config.wandb is not None:
+        wandb_shared_run_id = os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex)
+
     script_path = config.output_dir / SFT_SBATCH
-    write_slurm_script(config, config_path, script_path)
+    write_slurm_script(config, config_path, script_path, wandb_shared_run_id)
     logger.info(f"Wrote SLURM script to {script_path}")
+
+    # The eval job is submitted first and the trainer job depends on it having started:
+    # the evaluator is the shared W&B run's primary, and the trainer's non-primary init
+    # only retries for a bounded window — starting the trainer while the eval job pends
+    # would crash it at wandb init.
+    script_paths = [script_path]
+    if decoupled_eval:
+        write_eval_subconfigs(config, config_dir, strip_router=True)
+        logger.info(f"Wrote eval subconfigs to {config_dir}")
+        eval_script_path = config.output_dir / EVAL_SBATCH
+        write_eval_slurm_script(config, config_dir, eval_script_path, wandb_shared_run_id)
+        logger.info(f"Wrote eval SLURM script to {eval_script_path}")
+        script_paths = [eval_script_path, script_path]
 
     log_dir = get_log_dir(config.output_dir)
     num_nodes = config.deployment.num_nodes if config.deployment.type == "multi_node" else 1
-    log_message = format_log_message(log_dir=log_dir, trainer=True, num_train_nodes=num_nodes)
+    log_message = format_log_message(
+        log_dir=log_dir,
+        trainer=True,
+        evaluator=decoupled_eval,
+        inference=decoupled_eval,
+        eval_env_names=[source.resolved_name for source, _ in eval_env_servers(config)] if decoupled_eval else None,
+        num_train_nodes=num_nodes,
+        num_infer_nodes=config.deployment.num_infer_nodes if decoupled_eval else 0,
+    )
 
     if config.dry_run:
-        logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
+        submit = "\n".join(f"  sbatch {path}" for path in script_paths)
+        note = "\n\nSubmit the eval job first — the trainer joins the W&B run the evaluator creates." if decoupled_eval else ""
+        logger.success(f"Dry run complete. To submit manually:\n\n{submit}{note}\n\n{log_message}")
         return
 
-    logger.info(f"Submitting: sbatch {script_path}")
-    result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"sbatch failed: {result.stderr.strip()}")
-        sys.exit(1)
+    submitted_job_ids: list[str] = []
+    for path in script_paths:
+        cmd = ["sbatch"]
+        if submitted_job_ids:
+            # Hold the trainer until the eval job has started (not finished).
+            cmd.append(f"--dependency=after:{submitted_job_ids[-1]}")
+        cmd.append(str(path))
+        logger.info(f"Submitting: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.error(f"sbatch failed: {result.stderr.strip()}")
+            for job_id in submitted_job_ids:
+                logger.warning(f"Cancelling already-submitted job {job_id}")
+                subprocess.run(["scancel", job_id], capture_output=True, text=True)
+            sys.exit(1)
+        stdout = result.stdout.strip()
+        submitted_job_ids.append(stdout.split()[-1])
+        logger.success(stdout)
 
-    logger.success(f"{result.stdout.strip()}\n\n{log_message}")
+    logger.success(log_message)
 
 
 def sft_local(config: SFTConfig):
@@ -402,6 +511,11 @@ def clean_stale_weights(config: SFTConfig) -> None:
     """Remove weight checkpoints a previous run left behind: everything on a fresh
     start, steps past the resume step on resume. Without this the evaluator would
     replay stale checkpoints (and then skip the re-trained ones at the same steps)."""
+    if os.environ.get("NEVER_CLEAN_OUTPUT_DIR"):
+        setup_logger(config.log.level or "info").warning(
+            "NEVER_CLEAN_OUTPUT_DIR is set - keeping stale weight checkpoints; the evaluator may replay them"
+        )
+        return
     ckpt_base = (config.ckpt.output_dir if config.ckpt else None) or config.output_dir
     weights_dir = get_weights_dir(ckpt_base)
     resume_step = resolve_resume_step(config)
@@ -418,7 +532,8 @@ def clean_stale_weights(config: SFTConfig) -> None:
 def sft(config: SFTConfig):
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
     clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
-    validate_output_dir(config.output_dir, resuming=resuming, clean=clean)
+    ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
+    validate_output_dir(config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir)
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     if config.eval is not None and not config.dry_run:

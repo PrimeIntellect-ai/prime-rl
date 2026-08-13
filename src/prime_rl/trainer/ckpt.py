@@ -499,6 +499,13 @@ class WeightCheckpointManager:
         # Determine which steps to keep
         steps_to_keep = set()
 
+        # Always keep the newest weight checkpoint — it is the current policy. With
+        # keep_interval-only cleaning, a freshly saved non-aligned final checkpoint would
+        # otherwise be deleted immediately, and the online evaluator would wait for the
+        # max_steps checkpoint forever.
+        if self.ckpt_steps:
+            steps_to_keep.add(self.ckpt_steps[-1])
+
         # Keep the most recent keep_last steps
         if self.keep_last is not None:
             steps_to_keep.update(self.ckpt_steps[-self.keep_last :])
