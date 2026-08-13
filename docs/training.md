@@ -199,7 +199,7 @@ Pulled from the console log and mirrored to W&B.
 **Stability and optimization:**
 
 - `optim/grad_norm` — spikes precede divergence.
-- `optim/lr`, `optim/zero_grad_ratio` — LR schedule and the fraction of params that received zero gradients (high → dead path or wrong loss masking).
+- `optim/lr` — LR schedule.
 - For MoE: `max_vio/mean` (load-balancing violation), `routing_confidence/mean` — both are logged when non-zero.
 
 **Performance:**
