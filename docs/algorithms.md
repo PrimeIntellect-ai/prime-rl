@@ -458,53 +458,45 @@ Scoring runs at arrival, before curriculum admission, so a rollout that is later
 
 ## Curricula
 
-Each training source has a `Curriculum` that chooses its next task and sees the finalized result after samples and credit have been built. Returning `False` from `on_result` rejects the whole group; the orchestrator samples again and backfills the batch. Curriculum state is included in orchestrator checkpoints, and metrics are logged under `curriculum/<env>/`.
+Each training source has a `Curriculum` composed from one `TaskSampler` and any number of named `AdmissionGate`s. The sampler chooses tasks and observes every finalized result. All gates also observe every result; the group trains only if every gate admits it. Rejected groups remain observable while the orchestrator samples again to fill the batch.
 
-The default curriculum preserves epoch-shuffled task iteration and admits every result. A custom curriculum subclasses it and is loaded from the source config:
+Samplers and gates can be stateful. Their `state_dict`, `load_state_dict`, and `metrics` methods are included in orchestrator checkpoints and logged under `curriculum/<env>/`. Custom implementations are ordinary subclasses loaded by import path:
 
 ```python
-from prime_rl.orchestrator.curriculum import Curriculum
+from prime_rl.orchestrator.curriculum import AdmissionGate, TaskSampler
 
 
-class MyCurriculum(Curriculum):
-    def sample(self):
-        return super().sample()
+class MySampler(TaskSampler):
+    def observe(self, result):
+        ...
 
-    def on_result(self, result):
-        # result.task_key is stable across runs; result.rollouts carry samples and advantages.
+
+class MyGate(AdmissionGate):
+    def admit(self, result):
         return True
 ```
 
-```toml
-[[orchestrator.train.source]]
-env = { taskset = { id = "my-env" } }
-curriculum = { import_path = "my_package.MyCurriculum", kwargs = { seed = 7 } }
-```
-
-Override `state_dict` and `load_state_dict` for additional mutable state, calling the base implementations when using its RNG or iteration state. `metrics` returns unprefixed metric names.
-
-Two small implementations are included as examples:
+Two small implementations are included:
 
 - `DifficultyPools` samples every finite task once, tracks its latest mean group reward, then samples a named reward pool by weight and a task uniformly within that pool.
 - `AdvantageRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Its default `[0, 0]` range rejects zero-advantage groups. Groups without an advantage stream are admitted.
 
 ```toml
-[orchestrator.train.source.curriculum]
+[orchestrator.train.source.curriculum.sampler]
 import_path = "prime_rl.orchestrator.curricula.DifficultyPools"
 
-[orchestrator.train.source.curriculum.kwargs.thresholds]
+[orchestrator.train.source.curriculum.sampler.kwargs.thresholds]
 hard = 0.25
 medium = 0.75
 easy = 1.0
 
-[orchestrator.train.source.curriculum.kwargs.weights]
+[orchestrator.train.source.curriculum.sampler.kwargs.weights]
 hard = 0.2
 medium = 0.6
 easy = 0.2
-```
 
-```toml
-curriculum = { import_path = "prime_rl.orchestrator.curricula.AdvantageRangeGate", kwargs = { reject_min = -0.05, reject_max = 0.05 } }
+[orchestrator.train.source.curriculum.gates.zero_advantage]
+import_path = "prime_rl.orchestrator.curricula.AdvantageRangeGate"
 ```
 
 ## Multi-Turn Trajectories

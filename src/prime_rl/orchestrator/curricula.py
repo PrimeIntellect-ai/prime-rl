@@ -8,10 +8,10 @@ from typing import Any
 
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.curriculum import Curriculum, CurriculumResult
+from prime_rl.orchestrator.curriculum import AdmissionGate, CurriculumResult, TaskSampler
 
 
-class DifficultyPools(Curriculum):
+class DifficultyPools(TaskSampler):
     """Sample finite tasks through named pools based on the latest group mean.
 
     Unseen tasks are sampled first. Afterwards, a nonempty pool is selected by
@@ -63,12 +63,11 @@ class DifficultyPools(Curriculum):
         pool = self.rng.choices(nonempty, weights=[self.weights[name] for name in nonempty], k=1)[0]
         return self.rng.choice(tasks_by_pool[pool])
 
-    def on_result(self, result: CurriculumResult) -> bool:
+    def observe(self, result: CurriculumResult) -> None:
         rewards = [rollout.reward for rollout in result.rollouts if not rollout.has_error and rollout.agent.trainable]
         if not rewards:
-            return True
+            return
         self.task_rewards[result.task_key] = sum(rewards) / len(rewards)
-        return True
 
     def state_dict(self) -> dict[str, Any]:
         return super().state_dict() | {
@@ -89,7 +88,7 @@ class DifficultyPools(Curriculum):
         }
 
 
-class AdvantageRangeGate(Curriculum):
+class AdvantageRangeGate(AdmissionGate):
     """Reject groups whose trainable-token advantages all fall inside a range.
 
     The default ``[0, 0]`` interval implements zero-advantage rejection.
@@ -98,19 +97,16 @@ class AdvantageRangeGate(Curriculum):
 
     def __init__(
         self,
-        tasks: Sequence[vf.Task] | Iterator[vf.Task],
         *,
         reject_min: float = 0.0,
         reject_max: float = 0.0,
-        seed: int = 42,
     ) -> None:
-        super().__init__(tasks, seed=seed)
         if reject_min > reject_max:
             raise ValueError("reject_min must be less than or equal to reject_max")
         self.reject_min = reject_min
         self.reject_max = reject_max
 
-    def on_result(self, result: CurriculumResult) -> bool:
+    def admit(self, result: CurriculumResult) -> bool:
         advantages: list[float] = []
         for rollout in result.rollouts:
             if rollout.advantages is None:

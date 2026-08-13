@@ -158,12 +158,21 @@ class EnvConfig(BaseConfig):
         return self
 
 
-class CurriculumConfig(BaseConfig):
+class CurriculumComponentConfig(BaseConfig):
     import_path: str
-    """Dotted path to a ``Curriculum`` subclass."""
+    """Dotted path to a task sampler or admission gate subclass."""
 
-    kwargs: dict[str, Any] = {}
-    """Keyword arguments passed to the curriculum constructor."""
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments passed to the component constructor."""
+
+
+class CurriculumConfig(BaseConfig):
+    sampler: CurriculumComponentConfig | None = None
+    """Task selection policy. The default cycles through the taskset."""
+
+    gates: dict[str, CurriculumComponentConfig] = Field(default_factory=dict)
+    """Named admission policies. Every gate observes every finalized group,
+    and a group trains only when every gate admits it."""
 
 
 class TrainSourceConfig(EnvConfig):
@@ -180,8 +189,8 @@ class TrainSourceConfig(EnvConfig):
     this env its own algorithm."""
 
     curriculum: CurriculumConfig | None = None
-    """User-authored task sampling and group admission policy. The default
-    cycles through the taskset and admits every finalized group."""
+    """User-authored task sampler and admission gates. The default cycles
+    through the taskset and admits every finalized group."""
 
 
 class EvalSourceConfig(EnvConfig):

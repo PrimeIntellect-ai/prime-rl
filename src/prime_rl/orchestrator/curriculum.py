@@ -1,4 +1,4 @@
-"""User-authored task sampling and admission policy."""
+"""User-authored task sampling and admission policies."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import verifiers.v1 as vf
 from prime_rl.utils.utils import import_object
 
 if TYPE_CHECKING:
-    from prime_rl.configs.orchestrator import CurriculumConfig
+    from prime_rl.configs.orchestrator import CurriculumComponentConfig, CurriculumConfig
     from prime_rl.orchestrator.types import Rollout
 
 
@@ -38,14 +38,8 @@ class CurriculumResult:
         return cls(task_key=task_key, rollouts=tuple(rollouts))
 
 
-class Curriculum:
-    """Default task curriculum and base class for user-authored policies.
-
-    Override :meth:`sample` to choose tasks and :meth:`on_result` to update
-    policy state or reject a finalized group. Returning ``False`` from
-    :meth:`on_result` keeps the group out of the training batch; the engine
-    continues sampling until the batch is full.
-    """
+class TaskSampler:
+    """Default task sampler and base class for user-authored selection policies."""
 
     def __init__(self, tasks: Sequence[vf.Task] | Iterator[vf.Task], *, seed: int = 42) -> None:
         self.rng = random.Random(seed)
@@ -96,12 +90,11 @@ class Curriculum:
         self.cursor += 1
         return task
 
-    def on_result(self, result: CurriculumResult) -> bool:
-        """Update policy state and return whether this group should train."""
-        return True
+    def observe(self, result: CurriculumResult) -> None:
+        """Update sampling state from a finalized group."""
 
     def state_dict(self) -> dict[str, Any]:
-        """Return checkpoint state owned by this curriculum."""
+        """Return checkpoint state owned by this sampler."""
         return {
             "rng": self.rng.getstate(),
             "epoch": self.epoch,
@@ -122,17 +115,91 @@ class Curriculum:
             self._epoch_tasks = self._shuffle()
 
     def metrics(self) -> dict[str, float]:
-        """Return metrics relative to this curriculum's env namespace."""
+        """Return metrics relative to this sampler's namespace."""
         return {}
+
+
+class AdmissionGate:
+    """Base class for user-authored training-sample admission policies."""
+
+    def admit(self, result: CurriculumResult) -> bool:
+        """Return whether a finalized group should enter the training batch."""
+        return True
+
+    def state_dict(self) -> dict[str, Any]:
+        """Return checkpoint state owned by this gate."""
+        return {}
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Restore checkpoint state before results resume."""
+
+    def metrics(self) -> dict[str, float]:
+        """Return metrics relative to this gate's namespace."""
+        return {}
+
+
+class Curriculum:
+    """One task sampler composed with zero or more admission gates."""
+
+    def __init__(self, sampler: TaskSampler, gates: dict[str, AdmissionGate] | None = None) -> None:
+        self.sampler = sampler
+        self.gates = {} if gates is None else dict(gates)
+
+    def sample(self) -> vf.Task:
+        return self.sampler.sample()
+
+    def on_result(self, result: CurriculumResult) -> bool:
+        """Observe every result, evaluate every gate, and combine with AND."""
+        self.sampler.observe(result)
+        decisions: list[bool] = []
+        for name, gate in self.gates.items():
+            decision = gate.admit(result)
+            if not isinstance(decision, bool):
+                raise TypeError(f"AdmissionGate {name!r}.admit() must return bool, got {type(decision).__name__}")
+            decisions.append(decision)
+        return all(decisions)
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "sampler": self.sampler.state_dict(),
+            "gates": {name: gate.state_dict() for name, gate in self.gates.items()},
+        }
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        if "sampler" not in state_dict:
+            self.sampler.load_state_dict(state_dict)
+            return
+        self.sampler.load_state_dict(state_dict["sampler"])
+        for name, gate_state in state_dict["gates"].items():
+            gate = self.gates.get(name)
+            if gate is not None:
+                gate.load_state_dict(gate_state)
+
+    def metrics(self) -> dict[str, float]:
+        metrics = {f"sampler/{name}": float(value) for name, value in self.sampler.metrics().items()}
+        for gate_name, gate in self.gates.items():
+            metrics |= {f"gate/{gate_name}/{name}": float(value) for name, value in gate.metrics().items()}
+        return metrics
+
+
+def _setup_component(config: CurriculumComponentConfig, base_type: type, *args: Any) -> Any:
+    component_type = import_object(config.import_path)
+    component = component_type(*args, **config.kwargs)
+    if not isinstance(component, base_type):
+        raise TypeError(f"{config.import_path} must subclass {base_type.__name__}")
+    return component
 
 
 def setup_curriculum(
     config: CurriculumConfig | None,
     tasks: Sequence[vf.Task] | Iterator[vf.Task],
 ) -> Curriculum:
-    curriculum_type = Curriculum if config is None else import_object(config.import_path)
-    kwargs = {} if config is None else config.kwargs
-    curriculum = curriculum_type(tasks, **kwargs)
-    if not isinstance(curriculum, Curriculum):
-        raise TypeError(f"{curriculum_type.__module__}.{curriculum_type.__name__} must subclass Curriculum")
-    return curriculum
+    sampler = (
+        TaskSampler(tasks)
+        if config is None or config.sampler is None
+        else _setup_component(config.sampler, TaskSampler, tasks)
+    )
+    gates = (
+        {} if config is None else {name: _setup_component(gate, AdmissionGate) for name, gate in config.gates.items()}
+    )
+    return Curriculum(sampler, gates)
