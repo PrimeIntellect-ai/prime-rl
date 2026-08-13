@@ -18,6 +18,7 @@ from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
+from prime_rl.inference.vllm.ranks import global_inference_rank
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
 from prime_rl.trainer.rl.broadcast.nixl.agent import MemDesc, NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.trainer.rl.broadcast.nixl.cuda_malloc_memory import (
@@ -96,9 +97,24 @@ class NIXLWeightUpdateWorker(Worker):
         timeout: int,
         quantize_in_weight_transfer: bool = False,
         session_id: str = "default",
+        engine_world_size: int | None = None,
     ) -> None:
-        del inference_world_size, quantize_in_weight_transfer
-        global_rank = rank_offset + self.device.index
+        del quantize_in_weight_transfer
+        if engine_world_size is None:
+            global_rank = rank_offset + self.device.index
+        else:
+            parallel_config = self.parallel_config
+            global_rank = global_inference_rank(
+                rank_offset=rank_offset,
+                data_parallel_index=parallel_config.data_parallel_index,
+                data_parallel_size=parallel_config.data_parallel_size,
+                worker_rank=self.rank,
+                tensor_parallel_size=parallel_config.tensor_parallel_size,
+                pipeline_parallel_size=parallel_config.pipeline_parallel_size,
+                prefill_context_parallel_size=parallel_config.prefill_context_parallel_size,
+                inference_world_size=inference_world_size,
+                engine_world_size=engine_world_size,
+            )
         server_url = f"{host}:{port}"
         set_ucx_env_defaults()
         self.nixl_agent = NixlAgent(make_agent_name("inference", global_rank))

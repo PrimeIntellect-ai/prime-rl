@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal, Self, TypeAlias
 
 from pydantic import AfterValidator, Field, model_validator
 
@@ -132,6 +132,19 @@ class ClientConfig(BaseConfig):
 
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
+
+    dynamo_discovery_url: str | None = None
+    """Dynamo URL used to discover vLLM admin endpoints and per-engine world sizes."""
+
+    @model_validator(mode="after")
+    def validate_dynamo_discovery(self) -> Self:
+        if self.dynamo_discovery_url is not None and self.admin_base_url is not None:
+            raise ValueError("dynamo_discovery_url cannot be combined with admin_base_url")
+        return self
+
+    @property
+    def is_dynamo(self) -> bool:
+        return self.dynamo_discovery_url is not None
 
 
 class LogConfig(BaseConfig):

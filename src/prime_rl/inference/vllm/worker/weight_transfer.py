@@ -16,11 +16,21 @@ def load_weights_checkpoint_layerwise(
     model_config,
     vllm_config,
 ) -> None:
+    load_weight_groups_checkpoint_layerwise(model, (state_iter,), model_config, vllm_config)
+
+
+def load_weight_groups_checkpoint_layerwise(
+    model: Module,
+    state_iters: Iterable[Iterable[tuple[str, torch.Tensor]]],
+    model_config,
+    vllm_config,
+) -> None:
     logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     device = next(model.parameters()).device
     with torch.device(device), set_current_vllm_config(vllm_config):
         initialize_layerwise_reload(model)
-        model.load_weights(state_iter)  # type: ignore
+        for state_iter in state_iters:
+            model.load_weights(state_iter)  # type: ignore
         finalize_layerwise_reload(model, model_config)
 
 

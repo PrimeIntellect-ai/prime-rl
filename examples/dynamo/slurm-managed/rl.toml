@@ -1,0 +1,53 @@
+max_steps = 4
+seq_len = 2048
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+gpus_per_node = 1
+
+[slurm]
+project_dir = "."
+partition = "cluster"
+time = "02:00:00"
+
+[dynamo]
+enabled = true
+
+[weight_broadcast]
+type = "nccl"
+inference_world_size = 1
+
+[trainer]
+
+[orchestrator]
+batch_size = 32
+group_size = 4
+
+[orchestrator.renderer]
+name = "auto"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.train.source]]
+name = "math"
+env.taskset = { id = "math-env", dataset_name = "openai/gsm8k", dataset_subset = "main" }
+env.agent.harness = { id = "null" }
+env.agent.runtime = { type = "subprocess" }
+
+[inference]
+
+[inference.deployment]
+type = "multi_node"
+num_nodes = 1
+
+[inference.vllm]
+model = "Qwen/Qwen3-0.6B"
+tensor_parallel_size = 1
+max_model_len = 2048
+enforce_eager = true

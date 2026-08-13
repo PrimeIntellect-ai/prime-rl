@@ -1,0 +1,64 @@
+{# Launch helpers for an aggregated Dynamo topology. One frontend + etcd run on
+   inference node 0. Every local DP rank runs one native-gRPC vLLM engine and
+   one Dynamo sidecar. #}
+launch_dynamo_control_plane() {
+    local log="$OUTPUT_DIR/logs/inference/dynamo-frontend.log"
+    local etcd_data="/tmp/prime-rl-dynamo-etcd-$SLURM_JOB_ID"
+    echo "Starting Dynamo control plane on $LOCAL_IP:$DYNAMO_FRONTEND_PORT (discovery $DYNAMO_DISCOVERY_PORT)" | tee "$log"
+    rm -rf "$etcd_data"
+    "$DYNAMO_ETCD_BIN" --name "dynamo-$SLURM_JOB_ID" --data-dir "$etcd_data" \
+        --listen-client-urls "http://0.0.0.0:$DYNAMO_ETCD_PORT" \
+        --advertise-client-urls "http://$LOCAL_IP:$DYNAMO_ETCD_PORT" \
+        --listen-peer-urls "http://127.0.0.1:$DYNAMO_ETCD_PEER_PORT" \
+        --initial-advertise-peer-urls "http://127.0.0.1:$DYNAMO_ETCD_PEER_PORT" \
+        --initial-cluster "dynamo-$SLURM_JOB_ID=http://127.0.0.1:$DYNAMO_ETCD_PEER_PORT" \
+        --initial-cluster-state new >> "$OUTPUT_DIR/logs/inference/dynamo-etcd.log" 2>&1 &
+    local deadline=$((SECONDS + 60))
+    until curl -fsS "$DYNAMO_ETCD_ENDPOINT/health" >/dev/null; do
+        [ "$SECONDS" -lt "$deadline" ] || { echo "Timed out waiting for Dynamo etcd" >&2; return 1; }
+        sleep 1
+    done
+    DYN_ENABLE_RL=true DYN_RL_PORT="$DYNAMO_DISCOVERY_PORT" \
+    DYN_NAMESPACE="$DYNAMO_NAMESPACE" DYN_DISCOVERY_BACKEND=etcd \
+    ETCD_ENDPOINTS="$DYNAMO_ETCD_ENDPOINT" \
+    DYN_VLLM_ENABLE_INFERENCE_V1_GENERATE=true \
+        "$DYNAMO_PYTHON" -m dynamo.frontend \
+        --http-host 0.0.0.0 --http-port "$DYNAMO_FRONTEND_PORT" \
+        --namespace "$DYNAMO_NAMESPACE" --discovery-backend etcd \
+        --request-plane tcp --event-plane zmq \
+        --router-min-initial-workers "$DYNAMO_TOTAL_ENGINES" >> "$log" 2>&1 &
+}
+
+# launch_dynamo_rank <local-rank> <global-rank> <http-port> <grpc-port> <gpu-list> <log>
+launch_dynamo_rank() {
+    local local_rank="$1" global_rank="$2" http_port="$3" grpc_port="$4" gpus="$5" log="$6"
+    local system_port=$((DYNAMO_SYSTEM_PORT + global_rank))
+    local rpcbase="/tmp/vllm-rpc-$USER-$SLURM_JOB_ID-$http_port"
+    mkdir -p "$rpcbase"
+    echo "Starting Dynamo engine global_rank=$global_rank http=$http_port grpc=$grpc_port GPUs=$gpus" | tee -a "$log"
+    local -a vllm_args=()
+    if [ -n "$DYNAMO_VLLM_ARGS" ]; then
+        eval "vllm_args=($DYNAMO_VLLM_ARGS)"
+    fi
+    local -a managed_args=()
+    [ -n "$DYNAMO_MAX_MODEL_LEN" ] && managed_args+=(--max-model-len "$DYNAMO_MAX_MODEL_LEN")
+
+    CUDA_VISIBLE_DEVICES="$gpus" VLLM_SERVER_DEV_MODE=1 \
+    PYTHONPATH="$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+    VLLM_RPC_BASE_PATH="$rpcbase" \
+        "$DYNAMO_VLLM_RS" serve "$DYNAMO_MODEL" \
+        --host 0.0.0.0 --port "$http_port" --grpc-port "$grpc_port" \
+        --python "$DYNAMO_PYTHON" --data-parallel-size 1 "${managed_args[@]}" \
+        --tensor-parallel-size "$INFERENCE_TP" \
+        --worker-extension-cls prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker \
+        "${vllm_args[@]}" >> "$log" 2>&1 &
+
+    DYN_NAMESPACE="$DYNAMO_NAMESPACE" DYN_DISCOVERY_BACKEND=etcd \
+    ETCD_ENDPOINTS="$DYNAMO_ETCD_ENDPOINT" DYN_ENABLE_RL=true \
+    DYN_SYSTEM_PORT="$system_port" VLLM_HTTP_ENDPOINT="http://$LOCAL_IP:$http_port" \
+        "$DYNAMO_SIDECAR" --vllm-endpoint "$LOCAL_IP:$grpc_port" \
+        --admin-endpoint "http://$LOCAL_IP:$http_port" \
+        --model-path "$DYNAMO_MODEL" --namespace "$DYNAMO_NAMESPACE" \
+        --component "backend-$global_rank" \
+        --rl-discovery-model-name "$DYNAMO_MODEL" >> "$log" 2>&1 &
+}

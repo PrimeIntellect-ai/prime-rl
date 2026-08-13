@@ -92,3 +92,12 @@ curl http://localhost:8000/v1/chat/completions \
 - `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
 - `configs/debug/` — minimal debug configs
 - `examples/` — full example configs (e.g. `reverse-text/`)
+
+## Dynamo on SLURM
+
+Set `[dynamo] enabled = true` in a multi-node RL config to replace the normal
+SLURM `vllm-router` deployment with a launcher-managed aggregated Dynamo stack.
+Build the pinned inference artifacts first, then use
+`examples/dynamo/slurm-managed/rl.toml`; the full workflow is documented in
+`examples/dynamo/slurm-managed/README.md`. Dynamo currently requires dedicated inference
+nodes and does not support the launcher's disaggregated prefill/decode mode.

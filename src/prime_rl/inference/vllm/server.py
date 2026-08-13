@@ -138,11 +138,21 @@ async def init_broadcaster(request: Request):
     timeout = data.get("timeout")
     rank_offset = data.get("rank_offset")
     inference_world_size = data.get("inference_world_size")
+    engine_world_size = data.get("engine_world_size")
     quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
     session_id = data.get("session_id", "default")
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer, session_id),
+        args=(
+            host,
+            port,
+            rank_offset,
+            inference_world_size,
+            timeout,
+            quantize_in_weight_transfer,
+            session_id,
+            engine_world_size,
+        ),
     )
     return {"status": "ok"}
 
@@ -153,28 +163,25 @@ async def custom_init_app_state(
     args: Namespace,
     supported_tasks: tuple,
 ):
-    """
-    Modifies init_app_state:
-    1. Call the original init_app_state to set up standard state, including
-       vLLM 0.20's ``serving_tokens`` for ``/inference/v1/generate``.
-    2. Replace ``serving_tokens`` with ``PrimeRlServingTokens`` so DP-rank
-       routing and ``routed_experts`` export survive the migration off the
-       legacy ``/v1/generate`` endpoint.
-    """
+    """Initialize vLLM app state and install Prime's token response adapter."""
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
 
-    # Swap in our ServingTokens subclass for /inference/v1/generate so the
-    # X-data-parallel-rank header and routed_experts response field — both
-    # used by prime-RL's renderer / router-replay paths — keep working.
     if "generate" in supported_tasks and state.serving_tokens is not None:
         from prime_rl.inference.vllm.serving_tokens import PrimeRlServingTokens
 
         upstream = state.serving_tokens
-        prime_serving = object.__new__(PrimeRlServingTokens)
-        prime_serving.__dict__.update(upstream.__dict__)
-        state.serving_tokens = prime_serving
+        state.serving_tokens = PrimeRlServingTokens(
+            upstream.engine_client,
+            upstream.models,
+            upstream.online_renderer,
+            request_logger=upstream.request_logger,
+            return_tokens_as_token_ids=upstream.return_tokens_as_token_ids,
+            force_no_detokenize=upstream.force_no_detokenize,
+            enable_prompt_tokens_details=True,
+            enable_log_outputs=upstream.enable_log_outputs,
+        )
 
 
 import vllm.entrypoints.openai.api_server

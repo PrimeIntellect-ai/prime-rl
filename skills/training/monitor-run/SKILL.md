@@ -189,3 +189,17 @@ PRIME-RL::Launcher
 ```
 
 For multi-node runs, trainer and inference processes are on separate nodes — use `srun` or `ssh` to inspect them.
+
+### Dynamo SLURM inference logs
+
+For `[dynamo] enabled = true`, the global router log is replaced by:
+
+```text
+logs/inference/dynamo-etcd.log
+logs/inference/dynamo-frontend.log
+logs/inference/node_<rank>.log
+```
+
+The node log contains both the native-gRPC vLLM engine and its sidecar. Check
+`/v1/models` on the frontend port and `/v1/rl/workers` on the configured
+Dynamo discovery port before diagnosing Prime weight-transfer startup.
