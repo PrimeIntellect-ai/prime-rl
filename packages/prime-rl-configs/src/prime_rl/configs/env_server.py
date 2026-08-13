@@ -20,6 +20,9 @@ class EnvServerConfig(BaseConfig):
 
     log: LogConfig = LogConfig()
 
+    sandbox_labels: list[str] = []
+    """Base labels attached to every Prime sandbox created by this server's workers, extended by each runtime's own labels. The ``rl`` launcher stamps the run name here."""
+
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — logs and any generated artifacts are written as subdirectories."""
 

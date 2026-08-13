@@ -385,6 +385,24 @@ class RLConfig(BaseConfig):
             sub.output_dir = run_dir
         return self
 
+    @model_validator(mode="after")
+    def auto_setup_run_identity(self):
+        """Propagate the run identity to the orchestrator (which stamps it on rollout
+        traces) and default the W&B and Prime platform run names to ``run.name``.
+
+        Explicit names always win: only unset names inherit. Runs after the
+        orchestrator's own ``auto_setup_prime_monitor_run_name``, so an explicitly
+        set W&B name still takes precedence for the platform run name.
+        """
+        self.orchestrator.run = self.run
+        for wandb in (self.wandb, self.trainer.wandb, self.orchestrator.wandb):
+            if wandb is not None and wandb.name is None:
+                wandb.name = self.run.name
+        prime_monitor = self.orchestrator.prime_monitor
+        if prime_monitor is not None and prime_monitor.run_name is None:
+            prime_monitor.run_name = self.run.name
+        return self
+
     ### Validate shared configs (after sub-config construction)
 
     @model_validator(mode="after")

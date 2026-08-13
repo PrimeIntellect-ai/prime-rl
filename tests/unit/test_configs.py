@@ -556,6 +556,7 @@ def test_run_dir_propagates_through_cli(tmp_path):
             "max_steps": 1,
             "seq_len": 128,
             "model": {"name": "Qwen/Qwen3-0.6B"},
+            "wandb": {},
             "trainer": {},
             "orchestrator": {"batch_size": 16, "group_size": 1},
             "inference": {},
@@ -566,6 +567,11 @@ def test_run_dir_propagates_through_cli(tmp_path):
     assert config.run_dir == shared_out / "my-exp"
     assert config.trainer.output_dir == shared_out / "my-exp"
     assert config.orchestrator.output_dir == shared_out / "my-exp"
+    # Run identity propagates to the orchestrator; unset monitor names inherit run.name
+    assert config.orchestrator.run == config.run
+    assert config.wandb is not None and config.wandb.name == "my-exp"
+    assert config.trainer.wandb is not None and config.trainer.wandb.name == "my-exp"
+    assert config.orchestrator.wandb is not None and config.orchestrator.wandb.name == "my-exp"
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():

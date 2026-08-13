@@ -116,6 +116,7 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             "env": source_dict["env"],
             "serve": {**source_dict.get("serve", {}), "address": address},
             "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
+            "sandbox_labels": [config.run.name],
         }
         with open(env_dir / f"{source.resolved_name}.toml", "wb") as f:
             tomli_w.dump(env_server_dict, f)
@@ -166,7 +167,7 @@ def rl_local(config: RLConfig):
     # The monitor short-circuits when WANDB_MODE=disabled/offline is also set.
     wandb_shared_env: dict[str, str] = {
         "WANDB_SHARED_MODE": "1",
-        "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex),
+        "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", config.run.id),
     }
 
     # Validate client port matches inference server port

@@ -29,8 +29,12 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 
 
 class RunConfig(BaseConfig):
+    # TODO: fetch this identifier from the Prime SDK once runs are registered there.
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    """Unique run identifier, locally generated for now. Stamped on rollout traces and used as the shared W&B run id."""
+
     name: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    """Run name. The run writes all its artifacts to ``output_dir / name``. Defaults to a random UUID, so every launch gets a fresh run directory; set an explicit name (e.g. an experiment name) to get a predictable run directory, which is also required to resume a previous run."""
+    """Run name. The run writes all its artifacts to ``output_dir / name``. Defaults to a random UUID, so every launch gets a fresh run directory; set an explicit name (e.g. an experiment name) to get a predictable run directory, which is also required to resume a previous run. Unless set explicitly, the W&B run name and the Prime platform run name inherit it."""
 
 
 class SlurmConfig(BaseConfig):

@@ -209,6 +209,13 @@ class SFTConfig(BaseConfig):
     def run_dir(self) -> Path:
         return self.output_dir / self.run.name
 
+    @model_validator(mode="after")
+    def auto_setup_run_identity(self):
+        """Default the W&B run name to ``run.name`` when not set explicitly."""
+        if self.wandb is not None and self.wandb.name is None:
+            self.wandb.name = self.run.name
+        return self
+
     matmul_precision: Literal["highest", "high", "medium"] = "high"
     """Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``."""
 
