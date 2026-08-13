@@ -9,6 +9,7 @@ End-to-end usage examples for prime-rl, referenced from the top-level [README](.
   - `wiki-search` — multi-turn tool calling, LoRA
   - `wordle` — multi-turn (~6-turn games)
   - `hendrycks-sanity` — single-turn math, long-running
+- **[`reward_model/`](reward_model)** — Bradley–Terry pairwise reward-model training, including a Qwen3-0.6B capitalization sanity check.
 - **[`advanced/`](advanced)** — larger, mostly multi-node runs on frontier models, one folder
   per model: `qwen3-30b-a3b` (math/swe/tool), `glm-4.5-air` (search/swe/terminal), `glm-5.2`
   (large-scale + PD-disaggregated inference), `minimax-m2.5` (swe), `nemotron-3-super` (swe),
