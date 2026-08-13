@@ -99,8 +99,6 @@ id = "rlm"
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
-idle_timeout = "None"
 labels = ["glm45air-terminal"]
 
 [orchestrator.train.source.env.taskset]
@@ -134,8 +132,6 @@ id = "rlm"
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
-idle_timeout = "None"
 labels = ["glm45air-terminal"]
 
 [orchestrator.eval.source.env.agent.timeout]
@@ -167,8 +163,6 @@ id = "rlm"
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
-idle_timeout = "None"
 labels = ["glm45air-terminal"]
 
 [orchestrator.eval.source.env.agent.timeout]

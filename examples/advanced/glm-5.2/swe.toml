@@ -85,7 +85,6 @@ id = "swebench-verified"
 id = "bash"
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
 labels = ["glm5-pd-disag", "swe-bench-verified"]
 
 [[orchestrator.post_batch_filters]]
