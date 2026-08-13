@@ -117,37 +117,54 @@ def has_checkpoints(output_dir: Path) -> bool:
     return ckpt_dir.exists() and any(ckpt_dir.iterdir())
 
 
-def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool, ckpt_output_dir: Path | None = None) -> None:
-    """Validate the output directory before training starts.
+# Launcher artifacts that may exist in a run directory before training starts: resolved
+# configs and the SLURM script/job log (a submitted job re-invokes the entrypoint inside
+# the run directory). Everything else is treated as artifacts of a previous run.
+LAUNCHER_ARTIFACTS = ("configs", "rl.sbatch", "sft.sbatch", "job_*.log")
 
-    Raises if the directory contains checkpoints from a previous run, unless
-    explicitly resuming or opting into cleaning. Other artifacts (logs,
-    rollouts, configs) are fine and don't trigger the error.
+
+def has_run_artifacts(run_dir: Path) -> bool:
+    """Check if the run directory contains artifacts beyond what the launcher pre-writes."""
+    if not run_dir.exists():
+        return False
+    launcher_entries = {entry for pattern in LAUNCHER_ARTIFACTS for entry in run_dir.glob(pattern)}
+    return any(entry not in launcher_entries for entry in run_dir.iterdir())
+
+
+def validate_run_dir(run_dir: Path, *, resuming: bool, clean: bool, ckpt_output_dir: Path | None = None) -> None:
+    """Validate the run directory before training starts.
+
+    Raises if the run directory was already used by a previous run, unless explicitly
+    resuming or opting into cleaning — a second run writing into the same run directory
+    would overwrite or interleave with the first run's artifacts.
 
     When ckpt_output_dir is set, checkpoints live there instead of under
-    output_dir, so the guard and clean logic check both locations.
+    run_dir, so the guard and clean logic check both locations.
     """
-    dirs_to_check = [output_dir]
-    if ckpt_output_dir is not None and ckpt_output_dir != output_dir:
-        dirs_to_check.append(ckpt_output_dir)
-
     if resuming:
         return
     if clean:
         logger = get_logger()
-        for d in dirs_to_check:
+        dirs_to_clean = [run_dir]
+        if ckpt_output_dir is not None and ckpt_output_dir != run_dir:
+            dirs_to_clean.append(ckpt_output_dir)
+        for d in dirs_to_clean:
             if d.exists():
                 logger.warning(f"Cleaning existing directory: {d}")
                 shutil.rmtree(d)
         return
-    for d in dirs_to_check:
-        if has_checkpoints(d):
-            raise FileExistsError(
-                f"Directory '{d}' already contains checkpoints from a previous run. "
-                f"To resume the latest step of the previous run, set ckpt.resume_step=-1 or --ckpt.resume-step -1 via CLI. "
-                f"To delete the existing directory and start fresh, set clean_output_dir=true or --clean-output-dir via CLI. "
-                f"Otherwise use a unique output_dir for this experiment."
-            )
+    blocked = None
+    if has_run_artifacts(run_dir):
+        blocked = f"Run directory '{run_dir}' already contains artifacts from a previous run."
+    elif ckpt_output_dir is not None and ckpt_output_dir != run_dir and has_checkpoints(ckpt_output_dir):
+        blocked = f"Checkpoint directory '{ckpt_output_dir}' already contains checkpoints from a previous run."
+    if blocked:
+        raise FileExistsError(
+            f"{blocked} "
+            f"To resume the latest step of the previous run, set ckpt.resume_step=-1 or --ckpt.resume-step -1 via CLI. "
+            f"To delete the existing directory and start fresh, set clean_output_dir=true or --clean-output-dir via CLI. "
+            f"Otherwise use a unique run name (run.name or --run.name via CLI) or output_dir for this run."
+        )
 
 
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:

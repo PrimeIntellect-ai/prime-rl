@@ -9,6 +9,14 @@ from tests.utils import check_loss_goes_down, strip_escape_codes
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
+RUN_NAME = "reverse-text-sft-lora"
+
+
+@pytest.fixture(scope="module")
+def run_dir(output_dir: Path) -> Path:
+    return output_dir / RUN_NAME
+
+
 TIMEOUT = 300  # 5 minutes
 
 
@@ -50,6 +58,8 @@ def sft_lora_process(
         wandb_name,
         "--output-dir",
         output_dir.as_posix(),
+        "--run.name",
+        RUN_NAME,
     ]
 
     return run_process(cmd, timeout=TIMEOUT)
@@ -79,6 +89,8 @@ def sft_lora_resume_process(
         wandb_name,
         "--output-dir",
         output_dir.as_posix(),
+        "--run.name",
+        RUN_NAME,
     ]
 
     return run_process(cmd, timeout=TIMEOUT)
@@ -89,18 +101,18 @@ def test_no_error(sft_lora_process: ProcessResult):
     assert sft_lora_process.returncode == 0, f"Process has non-zero return code ({sft_lora_process})"
 
 
-def test_loss_goes_down(sft_lora_process: ProcessResult, output_dir: Path):
+def test_loss_goes_down(sft_lora_process: ProcessResult, run_dir: Path):
     """Tests that the loss goes down in the SFT LoRA process"""
-    trainer_log_path = output_dir / "logs" / "trainer.log"
+    trainer_log_path = run_dir / "logs" / "trainer.log"
     print(f"Checking trainer path in {trainer_log_path}")
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_loss_goes_down(trainer_stdout)
 
 
-def test_adapter_checkpoint_written(sft_lora_process: ProcessResult, output_dir: Path):
+def test_adapter_checkpoint_written(sft_lora_process: ProcessResult, run_dir: Path):
     """Tests that the adapter checkpoint is written with valid PEFT-compatible keys."""
-    adapter_dir = output_dir / "weights" / "step_5" / "lora_adapters"
+    adapter_dir = run_dir / "weights" / "step_5" / "lora_adapters"
     assert_adapter_checkpoint(adapter_dir)
 
 
@@ -109,16 +121,16 @@ def test_no_error_resume(sft_lora_resume_process: ProcessResult):
     assert sft_lora_resume_process.returncode == 0, f"Process has non-zero return code ({sft_lora_resume_process})"
 
 
-def test_loss_goes_down_resume(sft_lora_resume_process: ProcessResult, output_dir: Path):
+def test_loss_goes_down_resume(sft_lora_resume_process: ProcessResult, run_dir: Path):
     """Tests that the loss goes down in the SFT LoRA resume process"""
-    trainer_log_path = output_dir / "logs" / "trainer.log"
+    trainer_log_path = run_dir / "logs" / "trainer.log"
     print(f"Checking trainer path in {trainer_log_path}")
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_loss_goes_down(trainer_stdout)
 
 
-def test_adapter_checkpoint_written_resume(sft_lora_resume_process: ProcessResult, output_dir: Path):
+def test_adapter_checkpoint_written_resume(sft_lora_resume_process: ProcessResult, run_dir: Path):
     """Tests that the adapter checkpoint is written after resuming with valid PEFT-compatible keys."""
-    adapter_dir = output_dir / "weights" / "step_10" / "lora_adapters"
+    adapter_dir = run_dir / "weights" / "step_10" / "lora_adapters"
     assert_adapter_checkpoint(adapter_dir)

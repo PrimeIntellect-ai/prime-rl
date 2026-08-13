@@ -8,6 +8,14 @@ from tests.utils import check_loss_goes_down, strip_escape_codes
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
+RUN_NAME = "reverse-text-sft"
+
+
+@pytest.fixture(scope="module")
+def run_dir(output_dir: Path) -> Path:
+    return output_dir / RUN_NAME
+
+
 TIMEOUT = 300  # 5 minutes
 
 
@@ -40,6 +48,8 @@ def sft_process(
         wandb_name,
         "--output-dir",
         output_dir.as_posix(),
+        "--run.name",
+        RUN_NAME,
     ]
 
     return run_process(cmd, timeout=TIMEOUT)
@@ -69,6 +79,8 @@ def sft_resume_process(
         wandb_name,
         "--output-dir",
         output_dir.as_posix(),
+        "--run.name",
+        RUN_NAME,
     ]
 
     return run_process(cmd, timeout=TIMEOUT)
@@ -79,9 +91,9 @@ def test_no_error(sft_process: ProcessResult):
     assert sft_process.returncode == 0, f"Process has non-zero return code ({sft_process})"
 
 
-def test_loss_goes_down(sft_process: ProcessResult, output_dir: Path):
+def test_loss_goes_down(sft_process: ProcessResult, run_dir: Path):
     """Tests that the loss goes down in the SFT process"""
-    trainer_log_path = output_dir / "logs" / "trainer.log"
+    trainer_log_path = run_dir / "logs" / "trainer.log"
     print(f"Checking trainer path in {trainer_log_path}")
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
@@ -93,9 +105,9 @@ def test_no_error_resume(sft_resume_process: ProcessResult):
     assert sft_resume_process.returncode == 0, f"Process has non-zero return code ({sft_resume_process})"
 
 
-def test_loss_goes_down_resume(sft_resume_process: ProcessResult, output_dir: Path):
+def test_loss_goes_down_resume(sft_resume_process: ProcessResult, run_dir: Path):
     """Tests that the loss goes down in the SFT resume process"""
-    trainer_log_path = output_dir / "logs" / "trainer.log"
+    trainer_log_path = run_dir / "logs" / "trainer.log"
     print(f"Checking trainer path in {trainer_log_path}")
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()

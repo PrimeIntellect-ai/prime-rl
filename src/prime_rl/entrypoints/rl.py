@@ -24,9 +24,10 @@ from prime_rl.utils.pathing import (
     clean_future_steps,
     format_log_message,
     get_ckpt_dir,
+    get_config_dir,
     get_log_dir,
     resolve_latest_ckpt_step,
-    validate_output_dir,
+    validate_run_dir,
 )
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
@@ -128,7 +129,7 @@ def rl_local(config: RLConfig):
         json_logging=config.log.json_logging,
     )
 
-    config_dir = config.output_dir / "configs"
+    config_dir = get_config_dir(config.run_dir)
     write_subconfigs(config, config_dir)
     logger.info(f"Wrote subconfigs to {config_dir}")
 
@@ -181,7 +182,7 @@ def rl_local(config: RLConfig):
             )
 
     # Prepare paths to communicate with the trainer
-    log_dir = get_log_dir(config.output_dir)
+    log_dir = get_log_dir(config.run_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # Start processes
@@ -470,7 +471,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         script = template.render(
             **config.slurm.template_vars,
             config_path=config_dir / RL_TOML,
-            output_dir=config.output_dir,
+            output_dir=config.run_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
     elif config.inference is not None and config.inference.deployment.type == "disaggregated":
@@ -480,7 +481,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             **config.slurm.template_vars,
             is_disaggregated=True,
             config_dir=config_dir,
-            output_dir=config.output_dir,
+            output_dir=config.run_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
             nodes_per_infer_replica=infer_deploy.num_nodes,
@@ -520,7 +521,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             **config.slurm.template_vars,
             is_disaggregated=False,
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
-            output_dir=config.output_dir,
+            output_dir=config.run_dir,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes,
             nodes_per_infer_replica=config.deployment.infer_nodes_per_replica,
@@ -563,8 +564,8 @@ def rl_slurm(config: RLConfig):
         config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"), json_logging=config.log.json_logging
     )
 
-    config_dir = config.output_dir / "configs"
-    log_dir = get_log_dir(config.output_dir)
+    config_dir = get_config_dir(config.run_dir)
+    log_dir = get_log_dir(config.run_dir)
 
     if config.deployment.type == "single_node":
         write_config(config, config_dir, exclude={"slurm", "dry_run", "clean_output_dir"})
@@ -600,7 +601,7 @@ def rl_slurm(config: RLConfig):
             num_infer_nodes=config.deployment.total_infer_nodes if has_infer else 0,
         )
 
-    script_path = config.output_dir / RL_SBATCH
+    script_path = config.run_dir / RL_SBATCH
     write_slurm_script(config, config_dir, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 
@@ -621,28 +622,28 @@ def rl(config: RLConfig):
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
     clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
-    validate_output_dir(config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir)
-    config.output_dir.mkdir(parents=True, exist_ok=True)
+    validate_run_dir(config.run_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir)
+    config.run_dir.mkdir(parents=True, exist_ok=True)
     if ckpt_output_dir is not None:
         ckpt_output_dir.mkdir(parents=True, exist_ok=True)
 
     # Clean stale rollouts and broadcasts. When resuming, anything past the resume
     # step is stale. When training from scratch, every existing step directory is
-    # stale — without this, a fresh run in a dirty output_dir would pick up rollouts
+    # stale — without this, a fresh run in a dirty run dir would pick up rollouts
     # from a previous run and the orchestrator would see a negative async level.
     resume_step: int | None = None
     if resuming:
         resume_step = config.ckpt.resume_step
         if resume_step == -1:
-            ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.output_dir
+            ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
             resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")
-        clean_future_steps(config.output_dir, resume_step)
+        clean_future_steps(config.run_dir, resume_step)
     else:
         get_logger().info("Training from scratch, cleaning any stale rollouts and broadcasts")
-        clean_future_steps(config.output_dir, -1)
+        clean_future_steps(config.run_dir, -1)
 
     if not config.dry_run:
         from prime_rl.trainer.model import pre_download_model

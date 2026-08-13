@@ -1,4 +1,5 @@
 import os
+import uuid
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -25,6 +26,11 @@ def reject_protected_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
 
 EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_env_vars)]
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
+
+
+class RunConfig(BaseConfig):
+    name: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    """Run name. The run writes all its artifacts to ``output_dir / name``. Defaults to a random UUID, so every launch gets a fresh run directory; set an explicit name (e.g. an experiment name) to get a predictable run directory, which is also required to resume a previous run."""
 
 
 class SlurmConfig(BaseConfig):

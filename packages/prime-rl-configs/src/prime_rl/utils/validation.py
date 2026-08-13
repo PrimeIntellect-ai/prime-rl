@@ -138,8 +138,6 @@ def propagate_shared_fields(data: Any) -> Any:
     # pass (the per-rank inference.toml drops slurm, so each rank still runs locally).
     propagate("slurm", "inference.slurm")
 
-    propagate("output_dir", "trainer.output_dir", "orchestrator.output_dir")
-
     # Cascade trainer.tokenizer.chat_template → inference.vllm.chat_template
     # (vLLM ``--chat-template``). Read trainer's value *after* the shared
     # propagation above so we cover both:
@@ -222,17 +220,6 @@ def validate_shared_model_name(
     if trainer.model.name != orchestrator.model.name:
         raise ValueError(
             f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. Please specify the same model name for both."
-        )
-
-
-def validate_shared_output_dir(
-    trainer: TrainerConfig,
-    orchestrator: OrchestratorConfig,
-) -> None:
-    if trainer.output_dir != orchestrator.output_dir:
-        raise ValueError(
-            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory ({orchestrator.output_dir}) are not the same. "
-            "Please specify the same outputs directory for both (the orchestrator no longer nests under a run_default subdirectory)."
         )
 
 

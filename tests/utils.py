@@ -9,14 +9,14 @@ def strip_escape_codes(text: str) -> str:
     return re.sub(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", text)
 
 
-def check_no_error(process: ProcessResult, output_dir: Path) -> None:
+def check_no_error(process: ProcessResult, run_dir: Path) -> None:
     """Helper to assert that a process did not error"""
     if process.returncode != 0:
         print("=== Inference Outputs ===")
-        with open(output_dir / "logs" / "inference.log", "r") as f:
+        with open(run_dir / "logs" / "inference.log", "r") as f:
             print(*f.readlines()[-100:], sep="")
         print("=== Orchestrator Outputs ===")
-        with open(output_dir / "logs" / "orchestrator.log", "r") as f:
+        with open(run_dir / "logs" / "orchestrator.log", "r") as f:
             print(*f.readlines()[-1000:], sep="")
     assert process.returncode == 0, f"Process has non-zero return code ({process})"
 

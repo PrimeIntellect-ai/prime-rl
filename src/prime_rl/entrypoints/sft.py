@@ -11,7 +11,7 @@ import tomli_w
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.config import cli, to_toml_dict
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir, validate_output_dir
+from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir, validate_run_dir
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
@@ -52,14 +52,14 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path) 
         script = template.render(
             **config.slurm.template_vars,
             config_path=config_path,
-            output_dir=config.output_dir,
+            output_dir=config.run_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
     else:
         script = template.render(
             **config.slurm.template_vars,
             config_path=config_path,
-            output_dir=config.output_dir,
+            output_dir=config.run_dir,
             trainer_env_vars=trainer_env_vars,
             num_nodes=config.deployment.num_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
@@ -76,7 +76,7 @@ def sft_slurm(config: SFTConfig):
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
-    config_dir = get_config_dir(config.output_dir)
+    config_dir = get_config_dir(config.run_dir)
     config_path = config_dir / SFT_TOML
     exclude = (
         {"deployment", "slurm", "dry_run", "clean_output_dir"}
@@ -86,11 +86,11 @@ def sft_slurm(config: SFTConfig):
     write_config(config, config_path, exclude=exclude)
     logger.info(f"Wrote config to {config_path}")
 
-    script_path = config.output_dir / SFT_SBATCH
+    script_path = config.run_dir / SFT_SBATCH
     write_slurm_script(config, config_path, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    log_dir = get_log_dir(config.output_dir)
+    log_dir = get_log_dir(config.run_dir)
     num_nodes = config.deployment.num_nodes if config.deployment.type == "multi_node" else 1
     log_message = format_log_message(log_dir=log_dir, trainer=True, num_train_nodes=num_nodes)
 
@@ -113,7 +113,7 @@ def sft_local(config: SFTConfig):
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
-    config_dir = get_config_dir(config.output_dir)
+    config_dir = get_config_dir(config.run_dir)
     config_path = config_dir / SFT_TOML
     write_config(config, config_path)
     logger.info(f"Wrote config to {config_path}")
@@ -122,7 +122,7 @@ def sft_local(config: SFTConfig):
         logger.success("Dry run complete. To start an SFT run locally, remove --dry-run from your command.")
         return
 
-    log_dir = config.output_dir / "logs"
+    log_dir = get_log_dir(config.run_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     from prime_rl.utils.utils import get_free_port
@@ -132,7 +132,7 @@ def sft_local(config: SFTConfig):
         "--role=trainer",
         f"--rdzv-endpoint=localhost:{get_free_port()}",
         f"--rdzv-id={uuid.uuid4().hex}",
-        f"--log-dir={config.output_dir / 'logs' / 'trainer' / 'torchrun'}",
+        f"--log-dir={log_dir / 'trainer' / 'torchrun'}",
         f"--local-ranks-filter={','.join(map(str, config.log.ranks_filter))}",
         "--redirect=3",
         "--tee=3",
@@ -208,8 +208,8 @@ def sft_local(config: SFTConfig):
 def sft(config: SFTConfig):
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
     clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
-    validate_output_dir(config.output_dir, resuming=resuming, clean=clean)
-    config.output_dir.mkdir(parents=True, exist_ok=True)
+    validate_run_dir(config.run_dir, resuming=resuming, clean=clean)
+    config.run_dir.mkdir(parents=True, exist_ok=True)
 
     if not config.dry_run:
         from prime_rl.trainer.model import pre_download_model

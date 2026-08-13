@@ -48,14 +48,14 @@ For quick A/B ablations on the same node, run two RL instances side-by-side in s
 ```bash
 # session 1, GPUs 0–1, default port 8000
 bash scripts/tmux.sh -s exp1 -o outputs/exp1
-CUDA_VISIBLE_DEVICES=0,1 uv run rl @ rl.toml --output-dir outputs/exp1
+CUDA_VISIBLE_DEVICES=0,1 uv run rl @ rl.toml --run.name exp1
 
 # session 2, GPUs 2–3, port 8001
 bash scripts/tmux.sh -s exp2 -o outputs/exp2
 CUDA_VISIBLE_DEVICES=2,3 uv run rl @ rl.toml \
   --inference.server.port 8001 \
   --orchestrator.model.client.base-url http://localhost:8001/v1 \
-  --output-dir outputs/exp2
+  --run.name exp2
 ```
 
 #### SFT and Torchrun
@@ -69,7 +69,7 @@ uv run torchrun \
   src/prime_rl/trainer/sft/train.py @ sft.toml
 ```
 
-`--local-ranks-filter 0` keeps console output to rank 0 only; per-rank stdout/stderr is still captured in `<output_dir>/logs/trainer/torchrun/`.
+`--local-ranks-filter 0` keeps console output to rank 0 only; per-rank stdout/stderr is still captured in `<run_dir>/logs/trainer/torchrun/`.
 
 ### Multi-Node
 

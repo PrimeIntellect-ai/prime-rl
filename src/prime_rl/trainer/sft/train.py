@@ -72,9 +72,7 @@ def train(config: SFTConfig):
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
-    monitor = setup_monitor(
-        config.wandb, file_config=config.file_monitor, output_dir=config.output_dir, run_config=config
-    )
+    monitor = setup_monitor(config.wandb, file_config=config.file_monitor, output_dir=config.run_dir, run_config=config)
 
     # Setup heartbeat (only on rank 0)
     heart = None
@@ -127,7 +125,7 @@ def train(config: SFTConfig):
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
-    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(config.output_dir, config.ckpt, config.model.lora)
+    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(config.run_dir, config.ckpt, config.model.lora)
 
     checkpoint_step = None
     if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
@@ -599,7 +597,7 @@ def train(config: SFTConfig):
         monitor.log(time_metrics, step=progress.step)
 
         # Log disk metrics
-        disk_metrics = get_ckpt_disk_metrics(config.output_dir)
+        disk_metrics = get_ckpt_disk_metrics(config.run_dir)
         disk_metrics["step"] = progress.step
         monitor.log(disk_metrics, step=progress.step)
 

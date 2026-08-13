@@ -10,6 +10,7 @@ from prime_rl.configs.shared import (
     EnvVars,
     FileMonitorConfig,
     HeartbeatConfig,
+    RunConfig,
     SlurmConfig,
     TrainerLogConfig,
     WandbConfig,
@@ -195,11 +196,18 @@ class SFTConfig(BaseConfig):
     file_monitor: FileMonitorConfig | None = None
     """Local JSONL metric sink. If set, metrics are appended to ``<output_dir>/metrics.jsonl``."""
 
+    run: RunConfig = Field(default_factory=RunConfig)
+    """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
+
     output_dir: Path = Path("outputs")
-    """Directory to write outputs to — checkpoints and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
+    """Directory that groups related runs. Each run writes its artifacts (checkpoints, logs, ...) to ``output_dir / run.name``. Should be a persistent directory with enough disk space."""
 
     clean_output_dir: bool = False
-    """Delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming."""
+    """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""
+
+    @property
+    def run_dir(self) -> Path:
+        return self.output_dir / self.run.name
 
     matmul_precision: Literal["highest", "high", "medium"] = "high"
     """Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``."""

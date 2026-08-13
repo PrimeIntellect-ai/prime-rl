@@ -21,6 +21,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.shared import (
     EnvVars,
     FileMonitorConfig,
+    RunConfig,
     SlurmConfig,
     TransportConfig,
     VLMConfig,
@@ -46,7 +47,6 @@ from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
     validate_shared_max_steps,
     validate_shared_model_name,
-    validate_shared_output_dir,
     validate_shared_seq_len,
     validate_shared_tokenizer,
     validate_shared_wandb_config,
@@ -227,11 +227,18 @@ class RLConfig(BaseConfig):
     env_vars: EnvVars = {}
     """Extra environment variables for every launched RL component. Component-specific env_vars override these."""
 
+    run: RunConfig = Field(default_factory=RunConfig)
+    """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
+
     output_dir: Path = Path("outputs")
-    """Output directory. Should be unique per experiment."""
+    """Directory that groups related runs. Each run writes its artifacts to ``output_dir / run.name``."""
 
     clean_output_dir: bool = False
-    """Delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming."""
+    """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""
+
+    @property
+    def run_dir(self) -> Path:
+        return self.output_dir / self.run.name
 
     ### Shared configurations
 
@@ -360,12 +367,29 @@ class RLConfig(BaseConfig):
         """
         return propagate_shared_fields(data)
 
+    @model_validator(mode="after")
+    def auto_setup_run_dir(self):
+        """Point trainer and orchestrator at the run directory (``output_dir / run.name``).
+
+        The sub-configs' ``output_dir`` is fully derived here: sub-processes spawned by
+        the launcher receive the resolved run directory and never re-derive it.
+        """
+        run_dir = self.run_dir
+        for sub in (self.trainer, self.orchestrator):
+            if "output_dir" in sub.model_fields_set and sub.output_dir != run_dir:
+                raise ValueError(
+                    f"{type(sub).__name__}.output_dir ({sub.output_dir}) conflicts with the run directory "
+                    f"({run_dir}). Under the rl entrypoint, sub-config output directories are derived from "
+                    "output_dir / run.name — set those instead."
+                )
+            sub.output_dir = run_dir
+        return self
+
     ### Validate shared configs (after sub-config construction)
 
     @model_validator(mode="after")
     def validate_shared_configs(self):
         """Validate consistency of shared configs across trainer, orchestrator, and inference."""
-        validate_shared_output_dir(self.trainer, self.orchestrator)
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
         validate_shared_tokenizer(self.trainer, self.orchestrator, self.inference)
         validate_shared_max_steps(self.trainer, self.orchestrator)

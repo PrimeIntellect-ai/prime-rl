@@ -9,9 +9,9 @@ description: Monitor an ongoing prime-rl training run — find the output direct
 
 ### On launch
 
-1. Find the output dir and read the resolved configs at `{output_dir}/configs/` (start with `rl.toml`).
+1. Find the run dir and read the resolved configs at `{run_dir}/configs/` (start with `rl.toml`). The run dir is `{output_dir}/{run_name}` — `run.name` defaults to a random UUID, so if you only know the output dir, pick the most recently modified subdirectory (`ls -t {output_dir} | head -1`) or read `run.name` from the launch command.
 2. Confirm all processes are alive and the run is making progress.
-3. Write the initial summary into `{output_dir}/STATUS.md`.
+3. Write the initial summary into `{run_dir}/STATUS.md`.
 
 ### Recurring check-ins
 
@@ -19,7 +19,7 @@ Default cadence: **1 hour** (researcher can override). At each check-in:
 
 1. Confirm processes are alive.
 2. Grep logs for errors/warnings; note current step and key metrics.
-3. **Append** an entry to `{output_dir}/STATUS.md` (never overwrite):
+3. **Append** an entry to `{run_dir}/STATUS.md` (never overwrite):
 
 ```markdown
 ## YYYY-MM-DD HH:MM UTC
@@ -55,15 +55,15 @@ After a restart, verify all processes are back up and progress resumed before th
 
 ### Where to find things
 
-- `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the output dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
-- `{output_dir}/configs/` — resolved TOMLs (`rl.toml` has the full picture).
-- `{output_dir}/logs/` — see below.
-- `{output_dir}/rollouts/step_N/{train,eval}/` — saved rollout traces (see Traces below).
+- `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the run dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
+- `{run_dir}/configs/` — resolved TOMLs (`rl.toml` has the full picture).
+- `{run_dir}/logs/` — see below.
+- `{run_dir}/rollouts/step_N/{train,eval}/` — saved rollout traces (see Traces below).
 
 ### Logs
 
 ```
-{output_dir}/logs/
+{run_dir}/logs/
 ├── trainer.log                # rank 0 stdout
 ├── orchestrator.log           # orchestrator stdout
 ├── inference.log              # vLLM stdout
@@ -81,8 +81,8 @@ Usually tailing `trainer.log`, `orchestrator.log`, and `inference.log` is enough
 Scan for problems:
 
 ```bash
-grep -E "WARNING|ERROR" {output_dir}/logs/{trainer,orchestrator,inference}.log
-grep -E "WARNING|ERROR" {output_dir}/logs/envs/{train,eval}/*.log
+grep -E "WARNING|ERROR" {run_dir}/logs/{trainer,orchestrator,inference}.log
+grep -E "WARNING|ERROR" {run_dir}/logs/envs/{train,eval}/*.log
 ```
 
 ### Metrics
@@ -141,8 +141,8 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 ### Traces
 
 ```
-{output_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per rollout as it completes
-{output_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
+{run_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per rollout as it completes
+{run_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
 
 JSONL files of `vf.Trace` records (training tensors excluded), one line per trace — a
@@ -157,12 +157,12 @@ share the step file) — untrainable traces (a frozen judge's) appear only in `a
 `group_id`, `episode_id`, and `policy_version` under `info`.
 
 ```bash
-wc -l {output_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
-jq '.rewards' {output_dir}/rollouts/step_42/train/effective/traces.jsonl
-jq 'select(.ok | not) | {id, env: .info.env_name, runtime}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
+wc -l {run_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
+jq '.rewards' {run_dir}/rollouts/step_42/train/effective/traces.jsonl
+jq 'select(.ok | not) | {id, env: .info.env_name, runtime}' {run_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
-The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{output_dir}/rollouts/step_N/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the trace subtrees.
+The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_N/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the trace subtrees.
 
 ### Common failure modes
 

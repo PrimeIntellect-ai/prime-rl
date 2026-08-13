@@ -547,8 +547,8 @@ def test_shared_and_subconfig_disjoint_fields_coexist():
     assert config.trainer.model.impl == "custom"
 
 
-def test_shared_output_dir_propagates_through_cli(tmp_path):
-    """Shared output_dir from CLI reaches sub-configs even when tyro constructs sub-configs before the before-validator."""
+def test_run_dir_propagates_through_cli(tmp_path):
+    """Sub-configs receive the run directory (output_dir / run.name) resolved from the CLI."""
     toml_path = tmp_path / "cfg.toml"
     write_toml(
         toml_path,
@@ -562,9 +562,10 @@ def test_shared_output_dir_propagates_through_cli(tmp_path):
         },
     )
     shared_out = tmp_path / "shared"
-    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out)])
-    assert config.trainer.output_dir == shared_out
-    assert config.orchestrator.output_dir == shared_out
+    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out), "--run.name", "my-exp"])
+    assert config.run_dir == shared_out / "my-exp"
+    assert config.trainer.output_dir == shared_out / "my-exp"
+    assert config.orchestrator.output_dir == shared_out / "my-exp"
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():
