@@ -40,7 +40,6 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     export_benchmark_json,
-    get_zero_gradient_ratio,
     get_ckpt_disk_metrics,
     print_sample,
     setup_torch_distributed,
@@ -470,8 +469,6 @@ def train(config: SFTConfig):
             )
             if grad_norm.device.type == "cpu":
                 grad_norm = grad_norm.to(torch.device("cuda"))
-        zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
-
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
@@ -578,7 +575,6 @@ def train(config: SFTConfig):
         # Log optimizer metrics
         optim_metrics = {
             "optim/lr": current_lr,
-            "optim/zero_grad_ratio": zero_grad_ratio,
             "step": progress.step,
         }
         if grad_norm is not None:
