@@ -568,7 +568,8 @@ def test_run_dir_propagates_through_cli(tmp_path):
     assert config.trainer.output_dir == shared_out / "my-exp"
     assert config.orchestrator.output_dir == shared_out / "my-exp"
     # Run identity propagates to the orchestrator; unset monitor names inherit run.name
-    assert config.orchestrator.run == config.run
+    assert config.orchestrator.run.name == "my-exp"
+    assert config.orchestrator.run.id is None  # minted by the rl entrypoint, not config
     assert config.wandb is not None and config.wandb.name == "my-exp"
     assert config.trainer.wandb is not None and config.trainer.wandb.name == "my-exp"
     assert config.orchestrator.wandb is not None and config.orchestrator.wandb.name == "my-exp"

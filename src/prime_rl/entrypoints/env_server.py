@@ -1,6 +1,7 @@
 from functools import partial
 
-from verifiers.v1 import pool_serve_kwargs, set_base_sandbox_labels
+from verifiers.v1 import pool_serve_kwargs
+from verifiers.v1.runtimes import set_base_sandbox_labels
 from verifiers.v1.serve import env_config_data, serve_env
 
 from prime_rl.configs.env_server import EnvServerConfig
@@ -17,12 +18,13 @@ def setup_worker(log_level: str | None, json_logging: bool, sandbox_labels: list
 
 @clean_exit
 def run_server(config: EnvServerConfig):
+    sandbox_labels = [config.run.name] if config.run.name else []
     # ``serve.pool`` (static or elastic) sizes the server. serve_env applies the worker
     # setup in this process and in every spawned worker.
     serve_env(
         **pool_serve_kwargs(config.serve.pool),
         address=config.serve.address,
-        log_setup=partial(setup_worker, config.log.level, config.log.json_logging, config.sandbox_labels),
+        log_setup=partial(setup_worker, config.log.level, config.log.json_logging, sandbox_labels),
         config_data=env_config_data(config.env),
         max_concurrent=config.serve.max_concurrent,
     )

@@ -3,7 +3,7 @@ from pathlib import Path
 import verifiers.v1 as vf
 from pydantic import SerializeAsAny, model_validator
 
-from prime_rl.configs.shared import LogConfig
+from prime_rl.configs.shared import LogConfig, RunInfoConfig
 from prime_rl.utils.config import BaseConfig
 
 
@@ -20,8 +20,8 @@ class EnvServerConfig(BaseConfig):
 
     log: LogConfig = LogConfig()
 
-    sandbox_labels: list[str] = []
-    """Base labels attached to every Prime sandbox created by this server's workers, extended by each runtime's own labels. The ``rl`` launcher stamps the run name here."""
+    run: RunInfoConfig = RunInfoConfig()
+    """Run identity, injected by the ``rl`` launcher. The run name becomes a base label on every Prime sandbox created by this server's workers, extended by each runtime's own labels."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — logs and any generated artifacts are written as subdirectories."""

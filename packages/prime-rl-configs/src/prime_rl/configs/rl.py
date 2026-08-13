@@ -392,9 +392,10 @@ class RLConfig(BaseConfig):
 
         Explicit names always win: only unset names inherit. Runs after the
         orchestrator's own ``auto_setup_prime_monitor_run_name``, so an explicitly
-        set W&B name still takes precedence for the platform run name.
+        set W&B name still takes precedence for the platform run name. The run id is
+        minted by the launcher (see the ``rl`` entrypoint), not here.
         """
-        self.orchestrator.run = self.run
+        self.orchestrator.run.name = self.run.name
         for wandb in (self.wandb, self.trainer.wandb, self.orchestrator.wandb):
             if wandb is not None and wandb.name is None:
                 wandb.name = self.run.name

@@ -116,7 +116,7 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             "env": source_dict["env"],
             "serve": {**source_dict.get("serve", {}), "address": address},
             "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
-            "sandbox_labels": [config.run.name],
+            "run": {"id": config.orchestrator.run.id, "name": config.run.name},
         }
         with open(env_dir / f"{source.resolved_name}.toml", "wb") as f:
             tomli_w.dump(env_server_dict, f)
@@ -167,7 +167,7 @@ def rl_local(config: RLConfig):
     # The monitor short-circuits when WANDB_MODE=disabled/offline is also set.
     wandb_shared_env: dict[str, str] = {
         "WANDB_SHARED_MODE": "1",
-        "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", config.run.id),
+        "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", config.orchestrator.run.id or uuid.uuid4().hex),
     }
 
     # Validate client port matches inference server port
@@ -620,6 +620,12 @@ def rl_slurm(config: RLConfig):
 
 
 def rl(config: RLConfig):
+    # Mint the run id here, not in config: it is not user-settable and must survive the
+    # rl.toml round-trip on SLURM re-invocation. TODO: fetch it from the Prime SDK once
+    # runs are registered there.
+    if config.orchestrator.run.id is None:
+        config.orchestrator.run.id = uuid.uuid4().hex
+
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
     clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None

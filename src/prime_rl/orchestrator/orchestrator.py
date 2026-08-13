@@ -24,11 +24,13 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import uuid
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
 from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
+from verifiers.v1.runtimes import set_base_sandbox_labels
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -235,11 +237,12 @@ class Orchestrator:
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
         # Prefer the monitor identity (platform run id, else W&B id) so traces link
-        # back to it; fall back to the config-generated run id.
-        self.run_id = self.monitor.run_id or config.run.id
+        # back to it, then the launcher-injected run id; standalone runs mint a local one.
+        self.run_id = self.monitor.run_id or config.run.id or uuid.uuid4().hex
         # Base labels for sandboxes created in this process; env-server processes get
         # them via their own config.
-        vf.set_base_sandbox_labels([config.run.name])
+        if config.run.name:
+            set_base_sandbox_labels([config.run.name])
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat.url)
