@@ -34,7 +34,7 @@ def _extension() -> ModuleType:
     capability, capability_flags = _cpu_build_options()
     return load(
         name=f"prime_rl_cpu_adam_{capability}",
-        sources=[str(Path(__file__).with_suffix(".cpp"))],
+        sources=[str(Path(__file__).with_name("kernel.cpp"))],
         extra_cflags=["-O3", "-fopenmp", *capability_flags],
         extra_ldflags=["-fopenmp"],
         verbose=False,
