@@ -329,14 +329,22 @@ PERFORMANCE_METRICS = [
 # One saturated engine thrashing its KV cache (preempt -> re-prefill -> cache eviction) hides
 # inside fleet means; the max/min series is what surfaces it.
 INFERENCE_PANELS = [
-    ["inference/agg/kv_cache_usage_perc/mean", "inference/agg/kv_cache_usage_perc/max"],
+    [
+        "inference/agg/kv_cache_usage_perc/mean",
+        "inference/agg/kv_cache_usage_perc/min",
+        "inference/agg/kv_cache_usage_perc/max",
+    ],
     ["inference/agg/num_preemptions_total:rate/sum", "inference/agg/num_preemptions_total:rate/max"],
     [
         "inference/agg/num_requests_running/mean",
         "inference/agg/num_requests_running/min",
         "inference/agg/num_requests_running/max",
     ],
-    ["inference/agg/num_requests_waiting/mean", "inference/agg/num_requests_waiting/max"],
+    [
+        "inference/agg/num_requests_waiting/mean",
+        "inference/agg/num_requests_waiting/min",
+        "inference/agg/num_requests_waiting/max",
+    ],
     ["inference/agg/prefix_cache_hit_rate/pooled", "inference/agg/prefix_cache_hit_rate/min"],
     ["inference/agg/generation_tokens_total:rate/sum", "inference/agg/generation_tokens_total:rate/min"],
     ["inference/agg/prompt_tokens_total:rate/sum", "inference/agg/prompt_tokens_total:rate/max"],
