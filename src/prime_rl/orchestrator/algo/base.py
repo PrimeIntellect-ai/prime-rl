@@ -23,7 +23,7 @@ I/O); a hook that only does advantage math never awaits:
   (filters read the streams): group-relative credit (GRPO/MaxRL baselines).
 
 How rollouts are *produced* is not the algorithm's concern: that is the env's
-:class:`~prime_rl.orchestrator.sampler.Sampler`, and sample construction
+:class:`~prime_rl.orchestrator.rollout_source.RolloutSource`, and sample construction
 (interleaving, with observation-token provenance via structural node
 attribution) is pure pipeline.
 
@@ -80,8 +80,8 @@ async def connect_frozen_pool(
 
 class Algorithm:
     """Base class for one env's training algorithm — the runtime of the
-    algorithm config's per-token training signal (its sibling :class:`Sampler`
-    interprets the ``sampling`` half).
+    algorithm config's per-token training signal (its sibling
+    :class:`RolloutSource` interprets the ``sampling`` half).
 
     Everything on this class is yours to override; the pipeline drives the
     compilation through the non-virtual :meth:`finalize_rollout` /

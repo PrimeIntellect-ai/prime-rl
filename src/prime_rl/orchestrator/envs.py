@@ -29,7 +29,7 @@ from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
-from prime_rl.orchestrator.sampler import Sampler
+from prime_rl.orchestrator.rollout_source import RolloutSource
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
 
@@ -131,11 +131,11 @@ class Env:
 class TrainEnv(Env):
     config: TrainSourceConfig
 
-    def __init__(self, config: TrainSourceConfig, address: str, sampler: Sampler, algorithm: Algorithm):
+    def __init__(self, config: TrainSourceConfig, address: str, rollout_source: RolloutSource, algorithm: Algorithm):
         super().__init__(config, address)
-        self.sampler = sampler
+        self.rollout_source = rollout_source
         self.algorithm = algorithm
-        self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
+        self.sampling_args = rollout_source.sampling_args(config.sampling.to_sampling_args())
 
 
 class EvalEnv(Env):
@@ -188,8 +188,8 @@ class Envs(Generic[EnvT]):
 
 
 class TrainEnvs(Envs[TrainEnv]):
-    """Collection of training environments, each paired with its rollout
-    :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
+    """Collection of training environments, each paired with its
+    :class:`RolloutSource` and runtime :class:`Algorithm`, built from the env's
     resolved algorithm config."""
 
     def __init__(
@@ -206,7 +206,7 @@ class TrainEnvs(Envs[TrainEnv]):
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],
-                Sampler(config.algo.sampling, policy_pool, renderer_config),
+                RolloutSource(config.algo.sampling, policy_pool, renderer_config),
                 build_algorithm(config.algo, policy_pool),
             )
             self._envs[env.name] = env

@@ -16,8 +16,8 @@
   drops groups past ``max_off_policy_steps``.
   Eval rollouts are measurements for the policy version they started with,
   so they are allowed to finish even if training advances. Train rollouts
-  sampled from a frozen model never age — their sampler doesn't change
-  with policy updates.
+  sampled from a frozen model never age — their rollout source doesn't
+  change with policy updates.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
   count-to-``group_size`` finalization still fires.
 """
@@ -136,7 +136,7 @@ class RolloutDispatcher:
         self.policy = policy
         self.train_envs = train_envs
         self.eval_envs = eval_envs
-        # Train rollouts go to the env sampler's pool; eval always
+        # Train rollouts go to the env's rollout-source pool; eval always
         # evaluates the policy.
         self.policy_pool = policy_pool
         self.train_source = train_source
@@ -173,11 +173,11 @@ class RolloutDispatcher:
 
     def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
         """``(pool, model_name, is_live)`` for *train* rollouts of this env —
-        the env sampler's pool. (Eval always uses the policy.)"""
-        sampler = self.train_envs.get(env_name).sampler
-        if sampler.samples_from_live_policy:
-            return sampler.pool, self.policy.model_name, True
-        return sampler.pool, sampler.pool.model_name, False
+        the env's rollout-source pool. (Eval always uses the policy.)"""
+        source = self.train_envs.get(env_name).rollout_source
+        if source.samples_from_live_policy:
+            return source.pool, self.policy.model_name, True
+        return source.pool, source.pool.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -282,9 +282,9 @@ class RolloutDispatcher:
         for meta in self.inflight.values():
             if meta.kind != "train":
                 continue
-            # Frozen-sourced rollouts never go stale — their sampler doesn't
-            # change with policy updates.
-            if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
+            # Frozen-sourced rollouts never go stale — their rollout source
+            # doesn't change with policy updates.
+            if not self.train_envs.get(meta.env_name).rollout_source.samples_from_live_policy:
                 continue
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:
@@ -396,7 +396,7 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the env sampler's pool via the
+        # Train rollouts use the env's rollout-source pool via the
         # renderer/token train client. Eval always evaluates the policy and
         # goes through the eval client (chat-completions) so eval scores stay
         # comparable.

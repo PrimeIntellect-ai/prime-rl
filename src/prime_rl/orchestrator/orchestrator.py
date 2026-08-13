@@ -286,7 +286,7 @@ class Orchestrator:
         # Build + ready pools for each env's frozen sampling source and the
         # algorithm's frozen reference model
         await asyncio.gather(
-            *(env.sampler.setup() for env in self.train_envs),
+            *(env.rollout_source.setup() for env in self.train_envs),
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
@@ -640,7 +640,7 @@ class Orchestrator:
         # counter, which only sees weight updates during generation. Frozen-
         # sourced rollouts stay 0 (their sampler doesn't follow the policy).
         for r in batch.rollouts:
-            if self.train_envs.get(r.env_name).sampler.samples_from_live_policy:
+            if self.train_envs.get(r.env_name).rollout_source.samples_from_live_policy:
                 r.off_policy_steps = (step - 1) - r.policy_version
 
         # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
@@ -991,7 +991,7 @@ class Orchestrator:
                 await self.policy_inference.stop()
             if self.train_envs is not None:
                 for env in self.train_envs:
-                    for pool in (*env.sampler.connected_pools, *env.algorithm.connected_pools):
+                    for pool in (*env.rollout_source.connected_pools, *env.algorithm.connected_pools):
                         await pool.stop()
             if self.usage_reporter is not None:
                 self.usage_reporter.close()

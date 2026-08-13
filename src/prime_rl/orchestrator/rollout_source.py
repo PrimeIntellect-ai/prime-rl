@@ -1,10 +1,10 @@
-"""How an env's train rollouts are produced — the sample strategy.
+"""How an env's train rollouts are produced — the rollout source.
 
 The algorithm (``algo/``) consumes finalized rollouts and compiles them into
-per-token loss-component weights; the sampler owns where those rollouts come
-from. Today that is one question — which model generates them — and its
+per-token loss-component weights; the rollout source owns where those rollouts
+come from. Today that is one question — which model generates them — and its
 consequences (sampling logprobs, prefix-cache salting, and off-policy
-staleness are all liveness questions about the source). Future sampling
+staleness are all liveness questions about the source). Future production
 strategies (replay buffers, branching) extend here, not the algorithm.
 """
 
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from prime_rl.utils.client import InferencePool
 
 
-class Sampler:
+class RolloutSource:
     """One env's rollout source.
 
     ``pool`` is the pool train rollouts are generated from: the policy pool,
