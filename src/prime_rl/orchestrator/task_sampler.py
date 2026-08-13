@@ -44,12 +44,13 @@ class TaskSampler:
     batches), so a resume skips the tasks that were in flight at checkpoint
     time."""
 
-    def __init__(self, train_envs: TrainEnvs) -> None:
+    def __init__(self, train_envs: TrainEnvs, *, drop_degenerate_groups: bool = False) -> None:
         self.rng = random.Random(42)
         self.envs = list(train_envs)
         if not self.envs:
             raise ValueError("TaskSampler needs at least one train env")
         self.task_stats = TaskStats()
+        self.drop_degenerate_groups = drop_degenerate_groups
 
         # A finite env's example table in canonical order (each epoch's shuffle
         # starts from this); ``None`` for an infinite env, whose generator
@@ -85,10 +86,14 @@ class TaskSampler:
         random.Random(self.epochs[env_name]).shuffle(rows)
         return rows
 
-    def observe(self, group: list[Rollout]) -> None:
+    def observe(self, group: list[Rollout]) -> bool:
         """The sink's group-finalization hook: fold one finalized train group
-        into the per-task stats."""
-        self.task_stats.observe(group)
+        into the per-task stats. Returns the sampler's drop verdict — True
+        asks the sink to keep a degenerate (zero-signal) group out of the
+        batch so it backfills from fresh groups; the sink still exempts
+        sources whose algorithm trains on zero advantage."""
+        signal = self.task_stats.observe(group)
+        return self.drop_degenerate_groups and not signal
 
     def metrics(self) -> dict[str, float]:
         """Drain the sampler metric family (pool occupancy, coverage,

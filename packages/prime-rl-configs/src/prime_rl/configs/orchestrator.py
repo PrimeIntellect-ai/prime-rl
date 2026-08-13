@@ -303,11 +303,12 @@ class CheckpointConfig(BaseConfig):
 
 
 # Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
-class GibberishFilterConfig(BaseConfig):
+class GibberishDetectionConfig(BaseConfig):
     type: Literal["gibberish"] = "gibberish"
 
     enforce: bool = False
-    """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
+    """When True, detected rollouts ship no training samples (their reward still counts toward
+    the group baseline). When False, only track detection metrics."""
 
     token_id_threshold: int = 100_000
     """Token IDs above this are candidates for gibberish. BPE tokens are sorted by merge order."""
@@ -319,11 +320,12 @@ class GibberishFilterConfig(BaseConfig):
 # Flags rollouts stuck in a repetition loop: emits high-confidence tokens for an extended stretch.
 # Flagged when `window` consecutive tokens are each sampled with probability above `prob_threshold`.
 # (Section 3.2, https://arxiv.org/abs/2506.13585)
-class RepetitionFilterConfig(BaseConfig):
+class RepetitionDetectionConfig(BaseConfig):
     type: Literal["repetition"] = "repetition"
 
     enforce: bool = False
-    """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
+    """When True, detected rollouts ship no training samples (their reward still counts toward
+    the group baseline). When False, only track detection metrics."""
 
     window: int = Field(3_000, ge=1)
     """Consecutive high-probability steps required to flag the rollout."""
@@ -332,18 +334,20 @@ class RepetitionFilterConfig(BaseConfig):
     """Tokens sampled with probability above this are considered repetitive. Consecutive such tokens count toward the window."""
 
 
-# Flags rollouts with zero advantage.
-class ZeroAdvantageFilterConfig(BaseConfig):
-    type: Literal["zero_advantage"] = "zero_advantage"
-
-    enforce: bool = True
-    """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
-
-
-FilterConfig: TypeAlias = Annotated[
-    GibberishFilterConfig | RepetitionFilterConfig | ZeroAdvantageFilterConfig,
+DetectionConfig: TypeAlias = Annotated[
+    GibberishDetectionConfig | RepetitionDetectionConfig,
     Field(discriminator="type"),
 ]
+
+
+class SamplerConfig(BaseConfig):
+    """The task sampler's decision knobs (its stats collection is always on)."""
+
+    drop_degenerate_groups: bool = False
+    """Drop a finalized group that produced no training signal (every advantage stream all-zero)
+    instead of letting its rollouts occupy batch slots — the batch then backfills from fresh
+    groups, at inference cost bounded by ``oversampling_factor``. Groups of sources whose
+    algorithm declares ``trains_on_zero_advantage`` (echo) are never dropped."""
 
 
 class FileSystemWeightBroadcastConfig(BaseConfig):
@@ -416,23 +420,16 @@ class OrchestratorConfig(BaseConfig):
     eval: EvalConfig | None = None
     """Evaluation configuration."""
 
-    pre_batch_filters: list[FilterConfig] = [
-        GibberishFilterConfig(enforce=False),
-        RepetitionFilterConfig(enforce=False),
-        ZeroAdvantageFilterConfig(enforce=False),
+    detections: list[DetectionConfig] = [
+        GibberishDetectionConfig(),
+        RepetitionDetectionConfig(),
     ]
-    """Filters applied *before* a rollout enters the training batch buffer.
-    All three filter types are registered in monitor mode by default; flip ``enforce=true`` per type
-    to drop matching rollouts before they consume a slot in the batch (e.g. a zero-advantage group
-    never makes it into a training batch)."""
+    """Generation-pathology detections, evaluated per rollout at group finalization. Both registered in
+    monitor mode by default; flip ``enforce=true`` per type to keep detected rollouts out of
+    training (they never enter the batch, so the batch backfills; their reward still counts
+    toward the group baseline). Setting this replaces the defaults wholesale."""
 
-    post_batch_filters: list[FilterConfig] = [
-        GibberishFilterConfig(),
-        RepetitionFilterConfig(),
-        ZeroAdvantageFilterConfig(),
-    ]
-    """Filters applied *after* a batch has been assembled. Each filter annotates each rollout;
-    rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer."""
+    sampler: SamplerConfig = SamplerConfig()
 
     log: LogConfig = LogConfig()
 
@@ -531,13 +528,10 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_unique_filter_types(self):
-        for slot_name in ("pre_batch_filters", "post_batch_filters"):
-            types = [f.type for f in getattr(self, slot_name)]
-            if len(types) != len(set(types)):
-                raise ValueError(
-                    f"Duplicate filter types in {slot_name}: {types}. Each filter type may only appear once per slot."
-                )
+    def validate_unique_detection_types(self):
+        types = [d.type for d in self.detections]
+        if len(types) != len(set(types)):
+            raise ValueError(f"Duplicate detection types: {types}. Each detection type may only appear once.")
         return self
 
     @model_validator(mode="after")

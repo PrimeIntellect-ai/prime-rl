@@ -99,8 +99,11 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     # non-trainable positions. None = no credit assigned (advantage-based
     # filters skip it; the wire ships no advantage stream).
     advantages: list[float] | None = Field(default=None, exclude=True)
-    is_filtered: bool = Field(default=False, exclude=True)
-    filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
+    # Arrival-time detection results (per-name) + the exclusion verdict: an
+    # enforcing detection keeps the rollout's samples out of training while its
+    # reward still counts toward the group baseline.
+    detections: dict[str, bool] = Field(default_factory=dict, exclude=True)
+    is_excluded: bool = Field(default=False, exclude=True)
     eval_step: int | None = Field(default=None, exclude=True)
 
     def assign_advantages(self, values: float | list[float]) -> None:

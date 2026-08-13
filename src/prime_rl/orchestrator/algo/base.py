@@ -119,6 +119,13 @@ class Algorithm:
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
+    trains_on_zero_advantage: ClassVar[bool] = False
+    """Whether an all-zero advantage stream still carries training signal for
+    this algorithm. False for credit-assignment algorithms (an all-zero stream
+    means no gradient — the sink ships no samples for it, and the task
+    sampler's degenerate-group gate may drop the whole group); echo sets True
+    because its observation CE trains even when the GRPO advantage collapses."""
+
     def __init__(self, config: AlgoConfig, policy_pool: InferencePool):
         self.policy_pool = policy_pool
         self.connected_pools: list[InferencePool] = []  # frozen pools connected in setup(); closed at shutdown

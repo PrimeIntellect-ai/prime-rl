@@ -88,7 +88,7 @@ id = "bash"
 type = "prime"
 labels = ["glm5-pd-disag", "swe-bench-verified"]
 
-[[orchestrator.post_batch_filters]]
+[[orchestrator.detections]]
 type = "gibberish"
 enforce = true
 

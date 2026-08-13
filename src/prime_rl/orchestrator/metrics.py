@@ -342,16 +342,16 @@ class TrainMetrics(EpisodeMetrics):
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
-        # The pipeline verdicts are per-trace (an untrainable seat is 0.0 throughout, and filters
-        # only ever run on trainable survivors), so they read per agent like the rest.
+        # The pipeline verdicts are per-trace (an untrainable seat is 0.0 throughout, and
+        # detections only ever run on trainable survivors), so they read per agent like the rest.
         for agent, traces in self.by_agent().items():
             p = f"{prefix}/{subset}/{agent}"
             rollouts = traces.rollouts
             out[f"{p}/is_trainable/mean"] = sum(float(r.is_trainable) for r in rollouts) / len(rollouts)
-            out[f"{p}/is_filtered/mean"] = sum(float(r.is_filtered) for r in rollouts) / len(rollouts)
-            names = sorted({name for r in rollouts for name in r.filter_results})
+            out[f"{p}/is_excluded/mean"] = sum(float(r.is_excluded) for r in rollouts) / len(rollouts)
+            names = sorted({name for r in rollouts for name in r.detections})
             out |= {
-                f"{p}/filters/{name}/mean": sum(1 for r in rollouts if r.filter_results.get(name)) / len(rollouts)
+                f"{p}/detections/{name}/mean": sum(1 for r in rollouts if r.detections.get(name)) / len(rollouts)
                 for name in names
             }
         return out
@@ -414,7 +414,7 @@ class TrainRollouts:
 
     @property
     def effective(self) -> TrainRollouts:
-        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered and r.agent.trainable])
+        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_excluded and r.agent.trainable])
 
     def by_env(self) -> dict[str, TrainRollouts]:
         grouped: dict[str, list[Rollout]] = {}

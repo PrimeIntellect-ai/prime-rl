@@ -5,7 +5,7 @@ and drives the pipeline. Components are single-purpose:
 
 - ``RolloutDispatcher`` schedules rollouts; emits ``Rollout`` (train/eval
   discriminated by ``kind``) on its queue.
-- ``TrainSink`` ingests train rollouts (tokenize → advantages → filters)
+- ``TrainSink`` ingests train rollouts (tokenize → detections → advantages)
   and returns a ``TrainBatch`` when the threshold is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
   returned cohort) on epoch completion.
@@ -42,11 +42,11 @@ if TYPE_CHECKING:
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
+from prime_rl.orchestrator.detections import setup_detections
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.packing import BatchPacker
 from prime_rl.orchestrator.patches import (
@@ -95,9 +95,9 @@ monkey_patch_chat_completion_logprobs()
 # shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
-# Abort after this many consecutive train batches drop all rollouts to
-# post-batch filters — usually a misconfigured filter or homogeneous-reward
-# dataset; fail loudly instead of spinning
+# Abort after this many consecutive train batches ship nothing — usually a
+# homogeneous-reward dataset (every advantage stream collapses) or an
+# over-eager detection config; fail loudly instead of spinning
 MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
 # Maximum batches the orchestrator may run ahead of the trainer. The
@@ -247,9 +247,8 @@ class Orchestrator:
         if usage_base_url and usage_api_key:
             self.usage_reporter = UsageReporter()
 
-        # Filters apply to train rollouts only
-        pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="pre-batch")
-        post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
+        # Detections apply to train rollouts only
+        detections = setup_detections(config.detections, vocab_size=self.tokenizer.vocab_size)
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
@@ -328,7 +327,7 @@ class Orchestrator:
 
         self.lora_name = config.model.lora.name if config.model.lora else None
 
-        self.task_sampler = TaskSampler(self.train_envs)
+        self.task_sampler = TaskSampler(self.train_envs, drop_degenerate_groups=config.sampler.drop_degenerate_groups)
 
         if self.resume_step is not None and self.ckpt_manager is not None:
             self.ckpt_manager.load(self.progress, self.task_sampler, step=self.resume_step)
@@ -417,8 +416,7 @@ class Orchestrator:
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
-            pre_filters=pre_filters,
-            post_filters=post_filters,
+            detections=detections,
             on_group_finalized=self.task_sampler.observe,
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
@@ -603,7 +601,7 @@ class Orchestrator:
             if self.consecutive_empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
                 raise RuntimeError(
                     f"{self.consecutive_empty_batches} consecutive empty train batches — "
-                    "check filter config (pre_batch_filters / post_batch_filters) or task difficulty."
+                    "check the detection config ([[orchestrator.detections]]) or task difficulty."
                 )
             return
         self.consecutive_empty_batches = 0
@@ -612,7 +610,7 @@ class Orchestrator:
         if effective and n_trainable / len(effective) <= 0.1:
             get_logger().warning(
                 f"Only {n_trainable}/{len(effective)} effective rollouts are trainable "
-                f"({n_trainable / len(effective):.1%}) — consider reviewing task difficulty / filter config"
+                f"({n_trainable / len(effective):.1%}) — consider reviewing task difficulty / detection config"
             )
 
         # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}.
@@ -696,12 +694,14 @@ class Orchestrator:
         }
         for env_name, env_pool in batch.rollouts.by_env().items():
             metrics[f"batch/{env_name}"] = len(env_pool) / len(batch.rollouts)
-        if self.train_sink.pre_filter_seen > 0:
-            metrics["pre_filters/all/dropped_rate"] = (
-                self.train_sink.pre_filter_dropped / self.train_sink.pre_filter_seen
+        if self.train_sink.detection_seen > 0:
+            metrics["detections/all/excluded_rate"] = (
+                self.train_sink.detection_excluded / self.train_sink.detection_seen
             )
-            for name, count in self.train_sink.pre_filter_dropped_by_name.items():
-                metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
+            for name, count in self.train_sink.detection_by_name.items():
+                metrics[f"detections/all/{name}/rate"] = count / self.train_sink.detection_seen
+        for env_name, count in self.train_sink.degenerate_groups_dropped.items():
+            metrics[f"sampler/{env_name}/dropped_degenerate_groups"] = float(count)
         metrics |= self.task_sampler.metrics()
         self.monitor.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
@@ -731,7 +731,7 @@ class Orchestrator:
 
         self.log_train_batch(batch, step=step, step_time=step_time)
 
-        self.train_sink.reset_pre_filter_stats()
+        self.train_sink.reset_detection_stats()
         self.maybe_trigger_eval(self.progress.step)
         trim_process_memory()
 

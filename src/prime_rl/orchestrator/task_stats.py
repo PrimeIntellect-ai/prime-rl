@@ -110,10 +110,11 @@ class TaskStats:
         self._tokens: dict[str, int] = defaultdict(int)
         self._wasted_tokens: dict[str, int] = defaultdict(int)
 
-    def observe(self, group: list[Rollout]) -> None:
+    def observe(self, group: list[Rollout]) -> bool:
+        """Fold one finalized group into the stats; returns whether the group
+        bought any gradient (a nonzero advantage on some rollout)."""
         env_name = group[0].env_name
         tokens = sum(r.num_total_tokens for r in group)
-        # A group bought gradient iff any rollout carries a nonzero advantage.
         signal = any(r.is_trainable for r in group)
         self._groups[env_name] += 1
         self._signal_groups[env_name] += int(signal)
@@ -123,7 +124,7 @@ class TaskStats:
 
         clean = [r for r in group if not r.has_error and r.agent.trainable]
         if not clean:
-            return
+            return signal
         key = task_key(clean[0].task.data.model_dump(mode="json"))
         by_role: dict[str, list[Rollout]] = defaultdict(list)
         for rollout in clean:
@@ -142,6 +143,7 @@ class TaskStats:
                 draws=len(rewards),
                 version=max(r.policy_version for r in rollouts),
             )
+        return signal
 
     def metrics(self, num_tasks: dict[str, int | None]) -> dict[str, float]:
         """Sampler metric family, per env. Pool occupancy counts one unit per

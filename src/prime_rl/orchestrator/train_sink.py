@@ -4,11 +4,15 @@
    dispatcher producing more rollouts), then the env algorithm's
    ``finalize_rollout`` (rollout-local scoring + any reference I/O). Errored
    and untrainable rollouts skip this.
-2. ``process_group`` — filters errored rollouts, hands the trainable
-   survivors to the env algorithm's ``finalize_group`` (advantages +
-   per-sample wire stamping), runs the pre-batch filter pass.
-3. ``process_batch`` — applies post-batch filter annotations and assembles
-   the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
+2. ``process_group`` — the single decision point: filters errored rollouts,
+   hands the trainable survivors to the env algorithm's ``finalize_group``
+   (advantages + per-sample wire stamping), runs the generation-pathology
+   detections, reports the finalized group to the task sampler (whose
+   verdict may drop a degenerate group so the batch backfills), and queues
+   the admitted survivors.
+3. ``process_batch`` — assembles the trainer-bound ``TrainingSample`` list;
+   all-zero advantage streams ship nothing unless the source's algorithm
+   trains on zero advantage. Returns a ``TrainBatch``.
 
 ``add()`` takes one episode (``list[Rollout]``) and returns
 ``TrainBatch | None``; group accounting counts episodes, never loose traces.
@@ -24,8 +28,8 @@ from collections import defaultdict
 from collections.abc import Callable
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.detections import RolloutDetection, run_detections
 from prime_rl.orchestrator.envs import TrainEnvs
-from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout, TrainBatch
@@ -58,9 +62,8 @@ class TrainSink:
         mm_token_type_ids_mapping: dict[int, int] | None,
         batch_size: int | None,
         token_batch_size: int | None,
-        pre_filters: list[RolloutFilter],
-        post_filters: list[RolloutFilter],
-        on_group_finalized: Callable[[list[Rollout]], None] | None = None,
+        detections: list[RolloutDetection],
+        on_group_finalized: Callable[[list[Rollout]], bool] | None = None,
     ) -> None:
         assert (batch_size is None) != (token_batch_size is None), (
             "Exactly one of batch_size / token_batch_size must be set"
@@ -71,15 +74,15 @@ class TrainSink:
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
-        self.pre_filters = pre_filters
-        self.post_filters = post_filters
+        self.detections = detections
         # Fired once per finalized group with the full cohort (errored +
-        # filtered + survivors) — the task sampler's outcome feedback. The
-        # sink stays sampler-blind; the callback stays token-blind.
+        # excluded + survivors) — the task sampler's outcome feedback. Its
+        # return value is the sampler's degenerate-group drop verdict; the
+        # sink stays sampler-blind, the callback stays token-blind.
         self.on_group_finalized = on_group_finalized
 
         # Observation window for the next shipped batch: rollouts of groups
-        # finalized since the last ship (errored + filtered + survivors).
+        # finalized since the last ship (errored + excluded + survivors).
         # In-progress groups stay out until they finalize.
         self.pending_rollouts: TrainRollouts = TrainRollouts()
         # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
@@ -95,10 +98,11 @@ class TrainSink:
         # re-sums per arrival.
         self.pending_tokens: int = 0
 
-        # Reset by the orchestrator after each ship via ``reset_pre_filter_stats``
-        self.pre_filter_seen = 0
-        self.pre_filter_dropped = 0
-        self.pre_filter_dropped_by_name: dict[str, int] = {}
+        # Reset by the orchestrator after each ship via ``reset_detection_stats``
+        self.detection_seen = 0
+        self.detection_excluded = 0
+        self.detection_by_name: dict[str, int] = {}
+        self.degenerate_groups_dropped: dict[str, int] = defaultdict(int)
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -173,7 +177,8 @@ class TrainSink:
 
     async def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts, assign advantages,
-        run pre-batch filters, append survivors to ``pending_batch``."""
+        report the group to the task sampler, append admitted survivors to
+        ``pending_batch``."""
         group = self.pending_groups.pop(group_id, [])
         self.pending_group_episodes.pop(group_id, None)
         if not group:
@@ -215,47 +220,51 @@ class TrainSink:
             for sample in r.samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
 
-        if self.pre_filters:
-            apply_filters(self.pre_filters, survivors)
-        filtered_by_name: dict[str, int] = {}
-        num_filtered = 0
+        # Advantages are stamped — the group is now evidence. The sampler's
+        # verdict may drop a degenerate group so the batch backfills; sources
+        # whose algorithm trains on zero advantage are exempt.
+        drop_group = False
+        if self.on_group_finalized is not None:
+            drop_group = self.on_group_finalized(group) and not env.algorithm.trains_on_zero_advantage
+        if drop_group:
+            self.degenerate_groups_dropped[env_name] += 1
+
+        excluded_by_name: dict[str, int] = {}
+        num_excluded = 0
         for r in survivors:
-            self.pre_filter_seen += 1
-            if r.is_filtered:
-                self.pre_filter_dropped += 1
-                num_filtered += 1
-                for name, hit in r.filter_results.items():
+            # Rollout-granularity predicates, evaluated here with everything
+            # else — group finalization is the pipeline's one decision point.
+            run_detections(self.detections, r)
+            self.detection_seen += 1
+            if r.is_excluded:
+                self.detection_excluded += 1
+                num_excluded += 1
+                for name, hit in r.detections.items():
                     if hit:
-                        self.pre_filter_dropped_by_name[name] = self.pre_filter_dropped_by_name.get(name, 0) + 1
-                        filtered_by_name[name] = filtered_by_name.get(name, 0) + 1
+                        self.detection_by_name[name] = self.detection_by_name.get(name, 0) + 1
+                        excluded_by_name[name] = excluded_by_name.get(name, 0) + 1
                 continue
-            # Reset annotations so the post-batch filter pass starts clean
-            r.filter_results = {}
-            r.is_filtered = False
+            if drop_group:
+                continue
             self.pending_batch.append(r)
             if self.token_batch_size is not None:
                 self.pending_tokens += payload_tokens(r)
 
-        # Per-group summary. One line per finalized group; per-filter
-        # detection breakdown lives at debug level in ``apply_filters``
         rewards = [r.reward for r in survivors]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
-        filter_str = ", ".join(f"{n}={c}" for n, c in filtered_by_name.items()) if filtered_by_name else "—"
+        detection_str = ", ".join(f"{n}={c}" for n, c in excluded_by_name.items()) if excluded_by_name else "—"
         get_logger().debug(
             f"Finished group | env={env_name} task_idx={task_idx} | "
-            f"rollouts={len(group)} (errored={num_errored}, filtered={num_filtered}) | "
-            f"reward={avg_reward:.4f} | filters: {filter_str}"
+            f"rollouts={len(group)} (errored={num_errored}, excluded={num_excluded}"
+            f"{', dropped: degenerate' if drop_group else ''}) | "
+            f"reward={avg_reward:.4f} | detections: {detection_str}"
         )
-        # Advantages and filter flags are stamped — the group is now evidence.
-        if self.on_group_finalized is not None:
-            self.on_group_finalized(group)
 
     def process_batch(self) -> TrainBatch:
         """Pop a cohort off ``pending_batch`` (by rollout count when
         ``batch_size`` is set, by token count when ``token_batch_size`` is
-        set), apply post-batch filter annotations, and assemble the
-        trainer-bound ``TrainingSample`` list. Overflow stays for the next
-        batch."""
+        set) and assemble the trainer-bound ``TrainingSample`` list. Overflow
+        stays for the next batch."""
         if self.batch_size is not None:
             cohort = self.pending_batch[: self.batch_size]
             self.pending_batch = self.pending_batch[self.batch_size :]
@@ -272,15 +281,14 @@ class TrainSink:
             self.pending_batch = self.pending_batch[cut:]
             self.pending_tokens -= running
 
-        if self.post_filters:
-            apply_filters(self.post_filters, cohort)
-
         # Samples are pre-built by ``process_rollout``; ``process_group`` already stamped the
-        # advantage stream and loss routing on each sample. Filtered rollouts don't ship.
-        samples: list[TrainingSample] = [sample for r in cohort if not r.is_filtered for sample in r.samples]
+        # advantage stream and loss routing on each sample. An all-zero advantage stream is
+        # dead weight for the trainer unless the source's algorithm declares otherwise
+        # (echo's observation CE trains through collapsed advantages).
+        samples: list[TrainingSample] = [sample for r in cohort if self._ships(r) for sample in r.samples]
 
         # ``rollouts`` is the observation window — every rollout of every group finalized since the
-        # last ship (errored + filtered + survivors) — while ``samples`` is the shipped cohort's
+        # last ship (errored + excluded + survivors) — while ``samples`` is the shipped cohort's
         # trainable payload. ``rollouts.effective`` / ``rollouts.metrics`` derive the clean subset +
         # metric views on demand. Reset the window only when the batch actually ships (non-empty
         # samples) — an empty batch is dropped unlogged by the orchestrator, so keep accumulating its
@@ -290,7 +298,18 @@ class TrainSink:
             self.pending_rollouts = TrainRollouts()
         return TrainBatch(rollouts=rollouts, samples=samples)
 
-    def reset_pre_filter_stats(self) -> None:
-        self.pre_filter_seen = 0
-        self.pre_filter_dropped = 0
-        self.pre_filter_dropped_by_name.clear()
+    def _ships(self, rollout: Rollout) -> bool:
+        """Whether a queued rollout's samples ship to the trainer: an all-zero
+        advantage stream carries no gradient (``None`` streams — opd/opsd/sft —
+        always ship; their signal is not advantage-based)."""
+        if rollout.advantages is None:
+            return True
+        if any(a != 0.0 for a in rollout.advantages):
+            return True
+        return self.train_envs.get(rollout.env_name).algorithm.trains_on_zero_advantage
+
+    def reset_detection_stats(self) -> None:
+        self.detection_seen = 0
+        self.detection_excluded = 0
+        self.detection_by_name.clear()
+        self.degenerate_groups_dropped.clear()

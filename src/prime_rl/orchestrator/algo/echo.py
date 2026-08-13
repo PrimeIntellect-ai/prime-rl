@@ -23,6 +23,10 @@ class EchoAlgorithm(GRPOAlgorithm):
     mask and its denominator. An optional user filter narrows the selection
     per rollout (e.g. dropping tool-output warnings)."""
 
+    # Observation CE trains even when the GRPO advantage collapses to zero —
+    # zero-advantage rollouts of echo envs stay in the batch and ship.
+    trains_on_zero_advantage = True
+
     def __init__(self, config: EchoAlgoConfig, policy_pool: InferencePool):
         super().__init__(config, policy_pool)
         self.role_weights = {

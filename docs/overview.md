@@ -40,6 +40,6 @@ The `rl` entrypoint reads `examples/basic/reverse-text/rl.toml`, splits it into 
 - **[Training](training.md)** — Launch and observe RL and SFT runs.
 - **[Inference](inference.md)** — vLLM-backed server (or fleet) holding the current policy.
 - **[Scaling](scaling.md)** — Single-GPU through multi-node clusters via FSDP / EP / CP and SLURM.
-- **[Algorithms](algorithms.md)** — Async semantics, loss / advantage / filter plugins, trajectory merging.
+- **[Algorithms](algorithms.md)** — Async semantics, loss / advantage plugins, detections, trajectory merging.
 - **[Advanced](advanced.md)** — Custom modeling, multimodal, LoRA, P/D inference.
 - **[Development](development.md)** — Test suite, pre-commit hooks, adding a new model.
