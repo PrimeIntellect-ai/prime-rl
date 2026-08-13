@@ -1,10 +1,23 @@
-# Dynamo native-gRPC deployment requirements
+# Dynamo native-gRPC integration
 
-The recipes in this directory use Dynamo for inference and Prime only for the
-trainer/orchestrator. Start from Dynamo's `sidecar_agg.yaml` or
-`sidecar_disagg.yaml`, then apply the following RL overlay. The stock manifests
-are serving examples and do not enable Prime worker discovery or vLLM's admin
-control routes by themselves.
+Prime-RL uses Dynamo's OpenAI frontend for generation and `/v1/rl/workers` to
+discover the direct vLLM admin endpoints used for weight updates.
+
+## Pinned researcher stack
+
+The currently validated source set is:
+
+- vLLM `biswapanda/vllm@e74fc3f`
+- Dynamo `ai-dynamo/dynamo@fc556d9`
+- Prime-RL changes ported from Biswa's combined integration PR #3181 onto current `main`
+
+These features are not all present in the public vLLM 0.26 and Dynamo 1.3.0
+wheels. Use the build/install scripts in [`scripts/`](scripts/) or an internally
+published image containing those exact revisions. The scripts use seven-character
+revision pins as the repository policy requires.
+
+For a two-GPU researcher smoke test, follow [`local/README.md`](local/README.md).
+The other recipes describe larger externally deployed topologies.
 
 ## Frontend
 
@@ -72,6 +85,8 @@ launched.
 
 ## Recipes
 
+- [`local`](local): single-node 2-GPU smoke test with a real Dynamo stack
+  (etcd + frontend + sidecar + vLLM engine).
 - [`qwen3_06b_math`](qwen3_06b_math): single-GPU trainer and aggregate Dynamo
   inference smoke test.
 - [`qwen3_30b_Thinking`](qwen3_30b_Thinking): Qwen3-30B Thinking math with an

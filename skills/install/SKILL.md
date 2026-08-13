@@ -71,3 +71,18 @@ Binaries land in `third_party/llmd/bin/{epp,envoy,pd-sidecar}` (a shared path, s
 - `uv.lock` — pinned lockfile (refresh with `uv sync --all-extras`)
 - `scripts/install.sh` — bootstrap installer
 - `scripts/install_ep_kernels.sh` — DeepEP build script
+## Dynamo research stack
+
+The Dynamo native-gRPC integration currently requires source-built artifacts;
+the public vLLM 0.26 and Dynamo 1.3.0 wheels do not contain the complete tested
+stack. Follow [`examples/dynamo/local/README.md`](../../examples/dynamo/local/README.md).
+The pinned helper scripts are:
+
+```bash
+examples/dynamo/scripts/build_vllm_wheel.sh
+examples/dynamo/scripts/build_dynamo_artifacts.sh
+examples/dynamo/scripts/install_artifacts.sh
+```
+
+They verify the pinned seven-character vLLM and Dynamo revisions before
+building the custom artifacts and installing the inference stack in an isolated `.venv-dynamo`.

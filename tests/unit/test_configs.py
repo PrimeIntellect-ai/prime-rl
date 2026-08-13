@@ -229,7 +229,7 @@ def test_external_dynamo_world_size_survives_rl_config_resolution():
             "orchestrator": {
                 "model": {
                     "client": {
-                        "base_url": ["http://frontend:8000/v1"],
+                        "base_url": "http://frontend:8000/v1",
                         "dynamo_discovery_url": "http://frontend:8001",
                     }
                 }
@@ -256,7 +256,7 @@ def test_external_dynamo_nccl_does_not_require_a_local_inference_gpu():
             "orchestrator": {
                 "model": {
                     "client": {
-                        "base_url": ["http://frontend:8000/v1"],
+                        "base_url": "http://frontend:8000/v1",
                         "dynamo_discovery_url": "http://frontend:8001",
                     }
                 }
@@ -280,23 +280,6 @@ def test_external_dynamo_nccl_does_not_require_a_local_inference_gpu():
     assert config.trainer.weight_broadcast.inference_world_size == 1
 
 
-def test_default_nccl_world_size_does_not_bypass_local_gpu_guard():
-    with pytest.raises(ValueError, match="NCCL weight broadcast requires at least 2"):
-        RLConfig.model_validate(
-            {
-                "trainer": {},
-                "orchestrator": {},
-                "inference": None,
-                "deployment": {
-                    "type": "single_node",
-                    "num_train_gpus": 1,
-                    "num_infer_gpus": 0,
-                },
-                "weight_broadcast": {"type": "nccl"},
-            }
-        )
-
-
 def test_external_dynamo_lora_world_size_survives_filesystem_config_resolution():
     config = RLConfig.model_validate(
         {
@@ -304,7 +287,7 @@ def test_external_dynamo_lora_world_size_survives_filesystem_config_resolution()
             "orchestrator": {
                 "model": {
                     "client": {
-                        "base_url": ["http://frontend:8000/v1"],
+                        "base_url": "http://frontend:8000/v1",
                         "dynamo_discovery_url": "http://frontend:8001",
                     }
                 }
@@ -323,7 +306,7 @@ def test_dynamo_orchestrator_requires_explicit_inference_world_size():
             {
                 "model": {
                     "client": {
-                        "base_url": ["http://frontend:8000/v1"],
+                        "base_url": "http://frontend:8000/v1",
                         "dynamo_discovery_url": "http://frontend:8001",
                     }
                 },

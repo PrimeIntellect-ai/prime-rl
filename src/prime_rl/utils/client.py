@@ -70,10 +70,11 @@ class InferencePool:
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
         self._router_clients = (
-            setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
-            if client_config.admin_base_url
+            setup_admin_clients(client_config.model_copy(update={"admin_base_url": None, "dynamo_discovery_url": None}))
+            if client_config.admin_base_url or client_config.is_dynamo
             else []
         )
+        self._check_router_model = client_config.is_dynamo
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._scorer = PrefillScorer()
@@ -99,7 +100,7 @@ class InferencePool:
             client_config,
             model_name,
             expected_inference_world_size=expected_inference_world_size,
-            admin_clients=setup_dynamo_admin_clients(workers),
+            admin_clients=setup_dynamo_admin_clients(client_config, workers),
             engine_world_sizes=[worker.world_size for worker in workers],
             use_native_collective_rpc=True,
             **kwargs,
@@ -117,7 +118,48 @@ class InferencePool:
             self._admin_clients + self._router_clients,
             timeout=timeout if timeout is not None else self._wait_for_ready_timeout,
         )
-        await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
+        model_clients = self._admin_clients + (self._router_clients if self._check_router_model else [])
+        await maybe_check_has_model(model_clients, model_name, skip_model_check=self._skip_model_check)
+
+    async def init_nccl_broadcast(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int | None,
+        quantize_in_weight_transfer: bool,
+    ) -> None:
+        await init_nccl_broadcast(
+            self._admin_clients,
+            host,
+            port,
+            timeout,
+            inference_world_size=inference_world_size,
+            quantize_in_weight_transfer=quantize_in_weight_transfer,
+            engine_world_sizes=self._engine_world_sizes,
+            use_native_collective_rpc=self._use_native_collective_rpc,
+        )
+
+    async def init_nixl_broadcast(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        session_id: str,
+    ) -> None:
+        await init_nixl_broadcast(
+            self._admin_clients,
+            host,
+            port,
+            timeout,
+            inference_world_size,
+            session_id,
+            engine_world_sizes=self._engine_world_sizes,
+            use_native_collective_rpc=self._use_native_collective_rpc,
+        )
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         await update_weights(
@@ -164,14 +206,14 @@ def setup_client(
     )
 
 
-def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
+def setup_admin_clients(client_config: ClientConfig, urls: list[str] | None = None) -> list[AsyncClient]:
     """Create dedicated admin clients for weight update operations.
 
     Uses a separate connection pool to avoid queueing behind streaming requests.
     When admin_base_url is set, uses those URLs instead of base_url, allowing
     weight updates to bypass routers in disaggregated P/D deployments.
     """
-    urls = client_config.admin_base_url if client_config.admin_base_url else [client_config.base_url]
+    urls = urls or (client_config.admin_base_url if client_config.admin_base_url else [client_config.base_url])
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
         env_headers = {

@@ -10,7 +10,7 @@ tasks_per_minute = 1
 name = "zai-org/GLM-5.2-FP8"
 
 [model.client]
-base_url = ["http://dynamo-frontend:8000/v1"]
+base_url = "http://dynamo-frontend:8000/v1"
 dynamo_discovery_url = "http://dynamo-frontend:8001"
 wait_for_ready_timeout = 7200
 
@@ -33,7 +33,7 @@ extra_body = { chat_template_kwargs = { clear_thinking = false } }
 name = "r2e"
 group_size = 2
 serve.pool = { type = "static", num_workers = 2 }
-env.taskset = { id = "r2e-gym-v1" }
+env.taskset = { id = "r2e-gym" }
 env.agent.max_turns = 64
 env.agent.max_input_tokens = 30720
 env.agent.max_output_tokens = 16384

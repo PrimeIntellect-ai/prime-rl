@@ -33,7 +33,7 @@ max_inflight_episodes = 2
 max_off_policy_steps = 0
 
 [orchestrator.model.client]
-base_url = ["http://127.0.0.1:8000/v1"]
+base_url = "http://127.0.0.1:8000/v1"
 dynamo_discovery_url = "http://127.0.0.1:8001"
 wait_for_ready_timeout = 3600
 
@@ -51,6 +51,6 @@ max_completion_tokens = 2048
 
 [[orchestrator.train.source]]
 name = "math"
-env.taskset = { id = "math-env-v1", dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", task = { math_verify_timeout = 60 } }
+env.taskset = { id = "math-env", dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", task = { math_verify_timeout = 60 } }
 env.agent.harness = { id = "null" }
 env.agent.runtime = { type = "subprocess" }

@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.dynamo import _parse_dynamo_workers, discover_dynamo_workers
+from prime_rl.utils.dynamo import _parse_dynamo_workers, discover_dynamo_workers, setup_dynamo_admin_clients
 
 MODEL = "Qwen/Qwen3-0.6B"
 
@@ -101,3 +101,19 @@ def test_discovery_retries_until_expected_world_size_is_complete():
 
     assert discovery_client.get.await_count == 3
     assert [item.component for item in workers] == ["backend", "prefill"]
+
+
+def test_discovered_admin_clients_preserve_configured_headers(monkeypatch):
+    monkeypatch.setenv("DYNAMO_TOKEN", "secret")
+    clients = setup_dynamo_admin_clients(
+        ClientConfig(
+            headers={"X-Static": "value"},
+            headers_from_env={"X-Token": "DYNAMO_TOKEN"},
+        ),
+        _parse_dynamo_workers(payload(worker()), MODEL),
+    )
+    try:
+        assert clients[0].headers["X-Static"] == "value"
+        assert clients[0].headers["X-Token"] == "secret"
+    finally:
+        asyncio.run(clients[0].aclose())

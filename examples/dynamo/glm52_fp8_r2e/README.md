@@ -47,11 +47,11 @@ nodes to mount the same read-write shared output root.
 Initialize the R2E environment submodule and install its workspace package:
 
 ```bash
-git submodule update --init -- deps/research-environments
-uv sync --package prime-rl --package r2e-gym-v1
+git submodule update --init -- deps/prime-envs
+uv sync --package prime-rl --package r2e-gym
 ```
 
-The taskset intentionally uses the current `r2e-gym-v1` default,
+The taskset intentionally uses the current `r2e-gym` default,
 `PrimeIntellect/R2E-Gym-Subset-Verified`, instead of pinning an older dataset
 override in this recipe.
 

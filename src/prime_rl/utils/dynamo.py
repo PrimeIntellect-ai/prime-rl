@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_delay, wait_exponential
 
 from prime_rl.configs.shared import ClientConfig
+from prime_rl.utils.client import setup_admin_clients
 
 DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION = 1
 DYNAMO_READINESS_REQUEST_TIMEOUT_S = 30.0
@@ -66,15 +67,11 @@ def _parse_dynamo_workers(payload: object, model_name: str) -> tuple[DiscoveredD
     return tuple(sorted(workers, key=lambda worker: (worker.component, worker.instance_id)))
 
 
-def setup_dynamo_admin_clients(workers: tuple[DiscoveredDynamoWorker, ...]) -> list[AsyncClient]:
-    return [
-        AsyncClient(
-            base_url=worker.admin_base_url.rstrip("/"),
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
-            timeout=httpx.Timeout(None),
-        )
-        for worker in workers
-    ]
+def setup_dynamo_admin_clients(
+    client_config: ClientConfig,
+    workers: tuple[DiscoveredDynamoWorker, ...],
+) -> list[AsyncClient]:
+    return setup_admin_clients(client_config, [worker.admin_base_url for worker in workers])
 
 
 async def discover_dynamo_workers(
