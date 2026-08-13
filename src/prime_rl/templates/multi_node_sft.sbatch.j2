@@ -37,10 +37,12 @@ mkdir -p $OUTPUT_DIR/logs/trainer
 ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 
 {% if wandb_shared_run_id %}
-# Trainer and evaluator (separate SLURM job) log to a single shared W&B run.
+# Trainer and evaluator (separate SLURM job) log to a single shared W&B run: the
+# trainer creates it, the evaluator (which outlives the trainer) finalizes it.
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_RUN_ID={{ wandb_shared_run_id }}
-export WANDB_SHARED_PRIMARY=evaluator
+export WANDB_SHARED_PRIMARY=trainer
+export WANDB_SHARED_FINISHER=evaluator
 export WANDB_SHARED_LABEL=trainer
 export WANDB_PROGRAM="uv run sft"
 {% endif %}

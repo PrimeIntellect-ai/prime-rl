@@ -254,9 +254,9 @@ def sft_slurm(config: SFTConfig):
     write_slurm_script(config, config_path, script_path, wandb_shared_run_id)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    # The eval job is submitted first and the trainer job depends on it having started:
-    # the evaluator is the shared W&B run's primary, and the trainer's non-primary init
-    # only retries for a bounded window — starting the trainer while the eval job pends
+    # The trainer job is submitted first and the eval job depends on it having started:
+    # the trainer creates the shared W&B run, and the evaluator's joiner init only
+    # retries for a bounded window — starting the evaluator while the trainer job pends
     # would crash it at wandb init.
     script_paths = [script_path]
     if decoupled_eval:
@@ -265,7 +265,7 @@ def sft_slurm(config: SFTConfig):
         eval_script_path = config.output_dir / EVAL_SBATCH
         write_eval_slurm_script(config, config_dir, eval_script_path, wandb_shared_run_id)
         logger.info(f"Wrote eval SLURM script to {eval_script_path}")
-        script_paths = [eval_script_path, script_path]
+        script_paths = [script_path, eval_script_path]
 
     log_dir = get_log_dir(config.output_dir)
     num_nodes = config.deployment.num_nodes if config.deployment.type == "multi_node" else 1
@@ -281,7 +281,7 @@ def sft_slurm(config: SFTConfig):
 
     if config.dry_run:
         submit = "\n".join(f"  sbatch {path}" for path in script_paths)
-        note = "\n\nSubmit the eval job first — the trainer joins the W&B run the evaluator creates." if decoupled_eval else ""
+        note = "\n\nSubmit the trainer job first — the evaluator joins the W&B run the trainer creates." if decoupled_eval else ""
         logger.success(f"Dry run complete. To submit manually:\n\n{submit}{note}\n\n{log_message}")
         return
 
@@ -289,7 +289,7 @@ def sft_slurm(config: SFTConfig):
     for path in script_paths:
         cmd = ["sbatch"]
         if submitted_job_ids:
-            # Hold the trainer until the eval job has started (not finished).
+            # Hold the eval job until the trainer job has started (not finished).
             cmd.append(f"--dependency=after:{submitted_job_ids[-1]}")
         cmd.append(str(path))
         logger.info(f"Submitting: {' '.join(cmd)}")
@@ -348,10 +348,13 @@ def sft_local(config: SFTConfig):
     # Trainer and evaluator log to a single shared W&B run, one label per process.
     wandb_shared_env: dict[str, str] = {}
     if config.eval is not None:
+        # The trainer creates the run; the evaluator (which drains its final evals
+        # after the trainer exits) finalizes it.
         wandb_shared_env = {
             "WANDB_SHARED_MODE": "1",
             "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex),
-            "WANDB_SHARED_PRIMARY": "evaluator",
+            "WANDB_SHARED_PRIMARY": "trainer",
+            "WANDB_SHARED_FINISHER": "evaluator",
             "WANDB_PROGRAM": "uv run sft",
             "WANDB_ARGS": json.dumps(sys.argv),
         }

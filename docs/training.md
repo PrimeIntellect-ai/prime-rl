@@ -224,7 +224,7 @@ tensor_parallel_size = 8
 job_name = "my-run"
 ```
 
-The only coupling is weight checkpoints on the shared filesystem, so the jobs' lifetimes are independent: when training finishes, the trainer job exits and releases its nodes even while evals are still running; the eval job keeps draining pending checkpoints and exits after evaluating the final one (`max_steps` — without it the eval job never sees a final checkpoint and holds its allocation until walltime). Trainer and evaluator log to a single shared W&B run across both jobs. Any train × inference layout works: `num_nodes` and `num_infer_nodes` are fully independent.
+The only coupling is weight checkpoints on the shared filesystem, so the jobs' lifetimes are independent: when training finishes, the trainer job exits and releases its nodes even while evals are still running; the eval job keeps draining pending checkpoints and exits after evaluating the final one (`max_steps` — without it the eval job never sees a final checkpoint and holds its allocation until walltime). Trainer and evaluator log to a single shared W&B run across both jobs — the trainer creates it, the evaluator finalizes it. Any train × inference layout works: `num_nodes` and `num_infer_nodes` are fully independent.
 
 ### SFT-Specific Knobs
 

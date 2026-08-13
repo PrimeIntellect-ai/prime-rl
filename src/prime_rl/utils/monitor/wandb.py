@@ -81,14 +81,19 @@ class WandbMonitor(Monitor):
         if shared_mode:
             run_id = os.environ.get("WANDB_SHARED_RUN_ID")
             label = os.environ.get("WANDB_SHARED_LABEL")
-            primary = label == os.environ.get("WANDB_SHARED_PRIMARY", "orchestrator")
+            primary_label = os.environ.get("WANDB_SHARED_PRIMARY", "orchestrator")
+            primary = label == primary_label
+            # The primary creates the run; the finisher writes its final state. They can
+            # differ when the run's creator is not its last-alive writer (e.g. the SFT
+            # trainer creates the run, the evaluator outlives it and finalizes).
+            finisher = label == os.environ.get("WANDB_SHARED_FINISHER", primary_label)
             settings = wandb.Settings(
                 mode="shared",
                 x_label=label,
                 x_primary=primary,
-                x_update_finish_state=primary,
+                x_update_finish_state=finisher,
             )
-            self.logger.info(f"Using shared W&B mode ({label=}, {primary=})")
+            self.logger.info(f"Using shared W&B mode ({label=}, {primary=}, {finisher=})")
             is_online = True
         else:
             run_id = None

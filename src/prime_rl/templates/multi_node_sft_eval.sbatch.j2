@@ -57,10 +57,12 @@ ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 export EVAL_DONE=$OUTPUT_DIR/.eval_done_$SLURM_JOB_ID
 rm -f "$EVAL_DONE"
 {% if wandb_shared_run_id %}
-# Trainer (separate SLURM job) and evaluator log to a single shared W&B run.
+# Trainer (separate SLURM job) and evaluator log to a single shared W&B run: the
+# trainer creates it, the evaluator (which outlives the trainer) finalizes it.
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_RUN_ID={{ wandb_shared_run_id }}
-export WANDB_SHARED_PRIMARY=evaluator
+export WANDB_SHARED_PRIMARY=trainer
+export WANDB_SHARED_FINISHER=evaluator
 export WANDB_PROGRAM="uv run sft"
 {% endif %}
 # Networking
