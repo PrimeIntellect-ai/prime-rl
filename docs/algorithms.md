@@ -478,7 +478,7 @@ class MyGate(AdmissionGate):
 
 Two small implementations are included:
 
-- `DifficultyPools` samples every finite task once, tracks its latest mean group reward, then samples a named reward pool by weight and a task uniformly within that pool.
+- `DifficultyPools` samples every finite task once, tracks its latest valid mean group reward, then samples a named reward pool by weight and a task uniformly within that pool. Tasks without a valid result do not block pool sampling, and the final pool is a catch-all.
 - `AdvantageRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Its default `[0, 0]` range rejects zero-advantage groups. Groups without an advantage stream are admitted.
 
 ```toml

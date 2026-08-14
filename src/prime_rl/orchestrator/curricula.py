@@ -14,9 +14,10 @@ from prime_rl.orchestrator.curriculum import AdmissionGate, CurriculumResult, Ta
 class DifficultyPools(TaskSampler):
     """Sample finite tasks through named pools based on the latest group mean.
 
-    Unseen tasks are sampled first. Afterwards, a nonempty pool is selected by
-    its configured weight and a task is sampled uniformly from that pool.
-    ``thresholds`` maps each pool name to its inclusive maximum mean reward.
+    Unsampled tasks are chosen first. Afterwards, a nonempty pool is selected
+    by its configured weight and a task is sampled uniformly from that pool.
+    ``thresholds`` maps each pool name to its inclusive maximum mean reward;
+    the final pool is the catch-all.
     """
 
     def __init__(
@@ -42,6 +43,7 @@ class DifficultyPools(TaskSampler):
         if len({maximum for _, maximum in ordered}) != len(ordered):
             raise ValueError("Difficulty pool thresholds must be unique")
         self._ordered_pools = tuple(ordered)
+        self.sampled_task_keys: set[str] = set()
         self.task_rewards: dict[str, float] = {}
 
     def _pool(self, task_key: str) -> str:
@@ -49,12 +51,17 @@ class DifficultyPools(TaskSampler):
         for name, maximum in self._ordered_pools:
             if score <= maximum:
                 return name
-        raise ValueError(f"Task {task_key!r} has mean reward {score} above every difficulty threshold")
+        return self._ordered_pools[-1][0]
 
     def sample(self) -> vf.Task:
-        unseen = [task for task in self.tasks_by_key.values() if task.key not in self.task_rewards]
-        if unseen:
-            return self.rng.choice(unseen)
+        unsampled = [task for task in self.tasks_by_key.values() if task.key not in self.sampled_task_keys]
+        if unsampled:
+            task = self.rng.choice(unsampled)
+            self.sampled_task_keys.add(task.key)
+            return task
+
+        if not self.task_rewards:
+            return self.rng.choice(tuple(self.tasks_by_key.values()))
 
         tasks_by_pool: dict[str, list[vf.Task]] = defaultdict(list)
         for task_key, task in self.tasks_by_key.items():
@@ -71,19 +78,21 @@ class DifficultyPools(TaskSampler):
 
     def state_dict(self) -> dict[str, Any]:
         return super().state_dict() | {
+            "sampled_task_keys": sorted(self.sampled_task_keys),
             "task_rewards": dict(self.task_rewards),
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         super().load_state_dict(state_dict)
         self.task_rewards = dict(state_dict["task_rewards"])
+        self.sampled_task_keys = set(state_dict.get("sampled_task_keys", self.task_rewards))
 
     def metrics(self) -> dict[str, float]:
         occupancy = dict.fromkeys(self.thresholds, 0)
         for task_key in self.task_rewards:
             occupancy[self._pool(task_key)] += 1
         return {
-            "pool/unseen": float(len(self.tasks_by_key) - len(self.task_rewards)),
+            "pool/unseen": float(len(self.tasks_by_key) - len(self.sampled_task_keys)),
             **{f"pool/{name}": float(count) for name, count in occupancy.items()},
         }
 

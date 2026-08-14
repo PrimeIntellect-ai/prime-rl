@@ -587,13 +587,13 @@ class Orchestrator:
         if not batch.samples:
             self.consecutive_empty_batches += 1
             get_logger().warning(
-                f"Step {step}: empty train batch (0 of {len(batch.rollouts)} generated rollouts shipped — "
-                f"all errored, rejected, or empty) "
-                f"(consecutive empty batches: {self.consecutive_empty_batches}/{MAX_CONSECUTIVE_EMPTY_BATCHES})"
+                f"Step {step}: no train batch produced after {len(batch.rollouts)} finalized rollouts "
+                f"(consecutive no-progress windows: "
+                f"{self.consecutive_empty_batches}/{MAX_CONSECUTIVE_EMPTY_BATCHES})"
             )
             if self.consecutive_empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
                 raise RuntimeError(
-                    f"{self.consecutive_empty_batches} consecutive empty train batches — "
+                    f"{self.consecutive_empty_batches} consecutive no-progress windows — "
                     "check the curriculum admission policy and task difficulty."
                 )
             return
