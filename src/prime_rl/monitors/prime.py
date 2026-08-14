@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import io
 import json
 import os
@@ -105,6 +106,14 @@ class PrimeMonitor(Monitor):
         os.environ["RUN_ID"] = run_id
         self.run_id = run_id
 
+        # atexit rather than __del__: it runs before interpreter teardown, while httpx can
+        # still create a client. A run registered but never finalized did not exit cleanly.
+        def mark_failed() -> None:
+            if self._registered and not self._finalized and os.getpid() == self._owner_pid:
+                self._set_run_status(success=False)
+
+        atexit.register(mark_failed)
+
     def log(self, metrics: dict[str, Any], step: int) -> None:
         self._last_metrics = metrics
         payload = self._sanitize({"run_id": self.run_id, "metrics": metrics})
@@ -129,11 +138,12 @@ class PrimeMonitor(Monitor):
         if not episodes:
             return
 
-        parquet_bytes = self._episodes_to_parquet_bytes(episodes, step)
-        if parquet_bytes is None:
-            return
-
         async def upload() -> None:
+            # Serialization dumps every episode's full model - heavy pure-Python work that
+            # would stall the event loop (and with it dispatch) if run inline.
+            parquet_bytes = await asyncio.to_thread(self._episodes_to_parquet_bytes, episodes, step)
+            if parquet_bytes is None:
+                return
             # Presigned-URL flow: presign -> R2 PUT -> confirm. The PUT carries no API
             # headers - extra auth breaks the presigned signature.
             async with _client() as client:
@@ -169,11 +179,6 @@ class PrimeMonitor(Monitor):
             self._set_run_status(success=True)
         if os.getpid() == self._owner_pid:
             self._finalized = True
-
-    def __del__(self) -> None:
-        # A run that was registered but never finalized did not exit cleanly.
-        if getattr(self, "_registered", False) and not self._finalized and os.getpid() == self._owner_pid:
-            self._set_run_status(success=False)
 
     def _register_run(self, run_config: OrchestratorConfig | None) -> str:
         """Register an external run with the platform and return its run id."""
