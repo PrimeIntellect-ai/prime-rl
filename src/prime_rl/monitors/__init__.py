@@ -29,6 +29,7 @@ __all__ = [
     "PrimeMonitor",
     "FileMonitor",
     "setup",
+    "get",
     "log",
     "log_episodes",
     "finalize",
@@ -84,6 +85,12 @@ def setup(
             get_logger().warning(f"Failed to initialize {monitor.__class__.__name__} - disabling it ({e})")
             continue
         _monitors.append(monitor)
+
+
+def get(monitor_cls: type[Monitor]) -> Monitor | None:
+    """The registered monitor of the given type, None when it isn't running
+    (not configured, non-zero rank, or disabled by a failed ``init``)."""
+    return next((monitor for monitor in _monitors if isinstance(monitor, monitor_cls)), None)
 
 
 def run_id() -> str | None:

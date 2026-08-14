@@ -283,7 +283,9 @@ class Orchestrator:
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
-        if config.monitors.wandb is not None and config.collect_inference_metrics:
+        # Gate on the registered monitor, not the config - the collector logs to the global
+        # W&B session, which only exists when the monitor's init succeeded.
+        if monitors.get(monitors.WandbMonitor) is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(
                 self.policy_inference.admin_clients,
                 roles=config.inference_metrics_roles,
@@ -388,7 +390,7 @@ class Orchestrator:
 
         assert config.max_inflight_episodes is not None, "max_inflight_episodes must be resolved before dispatcher init"
         log_interval = config.log.interval
-        wandb_enabled = config.monitors.wandb is not None
+        wandb_enabled = monitors.get(monitors.WandbMonitor) is not None
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
