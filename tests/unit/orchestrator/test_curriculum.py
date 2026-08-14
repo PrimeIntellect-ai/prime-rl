@@ -5,8 +5,14 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import CurriculumComponentConfig, CurriculumConfig
-from prime_rl.orchestrator.curricula import AdvantageRangeGate, DifficultyPools
-from prime_rl.orchestrator.curriculum import AdmissionGate, Curriculum, CurriculumResult, TaskSampler
+from prime_rl.orchestrator.curriculum import (
+    AdmissionGate,
+    AdvantageRangeGate,
+    Curriculum,
+    CurriculumResult,
+    DifficultyPools,
+    TaskSampler,
+)
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.transport import TrainingSample

@@ -1,4 +1,4 @@
-"""User-authored task sampling and admission policies."""
+"""User-authored task sampling and admission interfaces."""
 
 from __future__ import annotations
 

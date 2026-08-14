@@ -1,4 +1,4 @@
-"""Small curriculum implementations built on the user-space surface."""
+"""Difficulty-pool task sampling."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.curriculum import AdmissionGate, CurriculumResult, TaskSampler
+from prime_rl.orchestrator.curriculum.base import CurriculumResult, TaskSampler
 
 
 class DifficultyPools(TaskSampler):
@@ -65,7 +65,8 @@ class DifficultyPools(TaskSampler):
 
         tasks_by_pool: dict[str, list[vf.Task]] = defaultdict(list)
         for task_key, task in self.tasks_by_key.items():
-            tasks_by_pool[self._pool(task_key)].append(task)
+            if task_key in self.task_rewards:
+                tasks_by_pool[self._pool(task_key)].append(task)
         nonempty = [name for name in self.weights if tasks_by_pool[name]]
         pool = self.rng.choices(nonempty, weights=[self.weights[name] for name in nonempty], k=1)[0]
         return self.rng.choice(tasks_by_pool[pool])
@@ -95,33 +96,3 @@ class DifficultyPools(TaskSampler):
             "pool/unseen": float(len(self.tasks_by_key) - len(self.sampled_task_keys)),
             **{f"pool/{name}": float(count) for name, count in occupancy.items()},
         }
-
-
-class AdvantageRangeGate(AdmissionGate):
-    """Reject groups whose trainable-token advantages all fall inside a range.
-
-    The default ``[0, 0]`` interval implements zero-advantage rejection.
-    Groups without an advantage stream are admitted.
-    """
-
-    def __init__(
-        self,
-        *,
-        reject_min: float = 0.0,
-        reject_max: float = 0.0,
-    ) -> None:
-        if reject_min > reject_max:
-            raise ValueError("reject_min must be less than or equal to reject_max")
-        self.reject_min = reject_min
-        self.reject_max = reject_max
-
-    def admit(self, result: CurriculumResult) -> bool:
-        advantages: list[float] = []
-        for rollout in result.rollouts:
-            if rollout.advantages is None:
-                continue
-            trainable = [value for sample in rollout.samples for value in sample.mask]
-            advantages.extend(advantage for advantage, keep in zip(rollout.advantages, trainable, strict=True) if keep)
-        if not advantages:
-            return True
-        return not all(self.reject_min <= advantage <= self.reject_max for advantage in advantages)

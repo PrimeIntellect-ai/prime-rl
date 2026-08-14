@@ -483,7 +483,7 @@ Two small implementations are included:
 
 ```toml
 [orchestrator.train.source.curriculum.sampler]
-import_path = "prime_rl.orchestrator.curricula.DifficultyPools"
+import_path = "prime_rl.orchestrator.curriculum.DifficultyPools"
 
 [orchestrator.train.source.curriculum.sampler.kwargs.thresholds]
 hard = 0.25
@@ -496,7 +496,7 @@ medium = 0.6
 easy = 0.2
 
 [orchestrator.train.source.curriculum.gates.zero_advantage]
-import_path = "prime_rl.orchestrator.curricula.AdvantageRangeGate"
+import_path = "prime_rl.orchestrator.curriculum.AdvantageRangeGate"
 ```
 
 ## Multi-Turn Trajectories
