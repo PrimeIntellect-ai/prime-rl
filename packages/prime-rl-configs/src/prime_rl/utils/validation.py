@@ -93,19 +93,19 @@ def propagate_shared_fields(data: Any) -> Any:
     propagate("ckpt.keep_last", "trainer.ckpt.keep_last", "orchestrator.ckpt.keep_last")
     propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval", "orchestrator.ckpt.keep_interval")
 
-    # [wandb] leaves. (Bare empty ``[wandb]`` block enablement is at the end.)
-    # ``wandb.name`` flows verbatim to both sub-configs — shared W&B mode is
+    # [monitors.wandb] leaves. (Bare empty ``[monitors.wandb]`` block enablement is at the end.)
+    # ``monitors.wandb.name`` flows verbatim to both sub-configs — shared W&B mode is
     # always on for the rl entrypoint, so the legacy ``-trainer`` /
     # ``-orchestrator`` suffix split is gone.
-    propagate("wandb.project", "trainer.wandb.project", "orchestrator.wandb.project")
-    propagate("wandb.entity", "trainer.wandb.entity", "orchestrator.wandb.entity")
-    propagate("wandb.name", "trainer.wandb.name", "orchestrator.wandb.name")
-    propagate("wandb.group", "trainer.wandb.group", "orchestrator.wandb.group")
-    propagate("wandb.tags", "trainer.wandb.tags", "orchestrator.wandb.tags")
-    propagate("wandb.offline", "trainer.wandb.offline", "orchestrator.wandb.offline")
+    for leaf in ("project", "entity", "name", "group", "tags", "offline"):
+        propagate(
+            f"monitors.wandb.{leaf}",
+            f"trainer.monitors.wandb.{leaf}",
+            f"orchestrator.monitors.wandb.{leaf}",
+        )
 
-    # [file_monitor] leaf. (Bare empty ``[file_monitor]`` block enablement is at the end.)
-    propagate("file_monitor.filename", "trainer.file_monitor.filename", "orchestrator.file_monitor.filename")
+    # [monitors.file] leaf. (Bare empty ``[monitors.file]`` block enablement is at the end.)
+    propagate("monitors.file.filename", "trainer.monitors.file.filename", "orchestrator.monitors.file.filename")
 
     # [tokenizer]. ``chat_template`` also flows to ``inference.vllm`` (vLLM's
     # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
@@ -149,18 +149,18 @@ def propagate_shared_fields(data: Any) -> Any:
     if trainer_chat_template is not None:
         fill("inference.vllm.chat_template", trainer_chat_template)
 
-    # Bare ``[ckpt]`` / ``[wandb]`` block: presence-only signal that enables
-    # the section with defaults on both sub-configs. Necessary because
-    # ``trainer.ckpt`` / ``orchestrator.ckpt`` are Optional[None] by default —
-    # without this an empty shared block would be a no-op. Leaf-level
-    # conflicts (e.g. shared ``ckpt.interval`` vs ``trainer.ckpt.interval``)
-    # are already caught above; the bare block is exempt because
-    # ``[ckpt]`` + ``[trainer.ckpt] keep_last = 3`` is a legitimate
-    # "enable + customise per side" pattern. The ``isinstance(dict)`` check
-    # (not ``is not None``) is what makes CLI ``--no-wandb`` / ``--no-ckpt``
-    # work — those land as the *string* ``"None"`` until ``BaseConfig``'s
-    # parent-class validator converts it, which happens after this one.
-    for key in ("ckpt", "wandb", "file_monitor"):
+    # Bare ``[ckpt]`` / ``[monitors.wandb]`` block: presence-only signal that
+    # enables the section with defaults on both sub-configs. Necessary because
+    # the sub-config fields are Optional[None] by default — without this an
+    # empty shared block would be a no-op. Leaf-level conflicts (e.g. shared
+    # ``ckpt.interval`` vs ``trainer.ckpt.interval``) are already caught above;
+    # the bare block is exempt because ``[ckpt]`` + ``[trainer.ckpt]
+    # keep_last = 3`` is a legitimate "enable + customise per side" pattern.
+    # The ``isinstance(dict)`` check (not ``is not None``) is what makes CLI
+    # ``--no-ckpt`` / ``--no-monitors.wandb`` work — those land as the *string*
+    # ``"None"`` until ``BaseConfig``'s parent-class validator converts it,
+    # which happens after this one.
+    for key in ("ckpt", "monitors.wandb", "monitors.file"):
         if isinstance(get(key), dict):
             fill(f"trainer.{key}", {})
             fill(f"orchestrator.{key}", {})
@@ -226,22 +226,22 @@ def validate_shared_wandb_config(
     trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if trainer.wandb and not orchestrator.wandb:
+    if trainer.monitors.wandb and not orchestrator.monitors.wandb:
         raise ValueError(
             "Trainer W&B config is specified, but orchestrator W&B config is not. "
-            "This means only trainer metrics will be logged. Please specify [orchestrator.wandb] to log orchestrator metrics as well, "
-            "or use [wandb] to configure both at once."
+            "This means only trainer metrics will be logged. Please specify [orchestrator.monitors.wandb] to log orchestrator metrics as well, "
+            "or use [monitors.wandb] to configure both at once."
         )
-    if orchestrator.wandb and not trainer.wandb:
+    if orchestrator.monitors.wandb and not trainer.monitors.wandb:
         raise ValueError(
             "Orchestrator W&B config is specified, but trainer W&B config is not. "
-            "This means only orchestrator metrics will be logged. Please specify [trainer.wandb] to log trainer metrics as well, "
-            "or use [wandb] to configure both at once."
+            "This means only orchestrator metrics will be logged. Please specify [trainer.monitors.wandb] to log trainer metrics as well, "
+            "or use [monitors.wandb] to configure both at once."
         )
-    if trainer.wandb and orchestrator.wandb:
-        if trainer.wandb.project != orchestrator.wandb.project:
+    if trainer.monitors.wandb and orchestrator.monitors.wandb:
+        if trainer.monitors.wandb.project != orchestrator.monitors.wandb.project:
             raise ValueError(
-                f"Trainer W&B project ({trainer.wandb.project}) and orchestrator W&B project ({orchestrator.wandb.project}) are not the same. Please specify the same W&B project for both."
+                f"Trainer W&B project ({trainer.monitors.wandb.project}) and orchestrator W&B project ({orchestrator.monitors.wandb.project}) are not the same. Please specify the same W&B project for both."
             )
 
 

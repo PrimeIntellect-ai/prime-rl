@@ -9,13 +9,12 @@ from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.shared import (
     EnvVars,
-    FileMonitorConfig,
     HeartbeatConfig,
+    MonitorsConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
     TrainerLogConfig,
-    WandbConfig,
 )
 from prime_rl.configs.trainer import (
     AdamWConfig,
@@ -195,10 +194,8 @@ class SFTConfig(BaseConfig):
 
     log: TrainerLogConfig = TrainerLogConfig()
 
-    wandb: WandbConfig | None = None
-
-    file_monitor: FileMonitorConfig | None = None
-    """Local JSONL metric sink. If set, metrics are appended to ``<output_dir>/metrics.jsonl``."""
+    monitors: MonitorsConfig = MonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
 
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
@@ -225,8 +222,8 @@ class SFTConfig(BaseConfig):
             self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
         if self.run.dir is None:
             self.run.dir = self.run.name
-        if self.wandb is not None and self.wandb.name is None:
-            self.wandb.name = self.run.name
+        if self.monitors.wandb is not None and self.monitors.wandb.name is None:
+            self.monitors.wandb.name = self.run.name
         return self
 
     matmul_precision: Literal["highest", "high", "medium"] = "high"

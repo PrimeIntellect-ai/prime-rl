@@ -146,7 +146,7 @@ def build_command(config: BenchmarkConfig, output_dir: Path) -> list[str]:
         str(config.max_steps),
         "--output-dir",
         str(output_dir),
-        "--file-monitor.filename",
+        "--monitors.file.filename",
         "metrics.jsonl",
         "--model.compile",
         "--dist-timeout-seconds",

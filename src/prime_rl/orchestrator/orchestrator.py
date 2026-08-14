@@ -39,8 +39,8 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.ckpt import CheckpointManager
     from prime_rl.transport.base import MicroBatchSender
     from prime_rl.utils.client import InferencePool
-    from prime_rl.utils.monitor.base import Monitor
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
+from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
@@ -80,7 +80,6 @@ from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, s
 from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pathing import get_trace_path
 from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
@@ -128,7 +127,6 @@ class Orchestrator:
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
     policy_inference: InferencePool
-    monitor: Monitor
     sender: MicroBatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
@@ -221,20 +219,19 @@ class Orchestrator:
         if self.mm_token_type_ids_mapping == {}:
             self.mm_token_type_ids_mapping = None
 
-        get_logger().info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
-        self.monitor = setup_monitor(
-            wandb_config=config.wandb,
-            prime_config=config.prime_monitor,
-            file_config=config.file_monitor,
+        get_logger().info(f"Initializing monitors ({config.monitors})")
+        monitors.setup(
+            wandb=config.monitors.wandb,
+            prime=config.monitors.prime,
+            file=config.monitors.file,
             output_dir=config.output_dir,
-            tokenizer=self.tokenizer,
             run_config=config,
             train_env_names=[env.resolved_name for env in config.train.source],
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
         # Prefer the monitor identity (platform run id, else W&B id) so traces link
         # back to it, then the launcher-set $PRL_RUN_ID; standalone runs mint a local one.
-        self.run_id = self.monitor.run_id or os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
+        self.run_id = monitors.run_id() or os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
         # Base labels for sandboxes created in this process; env-server processes read
         # the same launcher-set env var themselves.
         self.run_name = os.environ.get("PRL_RUN_NAME")
@@ -294,7 +291,7 @@ class Orchestrator:
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
-        if config.wandb is not None and config.collect_inference_metrics:
+        if config.monitors.wandb is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(
                 self.policy_inference.admin_clients,
                 roles=config.inference_metrics_roles,
@@ -399,7 +396,7 @@ class Orchestrator:
 
         assert config.max_inflight_episodes is not None, "max_inflight_episodes must be resolved before dispatcher init"
         log_interval = config.log.interval
-        wandb_enabled = config.wandb is not None
+        wandb_enabled = config.monitors.wandb is not None
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
@@ -499,7 +496,7 @@ class Orchestrator:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
-            self.monitor.save_final_summary()
+            monitors.save_final_summary()
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
             # first ship).
@@ -701,16 +698,9 @@ class Orchestrator:
             )
             for name, count in self.train_sink.pre_filter_dropped_by_name.items():
                 metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
-        self.monitor.log(metrics, step=step)
+        monitors.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
-        self.monitor.log_samples(effective.rollouts, step=step)
-        self.monitor.log_distributions(
-            distributions={
-                "rewards": [r.reward for r in effective],
-                "advantages": [a for r in effective if (a := r.scalar_advantage()) is not None],
-            },
-            step=step,
-        )
+        monitors.log_episodes(effective.rollouts, step=step)
 
         if self.usage_reporter is not None:
             run_id = os.getenv("RUN_ID", "")
@@ -857,8 +847,7 @@ class Orchestrator:
         get_logger().success("\n\t\t ".join(lines))
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
-        """Persist + log one completed eval epoch (save_rollouts,
-        monitor.log_eval_samples, monitor.log)."""
+        """Persist + log one completed eval epoch (save_rollouts, monitors.log)."""
         if not batch.rollouts:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
             return
@@ -871,7 +860,6 @@ class Orchestrator:
         await asyncio.to_thread(
             save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
         )
-        self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
         policy_versions = {r.policy_version for r in batch.rollouts}
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:
@@ -887,7 +875,7 @@ class Orchestrator:
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
-        self.monitor.log(metrics, step=batch.step)
+        monitors.log(metrics, step=batch.step)
 
         # Success line — quality metrics over the effective set, error rate over the full returned
         # cohort. ``Stat.mean()`` is 0.0 for an empty set.

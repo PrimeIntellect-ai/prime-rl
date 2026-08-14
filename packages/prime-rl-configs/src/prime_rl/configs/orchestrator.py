@@ -13,13 +13,11 @@ from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
     EnvVars,
-    FileMonitorConfig,
     HeartbeatConfig,
     LogConfig,
-    PrimeMonitorConfig,
+    OrchestratorMonitorsConfig,
     ResumeConfig,
     TransportConfig,
-    WandbWithExtrasConfig,
     ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
@@ -437,12 +435,8 @@ class OrchestratorConfig(BaseConfig):
     env_vars: EnvVars = {}
     """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
 
-    wandb: WandbWithExtrasConfig | None = None
-
-    prime_monitor: PrimeMonitorConfig | None = None
-
-    file_monitor: FileMonitorConfig | None = None
-    """Local JSONL metric sink. If set, orchestrator metrics are appended to ``<output_dir>/metrics.jsonl``."""
+    monitors: OrchestratorMonitorsConfig = OrchestratorMonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     collect_inference_metrics: bool = True
     """Collect inference-server metrics (requires wandb)."""
@@ -520,12 +514,12 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_prime_monitor_run_name(self):
-        """Default ``prime_monitor.run_name`` to the W&B run name when monitoring
-        is enabled and the user hasn't named the prime-monitor run explicitly."""
-        if self.prime_monitor is None or self.prime_monitor.run_name is not None:
+        """Default ``monitors.prime.run_name`` to the W&B run name when monitoring
+        is enabled and the user hasn't named the platform run explicitly."""
+        if self.monitors.prime is None or self.monitors.prime.run_name is not None:
             return self
-        if self.wandb is not None and self.wandb.name:
-            self.prime_monitor.run_name = self.wandb.name
+        if self.monitors.wandb is not None and self.monitors.wandb.name:
+            self.monitors.prime.run_name = self.monitors.wandb.name
         return self
 
     @model_validator(mode="after")

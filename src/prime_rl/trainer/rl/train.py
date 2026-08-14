@@ -57,7 +57,7 @@ from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer
-from prime_rl.utils.monitor import setup_monitor
+from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
@@ -75,10 +75,10 @@ def train(config: TrainerConfig):
     )
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
-    # Setup the monitor
-    logger.info(f"Initializing monitor ({config.wandb})")
-    monitor = setup_monitor(
-        config.wandb, file_config=config.file_monitor, output_dir=config.output_dir, run_config=config
+    # Setup the monitors
+    logger.info(f"Initializing monitors ({config.monitors})")
+    monitors.setup(
+        wandb=config.monitors.wandb, file=config.monitors.file, output_dir=config.output_dir, run_config=config
     )
 
     # Setup heartbeat (only on rank 0)
@@ -649,7 +649,7 @@ def train(config: TrainerConfig):
             "perf/peak_memory": peak_memory,
             "step": progress.step,
         }
-        monitor.log(perf_metrics, step=progress.step)
+        monitors.log(perf_metrics, step=progress.step)
 
         # Log optimizer metrics
         optim_metrics = {
@@ -658,7 +658,7 @@ def train(config: TrainerConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
-        monitor.log(optim_metrics, step=progress.step)
+        monitors.log(optim_metrics, step=progress.step)
 
         # Compute derived metrics
         entropy_mean = tensor_stats.get("entropy/all/mean", 0.0)
@@ -667,7 +667,7 @@ def train(config: TrainerConfig):
             tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
 
         tensor_stats["step"] = progress.step
-        monitor.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step)
+        monitors.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step)
 
         # Log time metrics
         time_metrics = {
@@ -679,12 +679,12 @@ def train(config: TrainerConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        monitor.log(time_metrics, step=progress.step)
+        monitors.log(time_metrics, step=progress.step)
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.output_dir)
         disk_metrics["step"] = progress.step
-        monitor.log(disk_metrics, step=progress.step)
+        monitors.log(disk_metrics, step=progress.step)
 
         # Update Prometheus metrics if configured
         if metrics_server is not None:

@@ -21,7 +21,7 @@ num_train_nodes = 2
 num_infer_nodes = 1
 num_infer_replicas = 4
 
-[wandb]
+[monitors.wandb]
 project = "search-ablations"
 name = "glm45air-search"
 
@@ -87,7 +87,7 @@ num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1
 num_turns_weight = 0.0
 
-[orchestrator.prime_monitor]
+[orchestrator.monitors.prime]
 
 # --- Train: the search envs with usable training data (rlm `search` skill, prime sandbox) ---
 

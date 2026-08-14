@@ -192,20 +192,6 @@ class TrainerLogConfig(LogConfig):
     """Trainer ranks to show in console output. Passed to ``torchrun --local-ranks-filter``."""
 
 
-class LogExtrasConfig(BaseConfig):
-    samples: bool = True
-    """Log prompt/response samples."""
-
-    distributions: bool = True
-    """Log distributions (rewards, advantages, etc.)."""
-
-    interval: int = Field(10, ge=1)
-    """Step interval between extras logs."""
-
-    sample_ratio: float | None = Field(None, ge=0.0, le=1.0)
-    """Fraction of rollouts to log per step. The effective cap is ``len(rollouts) * sample_ratio``; 1.0 = all, 0.5 = half, 0.0 = none."""
-
-
 class WandbConfig(BaseConfig):
     # Shared configs (May be overwritten by WandbConfig from `rl.py`)
     project: str = "prime-rl"
@@ -227,21 +213,20 @@ class WandbConfig(BaseConfig):
     """Run W&B in offline mode."""
 
 
-class WandbWithExtrasConfig(WandbConfig):
-    log_extras: LogExtrasConfig | None = LogExtrasConfig()
-    """Extras logging configuration. If None, no extras are logged."""
-
-
 class FileMonitorConfig(BaseConfig):
-    """Enable the local JSONL metric sink (``<output_dir>/metrics.jsonl``).
-
-    Present (non-None) enables it, mirroring the ``prime_monitor`` pattern. Metrics
-    are the same scalars sent to W&B; useful for self-hosted dashboards or when W&B
-    is disabled.
-    """
+    """Local JSONL metric sink (``<output_dir>/metrics.jsonl``). Metrics are the same
+    scalars sent to W&B; useful for self-hosted dashboards or when W&B is disabled."""
 
     filename: str = "metrics.jsonl"
     """Name of the JSONL file written under the component's ``output_dir``."""
+
+
+class EpisodeLogConfig(BaseConfig):
+    interval: int = Field(10, ge=1)
+    """Step interval between episode uploads."""
+
+    sample_ratio: float | None = Field(None, ge=0.0, le=1.0)
+    """Fraction of episodes to upload per logged step. 1.0 = all, 0.5 = half, 0.0 = none; None keeps all."""
 
 
 class PrimeMonitorConfig(BaseConfig):
@@ -251,8 +236,8 @@ class PrimeMonitorConfig(BaseConfig):
     api_key_var: str = "PRIME_API_KEY"
     """Environment variable name containing the Prime Intellect API key, resolved via ``os.getenv``."""
 
-    log_extras: LogExtrasConfig | None = LogExtrasConfig()
-    """Extras logging configuration. If None, no extras are logged."""
+    log_episodes: EpisodeLogConfig | None = EpisodeLogConfig()
+    """Episode upload configuration. If None, no episodes are uploaded."""
 
     run_name: str | None = None
     """Run name shown on the platform. Defaults to the W&B run name when set, otherwise the platform auto-generates one."""
@@ -262,6 +247,19 @@ class PrimeMonitorConfig(BaseConfig):
 
     frontend_url: str | None = None
     """Frontend base URL used for the dashboard link printed after registration. Defaults to the Prime CLI frontend URL when unset."""
+
+
+class MonitorsConfig(BaseConfig):
+    wandb: WandbConfig | None = None
+    """Log metrics to Weights & Biases. If None, W&B logging is disabled."""
+
+    file: FileMonitorConfig | None = None
+    """Append metrics to a local JSONL file under the run's output directory. If None, disabled."""
+
+
+class OrchestratorMonitorsConfig(MonitorsConfig):
+    prime: PrimeMonitorConfig | None = None
+    """Log metrics and episodes to the Prime Intellect platform. If None, disabled."""
 
 
 class HeartbeatConfig(BaseConfig):

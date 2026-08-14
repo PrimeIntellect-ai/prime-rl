@@ -53,7 +53,7 @@ def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
     Disk usage metrics for the checkpoint directory (<output_dir>/checkpoints).
 
     Intended to be called by trainer(s) on rank 0 and included in an existing
-    monitor.log(...) call (once per step).
+    monitors.log(...) call (once per step).
     """
     ckpt_dir = get_ckpt_dir(output_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)

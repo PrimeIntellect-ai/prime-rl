@@ -1,6 +1,6 @@
 max_steps = 5000
 
-[wandb]
+[monitors.wandb]
 project = "hendrycks-sanity"
 name = "hendrycks-sanity"
 

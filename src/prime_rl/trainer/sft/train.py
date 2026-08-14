@@ -46,7 +46,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.monitor import setup_monitor
+from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
@@ -65,9 +65,9 @@ def train(config: SFTConfig):
     )
     logger.info(f"Starting SFT trainer in {world}")
 
-    # Setup the monitor
-    logger.info(f"Initializing monitor ({config.wandb})")
-    monitor = setup_monitor(config.wandb, file_config=config.file_monitor, output_dir=config.run_dir, run_config=config)
+    # Setup the monitors
+    logger.info(f"Initializing monitors ({config.monitors})")
+    monitors.setup(wandb=config.monitors.wandb, file=config.monitors.file, output_dir=config.run_dir, run_config=config)
 
     # Setup heartbeat (only on rank 0)
     heart = None
@@ -358,7 +358,7 @@ def train(config: SFTConfig):
             logger.warning(f"Validation at step {step} had no valid tokens")
         else:
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        monitor.log({"val/loss": mean_loss, "step": step}, step=step)
+        monitors.log({"val/loss": mean_loss, "step": step}, step=step)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -558,7 +558,7 @@ def train(config: SFTConfig):
                     for subset_or_split, num_tokens in dataset.num_tokens.items()
                 },
             )
-        monitor.log(progress_metrics, step=progress.step)
+        monitors.log(progress_metrics, step=progress.step)
 
         # Log performance metrics
         perf_metrics = {
@@ -568,7 +568,7 @@ def train(config: SFTConfig):
             "perf/mfu": mfu,
             "step": progress.step,
         }
-        monitor.log(perf_metrics, step=progress.step)
+        monitors.log(perf_metrics, step=progress.step)
 
         # Log optimizer metrics
         optim_metrics = {
@@ -577,7 +577,7 @@ def train(config: SFTConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
-        monitor.log(optim_metrics, step=progress.step)
+        monitors.log(optim_metrics, step=progress.step)
 
         loss_log_metrics = {
             "loss/mean": batch_loss,
@@ -585,7 +585,7 @@ def train(config: SFTConfig):
             "step": progress.step,
         }
         # Log tensor stats
-        monitor.log(loss_log_metrics, step=progress.step)
+        monitors.log(loss_log_metrics, step=progress.step)
 
         # Log time metrics
         time_metrics = {
@@ -594,16 +594,16 @@ def train(config: SFTConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        monitor.log(time_metrics, step=progress.step)
+        monitors.log(time_metrics, step=progress.step)
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.run_dir)
         disk_metrics["step"] = progress.step
-        monitor.log(disk_metrics, step=progress.step)
+        monitors.log(disk_metrics, step=progress.step)
 
         moe_log_metrics = {f"{name}/mean": value.item() for name, value in moe_stats.items() if value.item() > 0}
         if moe_log_metrics:
-            monitor.log({**moe_log_metrics, "step": progress.step}, step=progress.step)
+            monitors.log({**moe_log_metrics, "step": progress.step}, step=progress.step)
 
         is_first_step = False
 

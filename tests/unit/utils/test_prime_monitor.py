@@ -5,21 +5,20 @@ from unittest.mock import Mock
 import pyarrow.parquet as pq
 import verifiers.v1 as vf
 
+from prime_rl.monitors.prime import PrimeMonitor, group_episodes
 from prime_rl.orchestrator.types import Rollout
-from prime_rl.utils.monitor.prime import PrimeMonitor
 
 
 def _new_monitor() -> PrimeMonitor:
     monitor = PrimeMonitor.__new__(PrimeMonitor)
-    monitor._closed = True
+    monitor.logger = Mock()
     return monitor
 
 
-def _build_rollout(*, example_id: int, reward: float, task: str) -> Rollout:
+def _build_rollout(*, example_id: int, reward: float, env_name: str, episode_id: str = "") -> Rollout:
     """Build a v1 ``Rollout`` (message-graph trace). The user node carries the prompt and the
-    assistant node the completion; ``_rollouts_to_parquet_bytes`` reads the conversation off the
-    branches (its ``completion`` column is the last branch's messages, ``trajectory`` is one
-    message list per branch)."""
+    assistant node the completion; the parquet ``completion`` column is the last branch's
+    messages, ``trajectory`` is one message list per branch."""
     nodes = [
         vf.MessageNode(
             message=vf.UserMessage(content=f"prompt-{example_id}"),
@@ -41,79 +40,96 @@ def _build_rollout(*, example_id: int, reward: float, task: str) -> Rollout:
         nodes=nodes,
         rewards={"reward": vf.Reward(score=reward)},
     )
-    rollout.env_name = task
+    rollout.env_name = env_name
+    rollout.episode_id = episode_id
+    rollout.ok = True
     # Per-token advantage stream (full-length-N): 0.0 on the 3 prompt tokens,
     # reward/2 on the 2 completion (mask-True) tokens.
     rollout.advantages = [0.0, 0.0, 0.0, reward / 2, reward / 2]
     return rollout
 
 
-def test_rollouts_to_parquet_bytes_preserves_all_rollouts_and_ids():
+def test_group_episodes_links_rollouts_by_episode_id():
+    rollouts = [
+        _build_rollout(example_id=1, reward=1.0, env_name="task-a", episode_id="ep-1"),
+        _build_rollout(example_id=1, reward=0.5, env_name="task-a", episode_id="ep-1"),
+        _build_rollout(example_id=2, reward=0.0, env_name="task-b", episode_id="ep-2"),
+        _build_rollout(example_id=3, reward=0.0, env_name="task-b"),  # no episode_id: own episode
+    ]
+
+    episodes = group_episodes(rollouts)
+
+    assert [len(e.traces) for e in episodes] == [2, 1, 1]
+    assert episodes[0].id == "ep-1"
+    assert episodes[0].env.id == "task-a"
+    assert all(e.ok for e in episodes)
+
+
+def test_episodes_to_parquet_bytes_one_row_per_episode():
     monitor = _new_monitor()
     monitor.run_id = "run-123"
 
-    parquet_bytes = monitor._rollouts_to_parquet_bytes(
+    episodes = group_episodes(
         [
-            _build_rollout(example_id=101, reward=1.0, task="task-a"),
-            _build_rollout(example_id=202, reward=0.0, task="task-b"),
-        ],
-        step=7,
+            _build_rollout(example_id=101, reward=1.0, env_name="task-a", episode_id="ep-1"),
+            _build_rollout(example_id=202, reward=0.0, env_name="task-b", episode_id="ep-2"),
+        ]
     )
+    parquet_bytes = monitor._episodes_to_parquet_bytes(episodes, step=7)
 
     assert parquet_bytes is not None
-
-    table = pq.read_table(io.BytesIO(parquet_bytes))
-    rows = table.to_pylist()
+    rows = pq.read_table(io.BytesIO(parquet_bytes)).to_pylist()
 
     assert len(rows) == 2
     assert [row["problem_id"] for row in rows] == [101, 202]
     assert [row["sample_id"] for row in rows] == [0, 1]
+    assert [row["env_name"] for row in rows] == ["task-a", "task-b"]
     assert all(row["run_id"] == "run-123" for row in rows)
     assert all(row["step"] == 7 for row in rows)
     # `completion` is the last branch's messages; the prompt user message lives in `trajectory`.
     assert json.loads(rows[1]["completion"])[0]["content"] == "completion-202"
     trajectory = json.loads(rows[0]["trajectory"])
     assert trajectory[0]["messages"][0]["content"] == "prompt-101"
+    # The full native episode travels in info, the episode advantage on each branch.
+    assert json.loads(rows[0]["info"])["native_wrapper"]["id"] == "ep-1"
+    assert trajectory[0]["advantage"] == 0.5
 
 
-def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
+def test_episodes_to_parquet_bytes_skips_episodes_without_trajectory():
     monitor = _new_monitor()
     monitor.run_id = "run-456"
 
-    rollout_with_branches = _build_rollout(example_id=1, reward=1.0, task="task-a")
-    rollout_without_branches = Rollout[vf.TaskData](
+    empty_rollout = Rollout[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=2, prompt="missing-trajectory")),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
     )
-    assert rollout_without_branches.branches == []
+    empty_rollout.env_name = "task-a"
+    assert empty_rollout.branches == []
 
-    parquet_bytes = monitor._rollouts_to_parquet_bytes(
-        [rollout_with_branches, rollout_without_branches],
-        step=3,
+    episodes = group_episodes(
+        [_build_rollout(example_id=1, reward=1.0, env_name="task-a", episode_id="ep-1"), empty_rollout]
     )
+    parquet_bytes = monitor._episodes_to_parquet_bytes(episodes, step=3)
 
     assert parquet_bytes is not None
-
-    table = pq.read_table(io.BytesIO(parquet_bytes))
-    rows = table.to_pylist()
+    rows = pq.read_table(io.BytesIO(parquet_bytes)).to_pylist()
 
     assert len(rows) == 1
     assert rows[0]["problem_id"] == 1
     assert rows[0]["sample_id"] == 0
 
 
-def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
+def test_sanitize_drops_non_finite_values_and_logs_paths():
     monitor = _new_monitor()
-    monitor.logger = Mock()
 
     payload = {
         "metrics": {"finite": 1.0, "nan": float("nan")},
-        "distributions": [0.5, float("inf")],
+        "values": [0.5, float("inf")],
     }
 
-    sanitized = monitor._sanitize_json_payload("metrics", payload)
+    sanitized = monitor._sanitize("metrics", payload)
 
-    assert sanitized == {"metrics": {"finite": 1.0}, "distributions": [0.5]}
+    assert sanitized == {"metrics": {"finite": 1.0}, "values": [0.5]}
     monitor.logger.warning.assert_called_once_with(
-        "Dropping 2 non-finite value(s) from Prime monitor metrics payload: metrics.nan, distributions[1]"
+        "Dropping 2 non-finite value(s) from Prime monitor metrics payload: metrics.nan, values[1]"
     )

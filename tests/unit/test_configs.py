@@ -493,24 +493,26 @@ def test_trainer_chat_template_cascades_to_inference():
 
 def test_shared_wandb_fields_propagate_to_subconfigs():
     """Every ``SharedWandbConfig`` leaf (project, entity, name, group, tags,
-    offline) propagates to both trainer.wandb and orchestrator.wandb. Regression
-    for a miss in the inline propagator."""
+    offline) propagates to both trainer.monitors.wandb and
+    orchestrator.monitors.wandb. Regression for a miss in the inline propagator."""
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
-            "wandb": {
-                "project": "shared-proj",
-                "entity": "shared-entity",
-                "name": "shared-name",
-                "group": "shared-group",
-                "tags": ["a", "b"],
-                "offline": False,
+            "monitors": {
+                "wandb": {
+                    "project": "shared-proj",
+                    "entity": "shared-entity",
+                    "name": "shared-name",
+                    "group": "shared-group",
+                    "tags": ["a", "b"],
+                    "offline": False,
+                }
             },
             "trainer": {},
             "orchestrator": {"renderer": {"name": "default"}},
         }
     )
-    for component in (config.trainer.wandb, config.orchestrator.wandb):
+    for component in (config.trainer.monitors.wandb, config.orchestrator.monitors.wandb):
         assert component is not None
         assert component.project == "shared-proj"
         assert component.entity == "shared-entity"
@@ -557,7 +559,7 @@ def test_run_dir_propagates_through_cli(tmp_path):
             "max_steps": 1,
             "seq_len": 128,
             "model": {"name": "Qwen/Qwen3-0.6B"},
-            "wandb": {},
+            "monitors": {"wandb": {}},
             "trainer": {},
             "orchestrator": {"batch_size": 16, "group_size": 1},
             "inference": {},
@@ -569,9 +571,9 @@ def test_run_dir_propagates_through_cli(tmp_path):
     assert config.trainer.output_dir == shared_out / "my-exp"
     assert config.orchestrator.output_dir == shared_out / "my-exp"
     # Unset monitor names inherit run.name
-    assert config.wandb is not None and config.wandb.name == "my-exp"
-    assert config.trainer.wandb is not None and config.trainer.wandb.name == "my-exp"
-    assert config.orchestrator.wandb is not None and config.orchestrator.wandb.name == "my-exp"
+    assert config.monitors.wandb is not None and config.monitors.wandb.name == "my-exp"
+    assert config.trainer.monitors.wandb is not None and config.trainer.monitors.wandb.name == "my-exp"
+    assert config.orchestrator.monitors.wandb is not None and config.orchestrator.monitors.wandb.name == "my-exp"
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():

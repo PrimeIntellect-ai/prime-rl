@@ -1,0 +1,127 @@
+"""Metric monitors.
+
+Monitors are registered once per process via ``setup`` and used through the
+module-level functions (``log``, ``log_episodes``, ...), which fan out to every
+registered monitor. Fan-out never raises — a monitoring failure must not take
+down training.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from prime_rl.configs.shared import FileMonitorConfig, PrimeMonitorConfig, WandbConfig
+from prime_rl.monitors.base import Monitor
+from prime_rl.monitors.file import FileMonitor
+from prime_rl.monitors.prime import PrimeMonitor
+from prime_rl.monitors.wandb import WandbMonitor
+from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import Rollout
+
+__all__ = [
+    "Monitor",
+    "WandbMonitor",
+    "PrimeMonitor",
+    "FileMonitor",
+    "setup",
+    "log",
+    "log_episodes",
+    "save_final_summary",
+    "close",
+    "run_id",
+]
+
+_monitors: list[Monitor] = []
+
+
+def setup(
+    wandb: WandbConfig | None = None,
+    prime: PrimeMonitorConfig | None = None,
+    file: FileMonitorConfig | None = None,
+    *,
+    output_dir: Path,
+    run_config: BaseConfig | None = None,
+    train_env_names: list[str] | None = None,
+    eval_env_names: list[str] | None = None,
+) -> None:
+    """Construct, initialize, and register one monitor per non-None config.
+
+    Only rank 0 registers monitors — on other ranks the fan-out functions are
+    no-ops. A monitor whose ``init`` raises is disabled with a warning. Prime
+    registers first so ``run_id`` prefers the platform run id over W&B's.
+    """
+    assert not _monitors, "Monitors already set up. Call `setup` only once per process."
+    rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
+    if rank != 0:
+        return
+
+    monitors: list[Monitor] = []
+    if prime is not None:
+        monitors.append(PrimeMonitor(prime, run_config=run_config))
+    if wandb is not None:
+        monitors.append(
+            WandbMonitor(
+                wandb,
+                output_dir=output_dir,
+                run_config=run_config,
+                train_env_names=train_env_names,
+                eval_env_names=eval_env_names,
+            )
+        )
+    if file is not None:
+        monitors.append(FileMonitor(file, output_dir=output_dir))
+
+    for monitor in monitors:
+        try:
+            monitor.init()
+        except Exception as e:
+            get_logger().warning(f"Failed to initialize {monitor.__class__.__name__} - disabling it ({e})")
+            continue
+        _monitors.append(monitor)
+
+
+def run_id() -> str | None:
+    """External run id of this run (platform run id when available, else W&B's)."""
+    return next((monitor.run_id for monitor in _monitors if monitor.run_id), None)
+
+
+def log(metrics: dict[str, Any], step: int) -> None:
+    """Log scalar metrics for one step to all registered monitors."""
+    for monitor in _monitors:
+        try:
+            monitor.log(metrics, step=step)
+        except Exception as e:
+            get_logger().warning(f"Failed to log metrics to {monitor.__class__.__name__}: {e}")
+
+
+def log_episodes(rollouts: list[Rollout], step: int) -> None:
+    """Log full episodes to all registered monitors that support it."""
+    for monitor in _monitors:
+        try:
+            monitor.log_episodes(rollouts, step=step)
+        except Exception as e:
+            get_logger().warning(f"Failed to log episodes to {monitor.__class__.__name__}: {e}")
+
+
+def save_final_summary() -> None:
+    """Persist the final metric summary on all registered monitors."""
+    for monitor in _monitors:
+        try:
+            monitor.save_final_summary()
+        except Exception as e:
+            get_logger().warning(f"Failed to save final summary to {monitor.__class__.__name__}: {e}")
+
+
+def close() -> None:
+    """Close and deregister all monitors."""
+    for monitor in _monitors:
+        try:
+            monitor.close()
+        except Exception as e:
+            get_logger().warning(f"Failed to close {monitor.__class__.__name__}: {e}")
+    _monitors.clear()

@@ -32,7 +32,7 @@ num_train_nodes = 2
 num_infer_nodes = 1
 num_infer_replicas = 4
 
-[wandb]
+[monitors.wandb]
 project = "swe-ablations"
 name = "glm45air-scaleswe"
 
@@ -111,7 +111,7 @@ summarize_at_tokens = [65536, 131072]
 [orchestrator.train.source.env.agent.runtime]
 labels = ["glm45air-swe"]
 
-[orchestrator.prime_monitor]
+[orchestrator.monitors.prime]
 
 # --- Eval: SWE-Bench Verified at step 0 + every 20 steps, rlm harness on prime ---
 

@@ -20,7 +20,7 @@ job_name = "swe-qwen30b"
 [ckpt]
 interval = 100
 
-[wandb]
+[monitors.wandb]
 project = "qwen30b-swe"
 
 [trainer.model]

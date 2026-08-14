@@ -3,9 +3,6 @@
 Owns an event loop running on a background thread plus an httpx.AsyncClient,
 so callers can submit coroutines without blocking the main thread.
 Fork-safe via ``os.register_at_fork``.
-
-Used by UsageReporter; PrimeMonitor still has its own copy of the same
-pattern and can be migrated to this helper in a follow-up.
 """
 
 import asyncio

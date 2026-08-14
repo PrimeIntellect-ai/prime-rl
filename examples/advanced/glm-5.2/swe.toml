@@ -3,7 +3,7 @@ seq_len = 131072
 [log]
 level = "debug"
 
-[wandb]
+[monitors.wandb]
 project = "glm5-pd-disag"
 
 [weight_broadcast]
