@@ -285,20 +285,27 @@ class TrainRun:
 
     def _mark_failed(self) -> None:
         # Forked children inherit the atexit table; only the creating process may
-        # flip the run's status. The run's loop is gone at atexit - use a fresh one.
-        if os.getpid() == self._owner_pid:
-            asyncio.run(self.set_status(success=False))
+        # flip the run's status. At interpreter shutdown there is no event loop and
+        # no executor for async DNS, so this path must stay synchronous.
+        if os.getpid() != self._owner_pid:
+            return
+        self.logger.info(f"Marking platform run {self.id} as failed")
+        try:
+            httpx.put(
+                f"{BASE_URL}/external-runs/{self.id}/status",
+                headers=self.headers,
+                json={"status": "failed"},
+                timeout=30,
+            ).raise_for_status()
+        except httpx.HTTPError as e:
+            self.logger.warning(f"Failed to mark platform run {self.id} as failed: {e}")
 
     async def set_status(self, success: bool) -> None:
-        """Mark the run as completed or failed. Uses a fresh client so it works from
-        any loop, including the atexit path."""
+        """Mark the run as completed or failed."""
         status = "completed" if success else "failed"
         self.logger.info(f"Marking platform run {self.id} as {status}")
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                put = await client.put(
-                    f"{BASE_URL}/external-runs/{self.id}/status", headers=self.headers, json={"status": status}
-                )
-                put.raise_for_status()
+            put = await self.client.put(f"/external-runs/{self.id}/status", json={"status": status})
+            put.raise_for_status()
         except httpx.HTTPError as e:
             self.logger.warning(f"Failed to mark platform run {self.id} as {status}: {e}")
