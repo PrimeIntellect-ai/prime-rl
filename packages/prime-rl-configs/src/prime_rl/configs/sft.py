@@ -192,7 +192,7 @@ class SFTConfig(BaseConfig):
     ckpt: CheckpointConfig | None = None
 
     resume: ResumeConfig | None = None
-    """Resume the run from a checkpoint (requires ``[ckpt]`` and the previous run's ``run.name``). If None, does not resume."""
+    """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
 
     log: TrainerLogConfig = TrainerLogConfig()
 
@@ -214,12 +214,6 @@ class SFTConfig(BaseConfig):
     def run_dir(self) -> Path:
         assert self.run.dir is not None  # resolved at construction
         return self.output_dir / self.run.dir
-
-    @model_validator(mode="after")
-    def validate_resume_requires_ckpt(self):
-        if self.resume is not None and self.ckpt is None:
-            raise ValueError("resume requires checkpointing — add the [ckpt] block")
-        return self
 
     @model_validator(mode="after")
     def auto_setup_run_identity(self):

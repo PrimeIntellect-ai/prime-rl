@@ -128,7 +128,7 @@ def train(config: TrainerConfig):
         config.output_dir, config.ckpt, config.model.lora, resume=config.resume
     )
 
-    if config.ckpt and config.resume is not None and ckpt_manager is not None:
+    if config.resume is not None:
         if config.resume.dir is not None:
             checkpoint_step = config.resume.dir_step
         else:
@@ -589,8 +589,7 @@ def train(config: TrainerConfig):
 
         # Checkpoint the step we just finished (model = policy v{progress.step}).
         if (
-            ckpt_manager is not None
-            and (config.ckpt and config.ckpt.interval)
+            (config.ckpt and config.ckpt.interval)
             # the last step is written once after the loop (final ckpt), so skip it here
             and not is_last_step
             and progress.step % config.ckpt.interval == 0
@@ -724,8 +723,8 @@ def train(config: TrainerConfig):
     token_exporter.close()
 
     # Write final checkpoint
-    if ckpt_manager is not None:
-        if not (config.ckpt and config.ckpt.weights_only):
+    if config.ckpt is not None:
+        if not config.ckpt.weights_only:
             logger.info("Writing final checkpoint")
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.maybe_clean()

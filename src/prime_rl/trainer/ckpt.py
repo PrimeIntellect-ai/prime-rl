@@ -530,12 +530,12 @@ def setup_ckpt_managers(
     ckpt_config: CheckpointConfig | None,
     lora_config: LoRAConfig | None = None,
     resume: ResumeConfig | None = None,
-) -> tuple[CheckpointManager | None, WeightCheckpointManager | None]:
-    if ckpt_config is None:
-        return None, None
-    ckpt_output_dir = ckpt_config.output_dir or output_dir
-    ckpt_manager = CheckpointManager(ckpt_output_dir, ckpt_config, resume)
-    if ckpt_config.weights and not ckpt_config.skip_gather_master_weights:
+) -> tuple[CheckpointManager, WeightCheckpointManager | None]:
+    """The checkpoint manager always exists: ``resume`` decides whether it loads,
+    ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
+    ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
+    ckpt_manager = CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume)
+    if ckpt_config and ckpt_config.weights and not ckpt_config.skip_gather_master_weights:
         weight_ckpt_manager = WeightCheckpointManager(
             ckpt_output_dir,
             ckpt_config.weights,

@@ -577,7 +577,7 @@ class TrainerConfig(BaseConfig):
     ckpt: CheckpointConfig | None = None
 
     resume: ResumeConfig | None = None
-    """Resume training from a checkpoint (requires ``ckpt``). None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory."""
+    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
     """Full training-state checkpoint configuration (model + optimizer + scheduler). If None, no resume-capable checkpoints are written."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()

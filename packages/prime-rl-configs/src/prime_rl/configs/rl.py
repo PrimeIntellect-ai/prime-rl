@@ -259,7 +259,7 @@ class RLConfig(BaseConfig):
     """Shared checkpoint config. If None, falls back to the sub-config checkpoint settings."""
 
     resume: ResumeConfig | None = None
-    """Resume the run from a checkpoint (requires ``[ckpt]`` and the previous run's ``run.name``). If None, does not resume."""
+    """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
 
     wandb: SharedWandbConfig | None = None
     """Shared W&B config. If None, falls back to the sub-config W&B settings."""
@@ -404,8 +404,6 @@ class RLConfig(BaseConfig):
         """Propagate the top-level resume onto the sub-configs."""
         if self.resume is None:
             return self
-        if self.trainer.ckpt is None or self.orchestrator.ckpt is None:
-            raise ValueError("resume requires checkpointing — add the [ckpt] block")
         self.trainer.resume = self.resume.model_copy()
         self.orchestrator.resume = self.resume.model_copy()
         return self

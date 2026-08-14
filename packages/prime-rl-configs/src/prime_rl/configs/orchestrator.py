@@ -453,7 +453,7 @@ class OrchestratorConfig(BaseConfig):
     ckpt: CheckpointConfig | None = None
 
     resume: ResumeConfig | None = None
-    """Resume the orchestrator from a checkpoint (requires ``ckpt``). None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory."""
+    """Resume the orchestrator from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
     """Checkpoint configuration."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()

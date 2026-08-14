@@ -78,7 +78,7 @@ class CheckpointManager:
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
 
 
-def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
-    if config is None:
-        return None
-    return CheckpointManager(output_dir, config)
+def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager:
+    """The checkpoint manager always exists: ``resume`` decides whether it loads,
+    ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
+    return CheckpointManager(output_dir, config or CheckpointConfig())

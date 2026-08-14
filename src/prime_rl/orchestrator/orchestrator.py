@@ -122,7 +122,7 @@ class Orchestrator:
     last_batch_at: float | None
     consecutive_empty_batches: int
     eval_triggered_at: dict[tuple[str, int], float]
-    ckpt_manager: CheckpointManager | None
+    ckpt_manager: CheckpointManager
     component_tasks: list[asyncio.Task]
 
     # Always set by ``setup()``
@@ -277,7 +277,7 @@ class Orchestrator:
             await self.eval_envs.start()
             get_logger().success("Eval environment(s) ready")
 
-        if config.ckpt is not None and config.resume is not None and self.ckpt_manager is not None:
+        if config.resume is not None:
             if config.resume.dir is not None:
                 self.resume_step = config.resume.dir_step
             else:
@@ -339,7 +339,7 @@ class Orchestrator:
 
         self.train_source = TrainSource(self.train_envs)
 
-        if self.resume_step is not None and self.ckpt_manager is not None:
+        if self.resume_step is not None:
             resume = self.config.resume
             resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
             self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
@@ -513,7 +513,7 @@ class Orchestrator:
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
             # first ship).
-            if self.ckpt_manager is not None and self.progress.step > 1:
+            if self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info("Writing final checkpoint")
                 self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
@@ -915,7 +915,7 @@ class Orchestrator:
     async def maybe_save_ckpt(self, step: int) -> float:
         """Checkpoint the step just shipped if it's an interval boundary. Returns
         elapsed time (0.0 when no save happened)."""
-        if self.ckpt_manager is None or self.config.ckpt is None or not self.config.ckpt.interval:
+        if self.config.ckpt is None or not self.config.ckpt.interval:
             return 0.0
         # The final step's checkpoint is written once in ``start()``'s teardown; skip it here so
         # we don't double-save. This mirrors the trainer (its is_last_step skips the in-loop save).
