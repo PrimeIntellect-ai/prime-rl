@@ -234,7 +234,7 @@ class RLConfig(BaseConfig):
     output_dir: Path = Path("outputs")
     """Directory that groups related runs. Each run writes its artifacts to ``output_dir / run.name``."""
 
-    clean_output_dir: bool = False
+    clean: bool = False
     """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""
 
     @property
@@ -248,7 +248,7 @@ class RLConfig(BaseConfig):
         if self.run.name is None:
             envs = "+".join(dict.fromkeys(source.resolved_name for source in self.orchestrator.train.source))
             model = self.trainer.model.name.split("/")[-1]
-            self.run.name = f"{envs or 'no-env'}--{model}--{uuid.uuid4().hex[:8]}"
+            self.run.name = f"{envs or 'no-env'}--{model}--{uuid.uuid4().hex[:8]}".lower()
         if self.run.dir is None:
             self.run.dir = self.run.name
 

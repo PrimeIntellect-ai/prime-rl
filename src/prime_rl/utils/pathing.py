@@ -162,7 +162,7 @@ def validate_run_dir(run_dir: Path, *, resuming: bool, clean: bool, ckpt_output_
         raise FileExistsError(
             f"{blocked} "
             f"To resume the latest step of the previous run, set ckpt.resume_step=-1 or --ckpt.resume-step -1 via CLI. "
-            f"To delete the existing directory and start fresh, set clean_output_dir=true or --clean-output-dir via CLI. "
+            f"To delete the existing directory and start fresh, set clean=true or --clean via CLI. "
             f"Otherwise use a unique run name (run.name or --run.name via CLI) or output_dir for this run."
         )
 

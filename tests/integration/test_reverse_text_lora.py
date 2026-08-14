@@ -38,7 +38,7 @@ def rl_process(
         "rl",
         "@",
         "configs/ci/integration/reverse-text-lora/start.toml",
-        "--clean-output-dir",
+        "--clean",
         "--wandb.project",
         wandb_project,
         "--wandb.name",

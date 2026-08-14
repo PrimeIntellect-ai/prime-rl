@@ -37,7 +37,7 @@ def rl_process(
         "rl",
         "@",
         "configs/ci/integration/reverse-text-moe/start.toml",
-        "--clean-output-dir",
+        "--clean",
         "--trainer.model.impl",
         "custom",
         "--wandb.project",

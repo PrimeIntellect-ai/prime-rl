@@ -51,7 +51,7 @@ def sft_lora_process(
         "configs/ci/integration/reverse-text-sft-lora/start.toml",
         "--deployment.num-gpus",
         "2",
-        "--clean-output-dir",
+        "--clean",
         "--wandb.project",
         wandb_project,
         "--wandb.name",

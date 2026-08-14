@@ -41,7 +41,7 @@ def sft_process(
         "configs/ci/integration/reverse-text-sft/start.toml",
         "--deployment.num-gpus",
         "2",
-        "--clean-output-dir",
+        "--clean",
         "--wandb.project",
         wandb_project,
         "--wandb.name",

@@ -79,9 +79,9 @@ def sft_slurm(config: SFTConfig):
     config_dir = get_config_dir(config.run_dir)
     config_path = config_dir / SFT_TOML
     exclude = (
-        {"deployment", "slurm", "dry_run", "clean_output_dir"}
+        {"deployment", "slurm", "dry_run", "clean"}
         if config.deployment.type == "multi_node"
-        else {"slurm", "dry_run", "clean_output_dir"}
+        else {"slurm", "dry_run", "clean"}
     )
     write_config(config, config_path, exclude=exclude)
     logger.info(f"Wrote config to {config_path}")
@@ -207,7 +207,7 @@ def sft_local(config: SFTConfig):
 
 def sft(config: SFTConfig):
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
-    clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
+    clean = config.clean and not os.environ.get("NEVER_CLEAN")
     validate_run_dir(config.run_dir, resuming=resuming, clean=clean)
     config.run_dir.mkdir(parents=True, exist_ok=True)
 

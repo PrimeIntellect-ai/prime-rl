@@ -203,7 +203,7 @@ class SFTConfig(BaseConfig):
     output_dir: Path = Path("outputs")
     """Directory that groups related runs. Each run writes its artifacts (checkpoints, logs, ...) to ``output_dir / run.name``. Should be a persistent directory with enough disk space."""
 
-    clean_output_dir: bool = False
+    clean: bool = False
     """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""
 
     @property
@@ -219,7 +219,7 @@ class SFTConfig(BaseConfig):
             dataset = str(getattr(self.data, "name", "")).split("/")[-1]
             model = self.model.name.split("/")[-1]
             parts = [part for part in (dataset, model) if part]
-            self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]])
+            self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
         if self.run.dir is None:
             self.run.dir = self.run.name
         if self.wandb is not None and self.wandb.name is None:

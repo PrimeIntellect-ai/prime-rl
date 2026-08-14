@@ -9,7 +9,7 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 
 ## Run directories
 
-`output_dir` (default `outputs`) groups related runs; each run writes all its artifacts (logs, configs, checkpoints, weights, rollouts) to its own run directory `<output_dir>/<run_name>`. `run.name` auto-generates as `<envs>--<model>--<short-id>` (SFT: `<dataset>--<model>--<short-id>`), so every launch gets a fresh, readable run directory; `run.dir` overrides the directory leaf when it should differ from the name. Pass `--run.name <name>` to make the run directory predictable — required to resume the run later (`--ckpt.resume-step` reuses the named run directory). Launching into a run directory that already contains artifacts fails unless resuming or `--clean-output-dir` is set (which wipes only that run directory).
+`output_dir` (default `outputs`) groups related runs; each run writes all its artifacts (logs, configs, checkpoints, weights, rollouts) to its own run directory `<output_dir>/<run_name>`. `run.name` auto-generates as `<envs>--<model>--<short-id>` (SFT: `<dataset>--<model>--<short-id>`), so every launch gets a fresh, readable run directory; `run.dir` overrides the directory leaf when it should differ from the name. Pass `--run.name <name>` to make the run directory predictable — required to resume the run later (`--ckpt.resume-step` reuses the named run directory). Launching into a run directory that already contains artifacts fails unless resuming or `--clean` is set (which wipes only that run directory).
 
 ## Config system at a glance
 

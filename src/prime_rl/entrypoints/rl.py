@@ -569,7 +569,7 @@ def rl_slurm(config: RLConfig):
     log_dir = get_log_dir(config.run_dir)
 
     if config.deployment.type == "single_node":
-        write_config(config, config_dir, exclude={"slurm", "dry_run", "clean_output_dir"})
+        write_config(config, config_dir, exclude={"slurm", "dry_run", "clean"})
         logger.info(f"Wrote config to {config_dir / RL_TOML}")
 
         train_env_names = env_server_names(config, "train")
@@ -627,7 +627,7 @@ def rl(config: RLConfig):
         config.orchestrator.run.id = uuid.uuid4().hex
 
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
-    clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
+    clean = config.clean and not os.environ.get("NEVER_CLEAN")
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
     validate_run_dir(config.run_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir)
     config.run_dir.mkdir(parents=True, exist_ok=True)

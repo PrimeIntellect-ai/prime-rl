@@ -1,7 +1,7 @@
 max_steps = 10000000
 seq_len = 131072
 output_dir = "/shared/outputs/glm5-llmd" # FILL IN: point at your shared filesystem
-clean_output_dir = true
+clean = true
 
 [log]
 level = "debug"

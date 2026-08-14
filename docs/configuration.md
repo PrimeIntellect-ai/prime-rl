@@ -71,12 +71,12 @@ uv run rl @ rl.toml --dry-run --output-dir /tmp/check --run.name check  # write 
 CLI uses paired flags: bare `--flag` sets `True`, `--no-flag` sets `False`. TOML must be explicit:
 
 ```bash
-uv run rl @ rl.toml --clean-output-dir       # True
-uv run rl @ rl.toml --no-clean-output-dir    # False
+uv run rl @ rl.toml --clean       # True
+uv run rl @ rl.toml --no-clean    # False
 ```
 
 ```toml
-clean_output_dir = true
+clean = true
 ```
 
 ### Lists

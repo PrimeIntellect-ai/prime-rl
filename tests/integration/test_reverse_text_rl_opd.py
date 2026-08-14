@@ -48,7 +48,7 @@ def ref_inference(output_dir: Path) -> Generator[subprocess.Popen, None, None]:
     """Spawn a `uv run inference` frozen reference server on GPU 0 (shared with the rl-launched
     policy) at 40% gpu_memory_utilization. Tears down at module scope.
     """
-    # The rl entrypoint's --clean-output-dir wipes the rl output_dir on start,
+    # The rl entrypoint's --clean wipes the rl output_dir on start,
     # so park the reference-server log next to it instead of inside it.
     ref_log_dir = output_dir.parent / f"{output_dir.name}_ref"
     ref_log_dir.mkdir(parents=True, exist_ok=True)
@@ -100,7 +100,7 @@ def rl_opd_process(
         "rl",
         "@",
         "configs/ci/integration/reverse-text-rl-opd/start.toml",
-        "--clean-output-dir",
+        "--clean",
         "--wandb.project",
         wandb_project,
         "--wandb.name",
