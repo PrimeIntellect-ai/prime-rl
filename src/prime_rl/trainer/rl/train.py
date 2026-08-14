@@ -14,9 +14,8 @@ import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
-from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
-from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
-from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
+from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
@@ -671,8 +670,6 @@ def train(config: TrainerConfig):
             "optim/lr": current_lr,
             "step": progress.step,
         }
-        if zero_grad_ratio is not None:
-            optim_metrics["optim/zero_grad_ratio"] = zero_grad_ratio
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
         monitor.log(optim_metrics, step=progress.step)

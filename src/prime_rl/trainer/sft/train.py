@@ -597,8 +597,6 @@ def train(config: SFTConfig):
             "optim/lr": current_lr,
             "step": progress.step,
         }
-        if zero_grad_ratio is not None:
-            optim_metrics["optim/zero_grad_ratio"] = zero_grad_ratio
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
         monitor.log(optim_metrics, step=progress.step)
