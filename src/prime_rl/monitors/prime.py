@@ -68,42 +68,32 @@ class PrimeMonitor(Monitor):
         api_key = os.getenv(API_KEY_VAR) or PrimeConfig().api_key
         if not api_key:
             raise RuntimeError(f"API key not found - set {API_KEY_VAR} or run `prime login`")
-        self.base_url = BASE_URL
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "x-api-key": api_key,
             "Content-Type": "application/json",
         }
-        self._last_metrics: dict[str, Any] = {}
-        self._registered = False
-        self._finalized = False
         self._owner_pid = os.getpid()
         self._tasks: set[asyncio.Task] = set()
 
         run_id = os.getenv("RUN_ID")
         if run_id is None:
             run_id = self._register_run(run_config)
-            self._registered = True
+            # A run this process registered but never finalized did not exit cleanly;
+            # finalize unregisters the hook. atexit rather than __del__ because it runs
+            # before interpreter teardown, while httpx can still create a client.
+            atexit.register(self._mark_failed)
         os.environ["RUN_ID"] = run_id
         self.run_id = run_id
 
-        # atexit rather than __del__: it runs before interpreter teardown, while httpx can
-        # still create a client. A run registered but never finalized did not exit cleanly.
-        def mark_failed() -> None:
-            if self._registered and not self._finalized and os.getpid() == self._owner_pid:
-                self._set_run_status(success=False)
-
-        atexit.register(mark_failed)
-
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        self._last_metrics = metrics
         payload, dropped = sanitize({"run_id": self.run_id, "metrics": metrics})
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
 
         async def post() -> None:
             async with get_client() as client:
-                response = await client.post(f"{self.base_url}/metrics", headers=self.headers, json=payload)
+                response = await client.post(f"{BASE_URL}/metrics", headers=self.headers, json=payload)
                 response.raise_for_status()
 
         self._submit("metrics upload", post())
@@ -124,7 +114,7 @@ class PrimeMonitor(Monitor):
             # headers - extra auth breaks the presigned signature.
             async with get_client() as client:
                 presign = await client.post(
-                    f"{self.base_url}/samples/presign",
+                    f"{BASE_URL}/samples/presign",
                     headers=self.headers,
                     json={"run_id": self.run_id, "step": step},
                 )
@@ -135,7 +125,7 @@ class PrimeMonitor(Monitor):
                 )
                 put.raise_for_status()
                 confirm = await client.post(
-                    f"{self.base_url}/samples/confirm",
+                    f"{BASE_URL}/samples/confirm",
                     headers=self.headers,
                     json={"run_id": self.run_id, "step": step, "s3_key": data["s3Key"]},
                 )
@@ -145,18 +135,21 @@ class PrimeMonitor(Monitor):
         self._submit(f"episodes upload at step {step}", upload())
 
     def finalize(self) -> None:
-        """Finalize the platform run as completed, submitting the last metrics as its summary."""
+        """Finalize the platform run as completed."""
         self.logger.info(f"Finalizing platform run {self.run_id}")
-        payload, dropped = sanitize({"run_id": self.run_id, "summary": self._last_metrics})
-        if dropped:
-            self.logger.warning(f"Dropping {len(dropped)} non-finite summary value(s): {', '.join(dropped[:5])}")
+        payload = {"run_id": self.run_id, "summary": {}}
         try:
-            httpx.post(f"{self.base_url}/finalize", headers=self.headers, json=payload, timeout=30).raise_for_status()
+            httpx.post(f"{BASE_URL}/finalize", headers=self.headers, json=payload, timeout=30).raise_for_status()
         except httpx.HTTPError as e:
             self.logger.warning(f"Failed to finalize platform run {self.run_id}: {e}")
             self._set_run_status(success=True)
+        atexit.unregister(self._mark_failed)
+
+    def _mark_failed(self) -> None:
+        # Forked children (subprocess evals) inherit the atexit table; only the
+        # registering process may flip the run's status.
         if os.getpid() == self._owner_pid:
-            self._finalized = True
+            self._set_run_status(success=False)
 
     def _register_run(self, run_config: OrchestratorConfig | None) -> str:
         """Register an external run with the platform and return its run id."""
@@ -182,7 +175,7 @@ class PrimeMonitor(Monitor):
         if team_id:
             payload["team_id"] = team_id
 
-        response = httpx.post(f"{self.base_url}/external-runs", headers=self.headers, json=payload, timeout=30)
+        response = httpx.post(f"{BASE_URL}/external-runs", headers=self.headers, json=payload, timeout=30)
         if response.status_code != 201:
             raise RuntimeError(f"Failed to create platform run (HTTP {response.status_code}): {response.text}")
 
@@ -199,7 +192,7 @@ class PrimeMonitor(Monitor):
         self.logger.info(f"Marking platform run {self.run_id} as {status}")
         try:
             httpx.put(
-                f"{self.base_url}/external-runs/{self.run_id}/status",
+                f"{BASE_URL}/external-runs/{self.run_id}/status",
                 headers=self.headers,
                 json={"status": status},
                 timeout=30,
