@@ -330,6 +330,8 @@ def test_external_dynamo_reuses_native_trainer_broadcast():
 
     assert config.trainer.weight_broadcast.type == "nccl"
     assert config.trainer.weight_broadcast.inference_world_size == 1
+    assert config.trainer.weight_broadcast.dynamo is not None
+    assert config.trainer.weight_broadcast.dynamo.discovery_url == "http://dynamo-frontend:8001"
 
 
 def test_client_config_identifies_dynamo_with_admin_urls():

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -12,16 +12,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.client import (
-    NCCL_MANIFEST,
     NCCL_READY_MARKER,
     InferencePool,
     check_health,
-    get_nccl_chunk_manifest,
     maybe_check_has_model,
     setup_admin_clients,
 )
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.pathing import wait_for_path
 
 DYNAMO_RL_DISCOVERY_PROTOCOL_VERSION = 1
 REQUIRED_ROUTES = frozenset(
@@ -65,6 +62,52 @@ class DynamoSnapshot(BaseModel):
 
 class DynamoDiscoveryPending(RuntimeError):
     pass
+
+
+class DynamoVLLMWeightSyncClient:
+    def __init__(self, workers: tuple[DynamoWorker, ...], headers: dict[str, str], timeout: float) -> None:
+        self.workers = workers
+        self.clients = [
+            httpx.Client(base_url=worker.system_url.rstrip("/"), headers=headers, timeout=timeout) for worker in workers
+        ]
+
+    @staticmethod
+    def _validate(response: httpx.Response, path: str) -> None:
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Dynamo route {path} returned a non-object response")
+        if payload.get("status") == "error":
+            raise RuntimeError(payload.get("message", f"Dynamo route {path} failed"))
+
+    def _fanout(self, path: str, bodies: list[dict[str, Any]]) -> None:
+        def request(client: httpx.Client, body: dict[str, Any]) -> None:
+            self._validate(client.post(path, json=body), path)
+
+        with ThreadPoolExecutor(max_workers=len(self.clients)) as executor:
+            futures = [executor.submit(request, client, body) for client, body in zip(self.clients, bodies)]
+            for future in futures:
+                future.result()
+
+    def init_weight_transfer_engine(self, init_info: dict[str, Any]) -> None:
+        rank_offset = 1
+        bodies = []
+        for worker in self.workers:
+            bodies.append({"init_info": {**init_info, "rank_offset": rank_offset}})
+            rank_offset += worker.world_size
+        self._fanout("/engine/update/init_weight_transfer_engine", bodies)
+
+    def start_weight_update(self) -> None:
+        self._fanout("/engine/update/start_weight_update", [{} for _ in self.clients])
+
+    def update_weights(self, update_info: dict[str, Any]) -> None:
+        self._fanout("/engine/update/update_weights", [{"update_info": update_info} for _ in self.clients])
+
+    def finish_weight_update(self, weight_version: str | None = None) -> None:
+        self._fanout(
+            "/engine/update/finish_weight_update",
+            [{"weight_version": weight_version} for _ in self.clients],
+        )
 
 
 def client_headers(
@@ -239,22 +282,7 @@ class DynamoInferencePool(InferencePool):
                 f"world size {discovered_world_size}"
             )
         self._weight_update_timeout = timeout
-        rank_offset = 1
-        bodies = []
-        for worker in self.workers:
-            bodies.append(
-                {
-                    "init_info": {
-                        "master_address": host,
-                        "master_port": port,
-                        "rank_offset": rank_offset,
-                        "world_size": discovered_world_size + 1,
-                    }
-                }
-            )
-            rank_offset += worker.world_size
-        await self._fanout("/engine/update/init_weight_transfer_engine", bodies)
-        get_logger().info(f"Initialized native NCCL transfer for {discovered_world_size} Dynamo ranks")
+        get_logger().info(f"Dynamo trainer will initialize native NCCL transfer for {discovered_world_size} ranks")
 
     async def init_nixl_broadcast(self, **kwargs: Any) -> None:
         raise ValueError("Dynamo does not support NIXL weight updates yet.")
@@ -282,42 +310,21 @@ class DynamoInferencePool(InferencePool):
         if not native_nccl or lora_name is not None or weight_dir is None:
             raise ValueError("Dynamo currently supports full-model native NCCL updates only")
 
-        deadline = time.monotonic() + self._weight_update_timeout
         await self._fanout_same("/engine/control/pause_generation", {"mode": "keep", "clear_cache": False})
         paused = await self._fanout_same("/engine/control/is_paused", {})
         if not all(result.get("is_paused") is True for result in paused):
             raise RuntimeError("Dynamo did not confirm every pinned worker was paused")
 
-        update_succeeded = False
-        try:
-            (weight_dir / NCCL_MANIFEST).unlink(missing_ok=True)
-            for chunk_manifest in weight_dir.glob("NCCL_CHUNK_*.json"):
-                chunk_manifest.unlink()
-            await self._fanout_same("/engine/update/start_weight_update", {})
-            (weight_dir / NCCL_READY_MARKER).touch()
-
-            manifest_path = weight_dir / NCCL_MANIFEST
-            await asyncio.wait_for(
-                wait_for_path(manifest_path, interval=0.1, log_interval=10), deadline - time.monotonic()
-            )
-            num_chunks = int(json.loads(manifest_path.read_text())["num_chunks"])
-            for chunk_id in range(num_chunks):
-                chunk_path = get_nccl_chunk_manifest(weight_dir, chunk_id)
-                await asyncio.wait_for(
-                    wait_for_path(chunk_path, interval=0.1, log_interval=10), deadline - time.monotonic()
-                )
-                update_info = json.loads(chunk_path.read_text())
-                await self._fanout_same("/engine/update/update_weights", {"update_info": update_info})
-
-            expected_version = str(step)
-            await self._fanout_same("/engine/update/finish_weight_update", {"weight_version": expected_version})
+        (weight_dir / NCCL_READY_MARKER).touch()
+        expected_version = str(step)
+        deadline = time.monotonic() + self._weight_update_timeout
+        while time.monotonic() < deadline:
             versions = await self._fanout_same("/engine/control/get_weight_version", {})
-            if not all(result.get("weight_version") == expected_version for result in versions):
-                raise RuntimeError(f"Dynamo workers did not commit weight version {expected_version}")
-            update_succeeded = True
-        finally:
-            if update_succeeded:
+            if all(result.get("weight_version") == expected_version for result in versions):
                 await self._fanout_same("/engine/control/resume_generation", {})
+                return
+            await asyncio.sleep(0.1)
+        raise TimeoutError(f"Dynamo workers did not commit weight version {expected_version}; engines remain paused")
 
     async def stop(self) -> None:
         await super().stop()

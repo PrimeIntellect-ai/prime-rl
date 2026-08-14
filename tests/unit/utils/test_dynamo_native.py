@@ -7,6 +7,7 @@ from prime_rl.utils.dynamo import (
     REQUIRED_ROUTES,
     DynamoDiscoveryPending,
     DynamoInferencePool,
+    DynamoVLLMWeightSyncClient,
     DynamoWorker,
     parse_dynamo_workers,
 )
@@ -46,33 +47,30 @@ def test_parse_dynamo_workers_waits_for_complete_capabilities():
         )
 
 
-@pytest.mark.asyncio
-async def test_dynamo_init_assigns_cumulative_rank_offsets():
-    requests: list[tuple[str, dict]] = []
+def test_weight_sync_client_assigns_cumulative_rank_offsets(monkeypatch):
+    requests: list[tuple[str, str, dict]] = []
+    real_client = httpx.Client
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append((request.url.host or "", json.loads(request.content)))
-        return httpx.Response(200, json={"status": "ok"})
+    def client_factory(*, base_url, **kwargs):
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append((request.url.host or "", request.url.path, json.loads(request.content)))
+            return httpx.Response(200, json={"status": "ok"})
 
-    pool = object.__new__(DynamoInferencePool)
-    pool.workers = (
+        return real_client(base_url=base_url, transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr("prime_rl.utils.dynamo.httpx.Client", client_factory)
+    workers = (
         DynamoWorker.model_validate(worker("decode", 9, 4)),
         DynamoWorker.model_validate(worker("prefill", 3, 2)),
     )
-    pool._weight_update_timeout = 10
-    pool._admin_clients = [
-        httpx.AsyncClient(base_url=item.system_url, transport=httpx.MockTransport(handler)) for item in pool.workers
-    ]
-    try:
-        await pool.init_nccl_broadcast(host="trainer", port=29501, timeout=10, inference_world_size=6)
-    finally:
-        await _close(pool._admin_clients)
+    client = DynamoVLLMWeightSyncClient(workers, {}, timeout=10)
+    client.init_weight_transfer_engine({"master_address": "trainer", "world_size": 7})
 
-    assert [(host, body["init_info"]["rank_offset"]) for host, body in requests] == [
+    assert [(host, body["init_info"]["rank_offset"]) for host, _, body in requests] == [
         ("decode-9", 1),
         ("prefill-3", 5),
     ]
-    assert {body["init_info"]["world_size"] for _, body in requests} == {7}
+    assert {path for _, path, _ in requests} == {"/engine/update/init_weight_transfer_engine"}
 
 
 @pytest.mark.asyncio
@@ -85,11 +83,6 @@ async def test_dynamo_update_drives_native_lifecycle_and_commits_version(tmp_pat
         requests.append((path, body))
         if path.endswith("is_paused"):
             return httpx.Response(200, json={"is_paused": True})
-        if path.endswith("start_weight_update"):
-            (tmp_path / "NCCL_MANIFEST.json").write_text(json.dumps({"num_chunks": 1}))
-            (tmp_path / "NCCL_CHUNK_0.json").write_text(
-                json.dumps({"names": ["model.weight"], "dtype_names": ["bfloat16"], "shapes": [[2, 2]]})
-            )
         if path.endswith("get_weight_version"):
             return httpx.Response(200, json={"weight_version": "3"})
         return httpx.Response(200, json={"status": "ok"})
@@ -108,13 +101,9 @@ async def test_dynamo_update_drives_native_lifecycle_and_commits_version(tmp_pat
     assert [path for path, _ in requests] == [
         "/engine/control/pause_generation",
         "/engine/control/is_paused",
-        "/engine/update/start_weight_update",
-        "/engine/update/update_weights",
-        "/engine/update/finish_weight_update",
         "/engine/control/get_weight_version",
         "/engine/control/resume_generation",
     ]
-    assert requests[4][1] == {"weight_version": "3"}
 
 
 @pytest.mark.asyncio
