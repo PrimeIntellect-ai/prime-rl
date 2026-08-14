@@ -18,7 +18,8 @@ from verifiers.v1.utils.platform import build_samples
 
 from prime_rl.configs.monitors import PrimeMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.monitors.base import Monitor, sanitize
+from prime_rl.monitors.base import Monitor
+from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout

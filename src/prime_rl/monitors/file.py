@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from prime_rl.configs.monitors import FileMonitorConfig
-from prime_rl.monitors.base import Monitor, sanitize
+from prime_rl.monitors.base import Monitor
+from prime_rl.utils.utils import sanitize
 
 
 class FileMonitor(Monitor):

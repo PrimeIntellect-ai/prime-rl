@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
@@ -9,31 +8,6 @@ from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
-
-
-def sanitize(obj: Any) -> tuple[Any, list[str]]:
-    """Recursively drop non-finite floats (NaN/inf), which are not valid JSON.
-    Returns the sanitized object and the dotted paths of the dropped values."""
-    dropped_paths: list[str] = []
-
-    def keep(item: Any, path: str) -> bool:
-        if isinstance(item, float) and not math.isfinite(item):
-            dropped_paths.append(path)
-            return False
-        return True
-
-    def walk(value: Any, path: str) -> Any:
-        if isinstance(value, dict):
-            return {
-                key: walk(item, child)
-                for key, item in value.items()
-                if keep(item, child := f"{path}.{key}" if path else key)
-            }
-        if isinstance(value, list):
-            return [walk(item, child) for index, item in enumerate(value) if keep(item, child := f"{path}[{index}]")]
-        return value
-
-    return walk(obj, ""), dropped_paths
 
 
 class Monitor(ABC):
