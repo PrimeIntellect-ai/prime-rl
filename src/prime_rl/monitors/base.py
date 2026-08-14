@@ -11,20 +11,17 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
 
 
-type Json = dict[str, "Json"] | list["Json"] | str | int | float | bool | None
-
-
-def sanitize(obj: Json, dropped_paths: list[str]) -> Json:
+def sanitize(obj: Any, dropped_paths: list[str]) -> Any:
     """Recursively drop non-finite floats (NaN/inf), which are not valid JSON.
     Appends the dotted path of each dropped value to ``dropped_paths``."""
 
-    def keep(item: Json, path: str) -> bool:
+    def keep(item: Any, path: str) -> bool:
         if isinstance(item, float) and not math.isfinite(item):
             dropped_paths.append(path)
             return False
         return True
 
-    def walk(value: Json, path: str) -> Json:
+    def walk(value: Any, path: str) -> Any:
         if isinstance(value, dict):
             return {
                 key: walk(item, child)
