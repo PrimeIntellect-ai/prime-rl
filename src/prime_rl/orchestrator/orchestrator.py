@@ -277,11 +277,11 @@ class Orchestrator:
             await self.eval_envs.start()
             get_logger().success("Eval environment(s) ready")
 
-        if config.ckpt is not None and config.ckpt.resume is not None and self.ckpt_manager is not None:
-            if config.ckpt.resume.dir is not None:
-                self.resume_step = config.ckpt.resume.dir_step
+        if config.ckpt is not None and config.resume is not None and self.ckpt_manager is not None:
+            if config.resume.dir is not None:
+                self.resume_step = config.resume.dir_step
             else:
-                self.resume_step = config.ckpt.resume.step
+                self.resume_step = config.resume.step
                 if self.resume_step is None:
                     self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
 
@@ -340,7 +340,7 @@ class Orchestrator:
         self.train_source = TrainSource(self.train_envs)
 
         if self.resume_step is not None and self.ckpt_manager is not None:
-            resume = self.config.ckpt.resume if self.config.ckpt else None
+            resume = self.config.resume
             resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
             self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
             # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step

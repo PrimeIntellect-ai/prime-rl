@@ -167,7 +167,7 @@ class AppState(Stateful):
 class CheckpointManager:
     """Utility class to save and load trainer checkpoints to resume SFT and RL training."""
 
-    def __init__(self, output_dir: Path, config: CheckpointConfig):
+    def __init__(self, output_dir: Path, config: CheckpointConfig, resume: ResumeConfig | None = None):
         self.config = config
         self.skip_optimizer = config.skip_optimizer
         self.ckpt_dir = get_ckpt_dir(output_dir)
@@ -175,8 +175,8 @@ class CheckpointManager:
         self.world = get_world()
 
         all_steps = get_all_ckpt_steps(self.ckpt_dir)
-        if config.resume is not None and config.resume.step is not None:
-            self.ckpt_steps = [s for s in all_steps if s <= config.resume.step]
+        if resume is not None and resume.step is not None:
+            self.ckpt_steps = [s for s in all_steps if s <= resume.step]
         else:
             self.ckpt_steps = all_steps
 
@@ -526,12 +526,15 @@ class WeightCheckpointManager:
 
 
 def setup_ckpt_managers(
-    output_dir: Path, ckpt_config: CheckpointConfig | None, lora_config: LoRAConfig | None = None
+    output_dir: Path,
+    ckpt_config: CheckpointConfig | None,
+    lora_config: LoRAConfig | None = None,
+    resume: ResumeConfig | None = None,
 ) -> tuple[CheckpointManager | None, WeightCheckpointManager | None]:
     if ckpt_config is None:
         return None, None
     ckpt_output_dir = ckpt_config.output_dir or output_dir
-    ckpt_manager = CheckpointManager(ckpt_output_dir, ckpt_config)
+    ckpt_manager = CheckpointManager(ckpt_output_dir, ckpt_config, resume)
     if ckpt_config.weights and not ckpt_config.skip_gather_master_weights:
         weight_ckpt_manager = WeightCheckpointManager(
             ckpt_output_dir,
@@ -539,7 +542,7 @@ def setup_ckpt_managers(
             lora_config=lora_config,
             keep_last=ckpt_config.keep_last,
             keep_interval=ckpt_config.keep_interval,
-            resume=ckpt_config.resume,
+            resume=resume,
         )
     else:
         weight_ckpt_manager = None

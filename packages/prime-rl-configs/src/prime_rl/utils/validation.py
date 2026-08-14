@@ -194,9 +194,9 @@ def validate_shared_ckpt_config(
         raise ValueError(
             f"Trainer checkpoint interval ({trainer.ckpt.interval}) and orchestrator checkpoint interval ({orchestrator.ckpt.interval}) are not the same. Please specify the same checkpoint interval for both."
         )
-    if trainer.ckpt and orchestrator.ckpt and trainer.ckpt.resume != orchestrator.ckpt.resume:
+    if trainer.resume != orchestrator.resume:
         raise ValueError(
-            f"Trainer checkpoint resume ({trainer.ckpt.resume}) and orchestrator checkpoint resume ({orchestrator.ckpt.resume}) are not the same. Please specify the same resume config for both."
+            f"Trainer resume ({trainer.resume}) and orchestrator resume ({orchestrator.resume}) are not the same. Please specify the same resume config for both."
         )
 
 

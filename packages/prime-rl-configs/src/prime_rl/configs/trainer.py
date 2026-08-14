@@ -432,9 +432,6 @@ class CheckpointConfig(BaseConfig):
     weights_only: bool = False
     """Save only weight checkpoints (no optimizer/scheduler state). Much faster and smaller than full checkpoints, but cannot resume training."""
 
-    resume: ResumeConfig | None = None
-    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step."""
-
     keep_last: int | None = Field(None, ge=1)
     """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
 
@@ -578,6 +575,9 @@ class TrainerConfig(BaseConfig):
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
     ckpt: CheckpointConfig | None = None
+
+    resume: ResumeConfig | None = None
+    """Resume training from a checkpoint (requires ``ckpt``). None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory."""
     """Full training-state checkpoint configuration (model + optimizer + scheduler). If None, no resume-capable checkpoints are written."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()

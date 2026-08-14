@@ -401,13 +401,13 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_resume(self):
-        """Propagate the top-level resume onto the sub-config checkpoint configs."""
+        """Propagate the top-level resume onto the sub-configs."""
         if self.resume is None:
             return self
         if self.trainer.ckpt is None or self.orchestrator.ckpt is None:
             raise ValueError("resume requires checkpointing — add the [ckpt] block")
-        self.trainer.ckpt.resume = self.resume.model_copy()
-        self.orchestrator.ckpt.resume = self.resume.model_copy()
+        self.trainer.resume = self.resume.model_copy()
+        self.orchestrator.resume = self.resume.model_copy()
         return self
 
     @model_validator(mode="after")

@@ -125,14 +125,16 @@ def train(config: SFTConfig):
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
-    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(config.run_dir, config.ckpt, config.model.lora)
+    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
+        config.run_dir, config.ckpt, config.model.lora, resume=config.resume
+    )
 
     checkpoint_step = None
-    if config.ckpt and config.ckpt.resume is not None and ckpt_manager is not None:
-        if config.ckpt.resume.dir is not None:
-            checkpoint_step = config.ckpt.resume.dir_step
+    if config.ckpt and config.resume is not None and ckpt_manager is not None:
+        if config.resume.dir is not None:
+            checkpoint_step = config.resume.dir_step
         else:
-            checkpoint_step = config.ckpt.resume.step
+            checkpoint_step = config.resume.step
             if checkpoint_step is None:
                 checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
@@ -178,7 +180,7 @@ def train(config: SFTConfig):
     )
 
     # Set up the learning rate scheduler
-    resume_from = config.ckpt.resume.step if config.ckpt and config.ckpt.resume is not None else None
+    resume_from = config.resume.step if config.resume is not None else None
     scheduler_steps = (
         config.max_steps - resume_from
         if config.max_steps is not None and (config.ckpt and config.ckpt.skip_scheduler and resume_from is not None)
@@ -203,7 +205,7 @@ def train(config: SFTConfig):
     progress = Progress()
 
     if checkpoint_step is not None:
-        resume_dir = config.ckpt.resume.dir if config.ckpt.resume else None
+        resume_dir = config.resume.dir if config.resume else None
         ckpt_manager.load(
             checkpoint_step,
             model,
