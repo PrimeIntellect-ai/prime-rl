@@ -412,16 +412,15 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
-        """Propagate the run identity to the orchestrator (which stamps it on rollout
-        traces) and default the W&B and Prime platform run names to ``run.name``.
+        """Default the W&B and Prime platform run names to ``run.name``.
 
         Explicit names always win: only unset names inherit. Runs after the
         orchestrator's own ``auto_setup_prime_monitor_run_name``, so an explicitly
-        set W&B name still takes precedence for the platform run name. The run id is
-        minted by the launcher (see the ``rl`` entrypoint), not here.
+        set W&B name still takes precedence for the platform run name. The run
+        identity itself is runtime-only ($PRL_RUN_ID / $PRL_RUN_NAME, set by the
+        ``rl`` entrypoint), never sub-config.
         """
         self._resolve_run_name()
-        self.orchestrator.run.name = self.run.name
         for wandb in (self.wandb, self.trainer.wandb, self.orchestrator.wandb):
             if wandb is not None and wandb.name is None:
                 wandb.name = self.run.name

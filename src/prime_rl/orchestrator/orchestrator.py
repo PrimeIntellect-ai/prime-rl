@@ -239,10 +239,11 @@ class Orchestrator:
         # Prefer the monitor identity (platform run id, else W&B id) so traces link
         # back to it, then the launcher-set $PRL_RUN_ID; standalone runs mint a local one.
         self.run_id = self.monitor.run_id or os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
-        # Base labels for sandboxes created in this process; env-server processes get
-        # them via their own config.
-        if config.run.name:
-            set_base_sandbox_labels([config.run.name])
+        # Base labels for sandboxes created in this process; env-server processes read
+        # the same launcher-set env var themselves.
+        self.run_name = os.environ.get("PRL_RUN_NAME")
+        if self.run_name:
+            set_base_sandbox_labels([self.run_name])
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat.url)
@@ -546,9 +547,9 @@ class Orchestrator:
             step = episode[0].eval_step if kind == "eval" else self.progress.step
             assert step is not None
             run: vf.RunInfo = (
-                vf.EvalRunInfo(id=self.run_id, name=self.config.run.name, step=step)
+                vf.EvalRunInfo(id=self.run_id, name=self.run_name, step=step)
                 if kind == "eval"
-                else vf.TrainRunInfo(id=self.run_id, name=self.config.run.name, step=step)
+                else vf.TrainRunInfo(id=self.run_id, name=self.run_name, step=step)
             )
             for rollout in episode:
                 rollout.record_run(

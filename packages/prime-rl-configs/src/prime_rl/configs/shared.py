@@ -11,7 +11,7 @@ from prime_rl.utils.config import BaseConfig
 # and the single shared W&B run. The launcher always sets these last, so allowing them in
 # `env_vars` would be a silent no-op (or, on multi-node, a footgun) — reject them instead.
 PROTECTED_ENV_VARS = frozenset(
-    {"CUDA_VISIBLE_DEVICES", "PRL_RUN_ID", "WANDB_RUN_ID", "WANDB_SHARED_MODE", "WANDB_SHARED_LABEL"}
+    {"CUDA_VISIBLE_DEVICES", "PRL_RUN_ID", "PRL_RUN_NAME", "WANDB_RUN_ID", "WANDB_SHARED_MODE", "WANDB_SHARED_LABEL"}
 )
 
 
@@ -61,14 +61,6 @@ class ResumeConfig(BaseConfig):
         """The step encoded in ``dir``'s name (validated to exist)."""
         assert self.dir is not None
         return int(self.dir.name.removeprefix("step_"))
-
-
-class RunInfoConfig(BaseConfig):
-    """Launcher-resolved run info — not user config. The launcher resolves the name from
-    ``run.name``; sub-processes stamp it on traces and label sandboxes with it. The run
-    id is runtime-only and travels as ``$PRL_RUN_ID``, never through config."""
-
-    name: str | None = None
 
 
 class SlurmConfig(BaseConfig):

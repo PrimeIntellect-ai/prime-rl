@@ -116,7 +116,6 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             "env": source_dict["env"],
             "serve": {**source_dict.get("serve", {}), "address": address},
             "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
-            "run": {"name": config.run.name},
         }
         with open(env_dir / f"{source.resolved_name}.toml", "wb") as f:
             tomli_w.dump(env_server_dict, f)
@@ -482,6 +481,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         script = template.render(
             **config.slurm.template_vars,
             is_disaggregated=True,
+            run_name=config.run.name,
             config_dir=config_dir,
             output_dir=config.run_dir,
             num_train_nodes=config.deployment.num_train_nodes,
@@ -522,6 +522,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         script = template.render(
             **config.slurm.template_vars,
             is_disaggregated=False,
+            run_name=config.run.name,
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             output_dir=config.run_dir,
             num_train_nodes=config.deployment.num_train_nodes,
@@ -621,10 +622,13 @@ def rl_slurm(config: RLConfig):
 
 
 def rl(config: RLConfig):
-    # The run id is runtime-only, never config: $PRL_RUN_ID is the vehicle for runtime
-    # info between processes, and every spawned process inherits it. TODO: fetch it from
+    # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are
+    # the vehicle for runtime info between processes, and every spawned process inherits
+    # them. Components launched standalone have no run identity. TODO: fetch the id from
     # the Prime SDK once runs are registered there.
     os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
+    assert config.run.name is not None  # resolved at construction
+    os.environ["PRL_RUN_NAME"] = config.run.name
 
     resuming = config.resume is not None
     clean = config.clean and not os.environ.get("NEVER_CLEAN")

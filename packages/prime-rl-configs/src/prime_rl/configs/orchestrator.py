@@ -18,7 +18,6 @@ from prime_rl.configs.shared import (
     LogConfig,
     PrimeMonitorConfig,
     ResumeConfig,
-    RunInfoConfig,
     TransportConfig,
     WandbWithExtrasConfig,
     ZMQTransportConfig,
@@ -440,9 +439,6 @@ class OrchestratorConfig(BaseConfig):
 
     env_vars: EnvVars = {}
     """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
-
-    run: RunInfoConfig = Field(default_factory=RunInfoConfig)
-    """Run identity, injected by the rl entrypoint; stamped on rollout traces."""
 
     wandb: WandbWithExtrasConfig | None = None
 

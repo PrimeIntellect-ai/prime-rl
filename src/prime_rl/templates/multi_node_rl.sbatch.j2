@@ -64,6 +64,7 @@ ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 
 export PRL_RUN_ID=${PRL_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
+export PRL_RUN_NAME={{ run_name }}
 export WANDB_RUN_ID=$PRL_RUN_ID
 export WANDB_SHARED_MODE=1
 

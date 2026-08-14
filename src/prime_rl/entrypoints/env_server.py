@@ -1,3 +1,4 @@
+import os
 from functools import partial
 
 from verifiers.v1 import pool_serve_kwargs
@@ -18,7 +19,8 @@ def setup_worker(log_level: str | None, json_logging: bool, sandbox_labels: list
 
 @clean_exit
 def run_server(config: EnvServerConfig):
-    sandbox_labels = [config.run.name] if config.run.name else []
+    run_name = os.environ.get("PRL_RUN_NAME")
+    sandbox_labels = [run_name] if run_name else []
     # ``serve.pool`` (static or elastic) sizes the server. serve_env applies the worker
     # setup in this process and in every spawned worker.
     serve_env(
