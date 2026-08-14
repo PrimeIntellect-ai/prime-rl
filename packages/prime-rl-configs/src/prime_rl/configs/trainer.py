@@ -209,8 +209,8 @@ class ModelConfig(BaseModelConfig):
     optim_cpu_offload: bool = True
     """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
 
-    full_optim_cpu_offload: FullOptimizerOffloading = None
-    """Full CPU optimizer offload: FP32 masters, moments, and gradients live in CPU RAM and the optimizer runs on CPU, overlapped with backward. Enable with ``true`` or a ``[model.full_optim_cpu_offload]`` section; disabled by default."""
+    full_offload: FullOptimizerOffloading = None
+    """Full CPU optimizer offload: FP32 masters, moments, and gradients live in CPU RAM and the optimizer runs on CPU, overlapped with backward. Enable with ``true`` or a ``[model.full_offload]`` section; disabled by default."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
@@ -314,11 +314,11 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def cpu_offload_mutual_exclusion(self):
-        if self.fsdp_cpu_offload and (self.optim_cpu_offload or self.full_optim_cpu_offload):
+        if self.fsdp_cpu_offload and (self.optim_cpu_offload or self.full_offload):
             raise ValueError("Cannot combine fsdp_cpu_offload with optimizer CPU offloading.")
-        if self.optim_cpu_offload and self.full_optim_cpu_offload:
+        if self.optim_cpu_offload and self.full_offload:
             raise ValueError(
-                "Cannot enable both optim_cpu_offload and full_optim_cpu_offload. "
+                "Cannot enable both optim_cpu_offload and full_offload. "
                 "Set optim_cpu_offload=false when enabling full optimizer offload."
             )
         return self
@@ -686,7 +686,7 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def full_optimizer_offload_disables_grad_clipping(self):
-        if self.model.full_optim_cpu_offload and self.optim.max_norm is not None:
+        if self.model.full_offload and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping prevents optimizer-in-backward overlap with CPU optimizer offload. "
                 "Automatically setting optim.max_norm to None (disabled).",
