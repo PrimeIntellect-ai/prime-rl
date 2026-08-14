@@ -103,9 +103,6 @@ forward_env = ["SERPER_API_KEY"]
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-search"]
 
 [orchestrator.train.source.env.taskset]
@@ -136,9 +133,6 @@ forward_env = ["SERPER_API_KEY"]
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-search"]
 
 [orchestrator.train.source.env.taskset]
@@ -175,9 +169,6 @@ forward_env = ["SERPER_API_KEY"]
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-search"]
 
 [orchestrator.eval.source.env.agent.timeout]

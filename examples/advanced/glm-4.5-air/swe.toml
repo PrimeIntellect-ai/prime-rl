@@ -108,9 +108,6 @@ id = "rlm"
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-swe"]
 
 [orchestrator.prime_monitor]
@@ -131,9 +128,6 @@ id = "rlm"
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-swe"]
 
 [orchestrator.eval.source.env.agent.timeout]

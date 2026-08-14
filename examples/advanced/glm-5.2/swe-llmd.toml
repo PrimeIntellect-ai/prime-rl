@@ -137,7 +137,6 @@ id = "r2e-gym"
 id = "rlm"
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
 labels = ["glm5-llmd"]
 
 [inference]

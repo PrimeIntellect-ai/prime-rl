@@ -299,6 +299,7 @@ class Orchestrator:
             self.inference_metrics = InferenceMetricsCollector(
                 self.policy_inference.admin_clients,
                 roles=config.inference_metrics_roles,
+                max_inflight_episodes=config.max_inflight_episodes,
             )
             await self.inference_metrics.start()
 
