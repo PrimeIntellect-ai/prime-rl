@@ -138,7 +138,7 @@ def train(config: TrainerConfig):
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
-    loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
+    loading_from_ckpt_later = checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
