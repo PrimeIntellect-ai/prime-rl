@@ -52,14 +52,11 @@ class WandbMonitor(Monitor):
         output_dir: Path | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         run_config: BaseConfig | None = None,
-        keep_full_history: bool = True,
         train_env_names: list[str] = [],
         eval_env_names: list[str] = [],
     ):
         self.config = config
         self.logger = get_logger()
-        self.history: list[dict[str, Any]] = []
-        self._keep_full_history = keep_full_history
         self.output_dir = output_dir
 
         rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
@@ -180,10 +177,6 @@ class WandbMonitor(Monitor):
             sys.argv = json.loads(wandb_args)
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        if self._keep_full_history:
-            self.history.append(metrics)
-        else:
-            self.history = [metrics]
         if not self.is_master:
             return
         if not self.enabled:

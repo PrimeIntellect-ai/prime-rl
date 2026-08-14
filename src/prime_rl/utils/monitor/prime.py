@@ -75,12 +75,10 @@ class PrimeMonitor(Monitor):
         output_dir: Path | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         run_config: OrchestratorConfig | None = None,
-        keep_full_history: bool = True,
     ):
         self.config = config
         self.logger = get_logger()
-        self.history: list[dict[str, Any]] = []
-        self._keep_full_history = keep_full_history
+        self._last_metrics: dict[str, Any] = {}
         self.output_dir = output_dir
         self._registered = False
         self._finalized = False
@@ -232,10 +230,7 @@ class PrimeMonitor(Monitor):
         self.logger.info(f"Platform run {self.run_id} marked as {status_label}")
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        if self._keep_full_history:
-            self.history.append(metrics)
-        else:
-            self.history = [metrics]
+        self._last_metrics = metrics
         if not self.is_master:
             return
         if not self.enabled:
@@ -518,7 +513,7 @@ class PrimeMonitor(Monitor):
             return
 
         self.logger.info("Saving final summary to Prime Intellect API")
-        summary = self.history[-1] if self.history else {}
+        summary = self._last_metrics
         finalized_via_summary = self._submit_final_summary(summary)
 
         if os.getpid() != self._owner_pid:

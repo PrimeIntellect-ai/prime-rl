@@ -83,30 +83,6 @@ def clean_exit(func: Callable) -> Callable:
         return sync_wrapper
 
 
-def to_col_format(list_of_dicts: list[dict[str, Any]]) -> dict[str, list[Any]]:
-    """
-    Turns a list of dicts to a dict of lists.
-
-    Example:
-
-    ```python
-    list_of_dicts = [{"a": 1, "b": 2}, {"a": 3, "b": 4}] # Row format
-    to_col_format(list_of_dicts)
-    ```
-
-    Returns:
-
-    ```python
-    {"a": [1, 3], "b": [2, 4]} # Column format
-    ```
-    """
-    dict_of_lists = defaultdict(list)
-    for row in list_of_dicts:
-        for key, value in row.items():
-            dict_of_lists[key].append(value)
-    return dict(dict_of_lists)
-
-
 def format_time(time_s: float) -> str:
     """
     Format a time in seconds to a human-readable format:

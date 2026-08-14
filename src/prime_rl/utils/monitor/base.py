@@ -71,11 +71,7 @@ def sample_items_for_logging(items: list[Any], sample_ratio: float | None) -> li
 
 
 class Monitor(ABC):
-    """Base class for all monitoring implementations.
-
-    Subclasses should initialize a `history` attribute as a list of dictionaries
-    to store logged metrics.
-    """
+    """Base class for all monitoring implementations."""
 
     run_id: str | None = None
     """External identifier of the run this monitor reports to (platform / W&B), when it has one."""
@@ -108,15 +104,8 @@ class Monitor(ABC):
 class NoOpMonitor(Monitor):
     """Monitor that does nothing. Used when no monitors are configured."""
 
-    def __init__(self, keep_full_history: bool = True):
-        self.history: list[dict[str, Any]] = []
-        self._keep_full_history = keep_full_history
-
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        if self._keep_full_history:
-            self.history.append(metrics)
-        else:
-            self.history = [metrics]
+        pass
 
     def log_samples(self, rollouts: list[Rollout], step: int) -> None:
         pass

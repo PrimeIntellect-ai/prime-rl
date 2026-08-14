@@ -30,12 +30,10 @@ class FileMonitor(Monitor):
         config: FileMonitorConfig | None,
         output_dir: Path | None = None,
         run_config: BaseConfig | None = None,
-        keep_full_history: bool = True,
     ):
         self.config = config
         self.logger = get_logger()
-        self.history: list[dict[str, Any]] = []
-        self._keep_full_history = keep_full_history
+        self._last_metrics: dict[str, Any] = {}
         self.output_dir = output_dir
         self._file = None
 
@@ -59,10 +57,7 @@ class FileMonitor(Monitor):
         self.logger.info(f"Logging metrics to {self._path}")
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        if self._keep_full_history:
-            self.history.append(metrics)
-        else:
-            self.history = [metrics]
+        self._last_metrics = metrics
         if not self.is_master or not self.enabled or self._file is None:
             return
 
@@ -91,7 +86,7 @@ class FileMonitor(Monitor):
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         if not self.is_master or not self.enabled or self.output_dir is None:
             return
-        summary = self.history[-1] if self.history else {}
+        summary = self._last_metrics
         dropped_paths: list[str] = []
         sanitized = drop_non_finite_json_values(summary, dropped_paths)
         with open(self.output_dir / filename, "w") as f:

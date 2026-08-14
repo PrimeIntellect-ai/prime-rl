@@ -40,19 +40,12 @@ def setup_monitor(
     *,
     prime_config: PrimeMonitorConfig | None = None,
     file_config: FileMonitorConfig | None = None,
-    keep_full_history: bool = True,
     train_env_names: list[str] = [],
     eval_env_names: list[str] = [],
     # Backward compatibility: support old 'config' keyword argument
     config: WandbWithExtrasConfig | None = None,
 ) -> Monitor:
-    """
-    Sets up monitors to log metrics.
-
-    `keep_full_history`: when False, monitors retain only the most recent
-    metrics dict. The orchestrator passes False outside `--bench` mode to
-    avoid an unbounded list growing for the lifetime of the run.
-    """
+    """Sets up monitors to log metrics."""
     global _MONITOR
     if _MONITOR is not None:
         raise RuntimeError("Monitor already initialized. Please call `setup_monitor` only once.")
@@ -69,7 +62,6 @@ def setup_monitor(
                 output_dir=output_dir,
                 tokenizer=tokenizer,
                 run_config=run_config,
-                keep_full_history=keep_full_history,
                 train_env_names=train_env_names,
                 eval_env_names=eval_env_names,
             )
@@ -82,7 +74,6 @@ def setup_monitor(
                 output_dir=output_dir,
                 tokenizer=tokenizer,
                 run_config=run_config,
-                keep_full_history=keep_full_history,
             )
         )
 
@@ -92,12 +83,11 @@ def setup_monitor(
                 config=file_config,
                 output_dir=output_dir,
                 run_config=run_config,
-                keep_full_history=keep_full_history,
             )
         )
 
     if len(monitors) == 0:
-        _MONITOR = NoOpMonitor(keep_full_history=keep_full_history)
+        _MONITOR = NoOpMonitor()
     elif len(monitors) == 1:
         _MONITOR = monitors[0]
     else:

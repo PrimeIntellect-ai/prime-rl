@@ -19,7 +19,6 @@ from prime_rl.configs.shared import (
 )
 from prime_rl.configs.trainer import (
     AdamWConfig,
-    BenchConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
     GCConfig,
@@ -239,9 +238,6 @@ class SFTConfig(BaseConfig):
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""
 
-    bench: BenchConfig | None = None
-    """Benchmark-mode configuration. When set, ``max_steps`` is forced to 4 and fake data is used."""
-
     gc: GCConfig | None = GCConfig()
     """Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior."""
 
@@ -393,14 +389,6 @@ class SFTConfig(BaseConfig):
         return self
 
     ### Auto-setup and validate shared configs
-
-    @model_validator(mode="after")
-    def auto_setup_bench(self):
-        if self.bench is not None:
-            self.max_steps = 4  # 1 Warmup + 3 Benchmark
-            if self.ckpt:  # Do not checkpoint
-                self.ckpt = None
-        return self
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):

@@ -20,12 +20,6 @@ class MultiMonitor(Monitor):
         prime = next((m for m in monitors if isinstance(m, PrimeMonitor)), None)
         self.run_id = (prime.run_id if prime else None) or next((m.run_id for m in monitors if m.run_id), None)
 
-    @property
-    def history(self) -> list[dict[str, Any]]:
-        if not self.monitors:
-            return []
-        return self.monitors[0].history
-
     def log(self, metrics: dict[str, Any], step: int) -> None:
         for monitor in self.monitors:
             try:

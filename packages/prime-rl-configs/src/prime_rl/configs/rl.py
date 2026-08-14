@@ -29,12 +29,6 @@ from prime_rl.configs.shared import (
     VLMConfig,
 )
 from prime_rl.configs.trainer import (
-    BenchConfig,
-    FakeDataLoaderConfig,
-    TokenizerConfig,
-    TrainerConfig,
-)
-from prime_rl.configs.trainer import (
     FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
@@ -42,6 +36,10 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.configs.trainer import (
     NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
+)
+from prime_rl.configs.trainer import (
+    TokenizerConfig,
+    TrainerConfig,
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
@@ -283,9 +281,6 @@ class RLConfig(BaseConfig):
 
     rollout_transport: TransportConfig | None = None
 
-    bench: bool = False
-    """Benchmark mode. Sets trainer and orchestrator to benchmark mode and, when set, suffixes the W&B project with ``-bench``."""
-
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
     slurm: SlurmConfig | None = None
@@ -336,9 +331,9 @@ class RLConfig(BaseConfig):
                     "Cannot configure inference with num_infer_nodes = 0. "
                     "Either set num_infer_nodes > 0 or remove the inference config."
                 )
-            if num_infer_nodes == 0 and not self.trainer.data.fake and not self.bench:
+            if num_infer_nodes == 0 and not self.trainer.data.fake:
                 raise ValueError(
-                    "Must use fake data (trainer.data.fake or bench = true) when num_infer_nodes = 0, "
+                    "Must use fake data (trainer.data.fake) when num_infer_nodes = 0, "
                     "since no orchestrator or inference server will be running."
                 )
         return self
@@ -525,24 +520,6 @@ class RLConfig(BaseConfig):
             raise ValueError(
                 "inference.vllm.enable_eplb requires weight_broadcast.type = 'nccl' and "
                 "weight_broadcast.quantize_in_weight_transfer = true."
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_bench(self):
-        if self.bench:
-            self.trainer.bench = BenchConfig()
-            self.orchestrator.bench = True
-            self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=self.orchestrator.batch_size or 32,
-            )
-
-        trainer_bench_enabled = self.trainer.bench is not None
-        if trainer_bench_enabled != self.orchestrator.bench:
-            raise ValueError(
-                f"Trainer benchmark mode ({self.trainer.bench}) and orchestrator benchmark mode "
-                f"({self.orchestrator.bench}) must match. Use the top-level bench = true to set both."
             )
 
         return self

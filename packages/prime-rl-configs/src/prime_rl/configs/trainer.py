@@ -60,11 +60,6 @@ class CompileConfig(BaseConfig):
     """Compile transformer blocks with ``fullgraph=True``."""
 
 
-class BenchConfig(BaseConfig):
-    output_json: Path | None = None
-    """Path to write benchmark results as JSON. If unset, results are only printed to the console."""
-
-
 class IndexCacheConfig(BaseConfig):
     topk_freq: int = Field(1, ge=1)
     """Recompute DSA top-k indices every N layers; intervening layers reuse the cached indices. ``1`` recomputes every layer (effectively no reuse). Mirrors vLLM's ``index_topk_freq`` HF override."""
@@ -608,9 +603,6 @@ class TrainerConfig(BaseConfig):
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""
 
-    bench: BenchConfig | None = None
-    """Benchmark-mode configuration. When set, ``max_steps`` is forced to 4 and fake data is used."""
-
     gc: GCConfig | None = GCConfig()
     """Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior."""
 
@@ -660,16 +652,6 @@ class TrainerConfig(BaseConfig):
                 "freeze_vision_encoder=false is incompatible with LoRA. "
                 "LoRA freezes all non-adapter parameters including the vision encoder."
             )
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_bench(self):
-        if self.bench is not None:
-            self.max_steps = 4  # 1 Warmup + 3 Benchmark
-            if not self.data.fake:
-                self.data.fake = FakeDataLoaderConfig()
-            if self.ckpt:  # Do not checkpoint
-                self.ckpt = None
         return self
 
     @model_validator(mode="after")

@@ -161,9 +161,6 @@ class Orchestrator:
         algorithms = sorted({env.algo.type for env in config.train.source if env.algo is not None})
         get_logger().info(f"Starting orchestrator (algorithm: {', '.join(algorithms)})")
 
-        if config.bench:
-            get_logger().warning(f"Running in benchmark mode (max_steps={config.max_steps})")
-
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
         self.policy = Policy(version=0, model_name="")
@@ -232,7 +229,6 @@ class Orchestrator:
             output_dir=config.output_dir,
             tokenizer=self.tokenizer,
             run_config=config,
-            keep_full_history=config.bench,
             train_env_names=[env.resolved_name for env in config.train.source],
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
@@ -352,50 +348,44 @@ class Orchestrator:
             get_logger().info("Training from scratch")
 
         self.packer = BatchPacker(config)
-        if config.bench:
-            # Bench runs have no trainer: nothing consumes shipped batches, and the
-            # ZMQ sender's READY barrier would block forever.
-            self.sender = None
-        else:
-            get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
-            self.sender = setup_micro_batch_sender(
-                config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
-            )
+        get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
+        self.sender = setup_micro_batch_sender(
+            config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
+        )
 
         # Sync inference to the incoming policy before the first step, rendezvousing
         # with the trainer's startup broadcast (v{resume_step} on resume, v0 from
-        # scratch). Bench runs have no trainer, so there is no broadcast to wait for.
-        if not config.bench:
-            sync_version = self.resume_step if self.resume_step is not None else 0
-            if config.weight_broadcast.type == "nixl":
-                weights_path = None
-            else:
-                check_exists = config.weight_broadcast.type == "filesystem"
-                # The trainer's startup broadcast is always coming, so wait for it
-                # rather than failing immediately when the directory is not there yet.
-                wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
-                    STARTUP_WEIGHT_WAIT_TIMEOUT_S
-                )
-                weights_path = get_weight_dir(
-                    config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
-                )
-            if self.model_express is not None:
-                await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
-            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
-            if self.model_express is not None:
-                await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
-                # Complete the startup rendezvous before the watcher begins its next cycle.
-                await asyncio.to_thread(
-                    self.model_express.wait_for,
-                    "trainer",
-                    count=1,
-                    status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                    timeout=config.weight_broadcast.timeout,
-                )
-            if self.lora_name is not None:
-                self.policy_inference.update_model_name(self.lora_name)
-                self.policy.model_name = self.lora_name
-            self.policy.version = sync_version
+        # scratch).
+        sync_version = self.resume_step if self.resume_step is not None else 0
+        if config.weight_broadcast.type == "nixl":
+            weights_path = None
+        else:
+            check_exists = config.weight_broadcast.type == "filesystem"
+            # The trainer's startup broadcast is always coming, so wait for it
+            # rather than failing immediately when the directory is not there yet.
+            wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
+                STARTUP_WEIGHT_WAIT_TIMEOUT_S
+            )
+            weights_path = get_weight_dir(
+                config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
+            )
+        if self.model_express is not None:
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
+        await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
+        if self.model_express is not None:
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            # Complete the startup rendezvous before the watcher begins its next cycle.
+            await asyncio.to_thread(
+                self.model_express.wait_for,
+                "trainer",
+                count=1,
+                status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
+                timeout=config.weight_broadcast.timeout,
+            )
+        if self.lora_name is not None:
+            self.policy_inference.update_model_name(self.lora_name)
+            self.policy.model_name = self.lora_name
+        self.policy.version = sync_version
 
         self.eval_source: EvalSource | None = (
             EvalSource(
@@ -630,9 +620,9 @@ class Orchestrator:
         # orchestrator finishes early, and its teardown strands the trainer inside
         # an in-memory broadcast handshake that needs the live weight watcher.
         # Always satisfiable: the trainer skips only the final TARGET_LAG+1
-        # in-memory broadcasts. Bench runs have no trainer, so they ship freely.
+        # in-memory broadcasts.
         required_version = step - 1 - TARGET_LAG
-        if not config.bench and self.policy.version < required_version:
+        if self.policy.version < required_version:
             get_logger().info(
                 f"Holding batch {step} until the trainer publishes policy v{required_version} "
                 f"(currently v{self.policy.version})"
@@ -664,8 +654,7 @@ class Orchestrator:
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
         pack_time = time.perf_counter() - pack_start_time
-        if self.sender is not None:
-            await self.sender.send(micro_batch_grid)
+        await self.sender.send(micro_batch_grid)
         self.progress.step += 1
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
@@ -982,8 +971,7 @@ class Orchestrator:
         training artifacts are already persisted before this is reached."""
 
         async def teardown() -> None:
-            if self.sender is not None:
-                self.sender.close()
+            self.sender.close()
             if self.dispatcher is not None:
                 await self.dispatcher.stop()
             if self.watcher is not None:

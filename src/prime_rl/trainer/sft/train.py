@@ -40,18 +40,16 @@ from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
-    export_benchmark_json,
     get_ckpt_disk_metrics,
     print_sample,
     setup_torch_distributed,
-    print_benchmark,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, to_col_format
+from prime_rl.utils.utils import clean_exit
 import torch.distributed as dist
 
 from torchtitan.distributed.utils import clip_grad_norm_
@@ -66,10 +64,6 @@ def train(config: SFTConfig):
         json_logging=config.log.json_logging,
     )
     logger.info(f"Starting SFT trainer in {world}")
-
-    # Print warning if running in benchmark mode
-    if config.bench is not None:
-        logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
@@ -375,6 +369,7 @@ def train(config: SFTConfig):
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
+    max_peak_memory = 0.0
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -527,6 +522,7 @@ def train(config: SFTConfig):
         throughput = perf_counter.get_tokens_per_second() or 0
         mfu = perf_counter.get_mfu() or 0
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
+        max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
@@ -640,16 +636,8 @@ def train(config: SFTConfig):
         weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
         weight_ckpt_manager.maybe_clean()
 
-    logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
+    logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("SFT trainer finished!")
-
-    # Optionally, print benchmark table and export JSON
-    if config.bench is not None and world.is_master:
-        history = to_col_format(monitor.history)
-        print_benchmark(history)
-        if config.bench.output_json:
-            export_benchmark_json(history, config.bench.output_json)
-            logger.info(f"Benchmark results written to {config.bench.output_json}")
 
 
 def main():

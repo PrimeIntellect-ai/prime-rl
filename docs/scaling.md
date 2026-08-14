@@ -245,22 +245,14 @@ The default templates live under [`src/prime_rl/templates/`](https://github.com/
 
 ## Benchmarking
 
-Every entrypoint supports a `--bench` flag that runs a few warm-up + measurement steps with fake data and prints a rich-formatted throughput / MFU table:
+To benchmark a parallelism config before committing a multi-day run, run a short training with fake data and a step cap, and read throughput / MFU / step time / peak memory from the logs:
 
 ```bash
 # SFT trainer alone
-uv run sft @ sft.toml --bench
-uv run sft ... --data.type fake --data.length variable --bench   # variable-length fake data
+uv run sft @ sft.toml --data.type fake --max-steps 4
 
 # RL trainer alone (no inference involved)
-uv run trainer @ train.toml --data.fake --bench
-
-# Inference alone — start the server normally, then bench the orchestrator
-uv run inference @ infer.toml
-uv run orchestrator @ orch.toml --bench
-
-# Full RL stack (trainer with fake data, inference with real data from orchestrator)
-uv run rl @ rl.toml --bench
+uv run trainer @ train.toml --data.fake --max-steps 4
 ```
 
-Persist results with `--bench.output-json`. Use this to compare parallelism configs before committing a multi-day run.
+Every step logs `Throughput`, `MFU`, and `Peak Mem.` to the console. For machine-readable numbers, enable the file monitor (`--file-monitor.filename metrics.jsonl`) and aggregate `perf/throughput`, `perf/mfu`, `time/step`, and `perf/peak_memory` from the run's `metrics.jsonl` — skip the first step, it is warmup. [`benchmarks/scripts/run_single_benchmark.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/benchmarks/scripts/run_single_benchmark.py) does exactly this and is what the CI benchmark matrix runs.

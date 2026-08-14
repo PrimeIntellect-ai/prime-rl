@@ -501,9 +501,6 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
 
-    bench: bool = False
-    """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
-
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
@@ -636,20 +633,6 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.source:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_bench(self):
-        if self.bench:
-            self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
-
-            # Disable evaluation
-            self.eval = None
-            if self.wandb:
-                self.wandb.log_extras = None
-            if self.prime_monitor:
-                self.prime_monitor.log_extras = None
 
         return self
 

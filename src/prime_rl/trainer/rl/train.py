@@ -48,11 +48,9 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     Tensors,
-    export_benchmark_json,
     filter_rl_trainer_tensor_stats_for_wandb,
     get_ckpt_disk_metrics,
     setup_torch_distributed,
-    print_benchmark,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
@@ -62,7 +60,7 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
+from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
@@ -76,10 +74,6 @@ def train(config: TrainerConfig):
         json_logging=config.log.json_logging,
     )
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
-
-    # Print warning if running in benchmark mode
-    if config.bench is not None:
-        logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
@@ -253,6 +247,7 @@ def train(config: TrainerConfig):
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function
     start_step = progress.step
+    max_peak_memory = 0.0
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -630,6 +625,7 @@ def train(config: TrainerConfig):
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
         mfu = perf_counter.get_step_mfu(num_tokens, forward_backward_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
+        max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
@@ -734,7 +730,7 @@ def train(config: TrainerConfig):
         weight_ckpt_manager.save(progress.step, model, tokenizer)
         weight_ckpt_manager.maybe_clean()
 
-    logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
+    logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished!")
 
     # Stop metrics/health server if configured
@@ -742,14 +738,6 @@ def train(config: TrainerConfig):
         metrics_server.stop()
     if health_server is not None:
         health_server.stop()
-
-    # Optionally, print benchmark table and export JSON
-    if config.bench is not None and world.is_master:
-        history = to_col_format(monitor.history)
-        print_benchmark(history)
-        if config.bench.output_json:
-            export_benchmark_json(history, config.bench.output_json)
-            logger.info(f"Benchmark results written to {config.bench.output_json}")
 
 
 def main():
