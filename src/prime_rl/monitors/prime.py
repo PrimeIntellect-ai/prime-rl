@@ -74,7 +74,19 @@ class PrimeMonitor(Monitor):
 
         self.run = TrainRun(api_key, run_id=os.getenv("RUN_ID"))
         if self.run.id is None:
-            self.run.create(run_config, name=self.config.name, team_id=self.config.team_id)
+            run_fields: dict[str, Any] = {}
+            if run_config is not None:
+                run_fields = dict(
+                    base_model=run_config.model.name,
+                    max_steps=run_config.max_steps or 0,
+                    batch_size=run_config.batch_size,
+                    rollouts_per_example=run_config.group_size,
+                    seq_len=run_config.seq_len,
+                    environments=[env.env_id for env in run_config.train.source],
+                    run_config=run_config.model_dump(exclude_none=True, mode="json"),
+                    wandb_project=run_config.monitors.wandb.project if run_config.monitors.wandb else None,
+                )
+            self.run.create(name=self.config.name, team_id=self.config.team_id, **run_fields)
             # A run this process created but never finalized did not exit cleanly;
             # finalize unregisters the hook. atexit rather than __del__ because it runs
             # before interpreter teardown, while httpx can still send.
@@ -207,24 +219,36 @@ class TrainRun:
             transport=httpx.HTTPTransport(retries=3),
         )
 
-    def create(self, run_config: OrchestratorConfig | None, name: str | None, team_id: str | None) -> str:
+    def create(
+        self,
+        name: str | None = None,
+        team_id: str | None = None,
+        base_model: str = "unknown",
+        max_steps: int = 0,
+        batch_size: int | None = None,
+        rollouts_per_example: int | None = None,
+        seq_len: int | None = None,
+        environments: list[str] | None = None,
+        run_config: dict[str, Any] | None = None,
+        wandb_project: str | None = None,
+    ) -> str:
         """Register the run with the platform and return its id."""
         prime_config = PrimeConfig()
         team_id = team_id or prime_config.team_id
 
-        payload: dict[str, Any] = {
-            "base_model": run_config.model.name if run_config else "unknown",
-            "max_steps": (run_config.max_steps if run_config else None) or 0,
-        }
-        if run_config:
-            if run_config.batch_size is not None:
-                payload["batch_size"] = run_config.batch_size
-            payload["rollouts_per_example"] = run_config.group_size
-            payload["seq_len"] = run_config.seq_len
-            payload["environments"] = [{"id": env.env_id} for env in run_config.train.source]
-            payload["run_config"] = run_config.model_dump(exclude_none=True, mode="json")
-            if run_config.monitors.wandb:
-                payload["wandb_project"] = run_config.monitors.wandb.project
+        payload: dict[str, Any] = {"base_model": base_model, "max_steps": max_steps}
+        if batch_size is not None:
+            payload["batch_size"] = batch_size
+        if rollouts_per_example is not None:
+            payload["rollouts_per_example"] = rollouts_per_example
+        if seq_len is not None:
+            payload["seq_len"] = seq_len
+        if environments is not None:
+            payload["environments"] = [{"id": env_id} for env_id in environments]
+        if run_config is not None:
+            payload["run_config"] = run_config
+        if wandb_project is not None:
+            payload["wandb_project"] = wandb_project
         if name:
             payload["name"] = name
         if team_id:
