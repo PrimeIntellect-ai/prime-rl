@@ -11,14 +11,13 @@ from threading import Event, Thread
 from urllib.parse import urlparse
 
 import pynvml
-import tomli_w
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.inference import vllm_overrides_fragment
-from prime_rl.utils.config import cli, to_toml_dict
+from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -39,12 +38,12 @@ from prime_rl.utils.process import (
     set_proc_title,
 )
 
-RL_TOML = "rl.toml"
+RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
 
-TRAINER_TOML = "trainer.toml"
-ORCHESTRATOR_TOML = "orchestrator.toml"
-INFERENCE_TOML = "inference.toml"
+TRAINER_CONFIG = "trainer.json"
+ORCHESTRATOR_CONFIG = "orchestrator.json"
+INFERENCE_CONFIG = "inference.json"
 
 ENVS_DIR = "envs"
 
@@ -80,29 +79,29 @@ def get_physical_gpu_ids() -> list[int]:
 def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    with open(output_dir / RL_TOML, "wb") as f:
-        tomli_w.dump(to_toml_dict(config, exclude=exclude), f)
+    with open(output_dir / RL_CONFIG, "w") as f:
+        json.dump(dump_resolved_config(config, exclude=exclude), f, indent=2)
 
 
 def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     """Write resolved subconfigs to disk as TOML files."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(output_dir / TRAINER_TOML, "wb") as f:
-        tomli_w.dump(to_toml_dict(config.trainer), f)
+    with open(output_dir / TRAINER_CONFIG, "w") as f:
+        json.dump(dump_resolved_config(config.trainer), f, indent=2)
 
-    with open(output_dir / ORCHESTRATOR_TOML, "wb") as f:
-        tomli_w.dump(to_toml_dict(config.orchestrator), f)
+    with open(output_dir / ORCHESTRATOR_CONFIG, "w") as f:
+        json.dump(dump_resolved_config(config.orchestrator), f, indent=2)
 
     if config.inference is not None:
         # Exclude launcher-only fields that are not needed by the vLLM server
         exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
-        inference_dict = to_toml_dict(config.inference, exclude=exclude_inference)
+        inference_dict = dump_resolved_config(config.inference, exclude=exclude_inference)
         if config.deployment.type == "multi_node":
             # Per-rank processes run bare engines; the sbatch starts the single global router.
-            inference_dict["router"] = "None"
-        with open(output_dir / INFERENCE_TOML, "wb") as f:
-            tomli_w.dump(inference_dict, f)
+            inference_dict["router"] = None
+        with open(output_dir / INFERENCE_CONFIG, "w") as f:
+            json.dump(inference_dict, f, indent=2)
 
     # One EnvServerConfig TOML per launcher-managed source: `env-server @ <path>` binds
     # at the source's deterministic address, where the orchestrator connects. The source's
@@ -111,14 +110,14 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     for split, source, address in env_servers(config):
         env_dir = output_dir / ENVS_DIR / split
         env_dir.mkdir(parents=True, exist_ok=True)
-        source_dict = to_toml_dict(source)
+        source_dict = dump_resolved_config(source)
         env_server_dict = {
             "env": source_dict["env"],
             "serve": {**source_dict.get("serve", {}), "address": address},
             "log": {"level": config.orchestrator.log.vf_level, "json_logging": config.orchestrator.log.json_logging},
         }
-        with open(env_dir / f"{source.resolved_name}.toml", "wb") as f:
-            tomli_w.dump(env_server_dict, f)
+        with open(env_dir / f"{source.resolved_name}.json", "w") as f:
+            json.dump(env_server_dict, f, indent=2)
 
 
 def rl_local(config: RLConfig):
@@ -203,7 +202,7 @@ def rl_local(config: RLConfig):
     try:
         # Optionally, start inference process
         if config.inference:
-            inference_cmd = ["inference", "@", (config_dir / INFERENCE_TOML).as_posix()]
+            inference_cmd = ["inference", "@", (config_dir / INFERENCE_CONFIG).as_posix()]
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
             logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
             # If we don't log stdout, the server hangs
@@ -262,7 +261,7 @@ def rl_local(config: RLConfig):
         # orchestrator start in parallel.
         for split, source, address in env_servers(config):
             name = source.resolved_name
-            env_server_cmd = ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.toml").as_posix()]
+            env_server_cmd = ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()]
             logger.info(f"Starting {split} env server {name} at {address}")
             logger.debug(f"Env server start command: {' '.join(env_server_cmd)}")
             env_server_log = log_dir / ENVS_DIR / split / f"{name}.log"
@@ -292,7 +291,7 @@ def rl_local(config: RLConfig):
             monitor_thread.start()
             monitor_threads.append(monitor_thread)
 
-        orchestrator_cmd = ["orchestrator", "@", (config_dir / ORCHESTRATOR_TOML).as_posix()]
+        orchestrator_cmd = ["orchestrator", "@", (config_dir / ORCHESTRATOR_CONFIG).as_posix()]
         logger.info("Starting orchestrator process")
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
         with open(log_dir / "orchestrator.log", "w") as log_file:
@@ -342,7 +341,7 @@ def rl_local(config: RLConfig):
             "-m",
             "prime_rl.trainer.rl.train",
             "@",
-            (config_dir / TRAINER_TOML).as_posix(),
+            (config_dir / TRAINER_CONFIG).as_posix(),
         ]
         logger.info(f"Starting trainer on GPU(s) {' '.join(map(str, trainer_gpu_ids))}")
         logger.debug(f"Training start command: {' '.join(trainer_cmd)}")
@@ -471,7 +470,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
     if config.deployment.type == "single_node":
         script = template.render(
             **config.slurm.template_vars,
-            config_path=config_dir / RL_TOML,
+            config_path=config_dir / RL_CONFIG,
             output_dir=config.run_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
@@ -572,7 +571,7 @@ def rl_slurm(config: RLConfig):
 
     if config.deployment.type == "single_node":
         write_config(config, config_dir, exclude={"slurm", "dry_run", "clean"})
-        logger.info(f"Wrote config to {config_dir / RL_TOML}")
+        logger.info(f"Wrote config to {config_dir / RL_CONFIG}")
 
         train_env_names = env_server_names(config, "train")
         eval_env_names = env_server_names(config, "eval")

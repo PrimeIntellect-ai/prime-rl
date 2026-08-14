@@ -61,7 +61,7 @@ CLI flags mirror the TOML tree using dots:
 
 ```bash
 uv run rl --help                                       # full schema
-uv run rl @ rl.toml --dry-run --output-dir /tmp --run.name check  # write resolved configs to /tmp/check/configs
+uv run rl @ rl.toml --dry-run --output-dir /tmp --run.name check  # write resolved configs (JSON) to /tmp/check/configs
 ```
 
 ## Syntax
@@ -268,7 +268,7 @@ Then inspect the resolved config:
 
 ```bash
 ls /tmp/reverse-dry/check/configs/
-# rl.toml  trainer.toml  orchestrator.toml  inference.toml
+# rl.json  trainer.json  orchestrator.json  inference.json
 ```
 
-Each per-process TOML reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/check/configs/trainer.toml`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.
+Each per-process TOML reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/check/configs/trainer.json`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.

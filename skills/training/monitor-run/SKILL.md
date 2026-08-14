@@ -9,7 +9,7 @@ description: Monitor an ongoing prime-rl training run — find the output direct
 
 ### On launch
 
-1. Find the run dir and read the resolved configs at `{run_dir}/configs/` (start with `rl.toml`). The run dir is `{output_dir}/{run_name}` — `run.name` auto-generates as `<envs>--<model>--<short-id>`, so if you only know the output dir, pick the most recently modified subdirectory (`ls -t {output_dir} | head -1`) or read `run.name` from the launch command.
+1. Find the run dir and read the resolved configs at `{run_dir}/configs/` (start with `rl.json`). The run dir is `{output_dir}/{run_name}` — `run.name` auto-generates as `<envs>--<model>--<short-id>`, so if you only know the output dir, pick the most recently modified subdirectory (`ls -t {output_dir} | head -1`) or read `run.name` from the launch command.
 2. Confirm all processes are alive and the run is making progress.
 3. Write the initial summary into `{run_dir}/STATUS.md`.
 
@@ -56,7 +56,7 @@ After a restart, verify all processes are back up and progress resumed before th
 ### Where to find things
 
 - `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the run dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
-- `{run_dir}/configs/` — resolved TOMLs (`rl.toml` has the full picture).
+- `{run_dir}/configs/` — resolved configs, written as JSON so explicit None settings round-trip (`rl.json` has the full picture).
 - `{run_dir}/logs/` — see below.
 - `{run_dir}/rollouts/step_N/{train,eval}/` — saved rollout traces (see Traces below).
 

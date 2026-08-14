@@ -244,7 +244,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     echo "INFER_NODE_RANK=$INFER_NODE_RANK REPLICA=$REPLICA_IDX RANK_IN_REPLICA=$RANK_IN_REPLICA LOCAL_IP=$LOCAL_IP" \
         | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
-    CONFIG_PATH="$CONFIG_DIR/inference.toml"
+    CONFIG_PATH="$CONFIG_DIR/inference.json"
 {% include '_launch_rank.sh.j2' %}
 {% include '_launch_router.sh.j2' %}
 
@@ -408,7 +408,7 @@ else
         --redirects=3 \
         --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.rl.train \
-        @ $CONFIG_DIR/trainer.toml \
+        @ $CONFIG_DIR/trainer.json \
         {% if use_zmq_transport %}--rollout_transport.host $ORCH_ADDR \
         {% endif %}2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log &
 {% if num_infer_nodes > 0 %}    fi{% endif %}
@@ -417,7 +417,7 @@ else
 # computation above). Top-level (after the role if/else) so the wait -n teardown
 # covers it.
 if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
-    ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
+    ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.json"
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.base-url $INFER_URLS"
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.admin-base-url $ADMIN_URLS"
 {%- if orchestrator_env_vars %}
@@ -436,12 +436,12 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     # the script fails to parse.
 {%- for name in train_env_names %}
     mkdir -p $OUTPUT_DIR/logs/envs/train
-    uv run env-server @ $CONFIG_DIR/envs/train/{{ name }}.toml \
+    uv run env-server @ $CONFIG_DIR/envs/train/{{ name }}.json \
         > $OUTPUT_DIR/logs/envs/train/{{ name }}.log 2>&1 &
 {%- endfor %}
 {%- for name in eval_env_names %}
     mkdir -p $OUTPUT_DIR/logs/envs/eval
-    uv run env-server @ $CONFIG_DIR/envs/eval/{{ name }}.toml \
+    uv run env-server @ $CONFIG_DIR/envs/eval/{{ name }}.json \
         > $OUTPUT_DIR/logs/envs/eval/{{ name }}.log 2>&1 &
 {%- endfor %}
 {%- endif %}

@@ -13,7 +13,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.utils.config import BaseConfig, cli, to_toml_dict
+from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
 
 # All config config classes
 CONFIG_CLASSES = [
@@ -161,20 +161,21 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_to_toml_dict_roundtrips_explicit_none(tmp_path):
-    """An explicit None override survives the write/re-parse round-trip used by SLURM launches."""
+def test_resolved_json_roundtrips_explicit_none(tmp_path):
+    """An explicit None override survives the write/re-parse round-trip used by launches:
+    resolved configs are JSON, which keeps nulls (TOML cannot)."""
+    import json
+
     config = cli(TrainerConfig, args=["--model.compile", "None", "--optim.max_norm", "None"])
     assert config.model.compile is None
     assert config.optim.max_norm is None
 
-    write_toml(tmp_path / "cfg.toml", to_toml_dict(config))
-    reloaded = cli(TrainerConfig, args=["@", str(tmp_path / "cfg.toml")])
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps(dump_resolved_config(config)))
+    reloaded = cli(TrainerConfig, args=["@", str(path)])
     assert reloaded.model.compile is None
     assert reloaded.optim.max_norm is None
     assert reloaded == config
-
-    # Unset None fields stay dropped, so defaults still resolve on re-parse
-    assert "max_steps" not in to_toml_dict(cli(TrainerConfig, args=[]))
 
 
 def test_env_algo_overrides_top_level():

@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -6,10 +7,8 @@ from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
 
-import tomli_w
-
 from prime_rl.configs.sft import SFTConfig
-from prime_rl.utils.config import cli, to_toml_dict
+from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir, validate_run_dir
 from prime_rl.utils.process import (
@@ -21,15 +20,15 @@ from prime_rl.utils.process import (
     set_proc_title,
 )
 
-SFT_TOML = "sft.toml"
+SFT_CONFIG = "sft.json"
 SFT_SBATCH = "sft.sbatch"
 
 
 def write_config(config: SFTConfig, config_path: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "wb") as f:
-        tomli_w.dump(to_toml_dict(config, exclude=exclude), f)
+    with open(config_path, "w") as f:
+        json.dump(dump_resolved_config(config, exclude=exclude), f, indent=2)
 
 
 def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path) -> None:
@@ -77,7 +76,7 @@ def sft_slurm(config: SFTConfig):
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir = get_config_dir(config.run_dir)
-    config_path = config_dir / SFT_TOML
+    config_path = config_dir / SFT_CONFIG
     exclude = (
         {"deployment", "slurm", "dry_run", "clean"}
         if config.deployment.type == "multi_node"
@@ -114,7 +113,7 @@ def sft_local(config: SFTConfig):
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir = get_config_dir(config.run_dir)
-    config_path = config_dir / SFT_TOML
+    config_path = config_dir / SFT_CONFIG
     write_config(config, config_path)
     logger.info(f"Wrote config to {config_path}")
 
@@ -140,7 +139,7 @@ def sft_local(config: SFTConfig):
         "-m",
         "prime_rl.trainer.sft.train",
         "@",
-        (config_dir / SFT_TOML).as_posix(),
+        (config_dir / SFT_CONFIG).as_posix(),
     ]
 
     logger.info(f"Starting SFT trainer with {config.deployment.num_gpus} GPU(s)")
