@@ -1379,6 +1379,17 @@ class FullCPUOffloadOptimizer:
                 self._gradient_manager.wait_for_output_slots()
         self._initialized = True
 
+    @torch.no_grad()
+    def finish_model_only_checkpoint_load(self) -> None:
+        if self._master_weights is None:
+            raise RuntimeError("Full optimizer offload has no master weights")
+        for master in self._master_weights.values():
+            if not isinstance(master.model_param, DTensor):
+                raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(master.model_param)}")
+            master.cpu_tensor.copy_(master.model_param.to_local(), non_blocking=True)
+        torch.cuda.synchronize()
+        self._initialized = True
+
 
 @torch.no_grad()
 def _create_cpu_master_weights(

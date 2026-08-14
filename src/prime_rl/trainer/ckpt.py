@@ -237,6 +237,10 @@ class CheckpointManager:
         app_state = AppState(model, optimizers if not self.skip_optimizer else [], scheduler, progress)
         state_dict = {"app": app_state}
         dcp_load(state_dict=state_dict, checkpoint_id=path)
+        if self.skip_optimizer:
+            for optimizer in optimizers:
+                if isinstance(optimizer, FullCPUOffloadOptimizer):
+                    optimizer.finish_model_only_checkpoint_load()
 
         # Load the dataloader
         if dataloader is not None:
