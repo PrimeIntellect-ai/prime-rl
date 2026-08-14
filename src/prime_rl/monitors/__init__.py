@@ -1,7 +1,7 @@
 """Metric monitors.
 
 Monitors are registered once per process via ``setup`` and used through the
-module-level functions (``log``, ``log_episodes``, ...), which fan out to every
+module-level functions (``log``, ``finalize``, ...), which fan out to every
 registered monitor. Fan-out never raises — a monitoring failure must not take
 down training.
 """
@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig, WandbMonitorConfig
-from prime_rl.monitors.base import Monitor
+from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file import FileMonitor
 from prime_rl.monitors.prime import PrimeMonitor
 from prime_rl.monitors.wandb import WandbMonitor
@@ -21,7 +21,7 @@ from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    import verifiers.v1 as vf
 
 __all__ = [
     "Monitor",
@@ -31,12 +31,12 @@ __all__ = [
     "setup",
     "get",
     "log",
-    "log_episodes",
     "finalize",
     "run_id",
 ]
 
-_monitors: list[Monitor] = []
+# All monitors registered for the current run.
+MONITORS: list[Monitor] = []
 
 
 def setup(
@@ -56,7 +56,7 @@ def setup(
     monitor must work. Prime registers first so ``run_id`` prefers the
     platform run id over W&B's.
     """
-    assert not _monitors, "Monitors already set up. Call `setup` only once per process."
+    assert not MONITORS, "Monitors already set up. Call `setup` only once per process."
     rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
     if rank != 0:
         return
@@ -81,41 +81,41 @@ def setup(
 
     for monitor, init_kwargs in monitors:
         monitor.init(**init_kwargs)
-        _monitors.append(monitor)
+        MONITORS.append(monitor)
 
 
 def get(monitor_cls: type[Monitor]) -> Monitor | None:
     """The registered monitor of the given type, None when it isn't running
     (not configured, or a non-zero rank)."""
-    return next((monitor for monitor in _monitors if isinstance(monitor, monitor_cls)), None)
+    return next((monitor for monitor in MONITORS if isinstance(monitor, monitor_cls)), None)
 
 
 def run_id() -> str | None:
     """External run id of this run (platform run id when available, else W&B's)."""
-    return next((monitor.run_id for monitor in _monitors if monitor.run_id), None)
+    return next((monitor.run_id for monitor in MONITORS if monitor.run_id), None)
 
 
-def log(metrics: dict[str, Any], step: int) -> None:
-    """Log scalar metrics for one step to all registered monitors."""
-    for monitor in _monitors:
+@overload
+def log(data: dict[str, Any], step: int) -> None: ...
+
+
+@overload
+def log(data: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None: ...
+
+
+def log(data: dict[str, Any] | list[vf.Episode], step: int, kind: Kind = "train", subset: Subset = "effective") -> None:
+    """Log to all registered monitors: a dict of scalar metrics, or episodes
+    with their cohort coordinates (train/eval x all/effective)."""
+    for monitor in MONITORS:
         try:
-            monitor.log(metrics, step=step)
+            monitor.log(data, step=step, kind=kind, subset=subset)
         except Exception as e:
-            get_logger().warning(f"Failed to log metrics to {monitor.__class__.__name__}: {e}")
-
-
-def log_episodes(rollouts: list[Rollout], step: int) -> None:
-    """Log full episodes to all registered monitors that support it."""
-    for monitor in _monitors:
-        try:
-            monitor.log_episodes(rollouts, step=step)
-        except Exception as e:
-            get_logger().warning(f"Failed to log episodes to {monitor.__class__.__name__}: {e}")
+            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
 def finalize() -> None:
     """Finalize the run on all registered monitors."""
-    for monitor in _monitors:
+    for monitor in MONITORS:
         try:
             monitor.finalize()
         except Exception as e:

@@ -6,25 +6,20 @@ import io
 import json
 import os
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Coroutine
+from typing import Any, Coroutine
 
 import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 import verifiers.v1 as vf
 from prime_cli.core.config import Config as PrimeConfig
-from verifiers.v1.episode import EnvInfo
 from verifiers.v1.utils.platform import build_samples
 
 from prime_rl.configs.monitors import PrimeMonitorConfig
-from prime_rl.monitors.base import Monitor
+from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import sanitize
-
-if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
-
 
 BASE_URL = "https://api.primeintellect.ai/api/v1/rft"
 API_KEY_VAR = "PRIME_API_KEY"
@@ -70,7 +65,8 @@ class PrimeMonitor(Monitor):
         if not api_key:
             raise RuntimeError(f"API key not found - set {API_KEY_VAR} or run `prime login`")
         self._owner_pid = os.getpid()
-        self._tasks: set[asyncio.Task] = set()
+        self._loop = asyncio.get_running_loop()
+        self._tasks: set[Any] = set()
 
         self.run = TrainRun(api_key, run_id=os.getenv("RUN_ID"))
         if self.run.id is None:
@@ -94,16 +90,16 @@ class PrimeMonitor(Monitor):
         os.environ["RUN_ID"] = self.run.id
         self.run_id = self.run.id
 
-    def log(self, metrics: dict[str, Any], step: int) -> None:
+    def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
         metrics, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
         self._submit("metrics upload", asyncio.to_thread(self.run.log_metrics, metrics))
 
-    def log_episodes(self, rollouts: list[Rollout], step: int) -> None:
-        """Upload one platform sample per episode via the presigned-URL Parquet flow."""
-        episodes = group_episodes(rollouts)
-        if not episodes:
+    def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
+        """Upload one platform sample per episode via the presigned-URL Parquet flow.
+        Only the trained cohort ships to the platform."""
+        if kind != "train" or subset != "effective" or not episodes:
             return
 
         def upload() -> None:
@@ -125,7 +121,8 @@ class PrimeMonitor(Monitor):
             self.run.set_status(success=False)
 
     def _submit(self, what: str, request: Coroutine[Any, Any, None]) -> None:
-        """Run a request as a fire-and-forget task; a failure only warns."""
+        """Run a request as a fire-and-forget task on the orchestrator's loop; a failure
+        only warns. Thread-safe, since the episode fan-out runs in a worker thread."""
 
         async def guarded() -> None:
             try:
@@ -133,7 +130,7 @@ class PrimeMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed {what} to Prime Intellect API: {type(e).__name__}: {e}")
 
-        task = asyncio.get_running_loop().create_task(guarded())
+        task = asyncio.run_coroutine_threadsafe(guarded(), self._loop)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -298,21 +295,3 @@ class TrainRun:
             self.client.put(f"/external-runs/{self.id}/status", json={"status": status}).raise_for_status()
         except httpx.HTTPError as e:
             self.logger.warning(f"Failed to mark platform run {self.id} as {status}: {e}")
-
-
-def group_episodes(rollouts: list[Rollout]) -> list[vf.Episode]:
-    """Regroup rollouts into their episodes. The dispatcher unwraps every
-    ``vf.Episode`` into its traces on arrival; ``episode_id`` links them back
-    together (a rollout without one forms a single-trace episode)."""
-    groups: dict[str, list[Rollout]] = {}
-    for rollout in rollouts:
-        groups.setdefault(rollout.episode_id or rollout.id, []).append(rollout)
-    return [
-        vf.Episode(
-            id=episode_id,
-            env=EnvInfo(id=group[0].env_name),
-            traces=group,
-            ok=all(trace.ok for trace in group),
-        )
-        for episode_id, group in groups.items()
-    ]

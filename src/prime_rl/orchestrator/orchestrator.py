@@ -66,8 +66,8 @@ from prime_rl.orchestrator.types import (
 )
 from prime_rl.orchestrator.utils import (
     get_weight_dir,
+    group_episodes,
     intercept_vf_logging,
-    save_rollouts,
     set_default_executor,
     setup_policy_inference_pool,
     trim_process_memory,
@@ -80,7 +80,6 @@ from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, s
 from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_trace_path
 from prime_rl.utils.utils import (
     clean_exit,
     resolve_latest_ckpt_step,
@@ -540,11 +539,7 @@ class Orchestrator:
                     episode_id=rollout.episode_id,
                     policy_version=rollout.policy_version,
                 )
-            await asyncio.to_thread(
-                save_rollouts,
-                [rollout.to_record() for rollout in episode],
-                get_trace_path(self.config.output_dir, step, kind, "all"),
-            )
+            await asyncio.to_thread(monitors.log, group_episodes(episode), step, kind, "all")
 
             if kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
@@ -561,7 +556,7 @@ class Orchestrator:
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
-        side-effects (ckpt, save_rollouts, reference scoring, sender.send,
+        side-effects (ckpt, monitors.log, reference scoring, sender.send,
         metrics, heartbeat, progress, eval trigger). The sink has already
         done all data-transformation work."""
         config = self.config
@@ -635,12 +630,9 @@ class Orchestrator:
             if self.train_envs.get(r.env_name).sampler.samples_from_live_policy:
                 r.off_policy_steps = (step - 1) - r.policy_version
 
-        # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
-        # at ship time; the full arrival window already streamed into ``all`` on arrival.
-        # to_record drops the per-node training tensors — they're for training, not the rollout
-        # record, and can't round-trip json (raw numpy bytes).
-        records = [r.to_record() for r in effective]
-        await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
+        # The effective (clean, trained-on) subset is logged at ship time; the full arrival
+        # window already streamed into the ``all`` cohort on arrival.
+        await asyncio.to_thread(monitors.log, group_episodes(effective.rollouts), step, "train", "effective")
 
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
@@ -694,7 +686,6 @@ class Orchestrator:
                 metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
         monitors.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
-        monitors.log_episodes(effective.rollouts, step=step)
 
         if self.heart is not None:
             self.heart.beat()
@@ -833,18 +824,16 @@ class Orchestrator:
         get_logger().success("\n\t\t ".join(lines))
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
-        """Persist + log one completed eval epoch (save_rollouts, monitors.log)."""
+        """Persist + log one completed eval epoch through the monitors."""
         if not batch.rollouts:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
             return
 
-        # The non-errored subset lands in the per-step ``effective`` trace file on epoch
-        # completion (multiple eval envs share the step file — each epoch appends its cohort
-        # once, and every record carries ``env_name``); the full returned cohort already
-        # streamed into ``all`` on arrival.
-        records = [r.to_record() for r in batch.rollouts.effective]
+        # The non-errored subset is logged on epoch completion (multiple eval envs share the
+        # step's trace file — each epoch appends its cohort once, and every record carries
+        # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
         await asyncio.to_thread(
-            save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
+            monitors.log, group_episodes(batch.rollouts.effective.rollouts), batch.step, "eval", "effective"
         )
         policy_versions = {r.policy_version for r in batch.rollouts}
         policy_version = min(policy_versions)

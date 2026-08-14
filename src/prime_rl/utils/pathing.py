@@ -102,13 +102,6 @@ def get_rollout_dir(output_dir: Path) -> Path:
     return output_dir / "rollouts"
 
 
-def get_trace_path(output_dir: Path, step: int, kind: str, subset: str) -> Path:
-    """Where one trace file lives: ``rollouts/step_{n}/{train,eval}/{all,effective}/traces.jsonl``.
-    ``all`` is appended per rollout the moment it completes; ``effective`` is written at once
-    per finalized train batch / eval epoch."""
-    return get_step_path(get_rollout_dir(output_dir), step) / kind / subset / "traces.jsonl"
-
-
 def get_eval_dir(output_dir: Path) -> Path:
     return output_dir / "evals"
 

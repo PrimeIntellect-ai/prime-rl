@@ -37,11 +37,11 @@ class PrimeMonitorConfig(BaseConfig):
 
 
 class MonitorsConfig(BaseConfig):
-    wandb: WandbMonitorConfig | None = None
-    """Log metrics to Weights & Biases. If None, W&B logging is disabled."""
+    wandb: WandbMonitorConfig | None = WandbMonitorConfig()
+    """Log metrics to Weights & Biases. On by default; disable with ``--no-monitors.wandb``."""
 
-    file: FileMonitorConfig | None = None
-    """Append metrics to a local JSONL file under the run's output directory. If None, disabled."""
+    file: FileMonitorConfig | None = FileMonitorConfig()
+    """Log metrics and episode traces to the run's output directory. On by default; disable with ``--no-monitors.file``."""
 
 
 class OrchestratorMonitorsConfig(MonitorsConfig):
