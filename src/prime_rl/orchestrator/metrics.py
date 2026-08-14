@@ -271,7 +271,7 @@ class EpisodeMetrics:
 
     def episodes(self) -> list[list[Rollout]]:
         """The subset's rollouts grouped into their episodes. A rollout without an
-        ``episode_id`` (legacy envs, synthesized error markers) is its own episode."""
+        ``episode_id`` (synthesized error markers) is its own episode."""
         grouped: dict[str, list[Rollout]] = {}
         for r in self.rollouts:
             grouped.setdefault(r.episode_id or r.id, []).append(r)

@@ -58,7 +58,7 @@ class FrozenModelConfig(ClientConfig):
 
     @model_validator(mode="after")
     def require_explicit_endpoint(self):
-        if "base_url" not in self.model_fields_set and not self.is_elastic:
+        if "base_url" not in self.model_fields_set:
             raise ValueError(
                 "a frozen model reference needs base_url — frozen models are externally "
                 "hosted; prime-rl only ever hosts the trainable policy."
@@ -246,7 +246,7 @@ class RAEAlgoConfig(BaseAlgoConfig):
     https://arxiv.org/abs/2506.24119): scalar advantage = reward minus a
     per-agent EMA baseline of that agent's own rewards, consumed by the ``rl``
     loss component. The advantage estimator for multi-agent self-play envs
-    (``kuhn-poker-v1`` and friends): in a zero-sum game the group mean is ~0
+    (``kuhn-poker`` and friends): in a zero-sum game the group mean is ~0
     whatever the policy does, so a group-relative baseline mixes the agents'
     opposite reward scales — a structural first-mover edge would read as
     permanent credit. Per-agent baselines measure each agent against its own
@@ -274,16 +274,16 @@ class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
 
     episode_agents: list[str] = Field(min_length=1)
     """Roles compared within one proposed problem. Use ``["solver"]`` for
-    ``proposer-solver-v1``."""
+    ``proposer-solver``."""
 
     def validate_env(self, env_config: vf.EnvConfig) -> None:
         """Require the proposer-solver structure used by the comparisons."""
         try:
-            from proposer_solver_v1 import ProposerSolverEnvConfig
+            from proposer_solver import ProposerSolverEnvConfig
         except ImportError as e:
             raise ValueError(
                 "algorithm 'hierarchical_grpo' requires a proposer-solver env, but the "
-                "proposer-solver-v1 package is not installed (`uv sync --all-packages`)."
+                "proposer-solver package is not installed (`uv sync --all-packages`)."
             ) from e
         if not isinstance(env_config, ProposerSolverEnvConfig):
             raise ValueError(

@@ -68,13 +68,12 @@ def propagate_shared_fields(data: Any) -> Any:
     propagate(
         "model.name",
         "trainer.model.name",
-        "inference.model.name",
+        "inference.vllm.model",
         "orchestrator.model.name",
     )
     propagate(
         "model.vlm",
         "trainer.model.vlm",
-        "inference.model.vlm",
         "orchestrator.model.vlm",
     )
 
@@ -91,7 +90,6 @@ def propagate_shared_fields(data: Any) -> Any:
     # ``orchestrator.ckpt`` has no ``output_dir`` field — trainer-only.
     propagate("ckpt.output_dir", "trainer.ckpt.output_dir")
     propagate("ckpt.interval", "trainer.ckpt.interval", "orchestrator.ckpt.interval")
-    propagate("ckpt.resume_step", "trainer.ckpt.resume_step", "orchestrator.ckpt.resume_step")
     propagate("ckpt.keep_last", "trainer.ckpt.keep_last", "orchestrator.ckpt.keep_last")
     propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval", "orchestrator.ckpt.keep_interval")
 
@@ -109,7 +107,7 @@ def propagate_shared_fields(data: Any) -> Any:
     # [file_monitor] leaf. (Bare empty ``[file_monitor]`` block enablement is at the end.)
     propagate("file_monitor.filename", "trainer.file_monitor.filename", "orchestrator.file_monitor.filename")
 
-    # [tokenizer]. ``chat_template`` also flows to ``inference.model`` (vLLM's
+    # [tokenizer]. ``chat_template`` also flows to ``inference.vllm`` (vLLM's
     # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
     # differ between sub-configs (auto-derived from model names, which may
     # differ for FP8-quantized inference variants).
@@ -123,7 +121,7 @@ def propagate_shared_fields(data: Any) -> Any:
         "tokenizer.chat_template",
         "trainer.tokenizer.chat_template",
         "orchestrator.tokenizer.chat_template",
-        "inference.model.chat_template",
+        "inference.vllm.chat_template",
     )
 
     # [rollout_transport] → both sub-configs (host is launcher-injected for zmq multi-node).
@@ -139,23 +137,7 @@ def propagate_shared_fields(data: Any) -> Any:
     # pass (the per-rank inference.toml drops slurm, so each rank still runs locally).
     propagate("slurm", "inference.slurm")
 
-    # output_dir: orchestrator gets a ``/run_default`` subdir so trainer +
-    # orchestrator nest under the same experiment root without colliding.
-    # Conflicts are reported against the *transformed* sub-config value, not
-    # the raw shared path, so the materialized config round-trips cleanly.
-    output_dir = get("output_dir")
-    if output_dir is not None:
-        expected = {
-            "trainer.output_dir": output_dir,
-            "orchestrator.output_dir": f"{output_dir}/run_default",
-        }
-        for sub, expected_value in expected.items():
-            sub_value = get(sub)
-            if sub_value is not None and sub_value != expected_value:
-                conflicts.append(("output_dir", sub))
-            fill(sub, expected_value)
-
-    # Cascade trainer.tokenizer.chat_template → inference.model.chat_template
+    # Cascade trainer.tokenizer.chat_template → inference.vllm.chat_template
     # (vLLM ``--chat-template``). Read trainer's value *after* the shared
     # propagation above so we cover both:
     #   - shared ``[tokenizer] chat_template`` (already filled all three above,
@@ -165,7 +147,7 @@ def propagate_shared_fields(data: Any) -> Any:
     #     would otherwise complain about the missing inference value).
     trainer_chat_template = get("trainer.tokenizer.chat_template")
     if trainer_chat_template is not None:
-        fill("inference.model.chat_template", trainer_chat_template)
+        fill("inference.vllm.chat_template", trainer_chat_template)
 
     # Bare ``[ckpt]`` / ``[wandb]`` block: presence-only signal that enables
     # the section with defaults on both sub-configs. Necessary because
@@ -212,9 +194,9 @@ def validate_shared_ckpt_config(
         raise ValueError(
             f"Trainer checkpoint interval ({trainer.ckpt.interval}) and orchestrator checkpoint interval ({orchestrator.ckpt.interval}) are not the same. Please specify the same checkpoint interval for both."
         )
-    if trainer.ckpt and orchestrator.ckpt and trainer.ckpt.resume_step != orchestrator.ckpt.resume_step:
+    if trainer.resume != orchestrator.resume:
         raise ValueError(
-            f"Trainer checkpoint resume step ({trainer.ckpt.resume_step}) and orchestrator checkpoint resume step ({orchestrator.ckpt.resume_step}) are not the same. Please specify the same checkpoint resume step for both."
+            f"Trainer resume ({trainer.resume}) and orchestrator resume ({orchestrator.resume}) are not the same. Please specify the same resume config for both."
         )
 
 
@@ -225,9 +207,9 @@ def validate_shared_model_name(
 ) -> None:
     # Orchestrator must match inference (it queries the inference server)
     if inference is not None:
-        if inference.model.name != orchestrator.model.name:
+        if inference.vllm.model != orchestrator.model.name:
             raise ValueError(
-                f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. "
+                f"Inference model name ({inference.vllm.model}) and orchestrator model name ({orchestrator.model.name}) are not the same. "
                 "The orchestrator queries the inference server and must use the same model name."
             )
         return
@@ -237,16 +219,6 @@ def validate_shared_model_name(
     if trainer.model.name != orchestrator.model.name:
         raise ValueError(
             f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.model.name}) are not the same. Please specify the same model name for both."
-        )
-
-
-def validate_shared_output_dir(
-    trainer: TrainerConfig,
-    orchestrator: OrchestratorConfig,
-) -> None:
-    if trainer.output_dir != orchestrator.output_dir.parent:
-        raise ValueError(
-            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory parent ({orchestrator.output_dir.parent}) are not the same. Please specify the same outputs directory for both."
         )
 
 
@@ -310,9 +282,9 @@ def validate_shared_tokenizer(
             f"Use the shared [tokenizer] config to set chat_template for both."
         )
     if inference is not None:
-        if trainer.tokenizer.chat_template != inference.model.chat_template:
+        if trainer.tokenizer.chat_template != inference.vllm.chat_template:
             raise ValueError(
-                f"Inference chat_template ({inference.model.chat_template!r}) does not match "
+                f"Inference chat_template ({inference.vllm.chat_template!r}) does not match "
                 f"the shared tokenizer chat_template ({trainer.tokenizer.chat_template!r}). "
                 f"Use the shared [tokenizer] config to set chat_template for all components."
             )

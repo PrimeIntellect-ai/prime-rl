@@ -1,10 +1,10 @@
 """End-to-end integration test for the Qwen3-VL renderer path.
 
-Walks a multimodal request through the full client stack — RendererClient
-→ renderers.client.generate → /inference/v1/generate features payload —
-with the HTTP layer mocked, and verifies that vLLM can deserialize the
-features back into engine inputs identical to what its own server-side
-processor would have produced for the same messages.
+Walks a multimodal request through ``renderers.client.generate`` — the
+tokenize + /inference/v1/generate features payload path the v1 train
+client drives — with the HTTP layer mocked, and verifies that vLLM can
+deserialize the features back into engine inputs identical to what its
+own server-side processor would have produced for the same messages.
 
 This is the strongest end-to-end check we can run without a GPU. The
 remaining missing piece (vLLM actually consuming the engine input,
@@ -17,7 +17,6 @@ import asyncio
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -43,9 +42,9 @@ pytestmark = pytest.mark.skipif(
 class _FakeOpenAI:
     """Minimal AsyncOpenAI stand-in that captures POST bodies.
 
-    The renderer client calls ``client.post(absolute_url, body=...)``;
-    we capture the body for assertions and return a canned generate
-    response so the parse-side of the flow runs.
+    ``renderers.client.generate`` calls ``client.post(absolute_url,
+    body=...)``; we capture the body for assertions and return a canned
+    generate response so the parse-side of the flow runs.
     """
 
     def __init__(self):
@@ -76,9 +75,9 @@ class _FakeOpenAI:
         return httpx.Response(200, content=json.dumps(payload).encode())
 
 
-def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm():
-    """Walk a Qwen3-VL multimodal turn through the renderer client and
-    verify the resulting ``/inference/v1/generate`` body has a valid
+def test_generate_qwen3_vl_e2e_features_payload_roundtrips_through_vllm():
+    """Walk a Qwen3-VL multimodal turn through ``renderers.client.generate``
+    and verify the resulting ``/inference/v1/generate`` body has a valid
     ``features`` payload that:
 
     1. parses through vLLM's ``GenerateRequest`` pydantic model,
@@ -89,13 +88,9 @@ def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm()
     """
     from PIL import Image
     from renderers.base import load_tokenizer
+    from renderers.client import generate
     from renderers.qwen3_vl import Qwen3VLRenderer
     from transformers import AutoProcessor
-    from verifiers.clients.renderer_client import RendererClient
-    from verifiers.types import (
-        ClientConfig,
-        UserMessage,
-    )
     from vllm.entrypoints.scale_out.token_in_token_out.mm_serde import decode_mm_kwargs_item
     from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateRequest
 
@@ -106,47 +101,37 @@ def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm()
 
     image_pad_id = tokenizer.convert_tokens_to_ids("<|image_pad|>")
 
-    # ── Manually wire a RendererClient bypassing the pool factory. ──────
-    client_cfg = ClientConfig(client_type="renderer", base_url="http://fake-host:8000/v1")
-    rc = object.__new__(RendererClient)
-    rc._config = client_cfg
-    rc._renderer = renderer
-    rc._pool_size = 1
-    rc._client = _FakeOpenAI()
-    rc.logger = MagicMock()
+    fake = _FakeOpenAI()
 
-    # ── Build a verifiers-shaped user message with an image. ────────────
+    # ── Build a user message with an image (OpenAI content-part shape). ─
     img = Image.new("RGB", (224, 224), color=(64, 128, 255))
-    # The renderer accepts the OpenAI ``image_url`` content-part shape —
-    # the same shape verifiers' UserMessage carries through.
-    user = UserMessage(
-        content=[
-            {"type": "text", "text": "What's in this picture?"},
-            # Embed the PIL image directly. The verifiers→renderer message
-            # converter forwards content unchanged for our purposes.
-            {"type": "image", "image": img},
-        ]
-    )
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What's in this picture?"},
+                # Embed the PIL image directly; the renderer consumes it as-is.
+                {"type": "image", "image": img},
+            ],
+        }
+    ]
 
-    # to_native_prompt converts to renderer-shaped messages.
-    prompt, _ = asyncio.run(rc.to_native_prompt([user]))
-    sampling = {"max_tokens": 16}
-
-    response = asyncio.run(
-        rc.get_native_response(
-            prompt=prompt,
+    result = asyncio.run(
+        generate(
+            client=fake,
+            renderer=renderer,
+            messages=messages,
             model=_MODEL,
-            sampling_args=sampling,
-            tools=None,
+            sampling_params={"max_tokens": 16},
+            # Explicit cap so generate() skips the /v1/models discovery round-trip.
+            max_prompt_len=1_000_000,
         )
     )
 
     # ── The HTTP body should carry a features payload. ──────────────────
-    fake = rc.client
-    assert isinstance(fake, _FakeOpenAI)
     assert len(fake.calls) == 1
     body = fake.calls[0]["body"]
-    assert "features" in body, "RendererClient should ship features for image content"
+    assert "features" in body, "generate should ship features for image content"
     features = body["features"]
 
     # ── Pydantic-roundtrip through vLLM's GenerateRequest model. ────────
@@ -184,7 +169,7 @@ def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm()
     assert item["image_grid_thw"].data.tolist() == expected_grid
 
     # ── Response parsed through renderer's parse_response. ──────────────
-    assert response["completion_ids"] == [50, 60, 151645]
+    assert result["completion_ids"] == [50, 60, 151645]
     # multi_modal_data surfaces on the result so the caller can persist it.
-    assert response["multi_modal_data"] is not None
-    assert len(response["multi_modal_data"].mm_items["image"]) == 1
+    assert result["multi_modal_data"] is not None
+    assert len(result["multi_modal_data"].mm_items["image"]) == 1

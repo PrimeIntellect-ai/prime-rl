@@ -29,7 +29,7 @@ max_completion_tokens = 128
 name = "reverse-text"
 
 [orchestrator.train.source.env.taskset]
-id = "reverse-text-v1"
+id = "reverse-text"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
@@ -38,11 +38,9 @@ id = "null"
 type = "subprocess"
 
 [inference]
-gpu_memory_utilization = 0.7
 
-[inference.model]
+[inference.vllm]
 max_model_len = 2048
-
-# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+gpu_memory_utilization = 0.7
 [orchestrator.renderer]
 name = "default"

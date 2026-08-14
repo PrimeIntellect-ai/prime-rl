@@ -7,12 +7,10 @@ from pathlib import Path
 from threading import Event, Thread
 from typing import Any
 
-import tomli_w
-
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.utils.config import cli, to_toml_dict
+from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir
+from prime_rl.utils.pathing import format_log_message, get_config_dir, latest_log_dir
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_INFERENCE_ENV_VARS,
@@ -20,7 +18,7 @@ from prime_rl.utils.process import (
     set_proc_title,
 )
 
-INFERENCE_TOML = "inference.toml"
+INFERENCE_CONFIG = "inference.json"
 INFERENCE_SBATCH = "inference.sbatch"
 
 
@@ -44,12 +42,12 @@ def write_config(
     engines — the sbatch script starts the single global router.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    config_path = output_dir / INFERENCE_TOML
-    toml_dict = to_toml_dict(config, exclude=exclude)
+    config_path = output_dir / INFERENCE_CONFIG
+    config_dict = dump_resolved_config(config, exclude=exclude)
     if engine_only:
-        toml_dict["router"] = "None"
-    with open(config_path, "wb") as f:
-        tomli_w.dump(toml_dict, f)
+        config_dict["router"] = None
+    with open(config_path, "w") as f:
+        json.dump(config_dict, f, indent=2)
     return config_path
 
 
@@ -64,7 +62,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
     template = env.get_template(config.slurm.template_path.name)
 
     is_disaggregated = config.deployment.type == "disaggregated"
-    dp_per_node = config.deployment.gpus_per_node // config.parallel.tp
+    dp_per_node = config.deployment.gpus_per_node // config.vllm.tensor_parallel_size
 
     offload = config.kv_cache_offload
     is_mooncake = offload is not None and offload.type == "mooncake"
@@ -100,7 +98,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             num_decode_replicas=config.deployment.num_decode_replicas,
             prefill_port=config.deployment.prefill_port,
             decode_port=config.deployment.decode_port,
-            data_parallel_rpc_port=config.data_parallel_rpc_port,
+            data_parallel_rpc_port=config.vllm.data_parallel_rpc_port,
             use_deep_gemm=config.use_deep_gemm,
             prefill_env_vars=config.deployment.prefill_env_vars,
             decode_env_vars=config.deployment.decode_env_vars,
@@ -110,8 +108,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
     elif is_multi_node:
         template_vars.update(
             backend_port=config.backend_port,
-            data_parallel_rpc_port=config.data_parallel_rpc_port,
-            enable_expert_parallel=config.enable_expert_parallel,
+            data_parallel_rpc_port=config.vllm.data_parallel_rpc_port,
+            enable_expert_parallel=config.vllm.enable_expert_parallel,
             infer_nodes_per_replica=config.deployment.num_nodes,
         )
 
@@ -137,7 +135,7 @@ def inference_slurm(config: InferenceConfig):
     write_slurm_script(config, config_path, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    log_dir = get_log_dir(config.output_dir)
+    log_dir = latest_log_dir(config.output_dir)
     num_nodes = getattr(config.deployment, "num_nodes", 1)
     log_message = format_log_message(log_dir=log_dir, inference=True, job_log=True, num_infer_nodes=num_nodes)
 
@@ -170,7 +168,7 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         "--worker-urls",
         f"http://{worker_host}:{config.backend_port}",
         "--intra-node-data-parallel-size",
-        str(config.data_parallel_size_local or config.parallel.dp),
+        str(config.vllm.data_parallel_size_local or config.vllm.data_parallel_size),
         "--request-id-headers",
         "x-session-id",
         "--worker-startup-timeout-secs",
@@ -222,7 +220,7 @@ def inference_local(config: InferenceConfig):
     from prime_rl.inference.vllm.server import server  # pyright: ignore
 
     try:
-        server(config, vllm_extra=config.vllm_extra)
+        server(config)
     finally:
         if router_process is not None:
             router_stopping.set()

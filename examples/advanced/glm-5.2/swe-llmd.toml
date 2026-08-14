@@ -1,7 +1,10 @@
 max_steps = 10000000
 seq_len = 131072
-output_dir = "/shared/outputs/glm5-llmd" # FILL IN: point at your shared filesystem
-clean_output_dir = true
+output_dir = "/shared/outputs" # FILL IN: point at your shared filesystem
+clean = true
+
+[run]
+name = "glm5-llmd"
 
 [log]
 level = "debug"
@@ -48,7 +51,6 @@ num_decode_replicas = 1
 "max_num_batched_tokens" = 96
 "max_num_seqs" = 96
 
-
 [inference.router]
 type = "llm-d"
 
@@ -66,6 +68,16 @@ non_cached_tokens = 128 # if <128 tokens, skip prefill go to decode immediately
 "kv-cache-utilization-scorer" = 4.0
 "queue-scorer" = 3.0
 
+[inference.vllm]
+model = "zai-org/GLM-5.1-FP8"
+max_model_len = 131072
+tool_call_parser = "glm47"
+reasoning_parser = "glm45"
+gpu_memory_utilization = 0.75
+enable_expert_parallel = true
+enable_eplb = false
+enable_ep_weight_filter = true
+safetensors_load_strategy = "prefetch"
 [slurm]
 job_name = "glm5-llmd"
 partition = "all" # FILL IN: set to your cluster's partition
@@ -118,40 +130,23 @@ temperature = 1.0
 [orchestrator.train.sampling.extra_body.chat_template_kwargs]
 clear_thinking = false
 
-
 [[orchestrator.train.source]]
 name = "r2e"
 
 [orchestrator.train.source.env.taskset]
-id = "r2e-gym-v1"
+id = "r2e-gym"
 
 [orchestrator.train.source.env.agent.harness]
 id = "rlm"
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
 labels = ["glm5-llmd"]
 
 [inference]
-enable_expert_parallel = true
 # <0.80 because glm5 layers are too large for 0.85
-gpu_memory_utilization = 0.75
-enable_eplb = false
 use_deep_gemm = true
 enable_fp32_lm_head = true
 
-[inference.model]
-name = "zai-org/GLM-5.1-FP8"
-max_model_len = 131072
-tool_call_parser = "glm47"
-reasoning_parser = "glm45"
-
-# Speed up GLM-5.1 weight load: EP weight filtering + safetensors prefetch.
-[inference.vllm_extra]
-enable_ep_weight_filter = true
-safetensors_load_strategy = "prefetch"
-
-# Mooncake distributed CPU KV store: 1TB/node shared pool across all inference nodes.
 [inference.kv_cache_offload]
 type = "mooncake"
 # Auto Detection is funky, do it yourself from nvidia-smi topo -m

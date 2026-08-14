@@ -50,13 +50,12 @@ max_off_policy_steps = 16
 name = "swe"
 
 [orchestrator.train.source.env.taskset]
-id = "r2e-gym-v1"
+id = "r2e-gym"
 
 [orchestrator.train.source.env.agent.harness]
 id = "bash"
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
 labels = ["qwen30b-swe", "swe"]
 
 [orchestrator.eval]
@@ -66,14 +65,13 @@ interval = 25
 name = "swe-bench-verified"
 
 [orchestrator.eval.source.env.taskset]
-id = "swebench-verified-v1"
+id = "swebench-verified"
 
 [orchestrator.eval.source.env.agent.harness]
 id = "bash"
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
 labels = ["qwen30b-swe", "swe-bench-verified"]
 
-[inference.parallel]
-tp = 8
+[inference.vllm]
+tensor_parallel_size = 8

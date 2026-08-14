@@ -50,7 +50,7 @@ CLI flags mirror the TOML tree using dots:
 --max-steps 50                              # top-level
 --model.name Qwen/Qwen3-4B                  # nested
 --trainer.optim.lr 1e-5                     # double-nested
---inference.parallel.tp 4
+--inference.vllm.tensor-parallel-size 4
 ```
 
 > Field names are snake_case in TOML (`max_model_len`) and kebab-case on the CLI (`--max-model-len`).
@@ -61,7 +61,7 @@ CLI flags mirror the TOML tree using dots:
 
 ```bash
 uv run rl --help                                       # full schema
-uv run rl @ rl.toml --dry-run --output-dir /tmp/check  # write resolved configs
+uv run rl @ rl.toml --dry-run --output-dir /tmp --run.name check  # write resolved configs (JSON) to /tmp/check/configs
 ```
 
 ## Syntax
@@ -71,12 +71,12 @@ uv run rl @ rl.toml --dry-run --output-dir /tmp/check  # write resolved configs
 CLI uses paired flags: bare `--flag` sets `True`, `--no-flag` sets `False`. TOML must be explicit:
 
 ```bash
-uv run rl @ rl.toml --clean-output-dir       # True
-uv run rl @ rl.toml --no-clean-output-dir    # False
+uv run rl @ rl.toml --clean       # True
+uv run rl @ rl.toml --no-clean    # False
 ```
 
 ```toml
-clean_output_dir = true
+clean = true
 ```
 
 ### Lists
@@ -126,11 +126,11 @@ To **disable** a sub-config that's on by default, use `--no-<name>` on the CLI o
 TOML has no `null`. Use the string `"None"`, which the loader coerces:
 
 ```toml
-[inference.model]
+[inference.vllm]
 max_model_len = "None"
 ```
 
-On the CLI: `--inference.model.max-model-len None`.
+On the CLI: `--inference.vllm.max-model-len None`.
 
 ### Discriminated Unions
 
@@ -155,7 +155,7 @@ name = "gsm8k"
 ratio = 3  # 75% of batches
 
 [orchestrator.train.source.env.taskset]
-id = "gsm8k-v1"
+id = "gsm8k"
 split = "train"
 
 [orchestrator.train.source.env.agent.harness]
@@ -169,7 +169,7 @@ name = "reverse-text"
 ratio = 1  # default — 25% of batches
 
 [orchestrator.train.source.env.taskset]
-id = "reverse-text-v1"
+id = "reverse-text"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
@@ -181,7 +181,7 @@ type = "subprocess"
 name = "gsm8k-eval"
 
 [orchestrator.eval.source.env.taskset]
-id = "gsm8k-v1"
+id = "gsm8k"
 split = "test"
 
 [orchestrator.eval.source.env.agent.harness]
@@ -260,14 +260,15 @@ uv run rl @ examples/basic/reverse-text/rl.toml \
   --wandb.name my-experiment \
   --trainer.optim.lr 5e-6 \
   --output-dir /tmp/reverse-dry \
+  --run.name check \
   --dry-run
 ```
 
 Then inspect the resolved config:
 
 ```bash
-ls /tmp/reverse-dry/configs/
-# rl.toml  trainer.toml  orchestrator.toml  inference.toml
+ls /tmp/reverse-dry/check/configs/
+# rl.json  trainer.json  orchestrator.json  inference.json
 ```
 
-Each per-process TOML reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/configs/trainer.toml`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.
+Each per-process TOML reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/check/configs/trainer.json`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.

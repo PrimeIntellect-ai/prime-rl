@@ -27,7 +27,7 @@ enforce = true
 name = "wiki-search"
 
 [orchestrator.train.source.env.taskset]
-id = "wiki-search-v1"
+id = "wiki-search"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
@@ -40,8 +40,6 @@ max_completion_tokens = 512
 
 [trainer]
 
-[inference.parallel]
-dp = 4
-
-[inference.model]
+[inference.vllm]
 tool_call_parser = "hermes"
+data_parallel_size = 4

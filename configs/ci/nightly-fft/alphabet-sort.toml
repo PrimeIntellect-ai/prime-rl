@@ -22,7 +22,7 @@ group_size = 16
 name = "alphabet-sort"
 
 [orchestrator.train.source.env.taskset]
-id = "alphabet-sort-v1"
+id = "alphabet-sort"
 min_turns = 3
 max_turns = 5
 
@@ -40,5 +40,5 @@ max_completion_tokens = 768
 
 [trainer]
 
-[inference.parallel]
-dp = 4
+[inference.vllm]
+data_parallel_size = 4

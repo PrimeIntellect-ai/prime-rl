@@ -29,7 +29,8 @@ timeout = 3600
 [ckpt]
 interval = 50
 keep_last = 1
-resume_step = -1
+
+[resume]
 
 [model]
 name = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
@@ -85,16 +86,13 @@ truncate_history_thinking = false
 name = "scaleswe"
 
 [orchestrator.train.source.env.taskset]
-id = "scaleswe-v1"
+id = "scaleswe"
 
 [orchestrator.train.source.env.agent.harness]
 id = "rlm"
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["nemotron-3-super-swe"]
 
 [orchestrator.prime_monitor]
@@ -106,29 +104,24 @@ interval = 20
 name = "swebench-verified"
 
 [orchestrator.eval.source.env.taskset]
-id = "swebench-verified-v1"
+id = "swebench-verified"
 
 [orchestrator.eval.source.env.agent.harness]
 id = "rlm"
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["nemotron-3-super-swe"]
 
 [orchestrator.eval.source.env.agent.timeout]
 rollout = 3600
 
 [inference]
+# vLLM disables prefix caching by default for hybrid-Mamba models; SWE turns share long prefixes.
+
+[inference.vllm]
+max_model_len = 131072
+tensor_parallel_size = 8
+enable_prefix_caching = true
 enable_expert_parallel = true
 enable_return_routed_experts = true
-# vLLM disables prefix caching by default for hybrid-Mamba models; SWE turns share long prefixes.
-enable_prefix_caching = true
-
-[inference.model]
-max_model_len = 131072
-
-[inference.parallel]
-tp = 8

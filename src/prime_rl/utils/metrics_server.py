@@ -7,7 +7,6 @@ Runs in a background thread to avoid blocking the training loop.
 
 import threading
 import time
-from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING
 
@@ -16,17 +15,6 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, gen
 
 if TYPE_CHECKING:
     from prime_rl.configs.shared import MetricsServerConfig
-
-
-@dataclass
-class RunStats:
-    """Statistics for a single run/LoRA adapter."""
-
-    run_id: str
-    step: int
-    total_tokens: int
-    learning_rate: float
-    ready: bool
 
 
 class HealthServer:
@@ -115,36 +103,6 @@ class MetricsServer(HealthServer):
             "trainer_mismatch_kl", "KL divergence between trainer and inference model", registry=self._registry
         )
         self._kl_ent_ratio = Gauge("trainer_kl_ent_ratio", "Ratio of mismatch KL to entropy", registry=self._registry)
-        self._zero_grad_ratio = Gauge(
-            "trainer_zero_grad_ratio",
-            "Fraction of tracked parameter elements with zero gradient",
-            registry=self._registry,
-        )
-        # Aggregate run metrics
-        self._runs_discovered = Gauge(
-            "trainer_runs_discovered", "Number of run folders discovered", registry=self._registry
-        )
-        self._runs_active = Gauge("trainer_runs_active", "Number of runs with assigned slots", registry=self._registry)
-        self._runs_ready = Gauge(
-            "trainer_runs_ready", "Number of runs ready for gradient updates", registry=self._registry
-        )
-        self._runs_max = Gauge("trainer_runs_max", "Maximum run capacity", registry=self._registry)
-        # Per-run metrics with labels
-        self._run_step = Gauge("trainer_run_step", "Training step for run", ["run"], registry=self._registry)
-        self._run_tokens = Gauge(
-            "trainer_run_tokens", "Total tokens processed by run", ["run"], registry=self._registry
-        )
-        self._run_learning_rate = Gauge(
-            "trainer_run_learning_rate", "Current learning rate for run", ["run"], registry=self._registry
-        )
-        self._run_ready = Gauge(
-            "trainer_run_ready",
-            "Whether run is ready for updates (1=ready, 0=not ready)",
-            ["run"],
-            registry=self._registry,
-        )
-        # Track known run labels for cleanup
-        self._known_runs: set[str] = set()
 
     def _make_handler(self) -> type[BaseHTTPRequestHandler]:
         """Create handler with /metrics and /health endpoints."""
@@ -201,7 +159,6 @@ class MetricsServer(HealthServer):
         mfu: float = 0.0,
         entropy: float = 0.0,
         mismatch_kl: float = 0.0,
-        zero_grad_ratio: float = 0.0,
     ) -> None:
         """Update metrics after a training step."""
         self._step.set(step)
@@ -214,46 +171,6 @@ class MetricsServer(HealthServer):
         self._mfu.set(mfu)
         self._entropy.set(entropy)
         self._mismatch_kl.set(mismatch_kl)
-        self._zero_grad_ratio.set(zero_grad_ratio)
         if entropy > 0:
             self._kl_ent_ratio.set(mismatch_kl / entropy)
         self._last_step_ts.set(time.time())
-
-    def update_runs(
-        self,
-        runs_discovered: int,
-        runs_max: int,
-        run_stats: list[RunStats],
-    ) -> None:
-        """Update run/LoRA metrics.
-
-        Args:
-            runs_discovered: Number of run_* folders found in output directory
-            runs_max: Maximum run capacity
-            run_stats: List of per-run statistics
-        """
-        # Update aggregate metrics
-        self._runs_discovered.set(runs_discovered)
-        self._runs_active.set(len(run_stats))
-        self._runs_ready.set(sum(1 for r in run_stats if r.ready))
-        self._runs_max.set(runs_max)
-
-        # Track current runs for cleanup
-        current_runs = {r.run_id for r in run_stats}
-
-        # Remove metrics for runs that no longer exist
-        removed_runs = self._known_runs - current_runs
-        for run_id in removed_runs:
-            self._run_step.remove(run_id)
-            self._run_tokens.remove(run_id)
-            self._run_learning_rate.remove(run_id)
-            self._run_ready.remove(run_id)
-
-        # Update per-run metrics
-        for run in run_stats:
-            self._run_step.labels(run=run.run_id).set(run.step)
-            self._run_tokens.labels(run=run.run_id).set(run.total_tokens)
-            self._run_learning_rate.labels(run=run.run_id).set(run.learning_rate)
-            self._run_ready.labels(run=run.run_id).set(1 if run.ready else 0)
-
-        self._known_runs = current_runs

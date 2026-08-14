@@ -2,7 +2,9 @@ max_steps = 20
 seq_len = 2048
 
 [ckpt]
-resume_step = 15
+
+[resume]
+step = 15
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
@@ -30,7 +32,7 @@ max_completion_tokens = 128
 name = "reverse-text"
 
 [orchestrator.train.source.env.taskset]
-id = "reverse-text-v1"
+id = "reverse-text"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
@@ -39,10 +41,12 @@ id = "null"
 type = "subprocess"
 
 [inference]
-enable_lora = true
-gpu_memory_utilization = 0.7
 
 # PrimeIntellect Qwen3 fine-tune - select its renderer explicitly (the -SFT
 # suffix misses the MODEL_RENDERER_MAP exact match).
+
+[inference.vllm]
+enable_lora = true
+gpu_memory_utilization = 0.7
 [orchestrator.renderer]
 name = "prime-qwen3"

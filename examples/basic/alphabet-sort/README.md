@@ -1,6 +1,6 @@
 # Alphabet Sort
 
-In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort names alphabetically using LoRA. Unlike other examples, this task doesn't require SFT warmup as the base model already understands the conversation format. We proceed directly to multi-turn RL against the `alphabet-sort-v1` taskset.
+In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort names alphabetically using LoRA. Unlike other examples, this task doesn't require SFT warmup as the base model already understands the conversation format. We proceed directly to multi-turn RL against the `alphabet-sort` taskset.
 
 > This example runs on a single H100 GPU.
 
@@ -9,7 +9,7 @@ In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to sort na
 The taskset is included through the Verifiers workspace. After syncing the repository, verify it with:
 
 ```bash
-uv run python -c "import alphabet_sort_v1"
+uv run python -c "import alphabet_sort"
 ```
 
 Start the tmux session:
@@ -32,13 +32,13 @@ We use non-default settings to balance the difficulty: 3 fixed turns (instead of
 Start the inference server:
 ```bash
 # In the `Inference` pane
-uv run inference --enable-lora --model.name Qwen/Qwen3-4B-Instruct-2507
+uv run inference --vllm.enable-lora --vllm.model Qwen/Qwen3-4B-Instruct-2507
 ```
 
 Evaluate the base model:
 ```bash
 # In the `Trainer` pane
-uv run eval alphabet-sort-v1 --harness.id null \
+uv run eval alphabet-sort --harness.id null \
   -m Qwen/Qwen3-4B-Instruct-2507 \
   --client.base-url http://localhost:8000/v1 \
   -n 20 \
@@ -93,14 +93,15 @@ We train with LoRA (rank 32, alpha 64) for 100 steps.
 ```bash
 # In the `Trainer` pane
 uv run rl @ examples/basic/alphabet-sort/rl.toml \
+  --run.name rl \
   --wandb.project ... \
   --wandb.name ...
 ```
 
-This will write a weight checkpoint in `outputs/weights/step_100`. Upload it to HF to be able to use it as the final model for evaluation.
+This will write a weight checkpoint in `outputs/rl/weights/step_100`. Upload it to HF to be able to use it as the final model for evaluation.
 
 ```bash
-uv run hf upload <user>/Qwen3-4B-Instruct-AlphabetSort-RL outputs/weights/step_100
+uv run hf upload <user>/Qwen3-4B-Instruct-AlphabetSort-RL outputs/rl/weights/step_100
 ```
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL`](https://huggingface.co/PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL).
@@ -110,12 +111,12 @@ We have uploaded the final model as [`PrimeIntellect/Qwen3-4B-Instruct-AlphabetS
 Let's see how our final RL checkpoint performs on the eval set.
 ```bash
 # In the `Inference` pane
-uv run inference --enable-lora --model.name PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL
+uv run inference --vllm.enable-lora --vllm.model PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL
 ```
 
 ```bash
 # In the `Trainer` pane
-uv run eval alphabet-sort-v1 --harness.id null \
+uv run eval alphabet-sort --harness.id null \
   -m PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL \
   --client.base-url http://localhost:8000/v1 \
   -n 20 \

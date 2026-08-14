@@ -95,7 +95,7 @@ cd prime-rl
 2. Initialize submodules
 
 ```bash
-git submodule update --init -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
+git submodule update --init -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
 ```
 
 3. Install [uv](https://docs.astral.sh/uv/)
@@ -157,7 +157,7 @@ uv run trainer @ configs/debug/fake/rl.toml
 5. Check that you can run the inference server (*this requires 1 GPU*)
 
 ```bash
-uv run inference --model.name Qwen/Qwen3-0.6B
+uv run inference --vllm.model Qwen/Qwen3-0.6B
 ```
 
 6. Check that the full RL stack (inference + orchestrator + trainer) runs end-to-end (*this requires 2 GPUs*)
@@ -218,7 +218,7 @@ Check out the [docs](docs) directory for in-depth guides on how to use prime-rl.
 - [**Training**](docs/training.md) - RL, SFT, evals, checkpointing, observability, rules of thumb
 - [**Scaling**](docs/scaling.md) - Single-GPU through multi-node, FSDP/EP/CP, SLURM, benchmarking
 - [**Algorithms**](docs/algorithms.md) - Async/off-policy training, the AIPO loss, advantage and filter plugins, trajectory merging
-- [**Advanced**](docs/advanced.md) - Custom modeling, multimodal training, LoRA, multi-tenant training
+- [**Advanced**](docs/advanced.md) - Custom modeling, multimodal training, LoRA
 - [**Development**](docs/development.md) - Test suite, pre-commit hooks, adding a new model
 
 ## Contributing

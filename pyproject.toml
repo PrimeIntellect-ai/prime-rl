@@ -33,7 +33,7 @@ dependencies = [
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
     "torchtitan",
-    "verifiers[harbor]>=0.3.0",
+    "verifiers[harbor]>=0.3.1.dev14",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
@@ -128,28 +128,28 @@ override-dependencies = [
     "openenv-core",
 ]
 
-# research-environments packages are auto-discovered as workspace members, so new
+# prime-envs packages are auto-discovered as workspace members, so new
 # envs there need no per-package registration. verifiers' example envs are opt-in:
 # only the ones prime-rl trains or tests on are listed, so an upstream example with
 # conflicting pins can't break the shared lock. Install them with
 # `uv sync --all-packages`.
 [tool.uv.workspace]
 members = [
-    "deps/research-environments/environments/*/*",
-    "deps/verifiers/environments/alphabet_sort_v1",
-    "deps/verifiers/environments/color_codeword_v1",
-    "deps/verifiers/environments/gsm8k_v1",
-    "deps/verifiers/environments/kuhn_poker_v1",
-    "deps/verifiers/environments/proposer_solver_v1",
-    "deps/verifiers/environments/reverse_text_v1",
-    "deps/verifiers/environments/wiki_search_v1",
-    "deps/verifiers/environments/wordle_v1",
+    "deps/prime-envs/environments/*/*",
+    "deps/verifiers/environments/alphabet_sort",
+    "deps/verifiers/environments/color_codeword",
+    "deps/verifiers/environments/gsm8k",
+    "deps/verifiers/environments/kuhn_poker",
+    "deps/verifiers/environments/proposer_solver",
+    "deps/verifiers/environments/reverse_text",
+    "deps/verifiers/environments/wiki_search",
+    "deps/verifiers/environments/wordle",
 ]
-# tau2-synth-v1 and tau3-bench-v1 pin `tau2` forks/revs that conflict with the
-# canonical tau2-bench-v1; a workspace shares one lock, so these can't coexist.
+# tau2-synth and tau3-bench pin `tau2` forks/revs that conflict with the
+# canonical tau2-bench; a workspace shares one lock, so these can't coexist.
 exclude = [
-    "deps/research-environments/environments/tool_use/tau2_synth_v1",
-    "deps/research-environments/environments/tool_use/tau3_bench_v1",
+    "deps/prime-envs/environments/tool_use/tau2_synth",
+    "deps/prime-envs/environments/tool_use/tau3_bench",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
@@ -195,10 +195,8 @@ torchao = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
-# prime-rl depends on the one `verifiers` package (v0 + v1 + the legacy bridge + the built-in v1
-# harnesses/tasksets, now bundled in verifiers.v1). v0 envs resolve from
-# deps/{verifiers,research-environments}/environments; v1 tasksets (`-v1`) and the `compact`
-# example live under deps/{verifiers,research-environments}/environments.
+# prime-rl consumes `verifiers.v1` (incl. the built-in harnesses/tasksets); env tasksets
+# live under deps/{verifiers,prime-envs}/environments.
 verifiers = { path = "deps/verifiers", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
@@ -263,6 +261,7 @@ select = ["F", "I"]
 # Without this, ruff classifies prime_rl.configs.* as third-party because it
 # doesn't live under src/.
 known-first-party = ["prime_rl"]
+known-third-party = ["verifiers", "renderers", "pydantic_config"]
 
 [tool.ruff]
 line-length = 120

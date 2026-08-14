@@ -37,4 +37,5 @@ uv sync --all-extras --all-packages
 # Pre-run command
 {{ pre_run_command }}
 {% endif %}
+export PRL_RUN_ID=${PRL_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
 uv run rl @ {{ config_path }}

@@ -1,12 +1,13 @@
+import json
 from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
-from prime_rl.configs.shared import BaseModelConfig, EnvVars, LogConfig, SlurmConfig
-from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
+from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
+from prime_rl.utils.config import find_package_resource
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
 # TODO: Set thinking/ solution budget
@@ -23,61 +24,192 @@ class ServerConfig(BaseConfig):
     """Timeout in seconds for the ``/liveness`` endpoint's internal vLLM worker RPC. With Kubernetes liveness probes, keep the probe ``timeoutSeconds`` at least this high."""
 
 
-class ParallelConfig(BaseConfig):
-    tp: int = 1
-    """Tensor parallel size. Forwarded to vLLM as ``--tensor-parallel-size``."""
+# Valid vLLM max_lora_rank values (`vllm.config.lora.MaxLoRARanks`), excluding 1 so
+# tiny adapters round up to 8. Hardcoded rather than imported: prime-rl-configs does
+# not depend on vLLM, and importing it costs seconds in every config-parsing process.
+VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
-    dp: int = Field(1, ge=1)
-    """Data parallel size. Forwarded to vLLM as ``--data-parallel-size``."""
+# vLLM all2all backend options for expert-parallel deployments.
+All2AllBackend = Literal[
+    "allgather_reducescatter",
+    "deepep_high_throughput",
+    "deepep_low_latency",
+    "flashinfer_nvlink_one_sided",
+    "flashinfer_nvlink_two_sided",
+]
 
-    def __str__(self) -> str:
-        return f"tp={self.tp} dp={self.dp}"
 
+class VllmConfig(BaseConfig):
+    """Arguments forwarded to the vLLM server, under vLLM's own argument names
+    (https://docs.vllm.ai/en/latest/configuration/engine_args.html).
 
-class ModelConfig(BaseModelConfig):
-    """Configures the inference model. Most arguments are passed directly to the vLLM LLM class (https://docs.vllm.ai/en/latest/api/vllm.LLM.html).
+    The fields below are the arguments prime-rl types, defaults, or reads back;
+    any other vLLM argument can be set as well (``[inference.vllm] max_num_seqs = 256``
+    or ``--vllm.max-num-seqs 256``) and passes through to the server verbatim.
 
     Parser fields (``tool_call_parser``, ``reasoning_parser``) default to ``"auto"``,
     which resolves to a concrete parser name at validation time from the model name.
     Set to ``None`` to disable.
     """
 
+    model_config = ConfigDict(extra="allow")
+
+    model: str = "Qwen/Qwen3-0.6B"
+    """HF model name or local path."""
+
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
-    """dtype for model weights and activations. ``auto`` uses FP16 for FP32/FP16 models and BF16 for BF16 models. Forwarded as ``--dtype``."""
+    """dtype for model weights and activations. ``auto`` uses FP16 for FP32/FP16 models and BF16 for BF16 models."""
 
     max_model_len: int | None = None
-    """Maximum model context length. If None, uses the model config's value. Forwarded as ``--max-model-len``."""
+    """Maximum model context length. If None, uses the model config's value."""
 
     enforce_eager: bool = False
-    """Enforce eager mode. When False, PyTorch eager and cuda graphs run hybrid for maximum performance. Forwarded as ``--enforce-eager``."""
+    """Enforce eager mode. When False, PyTorch eager and cuda graphs run hybrid for maximum performance."""
 
     trust_remote_code: bool = False
-    """Trust remote code. Forwarded to vLLM engine init."""
+    """Trust remote code when loading the model."""
 
     chat_template: str | None = None
-    """Chat template — a Jinja2 template string or path to a template file. Forwarded as ``--chat-template``. If None, uses the model's default."""
+    """Chat template — a Jinja2 template string or path to a template file. If None, uses the model's default."""
 
     tool_call_parser: str | None = "auto"
-    """Tool-call parser. Forwarded as ``--tool-call-parser``. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable."""
+    """Tool-call parser. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable."""
 
     reasoning_parser: str | None = "auto"
-    """Parser for extracting reasoning content from model outputs. Forwarded as ``--reasoning-parser``. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable."""
+    """Parser for extracting reasoning content from model outputs. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable."""
 
     rope_scaling: dict[str, Any] | str | None = None
-    """RoPE scaling configuration as a dict (e.g. ``{rope_type="yarn", factor=4.0, original_max_position_embeddings=32768}``). Forwarded as ``--rope-scaling``."""
+    """RoPE scaling configuration as a dict (e.g. ``{rope_type="yarn", factor=4.0, original_max_position_embeddings=32768}``)."""
+
+    tensor_parallel_size: int = 1
+    """Tensor parallel size."""
+
+    data_parallel_size: int = Field(1, ge=1)
+    """Data parallel size."""
+
+    data_parallel_size_local: int | None = Field(None, ge=1)
+    """Data parallel replicas to run on this node."""
+
+    data_parallel_rpc_port: int = Field(13345, ge=1, le=65535)
+    """RPC port for data parallel communication."""
+
+    api_server_count: int = Field(1, ge=0)
+    """API servers to run. Set to 0 for headless mode."""
+
+    seed: int = 0
+    """Seed the inference components."""
+
+    gpu_memory_utilization: float = 0.9
+    """GPU memory utilization."""
+
+    enable_prefix_caching: bool | None = None
+    """Enable prefix caching."""
+
+    quantization: str | None = None
+    """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
+
+    enable_lora: bool = False
+    """Enable LoRA."""
+
+    max_loras: int = 8
+    """Maximum number of LoRAs."""
+
+    # TODO: The default value is very high because our areal impl for lora isn't ideal
+    # We add a lora with the same name instead of changing weights inplace
+    # Because we dont cancel requests that are past max_async, these requests could be using a LoRA that gets unloaded which will crash the inference server
+    max_cpu_loras: int = 100
+    """Maximum number of LoRAs on CPU."""
+
+    max_lora_rank: int | None = None
+    """Maximum LoRA rank. Rounded up to the nearest value vLLM accepts."""
+
+    lora_target_modules: list[str] | None = None
+    """LoRA target modules."""
+
+    enable_expert_parallel: bool = False
+    """Enable expert parallelism for MoE models."""
+
+    all2all_backend: All2AllBackend = "allgather_reducescatter"
+    """All-to-all backend for expert-parallel communication."""
+
+    enable_eplb: bool = False
+    """Enable expert parallel load balancer (EPLB)."""
+
+    enable_dbo: bool = False
+    """Enable dual batch overlap (DBO)."""
+
+    enable_return_routed_experts: bool = False
+    """Return routed experts in responses."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_extra_values(cls, data: dict) -> dict:
+        """Normalize pass-through (untyped) entries: kebab-case keys become snake_case,
+        and string values — which is how CLI overrides arrive — are JSON-parsed so
+        ``--vllm.max-num-seqs 256`` lands as an int and ``--vllm.compilation-config
+        '{"cudagraph_mode": "NONE"}'`` as a dict. Non-JSON strings stay strings."""
+        if not isinstance(data, dict):
+            return data
+        for key in [k for k in data if k not in cls.model_fields]:
+            value = data.pop(key)
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    pass
+            data[key.replace("-", "_")] = value
+        return data
 
     @model_validator(mode="after")
     def auto_resolve_parsers(self):
         """Resolve ``"auto"`` parser values to concrete parser names from the model name.
 
         Runs after ``RLConfig.auto_setup_shared_configs`` (mode=before) has
-        propagated the shared ``[model] name`` into ``inference.model``, so the
+        propagated the shared ``[model] name`` into ``inference.vllm``, so the
         name is set even when only the shared block specifies it.
         """
         if self.tool_call_parser == "auto":
-            self.tool_call_parser = resolve_tool_call_parser(self.name)
+            self.tool_call_parser = resolve_tool_call_parser(self.model)
         if self.reasoning_parser == "auto":
-            self.reasoning_parser = resolve_reasoning_parser(self.name)
+            self.reasoning_parser = resolve_reasoning_parser(self.model)
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_max_lora_rank(self):
+        """Auto-setup max_lora_rank by rounding up to the nearest valid vLLM value.
+
+        vLLM only accepts specific values for max_lora_rank: (1, 8, 16, 32, 64, 128, 256, 320, 512).
+        This validator ensures that any configured rank is rounded up to the minimum valid value
+        that can serve adapters of the requested rank.
+        """
+        if self.max_lora_rank is not None:
+            original_rank = self.max_lora_rank
+            for valid_rank in VALID_VLLM_LORA_RANKS:
+                if valid_rank >= self.max_lora_rank:
+                    self.max_lora_rank = valid_rank
+                    break
+            else:
+                raise ValueError(f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_api_server_count(self):
+        """
+        Ensures that we have at least as many API servers as data parallel
+        size. Unless LoRA is enabled, in which case only one API server is
+        supported (vLLM limitation).
+        """
+        if self.model_extra and self.model_extra.get("headless", False):
+            self.api_server_count = 0
+            return self
+
+        if "api_server_count" not in self.model_fields_set:
+            min_api_server_count = self.data_parallel_size_local or self.data_parallel_size
+            if self.api_server_count < min_api_server_count:
+                self.api_server_count = min_api_server_count
+
+        if self.enable_lora:
+            self.api_server_count = 1  # LoRA requires only one API server
         return self
 
 
@@ -150,20 +282,6 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
 
 KVCacheOffloadConfig: TypeAlias = Annotated[
     NativeKVCacheOffloadConfig | MooncakeKVCacheOffloadConfig, Field(discriminator="type")
-]
-
-
-# Valid vLLM max_lora_rank values (from vllm/config/lora.py)
-# TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
-VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
-
-# vLLM all2all backend options for expert-parallel deployments.
-All2AllBackend = Literal[
-    "allgather_reducescatter",
-    "deepep_high_throughput",
-    "deepep_low_latency",
-    "flashinfer_nvlink_one_sided",
-    "flashinfer_nvlink_two_sided",
 ]
 
 
@@ -325,67 +443,14 @@ class InferenceConfig(BaseConfig):
     backend_port: int = 8100
     """Port for the vLLM engine(s) behind the router. Defaults to ``server.port + 100``. Multi-node deployments start one engine per local DP rank at ``backend_port + rank``."""
 
-    model: ModelConfig = Field(default_factory=ModelConfig)
-
-    parallel: ParallelConfig = ParallelConfig()
-    """Multi-node and multi-GPU parallelism (TP, DP, PP)."""
+    vllm: VllmConfig = Field(default_factory=VllmConfig)
+    """vLLM server arguments, under vLLM's own argument names. Unknown fields pass through verbatim."""
 
     log: LogConfig = LogConfig()
     """Logging configuration."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the inference server process(es). Merged on top of the launcher defaults."""
-
-    enable_lora: bool = False
-    """Enable LoRA. Forwarded as ``--enable-lora``."""
-
-    max_loras: int = 8
-    """Maximum number of LoRAs. Forwarded as ``--max-loras``."""
-
-    # TODO: The default value is very high because our areal impl for lora isn't ideal
-    # We add a lora with the same name instead of changing weights inplace
-    # Because we dont cancel requests that are past max_async, these requests could be using a LoRA that gets unloaded which will crash the inference server
-    max_cpu_loras: int = 100
-    """Maximum number of LoRAs on CPU. Forwarded as ``--max-cpu-loras``."""
-
-    max_lora_rank: int | None = None
-    """Maximum LoRA rank. Forwarded as ``--max-lora-rank``."""
-
-    lora_target_modules: list[str] | None = None
-    """LoRA target modules. Forwarded as ``--lora-target-modules``."""
-
-    enable_prefix_caching: bool | None = None
-    """Enable prefix caching. Forwarded as ``--enable-prefix-caching``."""
-
-    gpu_memory_utilization: float = 0.9
-    """GPU memory utilization. Forwarded as ``--gpu-memory-utilization``."""
-
-    quantization: str | None = None
-    """Online inference quantization method. Forwarded as ``--quantization``."""
-
-    api_server_count: int = Field(1, ge=0)
-    """API servers to run. Forwarded as ``--api-server-count``. Set to 0 for headless mode."""
-
-    data_parallel_size_local: int | None = Field(None, ge=1)
-    """Data parallel replicas to run on this node. Forwarded as ``--data-parallel-size-local``."""
-
-    data_parallel_rpc_port: int = Field(13345, ge=1, le=65535)
-    """RPC port for data parallel communication. Forwarded as ``--data-parallel-rpc-port``."""
-
-    seed: int = 0
-    """Seed the inference components. Forwarded as ``--seed``."""
-
-    enable_expert_parallel: bool = False
-    """Enable expert parallelism for MoE models. Forwarded as ``--enable-expert-parallel``."""
-
-    all2all_backend: All2AllBackend = "allgather_reducescatter"
-    """All-to-all backend for expert-parallel communication. Forwarded as ``--all2all-backend``."""
-
-    enable_eplb: bool = False
-    """Enable expert parallel load balancer (EPLB). Forwarded as ``--enable-eplb``."""
-
-    enable_dbo: bool = False
-    """Enable dual batch overlap (DBO). Forwarded as ``--enable-dbo``."""
 
     use_deep_gemm: bool = False
     """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
@@ -398,17 +463,11 @@ class InferenceConfig(BaseConfig):
     use_pd_kv_transfer: bool = False
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
 
-    enable_return_routed_experts: bool = False
-    """Return routed experts in responses. Forwarded as ``--enable-return-routed-experts``."""
-
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
 
     enable_fp32_router_logits: bool = True
     """Emit fp32 MoE router logits for DeepSeek-family models (incl. GLM-5.x) by setting ``out_dtype=float32`` on the gate: the bf16×bf16 gate GEMM writes its fp32 accumulator out unrounded instead of truncating logits to bf16 before expert scoring. Matches fp32-routed checkpoints (e.g. GLM-5.x, trained with Megatron ``--moe-router-dtype fp32``); pairs with ``trainer.model.moe_router_dtype = "float32"``. Implemented as a monkey-patch over vLLM's DeepseekV2MoE, activated by setting ``additional_config["fp32_router_logits"] = True`` on the vLLM config."""
-
-    vllm_extra: dict[str, Any] = {}
-    """Extra arguments forwarded to vLLM. Applied as attributes on the vLLM namespace after config translation."""
 
     # Launcher-only fields
 
@@ -432,7 +491,7 @@ class InferenceConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_llmd_no_routed_experts(self):
         """Reject routed-expert return with the llm-d router (breaks P/D, unverified for multi-node)."""
-        if self.router is not None and self.router.type == "llm-d" and self.enable_return_routed_experts:
+        if self.router is not None and self.router.type == "llm-d" and self.vllm.enable_return_routed_experts:
             raise ValueError(
                 "The llm-d router backend does not support routed-expert return "
                 "(enable_return_routed_experts): it breaks P/D and is unverified for multi-node. "
@@ -458,10 +517,10 @@ class InferenceConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_kv_cache_offload(self):
         if self.kv_cache_offload is not None:
-            if self.enable_prefix_caching is False:
-                raise ValueError("KV cache offloading requires inference.enable_prefix_caching to be true.")
-            if "enable_prefix_caching" not in self.model_fields_set:
-                self.enable_prefix_caching = True
+            if self.vllm.enable_prefix_caching is False:
+                raise ValueError("KV cache offloading requires inference.vllm.enable_prefix_caching to be true.")
+            if "enable_prefix_caching" not in self.vllm.model_fields_set:
+                self.vllm.enable_prefix_caching = True
 
         return self
 
@@ -470,19 +529,19 @@ class InferenceConfig(BaseConfig):
         """Auto-configure inference for disaggregated P/D: enable EP and compute DP."""
         if self.deployment.type == "disaggregated":
             self.use_pd_kv_transfer = True
-            if "enable_expert_parallel" not in self.model_fields_set:
-                self.enable_expert_parallel = True
-            if "enable_eplb" not in self.model_fields_set:
-                self.enable_eplb = False
+            if "enable_expert_parallel" not in self.vllm.model_fields_set:
+                self.vllm.enable_expert_parallel = True
+            if "enable_eplb" not in self.vllm.model_fields_set:
+                self.vllm.enable_eplb = False
             gpus_per_node = self.deployment.gpus_per_node
-            tp = self.parallel.tp
+            tp = self.vllm.tensor_parallel_size
             dp_per_node = gpus_per_node // tp
-            if self.data_parallel_size_local is None:
-                self.data_parallel_size_local = dp_per_node
-            if self.parallel.dp == 1:
-                self.parallel.dp = dp_per_node
-            if self.api_server_count == 1:
-                self.api_server_count = dp_per_node
+            if self.vllm.data_parallel_size_local is None:
+                self.vllm.data_parallel_size_local = dp_per_node
+            if self.vllm.data_parallel_size == 1:
+                self.vllm.data_parallel_size = dp_per_node
+            if self.vllm.api_server_count == 1:
+                self.vllm.api_server_count = dp_per_node
         return self
 
     @model_validator(mode="after")
@@ -491,44 +550,6 @@ class InferenceConfig(BaseConfig):
             templates_dir = find_package_resource("templates")
             if templates_dir is not None:
                 self.slurm.template_path = templates_dir / "inference.sbatch.j2"
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_max_lora_rank(self):
-        """Auto-setup max_lora_rank by rounding up to the nearest valid vLLM value.
-
-        vLLM only accepts specific values for max_lora_rank: (1, 8, 16, 32, 64, 128, 256, 320, 512).
-        This validator ensures that any configured rank is rounded up to the minimum valid value
-        that can serve adapters of the requested rank.
-        """
-        if self.max_lora_rank is not None:
-            original_rank = self.max_lora_rank
-            for valid_rank in VALID_VLLM_LORA_RANKS:
-                if valid_rank >= self.max_lora_rank:
-                    self.max_lora_rank = valid_rank
-                    break
-            else:
-                raise ValueError(f"max_lora_rank={original_rank} exceeds vLLM maximum of {VALID_VLLM_LORA_RANKS[-1]}")
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_api_server_count(self):
-        """
-        Ensures that we have at least as many API servers as data parallel
-        size. Unless LoRA is enabled, in which case only one API server is
-        supported (vLLM limitation).
-        """
-        if self.vllm_extra.get("headless", False):
-            self.api_server_count = 0
-            return self
-
-        if "api_server_count" not in self.model_fields_set:
-            min_api_server_count = self.data_parallel_size_local or self.parallel.dp
-            if self.api_server_count < min_api_server_count:
-                self.api_server_count = min_api_server_count
-
-        if self.enable_lora:
-            self.api_server_count = 1  # LoRA requires only one API server
         return self
 
     def build_kv_transfer_config(self) -> dict[str, Any] | None:
@@ -560,90 +581,49 @@ class InferenceConfig(BaseConfig):
             "kv_connector_extra_config": {"connectors": connectors},
         }
 
-    def to_vllm(self) -> Namespace:
-        """Convert InferenceConfig to vLLM-compatible Namespace."""
-        namespace = Namespace()
-        to_vllm = {
-            "server.host": "host",
-            "server.port": "port",
-            "server.liveness_timeout_seconds": "liveness_timeout_seconds",
-            "model.name": "model",
-            "model.dtype": "dtype",
-            "model.max_model_len": "max_model_len",
-            "model.enforce_eager": "enforce_eager",
-            "model.trust_remote_code": "trust_remote_code",
-            "model.chat_template": "chat_template",
-            "model.tool_call_parser": "tool_call_parser",
-            "model.reasoning_parser": "reasoning_parser",
-            "model.rope_scaling": "rope_scaling",
-            "parallel.tp": "tensor_parallel_size",
-            "parallel.dp": "data_parallel_size",
-            "data_parallel_size_local": "data_parallel_size_local",
-            "data_parallel_rpc_port": "data_parallel_rpc_port",
-            "enable_lora": "enable_lora",
-            "enable_prefix_caching": "enable_prefix_caching",
-            "max_loras": "max_loras",
-            "max_cpu_loras": "max_cpu_loras",
-            "max_lora_rank": "max_lora_rank",
-            "lora_target_modules": "lora_target_modules",
-            "gpu_memory_utilization": "gpu_memory_utilization",
-            "quantization": "quantization",
-            "api_server_count": "api_server_count",
-            "enable_return_routed_experts": "enable_return_routed_experts",
-            "enable_expert_parallel": "enable_expert_parallel",
-            "all2all_backend": "all2all_backend",
-            "enable_eplb": "enable_eplb",
-            "enable_dbo": "enable_dbo",
-            "seed": "seed",
-        }
+    # Fields vLLM rejects as None — omitted from the namespace so vLLM applies its
+    # own default (e.g. quantization is inferred from the checkpoint).
+    _OMIT_IF_NONE = frozenset(
+        {"chat_template", "tool_call_parser", "reasoning_parser", "lora_target_modules", "quantization", "rope_scaling"}
+    )
 
-        for config_key, vllm_key in to_vllm.items():
-            value = rgetattr(self, config_key.replace("-", "_"))
-            rsetattr(namespace, vllm_key, value)
+    def to_namespace(self) -> Namespace:
+        """Dump the server + vllm sections into a vLLM-compatible Namespace."""
+        namespace = Namespace(
+            host=self.server.host,
+            port=self.server.port,
+            liveness_timeout_seconds=self.server.liveness_timeout_seconds,
+        )
 
-        # Set `logprobs_mode` to `processed_logprobs` by default
-        rsetattr(namespace, "logprobs_mode", "processed_logprobs")
+        extra_fields = self.vllm.model_extra or {}
+        for key in (*type(self.vllm).model_fields, *extra_fields):
+            value = getattr(self.vllm, key)
+            # None extras are dropped too: `--vllm.foo None` means "use vLLM's default".
+            if value is None and (key in self._OMIT_IF_NONE or key in extra_fields):
+                continue
+            setattr(namespace, key, value)
+
+        # Auto tool choice is gated on a tool-call parser being resolved, unless
+        # explicitly overridden.
+        if "enable_auto_tool_choice" not in extra_fields:
+            namespace.enable_auto_tool_choice = hasattr(namespace, "tool_call_parser")
+
+        # Default `logprobs_mode` to `processed_logprobs`
+        if not hasattr(namespace, "logprobs_mode"):
+            namespace.logprobs_mode = "processed_logprobs"
 
         kv_transfer_config = self.build_kv_transfer_config()
         if kv_transfer_config is not None:
-            rsetattr(namespace, "kv_transfer_config", kv_transfer_config)
+            namespace.kv_transfer_config = kv_transfer_config
 
         # Pass prime-rl-specific flags through vLLM's additional_config dict;
         # workers read these via get_current_vllm_config().additional_config.
+        additional_config = getattr(namespace, "additional_config", None) or {}
         if self.enable_fp32_lm_head:
-            existing = getattr(namespace, "additional_config", None) or {}
-            existing["fp32_lm_head"] = True
-            rsetattr(namespace, "additional_config", existing)
+            additional_config["fp32_lm_head"] = True
         if self.enable_fp32_router_logits:
-            existing = getattr(namespace, "additional_config", None) or {}
-            existing["fp32_router_logits"] = True
-            rsetattr(namespace, "additional_config", existing)
-
-        # Remove chat_template if not set (vLLM doesn't accept None)
-        if namespace.chat_template is None:
-            delattr(namespace, "chat_template")
-
-        # Remove tool_call_parser if not set (vLLM doesn't accept None) and gate
-        # `enable_auto_tool_choice` on its presence.
-        if namespace.tool_call_parser is None:
-            delattr(namespace, "tool_call_parser")
-        namespace.enable_auto_tool_choice = hasattr(namespace, "tool_call_parser")
-
-        # Remove reasoning_parser if not set (vLLM doesn't accept None)
-        if namespace.reasoning_parser is None:
-            delattr(namespace, "reasoning_parser")
-
-        # Remove lora_target_modules if not set (vLLM doesn't accept None)
-        if hasattr(namespace, "lora_target_modules") and namespace.lora_target_modules is None:
-            delattr(namespace, "lora_target_modules")
-
-        # Remove quantization if not set so vLLM can infer it from the checkpoint.
-        if namespace.quantization is None:
-            delattr(namespace, "quantization")
-
-        # Remove rope_scaling if not set (vLLM doesn't accept None)
-        if hasattr(namespace, "rope_scaling"):
-            if namespace.rope_scaling is None:
-                delattr(namespace, "rope_scaling")
+            additional_config["fp32_router_logits"] = True
+        if additional_config:
+            namespace.additional_config = additional_config
 
         return namespace

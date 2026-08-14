@@ -8,7 +8,9 @@ seq_len = 2048
 type = "filesystem"
 
 [ckpt]
-resume_step = 15
+
+[resume]
+step = 15
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
@@ -27,7 +29,7 @@ max_completion_tokens = 128
 name = "reverse-text"
 
 [orchestrator.train.source.env.taskset]
-id = "reverse-text-v1"
+id = "reverse-text"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"

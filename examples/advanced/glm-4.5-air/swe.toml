@@ -1,4 +1,4 @@
-# v1 RL: GLM-4.5-Air (100B MoE) on the v1 `scaleswe-v1` SWE taskset, rlm harness on a prime sandbox
+# v1 RL: GLM-4.5-Air (100B MoE) on the v1 `scaleswe` SWE taskset, rlm harness on a prime sandbox
 # runtime; eval on SWE-Bench Verified. Router replay is enabled (trainer.enable_router_replay replays
 # the routed-expert decisions returned by inference via enable_return_routed_experts) — GLM-4.5-Air is
 # a glm4_moe model, which supports routed_experts.
@@ -43,7 +43,8 @@ timeout = 3600
 [ckpt]
 interval = 50
 keep_last = 1
-resume_step = -1
+
+[resume]
 
 [model]
 name = "zai-org/GLM-4.5-Air"
@@ -101,16 +102,13 @@ thinking_retention = "all"
 name = "scaleswe"
 
 [orchestrator.train.source.env.taskset]
-id = "scaleswe-v1"
+id = "scaleswe"
 
 [orchestrator.train.source.env.agent.harness]
 id = "rlm"
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-swe"]
 
 [orchestrator.prime_monitor]
@@ -124,16 +122,13 @@ interval = 20
 name = "swebench-verified"
 
 [orchestrator.eval.source.env.taskset]
-id = "swebench-verified-v1"
+id = "swebench-verified"
 
 [orchestrator.eval.source.env.agent.harness]
 id = "rlm"
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-swe"]
 
 [orchestrator.eval.source.env.agent.timeout]
@@ -142,15 +137,13 @@ rollout = 3600
 # --- Inference ---
 
 [inference]
-enable_return_routed_experts = true
 
 # vLLM + FlashInfer caches on node-local /tmp (see [env_vars]).
 [inference.env_vars]
 VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
 FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 
-[inference.model]
+[inference.vllm]
 max_model_len = 131072
-
-[inference.parallel]
-tp = 8
+tensor_parallel_size = 8
+enable_return_routed_experts = true

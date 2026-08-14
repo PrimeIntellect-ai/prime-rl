@@ -13,7 +13,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.utils.config import BaseConfig, cli, to_toml_dict
+from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
 
 # All config config classes
 CONFIG_CLASSES = [
@@ -161,20 +161,21 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_to_toml_dict_roundtrips_explicit_none(tmp_path):
-    """An explicit None override survives the write/re-parse round-trip used by SLURM launches."""
+def test_resolved_json_roundtrips_explicit_none(tmp_path):
+    """An explicit None override survives the write/re-parse round-trip used by launches:
+    resolved configs are JSON, which keeps nulls (TOML cannot)."""
+    import json
+
     config = cli(TrainerConfig, args=["--model.compile", "None", "--optim.max_norm", "None"])
     assert config.model.compile is None
     assert config.optim.max_norm is None
 
-    write_toml(tmp_path / "cfg.toml", to_toml_dict(config))
-    reloaded = cli(TrainerConfig, args=["@", str(tmp_path / "cfg.toml")])
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps(dump_resolved_config(config)))
+    reloaded = cli(TrainerConfig, args=["@", str(path)])
     assert reloaded.model.compile is None
     assert reloaded.optim.max_norm is None
     assert reloaded == config
-
-    # Unset None fields stay dropped, so defaults still resolve on re-parse
-    assert "max_steps" not in to_toml_dict(cli(TrainerConfig, args=[]))
 
 
 def test_env_algo_overrides_top_level():
@@ -182,7 +183,12 @@ def test_env_algo_overrides_top_level():
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
             "algo": {"type": "echo"},
-            "train": {"source": [{"legacy": {"id": "a"}, "algo": {"type": "grpo"}}, {"legacy": {"id": "b"}}]},
+            "train": {
+                "source": [
+                    {"env": {"taskset": {"id": "reverse-text"}}, "algo": {"type": "grpo"}},
+                    {"env": {"taskset": {"id": "reverse-text"}}, "name": "b"},
+                ]
+            },
         }
     )
     env_a, env_b = config.train.source
@@ -199,7 +205,7 @@ def test_env_algo_overrides_top_level():
         OrchestratorConfig.model_validate(
             {
                 "renderer": {"name": "qwen3"},
-                "train": {"env": [{"legacy": {"id": "removed"}}]},
+                "train": {"env": [{"env": {"taskset": {"id": "removed"}}}]},
             }
         )
 
@@ -207,7 +213,7 @@ def test_env_algo_overrides_top_level():
         OrchestratorConfig.model_validate(
             {
                 "renderer": {"name": "qwen3"},
-                "eval": {"env": [{"legacy": {"id": "removed"}}]},
+                "eval": {"env": [{"env": {"taskset": {"id": "removed"}}}]},
             }
         )
 
@@ -222,7 +228,7 @@ def test_single_node_auto_inference_ports_follow_server_port():
         {
             "trainer": {},
             "orchestrator": {},
-            "inference": {"server": {"port": 8001}, "parallel": {"tp": 1}},
+            "inference": {"server": {"port": 8001}, "vllm": {"tensor_parallel_size": 1}},
             "deployment": {
                 "type": "single_node",
                 "gpus_per_node": 4,
@@ -233,7 +239,7 @@ def test_single_node_auto_inference_ports_follow_server_port():
     )
 
     assert config.inference is not None
-    assert config.inference.parallel.dp == 2
+    assert config.inference.vllm.data_parallel_size == 2
     assert config.inference.backend_port == 8101
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
@@ -243,7 +249,7 @@ def test_multi_node_auto_inference_parallelism():
         {
             "trainer": {},
             "orchestrator": {},
-            "inference": {"parallel": {"tp": 4}},
+            "inference": {"vllm": {"tensor_parallel_size": 4}},
             "deployment": {
                 "type": "multi_node",
                 "gpus_per_node": 8,
@@ -255,8 +261,8 @@ def test_multi_node_auto_inference_parallelism():
     )
 
     assert config.inference is not None
-    assert config.inference.data_parallel_size_local == 2
-    assert config.inference.parallel.dp == 2
+    assert config.inference.vllm.data_parallel_size_local == 2
+    assert config.inference.vllm.data_parallel_size == 2
 
 
 def test_orchestrator_vlm_requires_renderer():
@@ -324,7 +330,7 @@ def test_shared_model_name_propagates_to_subconfigs():
     )
     assert config.trainer.model.name == model_name
     assert config.orchestrator.model.name == model_name
-    assert config.inference is not None and config.inference.model.name == model_name
+    assert config.inference is not None and config.inference.vllm.model == model_name
     assert config.trainer.tokenizer.name == model_name
     assert config.orchestrator.tokenizer.name == model_name
 
@@ -468,7 +474,7 @@ def test_shared_and_sub_max_steps_conflict_raises():
 def test_trainer_chat_template_cascades_to_inference():
     """``[trainer.tokenizer] chat_template`` set directly (no shared
     ``[tokenizer] chat_template``) must still reach
-    ``inference.model.chat_template`` so vLLM's ``--chat-template`` is wired
+    ``inference.vllm.chat_template`` so vLLM's ``--chat-template`` is wired
     up. Regression: the original ``auto_setup_tokenizer`` cascaded this; the
     refactored propagator must keep doing it."""
     config = RLConfig.model_validate(
@@ -482,7 +488,7 @@ def test_trainer_chat_template_cascades_to_inference():
     assert config.trainer.tokenizer.chat_template == "TPL"
     assert config.orchestrator.tokenizer.chat_template == "TPL"
     assert config.inference is not None
-    assert config.inference.model.chat_template == "TPL"
+    assert config.inference.vllm.chat_template == "TPL"
 
 
 def test_shared_wandb_fields_propagate_to_subconfigs():
@@ -542,8 +548,8 @@ def test_shared_and_subconfig_disjoint_fields_coexist():
     assert config.trainer.model.impl == "custom"
 
 
-def test_shared_output_dir_propagates_through_cli(tmp_path):
-    """Shared output_dir from CLI reaches sub-configs even when tyro constructs sub-configs before the before-validator."""
+def test_run_dir_propagates_through_cli(tmp_path):
+    """Sub-configs receive the run directory (output_dir / run.name) resolved from the CLI."""
     toml_path = tmp_path / "cfg.toml"
     write_toml(
         toml_path,
@@ -551,15 +557,21 @@ def test_shared_output_dir_propagates_through_cli(tmp_path):
             "max_steps": 1,
             "seq_len": 128,
             "model": {"name": "Qwen/Qwen3-0.6B"},
+            "wandb": {},
             "trainer": {},
             "orchestrator": {"batch_size": 16, "group_size": 1},
             "inference": {},
         },
     )
     shared_out = tmp_path / "shared"
-    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out)])
-    assert config.trainer.output_dir == shared_out
-    assert config.orchestrator.output_dir == shared_out / "run_default"
+    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out), "--run.name", "my-exp"])
+    assert config.run_dir == shared_out / "my-exp"
+    assert config.trainer.output_dir == shared_out / "my-exp"
+    assert config.orchestrator.output_dir == shared_out / "my-exp"
+    # Unset monitor names inherit run.name
+    assert config.wandb is not None and config.wandb.name == "my-exp"
+    assert config.trainer.wandb is not None and config.trainer.wandb.name == "my-exp"
+    assert config.orchestrator.wandb is not None and config.orchestrator.wandb.name == "my-exp"
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():
@@ -632,7 +644,7 @@ def test_orchestrator_explicit_default_renderer_with_unmapped_model():
 
 
 def test_shared_model_name_resolves_inference_parsers():
-    """Shared [model] name must reach inference.model BEFORE ModelConfig's after-validator
+    """Shared [model] name must reach inference.vllm BEFORE VllmConfig's after-validator
     runs auto_resolve_parsers — i.e. the parsers resolve from the propagated name, not
     from an empty default.
     """
@@ -645,20 +657,20 @@ def test_shared_model_name_resolves_inference_parsers():
         }
     )
     assert config.inference is not None
-    assert config.inference.model.name == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
-    assert config.inference.model.tool_call_parser == "qwen3_coder"
+    assert config.inference.vllm.model == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+    assert config.inference.vllm.tool_call_parser == "qwen3_coder"
 
 
 def test_explicit_inference_parser_wins_over_auto():
-    """Explicit inference.model.tool_call_parser is preserved even when the shared model
+    """Explicit inference.vllm.tool_call_parser is preserved even when the shared model
     name would otherwise auto-resolve to something else."""
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
             "trainer": {},
             "orchestrator": {"renderer": {"name": "default"}},
-            "inference": {"model": {"tool_call_parser": "hermes"}},
+            "inference": {"vllm": {"tool_call_parser": "hermes"}},
         }
     )
     assert config.inference is not None
-    assert config.inference.model.tool_call_parser == "hermes"
+    assert config.inference.vllm.tool_call_parser == "hermes"

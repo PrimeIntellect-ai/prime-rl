@@ -30,7 +30,7 @@ type = "sft"
 # sft's teacher IS the model it samples from.
 [orchestrator.algo.sampling.source]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
-base_url = ["http://localhost:8001/v1"]
+base_url = "http://localhost:8001/v1"
 
 # The student's renderer tokenizes the teacher's messages into the student's
 # token space (backfill). Use `prime-qwen3` — it matches this PrimeIntellect
@@ -47,7 +47,7 @@ max_completion_tokens = 128
 name = "reverse-text"
 
 [orchestrator.train.source.env.taskset]
-id = "reverse-text-v1"
+id = "reverse-text"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
@@ -66,7 +66,7 @@ max_completion_tokens = 128
 name = "reverse-text"
 
 [orchestrator.eval.source.env.taskset]
-id = "reverse-text-v1"
+id = "reverse-text"
 
 [orchestrator.eval.source.env.agent.harness]
 id = "null"
@@ -78,4 +78,6 @@ type = "subprocess"
 lr = 3e-6
 
 [inference]
+
+[inference.vllm]
 gpu_memory_utilization = 0.4

@@ -1,9 +1,8 @@
 """EvalSource: trigger-driven, finite-per-epoch pull of eval examples.
 
 The orchestrator pokes ``trigger(step)`` after each ship + once at
-startup; the dispatcher pulls via ``next_example(available_permits)``
-until ``bool(source) == False``. Constructed only when eval is
-configured."""
+startup; the dispatcher pulls via ``next_example()`` until
+``bool(source) == False``. Constructed only when eval is configured."""
 
 from __future__ import annotations
 
@@ -68,15 +67,9 @@ class EvalSource:
                 self.queue.append(row)
         return fired
 
-    def next_example(self, available_permits: int) -> dict | None:
-        """Pop the next eval example if the head's permit cost fits in
-        ``available_permits``; otherwise leave it for a later call."""
+    def next_example(self) -> dict | None:
+        """Pop the next eval example, or ``None`` when the queue is empty."""
         if not self.queue:
-            return None
-        head = self.queue[0]
-        env = self.eval_envs.get(head["env_name"])
-        cost = env.config.group_size if env.requires_group_scoring else 1
-        if cost > available_permits:
             return None
         return self.queue.popleft()
 

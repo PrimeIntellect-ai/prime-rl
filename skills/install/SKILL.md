@@ -26,10 +26,10 @@ uv sync                                    # core only
 uv sync --group dev                        # + pytest, ruff, pre-commit
 uv sync --all-extras                       # + extras (flash-attn, flash-attn-cute, …)
 uv sync --all-extras --all-packages        # + all env packages (needed to train on them)
-uv sync --package prime-rl --package gsm8k-v1  # core + just one env
+uv sync --package prime-rl --package gsm8k  # core + just one env
 ```
 
-Environment packages are uv **workspace members**. Those under `deps/research-environments/environments/*/*` are auto-discovered — adding a new env there needs no `pyproject.toml` change. verifiers' example envs are enumerated explicitly in `[tool.uv.workspace].members` (only the ones prime-rl trains or tests on) — to use another, add its path to the list. Members are opt-in: a plain `uv sync` / `--all-extras` does not install them (and would remove them if already present — re-run with `--all-packages`, or `--inexact` to keep them). Install all with `--all-packages`, or a subset with repeated `--package <env>` (include `--package prime-rl` to keep the core). If two envs pin conflicting transitive versions (all members share one lock), add the loser to `[tool.uv.workspace].exclude`.
+Environment packages are uv **workspace members**. Those under `deps/prime-envs/environments/*/*` are auto-discovered — adding a new env there needs no `pyproject.toml` change. verifiers' example envs are enumerated explicitly in `[tool.uv.workspace].members` (only the ones prime-rl trains or tests on) — to use another, add its path to the list. Members are opt-in: a plain `uv sync` / `--all-extras` does not install them (and would remove them if already present — re-run with `--all-packages`, or `--inexact` to keep them). Install all with `--all-packages`, or a subset with repeated `--package <env>` (include `--package prime-rl` to keep the core). If two envs pin conflicting transitive versions (all members share one lock), add the loser to `[tool.uv.workspace].exclude`.
 
 When bumping a package past the workspace-wide `exclude-newer = "7 days"` window, add it (and any newly-required transitives) to `[tool.uv.exclude-newer-package]` before refreshing `uv.lock`.
 

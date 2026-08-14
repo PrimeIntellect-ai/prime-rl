@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Mapping
-from itertools import cycle
 from pathlib import Path
-from typing import Protocol, runtime_checkable
 
 import httpx
 import verifiers.v1 as vf
@@ -18,102 +15,33 @@ from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
-ClientIdentity = str
-
-
-def client_identity(client: vf.ClientConfig) -> ClientIdentity:
-    """Stable identity for load balancing across inference clients."""
-    return client.base_url
-
-
-@runtime_checkable
-class InferencePool(Protocol):
-    """Protocol for inference pools (static or elastic)."""
-
-    @property
-    def model_name(self) -> str:
-        """Get current model name for inference requests."""
-        ...
-
-    @property
-    def train_clients(self) -> list[vf.ClientConfig]:
-        """Get inference clients."""
-        ...
-
-    @property
-    def admin_clients(self) -> list[AsyncClient]:
-        """Get admin clients."""
-        ...
-
-    def update_model_name(self, model_name: str) -> None:
-        """Update the model name."""
-        ...
-
-    async def get_eval_client(self) -> vf.ClientConfig:
-        """Get next eval client in round-robin fashion."""
-        ...
-
-    async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
-        """Pick the train client with lowest in-flight load.
-
-        Waits for at least one train client to be available, then returns
-        the one with the smallest ``load[client_identity(client)]``. The
-        caller owns the in-flight counter; the pool just picks against it.
-        """
-        ...
-
-    async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
-        """Wait for inference pool to be ready."""
-        ...
-
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        """Update weights on all inference servers."""
-        ...
-
-    async def score(self, token_ids: list[int]) -> list[float]:
-        """Prefill-score ``token_ids`` under the pool's model — one logprob per token."""
-        ...
-
-    async def stop(self) -> None:
-        """Stop the inference pool."""
-        ...
-
 
 class PrefillScorer:
-    """Prefill-scores token ids against a pool's *current* endpoints. Resolves one
-    client per endpoint, cached by endpoint identity — so it fills once for a
-    static pool and tolerates churn for an elastic one (a departed endpoint is
-    simply never selected again; its client is closed at stop). Round-robins over
-    the live endpoints."""
+    """Prefill-scores token ids against a pool's endpoint, lazily resolving
+    a single OpenAI client from the pool's train client config."""
 
     def __init__(self) -> None:
-        self._clients: dict = {}  # client_identity -> AsyncOpenAI, one per endpoint
-        self._rr = 0
+        self._client: AsyncOpenAI | None = None
 
-    async def score(self, configs: list[vf.ClientConfig], model: str, token_ids: list[int]) -> list[float]:
-        if not configs:
-            raise RuntimeError("no inference endpoints available to prefill-score")
-        cfg = configs[self._rr % len(configs)]
-        self._rr += 1
-        key = client_identity(cfg)
-        openai = self._clients.get(key)
-        if openai is None:
+    async def score(self, config: vf.ClientConfig, model: str, token_ids: list[int]) -> list[float]:
+        if self._client is None:
             # Build the OpenAI client straight from the config fields — works for any
             # ClientConfig type; resolve_client would hand back an EvalClient (no `.openai`)
             # for these chat-completions teacher configs.
-            openai = self._clients[key] = AsyncOpenAI(
-                base_url=cfg.base_url,
-                api_key=os.environ.get(cfg.api_key_var) or "EMPTY",
-                default_headers=cfg.headers or None,
+            self._client = AsyncOpenAI(
+                base_url=config.base_url,
+                api_key=os.environ.get(config.api_key_var) or "EMPTY",
+                default_headers=config.headers or None,
             )
-        return await prefill_logprobs(openai, model, token_ids)
+        return await prefill_logprobs(self._client, model, token_ids)
 
     async def aclose(self) -> None:
-        await asyncio.gather(*(c.close() for c in self._clients.values()))
+        if self._client is not None:
+            await self._client.close()
 
 
-class StaticInferencePool:
-    """Static inference pool with fixed client list."""
+class InferencePool:
+    """Inference pool with a single data-plane endpoint and one admin client per server."""
 
     def __init__(
         self,
@@ -124,13 +52,13 @@ class StaticInferencePool:
         renderer_config: RendererConfig | None = None,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
-        self._train_clients = setup_clients(
+        self.train_client = setup_client(
             client_config,
             client_type=train_client_type,
             renderer_config=renderer_config,
             renderer_model_name=renderer_model_name,
         )
-        self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
+        self.eval_client = setup_client(client_config, client_type=eval_client_type)
         self._admin_clients = setup_admin_clients(client_config)
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
@@ -141,13 +69,8 @@ class StaticInferencePool:
         )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
-        self._eval_cycle = cycle(self._eval_clients)
         self._scorer = PrefillScorer()
         self.model_name = model_name
-
-    @property
-    def train_clients(self) -> list[vf.ClientConfig]:
-        return self._train_clients
 
     @property
     def admin_clients(self) -> list[AsyncClient]:
@@ -155,18 +78,6 @@ class StaticInferencePool:
 
     def update_model_name(self, model_name: str) -> None:
         self.model_name = model_name
-
-    @property
-    def eval_clients(self) -> list[vf.ClientConfig]:
-        return self._eval_clients
-
-    async def get_eval_client(self) -> vf.ClientConfig:
-        return next(self._eval_cycle)
-
-    async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
-        while not self.train_clients:
-            await asyncio.sleep(0.5)
-        return min(self.train_clients, key=lambda c: load[client_identity(c)])
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         await check_health(
@@ -181,47 +92,19 @@ class StaticInferencePool:
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this pool's model (one logprob per
         token, 0.0 for the leading token). Delegates to the shared scorer."""
-        return await self._scorer.score(self.train_clients, self.model_name, token_ids)
+        return await self._scorer.score(self.train_client, self.model_name, token_ids)
 
     async def stop(self) -> None:
         await self._scorer.aclose()
 
 
-async def setup_inference_pool(
-    client_config: ClientConfig,
-    model_name: str,
-    train_client_type: str = "openai_chat_completions",
-    eval_client_type: str = "openai_chat_completions",
-    renderer_config: RendererConfig | None = None,
-) -> InferencePool:
-    """Create an inference pool from config (static or elastic)."""
-    if client_config.is_elastic:
-        from prime_rl.utils.elastic import ElasticInferencePool
-
-        return await ElasticInferencePool.from_config(
-            client_config,
-            model_name=model_name,
-            train_client_type=train_client_type,
-            eval_client_type=eval_client_type,
-            renderer_config=renderer_config,
-        )
-
-    return StaticInferencePool(
-        client_config,
-        model_name=model_name,
-        train_client_type=train_client_type,
-        eval_client_type=eval_client_type,
-        renderer_config=renderer_config,
-    )
-
-
-def setup_clients(
+def setup_client(
     client_config: ClientConfig,
     client_type: str = "openai_chat_completions",
     renderer_config: RendererConfig | None = None,
     renderer_model_name: str | None = None,
-) -> list[vf.ClientConfig]:
-    """Build one v1 client config per base URL. ``client_type``
+) -> vf.ClientConfig:
+    """Build a v1 client config for the base URL. ``client_type``
     ``renderer`` → token-in/out (``TrainClientConfig``, with the renderer the env
     server should use forwarded as a serialized config so it doesn't fall back to the
     default renderer); otherwise plain chat-completions (``EvalClientConfig``)."""
@@ -236,13 +119,10 @@ def setup_clients(
     env_headers = {
         k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
     }
-    clients: list[vf.ClientConfig] = []
-    for base_url in client_config.base_url:
-        headers = {**client_config.headers, **env_headers}
-        clients.append(
-            config_cls(base_url=base_url, api_key_var=client_config.api_key_var, headers=headers, **renderer_extra)
-        )
-    return clients
+    headers = {**client_config.headers, **env_headers}
+    return config_cls(
+        base_url=client_config.base_url, api_key_var=client_config.api_key_var, headers=headers, **renderer_extra
+    )
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
@@ -252,7 +132,7 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     When admin_base_url is set, uses those URLs instead of base_url, allowing
     weight updates to bypass routers in disaggregated P/D deployments.
     """
-    urls = client_config.admin_base_url if client_config.admin_base_url else client_config.base_url
+    urls = client_config.admin_base_url if client_config.admin_base_url else [client_config.base_url]
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
         env_headers = {
@@ -455,8 +335,8 @@ def _is_retryable_lora_error(exception: BaseException) -> bool:
 
 # Per-attempt and total bounds for `/load_lora_adapter`. A LoRA load is fast
 # (small adapter file + KV cache reset, single-digit seconds in practice) but
-# the global admin AsyncClient uses `timeout=None`, so a stuck server hangs
-# the orchestrator forever inside `ElasticInferencePool._sync_server_adapter`.
+# the global admin AsyncClient uses `timeout=None`, so a stuck server would
+# hang the orchestrator forever.
 # `_PER_ATTEMPT` converts a hang into a TimeoutException so tenacity retries;
 # `_TOTAL` is the wall-clock budget across all retries — pick whichever
 # stop condition fires first.

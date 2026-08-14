@@ -10,6 +10,7 @@ from prime_rl.configs.shared import (
     FileMonitorConfig,
     HeartbeatConfig,
     MetricsServerConfig,
+    ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
     WandbConfig,
@@ -431,9 +432,6 @@ class CheckpointConfig(BaseConfig):
     weights_only: bool = False
     """Save only weight checkpoints (no optimizer/scheduler state). Much faster and smaller than full checkpoints, but cannot resume training."""
 
-    resume_step: int | None = Field(None, ge=-1)
-    """Step to resume training from. None starts from scratch; ``-1`` restarts from the latest checkpoint available."""
-
     keep_last: int | None = Field(None, ge=1)
     """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
 
@@ -577,6 +575,9 @@ class TrainerConfig(BaseConfig):
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
     ckpt: CheckpointConfig | None = None
+
+    resume: ResumeConfig | None = None
+    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
     """Full training-state checkpoint configuration (model + optimizer + scheduler). If None, no resume-capable checkpoints are written."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
@@ -624,9 +625,6 @@ class TrainerConfig(BaseConfig):
 
     metrics_server: MetricsServerConfig | None = None
     """Prometheus metrics server configuration. If set, exposes a ``/metrics`` endpoint for scraping."""
-
-    max_concurrent_runs: int = Field(1, ge=1)
-    """Maximum number of concurrent runs to allow. If 1, only one run may run at a time."""
 
     enable_token_export: bool = False
     """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
@@ -700,12 +698,6 @@ class TrainerConfig(BaseConfig):
     def validate_opt_and_fsdp_offload(self):
         if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
             raise ValueError("Muon optimizer does not support FSDP CPU offload")
-        return self
-
-    @model_validator(mode="after")
-    def validate_optim_cpu_offload_single_run(self):
-        if self.model.optim_cpu_offload and self.max_concurrent_runs > 1:
-            raise ValueError("Optimizer CPU offload is not supported with max_concurrent_runs > 1")
         return self
 
     @model_validator(mode="after")

@@ -35,7 +35,7 @@ A training algorithm in `prime-rl` is configured under `[orchestrator.algo]`, wh
 1. **Sampling** (`algo.sampling`) — how train rollouts are produced: which model generates them. `source` is a [model reference](#model-references): `"policy"` (the live policy, the default) or an inline frozen hosted model. Group sizing stays on the env config (`group_size`).
 2. **The per-token training signal** — credit assignment and loss routing, fused; the algorithm's own parameters sit directly on `algo`. One mapping from a finalized rollout to per-token *(loss component, weight)* pairs — the credit a token gets and the loss that consumes it are two coordinates of the same output. Group-relative algorithms compute credit on the orchestrator and ship per-token advantage streams; reference-KL algorithms query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The `type` determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`) and what happens to env-provided observation tokens in multi-turn rollouts (masked out by default; `echo` trains on them with weighted CE).
 
-The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, ref_kl), each normalized by its own global token count; per-token streams ship on the wire (the `rl_weights` / `ce_weights` / `ref_kl_weights` component weights plus the `advantages` stream on each training sample) and the trainer just executes them. Adding an algorithm never touches the dispatcher, packer, or trainer hot path.
+The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, ref_kl), each normalized by its own global token count; per-token streams ship on the wire (the `rl_weights` / `ce_weights` / `ref_kl_weights` component weights plus the `advantages` stream on each training sample) and the trainer just executes them. Adding an algorithm never touches the dispatcher, batch packing, or trainer hot path.
 
 ### Model References
 
@@ -47,7 +47,7 @@ type = "opd"
 
 [orchestrator.algo.teacher]   # opd's teacher: the frozen model it scores against
 name = "Qwen/Qwen3-32B"
-base_url = ["http://localhost:8001/v1"]
+base_url = "http://localhost:8001/v1"
 ```
 
 Model *roles* are algorithm-local vocabulary — each algorithm names its reference on the field where the model is actually used, and there is no shared `teacher` slot. `opd` declares a `teacher` field (the frozen model whose reverse KL the policy distills toward); `sft`'s teacher *is* its `sampling.source` (the frozen model it imitates); `opsd` self-distills against the live policy and names no model at all. No role exists outside the algorithm that declares it: the dispatcher, sink, and trainer branch on liveness alone, never on what an algorithm calls a model.
@@ -126,7 +126,7 @@ type = "grpo"
 name = "math"  # inherits the top-level grpo
 
 [orchestrator.train.source.env.taskset]
-id = "math-v1"
+id = "math"
 
 [orchestrator.train.source.env.agent.harness]
 id = "null"
@@ -138,7 +138,7 @@ type = "subprocess"
 name = "terminal"
 
 [orchestrator.train.source.env.taskset]
-id = "terminal-v1"
+id = "terminal"
 
 [orchestrator.train.source.env.agent.harness]
 id = "bash"
@@ -354,7 +354,7 @@ The solver attempts for A should not be compared with the solver attempts for B:
 
 For example, if three solvers receive rewards `[1, 1, 0]` on one proposed problem, their average is `2/3` and their advantages are `[1/3, 1/3, -2/3]`. Solver rewards from other proposed problems do not affect those values. The proposers are scored separately according to how useful their problems were for the solvers, then compared with the other proposers in the group.
 
-Configure which roles are compared within a single proposed problem with `episode_agents`. For `proposer-solver-v1`, that role is `solver`:
+Configure which roles are compared within a single proposed problem with `episode_agents`. For `proposer-solver`, that role is `solver`:
 
 ```toml
 [orchestrator.algo]
@@ -367,7 +367,7 @@ group_size = 4  # proposed problems per source task
 env.n = 4  # solver attempts per proposed problem
 
 [orchestrator.train.source.env.taskset]
-id = "proposer-solver-v1"
+id = "proposer-solver"
 
 [orchestrator.train.source.env.proposer.harness]
 id = "null"
@@ -401,7 +401,7 @@ decay = 0.95
 name = "kuhn-poker"
 
 [orchestrator.train.source.env.taskset]
-id = "kuhn-poker-v1"
+id = "kuhn-poker"
 
 [orchestrator.train.source.env.player0.harness]
 id = "null"
@@ -416,7 +416,7 @@ id = "null"
 type = "subprocess"
 ```
 
-Both of `kuhn-poker-v1`'s agents late-bind to the run's own model — shared-policy self-play against a continuously improving opponent. Pin one agent to a frozen endpoint (`env.player1.model = ...`) for asymmetric play; its traces are marked untrainable by the env and never reach the advantage computation. A single-agent env under `rae` degrades to REINFORCE with an EMA baseline.
+Both of `kuhn-poker`'s agents late-bind to the run's own model — shared-policy self-play against a continuously improving opponent. Pin one agent to a frozen endpoint (`env.player1.model = ...`) for asymmetric play; its traces are marked untrainable by the env and never reach the advantage computation. A single-agent env under `rae` degrades to REINFORCE with an EMA baseline.
 
 ### Authoring an Algorithm
 
@@ -481,7 +481,7 @@ Filtered rollouts still appear in W&B distributions, just not in the trainer bat
 
 ## Multi-Turn Trajectories
 
-Multi-turn rollouts (tool use, browser environments, long conversations) used to be stitched into a single fake "single-turn" sample, which silently corrupted the importance ratio when chat templates didn't roundtrip. Since [`verifiers` v0.1.8](https://github.com/PrimeIntellect-ai/verifiers/releases/tag/v0.1.8), `prime-rl` records each LLM request/response as an independent **trajectory step** and merges them at training time using best-effort interleaving — with [renderers](#renderers) as the mechanism that keeps the merge safe by construction.
+For multi-turn rollouts (tool use, browser environments, long conversations), `prime-rl` records each LLM request/response as an independent **trajectory step** and merges them at training time using best-effort interleaving — with [renderers](#renderers) as the mechanism that keeps the merge safe by construction.
 
 ### Extension Property
 

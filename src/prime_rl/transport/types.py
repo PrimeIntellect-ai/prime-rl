@@ -2,8 +2,8 @@ import msgspec
 
 
 # Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
-# Mirrors verifiers.utils.serve_utils.msgpack_encoder so the same wire
-# shape is used end-to-end from renderer → orchestrator → trainer.
+# Mirrors verifiers' env-serve msgpack encoder so the same wire shape is
+# used end-to-end from renderer → orchestrator → trainer.
 class EncodedTensor(msgspec.Struct, array_like=True, gc=False):
     dtype: str
     shape: list[int]
@@ -18,7 +18,8 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
     dtype: str
 
 
-# Orchestrator -> Packer
+# Produced by the orchestrator's train sink; consumed in-process by
+# ``prepare_batch``, which packs samples into per-rank ``MicroBatch``es.
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A single training example — one branch of a rollout as a flat token sequence.
 
@@ -69,15 +70,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     advantages: list[float] | None = None
 
 
-class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    """A batch of training examples with metadata for transport."""
-
-    examples: list[TrainingSample]
-    step: int
-    run_idx: int | None = None
-
-
-# Packer -> Trainer
+# Orchestrator -> Trainer
 class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A micro batch of data for training."""
 
@@ -91,7 +84,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     env_names: list[str]
     seq_lens: list[int]
     ref_logprobs: list[float] | None = None
-    lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None
 
     # See TrainingSample.mm_kwargs.
@@ -105,7 +97,3 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     rl_weights: list[float] | None = None
     ce_weights: list[float] | None = None
     ref_kl_weights: list[float] | None = None
-
-    # Packer-derived metadata used for run-local token exports.
-    run_id: str | None = None
-    run_step: int | None = None

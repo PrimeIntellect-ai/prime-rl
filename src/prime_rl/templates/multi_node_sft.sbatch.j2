@@ -33,8 +33,13 @@ export GPUS_PER_NODE={{ gpus_per_node }}
 export PROJECT_DIR={{ project_dir }}
 export CONFIG_PATH={{ config_path }}
 export OUTPUT_DIR={{ output_dir }}
-mkdir -p $OUTPUT_DIR/logs/trainer
-ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
+# Per-attempt log dir: a resume or relaunch never overwrites an earlier attempt's logs.
+ATTEMPT=1
+while [ -e $OUTPUT_DIR/logs/attempt_$ATTEMPT ]; do ATTEMPT=$((ATTEMPT+1)); done
+export LOG_DIR=$OUTPUT_DIR/logs/attempt_$ATTEMPT
+mkdir -p $LOG_DIR/trainer
+ln -sfn attempt_$ATTEMPT $OUTPUT_DIR/logs/latest
+ln -sfn trainer/node_0.log $LOG_DIR/trainer.log
 
 # Networking
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
@@ -54,7 +59,9 @@ source $PROJECT_DIR/.venv/bin/activate
 # all finish. `set -e` above aborts the job if any node's sync fails. Re-source .env
 # inside the task because unexported vars in .env don't cross srun even with normal
 # SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
-srun --ntasks-per-node=1 bash -c 'cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages'
+srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
+cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages
+SYNC_SH
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
 cd $PROJECT_DIR && uv sync --all-extras --all-packages
@@ -94,7 +101,13 @@ CLEANUP_SH
 # --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other
 # tasks so a single trainer crash terminates the entire SLURM job instead of
 # leaving the surviving ranks (and their nodes) idle.
-srun --kill-on-bad-exit=1 bash -c '
+#
+# The body goes to bash on stdin through a quoted heredoc instead of a
+# single-quoted `bash -c` argument: srun broadcasts stdin to every task, and the
+# quoted delimiter passes the script through verbatim, so apostrophes and quotes
+# need no escaping. Nothing in the body reads stdin, which would otherwise eat
+# the rest of the script.
+srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     set -o pipefail
 
     # Setup environment
@@ -115,7 +128,7 @@ srun --kill-on-bad-exit=1 bash -c '
     export {{ key }}="{{ value }}"
 {%- endfor %}
 
-    echo $HOSTNAMES | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
+    echo $HOSTNAMES | tee $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
     uv run torchrun \
         --role=trainer \
         --nnodes=$NUM_NODES \
@@ -123,11 +136,11 @@ srun --kill-on-bad-exit=1 bash -c '
         --node-rank=$TRAIN_NODE_RANK \
         --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
         --rdzv-id=job_$SLURM_JOB_ID \
-        --log-dir=$OUTPUT_DIR/logs/trainer/torchrun \
+        --log-dir=$LOG_DIR/trainer/torchrun \
         --tee=3 \
         --redirects=3 \
         --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.sft.train \
         @ $CONFIG_PATH \
-        2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
-'
+        2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
+LAUNCH_SH

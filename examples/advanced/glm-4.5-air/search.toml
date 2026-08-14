@@ -32,7 +32,8 @@ timeout = 3600
 [ckpt]
 interval = 50
 keep_last = 1
-resume_step = -1
+
+[resume]
 
 [model]
 name = "zai-org/GLM-4.5-Air"
@@ -103,13 +104,10 @@ forward_env = ["SERPER_API_KEY"]
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-search"]
 
 [orchestrator.train.source.env.taskset]
-id = "openseeker-v1"
+id = "openseeker"
 
 [[orchestrator.train.source.env.taskset.task.judges]]
 id = "reference"
@@ -122,7 +120,7 @@ choices = ["A", "B"]
 # [[orchestrator.train.source.env.taskset.task.judges]]
 # id = "rubric"
 # name = "rlm"
-# path = "deps/research-environments/rubrics/rlm.toml"
+# path = "deps/prime-envs/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
@@ -136,13 +134,10 @@ forward_env = ["SERPER_API_KEY"]
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-search"]
 
 [orchestrator.train.source.env.taskset]
-id = "redsearcher-v1" # optional `difficulty` filter (easy/medium/hard)
+id = "redsearcher" # optional `difficulty` filter (easy/medium/hard)
 
 [[orchestrator.train.source.env.taskset.task.judges]]
 id = "reference"
@@ -155,7 +150,7 @@ choices = ["A", "B"]
 # [[orchestrator.train.source.env.taskset.task.judges]]
 # id = "rubric"
 # name = "rlm"
-# path = "deps/research-environments/rubrics/rlm.toml"
+# path = "deps/prime-envs/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
@@ -175,16 +170,13 @@ forward_env = ["SERPER_API_KEY"]
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-search"]
 
 [orchestrator.eval.source.env.agent.timeout]
 rollout = 3600
 
 [orchestrator.eval.source.env.taskset]
-id = "browsecomp-v1"
+id = "browsecomp"
 
 [orchestrator.eval.source.env.taskset.task.judge]
 model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
@@ -193,22 +185,20 @@ model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 # [[orchestrator.eval.source.env.taskset.task.judges]]
 # id = "rubric"
 # name = "rlm"
-# path = "deps/research-environments/rubrics/rlm.toml"
+# path = "deps/prime-envs/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
 # --- Inference ---
 
 [inference]
-enable_return_routed_experts = true
 
 # vLLM + FlashInfer caches on node-local /tmp.
 [inference.env_vars]
 VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
 FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 
-[inference.model]
+[inference.vllm]
 max_model_len = 131072
-
-[inference.parallel]
-tp = 8
+tensor_parallel_size = 8
+enable_return_routed_experts = true

@@ -33,7 +33,8 @@ timeout = 3600
 [ckpt]
 interval = 50
 keep_last = 1
-resume_step = -1
+
+[resume]
 
 [model]
 name = "zai-org/GLM-4.5-Air"
@@ -99,26 +100,23 @@ id = "rlm"
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-terminal"]
 
 [orchestrator.train.source.env.taskset]
-id = "tmax-v1"
+id = "tmax"
 
 # # Metric-only monitors (weight 0): rlm harness-mechanics + swe code-usage rubrics, judged by GLM-5.2.
 # [[orchestrator.train.source.env.taskset.judges]]
 # id = "rubric"
 # name = "rlm"
-# path = "deps/research-environments/rubrics/rlm.toml"
+# path = "deps/prime-envs/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
 # [[orchestrator.train.source.env.taskset.judges]]
 # id = "rubric"
 # name = "swe"
-# path = "deps/research-environments/rubrics/swe.toml"
+# path = "deps/prime-envs/rubrics/swe.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
@@ -135,28 +133,25 @@ id = "rlm"
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-terminal"]
 
 [orchestrator.eval.source.env.agent.timeout]
 rollout = 3600
 
 [orchestrator.eval.source.env.taskset]
-id = "swebench-verified-v1"
+id = "swebench-verified"
 
 # [[orchestrator.eval.source.env.taskset.judges]]
 # id = "rubric"
 # name = "rlm"
-# path = "deps/research-environments/rubrics/rlm.toml"
+# path = "deps/prime-envs/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
 # [[orchestrator.eval.source.env.taskset.judges]]
 # id = "rubric"
 # name = "swe"
-# path = "deps/research-environments/rubrics/swe.toml"
+# path = "deps/prime-envs/rubrics/swe.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
@@ -169,43 +164,38 @@ id = "rlm"
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-terminal"]
 
 [orchestrator.eval.source.env.agent.timeout]
 rollout = 3600
 
 [orchestrator.eval.source.env.taskset]
-id = "terminal-bench-2-v1"
+id = "terminal-bench-2"
 
 # [[orchestrator.eval.source.env.taskset.judges]]
 # id = "rubric"
 # name = "rlm"
-# path = "deps/research-environments/rubrics/rlm.toml"
+# path = "deps/prime-envs/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
 # [[orchestrator.eval.source.env.taskset.judges]]
 # id = "rubric"
 # name = "swe"
-# path = "deps/research-environments/rubrics/swe.toml"
+# path = "deps/prime-envs/rubrics/swe.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
 # --- Inference ---
 
 [inference]
-enable_return_routed_experts = true
 
 # vLLM + FlashInfer caches on node-local /tmp.
 [inference.env_vars]
 VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
 FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 
-[inference.model]
+[inference.vllm]
 max_model_len = 131072
-
-[inference.parallel]
-tp = 8
+tensor_parallel_size = 8
+enable_return_routed_experts = true

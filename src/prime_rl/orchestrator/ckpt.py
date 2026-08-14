@@ -47,8 +47,10 @@ class CheckpointManager:
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
         )
 
-    def load(self, progress: Progress, train_source: TrainSource, step: int) -> None:
-        ckpt_path = self.get_ckpt_path(step)
+    def load(self, progress: Progress, train_source: TrainSource, step: int, path: Path | None = None) -> None:
+        """``path`` overrides where the checkpoint is read from (an external run's
+        ``step_<N>/orchestrator``)."""
+        ckpt_path = path if path is not None else self.get_ckpt_path(step)
         state_file = ckpt_path / "progress.pt"
         if not state_file.exists():
             raise FileNotFoundError(f"Orchestrator checkpoint not found at {state_file}")
@@ -76,7 +78,7 @@ class CheckpointManager:
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
 
 
-def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
-    if config is None:
-        return None
-    return CheckpointManager(output_dir, config)
+def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager:
+    """The checkpoint manager always exists: ``resume`` decides whether it loads,
+    ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
+    return CheckpointManager(output_dir, config or CheckpointConfig())
