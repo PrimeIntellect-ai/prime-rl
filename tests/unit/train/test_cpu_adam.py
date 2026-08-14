@@ -1,6 +1,6 @@
 import torch
 
-from prime_rl.trainer.cpu_adam import (
+from prime_rl.trainer.optim.cpu_adam import (
     adamw_step,
     add_bfloat16_,
     copy_bfloat16_,

@@ -23,6 +23,7 @@ from prime_rl.utils.pathing import get_ckpt_dir
 from prime_rl.utils.utils import get_step_path
 
 if TYPE_CHECKING:
+    from prime_rl.configs.trainer import OptimizerOffloadingConfig
     from prime_rl.trainer.optim import GradientOffloadManager
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
@@ -161,6 +162,14 @@ def configure_cpu_optimizer_threads() -> None:
         f"CPU optimizer uses {threads} intra-op threads "
         f"({len(available)} CPUs in this rank's affinity mask, {get_world().local_world_size} local ranks)"
     )
+
+
+def setup_cpu_optimizer_offload(config: "OptimizerOffloadingConfig | None") -> None:
+    if config is None:
+        return
+    if config.numa_bind:
+        bind_process_to_gpu_numa_node()
+    configure_cpu_optimizer_threads()
 
 
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
