@@ -65,6 +65,7 @@ class Evaluator:
             output_dir=config.output_dir,
             run_config=config,
             eval_env_names=[source.resolved_name for source in config.eval.source],
+            overview_flavor="sft",
         )
         self.run_id = self.monitor.run_id or uuid.uuid4().hex
 

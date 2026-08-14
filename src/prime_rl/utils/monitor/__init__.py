@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -43,6 +44,7 @@ def setup_monitor(
     keep_full_history: bool = True,
     train_env_names: list[str] = [],
     eval_env_names: list[str] = [],
+    overview_flavor: Literal["rl", "sft"] = "rl",
     # Backward compatibility: support old 'config' keyword argument
     config: WandbWithExtrasConfig | None = None,
 ) -> Monitor:
@@ -72,6 +74,7 @@ def setup_monitor(
                 keep_full_history=keep_full_history,
                 train_env_names=train_env_names,
                 eval_env_names=eval_env_names,
+                overview_flavor=overview_flavor,
             )
         )
 

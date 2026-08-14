@@ -243,8 +243,8 @@ Pulled from the console log and mirrored to W&B.
 
 **Progress and loss:**
 
-- `loss/mean` — main signal. Should decrease through the run.
-- `val/loss` — validation loss when `[val]` is set, logged every `val.interval` steps.
+- `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
+- `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
@@ -370,7 +370,7 @@ uv run rl @ rl.toml --wandb \
   --no-trainer.wandb.log-extras.distributions
 ```
 
-prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, W&B mode **auto-creates an `overview` saved view** on the first run into a project — curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first.
+prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, W&B mode **auto-creates an `overview` saved view** on the first run into a project — curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first. SFT runs get the same treatment with an SFT-shaped `train` section — loss and perplexity (train + validation) instead of rollout metrics — alongside the same per-env `eval` sections and SFT-specific `stability` / `performance` panels.
 
 ### Platform Monitoring
 

@@ -1,5 +1,6 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
+import math
 import time
 from contextlib import nullcontext
 from datetime import timedelta
@@ -74,7 +75,12 @@ def train(config: SFTConfig):
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
     monitor = setup_monitor(
-        config.wandb, file_config=config.file_monitor, output_dir=config.output_dir, run_config=config
+        config.wandb,
+        file_config=config.file_monitor,
+        output_dir=config.output_dir,
+        run_config=config,
+        eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval else [],
+        overview_flavor="sft",
     )
 
     # Setup heartbeat (only on rank 0)
@@ -358,7 +364,7 @@ def train(config: SFTConfig):
             logger.warning(f"Validation at step {step} had no valid tokens")
         else:
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        monitor.log({"val/loss": mean_loss, "step": step}, step=step)
+        monitor.log({"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -592,6 +598,7 @@ def train(config: SFTConfig):
 
         loss_log_metrics = {
             "loss/mean": batch_loss,
+            "loss/perplexity": math.exp(min(batch_loss, 20)),
             "loss/nan_count": nan_loss_count,
             "step": progress.step,
         }
