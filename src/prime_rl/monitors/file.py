@@ -28,7 +28,8 @@ class FileMonitor(Monitor):
         path.parent.mkdir(parents=True, exist_ok=True)
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(path, "a", buffering=1)  # noqa: SIM115
-        self.logger.info(f"Logging metrics to {path}")
+        self.path = path
+        self.logger.info(f"Logging metrics to {path} and traces to {output_dir / 'rollouts'}")
 
     async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
         if self.file is None:
@@ -60,3 +61,6 @@ class FileMonitor(Monitor):
         # Record serialization is heavy pure-Python work; keep it off the event loop.
         # Awaited (not fire-and-forget) so appends to one file never interleave.
         await asyncio.to_thread(write)
+
+    async def finalize(self) -> None:
+        self.logger.info(f"Finalized metrics at {self.path}")

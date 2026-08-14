@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -122,8 +123,16 @@ class WandbMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to create W&B overview view - {e}")
 
+        self.logger.info(f"Logging metrics to W&B run {self.wandb.id} ({self.wandb.url})")
+
     async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
         wandb.log({**metrics, "step": step})
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         pass
+
+    async def finalize(self) -> None:
+        self.logger.info(f"Finalizing W&B run {self.wandb.id}")
+        # Explicit finish: in (experimental) shared mode the SDK's atexit finish does
+        # not land the run state - without this, even clean runs decay to "crashed".
+        await asyncio.to_thread(wandb.finish, exit_code=0)

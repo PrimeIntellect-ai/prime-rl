@@ -100,7 +100,6 @@ class PrimeMonitor(Monitor):
             if parquet_bytes is not None:
                 await self.run.upload_samples(parquet_bytes, step)
 
-        self.logger.info(f"Logging {len(episodes)} episodes to Prime Intellect API at step {step}")
         self._submit(f"episodes upload at step {step}", upload())
 
     async def finalize(self) -> None:
@@ -249,9 +248,11 @@ class TrainRun:
         self._owner_pid = os.getpid()
         atexit.register(self._mark_failed)
         if prime_config.frontend_url:
-            self.logger.success(f"Monitor run at: {prime_config.frontend_url.rstrip('/')}/dashboard/training/{self.id}")
+            self.logger.info(
+                f"Logging metrics and episodes to platform run {self.id} ({prime_config.frontend_url.rstrip('/')}/dashboard/training/{self.id})"
+            )
         else:
-            self.logger.success(f"Registered platform run {self.id}")
+            self.logger.info(f"Logging metrics and episodes to platform run {self.id}")
         return self.id
 
     async def log_metrics(self, metrics: dict[str, Any]) -> None:
