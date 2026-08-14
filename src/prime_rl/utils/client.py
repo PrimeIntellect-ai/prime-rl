@@ -52,6 +52,8 @@ class InferencePool:
         train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
         renderer_config: RendererConfig | None = None,
+        *,
+        admin_clients: list[AsyncClient] | None = None,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
         self.train_client = setup_client(
@@ -61,7 +63,7 @@ class InferencePool:
             renderer_model_name=renderer_model_name,
         )
         self.eval_client = setup_client(client_config, client_type=eval_client_type)
-        self._admin_clients = setup_admin_clients(client_config)
+        self._admin_clients = setup_admin_clients(client_config) if admin_clients is None else admin_clients
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
         self._router_clients = (
@@ -97,6 +99,40 @@ class InferencePool:
     ) -> None:
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step, native_nccl=native_nccl)
 
+    async def init_nccl_broadcast(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int | None,
+    ) -> None:
+        await init_nccl_broadcast(
+            self._admin_clients,
+            host,
+            port,
+            timeout,
+            inference_world_size=inference_world_size,
+        )
+
+    async def init_nixl_broadcast(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        session_id: str,
+    ) -> None:
+        await init_nixl_broadcast(
+            self._admin_clients,
+            host,
+            port,
+            timeout,
+            inference_world_size,
+            session_id,
+        )
+
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this pool's model (one logprob per
         token, 0.0 for the leading token). Delegates to the shared scorer."""
@@ -104,6 +140,32 @@ class InferencePool:
 
     async def stop(self) -> None:
         await self._scorer.aclose()
+
+
+async def setup_inference_pool(
+    client_config: ClientConfig,
+    *,
+    model_name: str,
+    train_client_type: str = "openai_chat_completions",
+    eval_client_type: str = "openai_chat_completions",
+    renderer_config: RendererConfig | None = None,
+    inference_world_size: int | None = None,
+) -> InferencePool:
+    kwargs = {
+        "train_client_type": train_client_type,
+        "eval_client_type": eval_client_type,
+        "renderer_config": renderer_config,
+    }
+    if client_config.is_dynamo():
+        from prime_rl.utils.dynamo import DynamoInferencePool
+
+        return await DynamoInferencePool.from_config(
+            client_config,
+            model_name,
+            inference_world_size=inference_world_size,
+            **kwargs,
+        )
+    return InferencePool(client_config, model_name, **kwargs)
 
 
 def setup_client(

@@ -349,6 +349,8 @@ class RLConfig(BaseConfig):
     def validate_enough_devices_for_nccl(self):
         if self.deployment.type == "single_node":
             if self.trainer.weight_broadcast.type == "nccl":
+                if self.orchestrator.model.client.is_dynamo():
+                    return self
                 if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
                     raise ValueError(
                         "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
@@ -444,6 +446,9 @@ class RLConfig(BaseConfig):
                 "LoRA training is not yet supported with in-memory weight broadcast. "
                 "Set weight_broadcast.type = 'filesystem'."
             )
+        client = self.orchestrator.model.client
+        if client.is_dynamo() and self.weight_broadcast.type != "nccl":
+            raise ValueError("Dynamo currently supports native NCCL weight updates only.")
         if self.weight_broadcast.type in ("nccl", "nixl"):
             inference_world_size = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
