@@ -16,6 +16,7 @@ from prime_rl.configs.shared import BaseModelConfig, LogConfig
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
+    clean_future_steps,
     create_attempt_log_dir,
     format_log_message,
     get_all_ckpt_steps,
@@ -301,7 +302,9 @@ def sft_slurm(config: SFTConfig):
 
     submitted_job_ids: list[str] = []
     for path in script_paths:
-        cmd = ["sbatch"]
+        # --parsable prints ``<job_id>[;<cluster>]`` — the human-readable format varies
+        # (e.g. multi-cluster sbatch appends "on cluster <name>").
+        cmd = ["sbatch", "--parsable"]
         if submitted_job_ids:
             # Hold the eval job until the trainer job has started (not finished).
             cmd.append(f"--dependency=after:{submitted_job_ids[-1]}")
@@ -314,9 +317,9 @@ def sft_slurm(config: SFTConfig):
                 logger.warning(f"Cancelling already-submitted job {job_id}")
                 subprocess.run(["scancel", job_id], capture_output=True, text=True)
             sys.exit(1)
-        stdout = result.stdout.strip()
-        submitted_job_ids.append(stdout.split()[-1])
-        logger.success(stdout)
+        job_id = result.stdout.strip().split(";")[0]
+        submitted_job_ids.append(job_id)
+        logger.success(f"Submitted batch job {job_id}")
 
     logger.success(log_message)
 
@@ -524,25 +527,27 @@ def sft_local(config: SFTConfig):
         raise
 
 
-def clean_stale_weights(config: SFTConfig) -> None:
-    """Remove weight checkpoints a previous run left behind: everything on a fresh
-    start, steps past the resume step on resume. Without this the evaluator would
-    replay stale checkpoints (and then skip the re-trained ones at the same steps)."""
+def clean_stale_eval_artifacts(config: SFTConfig) -> None:
+    """Remove eval artifacts a previous run left behind: weight checkpoints and rollout
+    trace dirs — everything on a fresh start, steps past the resume step on resume.
+    Without this the evaluator would replay stale checkpoints (and then skip the
+    re-trained ones at the same steps), and the append-only trace files would mix two
+    policies' rollouts under one step."""
+    logger = setup_logger(config.log.level or "info")
     if os.environ.get("NEVER_CLEAN"):
-        setup_logger(config.log.level or "info").warning(
-            "NEVER_CLEAN is set - keeping stale weight checkpoints; the evaluator may replay them"
-        )
+        logger.warning("NEVER_CLEAN is set - keeping stale weight checkpoints; the evaluator may replay them")
         return
-    weights_dir = get_weights_dir(get_ckpt_base(config))
     resume_step = resolve_resume_step(config)
+    weights_dir = get_weights_dir(get_ckpt_base(config))
     stale_steps = [step for step in get_all_ckpt_steps(weights_dir) if resume_step is None or step > resume_step]
-    if not stale_steps:
-        return
-    setup_logger(config.log.level or "info").info(
-        f"Deleting {len(stale_steps)} stale weight checkpoint(s) in {weights_dir} ({','.join(map(str, stale_steps))})"
-    )
-    for step in stale_steps:
-        shutil.rmtree(get_step_path(weights_dir, step), ignore_errors=True)
+    if stale_steps:
+        logger.info(
+            f"Deleting {len(stale_steps)} stale weight checkpoint(s) in {weights_dir} "
+            f"({','.join(map(str, stale_steps))})"
+        )
+        for step in stale_steps:
+            shutil.rmtree(get_step_path(weights_dir, step), ignore_errors=True)
+    clean_future_steps(config.run_dir, resume_step if resume_step is not None else -1)
 
 
 def sft(config: SFTConfig):
@@ -564,7 +569,7 @@ def sft(config: SFTConfig):
         ckpt_output_dir.mkdir(parents=True, exist_ok=True)
 
     if config.eval is not None and not config.dry_run:
-        clean_stale_weights(config)
+        clean_stale_eval_artifacts(config)
 
     if not config.dry_run:
         from prime_rl.trainer.model import pre_download_model

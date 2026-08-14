@@ -432,7 +432,7 @@ class SFTConfig(BaseConfig):
                     f"inference.vllm.tensor_parallel_size ({vllm.tensor_parallel_size})."
                 )
             vllm.data_parallel_size = num_infer_gpus // vllm.tensor_parallel_size
-        if vllm.api_server_count < vllm.data_parallel_size:
+        if vllm.api_server_count < vllm.data_parallel_size and not vllm.enable_lora:
             vllm.api_server_count = vllm.data_parallel_size
         if self.inference.weight_broadcast.type != "filesystem":
             raise ValueError(

@@ -105,14 +105,25 @@ class Evaluator:
             assert config.weights_dir is not None  # resolved by the config validator
             steps = get_all_ckpt_steps(config.weights_dir)
             stable = {step: (get_step_path(config.weights_dir, step) / "STABLE").exists() for step in steps}
-            for step in steps:
+            newest_stable = max((step for step in steps if stable[step]), default=None)
+            # Also walk eval-due steps that are no longer on disk: checkpoint cleaning
+            # (ckpt.keep_last / keep_interval) can delete a step before this scan sees
+            # it, and a vanished step would otherwise be skipped without a trace.
+            for step in sorted(set(steps) | self.deleted_due_steps(steps, newest_stable)):
                 if step <= self.last_step:
+                    continue
+                if step not in stable:
+                    get_logger().warning(
+                        f"Weight checkpoint for eval step {step} was deleted before it could be "
+                        "evaluated (checkpoint cleaning outpaced the evaluator) - skipping its evals"
+                    )
+                    self.last_step = max(self.last_step, step)
                     continue
                 if not stable[step]:
                     # The trainer writes checkpoints in ascending order, so a marker-less
                     # step below a stable one is an abandoned partial write (e.g. a crash
                     # mid-save), not one in progress — skip it instead of wedging on it.
-                    if not any(stable[s] for s in steps if s > step):
+                    if newest_stable is None or newest_stable < step:
                         break  # still being written — later steps can't be ready either
                     get_logger().warning(
                         f"Weight checkpoint step {step} has no STABLE marker but newer stable "
@@ -127,6 +138,19 @@ class Evaluator:
             await asyncio.sleep(POLL_INTERVAL_S)
 
         get_logger().success("Evaluator finished!")
+
+    def deleted_due_steps(self, steps: list[int], newest_stable: int | None) -> set[int]:
+        """Eval-due steps up to the newest stable checkpoint that are missing from the
+        weights dir — the trainer wrote them (it saves at every due step), so their
+        absence means checkpoint cleaning removed them before they were evaluated."""
+        if newest_stable is None:
+            return set()
+        due = {
+            step
+            for interval in self.eval_source.intervals.values()
+            for step in range(interval, newest_stable + 1, interval)
+        }
+        return due - set(steps)
 
     async def maybe_run_evals(self, step: int, *, reload_weights: bool = False, force: bool = False) -> None:
         """Fire eligible envs for one checkpoint step and run the full epoch(s),

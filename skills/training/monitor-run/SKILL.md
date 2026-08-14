@@ -66,6 +66,7 @@ After a restart, verify all processes are back up and progress resumed before th
 {run_dir}/logs/latest/
 ├── trainer.log                # rank 0 stdout
 ├── orchestrator.log           # orchestrator stdout
+├── evaluator.log              # SFT online-eval evaluator stdout (single-node; the decoupled multi-node eval job logs at {run_dir}/logs/evaluator.log)
 ├── inference.log              # vLLM stdout
 ├── trainer/
 │   ├── node_*.log             # per-node (multi-node only)
@@ -81,7 +82,7 @@ Usually tailing `trainer.log`, `orchestrator.log`, and `inference.log` is enough
 Scan for problems:
 
 ```bash
-grep -E "WARNING|ERROR" {run_dir}/logs/latest/{trainer,orchestrator,inference}.log
+grep -E "WARNING|ERROR" {run_dir}/logs/latest/{trainer,orchestrator,evaluator,inference}.log
 grep -E "WARNING|ERROR" {run_dir}/logs/latest/envs/{train,eval}/*.log
 ```
 
