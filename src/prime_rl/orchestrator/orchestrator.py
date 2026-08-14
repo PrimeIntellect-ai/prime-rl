@@ -81,7 +81,6 @@ from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_trace_path
-from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
     clean_exit,
     resolve_latest_ckpt_step,
@@ -141,7 +140,6 @@ class Orchestrator:
     renderer: Renderer | None
     mm_token_type_ids_mapping: dict[int, int] | None
     heart: Heartbeat | None
-    usage_reporter: UsageReporter | None
     inference_metrics: InferenceMetricsCollector | None
     eval_envs: EvalEnvs | None
     eval_sink: EvalSink | None
@@ -183,7 +181,6 @@ class Orchestrator:
         self.renderer = None
         self.mm_token_type_ids_mapping = None
         self.heart = None
-        self.usage_reporter = None
         self.inference_metrics = None
         self.eval_envs = None
         self.eval_sink = None
@@ -240,11 +237,6 @@ class Orchestrator:
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat.url)
-
-        usage_base_url = os.environ.get("PI_USAGE_BASE_URL")
-        usage_api_key = os.environ.get("PI_USAGE_API_KEY")
-        if usage_base_url and usage_api_key:
-            self.usage_reporter = UsageReporter()
 
         # Filters apply to train rollouts only
         pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="pre-batch")
@@ -702,14 +694,6 @@ class Orchestrator:
         self.wait_for_policy_time = 0.0
         monitors.log_episodes(effective.rollouts, step=step)
 
-        if self.usage_reporter is not None:
-            run_id = os.getenv("RUN_ID", "")
-            if run_id:
-                self.usage_reporter.report_training_usage(
-                    run_id=run_id,
-                    step=step,
-                    tokens=num_input + num_output,
-                )
         if self.heart is not None:
             self.heart.beat()
 
@@ -980,8 +964,6 @@ class Orchestrator:
                 for env in self.train_envs:
                     for pool in (*env.sampler.connected_pools, *env.algorithm.connected_pools):
                         await pool.stop()
-            if self.usage_reporter is not None:
-                self.usage_reporter.close()
 
         task = asyncio.create_task(teardown())
         _, pending = await asyncio.wait({task}, timeout=SHUTDOWN_TIMEOUT_S)

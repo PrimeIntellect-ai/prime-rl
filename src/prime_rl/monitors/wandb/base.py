@@ -15,28 +15,20 @@ from prime_rl.configs.shared import WandbConfig
 from prime_rl.monitors.base import Monitor
 from prime_rl.monitors.wandb.overview import ensure_overview_view
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.logger import get_logger
 
 
 class WandbMonitor(Monitor):
     """Logs metrics to Weights and Biases."""
 
-    def __init__(
+    config: WandbConfig
+
+    def init(
         self,
-        config: WandbConfig,
         output_dir: Path,
         run_config: BaseConfig | None = None,
         train_env_names: list[str] | None = None,
         eval_env_names: list[str] | None = None,
-    ):
-        self.config = config
-        self.output_dir = output_dir
-        self.run_config = run_config
-        self.train_env_names = train_env_names or []
-        self.eval_env_names = eval_env_names or []
-        self.logger = get_logger()
-
-    def init(self) -> None:
+    ) -> None:
         # W&B reads the start command off sys.argv; the launcher passes the original
         # command to subprocesses via $WANDB_ARGS.
         wandb_args = os.environ.get("WANDB_ARGS")
@@ -46,8 +38,10 @@ class WandbMonitor(Monitor):
 
         # WANDB_MODE=disabled/offline takes precedence over shared mode — shared mode
         # requires a server connection and can't work offline.
-        _wandb_mode = os.environ.get("WANDB_MODE")
-        shared_mode = os.environ.get("WANDB_SHARED_MODE") == "1" and _wandb_mode not in ("disabled", "offline")
+        shared_mode = os.environ.get("WANDB_SHARED_MODE") == "1" and os.environ.get("WANDB_MODE") not in (
+            "disabled",
+            "offline",
+        )
         if shared_mode:
             # W&B's native run-id var, set by the launcher to $PRL_RUN_ID.
             run_id = os.environ.get("WANDB_RUN_ID")
@@ -81,8 +75,8 @@ class WandbMonitor(Monitor):
                         name=self.config.name,
                         group=self.config.group,
                         tags=self.config.tags,
-                        dir=self.output_dir,
-                        config=self.run_config.model_dump() if self.run_config else None,
+                        dir=output_dir,
+                        config=run_config.model_dump() if run_config else None,
                         settings=settings,
                     )
                 except retryable_errors as e:
@@ -118,8 +112,8 @@ class WandbMonitor(Monitor):
                 url = ensure_overview_view(
                     self.wandb.entity,
                     self.wandb.project,
-                    train_envs=self.train_env_names,
-                    eval_envs=self.eval_env_names,
+                    train_envs=train_env_names or [],
+                    eval_envs=eval_env_names or [],
                 )
                 if url:
                     self.logger.info(f"Created W&B overview view - {url}")

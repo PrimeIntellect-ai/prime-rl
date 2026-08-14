@@ -218,7 +218,7 @@ PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:False"
 VLLM_USE_DEEP_GEMM = "1"
 
 [orchestrator.env_vars]
-PI_USAGE_BASE_URL = "https://..."
+PRIME_LOG_LEVEL = "debug"
 ```
 
 The `rl` launcher applies these the same way in both single-node and multi-node (SLURM) runs. Precedence, low to high:

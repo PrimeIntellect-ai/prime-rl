@@ -59,25 +59,27 @@ def setup(
     if rank != 0:
         return
 
-    monitors: list[Monitor] = []
+    monitors: list[tuple[Monitor, dict[str, Any]]] = []
     if prime is not None:
-        monitors.append(PrimeMonitor(prime, run_config=run_config))
+        monitors.append((PrimeMonitor(prime), dict(run_config=run_config)))
     if wandb is not None:
         monitors.append(
-            WandbMonitor(
-                wandb,
-                output_dir=output_dir,
-                run_config=run_config,
-                train_env_names=train_env_names,
-                eval_env_names=eval_env_names,
+            (
+                WandbMonitor(wandb),
+                dict(
+                    output_dir=output_dir,
+                    run_config=run_config,
+                    train_env_names=train_env_names,
+                    eval_env_names=eval_env_names,
+                ),
             )
         )
     if file is not None:
-        monitors.append(FileMonitor(file, output_dir=output_dir))
+        monitors.append((FileMonitor(file), dict(output_dir=output_dir)))
 
-    for monitor in monitors:
+    for monitor, init_kwargs in monitors:
         try:
-            monitor.init()
+            monitor.init(**init_kwargs)
         except Exception as e:
             get_logger().warning(f"Failed to initialize {monitor.__class__.__name__} - disabling it ({e})")
             continue

@@ -4,6 +4,9 @@ import math
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.logger import get_logger
+
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
 
@@ -50,16 +53,21 @@ def drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str 
 class Monitor(ABC):
     """Base class for metric monitors.
 
-    Construction must be side-effect free — external resources (run registration,
-    connections, file handles) are created in ``init``, which ``monitors.setup``
-    calls once per monitor. An ``init`` that raises disables the monitor.
+    Construction takes only the monitor's config and must be side-effect free —
+    runtime context is passed to ``init``, which creates the external resources
+    (run registration, connections, file handles) and is called once per monitor
+    by ``monitors.setup``. An ``init`` that raises disables the monitor.
     """
 
     run_id: str | None = None
     """External identifier of the run this monitor reports to (platform / W&B), when it has one."""
 
-    def init(self) -> None:
-        """Initialize external resources."""
+    def __init__(self, config: BaseConfig):
+        self.config = config
+        self.logger = get_logger()
+
+    def init(self, **kwargs: Any) -> None:
+        """Initialize external resources. Overrides name their own kwargs."""
 
     @abstractmethod
     def log(self, metrics: dict[str, Any], step: int) -> None:

@@ -6,7 +6,7 @@ import json
 import os
 import random
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Coroutine
 
 import httpx
 import pyarrow as pa
@@ -19,8 +19,6 @@ from verifiers.v1.utils.platform import build_samples
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import PrimeMonitorConfig
 from prime_rl.monitors.base import Monitor, drop_non_finite_json_values
-from prime_rl.utils.background_async import BackgroundAsync
-from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
@@ -51,6 +49,10 @@ _SAMPLE_SCHEMA = pa.schema(
 )
 
 
+def _client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=30, transport=httpx.AsyncHTTPTransport(retries=3))
+
+
 def group_episodes(rollouts: list[Rollout]) -> list[vf.Episode]:
     """Regroup rollouts into their episodes. The dispatcher unwraps every
     ``vf.Episode`` into its traces on arrival; ``episode_id`` links them back
@@ -70,36 +72,112 @@ def group_episodes(rollouts: list[Rollout]) -> list[vf.Episode]:
 
 
 class PrimeMonitor(Monitor):
-    """Logs metrics and episodes to the Prime Intellect platform."""
+    """Logs metrics and episodes to the prime platform.
 
-    def __init__(self, config: PrimeMonitorConfig, run_config: OrchestratorConfig | None = None):
-        self.config = config
-        self.run_config = run_config
-        self.logger = get_logger()
-        self.base_url = config.base_url.rstrip("/")
-        self._last_metrics: dict[str, Any] = {}
-        self._registered = False
-        self._finalized = False
-        self._owner_pid = os.getpid()
+    Uploads are fire-and-forget tasks on the caller's event loop — the prime
+    monitor only runs in the orchestrator, whose call sites are all async.
+    Each request uses a short-lived client (connect failures retry inside the
+    transport), so forked processes (subprocess evals) need no special handling.
+    """
 
-    def init(self) -> None:
+    config: PrimeMonitorConfig
+
+    def init(self, run_config: OrchestratorConfig | None = None) -> None:
         api_key = os.getenv(self.config.api_key_var) or PrimeConfig().api_key
         if not api_key:
             raise RuntimeError(f"API key not found - set {self.config.api_key_var} or run `prime login`")
-        self._headers = {
+        self.base_url = self.config.base_url.rstrip("/")
+        self.headers = {
             "Authorization": f"Bearer {api_key}",
             "x-api-key": api_key,
             "Content-Type": "application/json",
         }
+        self._last_metrics: dict[str, Any] = {}
+        self._registered = False
+        self._finalized = False
+        self._owner_pid = os.getpid()
+        self._tasks: set[asyncio.Task] = set()
 
-        run_id = os.getenv("RUN_ID") or self._register_run()
+        run_id = os.getenv("RUN_ID")
+        if run_id is None:
+            run_id = self._register_run(run_config)
+            self._registered = True
         os.environ["RUN_ID"] = run_id
         self.run_id = run_id
-        self._background = BackgroundAsync()
 
-    def _register_run(self) -> str:
+    def log(self, metrics: dict[str, Any], step: int) -> None:
+        self._last_metrics = metrics
+        payload = self._sanitize({"run_id": self.run_id, "metrics": metrics})
+
+        async def post() -> None:
+            async with _client() as client:
+                response = await client.post(f"{self.base_url}/metrics", headers=self.headers, json=payload)
+                response.raise_for_status()
+
+        self._submit("metrics upload", post())
+
+    def log_episodes(self, rollouts: list[Rollout], step: int) -> None:
+        """Upload one platform sample per episode via the presigned-URL Parquet flow."""
+        config = self.config.log_episodes
+        if config is None or step % config.interval != 0:
+            return
+
+        episodes = group_episodes(rollouts)
+        if config.sample_ratio is not None and config.sample_ratio < 1.0:
+            num_samples = max(1, int(len(episodes) * config.sample_ratio)) if config.sample_ratio > 0 else 0
+            episodes = random.sample(episodes, min(num_samples, len(episodes)))
+        if not episodes:
+            return
+
+        parquet_bytes = self._episodes_to_parquet_bytes(episodes, step)
+        if parquet_bytes is None:
+            return
+
+        async def upload() -> None:
+            # Presigned-URL flow: presign -> R2 PUT -> confirm. The PUT carries no API
+            # headers - extra auth breaks the presigned signature.
+            async with _client() as client:
+                presign = await client.post(
+                    f"{self.base_url}/samples/presign",
+                    headers=self.headers,
+                    json={"run_id": self.run_id, "step": step},
+                )
+                presign.raise_for_status()
+                data = presign.json()["data"]
+                put = await client.put(
+                    data["presignedUrl"], content=parquet_bytes, headers={"Content-Type": "application/parquet"}
+                )
+                put.raise_for_status()
+                confirm = await client.post(
+                    f"{self.base_url}/samples/confirm",
+                    headers=self.headers,
+                    json={"run_id": self.run_id, "step": step, "s3_key": data["s3Key"]},
+                )
+                confirm.raise_for_status()
+
+        self.logger.info(f"Logging {len(episodes)} episodes to Prime Intellect API at step {step}")
+        self._submit(f"episodes upload at step {step}", upload())
+
+    def finalize(self) -> None:
+        """Finalize the platform run as completed, submitting the last metrics as its summary."""
+        self.logger.info(f"Finalizing platform run {self.run_id}")
+        payload = self._sanitize({"run_id": self.run_id, "summary": self._last_metrics})
+        try:
+            httpx.post(f"{self.base_url}/finalize", headers=self.headers, json=payload, timeout=30).raise_for_status()
+        except httpx.HTTPError as e:
+            self.logger.warning(f"Failed to finalize platform run {self.run_id}: {e}")
+            self._set_run_status(success=True)
+        if os.getpid() == self._owner_pid:
+            self._finalized = True
+
+    def __del__(self) -> None:
+        # A run that was registered but never finalized did not exit cleanly.
+        if getattr(self, "_registered", False) and not self._finalized and os.getpid() == self._owner_pid:
+            self._set_run_status(success=False)
+
+    def _register_run(self, run_config: OrchestratorConfig | None) -> str:
         """Register an external run with the platform and return its run id."""
-        config, run_config = self.config, self.run_config
+        config = self.config
         team_id = config.team_id
         frontend_url = config.frontend_url
         if team_id is None or frontend_url is None:
@@ -125,7 +203,7 @@ class PrimeMonitor(Monitor):
         if team_id:
             payload["team_id"] = team_id
 
-        response = httpx.post(f"{self.base_url}/external-runs", headers=self._headers, json=payload, timeout=30)
+        response = httpx.post(f"{self.base_url}/external-runs", headers=self.headers, json=payload, timeout=30)
         if response.status_code != 201:
             raise RuntimeError(f"Failed to create platform run (HTTP {response.status_code}): {response.text}")
 
@@ -134,33 +212,44 @@ class PrimeMonitor(Monitor):
             self.logger.success(f"Monitor run at: {frontend_url.rstrip('/')}/dashboard/training/{run_id}")
         else:
             self.logger.success(f"Registered platform run {run_id}")
-        self._registered = True
         return run_id
 
-    def log(self, metrics: dict[str, Any], step: int) -> None:
-        self._last_metrics = metrics
-        payload = self._sanitize("metrics", {"run_id": self.run_id, "metrics": metrics})
-        self._submit("metrics upload", lambda: self._post_async("metrics", payload))
+    def _set_run_status(self, success: bool) -> None:
+        """Mark the run as completed or failed on the platform."""
+        status = "completed" if success else "failed"
+        self.logger.info(f"Marking platform run {self.run_id} as {status}")
+        try:
+            httpx.put(
+                f"{self.base_url}/external-runs/{self.run_id}/status",
+                headers=self.headers,
+                json={"status": status},
+                timeout=30,
+            ).raise_for_status()
+        except httpx.HTTPError as e:
+            self.logger.warning(f"Failed to mark platform run {self.run_id} as {status}: {e}")
 
-    def log_episodes(self, rollouts: list[Rollout], step: int) -> None:
-        """Upload one platform sample per episode via the presigned-URL Parquet flow."""
-        config = self.config.log_episodes
-        if config is None or step % config.interval != 0:
-            return
+    def _sanitize(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Drop non-finite floats (invalid JSON) before sending payloads to the public API."""
+        dropped: list[str] = []
+        sanitized = drop_non_finite_json_values(payload, dropped)
+        if dropped:
+            self.logger.warning(
+                f"Dropping {len(dropped)} non-finite value(s) from Prime monitor payload: {', '.join(dropped[:5])}"
+            )
+        return sanitized
 
-        episodes = group_episodes(rollouts)
-        if config.sample_ratio is not None and config.sample_ratio < 1.0:
-            num_samples = max(1, int(len(episodes) * config.sample_ratio)) if config.sample_ratio > 0 else 0
-            episodes = random.sample(episodes, min(num_samples, len(episodes)))
-        if not episodes:
-            return
+    def _submit(self, what: str, request: Coroutine[Any, Any, None]) -> None:
+        """Run a request as a fire-and-forget task; a failure only warns."""
 
-        parquet_bytes = self._episodes_to_parquet_bytes(episodes, step)
-        if parquet_bytes is None:
-            return
+        async def guarded() -> None:
+            try:
+                await request
+            except Exception as e:
+                self.logger.warning(f"Failed {what} to Prime Intellect API: {type(e).__name__}: {e}")
 
-        self.logger.info(f"Logging {len(episodes)} episodes to Prime Intellect API at step {step}")
-        self._submit(f"episodes upload at step {step}", lambda: self._upload_samples_async(parquet_bytes, step))
+        task = asyncio.get_running_loop().create_task(guarded())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     def _episodes_to_parquet_bytes(self, episodes: list[vf.Episode], step: int) -> bytes | None:
         """One row per episode. Sample construction is shared with verifiers' eval
@@ -220,108 +309,3 @@ class PrimeMonitor(Monitor):
         buf = io.BytesIO()
         pq.write_table(table, buf, compression="snappy", use_dictionary=True, write_statistics=True)
         return buf.getvalue()
-
-    def finalize(self) -> None:
-        """Finalize the platform run as completed, submitting the last metrics as its summary."""
-        self.logger.info(f"Finalizing platform run {self.run_id}")
-        payload = self._sanitize("finalize", {"run_id": self.run_id, "summary": self._last_metrics})
-        try:
-            response = httpx.post(f"{self.base_url}/finalize", headers=self._headers, json=payload, timeout=30)
-            response.raise_for_status()
-        except httpx.HTTPError as e:
-            self.logger.warning(f"Failed to finalize platform run {self.run_id}: {e}")
-            if os.getpid() == self._owner_pid:
-                self._set_run_status(success=True)
-                self._finalized = True
-            return
-        if os.getpid() == self._owner_pid:
-            self._finalized = True
-
-    def __del__(self) -> None:
-        if not hasattr(self, "_background"):  # init never ran or failed
-            return
-        # A run that was registered but never finalized did not exit cleanly.
-        if self._registered and not self._finalized and os.getpid() == self._owner_pid:
-            self._set_run_status(success=False)
-            self._finalized = True
-        self._background.close()
-
-    def _set_run_status(self, success: bool) -> None:
-        """Mark the run as completed or failed on the platform."""
-        status = "completed" if success else "failed"
-        self.logger.info(f"Marking platform run {self.run_id} as {status}")
-        try:
-            response = httpx.put(
-                f"{self.base_url}/external-runs/{self.run_id}/status",
-                headers=self._headers,
-                json={"status": status},
-                timeout=30,
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as e:
-            self.logger.warning(f"Failed to mark platform run {self.run_id} as {status}: {e}")
-
-    def _sanitize(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Drop non-finite floats before sending JSON payloads to the public API."""
-        dropped_paths: list[str] = []
-        sanitized = drop_non_finite_json_values(payload, dropped_paths)
-        if dropped_paths:
-            preview = ", ".join(dropped_paths[:5])
-            suffix = " ..." if len(dropped_paths) > 5 else ""
-            self.logger.warning(
-                f"Dropping {len(dropped_paths)} non-finite value(s) from Prime monitor {endpoint} payload: "
-                f"{preview}{suffix}"
-            )
-        return sanitized
-
-    def _submit(self, what: str, request: Callable[[], Awaitable[None]]) -> None:
-        """Run a request on the background loop (fire-and-forget); a failure only warns."""
-
-        async def guarded() -> None:
-            try:
-                await request()
-            except Exception as e:
-                self.logger.warning(f"Failed {what} to Prime Intellect API: {type(e).__name__}: {e}")
-
-        self._background.submit(guarded)
-
-    async def _retry(self, request: Callable[[], Awaitable[httpx.Response]], max_retries: int = 3) -> httpx.Response:
-        for attempt in range(max_retries):
-            try:
-                response = await request()
-                response.raise_for_status()
-                return response
-            except Exception:
-                if attempt + 1 == max_retries:
-                    raise
-                await asyncio.sleep(2**attempt)
-        raise AssertionError("unreachable")
-
-    async def _post_async(self, endpoint: str, payload: dict[str, Any]) -> None:
-        client = self._background.client
-        await self._retry(lambda: client.post(f"{self.base_url}/{endpoint}", headers=self._headers, json=payload))
-
-    async def _upload_samples_async(self, parquet_bytes: bytes, step: int) -> None:
-        """Presigned-URL upload flow: presign -> R2 PUT -> confirm."""
-        client = self._background.client
-        response = await self._retry(
-            lambda: client.post(
-                f"{self.base_url}/samples/presign",
-                headers=self._headers,
-                json={"run_id": self.run_id, "step": step},
-            )
-        )
-        data = response.json()["data"]
-        await self._retry(
-            lambda: client.put(
-                data["presignedUrl"], content=parquet_bytes, headers={"Content-Type": "application/parquet"}
-            )
-        )
-        await self._retry(
-            lambda: client.post(
-                f"{self.base_url}/samples/confirm",
-                headers=self._headers,
-                json={"run_id": self.run_id, "step": step, "s3_key": data["s3Key"]},
-            )
-        )
-        self.logger.debug(f"Uploaded episode samples for step {step}")
