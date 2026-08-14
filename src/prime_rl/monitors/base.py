@@ -20,16 +20,16 @@ class Monitor(ABC):
         self.config = config
         self.logger = get_logger()
 
-    def init(self, **kwargs: Any) -> None:
+    async def init(self, **kwargs: Any) -> None:
         """Initialize run. Overrides name their own kwargs."""
 
     @overload
-    def log(self, data: dict[str, Any], step: int) -> None: ...
+    async def log(self, data: dict[str, Any], step: int) -> None: ...
 
     @overload
-    def log(self, data: vf.Episode | list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None: ...
+    async def log(self, data: vf.Episode | list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None: ...
 
-    def log(
+    async def log(
         self,
         data: dict[str, Any] | vf.Episode | list[vf.Episode],
         step: int,
@@ -38,18 +38,18 @@ class Monitor(ABC):
     ) -> None:
         """Log scalar metrics, or episodes."""
         if isinstance(data, dict):
-            self.log_metrics(data, step=step)
+            await self.log_metrics(data, step=step)
         else:
             episodes = data if isinstance(data, list) else [data]
-            self.log_episodes(episodes, step=step, kind=kind, subset=subset)
+            await self.log_episodes(episodes, step=step, kind=kind, subset=subset)
 
     @abstractmethod
-    def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
+    async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
         """Log scalar metrics."""
 
     @abstractmethod
-    def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
+    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         """Log episodes."""
 
-    def finalize(self) -> None:
+    async def finalize(self) -> None:
         """Finalize run."""

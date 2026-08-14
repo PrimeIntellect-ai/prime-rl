@@ -1,6 +1,7 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 import time
+import asyncio
 from contextlib import nullcontext
 from datetime import timedelta
 
@@ -67,7 +68,11 @@ def train(config: SFTConfig):
 
     # Setup the monitors
     logger.info(f"Initializing monitors ({config.monitors})")
-    monitors.setup(wandb=config.monitors.wandb, file=config.monitors.file, output_dir=config.run_dir, run_config=config)
+    asyncio.run(
+        monitors.setup(
+            wandb=config.monitors.wandb, file=config.monitors.file, output_dir=config.run_dir, run_config=config
+        )
+    )
 
     # Setup heartbeat (only on rank 0)
     heart = None
@@ -358,7 +363,7 @@ def train(config: SFTConfig):
             logger.warning(f"Validation at step {step} had no valid tokens")
         else:
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        monitors.log({"val/loss": mean_loss, "step": step}, step=step)
+        asyncio.run(monitors.log({"val/loss": mean_loss, "step": step}, step=step))
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -558,7 +563,7 @@ def train(config: SFTConfig):
                     for subset_or_split, num_tokens in dataset.num_tokens.items()
                 },
             )
-        monitors.log(progress_metrics, step=progress.step)
+        asyncio.run(monitors.log(progress_metrics, step=progress.step))
 
         # Log performance metrics
         perf_metrics = {
@@ -568,7 +573,7 @@ def train(config: SFTConfig):
             "perf/mfu": mfu,
             "step": progress.step,
         }
-        monitors.log(perf_metrics, step=progress.step)
+        asyncio.run(monitors.log(perf_metrics, step=progress.step))
 
         # Log optimizer metrics
         optim_metrics = {
@@ -577,7 +582,7 @@ def train(config: SFTConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
-        monitors.log(optim_metrics, step=progress.step)
+        asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         loss_log_metrics = {
             "loss/mean": batch_loss,
@@ -585,7 +590,7 @@ def train(config: SFTConfig):
             "step": progress.step,
         }
         # Log tensor stats
-        monitors.log(loss_log_metrics, step=progress.step)
+        asyncio.run(monitors.log(loss_log_metrics, step=progress.step))
 
         # Log time metrics
         time_metrics = {
@@ -594,16 +599,16 @@ def train(config: SFTConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        monitors.log(time_metrics, step=progress.step)
+        asyncio.run(monitors.log(time_metrics, step=progress.step))
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.run_dir)
         disk_metrics["step"] = progress.step
-        monitors.log(disk_metrics, step=progress.step)
+        asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
         moe_log_metrics = {f"{name}/mean": value.item() for name, value in moe_stats.items() if value.item() > 0}
         if moe_log_metrics:
-            monitors.log({**moe_log_metrics, "step": progress.step}, step=progress.step)
+            asyncio.run(monitors.log({**moe_log_metrics, "step": progress.step}, step=progress.step))
 
         is_first_step = False
 

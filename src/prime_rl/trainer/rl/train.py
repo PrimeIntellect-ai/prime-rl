@@ -2,6 +2,7 @@ import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before im
 
 from contextlib import nullcontext
 import time
+import asyncio
 from datetime import timedelta
 
 # Import environment before any other imports
@@ -77,8 +78,10 @@ def train(config: TrainerConfig):
 
     # Setup the monitors
     logger.info(f"Initializing monitors ({config.monitors})")
-    monitors.setup(
-        wandb=config.monitors.wandb, file=config.monitors.file, output_dir=config.output_dir, run_config=config
+    asyncio.run(
+        monitors.setup(
+            wandb=config.monitors.wandb, file=config.monitors.file, output_dir=config.output_dir, run_config=config
+        )
     )
 
     # Setup heartbeat (only on rank 0)
@@ -649,7 +652,7 @@ def train(config: TrainerConfig):
             "perf/peak_memory": peak_memory,
             "step": progress.step,
         }
-        monitors.log(perf_metrics, step=progress.step)
+        asyncio.run(monitors.log(perf_metrics, step=progress.step))
 
         # Log optimizer metrics
         optim_metrics = {
@@ -658,7 +661,7 @@ def train(config: TrainerConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
-        monitors.log(optim_metrics, step=progress.step)
+        asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         # Compute derived metrics
         entropy_mean = tensor_stats.get("entropy/all/mean", 0.0)
@@ -667,7 +670,7 @@ def train(config: TrainerConfig):
             tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
 
         tensor_stats["step"] = progress.step
-        monitors.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step)
+        asyncio.run(monitors.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step))
 
         # Log time metrics
         time_metrics = {
@@ -679,12 +682,12 @@ def train(config: TrainerConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        monitors.log(time_metrics, step=progress.step)
+        asyncio.run(monitors.log(time_metrics, step=progress.step))
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.output_dir)
         disk_metrics["step"] = progress.step
-        monitors.log(disk_metrics, step=progress.step)
+        asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
         # Update Prometheus metrics if configured
         if metrics_server is not None:

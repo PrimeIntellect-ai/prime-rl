@@ -122,8 +122,8 @@ class WandbMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to create W&B overview view - {e}")
 
-    def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
+    async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
         wandb.log({**metrics, "step": step})
 
-    def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
+    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         pass

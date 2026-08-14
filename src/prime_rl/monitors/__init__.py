@@ -38,7 +38,7 @@ __all__ = [
 MONITORS: list[Monitor] = []
 
 
-def setup(
+async def setup(
     wandb: WandbMonitorConfig | None = None,
     prime: PrimeMonitorConfig | None = None,
     file: FileMonitorConfig | None = None,
@@ -78,7 +78,7 @@ def setup(
         monitors.append((FileMonitor(file), dict(output_dir=output_dir)))
 
     for monitor, init_kwargs in monitors:
-        monitor.init(**init_kwargs)
+        await monitor.init(**init_kwargs)
         MONITORS.append(monitor)
 
 
@@ -89,14 +89,14 @@ def get(monitor_cls: type[Monitor]) -> Monitor | None:
 
 
 @overload
-def log(data: dict[str, Any], step: int) -> None: ...
+async def log(data: dict[str, Any], step: int) -> None: ...
 
 
 @overload
-def log(data: vf.Episode | list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None: ...
+async def log(data: vf.Episode | list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None: ...
 
 
-def log(
+async def log(
     data: dict[str, Any] | vf.Episode | list[vf.Episode],
     step: int,
     kind: Kind = "train",
@@ -106,15 +106,15 @@ def log(
     with their cohort coordinates (train/eval x all/effective)."""
     for monitor in MONITORS:
         try:
-            monitor.log(data, step=step, kind=kind, subset=subset)
+            await monitor.log(data, step=step, kind=kind, subset=subset)
         except Exception as e:
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
-def finalize() -> None:
+async def finalize() -> None:
     """Finalize the run on all registered monitors."""
     for monitor in MONITORS:
         try:
-            monitor.finalize()
+            await monitor.finalize()
         except Exception as e:
             get_logger().warning(f"Failed to finalize {monitor.__class__.__name__}: {e}")

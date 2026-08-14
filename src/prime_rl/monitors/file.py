@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -21,7 +22,7 @@ class FileMonitor(Monitor):
     config: FileMonitorConfig
     file: TextIO | None = None
 
-    def init(self, output_dir: Path) -> None:
+    async def init(self, output_dir: Path) -> None:
         self.output_dir = output_dir
         path = output_dir / self.config.path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -29,7 +30,7 @@ class FileMonitor(Monitor):
         self.file = open(path, "a", buffering=1)  # noqa: SIM115
         self.logger.info(f"Logging metrics to {path}")
 
-    def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
+    async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
         if self.file is None:
             return
 
@@ -42,14 +43,20 @@ class FileMonitor(Monitor):
         row = {"step": step, "time": time.time(), **sanitized}
         self.file.write(json.dumps(row) + "\n")
 
-    def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
+    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         """Append the cohort's traces to its per-step trace file. ``all`` grows one
         episode at a time as they complete, ``effective`` one batch at a time on finalize,
         so an in-progress run's traces can be inspected live."""
-        path = self.output_dir / "rollouts" / f"step_{step}" / kind / subset / "traces.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
-        with open(path, "ab") as f:
-            for episode in episodes:
-                for trace in episode.traces:
-                    f.write(orjson.dumps(trace.to_record(), default=str, option=opts))
+
+        def write() -> None:
+            path = self.output_dir / "rollouts" / f"step_{step}" / kind / subset / "traces.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
+            with open(path, "ab") as f:
+                for episode in episodes:
+                    for trace in episode.traces:
+                        f.write(orjson.dumps(trace.to_record(), default=str, option=opts))
+
+        # Record serialization is heavy pure-Python work; keep it off the event loop.
+        # Awaited (not fire-and-forget) so appends to one file never interleave.
+        await asyncio.to_thread(write)

@@ -216,7 +216,7 @@ class Orchestrator:
             self.mm_token_type_ids_mapping = None
 
         get_logger().info(f"Initializing monitors ({config.monitors})")
-        monitors.setup(
+        await monitors.setup(
             wandb=config.monitors.wandb,
             prime=config.monitors.prime,
             file=config.monitors.file,
@@ -486,9 +486,11 @@ class Orchestrator:
             elapsed = format_time(time.perf_counter() - start_time)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
+                # Finalize only on a clean exit — a crashed run must not be marked
+                # completed; the platform run's atexit hook marks it failed instead.
+                await monitors.finalize()
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
-            monitors.finalize()
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
             # first ship).
@@ -538,7 +540,7 @@ class Orchestrator:
                     episode_id=rollout.episode_id,
                     policy_version=rollout.policy_version,
                 )
-            await asyncio.to_thread(monitors.log, group_episodes(episode), step, kind, "all")
+            await monitors.log(group_episodes(episode), step, kind, "all")
 
             if kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
@@ -631,7 +633,7 @@ class Orchestrator:
 
         # The effective (clean, trained-on) subset is logged at ship time; the full arrival
         # window already streamed into the ``all`` cohort on arrival.
-        await asyncio.to_thread(monitors.log, group_episodes(effective.rollouts), step, "train", "effective")
+        await monitors.log(group_episodes(effective.rollouts), step, "train", "effective")
 
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
@@ -683,7 +685,7 @@ class Orchestrator:
             )
             for name, count in self.train_sink.pre_filter_dropped_by_name.items():
                 metrics[f"pre_filters/all/{name}/rate"] = count / self.train_sink.pre_filter_seen
-        monitors.log(metrics, step=step)
+        await monitors.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
 
         if self.heart is not None:
@@ -831,9 +833,7 @@ class Orchestrator:
         # The non-errored subset is logged on epoch completion (multiple eval envs share the
         # step's trace file — each epoch appends its cohort once, and every record carries
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
-        await asyncio.to_thread(
-            monitors.log, group_episodes(batch.rollouts.effective.rollouts), batch.step, "eval", "effective"
-        )
+        await monitors.log(group_episodes(batch.rollouts.effective.rollouts), batch.step, "eval", "effective")
         policy_versions = {r.policy_version for r in batch.rollouts}
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:
@@ -849,7 +849,7 @@ class Orchestrator:
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
-        monitors.log(metrics, step=batch.step)
+        await monitors.log(metrics, step=batch.step)
 
         # Success line — quality metrics over the effective set, error rate over the full returned
         # cohort. ``Stat.mean()`` is 0.0 for an empty set.
