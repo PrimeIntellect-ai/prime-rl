@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 BASE_URL = "https://api.primeintellect.ai/api/v1/rft"
 API_KEY_VAR = "PRIME_API_KEY"
 
-_SAMPLE_SCHEMA = pa.schema(
+SAMPLE_SCHEMA = pa.schema(
     [
         ("run_id", pa.string()),
         ("step", pa.int64()),
@@ -300,7 +300,7 @@ class PrimeMonitor(Monitor):
         if not rows:
             return None
 
-        table = pa.Table.from_pylist(rows, schema=_SAMPLE_SCHEMA)
+        table = pa.Table.from_pylist(rows, schema=SAMPLE_SCHEMA)
         buf = io.BytesIO()
         pq.write_table(table, buf, compression="snappy", use_dictionary=True, write_statistics=True)
         return buf.getvalue()
