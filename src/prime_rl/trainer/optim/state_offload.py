@@ -109,8 +109,7 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             torch.cuda.synchronize()
 
     def finish_checkpoint_save(self) -> None:
-        if self._initialized:
-            self._move_states("cpu")
+        self._move_states("cpu")
 
     def finish_checkpoint_load(self) -> None:
         self._initialized = True
