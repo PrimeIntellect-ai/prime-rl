@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
-from collections import deque
 from dataclasses import dataclass, field
+from statistics import mean, median
 
 import wandb
 from httpx import AsyncClient
@@ -12,105 +13,43 @@ from prometheus_client.parser import text_string_to_metric_families
 from prime_rl.utils.logger import get_logger
 
 POLL_INTERVAL = 5.0
-WINDOW_SIZE = 20
+FETCH_TIMEOUT = 5.0
+METRIC_PREFIX = "vllm:"
 PD_ROLES = {"prefill", "decode"}
+QUANTILES = {"p50": 0.5, "p90": 0.9, "p99": 0.99}
+AGGREGATIONS = {"min": min, "max": max, "sum": sum, "mean": mean, "median": median}
+OVERLOAD_WAITING_FRACTION = 0.2
+OVERLOAD_WARN_INTERVAL = 60.0
 
-COUNTER_KEYS = {
-    "vllm:prompt_tokens": "prompt_tokens_total",
-    "vllm:prompt_tokens_total": "prompt_tokens_total",
-    "vllm:generation_tokens": "generation_tokens_total",
-    "vllm:generation_tokens_total": "generation_tokens_total",
-    "vllm:request_success": "request_success_total",
-    "vllm:request_success_total": "request_success_total",
-    "vllm:prefix_cache_queries": "prefix_cache_queries",
-    "vllm:prefix_cache_queries_total": "prefix_cache_queries",
-    "vllm:prefix_cache_hits": "prefix_cache_hits",
-    "vllm:prefix_cache_hits_total": "prefix_cache_hits",
-    "vllm:nixl_num_failed_transfers_total": "nixl_failed_transfers_total",
-    "vllm:nixl_num_failed_notifications_total": "nixl_failed_notifications_total",
-    "vllm:nixl_num_kv_expired_reqs_total": "nixl_kv_expired_requests_total",
-}
-
-GAUGE_KEYS = {
-    "vllm:num_requests_running": "running_requests",
-    "vllm:num_requests_waiting": "waiting_requests",
-    "vllm:kv_cache_usage_perc": "kv_cache_usage_perc",
-    "vllm:gpu_cache_usage_perc": "kv_cache_usage_perc",
-    "vllm:cpu_cache_usage_perc": "cpu_cache_usage_perc",
-    "vllm:gpu_prefix_cache_hit_rate": "gpu_prefix_cache_hit_rate",
-    "vllm:cpu_prefix_cache_hit_rate": "cpu_prefix_cache_hit_rate",
-}
-
-HISTOGRAM_SUM_KEYS = {
-    "vllm:request_prefill_time_seconds_sum": "request_prefill_time_seconds_sum",
-    "vllm:request_decode_time_seconds_sum": "request_decode_time_seconds_sum",
-    "vllm:request_queue_time_seconds_sum": "request_queue_time_seconds_sum",
-    "vllm:time_to_first_token_seconds_sum": "time_to_first_token_seconds_sum",
-    "vllm:inter_token_latency_seconds_sum": "inter_token_latency_seconds_sum",
-    "vllm:e2e_request_latency_seconds_sum": "e2e_request_latency_seconds_sum",
-    "vllm:nixl_xfer_time_seconds_sum": "nixl_xfer_time_seconds_sum",
-    "vllm:nixl_bytes_transferred_sum": "nixl_bytes_transferred_sum",
-}
-
-HISTOGRAM_COUNT_KEYS = {
-    "vllm:request_prefill_time_seconds_count": "request_prefill_time_seconds_count",
-    "vllm:request_decode_time_seconds_count": "request_decode_time_seconds_count",
-    "vllm:request_queue_time_seconds_count": "request_queue_time_seconds_count",
-    "vllm:time_to_first_token_seconds_count": "time_to_first_token_seconds_count",
-    "vllm:inter_token_latency_seconds_count": "inter_token_latency_seconds_count",
-    "vllm:e2e_request_latency_seconds_count": "e2e_request_latency_seconds_count",
-    "vllm:nixl_xfer_time_seconds_count": "nixl_xfer_time_seconds_count",
-    "vllm:nixl_bytes_transferred_count": "nixl_bytes_transferred_count",
+# Scope-level ratios derived from counter deltas; each operand lists legacy and
+# OpenMetrics sample names, whichever the running vLLM version emits.
+RATIO_METRICS = {
+    "prefix_cache_hit_rate": (
+        ("prefix_cache_hits", "prefix_cache_hits_total"),
+        ("prefix_cache_queries", "prefix_cache_queries_total"),
+    ),
 }
 
 
 @dataclass
-class EngineRollup:
-    running_requests: float = 0.0
-    waiting_requests: float = 0.0
-    kv_cache_usage_perc: float = 0.0
-    cpu_cache_usage_perc: float | None = None
-    gpu_prefix_cache_hit_rate: float | None = None
-    cpu_prefix_cache_hit_rate: float | None = None
-    prompt_tokens_total: float = 0.0
-    generation_tokens_total: float = 0.0
-    request_success_total: float = 0.0
-    prefix_cache_queries: float = 0.0
-    prefix_cache_hits: float = 0.0
-    nixl_failed_transfers_total: float = 0.0
-    nixl_failed_notifications_total: float = 0.0
-    nixl_kv_expired_requests_total: float = 0.0
-    request_prefill_time_seconds_sum: float = 0.0
-    request_prefill_time_seconds_count: float = 0.0
-    request_decode_time_seconds_sum: float = 0.0
-    request_decode_time_seconds_count: float = 0.0
-    request_queue_time_seconds_sum: float = 0.0
-    request_queue_time_seconds_count: float = 0.0
-    time_to_first_token_seconds_sum: float = 0.0
-    time_to_first_token_seconds_count: float = 0.0
-    inter_token_latency_seconds_sum: float = 0.0
-    inter_token_latency_seconds_count: float = 0.0
-    e2e_request_latency_seconds_sum: float = 0.0
-    e2e_request_latency_seconds_count: float = 0.0
-    nixl_xfer_time_seconds_sum: float = 0.0
-    nixl_xfer_time_seconds_count: float = 0.0
-    nixl_bytes_transferred_sum: float = 0.0
-    nixl_bytes_transferred_count: float = 0.0
+class HistogramSnapshot:
+    sum: float = 0.0
+    count: float = 0.0
+    buckets: dict[float, float] = field(default_factory=dict)
+    """Upper bound (``le``) -> cumulative count."""
 
 
 @dataclass
-class NodeRollup:
-    engines: dict[str, EngineRollup] = field(default_factory=dict)
+class EngineSnapshot:
+    """All samples scraped for one engine, keyed by vLLM sample name.
 
-    @property
-    def engine_count(self) -> int:
-        return len(self.engines)
+    Samples that carry extra labels (e.g. ``finished_reason``) are summed over
+    those labels so each name maps to a single value per engine.
+    """
 
-    def summed(self, attribute: str) -> float:
-        return sum(getattr(engine, attribute) for engine in self.engines.values())
-
-    def values(self, attribute: str) -> list[float]:
-        return [value for engine in self.engines.values() if (value := getattr(engine, attribute)) is not None]
+    gauges: dict[str, float] = field(default_factory=dict)
+    counters: dict[str, float] = field(default_factory=dict)
+    histograms: dict[str, HistogramSnapshot] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -118,284 +57,229 @@ class MetricsEndpoint:
     client: AsyncClient
     role: str | None
     key: str
+    name: str
 
 
 @dataclass(frozen=True)
-class TimedRollup:
+class TimedSnapshot:
     timestamp: float
-    rollup: NodeRollup
+    snapshot: EngineSnapshot
 
 
 @dataclass(frozen=True)
-class EndpointSample:
+class EngineSample:
     endpoint: MetricsEndpoint
+    engine_label: str
     timestamp: float
-    rollup: NodeRollup
+    snapshot: EngineSnapshot
+
+    @property
+    def engine_id(self) -> str:
+        return f"{self.endpoint.name}.{self.engine_label}"
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.endpoint.key, self.engine_label)
 
 
-def parse_prometheus_text(text: str) -> NodeRollup:
-    """Parse vLLM Prometheus metrics into per-engine counters, gauges, and histogram totals."""
-    engines: dict[str, EngineRollup] = {}
+def parse_prometheus_text(text: str) -> dict[str, EngineSnapshot]:
+    """Parse a vLLM Prometheus exposition into one snapshot per engine label."""
+    engines: dict[str, EngineSnapshot] = {}
     for family in text_string_to_metric_families(text):
+        if not family.name.startswith(METRIC_PREFIX) or family.type not in ("counter", "gauge", "histogram"):
+            continue
         for sample in family.samples:
-            engine_id = sample.labels.get("engine", "aggregate")
-            engine = engines.setdefault(engine_id, EngineRollup())
-            if sample.name in GAUGE_KEYS:
-                setattr(engine, GAUGE_KEYS[sample.name], float(sample.value))
-            elif sample.name in COUNTER_KEYS:
-                attribute = COUNTER_KEYS[sample.name]
-                setattr(engine, attribute, getattr(engine, attribute) + float(sample.value))
-            elif sample.name in HISTOGRAM_SUM_KEYS:
-                setattr(engine, HISTOGRAM_SUM_KEYS[sample.name], float(sample.value))
-            elif sample.name in HISTOGRAM_COUNT_KEYS:
-                setattr(engine, HISTOGRAM_COUNT_KEYS[sample.name], float(sample.value))
-    return NodeRollup(engines=engines)
+            if sample.name.endswith("_created") or not math.isfinite(sample.value):
+                continue
+            engine = engines.setdefault(sample.labels.get("engine", "0"), EngineSnapshot())
+            name = sample.name.removeprefix(METRIC_PREFIX)
+            if family.type == "gauge":
+                engine.gauges[name] = engine.gauges.get(name, 0.0) + sample.value
+            elif family.type == "counter":
+                engine.counters[name] = engine.counters.get(name, 0.0) + sample.value
+            else:
+                histogram = engine.histograms.setdefault(family.name.removeprefix(METRIC_PREFIX), HistogramSnapshot())
+                if sample.name.endswith("_sum"):
+                    histogram.sum += sample.value
+                elif sample.name.endswith("_count"):
+                    histogram.count += sample.value
+                elif sample.name.endswith("_bucket"):
+                    le = float(sample.labels["le"])
+                    histogram.buckets[le] = histogram.buckets.get(le, 0.0) + sample.value
+    return engines
 
 
 def build_metrics_endpoints(
     admin_clients: list[AsyncClient], roles: list[str | None] | None = None
 ) -> list[MetricsEndpoint]:
-    """Attach optional P/D roles to admin clients used for metrics polling."""
+    """Attach optional P/D roles and stable display names to admin clients."""
     if roles is None:
         roles = [None] * len(admin_clients)
     if len(roles) != len(admin_clients):
         raise ValueError(f"Got {len(roles)} inference metric role(s) for {len(admin_clients)} admin client(s)")
 
     endpoints: list[MetricsEndpoint] = []
+    counts: dict[str, int] = {}
     for client, role in zip(admin_clients, roles):
-        normalized_role = role if role in PD_ROLES else None
-        if role is not None and normalized_role is None:
+        if role is not None and role not in PD_ROLES:
             raise ValueError(f"Unsupported inference metrics role: {role}")
-        endpoints.append(MetricsEndpoint(client=client, role=normalized_role, key=str(client.base_url).rstrip("/")))
+        prefix = role or "server"
+        index = counts.get(prefix, 0)
+        counts[prefix] = index + 1
+        endpoints.append(
+            MetricsEndpoint(
+                client=client,
+                role=role,
+                key=str(client.base_url).rstrip("/"),
+                name=f"{prefix}{index}",
+            )
+        )
     return endpoints
 
 
-def max_vio(values: list[float]) -> float:
-    """Return the max-load violation used for MoE load-balance reporting."""
-    if not values:
-        return 0.0
-    balanced_load = sum(values) / len(values)
-    if balanced_load == 0:
-        return 0.0
-    return (max(values) - balanced_load) / balanced_load
-
-
-def counter_rate(samples: list[EndpointSample], previous: dict[str, TimedRollup], attribute: str) -> float | None:
-    """Sum per-endpoint counter rates for a scope."""
-    rates: list[float] = []
-    for sample in samples:
-        previous_sample = previous.get(sample.endpoint.key)
-        if previous_sample is None:
-            continue
-        dt = sample.timestamp - previous_sample.timestamp
-        delta = sample.rollup.summed(attribute) - previous_sample.rollup.summed(attribute)
-        if dt <= 0 or delta < 0:
-            continue
-        rates.append(delta / dt)
-    if not rates:
+def histogram_quantile(buckets: dict[float, float], quantile: float) -> float | None:
+    """Estimate a quantile from cumulative bucket deltas, Prometheus-style."""
+    total = max(buckets.values(), default=0.0)
+    if total <= 0:
         return None
-    return sum(rates)
+    target = quantile * total
+    previous_le, previous_cumulative = 0.0, 0.0
+    for le, cumulative in sorted(buckets.items()):
+        if cumulative >= target:
+            if math.isinf(le) or cumulative == previous_cumulative:
+                return previous_le
+            return previous_le + (le - previous_le) * (target - previous_cumulative) / (
+                cumulative - previous_cumulative
+            )
+        previous_le, previous_cumulative = le, cumulative
+    return None
 
 
-def counter_ratio(
-    samples: list[EndpointSample],
-    previous: dict[str, TimedRollup],
-    numerator_attribute: str,
-    denominator_attribute: str,
-) -> float | None:
-    """Compute a scope-level ratio from counter deltas."""
-    numerator_delta = 0.0
-    denominator_delta = 0.0
-    for sample in samples:
-        previous_sample = previous.get(sample.endpoint.key)
-        if previous_sample is None:
-            continue
-        endpoint_numerator_delta = sample.rollup.summed(numerator_attribute) - previous_sample.rollup.summed(
-            numerator_attribute
+def engine_values(sample: EngineSample, previous: TimedSnapshot | None) -> dict[str, float]:
+    """Pass-through values plus interval-derived rates and means for one engine.
+
+    Counter rates use ``:rate`` (per second), histogram interval means use
+    ``:mean``, and histogram completion rates use ``:rate``, mirroring how one
+    would express them as PromQL over the poll interval.
+    """
+    values: dict[str, float] = dict(sample.snapshot.gauges)
+    values.update(sample.snapshot.counters)
+    for name, histogram in sample.snapshot.histograms.items():
+        values[f"{name}_sum"] = histogram.sum
+        values[f"{name}_count"] = histogram.count
+
+    if previous is None:
+        return values
+    dt = sample.timestamp - previous.timestamp
+    if dt <= 0:
+        return values
+
+    for name, value in sample.snapshot.counters.items():
+        delta = value - previous.snapshot.counters.get(name, 0.0)
+        if delta >= 0:
+            values[f"{name}:rate"] = delta / dt
+    for name, histogram in sample.snapshot.histograms.items():
+        previous_histogram = previous.snapshot.histograms.get(name, HistogramSnapshot())
+        sum_delta = histogram.sum - previous_histogram.sum
+        count_delta = histogram.count - previous_histogram.count
+        if count_delta >= 0:
+            values[f"{name}:rate"] = count_delta / dt
+        if count_delta > 0 and sum_delta >= 0:
+            values[f"{name}:mean"] = sum_delta / count_delta
+    # Per-engine ratios so the scope aggregations include min/max — the pooled
+    # scope-level ratio alone hides a single engine's collapse (e.g. one engine
+    # thrashing at a 5% prefix hit rate inside a healthy fleet average).
+    for name, (numerator_names, denominator_names) in RATIO_METRICS.items():
+        numerator = sum(
+            sample.snapshot.counters.get(c, 0.0) - previous.snapshot.counters.get(c, 0.0) for c in numerator_names
         )
-        endpoint_denominator_delta = sample.rollup.summed(denominator_attribute) - previous_sample.rollup.summed(
-            denominator_attribute
+        denominator = sum(
+            sample.snapshot.counters.get(c, 0.0) - previous.snapshot.counters.get(c, 0.0) for c in denominator_names
         )
-        if endpoint_numerator_delta < 0 or endpoint_denominator_delta < 0:
-            continue
-        numerator_delta += endpoint_numerator_delta
-        denominator_delta += endpoint_denominator_delta
-    if denominator_delta <= 0:
-        return None
-    return numerator_delta / denominator_delta
+        if numerator >= 0 and denominator > 0:
+            values[name] = numerator / denominator
+    return values
 
 
-def histogram_average(
-    samples: list[EndpointSample],
-    previous: dict[str, TimedRollup],
-    sum_attribute: str,
-    count_attribute: str,
-) -> float | None:
-    """Compute a scope-level histogram average from sum/count deltas."""
-    sum_delta = 0.0
-    count_delta = 0.0
-    for sample in samples:
-        previous_sample = previous.get(sample.endpoint.key)
-        if previous_sample is None:
-            continue
-        endpoint_sum_delta = sample.rollup.summed(sum_attribute) - previous_sample.rollup.summed(sum_attribute)
-        endpoint_count_delta = sample.rollup.summed(count_attribute) - previous_sample.rollup.summed(count_attribute)
-        if endpoint_sum_delta < 0 or endpoint_count_delta < 0:
-            continue
-        sum_delta += endpoint_sum_delta
-        count_delta += endpoint_count_delta
-    if count_delta <= 0:
-        return None
-    return sum_delta / count_delta
-
-
-def mean(values: list[float]) -> float | None:
-    """Return the arithmetic mean for non-empty metric value lists."""
-    if not values:
-        return None
-    return sum(values) / len(values)
+def bucket_deltas(sample: EngineSample, previous: TimedSnapshot | None) -> dict[str, dict[float, float]]:
+    """Per-histogram cumulative bucket deltas since the previous scrape."""
+    if previous is None:
+        return {}
+    deltas: dict[str, dict[float, float]] = {}
+    for name, histogram in sample.snapshot.histograms.items():
+        previous_buckets = previous.snapshot.histograms.get(name, HistogramSnapshot()).buckets
+        delta = {le: count - previous_buckets.get(le, 0.0) for le, count in histogram.buckets.items()}
+        if delta and all(count >= 0 for count in delta.values()):
+            deltas[name] = delta
+    return deltas
 
 
 def build_scope_metrics(
     scope: str,
-    samples: list[EndpointSample],
-    previous: dict[str, TimedRollup],
+    values_per_engine: list[dict[str, float]],
+    bucket_deltas_per_engine: list[dict[str, dict[float, float]]],
+    counter_deltas: dict[str, float],
 ) -> dict[str, float]:
-    """Build W&B metric values for one inference scope."""
-    running_values = [value for sample in samples for value in sample.rollup.values("running_requests")]
-    waiting_values = [value for sample in samples for value in sample.rollup.values("waiting_requests")]
-    kv_values = [value for sample in samples for value in sample.rollup.values("kv_cache_usage_perc")]
-    cpu_kv_values = [value for sample in samples for value in sample.rollup.values("cpu_cache_usage_perc")]
-    prefix_gauge_values = [value for sample in samples for value in sample.rollup.values("gpu_prefix_cache_hit_rate")]
-    cpu_prefix_values = [value for sample in samples for value in sample.rollup.values("cpu_prefix_cache_hit_rate")]
-
+    """Aggregate per-engine values into ``inference/{scope}/{metric}/{agg}`` series."""
     prefix = f"inference/{scope}"
-    metrics: dict[str, float] = {
-        f"{prefix}/running_requests": sum(running_values),
-        f"{prefix}/waiting_requests": sum(waiting_values),
-        f"{prefix}/running_imbalance": max_vio(running_values),
-        f"{prefix}/waiting_imbalance": max_vio(waiting_values),
-        f"{prefix}/nixl_failed_transfers_total": sum(
-            sample.rollup.summed("nixl_failed_transfers_total") for sample in samples
-        ),
-        f"{prefix}/nixl_failed_notifications_total": sum(
-            sample.rollup.summed("nixl_failed_notifications_total") for sample in samples
-        ),
-        f"{prefix}/nixl_kv_expired_requests_total": sum(
-            sample.rollup.summed("nixl_kv_expired_requests_total") for sample in samples
-        ),
-    }
+    metrics: dict[str, float] = {}
 
-    if kv_values:
-        metrics[f"{prefix}/kv_cache_usage_mean"] = sum(kv_values) / len(kv_values)
-        metrics[f"{prefix}/kv_cache_usage_max"] = max(kv_values)
-    if cpu_kv_values:
-        metrics[f"{prefix}/cpu_kv_cache_usage_mean"] = sum(cpu_kv_values) / len(cpu_kv_values)
-        metrics[f"{prefix}/cpu_kv_cache_usage_max"] = max(cpu_kv_values)
+    names = {name for values in values_per_engine for name in values}
+    for name in sorted(names):
+        engine_values_for_name = [values[name] for values in values_per_engine if name in values]
+        for aggregation, fn in AGGREGATIONS.items():
+            metrics[f"{prefix}/{name}/{aggregation}"] = fn(engine_values_for_name)
 
-    prefix_cache_hit_rate = counter_ratio(samples, previous, "prefix_cache_hits", "prefix_cache_queries")
-    if prefix_cache_hit_rate is None:
-        prefix_cache_hit_rate = mean(prefix_gauge_values)
-    if prefix_cache_hit_rate is not None:
-        metrics[f"{prefix}/prefix_cache_hit_rate"] = prefix_cache_hit_rate
-    cpu_prefix_cache_hit_rate = mean(cpu_prefix_values)
-    if cpu_prefix_cache_hit_rate is not None:
-        metrics[f"{prefix}/cpu_prefix_cache_hit_rate"] = cpu_prefix_cache_hit_rate
+    histogram_names = {name for deltas in bucket_deltas_per_engine for name in deltas}
+    for name in sorted(histogram_names):
+        pooled: dict[float, float] = {}
+        for deltas in bucket_deltas_per_engine:
+            for le, count in deltas.get(name, {}).items():
+                pooled[le] = pooled.get(le, 0.0) + count
+        for label, quantile in QUANTILES.items():
+            value = histogram_quantile(pooled, quantile)
+            if value is not None:
+                metrics[f"{prefix}/{name}/{label}"] = value
 
-    prompt_token_rate = counter_rate(samples, previous, "prompt_tokens_total")
-    generation_token_rate = counter_rate(samples, previous, "generation_tokens_total")
-    if scope == "prefill":
-        if prompt_token_rate is not None:
-            metrics[f"{prefix}/throughput"] = prompt_token_rate
-    elif scope == "decode":
-        if generation_token_rate is not None:
-            metrics[f"{prefix}/throughput"] = generation_token_rate
-    else:
-        token_rates = [rate for rate in (prompt_token_rate, generation_token_rate) if rate is not None]
-        if token_rates:
-            metrics[f"{prefix}/throughput"] = sum(token_rates)
-
-    counter_metrics = {
-        "completed_requests": "request_success_total",
-        "nixl_transfers_per_second": "nixl_xfer_time_seconds_count",
-        "nixl_bytes_per_second": "nixl_bytes_transferred_sum",
-    }
-    for metric_name, attribute in counter_metrics.items():
-        rate = counter_rate(samples, previous, attribute)
-        if rate is not None:
-            metrics[f"{prefix}/{metric_name}"] = rate
-
-    histogram_metrics = {
-        "avg_queue_time_seconds": (
-            "request_queue_time_seconds_sum",
-            "request_queue_time_seconds_count",
-        ),
-        "avg_ttft_seconds": (
-            "time_to_first_token_seconds_sum",
-            "time_to_first_token_seconds_count",
-        ),
-        "avg_tpot_seconds": (
-            "inter_token_latency_seconds_sum",
-            "inter_token_latency_seconds_count",
-        ),
-        "avg_e2e_latency_seconds": (
-            "e2e_request_latency_seconds_sum",
-            "e2e_request_latency_seconds_count",
-        ),
-        "nixl_transfer_time_seconds": (
-            "nixl_xfer_time_seconds_sum",
-            "nixl_xfer_time_seconds_count",
-        ),
-        "nixl_avg_bytes_per_transfer": (
-            "nixl_bytes_transferred_sum",
-            "nixl_bytes_transferred_count",
-        ),
-    }
-    for metric_name, (sum_attribute, count_attribute) in histogram_metrics.items():
-        value = histogram_average(samples, previous, sum_attribute, count_attribute)
-        if value is not None:
-            metrics[f"{prefix}/{metric_name}"] = value
-
-    prefill_time = histogram_average(
-        samples,
-        previous,
-        "request_prefill_time_seconds_sum",
-        "request_prefill_time_seconds_count",
-    )
-    decode_time = histogram_average(
-        samples,
-        previous,
-        "request_decode_time_seconds_sum",
-        "request_decode_time_seconds_count",
-    )
-    if scope == "prefill":
-        if prefill_time is not None:
-            metrics[f"{prefix}/avg_time_seconds"] = prefill_time
-    elif scope == "decode":
-        if decode_time is not None:
-            metrics[f"{prefix}/avg_time_seconds"] = decode_time
-    else:
-        time_values = [value for value in (prefill_time, decode_time) if value is not None]
-        if time_values:
-            metrics[f"{prefix}/avg_time_seconds"] = sum(time_values) / len(time_values)
+    for name, (numerator_names, denominator_names) in RATIO_METRICS.items():
+        numerator = sum(counter_deltas.get(candidate, 0.0) for candidate in numerator_names)
+        denominator = sum(counter_deltas.get(candidate, 0.0) for candidate in denominator_names)
+        if denominator > 0:
+            metrics[f"{prefix}/{name}/pooled"] = numerator / denominator
 
     return metrics
 
 
 class InferenceMetricsCollector:
-    """Polls vLLM Prometheus /metrics and logs smoothed role-aware values to W&B.
+    """Polls vLLM Prometheus /metrics and mirrors every engine metric to W&B.
 
-    The ``agg`` scope is always logged. The ``prefill`` and ``decode`` scopes are
-    logged only when endpoints are explicitly or implicitly identified as a
-    disaggregated P/D deployment.
+    All ``vllm:*`` families are passed through dynamically (the ``vllm:``
+    prefix is stripped): gauges and counters verbatim, histograms as
+    ``_sum``/``_count`` plus derived ``:rate``/``:mean`` and scope-level
+    quantiles. Keys are ``inference/{scope}/{metric}/{stat}``: per-engine
+    series under ``inference/{engine_id}/{metric}`` and cross-engine
+    aggregations under ``inference/agg/{metric}/{stat}`` (plus
+    ``inference/prefill|decode/...`` for disaggregated deployments). Engine
+    ids (``server0.0``, ``prefill0.1``, ...) never collide with the scope
+    names.
     """
 
-    def __init__(self, admin_clients: list[AsyncClient], roles: list[str | None] | None = None):
+    def __init__(
+        self,
+        admin_clients: list[AsyncClient],
+        roles: list[str | None] | None = None,
+        max_inflight_episodes: int | None = None,
+    ):
         self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
-        self.metric_history: dict[str, deque[float]] = {}
-        self.previous: dict[str, TimedRollup] = {}
+        self.previous: dict[tuple[str, str], TimedSnapshot] = {}
         self.task: asyncio.Task | None = None
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
+        self.max_inflight_episodes = max_inflight_episodes
+        self.last_overload_warning = float("-inf")
+        get_logger().info(
+            "Collecting inference metrics from "
+            + ", ".join(f"{endpoint.name}={endpoint.key}" for endpoint in self.endpoints)
+        )
 
     async def start(self):
         wandb.define_metric("inference/*", step_metric="_timestamp")
@@ -415,7 +299,7 @@ class InferenceMetricsCollector:
 
         async def fetch(endpoint: MetricsEndpoint) -> str | None:
             try:
-                response = await endpoint.client.get("/metrics", timeout=5.0)
+                response = await endpoint.client.get("/metrics", timeout=FETCH_TIMEOUT)
                 response.raise_for_status()
                 return response.text
             except Exception as e:
@@ -424,33 +308,71 @@ class InferenceMetricsCollector:
 
         results = await asyncio.gather(*[fetch(endpoint) for endpoint in self.endpoints])
         samples = [
-            EndpointSample(endpoint=endpoint, timestamp=now, rollup=parse_prometheus_text(text))
+            EngineSample(endpoint=endpoint, engine_label=engine_label, timestamp=now, snapshot=snapshot)
             for endpoint, text in zip(self.endpoints, results)
             if text is not None
+            for engine_label, snapshot in sorted(parse_prometheus_text(text).items())
         ]
         if not samples:
             return
 
-        metrics = build_scope_metrics("agg", samples, self.previous)
+        metrics = self.build_metrics(samples)
+        for sample in samples:
+            self.previous[sample.key] = TimedSnapshot(timestamp=sample.timestamp, snapshot=sample.snapshot)
+
+        waiting_requests = metrics.get("inference/agg/num_requests_waiting/sum", 0.0)
+        if (
+            self.max_inflight_episodes is not None
+            and waiting_requests > OVERLOAD_WAITING_FRACTION * self.max_inflight_episodes
+            and now - self.last_overload_warning >= OVERLOAD_WARN_INTERVAL
+        ):
+            self.last_overload_warning = now
+            get_logger().warning(
+                f"Inference is overloaded: {waiting_requests:.0f} waiting request(s), more than "
+                f"{OVERLOAD_WAITING_FRACTION:.0%} of max_inflight_episodes={self.max_inflight_episodes} - "
+                "training is slowed by queued requests. If intermittent, wait it out - if persistent, "
+                "lower concurrency by decreasing max_inflight_episodes"
+            )
+
+        if metrics:
+            metrics["_timestamp"] = time.time()
+            wandb.log(metrics)
+
+    def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:
+        values_per_engine = [engine_values(sample, self.previous.get(sample.key)) for sample in samples]
+        bucket_deltas_per_engine = [bucket_deltas(sample, self.previous.get(sample.key)) for sample in samples]
+
+        metrics: dict[str, float] = {}
+        for sample, values in zip(samples, values_per_engine):
+            for name, value in values.items():
+                metrics[f"inference/{sample.engine_id}/{name}"] = value
+
+        scopes: list[tuple[str, list[int]]] = [("agg", list(range(len(samples))))]
         if self.has_pd_roles:
             for role in sorted(PD_ROLES):
-                role_samples = [sample for sample in samples if sample.endpoint.role == role]
-                if role_samples:
-                    metrics.update(build_scope_metrics(role, role_samples, self.previous))
+                indices = [i for i, sample in enumerate(samples) if sample.endpoint.role == role]
+                if indices:
+                    scopes.append((role, indices))
 
-        for sample in samples:
-            self.previous[sample.endpoint.key] = TimedRollup(timestamp=sample.timestamp, rollup=sample.rollup)
-
-        smoothed_metrics = self.smooth_metrics(metrics)
-        if smoothed_metrics:
-            smoothed_metrics["_timestamp"] = time.time()
-            wandb.log(smoothed_metrics)
-
-    def smooth_metrics(self, metrics: dict[str, float]) -> dict[str, float]:
-        """Add current values to the smoothing window and return W&B-ready metrics."""
-        for key, value in metrics.items():
-            self.metric_history.setdefault(key, deque(maxlen=WINDOW_SIZE)).append(value)
-        return {key: sum(values) / len(values) for key, values in self.metric_history.items() if values}
+        for scope, indices in scopes:
+            counter_deltas: dict[str, float] = {}
+            for i in indices:
+                previous = self.previous.get(samples[i].key)
+                if previous is None:
+                    continue
+                for name, value in samples[i].snapshot.counters.items():
+                    delta = value - previous.snapshot.counters.get(name, 0.0)
+                    if delta >= 0:
+                        counter_deltas[name] = counter_deltas.get(name, 0.0) + delta
+            metrics.update(
+                build_scope_metrics(
+                    scope,
+                    [values_per_engine[i] for i in indices],
+                    [bucket_deltas_per_engine[i] for i in indices],
+                    counter_deltas,
+                )
+            )
+        return metrics
 
     async def stop(self):
         if self.task is not None:

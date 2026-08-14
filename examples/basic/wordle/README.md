@@ -45,6 +45,7 @@ To train on a single GPU, run
 ```bash
 # In the `Trainer` pane
 uv run sft @ examples/basic/wordle/sft.toml \
+  --run.name sft \
   --wandb.project ... \
   --wandb.name ...
 ```
@@ -61,10 +62,10 @@ uv run torchrun \
   --wandb.name ... 
 ```
 
-After training completes, you will find the final weight checkpoint in `outputs/weights/step_20`. Upload it to HF to be able to use it as the base model for RL we will do in the next section.
+After training completes, you will find the final weight checkpoint in `outputs/sft/weights/step_20`. Upload it to HF to be able to use it as the base model for RL we will do in the next section.
 
 ```bash
-uv run hf upload <user>/Qwen3-1.7B-Wordle-SFT outputs/weights/step_20
+uv run hf upload <user>/Qwen3-1.7B-Wordle-SFT outputs/sft/weights/step_20
 ```
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-1.7B-Wordle-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-SFT).
@@ -80,14 +81,15 @@ Finally, we will do multi-turn RL against the `wordle` environment using the mod
 # Run this in the `Trainer` pane
 uv run rl @ examples/basic/wordle/rl.toml \
   --model.name ... \
+  --run.name rl \
   --wandb.project ... \
   --wandb.name ... 
 ```
 
-This will write a weight checkpoint in `outputs/weights/step_100`. As before, let's upload it to HF.
+This will write a weight checkpoint in `outputs/rl/weights/step_100`. As before, let's upload it to HF.
 
 ```bash
-uv run hf upload <user>/Qwen3-1.7B-Wordle-RL outputs/weights/step_100
+uv run hf upload <user>/Qwen3-1.7B-Wordle-RL outputs/rl/weights/step_100
 ```
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-1.7B-Wordle-RL`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-RL).

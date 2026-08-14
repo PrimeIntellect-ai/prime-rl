@@ -32,7 +32,7 @@ jobs:
       - name: Init public submodules
         run: |
           git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
+          git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
       - name: Install uv
         uses: astral-sh/setup-uv@v7
       - name: Install dependencies
@@ -100,7 +100,7 @@ jobs:
       - name: Init public submodules
         run: |
           git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
+          git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
       - name: Install uv
         uses: astral-sh/setup-uv@v7
       - name: Install dependencies

@@ -77,10 +77,11 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 
 | Knob | What it does |
 |---|---|
-| `--clean-output-dir` | Wipe `<output_dir>` before starting. Useful when re-running an experiment with the same name during iteration. |
-| `--output-dir outputs/<name>` | Per-run output directory. Always set this when running more than one experiment in parallel. |
+| `--output-dir outputs` | Directory that groups related runs. Each run writes its artifacts to its own run directory `<output_dir>/<run_name>` (`<run_dir>` below). |
+| `--run.name <name>` | Run name, also the run directory name under `<output_dir>` (override the directory separately via `--run.dir`). Auto-generated as `<envs>--<model>--<short-id>` when unset, so every launch gets a fresh, readable run directory. Set an explicit name for a predictable path — required to resume the run later. |
+| `--clean` | Wipe the run directory before starting. Useful when re-running a named run during iteration. |
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
-| `--dry-run` | Resolve + validate the full config, write per-process TOMLs to `<output_dir>/configs/`, and exit without launching. The fastest way to debug a misbehaving config. |
+| `--dry-run` | Resolve + validate the full config, write per-process TOMLs to `<run_dir>/configs/`, and exit without launching. The fastest way to debug a misbehaving config. |
 
 ### Algorithms
 
@@ -199,7 +200,7 @@ Pulled from the console log and mirrored to W&B.
 **Stability and optimization:**
 
 - `optim/grad_norm` — spikes precede divergence.
-- `optim/lr`, `optim/zero_grad_ratio` — LR schedule and the fraction of params that received zero gradients (high → dead path or wrong loss masking).
+- `optim/lr` — LR schedule.
 - For MoE: `max_vio/mean` (load-balancing violation), `routing_confidence/mean` — both are logged when non-zero.
 
 **Performance:**
@@ -217,10 +218,10 @@ Checkpointing is split across processes because the orchestrator and trainer can
 
 | Process | What's saved | Where |
 |---|---|---|
-| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<output_dir>/checkpoints/step_N/trainer/` |
-| Orchestrator | Progress, per-env data state | `<output_dir>/checkpoints/step_N/orchestrator/` |
+| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_N/trainer/` |
+| Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_N/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
-| Trainer (HF weights) | HF-compatible weight snapshot for serving | `<output_dir>/weights/step_N/` |
+| Trainer (HF weights) | HF-compatible weight snapshot for serving | `<run_dir>/weights/step_N/` |
 
 ### Enabling Checkpoints
 
@@ -235,22 +236,29 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus perma
 
 ### Resuming a Run
 
-Re-run the same launch command and pass `--ckpt.resume-step <N>` (or `-1` for "latest"). Make sure `--max-steps` is at least the target final step, not the remaining delta:
+Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:
 
 ```bash
 # First run: steps 1–10
-uv run rl @ rl.toml --max-steps 10 --ckpt
+uv run rl @ rl.toml --max-steps 10 --ckpt --run.name my-run
 
-# Resume: continue to step 20
-uv run rl @ rl.toml --max-steps 20 --ckpt.resume-step 10
+# Resume from the latest checkpoint: continue to step 20
+uv run rl @ rl.toml --max-steps 20 --ckpt --resume --run.name my-run
+
+# ...or from a specific step
+uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
+
+# ...or fork another run's checkpoint into a fresh run
+uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
+  --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
 ### Serving Checkpoints
 
-HF-compatible weight snapshots are written under `<output_dir>/weights/step_N/` whenever a full checkpoint runs (or you can write weights-only via `--ckpt.weights-only` for cheaper snapshots). Upload directly:
+HF-compatible weight snapshots are written under `<run_dir>/weights/step_N/` whenever a full checkpoint runs (or you can write weights-only via `--ckpt.weights-only` for cheaper snapshots). Upload directly:
 
 ```bash
-uv run hf upload <user>/<model>-RL outputs/weights/step_100
+uv run hf upload <user>/<model>-RL outputs/<run_name>/weights/step_100
 ```
 
 For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write the raw adapter alongside the merged weights — useful when serving the adapter through a separate `/load_lora_adapter` call.
@@ -259,10 +267,10 @@ For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write t
 
 ### Log Files
 
-The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The full layout (single-node runs skip the `node_*.log` and `router.log` files — there the router logs into `inference.log`):
+The launcher tees every process's stdout/stderr into `<run_dir>/logs/attempt_<n>/` — every launch (fresh or resumed) gets its own numbered attempt directory, and `logs/latest` symlinks to the current one. The full layout (single-node runs skip the `node_*.log` and `router.log` files — there the router logs into `inference.log`):
 
 ```
-<output_dir>/logs/
+<run_dir>/logs/latest/     # symlink -> attempt_<n>, one per launch
 ├── trainer.log                  # rank 0 only; symlink → trainer/node_0.log on multi-node
 ├── orchestrator.log             # single instance, single file
 ├── inference.log                # symlink → inference/node_0.log on multi-node
@@ -280,9 +288,9 @@ Env logs are the first place to look for env-side errors (most user code lives t
 Live tailing from a single point (works on the head node for multi-node runs over a shared filesystem):
 
 ```bash
-tail -F <output_dir>/logs/{trainer,orchestrator,inference}.log
-tail -F <output_dir>/logs/trainer/node_*.log     # multi-node only
-tail -F <output_dir>/logs/inference/router.log   # multi-node only
+tail -F <run_dir>/logs/latest/{trainer,orchestrator,inference}.log
+tail -F <run_dir>/logs/latest/trainer/node_*.log   # multi-node only
+tail -F <run_dir>/logs/latest/inference/router.log # multi-node only
 ```
 
 ### Console Output
@@ -290,12 +298,12 @@ tail -F <output_dir>/logs/inference/router.log   # multi-node only
 `scripts/tmux.sh` opens a 4-pane tmux session that follows `trainer.log`, `orchestrator.log`, `inference.log`, and the union of env worker logs. Start it before launching:
 
 ```bash
-bash scripts/tmux.sh
+bash scripts/tmux.sh -o outputs/my-run
 # then in the Launcher window:
-uv run rl @ ... --output-dir outputs/my-run
+uv run rl @ ... --run.name my-run
 ```
 
-Pass `-s <session>` and `-o <output_dir>` to run multiple parallel experiments side-by-side in different sessions. The helper also works on a SLURM head node — `bash scripts/tmux.sh my-rl-job /shared/outputs/my-rl-job`.
+Pass `-s <session>` and `-o <run_dir>` (the run directory, `<output_dir>/<run_name>`) to run multiple parallel experiments side-by-side in different sessions. The helper also works on a SLURM head node — `bash scripts/tmux.sh my-rl-job /shared/outputs/my-rl-job`.
 
 ### Weights & Biases
 
@@ -341,5 +349,5 @@ Requires `PRIME_API_KEY` (set via `prime login` or env var) and an allowlisted t
 - **Start small.** Run `examples/basic/reverse-text/rl.toml` end-to-end on 2 GPUs before scaling. If the smoke run finishes cleanly, your install is good.
 - **Batch size ≥ 64.** Smaller batches give noisy gradient estimates and the trainer's overhead-per-step dominates throughput. 64 is the practical floor; 128–512 is the range for quick ablations; production RL often runs at 1024+.
 - **Group size ≥ 8.** Bigger groups (`orchestrator.group_size`) make it more likely that a task produces a mix of high- and low-reward rollouts, which is what gives the trainer a usable signal — if all rollouts in a group succeed or all fail, the within-group advantage collapses to zero and the trainer learns nothing from that task. Bigger groups also tighten advantage normalization. 8 is the floor; 16–32 is common.
-- **Pin `output_dir` per run.** Sharing a directory across runs will mix rollouts and break resumes. `--output-dir outputs/<unique-name>` is the simplest discipline.
+- **Runs never share a directory.** Every launch writes to its own run directory `<output_dir>/<run_name>`, auto-named `<envs>--<model>--<short-id>` by default. Name runs you want to find again or resume with `--run.name <name>`; re-using a name blocks unless you resume or pass `--clean`.
 - **Use `--dry-run` before SLURM.** Validators (e.g. CP needs flash-attention) fail fast in dry-run and slow in queue.

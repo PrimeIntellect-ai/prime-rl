@@ -2,8 +2,6 @@
 
 This directory contains a Helm chart for deploying prime-rl training infrastructure on Kubernetes clusters.
 
-For complete documentation, see the [Kubernetes guide](https://docs.primeintellect.ai/prime-rl/kubernetes).
-
 ## Quick Start
 
 ```bash
@@ -64,11 +62,11 @@ helm install my-exp ./prime-rl \
 
 ```bash
 helm uninstall my-exp
-kubectl delete pvc prime-rl-shared-data  # Warning: deletes data!
+
+# The PVC is named <release-name>-shared-data (see templates/pvc.yaml)
+kubectl delete pvc my-exp-shared-data  # Warning: deletes data!
 ```
 
 ## Learn More
 
-- [Full Kubernetes documentation](https://docs.primeintellect.ai/prime-rl/kubernetes) - Architecture, configuration, distributed training
-- [Deployment guide](https://docs.primeintellect.ai/prime-rl/deployment) - Non-Kubernetes deployments
-- [Troubleshooting](https://docs.primeintellect.ai/prime-rl/troubleshooting) - Common issues
+- [Scaling guide](https://docs.primeintellect.ai/prime-rl/scaling) - Non-Kubernetes multi-node deployment (SLURM), parallelism, benchmarking

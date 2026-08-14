@@ -58,7 +58,6 @@ id = "r2e-gym"
 id = "bash"
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
 labels = ["intellect-3.1", "swe"]
 
 [[orchestrator.train.source]]
@@ -74,7 +73,6 @@ skills = ["search"]
 forward_env = ["SERPER_API_KEY"]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
 labels = ["intellect-3.1", "deepdive"]
 
 [[orchestrator.train.source]]
@@ -136,7 +134,6 @@ id = "swebench-verified"
 id = "bash"
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
 labels = ["intellect-3.1", "swe-bench-verified"]
 
 [[orchestrator.eval.source]]

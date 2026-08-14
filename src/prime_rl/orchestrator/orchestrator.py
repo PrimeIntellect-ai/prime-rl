@@ -27,10 +27,10 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
-import tomli_w
 import verifiers.v1 as vf
 from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
+from verifiers.v1.runtimes import set_base_sandbox_labels
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -78,7 +78,6 @@ from prime_rl.trainer.rl.broadcast.nixl.model_express import ModelExpressSession
 from prime_rl.transport import setup_micro_batch_sender
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
-from prime_rl.utils.config import to_toml_dict
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
@@ -123,7 +122,7 @@ class Orchestrator:
     last_batch_at: float | None
     consecutive_empty_batches: int
     eval_triggered_at: dict[tuple[str, int], float]
-    ckpt_manager: CheckpointManager | None
+    ckpt_manager: CheckpointManager
     component_tasks: list[asyncio.Task]
 
     # Always set by ``setup()``
@@ -207,12 +206,6 @@ class Orchestrator:
         config = self.config
         set_default_executor()
 
-        # Persist the resolved config alongside the run
-        config_dir = config.output_dir / "control"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        with open(config_dir / "orch.toml", "wb") as f:
-            tomli_w.dump(to_toml_dict(config), f)
-
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
 
@@ -243,9 +236,14 @@ class Orchestrator:
             train_env_names=[env.resolved_name for env in config.train.source],
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
-        # ``RunInfo.id`` is required on the trace: fall back to a run-local uuid
-        # when no external monitor identity (W&B) exists.
-        self.run_id = self.monitor.run_id or uuid.uuid4().hex
+        # Prefer the monitor identity (platform run id, else W&B id) so traces link
+        # back to it, then the launcher-set $PRL_RUN_ID; standalone runs mint a local one.
+        self.run_id = self.monitor.run_id or os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
+        # Base labels for sandboxes created in this process; env-server processes read
+        # the same launcher-set env var themselves.
+        self.run_name = os.environ.get("PRL_RUN_NAME")
+        if self.run_name:
+            set_base_sandbox_labels([self.run_name])
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat.url)
@@ -279,11 +277,13 @@ class Orchestrator:
             await self.eval_envs.start()
             get_logger().success("Eval environment(s) ready")
 
-        if config.ckpt is not None and config.ckpt.resume_step is not None and self.ckpt_manager is not None:
-            if config.ckpt.resume_step == -1:
-                self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
+        if config.resume is not None:
+            if config.resume.dir is not None:
+                self.resume_step = config.resume.dir_step
             else:
-                self.resume_step = config.ckpt.resume_step
+                self.resume_step = config.resume.step
+                if self.resume_step is None:
+                    self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
 
         # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.policy_inference.model_name
@@ -302,6 +302,7 @@ class Orchestrator:
             self.inference_metrics = InferenceMetricsCollector(
                 self.policy_inference.admin_clients,
                 roles=config.inference_metrics_roles,
+                max_inflight_episodes=config.max_inflight_episodes,
             )
             await self.inference_metrics.start()
 
@@ -338,8 +339,10 @@ class Orchestrator:
 
         self.train_source = TrainSource(self.train_envs)
 
-        if self.resume_step is not None and self.ckpt_manager is not None:
-            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step)
+        if self.resume_step is not None:
+            resume = self.config.resume
+            resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
+            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
             # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
             # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
             # trainer even when ``ckpt.skip_progress`` left the counter unrestored.
@@ -510,7 +513,7 @@ class Orchestrator:
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
             # first ship).
-            if self.ckpt_manager is not None and self.progress.step > 1:
+            if self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info("Writing final checkpoint")
                 self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
@@ -544,9 +547,9 @@ class Orchestrator:
             step = episode[0].eval_step if kind == "eval" else self.progress.step
             assert step is not None
             run: vf.RunInfo = (
-                vf.EvalRunInfo(id=self.run_id, step=step)
+                vf.EvalRunInfo(id=self.run_id, name=self.run_name, step=step)
                 if kind == "eval"
-                else vf.TrainRunInfo(id=self.run_id, step=step)
+                else vf.TrainRunInfo(id=self.run_id, name=self.run_name, step=step)
             )
             for rollout in episode:
                 rollout.record_run(
@@ -912,7 +915,7 @@ class Orchestrator:
     async def maybe_save_ckpt(self, step: int) -> float:
         """Checkpoint the step just shipped if it's an interval boundary. Returns
         elapsed time (0.0 when no save happened)."""
-        if self.ckpt_manager is None or self.config.ckpt is None or not self.config.ckpt.interval:
+        if self.config.ckpt is None or not self.config.ckpt.interval:
             return 0.0
         # The final step's checkpoint is written once in ``start()``'s teardown; skip it here so
         # we don't double-save. This mirrors the trainer (its is_last_step skips the in-loop save).

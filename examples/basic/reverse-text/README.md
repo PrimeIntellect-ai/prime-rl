@@ -43,6 +43,7 @@ To train on a single GPU, run
 ```bash
 # In the `Trainer` pane
 uv run sft @ examples/basic/reverse-text/sft.toml \
+  --run.name sft \
   --wandb.project ... \
   --wandb.name ...
 ```
@@ -59,10 +60,10 @@ uv run torchrun \
   --wandb.name ...
 ```
 
-This should write a weight checkpoint in `outputs/weights/step_100`. Upload it to HF to be able to use it as the base model for RL.
+This should write a weight checkpoint in `outputs/sft/weights/step_100`. Upload it to HF to be able to use it as the base model for RL.
 
 ```bash
-uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-SFT outputs/weights/step_100
+uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-SFT outputs/sft/weights/step_100
 ```
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT).
@@ -77,14 +78,15 @@ For the RL we will only do 20 steps at 8x16 rollouts, for a total batch size of 
 # Run this in the `Trainer` pane
 uv run rl @ examples/basic/reverse-text/rl.toml \
   --model.name ... \
+  --run.name rl \
   --wandb.project ... \
   --wandb.name ...
 ```
 
-This will write a weight checkpoint in `outputs/weights/step_20`. As before, let's upload it to HF.
+This will write a weight checkpoint in `outputs/rl/weights/step_20`. As before, let's upload it to HF.
 
 ```bash
-uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-RL outputs/weights/step_20
+uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-RL outputs/rl/weights/step_20
 ```
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL).
@@ -131,18 +133,18 @@ Exec into the trainer pod and run SFT:
 
 ```bash
 kubectl exec -it my-exp-trainer-0 -- bash
-uv run sft @ /app/examples/basic/reverse-text/sft.toml --output-dir /data/outputs
-# This will save checkpoints to /data/outputs/weights/step_100
+uv run sft @ /app/examples/basic/reverse-text/sft.toml --output-dir /data/outputs --run.name sft
+# This will save checkpoints to /data/outputs/sft/weights/step_100
 ```
 
 Upload the checkpoint to HuggingFace or use it directly from shared storage:
 
 ```bash
 # Option 1: Upload to HuggingFace (from within the pod)
-uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-SFT /data/outputs/weights/step_100
+uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-SFT /data/outputs/sft/weights/step_100
 
 # Option 2: Use local checkpoint path in RL config
-# Update the model.name in the RL configs to point to /data/outputs/weights/step_100
+# Update the model.name in the RL configs to point to /data/outputs/sft/weights/step_100
 ```
 
 ### Step 3: Deploy RL Training
@@ -223,8 +225,8 @@ uv run eval reverse-text --harness.id null \
 
 ```bash
 helm uninstall my-exp
-# Optionally delete shared data:
-kubectl delete pvc prime-rl-shared-data
+# Optionally delete shared data. The PVC is named <release-name>-shared-data:
+kubectl delete pvc my-exp-shared-data
 ```
 
 **What the Helm chart provides:**

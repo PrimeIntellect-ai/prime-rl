@@ -58,7 +58,6 @@ id = "r2e-gym"
 id = "bash"
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
 labels = ["minimax-swe", "swe"]
 
 [orchestrator.eval]
@@ -74,7 +73,6 @@ id = "swebench-verified"
 id = "bash"
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
 labels = ["minimax-swe", "swe-bench-verified"]
 
 [inference.vllm]
