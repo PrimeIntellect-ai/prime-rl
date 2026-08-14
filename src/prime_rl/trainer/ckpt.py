@@ -264,9 +264,11 @@ class CheckpointManager:
         scheduler: LRScheduler | None,
         progress: Progress | None,
         dataloader: StatefulDataLoader | None = None,
+        path: Path | None = None,
     ) -> None:
-        """Load the trainer checkpoint for a given step (in-place)."""
-        ckpt_path = self.get_ckpt_path(step)
+        """Load the trainer checkpoint for a given step (in-place). ``path`` overrides
+        where the checkpoint is read from (an external run's ``step_<N>/trainer``)."""
+        ckpt_path = path if path is not None else self.get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)

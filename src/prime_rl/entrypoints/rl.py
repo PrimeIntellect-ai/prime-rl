@@ -642,10 +642,13 @@ def rl(config: RLConfig):
     # from a previous run and the orchestrator would see a negative async level.
     resume_step: int | None = None
     if resuming:
-        resume_step = config.resume.step
-        if resume_step is None:
-            ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
-            resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
+        if config.resume.dir is not None:
+            resume_step = config.resume.dir_step
+        else:
+            resume_step = config.resume.step
+            if resume_step is None:
+                ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
+                resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")

@@ -277,9 +277,12 @@ class Orchestrator:
             get_logger().success("Eval environment(s) ready")
 
         if config.ckpt is not None and config.ckpt.resume is not None and self.ckpt_manager is not None:
-            self.resume_step = config.ckpt.resume.step
-            if self.resume_step is None:
-                self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
+            if config.ckpt.resume.dir is not None:
+                self.resume_step = config.ckpt.resume.dir_step
+            else:
+                self.resume_step = config.ckpt.resume.step
+                if self.resume_step is None:
+                    self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
 
         # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.policy_inference.model_name
@@ -336,7 +339,9 @@ class Orchestrator:
         self.train_source = TrainSource(self.train_envs)
 
         if self.resume_step is not None and self.ckpt_manager is not None:
-            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step)
+            resume = self.config.ckpt.resume if self.config.ckpt else None
+            resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
+            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
             # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
             # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
             # trainer even when ``ckpt.skip_progress`` left the counter unrestored.

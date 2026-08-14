@@ -127,9 +127,12 @@ def train(config: TrainerConfig):
     ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(config.output_dir, config.ckpt, config.model.lora)
 
     if config.ckpt and config.ckpt.resume is not None and ckpt_manager is not None:
-        checkpoint_step = config.ckpt.resume.step
-        if checkpoint_step is None:
-            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+        if config.ckpt.resume.dir is not None:
+            checkpoint_step = config.ckpt.resume.dir_step
+        else:
+            checkpoint_step = config.ckpt.resume.step
+            if checkpoint_step is None:
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
@@ -208,7 +211,15 @@ def train(config: TrainerConfig):
     # Optionally, resume training from a checkpoint
     progress = Progress()
     if checkpoint_step is not None:
-        ckpt_manager.load(checkpoint_step, model, [optimizer], scheduler, progress)
+        resume_dir = config.ckpt.resume.dir if config.ckpt and config.ckpt.resume else None
+        ckpt_manager.load(
+            checkpoint_step,
+            model,
+            [optimizer],
+            scheduler,
+            progress,
+            path=resume_dir / "trainer" if resume_dir is not None else None,
+        )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         progress.step += 1
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")

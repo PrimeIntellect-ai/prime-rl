@@ -247,6 +247,10 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --resume --run.name my-run
 
 # ...or from a specific step
 uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
+
+# ...or fork another run's checkpoint into a fresh run
+uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
+  --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
 ### Serving Checkpoints

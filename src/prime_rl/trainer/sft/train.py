@@ -129,9 +129,12 @@ def train(config: SFTConfig):
 
     checkpoint_step = None
     if config.ckpt and config.ckpt.resume is not None and ckpt_manager is not None:
-        checkpoint_step = config.ckpt.resume.step
-        if checkpoint_step is None:
-            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+        if config.ckpt.resume.dir is not None:
+            checkpoint_step = config.ckpt.resume.dir_step
+        else:
+            checkpoint_step = config.ckpt.resume.step
+            if checkpoint_step is None:
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
@@ -200,6 +203,7 @@ def train(config: SFTConfig):
     progress = Progress()
 
     if checkpoint_step is not None:
+        resume_dir = config.ckpt.resume.dir if config.ckpt.resume else None
         ckpt_manager.load(
             checkpoint_step,
             model,
@@ -207,6 +211,7 @@ def train(config: SFTConfig):
             scheduler if not config.ckpt.skip_scheduler else None,
             progress if not config.ckpt.skip_progress else None,
             dataloader=dataloader if not config.ckpt.skip_dataloader else None,
+            path=resume_dir / "trainer" if resume_dir is not None else None,
         )
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
