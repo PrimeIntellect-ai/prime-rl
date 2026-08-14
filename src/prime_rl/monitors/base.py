@@ -11,9 +11,10 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
 
 
-def sanitize(obj: Any, dropped_paths: list[str]) -> Any:
+def sanitize(obj: Any) -> tuple[Any, list[str]]:
     """Recursively drop non-finite floats (NaN/inf), which are not valid JSON.
-    Appends the dotted path of each dropped value to ``dropped_paths``."""
+    Returns the sanitized object and the dotted paths of the dropped values."""
+    dropped_paths: list[str] = []
 
     def keep(item: Any, path: str) -> bool:
         if isinstance(item, float) and not math.isfinite(item):
@@ -32,7 +33,7 @@ def sanitize(obj: Any, dropped_paths: list[str]) -> Any:
             return [walk(item, child) for index, item in enumerate(value) if keep(item, child := f"{path}[{index}]")]
         return value
 
-    return walk(obj, "")
+    return walk(obj, ""), dropped_paths
 
 
 class Monitor(ABC):

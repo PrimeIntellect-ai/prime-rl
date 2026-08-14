@@ -26,13 +26,10 @@ class FileMonitor(Monitor):
         if self.file is None:
             return
 
-        dropped_paths: list[str] = []
-        sanitized = sanitize(metrics, dropped_paths)
-        if dropped_paths:
-            preview = ", ".join(dropped_paths[:5])
-            suffix = " ..." if len(dropped_paths) > 5 else ""
+        sanitized, dropped = sanitize(metrics)
+        if dropped:
             self.logger.warning(
-                f"Dropping {len(dropped_paths)} non-finite value(s) from {self.config.filename}: {preview}{suffix}"
+                f"Dropping {len(dropped)} non-finite value(s) from {self.config.filename}: {', '.join(dropped[:5])}"
             )
 
         row = {"step": step, "time": time.time(), **sanitized}

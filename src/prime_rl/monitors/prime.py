@@ -235,8 +235,7 @@ class PrimeMonitor(Monitor):
 
     def _sanitize(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Drop non-finite floats (invalid JSON) before sending payloads to the public API."""
-        dropped: list[str] = []
-        sanitized = sanitize(payload, dropped)
+        sanitized, dropped = sanitize(payload)
         if dropped:
             self.logger.warning(
                 f"Dropping {len(dropped)} non-finite value(s) from Prime monitor payload: {', '.join(dropped[:5])}"
