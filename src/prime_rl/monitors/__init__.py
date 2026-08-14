@@ -63,14 +63,14 @@ def setup(
 
     monitors: list[tuple[Monitor, dict[str, Any]]] = []
     if prime is not None:
-        monitors.append((PrimeMonitor(prime), dict(run_config=run_config)))
+        monitors.append((PrimeMonitor(prime), dict(config=run_config)))
     if wandb is not None:
         monitors.append(
             (
                 WandbMonitor(wandb),
                 dict(
                     output_dir=output_dir,
-                    run_config=run_config,
+                    config=run_config,
                     train_env_names=train_env_names,
                     eval_env_names=eval_env_names,
                 ),

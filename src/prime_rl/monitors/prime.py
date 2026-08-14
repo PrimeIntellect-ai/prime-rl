@@ -65,7 +65,7 @@ class PrimeMonitor(Monitor):
 
     config: PrimeMonitorConfig
 
-    def init(self, run_config: OrchestratorConfig | None = None) -> None:
+    def init(self, config: OrchestratorConfig | None = None) -> None:
         api_key = os.getenv(API_KEY_VAR) or PrimeConfig().api_key
         if not api_key:
             raise RuntimeError(f"API key not found - set {API_KEY_VAR} or run `prime login`")
@@ -75,16 +75,16 @@ class PrimeMonitor(Monitor):
         self.run = TrainRun(api_key, run_id=os.getenv("RUN_ID"))
         if self.run.id is None:
             run_fields: dict[str, Any] = {}
-            if run_config is not None:
+            if config is not None:
                 run_fields = dict(
-                    base_model=run_config.model.name,
-                    max_steps=run_config.max_steps or 0,
-                    batch_size=run_config.batch_size,
-                    rollouts_per_example=run_config.group_size,
-                    seq_len=run_config.seq_len,
-                    environments=[env.env_id for env in run_config.train.source],
-                    run_config=run_config.model_dump(exclude_none=True, mode="json"),
-                    wandb_project=run_config.monitors.wandb.project if run_config.monitors.wandb else None,
+                    base_model=config.model.name,
+                    max_steps=config.max_steps or 0,
+                    batch_size=config.batch_size,
+                    rollouts_per_example=config.group_size,
+                    seq_len=config.seq_len,
+                    environments=[env.env_id for env in config.train.source],
+                    run_config=config.model_dump(exclude_none=True, mode="json"),
+                    wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
                 )
             self.run.create(name=self.config.name, team_id=self.config.team_id, **run_fields)
             # A run this process created but never finalized did not exit cleanly;

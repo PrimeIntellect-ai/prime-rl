@@ -25,7 +25,7 @@ class WandbMonitor(Monitor):
     def init(
         self,
         output_dir: Path,
-        run_config: BaseConfig | None = None,
+        config: BaseConfig | None = None,
         train_env_names: list[str] | None = None,
         eval_env_names: list[str] | None = None,
     ) -> None:
@@ -76,7 +76,7 @@ class WandbMonitor(Monitor):
                         group=self.config.group,
                         tags=self.config.tags,
                         dir=output_dir,
-                        config=run_config.model_dump() if run_config else None,
+                        config=config.model_dump() if config else None,
                         settings=settings,
                     )
                 except retryable_errors as e:
