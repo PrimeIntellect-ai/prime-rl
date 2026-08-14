@@ -103,11 +103,6 @@ class MetricsServer(HealthServer):
             "trainer_mismatch_kl", "KL divergence between trainer and inference model", registry=self._registry
         )
         self._kl_ent_ratio = Gauge("trainer_kl_ent_ratio", "Ratio of mismatch KL to entropy", registry=self._registry)
-        self._zero_grad_ratio = Gauge(
-            "trainer_zero_grad_ratio",
-            "Fraction of tracked parameter elements with zero gradient",
-            registry=self._registry,
-        )
 
     def _make_handler(self) -> type[BaseHTTPRequestHandler]:
         """Create handler with /metrics and /health endpoints."""
@@ -164,7 +159,6 @@ class MetricsServer(HealthServer):
         mfu: float = 0.0,
         entropy: float = 0.0,
         mismatch_kl: float = 0.0,
-        zero_grad_ratio: float = 0.0,
     ) -> None:
         """Update metrics after a training step."""
         self._step.set(step)
@@ -177,7 +171,6 @@ class MetricsServer(HealthServer):
         self._mfu.set(mfu)
         self._entropy.set(entropy)
         self._mismatch_kl.set(mismatch_kl)
-        self._zero_grad_ratio.set(zero_grad_ratio)
         if entropy > 0:
             self._kl_ent_ratio.set(mismatch_kl / entropy)
         self._last_step_ts.set(time.time())

@@ -17,6 +17,7 @@ from prime_rl.configs.shared import (
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
+    ResumeConfig,
     TransportConfig,
     WandbWithExtrasConfig,
     ZMQTransportConfig,
@@ -286,11 +287,8 @@ class CheckpointConfig(BaseConfig):
     interval: int | None = Field(None, ge=1)
     """Step interval at which to save the orchestrator checkpoint."""
 
-    resume_step: int | None = Field(None, ge=-1)
-    """Step to resume the orchestrator from. None starts from scratch; ``-1`` resumes from the latest checkpoint available."""
-
     wait_for_weights_timeout: int | None = Field(None, ge=1)
-    """Wait up to this many seconds for the startup weight directory to appear (the trainer broadcasts the incoming policy — v0 from scratch, v{resume_step} on resume — before the first step). If None, fall back to a default timeout. Raise this for large models on slow shared filesystems."""
+    """Wait up to this many seconds for the startup weight directory to appear (the trainer broadcasts the incoming policy — v0 from scratch, the resumed step's version on resume — before the first step). If None, fall back to a default timeout. Raise this for large models on slow shared filesystems."""
 
     keep_last: int | None = Field(None, ge=1)
     """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
@@ -453,6 +451,9 @@ class OrchestratorConfig(BaseConfig):
     """Role for each policy admin client when collecting P/D inference metrics."""
 
     ckpt: CheckpointConfig | None = None
+
+    resume: ResumeConfig | None = None
+    """Resume the orchestrator from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
     """Checkpoint configuration."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()

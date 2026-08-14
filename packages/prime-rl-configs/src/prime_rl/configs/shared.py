@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -12,8 +13,10 @@ from prime_rl.utils.config import BaseConfig
 PROTECTED_ENV_VARS = frozenset(
     {
         "CUDA_VISIBLE_DEVICES",
+        "PRL_RUN_ID",
+        "PRL_RUN_NAME",
+        "WANDB_RUN_ID",
         "WANDB_SHARED_MODE",
-        "WANDB_SHARED_RUN_ID",
         "WANDB_SHARED_LABEL",
         "WANDB_SHARED_PRIMARY",
         "WANDB_SHARED_FINISHER",
@@ -32,6 +35,41 @@ def reject_protected_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
 
 EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_env_vars)]
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
+
+
+class RunConfig(BaseConfig):
+    name: str | None = None
+    """Run name. Auto-generated as ``<envs>--<model>--<short-id>`` when unset, so every launch gets a fresh, readable run directory; set an explicit name (e.g. an experiment name) to get a predictable run directory, which is also required to resume a previous run. Unless set explicitly, the W&B run name and the Prime platform run name inherit it."""
+
+    dir: str | None = None
+    """Run directory name — the run writes all its artifacts to ``output_dir / dir``. Defaults to ``run.name``; set it only when the directory should differ from the display name."""
+
+
+class ResumeConfig(BaseConfig):
+    """Resume the run from a checkpoint. A bare ``--resume`` (or empty ``[resume]`` block)
+    resumes from the latest checkpoint."""
+
+    step: int | None = Field(None, ge=1)
+    """Checkpoint step to resume from. None resumes from the latest checkpoint."""
+
+    dir: Path | None = None
+    """External checkpoint step directory to resume from (e.g. ``other/run/checkpoints/step_50``) — forks another run's checkpoint into this run. Mutually exclusive with ``step``."""
+
+    @model_validator(mode="after")
+    def validate_step_xor_dir(self):
+        if self.step is not None and self.dir is not None:
+            raise ValueError(
+                "resume.step and resume.dir are mutually exclusive — the step is taken from the directory name"
+            )
+        if self.dir is not None and not re.fullmatch(r"step_\d+", self.dir.name):
+            raise ValueError(f"resume.dir must point at a checkpoint step directory (`.../step_<N>`), got '{self.dir}'")
+        return self
+
+    @property
+    def dir_step(self) -> int:
+        """The step encoded in ``dir``'s name (validated to exist)."""
+        assert self.dir is not None
+        return int(self.dir.name.removeprefix("step_"))
 
 
 class SlurmConfig(BaseConfig):

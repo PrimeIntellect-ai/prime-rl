@@ -33,14 +33,22 @@ export GPUS_PER_NODE={{ gpus_per_node }}
 export PROJECT_DIR={{ project_dir }}
 export CONFIG_PATH={{ config_path }}
 export OUTPUT_DIR={{ output_dir }}
-mkdir -p $OUTPUT_DIR/logs/trainer
-ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
+# Per-attempt log dir: a resume or relaunch never overwrites an earlier attempt's logs.
+ATTEMPT=1
+while [ -e $OUTPUT_DIR/logs/attempt_$ATTEMPT ]; do ATTEMPT=$((ATTEMPT+1)); done
+export LOG_DIR=$OUTPUT_DIR/logs/attempt_$ATTEMPT
+mkdir -p $LOG_DIR/trainer
+ln -sfn attempt_$ATTEMPT $OUTPUT_DIR/logs/latest
+ln -sfn trainer/node_0.log $LOG_DIR/trainer.log
 
-{% if wandb_shared_run_id %}
-# Trainer and evaluator (separate SLURM job) log to a single shared W&B run: the
-# trainer creates it, the evaluator (which outlives the trainer) finalizes it.
+{% if prl_run_id %}
+# Trainer and evaluator (separate SLURM job) log to a single shared W&B run whose id
+# ($WANDB_RUN_ID) equals $PRL_RUN_ID: the trainer creates it, the evaluator (which
+# outlives the trainer) finalizes it.
+export PRL_RUN_ID={{ prl_run_id }}
+export PRL_RUN_NAME={{ run_name }}
+export WANDB_RUN_ID=$PRL_RUN_ID
 export WANDB_SHARED_MODE=1
-export WANDB_SHARED_RUN_ID={{ wandb_shared_run_id }}
 export WANDB_SHARED_PRIMARY=trainer
 export WANDB_SHARED_FINISHER=evaluator
 export WANDB_SHARED_LABEL=trainer
@@ -133,7 +141,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     export {{ key }}="{{ value }}"
 {%- endfor %}
 
-    echo $HOSTNAMES | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
+    echo $HOSTNAMES | tee $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
     uv run torchrun \
         --role=trainer \
         --nnodes=$NUM_NODES \
@@ -141,11 +149,11 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         --node-rank=$TRAIN_NODE_RANK \
         --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
         --rdzv-id=job_$SLURM_JOB_ID \
-        --log-dir=$OUTPUT_DIR/logs/trainer/torchrun \
+        --log-dir=$LOG_DIR/trainer/torchrun \
         --tee=3 \
         --redirects=3 \
         --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.sft.train \
         @ $CONFIG_PATH \
-        2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
+        2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
 LAUNCH_SH

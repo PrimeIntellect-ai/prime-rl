@@ -7,12 +7,10 @@ from pathlib import Path
 from threading import Event, Thread
 from typing import Any
 
-import tomli_w
-
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.utils.config import cli, to_toml_dict
+from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir
+from prime_rl.utils.pathing import format_log_message, get_config_dir, latest_log_dir
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_INFERENCE_ENV_VARS,
@@ -20,7 +18,7 @@ from prime_rl.utils.process import (
     set_proc_title,
 )
 
-INFERENCE_TOML = "inference.toml"
+INFERENCE_CONFIG = "inference.json"
 INFERENCE_SBATCH = "inference.sbatch"
 
 
@@ -44,12 +42,12 @@ def write_config(
     engines — the sbatch script starts the single global router.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    config_path = output_dir / INFERENCE_TOML
-    toml_dict = to_toml_dict(config, exclude=exclude)
+    config_path = output_dir / INFERENCE_CONFIG
+    config_dict = dump_resolved_config(config, exclude=exclude)
     if engine_only:
-        toml_dict["router"] = "None"
-    with open(config_path, "wb") as f:
-        tomli_w.dump(toml_dict, f)
+        config_dict["router"] = None
+    with open(config_path, "w") as f:
+        json.dump(config_dict, f, indent=2)
     return config_path
 
 
@@ -137,7 +135,7 @@ def inference_slurm(config: InferenceConfig):
     write_slurm_script(config, config_path, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    log_dir = get_log_dir(config.output_dir)
+    log_dir = latest_log_dir(config.output_dir)
     num_nodes = getattr(config.deployment, "num_nodes", 1)
     log_message = format_log_message(log_dir=log_dir, inference=True, job_log=True, num_infer_nodes=num_nodes)
 

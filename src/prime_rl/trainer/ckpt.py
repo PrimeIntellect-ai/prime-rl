@@ -21,6 +21,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.processing_utils import ProcessorMixin
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
 from prime_rl.trainer.lora import get_lora_state, has_lora_layers, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
@@ -166,7 +167,7 @@ class AppState(Stateful):
 class CheckpointManager:
     """Utility class to save and load trainer checkpoints to resume SFT and RL training."""
 
-    def __init__(self, output_dir: Path, config: CheckpointConfig):
+    def __init__(self, output_dir: Path, config: CheckpointConfig, resume: ResumeConfig | None = None):
         self.config = config
         self.skip_optimizer = config.skip_optimizer
         self.ckpt_dir = get_ckpt_dir(output_dir)
@@ -174,8 +175,8 @@ class CheckpointManager:
         self.world = get_world()
 
         all_steps = get_all_ckpt_steps(self.ckpt_dir)
-        if config.resume_step is not None and config.resume_step >= 0:
-            self.ckpt_steps = [s for s in all_steps if s <= config.resume_step]
+        if resume is not None and resume.step is not None:
+            self.ckpt_steps = [s for s in all_steps if s <= resume.step]
         else:
             self.ckpt_steps = all_steps
 
@@ -263,9 +264,11 @@ class CheckpointManager:
         scheduler: LRScheduler | None,
         progress: Progress | None,
         dataloader: StatefulDataLoader | None = None,
+        path: Path | None = None,
     ) -> None:
-        """Load the trainer checkpoint for a given step (in-place)."""
-        ckpt_path = self.get_ckpt_path(step)
+        """Load the trainer checkpoint for a given step (in-place). ``path`` overrides
+        where the checkpoint is read from (an external run's ``step_<N>/trainer``)."""
+        ckpt_path = path if path is not None else self.get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
@@ -336,7 +339,7 @@ class WeightCheckpointManager:
         save_async: bool = False,
         keep_last: int | None = None,
         keep_interval: int | None = None,
-        resume_step: int | None = None,
+        resume: ResumeConfig | None = None,
     ):
         self.weights_dir = get_weights_dir(output_dir)
         self.config = config
@@ -345,8 +348,8 @@ class WeightCheckpointManager:
         self.world = get_world()
         if self.world.is_master:
             all_steps = get_all_ckpt_steps(self.weights_dir)
-            if resume_step is not None and resume_step >= 0:
-                self.ckpt_steps = [s for s in all_steps if s <= resume_step]
+            if resume is not None and resume.step is not None:
+                self.ckpt_steps = [s for s in all_steps if s <= resume.step]
             else:
                 self.ckpt_steps = all_steps
         else:
@@ -530,20 +533,23 @@ class WeightCheckpointManager:
 
 
 def setup_ckpt_managers(
-    output_dir: Path, ckpt_config: CheckpointConfig | None, lora_config: LoRAConfig | None = None
-) -> tuple[CheckpointManager | None, WeightCheckpointManager | None]:
-    if ckpt_config is None:
-        return None, None
-    ckpt_output_dir = ckpt_config.output_dir or output_dir
-    ckpt_manager = CheckpointManager(ckpt_output_dir, ckpt_config)
-    if ckpt_config.weights and not ckpt_config.skip_gather_master_weights:
+    output_dir: Path,
+    ckpt_config: CheckpointConfig | None,
+    lora_config: LoRAConfig | None = None,
+    resume: ResumeConfig | None = None,
+) -> tuple[CheckpointManager, WeightCheckpointManager | None]:
+    """The checkpoint manager always exists: ``resume`` decides whether it loads,
+    ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
+    ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
+    ckpt_manager = CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume)
+    if ckpt_config and ckpt_config.weights and not ckpt_config.skip_gather_master_weights:
         weight_ckpt_manager = WeightCheckpointManager(
             ckpt_output_dir,
             ckpt_config.weights,
             lora_config=lora_config,
             keep_last=ckpt_config.keep_last,
             keep_interval=ckpt_config.keep_interval,
-            resume_step=ckpt_config.resume_step,
+            resume=resume,
         )
     else:
         weight_ckpt_manager = None

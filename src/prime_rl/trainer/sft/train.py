@@ -19,6 +19,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
@@ -41,7 +42,6 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     export_benchmark_json,
-    get_zero_gradient_ratio,
     get_ckpt_disk_metrics,
     print_sample,
     setup_torch_distributed,
@@ -77,7 +77,7 @@ def train(config: SFTConfig):
     monitor = setup_monitor(
         config.wandb,
         file_config=config.file_monitor,
-        output_dir=config.output_dir,
+        output_dir=config.run_dir,
         run_config=config,
         eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval else [],
         overview_flavor="sft",
@@ -134,18 +134,22 @@ def train(config: SFTConfig):
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
-    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(config.output_dir, config.ckpt, config.model.lora)
+    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
+        config.run_dir, config.ckpt, config.model.lora, resume=config.resume
+    )
 
     checkpoint_step = None
-    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
-        if config.ckpt.resume_step == -1:
-            checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+    if config.resume is not None:
+        if config.resume.dir is not None:
+            checkpoint_step = config.resume.dir_step
         else:
-            checkpoint_step = config.ckpt.resume_step
+            checkpoint_step = config.resume.step
+            if checkpoint_step is None:
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
-    loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
+    loading_from_ckpt_later = checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     if parallel_dims.cp_enabled:
@@ -185,10 +189,11 @@ def train(config: SFTConfig):
     )
 
     # Set up the learning rate scheduler
+    # skip_scheduler rebuilds a fresh schedule over the remaining steps: size it from the
+    # resolved checkpoint step (bare --resume and --resume.dir carry no explicit step).
     scheduler_steps = (
-        config.max_steps - config.ckpt.resume_step
-        if config.max_steps is not None
-        and (config.ckpt and config.ckpt.skip_scheduler and config.ckpt.resume_step is not None)
+        config.max_steps - checkpoint_step
+        if config.max_steps is not None and (config.ckpt and config.ckpt.skip_scheduler and checkpoint_step is not None)
         else config.max_steps
     )
     logger.info(f"Setting up {config.scheduler.type} scheduler with {scheduler_steps} steps ({config.scheduler})")
@@ -210,20 +215,23 @@ def train(config: SFTConfig):
     progress = Progress()
 
     if checkpoint_step is not None:
+        resume_dir = config.resume.dir if config.resume else None
+        skip = config.ckpt or CheckpointConfig()
         ckpt_manager.load(
             checkpoint_step,
             model,
             [optimizer],
-            scheduler if not config.ckpt.skip_scheduler else None,
-            progress if not config.ckpt.skip_progress else None,
-            dataloader=dataloader if not config.ckpt.skip_dataloader else None,
+            scheduler if not skip.skip_scheduler else None,
+            progress if not skip.skip_progress else None,
+            dataloader=dataloader if not skip.skip_dataloader else None,
+            path=resume_dir / "trainer" if resume_dir is not None else None,
         )
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
-        if not config.ckpt.skip_progress:
+        if not skip.skip_progress:
             progress.step += 1
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
-        if config.ckpt.skip_scheduler:
+        if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={dataloader.state_dict()['dataset_state']})"
@@ -484,8 +492,6 @@ def train(config: SFTConfig):
             )
             if grad_norm.device.type == "cpu":
                 grad_norm = grad_norm.to(torch.device("cuda"))
-        zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
-
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
@@ -589,7 +595,6 @@ def train(config: SFTConfig):
         # Log optimizer metrics
         optim_metrics = {
             "optim/lr": current_lr,
-            "optim/zero_grad_ratio": zero_grad_ratio,
             "step": progress.step,
         }
         if grad_norm is not None:
@@ -615,7 +620,7 @@ def train(config: SFTConfig):
         monitor.log(time_metrics, step=progress.step)
 
         # Log disk metrics
-        disk_metrics = get_ckpt_disk_metrics(config.output_dir)
+        disk_metrics = get_ckpt_disk_metrics(config.run_dir)
         disk_metrics["step"] = progress.step
         monitor.log(disk_metrics, step=progress.step)
 
@@ -642,8 +647,8 @@ def train(config: SFTConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if ckpt_manager is not None:
-        if not (config.ckpt and config.ckpt.weights_only):
+    if config.ckpt is not None:
+        if not config.ckpt.weights_only:
             logger.info("Writing final checkpoint")
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()

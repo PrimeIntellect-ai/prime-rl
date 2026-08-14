@@ -262,6 +262,7 @@ select = ["F", "I"]
 # Without this, ruff classifies prime_rl.configs.* as third-party because it
 # doesn't live under src/.
 known-first-party = ["prime_rl"]
+known-third-party = ["verifiers", "renderers", "pydantic_config"]
 
 [tool.ruff]
 line-length = 120

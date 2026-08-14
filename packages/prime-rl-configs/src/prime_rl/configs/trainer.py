@@ -10,6 +10,7 @@ from prime_rl.configs.shared import (
     FileMonitorConfig,
     HeartbeatConfig,
     MetricsServerConfig,
+    ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
     WandbConfig,
@@ -431,9 +432,6 @@ class CheckpointConfig(BaseConfig):
     weights_only: bool = False
     """Save only weight checkpoints (no optimizer/scheduler state). Much faster and smaller than full checkpoints, but cannot resume training."""
 
-    resume_step: int | None = Field(None, ge=-1)
-    """Step to resume training from. None starts from scratch; ``-1`` restarts from the latest checkpoint available."""
-
     keep_last: int | None = Field(None, ge=1)
     """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
 
@@ -577,6 +575,9 @@ class TrainerConfig(BaseConfig):
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
     ckpt: CheckpointConfig | None = None
+
+    resume: ResumeConfig | None = None
+    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
     """Full training-state checkpoint configuration (model + optimizer + scheduler). If None, no resume-capable checkpoints are written."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()

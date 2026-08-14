@@ -25,7 +25,7 @@ Naming: CLI uses kebab-case (`--vllm.max-model-len`); TOML uses snake_case (`max
 
 ```bash
 uv run rl --help                                  # all fields and defaults
-uv run rl @ rl.toml --dry-run --output-dir /tmp/x # write resolved TOML to /tmp/x/configs
+uv run rl @ rl.toml --dry-run --output-dir /tmp/x --run.name check # write resolved configs (JSON) to /tmp/x/check/configs
 ```
 
 ## Validators
@@ -92,7 +92,7 @@ In TOML, an empty section header (`[ckpt]`) does the same.
 
 ## RL trainer token exports
 
-For rollout debugging, enable trainer-side token export with `trainer.enable_token_export = true` (or `--enable-token-export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence under `output_dir/token_exports/step_<step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, component weight streams (rl/ce/ref_kl), advantages, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.
+For rollout debugging, enable trainer-side token export with `trainer.enable_token_export = true` (or `--enable-token-export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence under `<run_dir>/token_exports/step_<step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, component weight streams (rl/ce/ref_kl), advantages, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.
 
 ```toml
 enable_token_export = true

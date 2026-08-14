@@ -13,7 +13,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.utils.config import BaseConfig, cli, to_toml_dict
+from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
 
 # All config config classes
 CONFIG_CLASSES = [
@@ -161,20 +161,21 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_to_toml_dict_roundtrips_explicit_none(tmp_path):
-    """An explicit None override survives the write/re-parse round-trip used by SLURM launches."""
+def test_resolved_json_roundtrips_explicit_none(tmp_path):
+    """An explicit None override survives the write/re-parse round-trip used by launches:
+    resolved configs are JSON, which keeps nulls (TOML cannot)."""
+    import json
+
     config = cli(TrainerConfig, args=["--model.compile", "None", "--optim.max_norm", "None"])
     assert config.model.compile is None
     assert config.optim.max_norm is None
 
-    write_toml(tmp_path / "cfg.toml", to_toml_dict(config))
-    reloaded = cli(TrainerConfig, args=["@", str(tmp_path / "cfg.toml")])
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps(dump_resolved_config(config)))
+    reloaded = cli(TrainerConfig, args=["@", str(path)])
     assert reloaded.model.compile is None
     assert reloaded.optim.max_norm is None
     assert reloaded == config
-
-    # Unset None fields stay dropped, so defaults still resolve on re-parse
-    assert "max_steps" not in to_toml_dict(cli(TrainerConfig, args=[]))
 
 
 def test_env_algo_overrides_top_level():
@@ -547,8 +548,8 @@ def test_shared_and_subconfig_disjoint_fields_coexist():
     assert config.trainer.model.impl == "custom"
 
 
-def test_shared_output_dir_propagates_through_cli(tmp_path):
-    """Shared output_dir from CLI reaches sub-configs even when tyro constructs sub-configs before the before-validator."""
+def test_run_dir_propagates_through_cli(tmp_path):
+    """Sub-configs receive the run directory (output_dir / run.name) resolved from the CLI."""
     toml_path = tmp_path / "cfg.toml"
     write_toml(
         toml_path,
@@ -556,15 +557,21 @@ def test_shared_output_dir_propagates_through_cli(tmp_path):
             "max_steps": 1,
             "seq_len": 128,
             "model": {"name": "Qwen/Qwen3-0.6B"},
+            "wandb": {},
             "trainer": {},
             "orchestrator": {"batch_size": 16, "group_size": 1},
             "inference": {},
         },
     )
     shared_out = tmp_path / "shared"
-    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out)])
-    assert config.trainer.output_dir == shared_out
-    assert config.orchestrator.output_dir == shared_out
+    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out), "--run.name", "my-exp"])
+    assert config.run_dir == shared_out / "my-exp"
+    assert config.trainer.output_dir == shared_out / "my-exp"
+    assert config.orchestrator.output_dir == shared_out / "my-exp"
+    # Unset monitor names inherit run.name
+    assert config.wandb is not None and config.wandb.name == "my-exp"
+    assert config.trainer.wandb is not None and config.trainer.wandb.name == "my-exp"
+    assert config.orchestrator.wandb is not None and config.orchestrator.wandb.name == "my-exp"
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():

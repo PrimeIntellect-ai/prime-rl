@@ -41,7 +41,7 @@ export RPC_PORT={{ data_parallel_rpc_port }}
 # Paths
 export PROJECT_DIR={{ project_dir }}
 export CONFIG_DIR={{ config_dir }}
-export CONFIG_PATH=$CONFIG_DIR/inference.toml
+export CONFIG_PATH=$CONFIG_DIR/inference.json
 export OUTPUT_DIR={{ output_dir }}
 # Move a previous job's inference logs aside instead of deleting them: rm of log
 # files another job's processes still hold open can wedge in the NFS client and
@@ -56,11 +56,14 @@ ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 # IDs are inert, so only this job's own path needs clearing.
 export EVAL_DONE=$OUTPUT_DIR/.eval_done_$SLURM_JOB_ID
 rm -f "$EVAL_DONE"
-{% if wandb_shared_run_id %}
-# Trainer (separate SLURM job) and evaluator log to a single shared W&B run: the
-# trainer creates it, the evaluator (which outlives the trainer) finalizes it.
+{% if prl_run_id %}
+# Trainer (separate SLURM job) and evaluator log to a single shared W&B run whose id
+# ($WANDB_RUN_ID) equals $PRL_RUN_ID: the trainer creates it, the evaluator (which
+# outlives the trainer) finalizes it.
+export PRL_RUN_ID={{ prl_run_id }}
+export PRL_RUN_NAME={{ run_name }}
+export WANDB_RUN_ID=$PRL_RUN_ID
 export WANDB_SHARED_MODE=1
-export WANDB_SHARED_RUN_ID={{ wandb_shared_run_id }}
 export WANDB_SHARED_PRIMARY=trainer
 export WANDB_SHARED_FINISHER=evaluator
 export WANDB_PROGRAM="uv run sft"
@@ -206,7 +209,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         # they are up - the servers and the evaluator start in parallel.
 {%- for name in eval_env_names %}
         mkdir -p $OUTPUT_DIR/logs/envs/eval
-        uv run env-server @ $CONFIG_DIR/envs/eval/{{ name }}.toml \
+        uv run env-server @ $CONFIG_DIR/envs/eval/{{ name }}.json \
             > $OUTPUT_DIR/logs/envs/eval/{{ name }}.log 2>&1 &
 {%- endfor %}
 {%- endif %}
@@ -217,7 +220,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         export {{ key }}="{{ value }}"
 {%- endfor %}
         WANDB_SHARED_LABEL=evaluator uv run evaluator \
-            @ $CONFIG_DIR/evaluator.toml \
+            @ $CONFIG_DIR/evaluator.json \
             --eval.client.base-url $INFER_URLS \
             --eval.client.admin-base-url $ADMIN_URLS \
             2>&1 | tee $OUTPUT_DIR/logs/evaluator.log &

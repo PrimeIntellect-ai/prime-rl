@@ -9,15 +9,14 @@ from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
 
-import tomli_w
-
 from prime_rl.configs.evaluator import EvaluatorConfig
 from prime_rl.configs.orchestrator import EvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import BaseModelConfig, LogConfig
-from prime_rl.utils.config import cli, find_package_resource, to_toml_dict
+from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
+    create_attempt_log_dir,
     format_log_message,
     get_all_ckpt_steps,
     get_ckpt_dir,
@@ -25,8 +24,9 @@ from prime_rl.utils.pathing import (
     get_log_dir,
     get_step_path,
     get_weights_dir,
+    latest_log_dir,
     resolve_latest_ckpt_step,
-    validate_output_dir,
+    validate_run_dir,
 )
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
@@ -39,13 +39,13 @@ from prime_rl.utils.process import (
     set_proc_title,
 )
 
-SFT_TOML = "sft.toml"
+SFT_CONFIG = "sft.json"
 SFT_SBATCH = "sft.sbatch"
 EVAL_SBATCH = "eval.sbatch"
 EVAL_TEMPLATE = "multi_node_sft_eval.sbatch.j2"
 
-INFERENCE_TOML = "inference.toml"
-EVALUATOR_TOML = "evaluator.toml"
+INFERENCE_CONFIG = "inference.json"
+EVALUATOR_CONFIG = "evaluator.json"
 
 ENVS_DIR = "envs"
 
@@ -53,7 +53,7 @@ ENVS_DIR = "envs"
 def eval_env_servers(config: SFTConfig) -> list[tuple[EvalSourceConfig, str]]:
     """``(source, address)`` for every launcher-managed eval source. A source with
     ``serve.address`` set is externally managed — the launcher neither writes its
-    TOML nor spawns a server for it."""
+    config nor spawns a server for it."""
     if config.eval is None:
         return []
     addresses = config.eval.env_addresses
@@ -64,24 +64,29 @@ def eval_env_servers(config: SFTConfig) -> list[tuple[EvalSourceConfig, str]]:
     ]
 
 
+def get_ckpt_base(config: SFTConfig) -> Path:
+    """Where checkpoints and weights live: ``ckpt.output_dir`` when set, else the run dir."""
+    return (config.ckpt.output_dir if config.ckpt else None) or config.run_dir
+
+
 def resolve_resume_step(config: SFTConfig) -> int | None:
-    if config.ckpt is None or config.ckpt.resume_step is None:
+    if config.resume is None:
         return None
-    if config.ckpt.resume_step == -1:
-        ckpt_base = config.ckpt.output_dir or config.output_dir
-        return resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
-    return config.ckpt.resume_step
+    if config.resume.dir is not None:
+        return config.resume.dir_step
+    if config.resume.step is not None:
+        return config.resume.step
+    return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
 def build_evaluator_config(config: SFTConfig) -> EvaluatorConfig:
     """Derive the evaluator subconfig from the resolved SFT config."""
     assert config.eval is not None
-    ckpt_base = (config.ckpt.output_dir if config.ckpt else None) or config.output_dir
     return EvaluatorConfig(
         model=BaseModelConfig(name=config.model.name),
         eval=config.eval,
-        weights_dir=get_weights_dir(ckpt_base),
-        output_dir=config.output_dir,
+        weights_dir=get_weights_dir(get_ckpt_base(config)),
+        output_dir=config.run_dir,
         max_steps=config.max_steps,
         resume_step=resolve_resume_step(config),
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
@@ -93,43 +98,43 @@ def build_evaluator_config(config: SFTConfig) -> EvaluatorConfig:
 def write_config(config: SFTConfig, config_path: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "wb") as f:
-        tomli_w.dump(to_toml_dict(config, exclude=exclude), f)
+    with open(config_path, "w") as f:
+        json.dump(dump_resolved_config(config, exclude=exclude), f, indent=2)
 
 
 def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: bool = False) -> None:
-    """Write the inference, evaluator, and env-server TOMLs for online evals."""
+    """Write the inference, evaluator, and env-server configs for online evals."""
     config_dir.mkdir(parents=True, exist_ok=True)
 
     if config.inference is not None:
         # Exclude launcher-only fields that are not needed by the vLLM server
         exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
-        inference_dict = to_toml_dict(config.inference, exclude=exclude_inference)
+        inference_dict = dump_resolved_config(config.inference, exclude=exclude_inference)
         if strip_router:
             # Per-rank processes run bare engines; the sbatch starts the single global router.
-            inference_dict["router"] = "None"
-        with open(config_dir / INFERENCE_TOML, "wb") as f:
-            tomli_w.dump(inference_dict, f)
+            inference_dict["router"] = None
+        with open(config_dir / INFERENCE_CONFIG, "w") as f:
+            json.dump(inference_dict, f, indent=2)
 
-    with open(config_dir / EVALUATOR_TOML, "wb") as f:
-        tomli_w.dump(to_toml_dict(build_evaluator_config(config)), f)
+    with open(config_dir / EVALUATOR_CONFIG, "w") as f:
+        json.dump(dump_resolved_config(build_evaluator_config(config)), f, indent=2)
 
-    # One EnvServerConfig TOML per launcher-managed eval source: `env-server @ <path>`
+    # One EnvServerConfig per launcher-managed eval source: `env-server @ <path>`
     # binds at the source's deterministic address, where the evaluator connects.
     for source, address in eval_env_servers(config):
         env_dir = config_dir / ENVS_DIR / "eval"
         env_dir.mkdir(parents=True, exist_ok=True)
-        source_dict = to_toml_dict(source)
+        source_dict = dump_resolved_config(source)
         env_server_dict = {
             "env": source_dict["env"],
-            "serve": {**source_dict.get("serve", {}), "address": address},
+            "serve": {**(source_dict.get("serve") or {}), "address": address},
             "log": {"level": config.log.vf_level, "json_logging": config.log.json_logging},
         }
-        with open(env_dir / f"{source.resolved_name}.toml", "wb") as f:
-            tomli_w.dump(env_server_dict, f)
+        with open(env_dir / f"{source.resolved_name}.json", "w") as f:
+            json.dump(env_server_dict, f, indent=2)
 
 
-def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, wandb_shared_run_id: str | None = None) -> None:
+def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, prl_run_id: str | None = None) -> None:
     """Write the SLURM script to disk."""
     from jinja2 import Environment, FileSystemLoader
 
@@ -149,28 +154,27 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, 
         script = template.render(
             **config.slurm.template_vars,
             config_path=config_path,
-            output_dir=config.output_dir,
+            output_dir=config.run_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
     else:
         script = template.render(
             **config.slurm.template_vars,
             config_path=config_path,
-            output_dir=config.output_dir,
+            output_dir=config.run_dir,
             trainer_env_vars=trainer_env_vars,
             num_nodes=config.deployment.num_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
             ranks_filter=",".join(map(str, config.log.ranks_filter)),
-            wandb_shared_run_id=wandb_shared_run_id,
+            prl_run_id=prl_run_id,
+            run_name=config.run.name,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
 
 
-def write_eval_slurm_script(
-    config: SFTConfig, config_dir: Path, script_path: Path, wandb_shared_run_id: str | None
-) -> None:
+def write_eval_slurm_script(config: SFTConfig, config_dir: Path, script_path: Path, prl_run_id: str | None) -> None:
     """Write the SLURM script for the decoupled online-eval job (inference pool +
     env servers + evaluator) to disk."""
     from jinja2 import Environment, FileSystemLoader
@@ -200,7 +204,7 @@ def write_eval_slurm_script(
     script = template.render(
         **config.slurm.template_vars,
         config_dir=config_dir,
-        output_dir=config.output_dir,
+        output_dir=config.run_dir,
         num_infer_nodes=config.deployment.num_infer_nodes,
         gpus_per_node=config.deployment.gpus_per_node,
         router=config.inference.router,
@@ -212,7 +216,8 @@ def write_eval_slurm_script(
         inference_env_vars=inference_env_vars,
         evaluator_env_vars=evaluator_env_vars,
         eval_env_names=[source.resolved_name for source, _ in eval_env_servers(config)],
-        wandb_shared_run_id=wandb_shared_run_id,
+        prl_run_id=prl_run_id,
+        run_name=config.run.name,
     )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -231,12 +236,12 @@ def sft_slurm(config: SFTConfig):
 
     decoupled_eval = config.deployment.type == "multi_node" and config.eval is not None
 
-    config_dir = get_config_dir(config.output_dir)
-    config_path = config_dir / SFT_TOML
+    config_dir = get_config_dir(config.run_dir)
+    config_path = config_dir / SFT_CONFIG
     exclude = (
-        {"deployment", "slurm", "dry_run", "clean_output_dir"}
+        {"deployment", "slurm", "dry_run", "clean"}
         if config.deployment.type == "multi_node"
-        else {"slurm", "dry_run", "clean_output_dir"}
+        else {"slurm", "dry_run", "clean"}
     )
     if decoupled_eval:
         # The trainer job only needs [eval] for the weight-checkpoint cadence; the
@@ -245,13 +250,14 @@ def sft_slurm(config: SFTConfig):
     write_config(config, config_path, exclude=exclude)
     logger.info(f"Wrote config to {config_path}")
 
-    # Trainer and evaluator processes log to a single shared W&B run across both jobs.
-    wandb_shared_run_id: str | None = None
+    # Trainer and evaluator processes log to a single shared W&B run across both jobs,
+    # keyed by the launcher's run id.
+    prl_run_id: str | None = None
     if decoupled_eval and config.wandb is not None:
-        wandb_shared_run_id = os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex)
+        prl_run_id = os.environ["PRL_RUN_ID"]
 
-    script_path = config.output_dir / SFT_SBATCH
-    write_slurm_script(config, config_path, script_path, wandb_shared_run_id)
+    script_path = config.run_dir / SFT_SBATCH
+    write_slurm_script(config, config_path, script_path, prl_run_id)
     logger.info(f"Wrote SLURM script to {script_path}")
 
     # The trainer job is submitted first and the eval job depends on it having started:
@@ -262,26 +268,34 @@ def sft_slurm(config: SFTConfig):
     if decoupled_eval:
         write_eval_subconfigs(config, config_dir, strip_router=True)
         logger.info(f"Wrote eval subconfigs to {config_dir}")
-        eval_script_path = config.output_dir / EVAL_SBATCH
-        write_eval_slurm_script(config, config_dir, eval_script_path, wandb_shared_run_id)
+        eval_script_path = config.run_dir / EVAL_SBATCH
+        write_eval_slurm_script(config, config_dir, eval_script_path, prl_run_id)
         logger.info(f"Wrote eval SLURM script to {eval_script_path}")
         script_paths = [script_path, eval_script_path]
 
-    log_dir = get_log_dir(config.output_dir)
     num_nodes = config.deployment.num_nodes if config.deployment.type == "multi_node" else 1
     log_message = format_log_message(
-        log_dir=log_dir,
+        log_dir=latest_log_dir(config.run_dir),
         trainer=True,
-        evaluator=decoupled_eval,
-        inference=decoupled_eval,
-        eval_env_names=[source.resolved_name for source, _ in eval_env_servers(config)] if decoupled_eval else None,
         num_train_nodes=num_nodes,
-        num_infer_nodes=config.deployment.num_infer_nodes if decoupled_eval else 0,
     )
+    if decoupled_eval:
+        # The eval job logs at stable (non-attempt) paths under the run dir.
+        log_message += "\n" + format_log_message(
+            log_dir=get_log_dir(config.run_dir),
+            evaluator=True,
+            inference=True,
+            eval_env_names=[source.resolved_name for source, _ in eval_env_servers(config)],
+            num_infer_nodes=config.deployment.num_infer_nodes,
+        ).removeprefix("Logs:\n")
 
     if config.dry_run:
         submit = "\n".join(f"  sbatch {path}" for path in script_paths)
-        note = "\n\nSubmit the trainer job first — the evaluator joins the W&B run the trainer creates." if decoupled_eval else ""
+        note = (
+            "\n\nSubmit the trainer job first — the evaluator joins the W&B run the trainer creates."
+            if decoupled_eval
+            else ""
+        )
         logger.success(f"Dry run complete. To submit manually:\n\n{submit}{note}\n\n{log_message}")
         return
 
@@ -313,8 +327,8 @@ def sft_local(config: SFTConfig):
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
-    config_dir = get_config_dir(config.output_dir)
-    config_path = config_dir / SFT_TOML
+    config_dir = get_config_dir(config.run_dir)
+    config_path = config_dir / SFT_CONFIG
     write_config(config, config_path)
     logger.info(f"Wrote config to {config_path}")
 
@@ -326,8 +340,7 @@ def sft_local(config: SFTConfig):
         logger.success("Dry run complete. To start an SFT run locally, remove --dry-run from your command.")
         return
 
-    log_dir = get_log_dir(config.output_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = create_attempt_log_dir(config.run_dir)
 
     # Derive launcher-local GPU IDs (inference first, then the trainer) only when the
     # launcher must partition GPUs between processes; plain SFT leaves them to torchrun.
@@ -345,14 +358,15 @@ def sft_local(config: SFTConfig):
         infer_gpu_ids = physical_gpu_ids[:num_infer_gpus]
         trainer_gpu_ids = physical_gpu_ids[num_infer_gpus:total_requested_gpus]
 
-    # Trainer and evaluator log to a single shared W&B run, one label per process.
+    # Trainer and evaluator log to a single shared W&B run whose id ($WANDB_RUN_ID)
+    # equals $PRL_RUN_ID, one label per process.
     wandb_shared_env: dict[str, str] = {}
     if config.eval is not None:
         # The trainer creates the run; the evaluator (which drains its final evals
         # after the trainer exits) finalizes it.
         wandb_shared_env = {
             "WANDB_SHARED_MODE": "1",
-            "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex),
+            "WANDB_RUN_ID": os.environ["PRL_RUN_ID"],
             "WANDB_SHARED_PRIMARY": "trainer",
             "WANDB_SHARED_FINISHER": "evaluator",
             "WANDB_PROGRAM": "uv run sft",
@@ -391,7 +405,7 @@ def sft_local(config: SFTConfig):
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
             start_process(
                 "inference",
-                ["inference", "@", (config_dir / INFERENCE_TOML).as_posix()],
+                ["inference", "@", (config_dir / INFERENCE_CONFIG).as_posix()],
                 env={
                     **os.environ,
                     **DEFAULT_COMMON_ENV_VARS,
@@ -410,7 +424,7 @@ def sft_local(config: SFTConfig):
             logger.info(f"Starting eval env server {name} at {address}")
             start_process(
                 f"env/eval/{name}",
-                ["env-server", "@", (config_dir / ENVS_DIR / "eval" / f"{name}.toml").as_posix()],
+                ["env-server", "@", (config_dir / ENVS_DIR / "eval" / f"{name}.json").as_posix()],
                 env={**os.environ, **DEFAULT_COMMON_ENV_VARS, **config.env_vars},
                 log_path=log_dir / ENVS_DIR / "eval" / f"{name}.log",
             )
@@ -419,7 +433,7 @@ def sft_local(config: SFTConfig):
             logger.info("Starting evaluator process")
             start_process(
                 "evaluator",
-                ["evaluator", "@", (config_dir / EVALUATOR_TOML).as_posix()],
+                ["evaluator", "@", (config_dir / EVALUATOR_CONFIG).as_posix()],
                 env={
                     **os.environ,
                     **DEFAULT_COMMON_ENV_VARS,
@@ -514,13 +528,12 @@ def clean_stale_weights(config: SFTConfig) -> None:
     """Remove weight checkpoints a previous run left behind: everything on a fresh
     start, steps past the resume step on resume. Without this the evaluator would
     replay stale checkpoints (and then skip the re-trained ones at the same steps)."""
-    if os.environ.get("NEVER_CLEAN_OUTPUT_DIR"):
+    if os.environ.get("NEVER_CLEAN"):
         setup_logger(config.log.level or "info").warning(
-            "NEVER_CLEAN_OUTPUT_DIR is set - keeping stale weight checkpoints; the evaluator may replay them"
+            "NEVER_CLEAN is set - keeping stale weight checkpoints; the evaluator may replay them"
         )
         return
-    ckpt_base = (config.ckpt.output_dir if config.ckpt else None) or config.output_dir
-    weights_dir = get_weights_dir(ckpt_base)
+    weights_dir = get_weights_dir(get_ckpt_base(config))
     resume_step = resolve_resume_step(config)
     stale_steps = [step for step in get_all_ckpt_steps(weights_dir) if resume_step is None or step > resume_step]
     if not stale_steps:
@@ -533,11 +546,22 @@ def clean_stale_weights(config: SFTConfig) -> None:
 
 
 def sft(config: SFTConfig):
-    resuming = config.ckpt is not None and config.ckpt.resume_step is not None
-    clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
+    # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are
+    # the vehicle for runtime info between processes, and every spawned process inherits
+    # them. Components launched standalone have no run identity.
+    os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
+    assert config.run.name is not None  # resolved at construction
+    os.environ["PRL_RUN_NAME"] = config.run.name
+
+    resuming = config.resume is not None
+    clean = config.clean and not os.environ.get("NEVER_CLEAN")
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
-    validate_output_dir(config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir)
-    config.output_dir.mkdir(parents=True, exist_ok=True)
+    validate_run_dir(
+        config.run_dir, output_dir=config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir
+    )
+    config.run_dir.mkdir(parents=True, exist_ok=True)
+    if ckpt_output_dir is not None:
+        ckpt_output_dir.mkdir(parents=True, exist_ok=True)
 
     if config.eval is not None and not config.dry_run:
         clean_stale_weights(config)

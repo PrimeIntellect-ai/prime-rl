@@ -7,6 +7,10 @@ description: How to launch prime-rl training runs — the `rl`, `sft`, and `infe
 
 All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/to.toml` plus CLI overrides.
 
+## Run directories
+
+`output_dir` (default `outputs`) groups related runs; each run writes all its artifacts (logs, configs, checkpoints, weights, rollouts) to its own run directory `<output_dir>/<run_name>`. `run.name` auto-generates as `<envs>--<model>--<short-id>` (SFT: `<dataset>--<model>--<short-id>`), so every launch gets a fresh, readable run directory; `run.dir` overrides the directory leaf when it should differ from the name. Pass `--run.name <name>` to make the run directory predictable — required to resume the run later (`--resume`, or `--resume.step N`, reuses the named run directory; without `[ckpt]` it loads but saves no new checkpoints). Launching into a run directory that already contains artifacts fails unless resuming or `--clean` is set (which wipes only that run directory).
+
 ## Config system at a glance
 
 [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config) — Pydantic-based TOML + CLI loader. Highlights (see the `configs` skill for full mechanics):

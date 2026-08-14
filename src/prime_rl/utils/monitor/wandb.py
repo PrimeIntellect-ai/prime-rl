@@ -80,7 +80,8 @@ class WandbMonitor(Monitor):
         _wandb_mode = os.environ.get("WANDB_MODE")
         shared_mode = os.environ.get("WANDB_SHARED_MODE") == "1" and _wandb_mode not in ("disabled", "offline")
         if shared_mode:
-            run_id = os.environ.get("WANDB_SHARED_RUN_ID")
+            # W&B's native run-id var, set by the launcher to $PRL_RUN_ID.
+            run_id = os.environ.get("WANDB_RUN_ID")
             label = os.environ.get("WANDB_SHARED_LABEL")
             primary_label = os.environ.get("WANDB_SHARED_PRIMARY", "orchestrator")
             primary = label == primary_label
@@ -329,11 +330,32 @@ PERFORMANCE_METRICS = [
     "time/step",
     "time/wait_for_batch",
     "time/wait_for_policy",
-    "inference/agg/throughput",
-    "inference/agg/running_requests",
-    "inference/agg/waiting_requests",
-    "inference/agg/kv_cache_usage_mean",
-    "inference/agg/prefix_cache_hit_rate",
+]
+
+# Inference health panels: each pairs the fleet aggregate (mean/sum) with the cross-engine
+# tail that flags a single sick engine - max for pressure metrics, min for health metrics.
+# One saturated engine thrashing its KV cache (preempt -> re-prefill -> cache eviction) hides
+# inside fleet means; the max/min series is what surfaces it.
+INFERENCE_PANELS = [
+    [
+        "inference/agg/kv_cache_usage_perc/mean",
+        "inference/agg/kv_cache_usage_perc/min",
+        "inference/agg/kv_cache_usage_perc/max",
+    ],
+    ["inference/agg/num_preemptions_total:rate/sum", "inference/agg/num_preemptions_total:rate/max"],
+    [
+        "inference/agg/num_requests_running/mean",
+        "inference/agg/num_requests_running/min",
+        "inference/agg/num_requests_running/max",
+    ],
+    [
+        "inference/agg/num_requests_waiting/mean",
+        "inference/agg/num_requests_waiting/min",
+        "inference/agg/num_requests_waiting/max",
+    ],
+    ["inference/agg/prefix_cache_hit_rate/pooled", "inference/agg/prefix_cache_hit_rate/min"],
+    ["inference/agg/generation_tokens_total:rate/sum", "inference/agg/generation_tokens_total:rate/min"],
+    ["inference/agg/prompt_tokens_total:rate/sum", "inference/agg/prompt_tokens_total:rate/max"],
 ]
 
 # SFT flavor: no rollout-based train sections — the training signal is the loss curve.
@@ -361,6 +383,16 @@ def line_panels(metrics: Sequence[str], regexes: Sequence[str]) -> list[wr.LineP
     return [wr.LinePlot(x="RelativeTime(Wall)" if m.startswith("inference/") else "step", y=[m]) for m in metrics] + [
         wr.LinePlot(x="step", metric_regex=r) for r in regexes
     ]
+
+
+def inference_section() -> ws.Section:
+    # Multi-series panels (aggregate + tail), on wall time like all inference/* metrics.
+    return ws.Section(
+        name="inference",
+        is_open=True,
+        panels=[wr.LinePlot(x="RelativeTime(Wall)", y=list(series)) for series in INFERENCE_PANELS],
+        layout_settings=ws.SectionLayoutSettings(columns=COLUMNS, rows=ROWS),
+    )
 
 
 def section(name: str, metrics: Sequence[str] = (), regexes: Sequence[str] = ()) -> ws.Section:
@@ -425,6 +457,7 @@ def build_sections(
         # Env names unknown (e.g. externally served sources): one regex section matching any eval env.
         sections.append(eval_section("eval", ".*"))
     sections.append(section("stability", metrics=STABILITY_METRICS))
+    sections.append(inference_section())
     sections.append(section("performance", metrics=PERFORMANCE_METRICS))
     return sections
 

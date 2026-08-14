@@ -1,3 +1,4 @@
+import uuid
 import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
@@ -13,6 +14,8 @@ from prime_rl.configs.shared import (
     EnvVars,
     FileMonitorConfig,
     HeartbeatConfig,
+    ResumeConfig,
+    RunConfig,
     SlurmConfig,
     TrainerLogConfig,
     WandbWithExtrasConfig,
@@ -209,6 +212,9 @@ class SFTConfig(BaseConfig):
 
     ckpt: CheckpointConfig | None = None
 
+    resume: ResumeConfig | None = None
+    """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
+
     log: TrainerLogConfig = TrainerLogConfig()
 
     wandb: WandbWithExtrasConfig | None = None
@@ -216,11 +222,34 @@ class SFTConfig(BaseConfig):
     file_monitor: FileMonitorConfig | None = None
     """Local JSONL metric sink. If set, metrics are appended to ``<output_dir>/metrics.jsonl``."""
 
-    output_dir: Path = Path("outputs")
-    """Directory to write outputs to — checkpoints and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
+    run: RunConfig = Field(default_factory=RunConfig)
+    """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
 
-    clean_output_dir: bool = False
-    """Delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming."""
+    output_dir: Path = Path("outputs")
+    """Directory that groups related runs. Each run writes its artifacts (checkpoints, logs, ...) to ``output_dir / run.name``. Should be a persistent directory with enough disk space."""
+
+    clean: bool = False
+    """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""
+
+    @property
+    def run_dir(self) -> Path:
+        assert self.run.dir is not None  # resolved at construction
+        return self.output_dir / self.run.dir
+
+    @model_validator(mode="after")
+    def auto_setup_run_identity(self):
+        """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
+        default the run directory and W&B run name to it when not set explicitly."""
+        if self.run.name is None:
+            dataset = str(getattr(self.data, "name", "")).split("/")[-1]
+            model = self.model.name.split("/")[-1]
+            parts = [part for part in (dataset, model) if part]
+            self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
+        if self.run.dir is None:
+            self.run.dir = self.run.name
+        if self.wandb is not None and self.wandb.name is None:
+            self.wandb.name = self.run.name
+        return self
 
     matmul_precision: Literal["highest", "high", "medium"] = "high"
     """Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``."""

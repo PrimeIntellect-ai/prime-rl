@@ -29,7 +29,8 @@ timeout = 3600
 [ckpt]
 interval = 50
 keep_last = 1
-resume_step = -1
+
+[resume]
 
 [model]
 name = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
@@ -92,9 +93,6 @@ id = "rlm"
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["nemotron-3-super-swe"]
 
 [orchestrator.prime_monitor]
@@ -113,9 +111,6 @@ id = "rlm"
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["nemotron-3-super-swe"]
 
 [orchestrator.eval.source.env.agent.timeout]
