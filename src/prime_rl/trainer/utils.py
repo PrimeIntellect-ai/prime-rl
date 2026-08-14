@@ -22,7 +22,7 @@ from prime_rl.utils.pathing import get_ckpt_dir
 from prime_rl.utils.utils import get_step_path
 
 if TYPE_CHECKING:
-    from prime_rl.configs.trainer import FullOptimizerOffloadingConfig
+    from prime_rl.configs.trainer import OptimizerInBackwardOffloadConfig
     from prime_rl.trainer.optim import GradientOffloadManager
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
@@ -165,7 +165,7 @@ def configure_cpu_optimizer_threads() -> None:
     )
 
 
-def setup_full_cpu_optimizer_offload(config: "FullOptimizerOffloadingConfig") -> None:
+def setup_full_cpu_optimizer_offload(config: "OptimizerInBackwardOffloadConfig") -> None:
     if config.numa_bind:
         bind_process_to_gpu_numa_node()
     configure_cpu_optimizer_threads()

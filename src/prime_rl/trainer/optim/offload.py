@@ -14,7 +14,8 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 from torch.optim import AdamW, Optimizer
 
-from prime_rl.configs.trainer import FullOptimizerOffloadingConfig
+from prime_rl.configs.trainer import OptimizerInBackwardOffloadConfig
+from prime_rl.trainer.optim.base import OffloadOptimizer
 from prime_rl.trainer.optim.cpu_adam import adamw_step as native_cpu_adamw_step
 from prime_rl.trainer.optim.cpu_adam import add_bfloat16_ as native_add_bfloat16_
 from prime_rl.trainer.optim.cpu_adam import copy_or_add_bfloat16_multi_ as native_copy_or_add_bfloat16_multi_
@@ -879,8 +880,7 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
                     for _, pending_backward in buffer.pending_generations
                 ):
                     raise RuntimeError(
-                        "Gradient event window exhausted before an older contribution drained; "
-                        f"increase max_inflight_backwards ({self._diagnostics()})"
+                        f"Gradient event window exhausted before an older contribution drained ({self._diagnostics()})"
                     )
                 buffer.pending = True
                 buffer.pending_generations.add(generation)
@@ -991,7 +991,7 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
         self._closed = True
 
 
-class FullCPUOffloadOptimizer:
+class FullCPUOffloadOptimizer(OffloadOptimizer):
     """Runs the optimizer on CPU-resident FP32 masters, overlapped with backward.
 
     The GPU keeps a persistent BF16 compute model; FP32 masters, moments, and
@@ -1001,12 +1001,15 @@ class FullCPUOffloadOptimizer:
     """
 
     _TARGET_CPU_CHUNK_NUMEL = 16 * 1024**2
+    _TRANSFER_BUFFER_COUNT = 4
+    _MAX_INFLIGHT_BACKWARDS = 16
+    _TIMEOUT_SECONDS = 120.0
     _MASTER_WEIGHT_STATE = "prime_rl_master_weight"
 
     def __init__(
         self,
         optimizer: Optimizer,
-        offload_config: FullOptimizerOffloadingConfig,
+        offload_config: OptimizerInBackwardOffloadConfig,
         master_weights: dict[int, _MasterWeight],
         dp_replicate: int = 1,
     ):
@@ -1039,9 +1042,9 @@ class FullCPUOffloadOptimizer:
             self._gradient_manager = BoundedGradientOffloadManager(
                 gradient_chunks,
                 dp_replicate,
-                buffer_count=offload_config.transfer_buffer_count,
-                max_inflight_backwards=offload_config.max_inflight_backwards,
-                timeout_seconds=offload_config.timeout_seconds,
+                buffer_count=self._TRANSFER_BUFFER_COUNT,
+                max_inflight_backwards=self._MAX_INFLIGHT_BACKWARDS,
+                timeout_seconds=self._TIMEOUT_SECONDS,
                 target_chunk_numel=self._TARGET_CPU_CHUNK_NUMEL,
                 chunk_ready_callback=self._step_cpu_chunk,
             )

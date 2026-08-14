@@ -4,8 +4,10 @@ import torch
 from torch.distributed.tensor import DTensor
 from torch.optim import Optimizer
 
+from prime_rl.trainer.optim.base import OffloadOptimizer
 
-class CPUOffloadOptimizer:
+
+class CPUOffloadOptimizer(OffloadOptimizer):
     """Wraps an optimizer to keep states on CPU, moving to GPU only for step().
 
     Unlike FSDP's CPUOffload which offloads weights too, this keeps weights on GPU.
@@ -97,3 +99,18 @@ class CPUOffloadOptimizer:
     @property
     def base_optimizer(self) -> Optimizer:
         return self.optimizer
+
+    def checkpoint_optimizer(self) -> Optimizer:
+        return self.optimizer
+
+    def prepare_checkpoint_save(self) -> None:
+        if self._initialized:
+            self._move_states("cuda")
+            torch.cuda.synchronize()
+
+    def finish_checkpoint_save(self) -> None:
+        if self._initialized:
+            self._move_states("cpu")
+
+    def finish_checkpoint_load(self) -> None:
+        self._initialized = True

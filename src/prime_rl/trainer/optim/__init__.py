@@ -2,7 +2,9 @@ from dion import Muon
 from torch import nn
 from torch.optim import SGD, AdamW, Optimizer
 
-from prime_rl.configs.trainer import FullOptimizerOffloadingConfig, OptimizerConfig
+from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
+from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
+from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -19,9 +21,9 @@ def setup_optimizer(
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     cpu_offload: bool = False,
-    full_offload_config: FullOptimizerOffloadingConfig | None = None,
+    full_offload_config: OptimizerInBackwardOffloadConfig | None = None,
     model: nn.Module | None = None,
-) -> tuple[Optimizer | CPUOffloadOptimizer | FullCPUOffloadOptimizer, GradientOffloadManager | None]:
+) -> tuple[OptimizerLike, GradientOffloadManager | None]:
     if cpu_offload and full_offload_config is not None:
         raise ValueError("State-only and full optimizer CPU offload cannot both be enabled")
     if full_offload_config is not None and config.type == "muon":

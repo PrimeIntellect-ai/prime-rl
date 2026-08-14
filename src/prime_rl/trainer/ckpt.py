@@ -25,7 +25,7 @@ from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
 from prime_rl.trainer.lora import get_lora_state, has_lora_layers, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
-from prime_rl.trainer.optim import CPUOffloadOptimizer, FullCPUOffloadOptimizer
+from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
     save_state_dict,
@@ -62,7 +62,7 @@ class AppState(Stateful):
     def __init__(
         self,
         model: Module,
-        optimizers: list[Optimizer],
+        optimizers: list[OptimizerLike],
         scheduler: LRScheduler | None,
         progress: Progress | None,
     ):
@@ -73,24 +73,18 @@ class AppState(Stateful):
 
     def _get_checkpoint_optimizers(self) -> list[Optimizer]:
         """Expose optimizers keyed by their model parameters for DCP."""
-        checkpoint_optimizers = []
-        for optimizer in self.optimizers:
-            if isinstance(optimizer, FullCPUOffloadOptimizer):
-                checkpoint_optimizers.append(optimizer.checkpoint_optimizer())
-            elif isinstance(optimizer, CPUOffloadOptimizer):
-                checkpoint_optimizers.append(optimizer.base_optimizer)
-            else:
-                checkpoint_optimizers.append(optimizer)
-        return checkpoint_optimizers
+        return [
+            optimizer.checkpoint_optimizer() if isinstance(optimizer, OffloadOptimizer) else optimizer
+            for optimizer in self.optimizers
+        ]
 
     def _has_cpu_offload(self) -> bool:
-        return any(isinstance(opt, (CPUOffloadOptimizer, FullCPUOffloadOptimizer)) for opt in self.optimizers)
+        return any(isinstance(optimizer, OffloadOptimizer) for optimizer in self.optimizers)
 
     def state_dict(self) -> dict[str, Any]:
         for optimizer in self.optimizers:
-            if isinstance(optimizer, CPUOffloadOptimizer) and optimizer._initialized:
-                optimizer._move_states("cuda")
-                torch.cuda.synchronize()
+            if isinstance(optimizer, OffloadOptimizer):
+                optimizer.prepare_checkpoint_save()
 
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
         checkpoint_optimizers = self._get_checkpoint_optimizers()
@@ -107,8 +101,8 @@ class AppState(Stateful):
             state_dict["progress"] = progress_state_dict
 
         for optimizer in self.optimizers:
-            if isinstance(optimizer, CPUOffloadOptimizer):
-                optimizer._move_states("cpu")
+            if isinstance(optimizer, OffloadOptimizer):
+                optimizer.finish_checkpoint_save()
 
         if self._has_cpu_offload():
             torch.cuda.synchronize()
@@ -135,10 +129,8 @@ class AppState(Stateful):
             # subsequent steps take the steady-state path.
             set_model_state_dict(self.model, model_state_dict=state_dict["model"])
             for optimizer in self.optimizers:
-                if isinstance(optimizer, FullCPUOffloadOptimizer):
+                if isinstance(optimizer, OffloadOptimizer):
                     optimizer.finish_checkpoint_load()
-                elif isinstance(optimizer, CPUOffloadOptimizer):
-                    optimizer._initialized = True
         else:
             set_state_dict(
                 self.model,
@@ -192,7 +184,7 @@ class CheckpointManager:
         self,
         path: Path,
         model: nn.Module,
-        optimizers: list[Optimizer],
+        optimizers: list[OptimizerLike],
         scheduler: LRScheduler,
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
@@ -224,7 +216,7 @@ class CheckpointManager:
         self,
         path: Path,
         model: nn.Module,
-        optimizers: list[Optimizer],
+        optimizers: list[OptimizerLike],
         scheduler: LRScheduler | None,
         progress: Progress | None,
         dataloader: StatefulDataLoader | None = None,
@@ -239,7 +231,7 @@ class CheckpointManager:
         dcp_load(state_dict=state_dict, checkpoint_id=path)
         if self.skip_optimizer:
             for optimizer in optimizers:
-                if isinstance(optimizer, FullCPUOffloadOptimizer):
+                if isinstance(optimizer, OffloadOptimizer):
                     optimizer.finish_model_only_checkpoint_load()
 
         # Load the dataloader
@@ -262,7 +254,7 @@ class CheckpointManager:
         self,
         step: int,
         model: nn.Module,
-        optimizers: list[Optimizer],
+        optimizers: list[OptimizerLike],
         scheduler: LRScheduler | None,
         progress: Progress | None,
         dataloader: StatefulDataLoader | None = None,
@@ -279,7 +271,7 @@ class CheckpointManager:
         self,
         step: int,
         model: nn.Module,
-        optimizers: list[Optimizer],
+        optimizers: list[OptimizerLike],
         scheduler: LRScheduler,
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
