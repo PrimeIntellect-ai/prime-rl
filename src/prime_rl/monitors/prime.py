@@ -17,8 +17,8 @@ from verifiers.v1.episode import EnvInfo
 from verifiers.v1.utils.platform import build_samples
 
 from prime_rl.configs.monitors import PrimeMonitorConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.monitors.base import Monitor
+from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import sanitize
 
@@ -65,7 +65,7 @@ class PrimeMonitor(Monitor):
 
     config: PrimeMonitorConfig
 
-    def init(self, config: OrchestratorConfig | None = None) -> None:
+    def init(self, config: BaseConfig | None = None) -> None:
         api_key = os.getenv(API_KEY_VAR) or PrimeConfig().api_key
         if not api_key:
             raise RuntimeError(f"API key not found - set {API_KEY_VAR} or run `prime login`")
