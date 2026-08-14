@@ -9,9 +9,7 @@ from prime_rl.utils.config import BaseConfig
 # Launcher-managed env vars that a component's `env_vars` must not set: GPU partitioning
 # and the single shared W&B run. The launcher always sets these last, so allowing them in
 # `env_vars` would be a silent no-op (or, on multi-node, a footgun) — reject them instead.
-PROTECTED_ENV_VARS = frozenset(
-    {"CUDA_VISIBLE_DEVICES", "PRL_RUN_ID", "WANDB_SHARED_MODE", "WANDB_SHARED_RUN_ID", "WANDB_SHARED_LABEL"}
-)
+PROTECTED_ENV_VARS = frozenset({"CUDA_VISIBLE_DEVICES", "PRL_RUN_ID", "WANDB_SHARED_MODE", "WANDB_SHARED_LABEL"})
 
 
 def reject_protected_env_vars(env_vars: dict[str, str]) -> dict[str, str]:

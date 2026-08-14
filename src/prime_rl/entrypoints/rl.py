@@ -163,11 +163,10 @@ def rl_local(config: RLConfig):
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
     # Build shared W&B env vars for subprocesses. Shared mode is always on for
-    # the rl entrypoint — trainer and orchestrator log to a single W&B run.
-    # The monitor short-circuits when WANDB_MODE=disabled/offline is also set.
+    # the rl entrypoint — trainer and orchestrator log to a single W&B run whose
+    # id is $PRL_RUN_ID. The monitor short-circuits when WANDB_MODE=disabled/offline is also set.
     wandb_shared_env: dict[str, str] = {
         "WANDB_SHARED_MODE": "1",
-        "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", os.environ["PRL_RUN_ID"]),
     }
 
     # Validate client port matches inference server port
