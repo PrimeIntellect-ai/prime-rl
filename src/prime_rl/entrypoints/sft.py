@@ -10,7 +10,13 @@ from threading import Event, Thread
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir, validate_run_dir
+from prime_rl.utils.pathing import (
+    create_attempt_log_dir,
+    format_log_message,
+    get_config_dir,
+    latest_log_dir,
+    validate_run_dir,
+)
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
@@ -89,7 +95,7 @@ def sft_slurm(config: SFTConfig):
     write_slurm_script(config, config_path, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    log_dir = get_log_dir(config.run_dir)
+    log_dir = latest_log_dir(config.run_dir)
     num_nodes = config.deployment.num_nodes if config.deployment.type == "multi_node" else 1
     log_message = format_log_message(log_dir=log_dir, trainer=True, num_train_nodes=num_nodes)
 
@@ -121,8 +127,7 @@ def sft_local(config: SFTConfig):
         logger.success("Dry run complete. To start an SFT run locally, remove --dry-run from your command.")
         return
 
-    log_dir = get_log_dir(config.run_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = create_attempt_log_dir(config.run_dir)
 
     from prime_rl.utils.utils import get_free_port
 

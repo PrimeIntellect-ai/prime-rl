@@ -10,7 +10,7 @@ from typing import Any
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir
+from prime_rl.utils.pathing import format_log_message, get_config_dir, latest_log_dir
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_INFERENCE_ENV_VARS,
@@ -135,7 +135,7 @@ def inference_slurm(config: InferenceConfig):
     write_slurm_script(config, config_path, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    log_dir = get_log_dir(config.output_dir)
+    log_dir = latest_log_dir(config.output_dir)
     num_nodes = getattr(config.deployment, "num_nodes", 1)
     log_message = format_log_message(log_dir=log_dir, inference=True, job_log=True, num_infer_nodes=num_nodes)
 

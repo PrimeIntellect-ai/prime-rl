@@ -93,7 +93,7 @@ def test_no_error(sft_process: ProcessResult):
 
 def test_loss_goes_down(sft_process: ProcessResult, run_dir: Path):
     """Tests that the loss goes down in the SFT process"""
-    trainer_log_path = run_dir / "logs" / "trainer.log"
+    trainer_log_path = run_dir / "logs" / "latest" / "trainer.log"
     print(f"Checking trainer path in {trainer_log_path}")
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
@@ -107,7 +107,7 @@ def test_no_error_resume(sft_resume_process: ProcessResult):
 
 def test_loss_goes_down_resume(sft_resume_process: ProcessResult, run_dir: Path):
     """Tests that the loss goes down in the SFT resume process"""
-    trainer_log_path = run_dir / "logs" / "trainer.log"
+    trainer_log_path = run_dir / "logs" / "latest" / "trainer.log"
     print(f"Checking trainer path in {trainer_log_path}")
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()

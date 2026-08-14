@@ -69,7 +69,7 @@ uv run torchrun \
   src/prime_rl/trainer/sft/train.py @ sft.toml
 ```
 
-`--local-ranks-filter 0` keeps console output to rank 0 only; per-rank stdout/stderr is still captured in `<run_dir>/logs/trainer/torchrun/`.
+`--local-ranks-filter 0` keeps console output to rank 0 only; per-rank stdout/stderr is still captured in `<run_dir>/logs/latest/trainer/torchrun/`.
 
 ### Multi-Node
 

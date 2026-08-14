@@ -267,10 +267,10 @@ For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write t
 
 ### Log Files
 
-The launcher tees every process's stdout/stderr into `<run_dir>/logs/`. The full layout (single-node runs skip the `node_*.log` and `router.log` files — there the router logs into `inference.log`):
+The launcher tees every process's stdout/stderr into `<run_dir>/logs/attempt_<n>/` — every launch (fresh or resumed) gets its own numbered attempt directory, and `logs/latest` symlinks to the current one. The full layout (single-node runs skip the `node_*.log` and `router.log` files — there the router logs into `inference.log`):
 
 ```
-<run_dir>/logs/
+<run_dir>/logs/latest/     # symlink -> attempt_<n>, one per launch
 ├── trainer.log                  # rank 0 only; symlink → trainer/node_0.log on multi-node
 ├── orchestrator.log             # single instance, single file
 ├── inference.log                # symlink → inference/node_0.log on multi-node
@@ -288,9 +288,9 @@ Env logs are the first place to look for env-side errors (most user code lives t
 Live tailing from a single point (works on the head node for multi-node runs over a shared filesystem):
 
 ```bash
-tail -F <run_dir>/logs/{trainer,orchestrator,inference}.log
-tail -F <run_dir>/logs/trainer/node_*.log       # multi-node only
-tail -F <run_dir>/logs/inference/router.log     # multi-node only
+tail -F <run_dir>/logs/latest/{trainer,orchestrator,inference}.log
+tail -F <run_dir>/logs/latest/trainer/node_*.log   # multi-node only
+tail -F <run_dir>/logs/latest/inference/router.log # multi-node only
 ```
 
 ### Console Output

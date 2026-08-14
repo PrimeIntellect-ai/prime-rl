@@ -57,13 +57,13 @@ After a restart, verify all processes are back up and progress resumed before th
 
 - `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the run dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
 - `{run_dir}/configs/` — resolved configs, written as JSON so explicit None settings round-trip (`rl.json` has the full picture).
-- `{run_dir}/logs/` — see below.
+- `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
 - `{run_dir}/rollouts/step_N/{train,eval}/` — saved rollout traces (see Traces below).
 
 ### Logs
 
 ```
-{run_dir}/logs/
+{run_dir}/logs/latest/
 ├── trainer.log                # rank 0 stdout
 ├── orchestrator.log           # orchestrator stdout
 ├── inference.log              # vLLM stdout
@@ -81,8 +81,8 @@ Usually tailing `trainer.log`, `orchestrator.log`, and `inference.log` is enough
 Scan for problems:
 
 ```bash
-grep -E "WARNING|ERROR" {run_dir}/logs/{trainer,orchestrator,inference}.log
-grep -E "WARNING|ERROR" {run_dir}/logs/envs/{train,eval}/*.log
+grep -E "WARNING|ERROR" {run_dir}/logs/latest/{trainer,orchestrator,inference}.log
+grep -E "WARNING|ERROR" {run_dir}/logs/latest/envs/{train,eval}/*.log
 ```
 
 ### Metrics

@@ -119,6 +119,6 @@ def test_no_error(rl_opd_process: ProcessResult, run_dir: Path):
 
 
 def test_eval_reward_converges(rl_opd_process: ProcessResult, test_no_error, run_dir: Path):
-    with open(run_dir / "logs" / "orchestrator.log", "r") as f:
+    with open(run_dir / "logs" / "latest" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
     check_final_eval_reward_above(orchestrator_stdout, env_name="reverse-text", min_threshold=0.5)

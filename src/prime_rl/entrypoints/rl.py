@@ -21,10 +21,11 @@ from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
+    create_attempt_log_dir,
     format_log_message,
     get_ckpt_dir,
     get_config_dir,
-    get_log_dir,
+    latest_log_dir,
     resolve_latest_ckpt_step,
     validate_run_dir,
 )
@@ -181,9 +182,8 @@ def rl_local(config: RLConfig):
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
 
-    # Prepare paths to communicate with the trainer
-    log_dir = get_log_dir(config.run_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    # Per-attempt log dir: a resume never overwrites an earlier attempt's logs
+    log_dir = create_attempt_log_dir(config.run_dir)
 
     # Start processes
     processes: list[Popen] = []
@@ -567,7 +567,7 @@ def rl_slurm(config: RLConfig):
     )
 
     config_dir = get_config_dir(config.run_dir)
-    log_dir = get_log_dir(config.run_dir)
+    log_dir = latest_log_dir(config.run_dir)
 
     if config.deployment.type == "single_node":
         write_config(config, config_dir, exclude={"slurm", "dry_run", "clean"})

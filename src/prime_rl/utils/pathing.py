@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 import time
 from pathlib import Path
@@ -8,6 +9,34 @@ from prime_rl.utils.logger import get_logger
 
 def get_log_dir(output_dir: Path) -> Path:
     return output_dir / "logs"
+
+
+def create_attempt_log_dir(run_dir: Path) -> Path:
+    """Create ``logs/attempt_<n>`` for this launch attempt and repoint ``logs/latest`` to it.
+
+    Every launch — fresh or resumed — gets its own numbered log directory, so a resume
+    never overwrites an earlier attempt's logs. Returns the attempt directory."""
+    logs_dir = get_log_dir(run_dir)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    attempts = (
+        int(p.name.removeprefix("attempt_"))
+        for p in logs_dir.glob("attempt_*")
+        if p.name.removeprefix("attempt_").isdigit()
+    )
+    attempt_dir = logs_dir / f"attempt_{1 + max(attempts, default=0)}"
+    attempt_dir.mkdir()
+    # Atomically repoint the relative ``latest`` symlink: create a temp link, then rename.
+    tmp_link = logs_dir / f".{attempt_dir.name}"
+    if tmp_link.is_symlink() or tmp_link.exists():
+        tmp_link.unlink()
+    os.symlink(attempt_dir.name, tmp_link)
+    os.replace(tmp_link, logs_dir / "latest")
+    return attempt_dir
+
+
+def latest_log_dir(run_dir: Path) -> Path:
+    """The current attempt's log directory, via the ``logs/latest`` symlink."""
+    return get_log_dir(run_dir) / "latest"
 
 
 def format_log_message(
@@ -30,7 +59,7 @@ def format_log_message(
 
     log_lines: list[str] = []
     if job_log:
-        log_lines.append(f"{i1}{'Job:':<{col}}tail -F {log_dir.parent}/job_*.log")
+        log_lines.append(f"{i1}{'Job:':<{col}}tail -F {log_dir.parent.parent}/job_*.log")
     if trainer:
         log_lines.append(f"{i1}{'Trainer:':<{col}}tail -F {log_dir}/trainer.log")
         if num_train_nodes > 1:
