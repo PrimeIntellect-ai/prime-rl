@@ -13,7 +13,7 @@ from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
 
 from prime_rl.configs.shared import WandbConfig
 from prime_rl.monitors.base import Monitor
-from prime_rl.monitors.wandb_overview import ensure_overview_view
+from prime_rl.monitors.wandb.overview import ensure_overview_view
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 
@@ -128,9 +128,3 @@ class WandbMonitor(Monitor):
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
         wandb.log({**metrics, "step": step})
-
-    def save_final_summary(self) -> None:
-        dir_path = self.output_dir / f"run-{self.wandb.id}"
-        dir_path.mkdir(parents=True, exist_ok=True)
-        with open(dir_path / "final_summary.json", "w") as f:
-            json.dump(wandb.summary._as_dict(), f)

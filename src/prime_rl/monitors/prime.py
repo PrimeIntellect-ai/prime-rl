@@ -221,37 +221,35 @@ class PrimeMonitor(Monitor):
         pq.write_table(table, buf, compression="snappy", use_dictionary=True, write_statistics=True)
         return buf.getvalue()
 
-    def save_final_summary(self) -> None:
-        """Submit the final summary, which also finalizes the platform run as completed."""
-        self.logger.info("Saving final summary to Prime Intellect API")
+    def finalize(self) -> None:
+        """Finalize the platform run as completed, submitting the last metrics as its summary."""
+        self.logger.info(f"Finalizing platform run {self.run_id}")
         payload = self._sanitize("finalize", {"run_id": self.run_id, "summary": self._last_metrics})
         try:
             response = httpx.post(f"{self.base_url}/finalize", headers=self._headers, json=payload, timeout=30)
             response.raise_for_status()
         except httpx.HTTPError as e:
-            self.logger.warning(f"Failed to submit final summary for platform run {self.run_id}: {e}")
+            self.logger.warning(f"Failed to finalize platform run {self.run_id}: {e}")
             if os.getpid() == self._owner_pid:
-                self._finalize_run(success=True)
+                self._set_run_status(success=True)
                 self._finalized = True
             return
         if os.getpid() == self._owner_pid:
             self._finalized = True
 
-    def close(self) -> None:
+    def __del__(self) -> None:
         if not hasattr(self, "_background"):  # init never ran or failed
             return
+        # A run that was registered but never finalized did not exit cleanly.
         if self._registered and not self._finalized and os.getpid() == self._owner_pid:
-            self._finalize_run(success=False)
+            self._set_run_status(success=False)
             self._finalized = True
         self._background.close()
 
-    def __del__(self) -> None:
-        self.close()
-
-    def _finalize_run(self, success: bool) -> None:
+    def _set_run_status(self, success: bool) -> None:
         """Mark the run as completed or failed on the platform."""
         status = "completed" if success else "failed"
-        self.logger.info(f"Finalizing platform run {self.run_id} as {status}")
+        self.logger.info(f"Marking platform run {self.run_id} as {status}")
         try:
             response = httpx.put(
                 f"{self.base_url}/external-runs/{self.run_id}/status",
@@ -261,7 +259,7 @@ class PrimeMonitor(Monitor):
             )
             response.raise_for_status()
         except httpx.HTTPError as e:
-            self.logger.warning(f"Failed to finalize platform run {self.run_id}: {e}")
+            self.logger.warning(f"Failed to mark platform run {self.run_id} as {status}: {e}")
 
     def _sanitize(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Drop non-finite floats before sending JSON payloads to the public API."""

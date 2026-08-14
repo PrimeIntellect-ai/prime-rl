@@ -496,7 +496,7 @@ class Orchestrator:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
-            monitors.save_final_summary()
+            monitors.finalize()
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
             # first ship).

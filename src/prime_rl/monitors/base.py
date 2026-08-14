@@ -68,8 +68,5 @@ class Monitor(ABC):
     def log_episodes(self, rollouts: list[Rollout], step: int) -> None:
         """Log full episodes. No-op unless the monitor supports it."""
 
-    def save_final_summary(self) -> None:
-        """Persist the final metric summary. No-op unless the monitor supports it."""
-
-    def close(self) -> None:
-        """Release resources held by the monitor."""
+    def finalize(self) -> None:
+        """Finalize the run on the monitor's backend. No-op unless the monitor supports it."""

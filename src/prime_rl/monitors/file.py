@@ -23,7 +23,6 @@ class FileMonitor(Monitor):
         self.config = config
         self.output_dir = output_dir
         self.logger = get_logger()
-        self._last_metrics: dict[str, Any] = {}
         self._file: TextIO | None = None
 
     def init(self) -> None:
@@ -34,7 +33,6 @@ class FileMonitor(Monitor):
         self.logger.info(f"Logging metrics to {path}")
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        self._last_metrics = metrics
         if self._file is None:
             return
 
@@ -49,13 +47,3 @@ class FileMonitor(Monitor):
 
         row = {"step": step, "time": time.time(), **sanitized}
         self._file.write(json.dumps(row) + "\n")
-
-    def save_final_summary(self) -> None:
-        sanitized = drop_non_finite_json_values(self._last_metrics, [])
-        with open(self.output_dir / "final_summary.json", "w") as f:
-            json.dump(sanitized, f)
-
-    def close(self) -> None:
-        if self._file is not None:
-            self._file.close()
-            self._file = None

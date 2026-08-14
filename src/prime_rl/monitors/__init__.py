@@ -31,8 +31,7 @@ __all__ = [
     "setup",
     "log",
     "log_episodes",
-    "save_final_summary",
-    "close",
+    "finalize",
     "run_id",
 ]
 
@@ -108,20 +107,10 @@ def log_episodes(rollouts: list[Rollout], step: int) -> None:
             get_logger().warning(f"Failed to log episodes to {monitor.__class__.__name__}: {e}")
 
 
-def save_final_summary() -> None:
-    """Persist the final metric summary on all registered monitors."""
+def finalize() -> None:
+    """Finalize the run on all registered monitors."""
     for monitor in _monitors:
         try:
-            monitor.save_final_summary()
+            monitor.finalize()
         except Exception as e:
-            get_logger().warning(f"Failed to save final summary to {monitor.__class__.__name__}: {e}")
-
-
-def close() -> None:
-    """Close and deregister all monitors."""
-    for monitor in _monitors:
-        try:
-            monitor.close()
-        except Exception as e:
-            get_logger().warning(f"Failed to close {monitor.__class__.__name__}: {e}")
-    _monitors.clear()
+            get_logger().warning(f"Failed to finalize {monitor.__class__.__name__}: {e}")
