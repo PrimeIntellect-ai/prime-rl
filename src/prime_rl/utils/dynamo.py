@@ -27,6 +27,11 @@ REQUIRED_ROUTES = frozenset(
         "control/resume_generation",
         "control/is_paused",
         "control/get_weight_version",
+        "update/update_weight_version",
+    }
+)
+NATIVE_NCCL_ROUTES = frozenset(
+    {
         "update/init_weight_transfer_engine",
         "update/start_weight_update",
         "update/update_weights",
@@ -43,8 +48,9 @@ class DynamoWorker(BaseModel):
     instance_id: int = Field(ge=0, strict=True)
     model: str = Field(min_length=1)
     system_url: str = Field(min_length=1)
+    admin_base_url: str | None = Field(default=None, min_length=1)
     world_size: int = Field(gt=0, strict=True)
-    weight_transfer_backend: str = Field(min_length=1)
+    weight_transfer_backend: str | None = Field(default=None, min_length=1)
     routes: tuple[str, ...]
     error: str | None = None
 
@@ -135,11 +141,6 @@ def parse_dynamo_workers(payload: object, model_name: str) -> tuple[DynamoWorker
         missing = REQUIRED_ROUTES.difference(worker.routes)
         if missing:
             raise DynamoDiscoveryPending(f"Dynamo worker is missing native routes: {sorted(missing)}")
-        if worker.weight_transfer_backend.strip() != "nccl":
-            raise ValueError(
-                f"Dynamo worker {worker.component}/{worker.instance_id} uses unsupported "
-                f"weight-transfer backend {worker.weight_transfer_backend!r}"
-            )
         workers.append(worker)
     if not workers:
         raise DynamoDiscoveryPending(f"Dynamo returned no bound workers for model {model_name!r}")
@@ -153,13 +154,16 @@ def parse_dynamo_workers(payload: object, model_name: str) -> tuple[DynamoWorker
     return tuple(sorted(workers, key=lambda worker: (worker.namespace, worker.component, worker.instance_id)))
 
 
-def topology_fingerprint(workers: tuple[DynamoWorker, ...]) -> tuple[tuple[str, str, int, str, int, str], ...]:
+def topology_fingerprint(
+    workers: tuple[DynamoWorker, ...],
+) -> tuple[tuple[str, str, int, str, str | None, int, str | None], ...]:
     return tuple(
         (
             worker.namespace,
             worker.component,
             worker.instance_id,
             worker.system_url.rstrip("/"),
+            worker.admin_base_url.rstrip("/") if worker.admin_base_url else None,
             worker.world_size,
             worker.weight_transfer_backend,
         )
@@ -201,7 +205,16 @@ class DynamoInferencePool(InferencePool):
     ) -> None:
         self.workers = workers
         self._weight_update_timeout = client_config.wait_for_ready_timeout
+        self._weight_update_backend: str | None = None
         self._frontend_clients = setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
+        admin_urls = [worker.admin_base_url for worker in workers]
+        self._collective_rpc_clients = (
+            setup_admin_clients(
+                client_config.model_copy(update={"admin_base_url": [url for url in admin_urls if url is not None]})
+            )
+            if all(admin_urls)
+            else []
+        )
         super().__init__(
             client_config.model_copy(update={"admin_base_url": None}),
             model_name,
@@ -281,21 +294,77 @@ class DynamoInferencePool(InferencePool):
                 f"Configured inference_world_size={inference_world_size} does not match Dynamo "
                 f"world size {discovered_world_size}"
             )
+        for worker in self.workers:
+            missing = NATIVE_NCCL_ROUTES.difference(worker.routes)
+            if worker.weight_transfer_backend != "nccl" or missing:
+                raise ValueError(
+                    f"Dynamo worker {worker.component}/{worker.instance_id} does not support native NCCL "
+                    f"weight transfer (backend={worker.weight_transfer_backend!r}, missing_routes={sorted(missing)})"
+                )
         self._weight_update_timeout = timeout
+        self._weight_update_backend = "nccl"
         get_logger().info(f"Dynamo trainer will initialize native NCCL transfer for {discovered_world_size} ranks")
 
-    async def init_nixl_broadcast(self, **kwargs: Any) -> None:
-        raise ValueError("Dynamo does not support NIXL weight updates yet.")
+    async def init_nixl_broadcast(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        session_id: str,
+    ) -> None:
+        discovered_world_size = sum(worker.world_size for worker in self.workers)
+        if inference_world_size != discovered_world_size:
+            raise ValueError(
+                f"Configured inference_world_size={inference_world_size} does not match Dynamo "
+                f"world size {discovered_world_size}"
+            )
+        if len(self._collective_rpc_clients) != len(self.workers):
+            missing = [
+                f"{worker.component}/{worker.instance_id}"
+                for worker in self.workers
+                if worker.admin_base_url is None
+            ]
+            raise ValueError(
+                "Dynamo NIXL requires vLLM HTTP admin endpoints for /collective_rpc; "
+                f"workers missing admin_base_url: {missing}"
+            )
 
-    async def _fanout(self, path: str, bodies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rank_offset = 0
+        bodies: list[dict[str, Any]] = []
+        for worker in self.workers:
+            bodies.append(
+                {
+                    "method": "init_broadcaster",
+                    "timeout": timeout,
+                    "args": [host, port, rank_offset, inference_world_size, timeout, session_id],
+                    "kwargs": {},
+                }
+            )
+            rank_offset += worker.world_size
+        self._weight_update_timeout = timeout
+        await self._fanout_to(self._collective_rpc_clients, "/collective_rpc", bodies)
+        self._weight_update_backend = "nixl"
+        get_logger().info(f"Dynamo initialized Prime NIXL transfer for {discovered_world_size} ranks")
+
+    async def _fanout_to(
+        self,
+        clients: list[httpx.AsyncClient],
+        path: str,
+        bodies: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         deadline = time.monotonic() + self._weight_update_timeout
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError(f"Dynamo operation timed out before {path}")
         return await asyncio.wait_for(
-            asyncio.gather(*(_post(client, path, body) for client, body in zip(self._admin_clients, bodies))),
+            asyncio.gather(*(_post(client, path, body) for client, body in zip(clients, bodies))),
             timeout=remaining,
         )
+
+    async def _fanout(self, path: str, bodies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return await self._fanout_to(self._admin_clients, path, bodies)
 
     async def _fanout_same(self, path: str, body: dict[str, Any]) -> list[dict[str, Any]]:
         return await self._fanout(path, [body for _ in self._admin_clients])
@@ -307,16 +376,38 @@ class DynamoInferencePool(InferencePool):
         step: int = 0,
         native_nccl: bool = False,
     ) -> None:
-        if not native_nccl or lora_name is not None or weight_dir is None:
-            raise ValueError("Dynamo currently supports full-model native NCCL updates only")
+        if lora_name is not None:
+            raise ValueError("Dynamo does not support LoRA weight updates yet")
+        if native_nccl and weight_dir is None:
+            raise ValueError("Dynamo native NCCL updates require a weight directory")
+        if not native_nccl and (self._weight_update_backend != "nixl" or weight_dir is not None):
+            raise ValueError("Dynamo custom weight updates require an initialized NIXL broadcaster")
 
         await self._fanout_same("/engine/control/pause_generation", {"mode": "keep", "clear_cache": False})
         paused = await self._fanout_same("/engine/control/is_paused", {})
         if not all(result.get("is_paused") is True for result in paused):
             raise RuntimeError("Dynamo did not confirm every pinned worker was paused")
 
-        (weight_dir / NCCL_READY_MARKER).touch()
         expected_version = str(step)
+        if native_nccl:
+            assert weight_dir is not None
+            (weight_dir / NCCL_READY_MARKER).touch()
+        else:
+            await self._fanout_to(
+                self._collective_rpc_clients,
+                "/collective_rpc",
+                [
+                    {
+                        "method": "update_weights_from_path",
+                        "timeout": self._weight_update_timeout,
+                        "args": [None],
+                        "kwargs": {},
+                    }
+                    for _ in self._collective_rpc_clients
+                ],
+            )
+            await self._fanout_same("/engine/update/update_weight_version", {"new_version": expected_version})
+
         deadline = time.monotonic() + self._weight_update_timeout
         while time.monotonic() < deadline:
             versions = await self._fanout_same("/engine/control/get_weight_version", {})
@@ -328,4 +419,9 @@ class DynamoInferencePool(InferencePool):
 
     async def stop(self) -> None:
         await super().stop()
-        await asyncio.gather(*(client.aclose() for client in [*self._admin_clients, *self._frontend_clients]))
+        await asyncio.gather(
+            *(
+                client.aclose()
+                for client in [*self._admin_clients, *self._frontend_clients, *self._collective_rpc_clients]
+            )
+        )

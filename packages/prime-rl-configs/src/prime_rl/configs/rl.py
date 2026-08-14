@@ -349,8 +349,6 @@ class RLConfig(BaseConfig):
     def validate_enough_devices_for_nccl(self):
         if self.deployment.type == "single_node":
             if self.trainer.weight_broadcast.type == "nccl":
-                if self.orchestrator.model.client.is_dynamo():
-                    return self
                 if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
                     raise ValueError(
                         "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
@@ -433,11 +431,12 @@ class RLConfig(BaseConfig):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference.
 
         Defaults to NCCL broadcast when no ``weight_broadcast`` is configured. Falls back to
-        filesystem when LoRA is enabled (not yet supported by in-memory transfer) or when no
-        inference server is configured.
+        filesystem when LoRA is enabled or when neither managed nor external Dynamo inference
+        is configured.
         """
+        client = self.orchestrator.model.client
         if self.weight_broadcast is None:
-            if self.trainer.model.lora is not None or self.inference is None:
+            if self.trainer.model.lora is not None or (self.inference is None and not client.is_dynamo()):
                 self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
@@ -446,15 +445,27 @@ class RLConfig(BaseConfig):
                 "LoRA training is not yet supported with in-memory weight broadcast. "
                 "Set weight_broadcast.type = 'filesystem'."
             )
-        client = self.orchestrator.model.client
-        if client.is_dynamo() and self.weight_broadcast.type != "nccl":
-            raise ValueError("Dynamo currently supports native NCCL weight updates only.")
+        if client.is_dynamo() and self.weight_broadcast.type == "filesystem":
+            raise ValueError("Dynamo does not support filesystem weight updates; use 'nccl' or 'nixl'.")
         if self.weight_broadcast.type in ("nccl", "nixl"):
-            inference_world_size = (
-                self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
-                if self.inference
-                else 1
-            )
+            if (
+                client.is_dynamo()
+                and self.inference is None
+                and self.deployment.type == "single_node"
+                and self.deployment.num_infer_gpus < 1
+            ):
+                raise ValueError(
+                    "External Dynamo weight broadcast requires deployment.num_infer_gpus >= 1 "
+                    "to declare the static inference capacity."
+                )
+            if self.inference is not None:
+                inference_world_size = (
+                    self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
+                )
+            elif client.is_dynamo() and self.deployment.type == "single_node":
+                inference_world_size = self.deployment.num_infer_gpus
+            else:
+                inference_world_size = 1
             common_config = dict(
                 host=self.weight_broadcast.host,
                 port=self.weight_broadcast.port,
