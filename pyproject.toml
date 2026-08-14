@@ -185,6 +185,8 @@ prime-evals = false
 verifiers = false
 renderers = false
 prime-pydantic-config = false
+# Verifiers pins Harbor 0.21.0, published after the rolling project cutoff.
+harbor = "2026-08-11T00:00:00Z"
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
 dion = false
