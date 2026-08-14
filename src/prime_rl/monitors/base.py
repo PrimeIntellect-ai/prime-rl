@@ -11,42 +11,28 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
 
 
-_DROPPED_JSON_VALUE = object()
-
-
 def drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str = "") -> Any:
-    """Recursively drop non-finite floats (NaN/inf) from a JSON-serializable value.
+    """Recursively drop non-finite floats (NaN/inf), which are not valid JSON, from a
+    payload. Appends the dotted path of each dropped value to ``dropped_paths``."""
 
-    Appends the dotted path of each dropped value to `dropped_paths`. Used before
-    serializing metric payloads that must be strict JSON (the public Prime API and
-    the local `metrics.jsonl` sink), since NaN/Infinity are not valid JSON.
-    """
-    if isinstance(value, float) and not math.isfinite(value):
-        dropped_paths.append(path)
-        return _DROPPED_JSON_VALUE
+    def keep(item: Any, item_path: str) -> bool:
+        if isinstance(item, float) and not math.isfinite(item):
+            dropped_paths.append(item_path)
+            return False
+        return True
 
     if isinstance(value, dict):
         return {
-            key: sanitized_item
+            key: drop_non_finite_json_values(item, dropped_paths, child)
             for key, item in value.items()
-            if (
-                sanitized_item := drop_non_finite_json_values(
-                    item,
-                    dropped_paths,
-                    f"{path}.{key}" if path else str(key),
-                )
-            )
-            is not _DROPPED_JSON_VALUE
+            if keep(item, child := f"{path}.{key}" if path else str(key))
         }
-
     if isinstance(value, list):
         return [
-            sanitized_item
-            for idx, item in enumerate(value)
-            if (sanitized_item := drop_non_finite_json_values(item, dropped_paths, f"{path}[{idx}]"))
-            is not _DROPPED_JSON_VALUE
+            drop_non_finite_json_values(item, dropped_paths, child)
+            for index, item in enumerate(value)
+            if keep(item, child := f"{path}[{index}]")
         ]
-
     return value
 
 
