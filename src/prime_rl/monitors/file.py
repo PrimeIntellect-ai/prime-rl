@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from prime_rl.configs.shared import FileMonitorConfig
-from prime_rl.monitors.base import Monitor, drop_non_finite_json_values
+from prime_rl.monitors.base import Monitor, sanitize
 
 
 class FileMonitor(Monitor):
@@ -27,7 +27,7 @@ class FileMonitor(Monitor):
             return
 
         dropped_paths: list[str] = []
-        sanitized = drop_non_finite_json_values(metrics, dropped_paths)
+        sanitized = sanitize(metrics, dropped_paths)
         if dropped_paths:
             preview = ", ".join(dropped_paths[:5])
             suffix = " ..." if len(dropped_paths) > 5 else ""

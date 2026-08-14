@@ -19,7 +19,7 @@ from verifiers.v1.utils.platform import build_samples
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import PrimeMonitorConfig
-from prime_rl.monitors.base import Monitor, drop_non_finite_json_values
+from prime_rl.monitors.base import Monitor, sanitize
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
@@ -236,7 +236,7 @@ class PrimeMonitor(Monitor):
     def _sanitize(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Drop non-finite floats (invalid JSON) before sending payloads to the public API."""
         dropped: list[str] = []
-        sanitized = drop_non_finite_json_values(payload, dropped)
+        sanitized = sanitize(payload, dropped)
         if dropped:
             self.logger.warning(
                 f"Dropping {len(dropped)} non-finite value(s) from Prime monitor payload: {', '.join(dropped[:5])}"

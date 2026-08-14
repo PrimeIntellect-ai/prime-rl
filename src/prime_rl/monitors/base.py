@@ -11,29 +11,31 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
 
 
-def drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str = "") -> Any:
-    """Recursively drop non-finite floats (NaN/inf), which are not valid JSON, from a
-    payload. Appends the dotted path of each dropped value to ``dropped_paths``."""
+type Json = dict[str, "Json"] | list["Json"] | str | int | float | bool | None
 
-    def keep(item: Any, item_path: str) -> bool:
+
+def sanitize(obj: Json, dropped_paths: list[str]) -> Json:
+    """Recursively drop non-finite floats (NaN/inf), which are not valid JSON.
+    Appends the dotted path of each dropped value to ``dropped_paths``."""
+
+    def keep(item: Json, path: str) -> bool:
         if isinstance(item, float) and not math.isfinite(item):
-            dropped_paths.append(item_path)
+            dropped_paths.append(path)
             return False
         return True
 
-    if isinstance(value, dict):
-        return {
-            key: drop_non_finite_json_values(item, dropped_paths, child)
-            for key, item in value.items()
-            if keep(item, child := f"{path}.{key}" if path else str(key))
-        }
-    if isinstance(value, list):
-        return [
-            drop_non_finite_json_values(item, dropped_paths, child)
-            for index, item in enumerate(value)
-            if keep(item, child := f"{path}[{index}]")
-        ]
-    return value
+    def walk(value: Json, path: str) -> Json:
+        if isinstance(value, dict):
+            return {
+                key: walk(item, child)
+                for key, item in value.items()
+                if keep(item, child := f"{path}.{key}" if path else key)
+            }
+        if isinstance(value, list):
+            return [walk(item, child) for index, item in enumerate(value) if keep(item, child := f"{path}[{index}]")]
+        return value
+
+    return walk(obj, "")
 
 
 class Monitor(ABC):
