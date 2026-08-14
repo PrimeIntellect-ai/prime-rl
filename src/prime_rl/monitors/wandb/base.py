@@ -11,7 +11,7 @@ import wandb
 from wandb.errors import CommError
 from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
 
-from prime_rl.configs.shared import WandbConfig
+from prime_rl.configs.monitors import WandbConfig
 from prime_rl.monitors.base import Monitor
 from prime_rl.monitors.wandb.overview import ensure_overview_view
 from prime_rl.utils.config import BaseConfig

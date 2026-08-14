@@ -7,10 +7,10 @@ from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     EnvVars,
     HeartbeatConfig,
-    MonitorsConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,

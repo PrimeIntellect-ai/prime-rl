@@ -4,12 +4,12 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     EnvVars,
     HeartbeatConfig,
     MetricsServerConfig,
-    MonitorsConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,

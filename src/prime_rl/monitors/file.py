@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import Any, TextIO
 
-from prime_rl.configs.shared import FileMonitorConfig
+from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Monitor, sanitize
 
 

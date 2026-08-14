@@ -9,13 +9,13 @@ from prime_rl.configs.algorithm import (
     AlgoConfig,
     GRPOAlgoConfig,
 )
+from prime_rl.configs.monitors import OrchestratorMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
     EnvVars,
     HeartbeatConfig,
     LogConfig,
-    OrchestratorMonitorsConfig,
     ResumeConfig,
     TransportConfig,
     ZMQTransportConfig,

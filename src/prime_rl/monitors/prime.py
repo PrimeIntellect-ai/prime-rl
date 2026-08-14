@@ -17,8 +17,8 @@ from prime_cli.core.config import Config as PrimeConfig
 from verifiers.v1.episode import EnvInfo
 from verifiers.v1.utils.platform import build_samples
 
+from prime_rl.configs.monitors import PrimeMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.configs.shared import PrimeMonitorConfig
 from prime_rl.monitors.base import Monitor, sanitize
 
 if TYPE_CHECKING:
@@ -73,7 +73,7 @@ def group_episodes(rollouts: list[Rollout]) -> list[vf.Episode]:
 
 
 class PrimeMonitor(Monitor):
-    """Logs metrics and episodes to the prime platform.
+    """Logs metrics and episodes to the Prime platform.
 
     Uploads are fire-and-forget tasks on the caller's event loop — the prime
     monitor only runs in the orchestrator, whose call sites are all async.

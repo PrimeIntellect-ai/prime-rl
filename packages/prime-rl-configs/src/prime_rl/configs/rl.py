@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
+from prime_rl.configs.monitors import SharedMonitorsConfig
 from prime_rl.configs.orchestrator import (
     FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
 )
@@ -21,7 +22,6 @@ from prime_rl.configs.orchestrator import (
 )
 from prime_rl.configs.shared import (
     EnvVars,
-    FileMonitorConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
@@ -60,45 +60,6 @@ class SharedLogConfig(BaseConfig):
 
     json_logging: bool = False
     """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.). Propagated to trainer, orchestrator, and inference."""
-
-
-class SharedWandbConfig(BaseConfig):
-    project: str | None = "prime-rl"
-    """W&B project."""
-
-    entity: str | None = None
-    """W&B entity."""
-
-    name: str | None = None
-    """W&B run name."""
-
-    group: str | None = None
-    """W&B group."""
-
-    tags: list[str] | None = None
-    """W&B tags attached to the run."""
-
-    offline: bool | None = False
-    """Run W&B in offline mode. Incompatible with shared mode, which is always on for the ``rl`` entrypoint."""
-
-    @model_validator(mode="after")
-    def validate_not_offline(self):
-        if self.offline:
-            raise ValueError(
-                "W&B shared mode is always on for the rl entrypoint and requires server "
-                "connectivity; monitors.wandb.offline = true is not supported. Use offline mode "
-                "via the sub-config wandb blocks (trainer.monitors.wandb.offline, "
-                "orchestrator.monitors.wandb.offline) if you really need it per-process."
-            )
-        return self
-
-
-class SharedMonitorsConfig(BaseConfig):
-    wandb: SharedWandbConfig | None = None
-    """Shared W&B config. Propagated to trainer and orchestrator."""
-
-    file: FileMonitorConfig | None = None
-    """Shared local JSONL metric sink. If set, enables ``<output_dir>/metrics.jsonl`` on both trainer and orchestrator."""
 
 
 class SharedCheckpointConfig(BaseConfig):
