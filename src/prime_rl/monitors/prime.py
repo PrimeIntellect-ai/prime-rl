@@ -53,28 +53,6 @@ SAMPLE_SCHEMA = pa.schema(
 )
 
 
-def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(timeout=30, transport=httpx.AsyncHTTPTransport(retries=3))
-
-
-def group_episodes(rollouts: list[Rollout]) -> list[vf.Episode]:
-    """Regroup rollouts into their episodes. The dispatcher unwraps every
-    ``vf.Episode`` into its traces on arrival; ``episode_id`` links them back
-    together (a rollout without one forms a single-trace episode)."""
-    groups: dict[str, list[Rollout]] = {}
-    for rollout in rollouts:
-        groups.setdefault(rollout.episode_id or rollout.id, []).append(rollout)
-    return [
-        vf.Episode(
-            id=episode_id,
-            env=EnvInfo(id=group[0].env_name),
-            traces=group,
-            ok=all(trace.ok for trace in group),
-        )
-        for episode_id, group in groups.items()
-    ]
-
-
 class PrimeMonitor(Monitor):
     """Logs metrics and episodes to the Prime platform.
 
@@ -119,10 +97,12 @@ class PrimeMonitor(Monitor):
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
         self._last_metrics = metrics
-        payload = self._sanitize({"run_id": self.run_id, "metrics": metrics})
+        payload, dropped = sanitize({"run_id": self.run_id, "metrics": metrics})
+        if dropped:
+            self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
 
         async def post() -> None:
-            async with _client() as client:
+            async with get_client() as client:
                 response = await client.post(f"{self.base_url}/metrics", headers=self.headers, json=payload)
                 response.raise_for_status()
 
@@ -142,7 +122,7 @@ class PrimeMonitor(Monitor):
                 return
             # Presigned-URL flow: presign -> R2 PUT -> confirm. The PUT carries no API
             # headers - extra auth breaks the presigned signature.
-            async with _client() as client:
+            async with get_client() as client:
                 presign = await client.post(
                     f"{self.base_url}/samples/presign",
                     headers=self.headers,
@@ -167,7 +147,9 @@ class PrimeMonitor(Monitor):
     def finalize(self) -> None:
         """Finalize the platform run as completed, submitting the last metrics as its summary."""
         self.logger.info(f"Finalizing platform run {self.run_id}")
-        payload = self._sanitize({"run_id": self.run_id, "summary": self._last_metrics})
+        payload, dropped = sanitize({"run_id": self.run_id, "summary": self._last_metrics})
+        if dropped:
+            self.logger.warning(f"Dropping {len(dropped)} non-finite summary value(s): {', '.join(dropped[:5])}")
         try:
             httpx.post(f"{self.base_url}/finalize", headers=self.headers, json=payload, timeout=30).raise_for_status()
         except httpx.HTTPError as e:
@@ -224,15 +206,6 @@ class PrimeMonitor(Monitor):
             ).raise_for_status()
         except httpx.HTTPError as e:
             self.logger.warning(f"Failed to mark platform run {self.run_id} as {status}: {e}")
-
-    def _sanitize(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Drop non-finite floats (invalid JSON) before sending payloads to the public API."""
-        sanitized, dropped = sanitize(payload)
-        if dropped:
-            self.logger.warning(
-                f"Dropping {len(dropped)} non-finite value(s) from Prime monitor payload: {', '.join(dropped[:5])}"
-            )
-        return sanitized
 
     def _submit(self, what: str, request: Coroutine[Any, Any, None]) -> None:
         """Run a request as a fire-and-forget task; a failure only warns."""
@@ -305,3 +278,25 @@ class PrimeMonitor(Monitor):
         buf = io.BytesIO()
         pq.write_table(table, buf, compression="snappy", use_dictionary=True, write_statistics=True)
         return buf.getvalue()
+
+
+def get_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=30, transport=httpx.AsyncHTTPTransport(retries=3))
+
+
+def group_episodes(rollouts: list[Rollout]) -> list[vf.Episode]:
+    """Regroup rollouts into their episodes. The dispatcher unwraps every
+    ``vf.Episode`` into its traces on arrival; ``episode_id`` links them back
+    together (a rollout without one forms a single-trace episode)."""
+    groups: dict[str, list[Rollout]] = {}
+    for rollout in rollouts:
+        groups.setdefault(rollout.episode_id or rollout.id, []).append(rollout)
+    return [
+        vf.Episode(
+            id=episode_id,
+            env=EnvInfo(id=group[0].env_name),
+            traces=group,
+            ok=all(trace.ok for trace in group),
+        )
+        for episode_id, group in groups.items()
+    ]

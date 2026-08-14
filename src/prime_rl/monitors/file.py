@@ -11,7 +11,7 @@ from prime_rl.utils.utils import sanitize
 
 
 class FileMonitor(Monitor):
-    """Logs metrics to a local ``metrics.jsonl`` file."""
+    """Logs metrics to a local JSONL file."""
 
     config: FileMonitorConfig
     file: TextIO | None = None
