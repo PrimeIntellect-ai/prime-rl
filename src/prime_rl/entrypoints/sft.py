@@ -206,9 +206,9 @@ def sft_local(config: SFTConfig):
 
 
 def sft(config: SFTConfig):
-    resuming = config.ckpt is not None and config.ckpt.resume_step is not None
+    resuming = config.resume is not None
     clean = config.clean and not os.environ.get("NEVER_CLEAN")
-    validate_run_dir(config.run_dir, resuming=resuming, clean=clean)
+    validate_run_dir(config.run_dir, output_dir=config.output_dir, resuming=resuming, clean=clean)
     config.run_dir.mkdir(parents=True, exist_ok=True)
 
     if not config.dry_run:

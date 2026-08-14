@@ -9,7 +9,9 @@ from prime_rl.utils.config import BaseConfig
 # Launcher-managed env vars that a component's `env_vars` must not set: GPU partitioning
 # and the single shared W&B run. The launcher always sets these last, so allowing them in
 # `env_vars` would be a silent no-op (or, on multi-node, a footgun) — reject them instead.
-PROTECTED_ENV_VARS = frozenset({"CUDA_VISIBLE_DEVICES", "PRL_RUN_ID", "WANDB_SHARED_MODE", "WANDB_SHARED_LABEL"})
+PROTECTED_ENV_VARS = frozenset(
+    {"CUDA_VISIBLE_DEVICES", "PRL_RUN_ID", "WANDB_RUN_ID", "WANDB_SHARED_MODE", "WANDB_SHARED_LABEL"}
+)
 
 
 def reject_protected_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
@@ -31,6 +33,14 @@ class RunConfig(BaseConfig):
 
     dir: str | None = None
     """Run directory name — the run writes all its artifacts to ``output_dir / dir``. Defaults to ``run.name``; set it only when the directory should differ from the display name."""
+
+
+class ResumeConfig(BaseConfig):
+    """Resume the run from a checkpoint. A bare ``--resume`` (or empty ``[resume]`` block)
+    resumes from the latest checkpoint."""
+
+    step: int | None = Field(None, ge=1)
+    """Checkpoint step to resume from. None resumes from the latest checkpoint."""
 
 
 class RunInfoConfig(BaseConfig):

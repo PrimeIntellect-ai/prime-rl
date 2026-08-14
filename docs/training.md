@@ -236,14 +236,17 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus perma
 
 ### Resuming a Run
 
-Re-run the same launch command and pass `--ckpt.resume-step <N>` (or `-1` for "latest"). Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:
+Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:
 
 ```bash
 # First run: steps 1–10
 uv run rl @ rl.toml --max-steps 10 --ckpt --run.name my-run
 
-# Resume: continue to step 20
-uv run rl @ rl.toml --max-steps 20 --ckpt.resume-step 10 --run.name my-run
+# Resume from the latest checkpoint: continue to step 20
+uv run rl @ rl.toml --max-steps 20 --ckpt --resume --run.name my-run
+
+# ...or from a specific step
+uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
 ```
 
 ### Serving Checkpoints

@@ -164,9 +164,11 @@ def rl_local(config: RLConfig):
 
     # Build shared W&B env vars for subprocesses. Shared mode is always on for
     # the rl entrypoint — trainer and orchestrator log to a single W&B run whose
-    # id is $PRL_RUN_ID. The monitor short-circuits when WANDB_MODE=disabled/offline is also set.
+    # id ($WANDB_RUN_ID) equals $PRL_RUN_ID. The monitor short-circuits when
+    # WANDB_MODE=disabled/offline is also set.
     wandb_shared_env: dict[str, str] = {
         "WANDB_SHARED_MODE": "1",
+        "WANDB_RUN_ID": os.environ["PRL_RUN_ID"],
     }
 
     # Validate client port matches inference server port
@@ -624,10 +626,12 @@ def rl(config: RLConfig):
     # the Prime SDK once runs are registered there.
     os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
 
-    resuming = config.ckpt is not None and config.ckpt.resume_step is not None
+    resuming = config.resume is not None
     clean = config.clean and not os.environ.get("NEVER_CLEAN")
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
-    validate_run_dir(config.run_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir)
+    validate_run_dir(
+        config.run_dir, output_dir=config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir
+    )
     config.run_dir.mkdir(parents=True, exist_ok=True)
     if ckpt_output_dir is not None:
         ckpt_output_dir.mkdir(parents=True, exist_ok=True)
@@ -638,8 +642,8 @@ def rl(config: RLConfig):
     # from a previous run and the orchestrator would see a negative async level.
     resume_step: int | None = None
     if resuming:
-        resume_step = config.ckpt.resume_step
-        if resume_step == -1:
+        resume_step = config.resume.step
+        if resume_step is None:
             ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
             resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
 

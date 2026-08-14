@@ -22,6 +22,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.shared import (
     EnvVars,
     FileMonitorConfig,
+    ResumeConfig,
     RunConfig,
     SlurmConfig,
     TransportConfig,
@@ -100,9 +101,6 @@ class SharedCheckpointConfig(BaseConfig):
 
     interval: int | None = None
     """Interval at which to save checkpoints."""
-
-    resume_step: int | None = None
-    """Step to resume from. If None, does not resume from a checkpoint."""
 
     keep_last: int | None = Field(None, ge=1)
     """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
@@ -260,6 +258,9 @@ class RLConfig(BaseConfig):
     ckpt: SharedCheckpointConfig | None = None
     """Shared checkpoint config. If None, falls back to the sub-config checkpoint settings."""
 
+    resume: ResumeConfig | None = None
+    """Resume the run from a checkpoint (requires ``[ckpt]`` and the previous run's ``run.name``). If None, does not resume."""
+
     wandb: SharedWandbConfig | None = None
     """Shared W&B config. If None, falls back to the sub-config W&B settings."""
 
@@ -396,6 +397,19 @@ class RLConfig(BaseConfig):
                     "output_dir / run.name — set those instead."
                 )
             sub.output_dir = run_dir
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_resume(self):
+        """Map the top-level resume onto the sub-config checkpoint configs (their internal
+        ``resume_step`` uses -1 for "latest")."""
+        if self.resume is None:
+            return self
+        if self.trainer.ckpt is None or self.orchestrator.ckpt is None:
+            raise ValueError("resume requires checkpointing — add the [ckpt] block")
+        step = self.resume.step if self.resume.step is not None else -1
+        self.trainer.ckpt.resume_step = step
+        self.orchestrator.ckpt.resume_step = step
         return self
 
     @model_validator(mode="after")

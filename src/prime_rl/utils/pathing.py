@@ -131,7 +131,9 @@ def has_run_artifacts(run_dir: Path) -> bool:
     return any(entry not in launcher_entries for entry in run_dir.iterdir())
 
 
-def validate_run_dir(run_dir: Path, *, resuming: bool, clean: bool, ckpt_output_dir: Path | None = None) -> None:
+def validate_run_dir(
+    run_dir: Path, *, output_dir: Path, resuming: bool, clean: bool, ckpt_output_dir: Path | None = None
+) -> None:
     """Validate the run directory before training starts.
 
     Raises if the run directory was already used by a previous run, unless explicitly
@@ -144,6 +146,8 @@ def validate_run_dir(run_dir: Path, *, resuming: bool, clean: bool, ckpt_output_
     if resuming:
         return
     if clean:
+        if not run_dir.resolve().is_relative_to(output_dir.resolve()):
+            raise ValueError(f"clean requires the run directory ({run_dir}) to remain under output_dir ({output_dir})")
         logger = get_logger()
         dirs_to_clean = [run_dir]
         if ckpt_output_dir is not None and ckpt_output_dir != run_dir:
@@ -161,7 +165,7 @@ def validate_run_dir(run_dir: Path, *, resuming: bool, clean: bool, ckpt_output_
     if blocked:
         raise FileExistsError(
             f"{blocked} "
-            f"To resume the latest step of the previous run, set ckpt.resume_step=-1 or --ckpt.resume-step -1 via CLI. "
+            f"To resume the latest step of the previous run, pass --resume (or --resume.step N). "
             f"To delete the existing directory and start fresh, set clean=true or --clean via CLI. "
             f"Otherwise use a unique run name (run.name or --run.name via CLI) or output_dir for this run."
         )

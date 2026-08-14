@@ -11,6 +11,7 @@ from prime_rl.configs.shared import (
     EnvVars,
     FileMonitorConfig,
     HeartbeatConfig,
+    ResumeConfig,
     RunConfig,
     SlurmConfig,
     TrainerLogConfig,
@@ -190,6 +191,9 @@ class SFTConfig(BaseConfig):
 
     ckpt: CheckpointConfig | None = None
 
+    resume: ResumeConfig | None = None
+    """Resume the run from a checkpoint (requires ``[ckpt]`` and the previous run's ``run.name``). If None, does not resume."""
+
     log: TrainerLogConfig = TrainerLogConfig()
 
     wandb: WandbConfig | None = None
@@ -210,6 +214,17 @@ class SFTConfig(BaseConfig):
     def run_dir(self) -> Path:
         assert self.run.dir is not None  # resolved at construction
         return self.output_dir / self.run.dir
+
+    @model_validator(mode="after")
+    def auto_setup_resume(self):
+        """Map the top-level resume onto the checkpoint config (its internal
+        ``resume_step`` uses -1 for "latest")."""
+        if self.resume is None:
+            return self
+        if self.ckpt is None:
+            raise ValueError("resume requires checkpointing — add the [ckpt] block")
+        self.ckpt.resume_step = self.resume.step if self.resume.step is not None else -1
+        return self
 
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
