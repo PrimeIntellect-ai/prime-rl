@@ -217,13 +217,12 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_resume(self):
-        """Map the top-level resume onto the checkpoint config (its internal
-        ``resume_step`` uses -1 for "latest")."""
+        """Propagate the top-level resume onto the checkpoint config."""
         if self.resume is None:
             return self
         if self.ckpt is None:
             raise ValueError("resume requires checkpointing — add the [ckpt] block")
-        self.ckpt.resume_step = self.resume.step if self.resume.step is not None else -1
+        self.ckpt.resume = self.resume.model_copy()
         return self
 
     @model_validator(mode="after")

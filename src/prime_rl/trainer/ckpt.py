@@ -21,6 +21,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.processing_utils import ProcessorMixin
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
 from prime_rl.trainer.lora import get_lora_state, has_lora_layers, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
@@ -174,8 +175,8 @@ class CheckpointManager:
         self.world = get_world()
 
         all_steps = get_all_ckpt_steps(self.ckpt_dir)
-        if config.resume_step is not None and config.resume_step >= 0:
-            self.ckpt_steps = [s for s in all_steps if s <= config.resume_step]
+        if config.resume is not None and config.resume.step is not None:
+            self.ckpt_steps = [s for s in all_steps if s <= config.resume.step]
         else:
             self.ckpt_steps = all_steps
 
@@ -336,7 +337,7 @@ class WeightCheckpointManager:
         save_async: bool = False,
         keep_last: int | None = None,
         keep_interval: int | None = None,
-        resume_step: int | None = None,
+        resume: ResumeConfig | None = None,
     ):
         self.weights_dir = get_weights_dir(output_dir)
         self.config = config
@@ -345,8 +346,8 @@ class WeightCheckpointManager:
         self.world = get_world()
         if self.world.is_master:
             all_steps = get_all_ckpt_steps(self.weights_dir)
-            if resume_step is not None and resume_step >= 0:
-                self.ckpt_steps = [s for s in all_steps if s <= resume_step]
+            if resume is not None and resume.step is not None:
+                self.ckpt_steps = [s for s in all_steps if s <= resume.step]
             else:
                 self.ckpt_steps = all_steps
         else:
@@ -536,7 +537,7 @@ def setup_ckpt_managers(
             lora_config=lora_config,
             keep_last=ckpt_config.keep_last,
             keep_interval=ckpt_config.keep_interval,
-            resume_step=ckpt_config.resume_step,
+            resume=ckpt_config.resume,
         )
     else:
         weight_ckpt_manager = None

@@ -126,11 +126,10 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
     ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(config.output_dir, config.ckpt, config.model.lora)
 
-    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
-        if config.ckpt.resume_step == -1:
+    if config.ckpt and config.ckpt.resume is not None and ckpt_manager is not None:
+        checkpoint_step = config.ckpt.resume.step
+        if checkpoint_step is None:
             checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
-        else:
-            checkpoint_step = config.ckpt.resume_step
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")

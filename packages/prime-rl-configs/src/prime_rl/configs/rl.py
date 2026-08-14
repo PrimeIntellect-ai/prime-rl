@@ -401,15 +401,13 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_resume(self):
-        """Map the top-level resume onto the sub-config checkpoint configs (their internal
-        ``resume_step`` uses -1 for "latest")."""
+        """Propagate the top-level resume onto the sub-config checkpoint configs."""
         if self.resume is None:
             return self
         if self.trainer.ckpt is None or self.orchestrator.ckpt is None:
             raise ValueError("resume requires checkpointing — add the [ckpt] block")
-        step = self.resume.step if self.resume.step is not None else -1
-        self.trainer.ckpt.resume_step = step
-        self.orchestrator.ckpt.resume_step = step
+        self.trainer.ckpt.resume = self.resume.model_copy()
+        self.orchestrator.ckpt.resume = self.resume.model_copy()
         return self
 
     @model_validator(mode="after")

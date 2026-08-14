@@ -10,6 +10,7 @@ from prime_rl.configs.shared import (
     FileMonitorConfig,
     HeartbeatConfig,
     MetricsServerConfig,
+    ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
     WandbConfig,
@@ -431,8 +432,8 @@ class CheckpointConfig(BaseConfig):
     weights_only: bool = False
     """Save only weight checkpoints (no optimizer/scheduler state). Much faster and smaller than full checkpoints, but cannot resume training."""
 
-    resume_step: int | None = Field(None, ge=-1)
-    """Step to resume training from. None starts from scratch; ``-1`` restarts from the latest checkpoint available."""
+    resume: ResumeConfig | None = None
+    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step."""
 
     keep_last: int | None = Field(None, ge=1)
     """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""

@@ -128,11 +128,10 @@ def train(config: SFTConfig):
     ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(config.run_dir, config.ckpt, config.model.lora)
 
     checkpoint_step = None
-    if config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None:
-        if config.ckpt.resume_step == -1:
+    if config.ckpt and config.ckpt.resume is not None and ckpt_manager is not None:
+        checkpoint_step = config.ckpt.resume.step
+        if checkpoint_step is None:
             checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
-        else:
-            checkpoint_step = config.ckpt.resume_step
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
@@ -176,10 +175,10 @@ def train(config: SFTConfig):
     )
 
     # Set up the learning rate scheduler
+    resume_from = config.ckpt.resume.step if config.ckpt and config.ckpt.resume is not None else None
     scheduler_steps = (
-        config.max_steps - config.ckpt.resume_step
-        if config.max_steps is not None
-        and (config.ckpt and config.ckpt.skip_scheduler and config.ckpt.resume_step is not None)
+        config.max_steps - resume_from
+        if config.max_steps is not None and (config.ckpt and config.ckpt.skip_scheduler and resume_from is not None)
         else config.max_steps
     )
     logger.info(f"Setting up {config.scheduler.type} scheduler with {scheduler_steps} steps ({config.scheduler})")
