@@ -25,7 +25,7 @@ class WandbMonitor(Monitor):
 
     config: WandbMonitorConfig
 
-    def init(
+    async def init(
         self,
         output_dir: Path,
         config: BaseConfig | None = None,
