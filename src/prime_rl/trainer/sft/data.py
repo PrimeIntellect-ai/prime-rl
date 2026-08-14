@@ -531,20 +531,19 @@ class CatDataset(StatefulIterableDataset):
 
 
 def cat_collate(samples: list[Sample]) -> Batch:
+    # CPU tensors only: this runs in dataloader workers then the trainer moves batches to the GPU with async copies from pinned memory
     (sample,) = samples
     mm_kwargs = sample.get("mm_kwargs")
     mm_token_type_ids = sample.get("mm_token_type_ids")
     return {
-        "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
-        "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
-        "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda").unsqueeze(0),
-        "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
-        "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long, device="cuda"),
-        "mm_kwargs": {key: value.to("cuda") for key, value in mm_kwargs.items()} if mm_kwargs is not None else None,
+        "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long).unsqueeze(0),
+        "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long).unsqueeze(0),
+        "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool).unsqueeze(0),
+        "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long).unsqueeze(0),
+        "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long),
+        "mm_kwargs": dict(mm_kwargs) if mm_kwargs is not None else None,
         "mm_token_type_ids": (
-            torch.tensor(mm_token_type_ids, dtype=torch.long, device="cuda").unsqueeze(0)
-            if mm_token_type_ids is not None
-            else None
+            torch.tensor(mm_token_type_ids, dtype=torch.long).unsqueeze(0) if mm_token_type_ids is not None else None
         ),
     }
 
@@ -656,4 +655,20 @@ def setup_dataset(
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
     packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
-    return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
+    return StatefulDataLoader(
+        packing_dataset,
+        batch_size=1,
+        collate_fn=cat_collate,
+        num_workers=config.num_workers,
+        pin_memory=config.num_workers > 0,
+        prefetch_factor=2 if config.num_workers > 0 else None,
+    )
+
+
+def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
+    state = dataloader.state_dict()
+    if "dataset_state" in state:
+        return state["dataset_state"]
+    worker_snapshots = (state.get("_snapshot") or {}).get("_worker_snapshots") or {}
+    (worker_state,) = worker_snapshots.values()
+    return worker_state["dataset_state"]
