@@ -10,7 +10,7 @@ from prime_rl.utils.config import BaseConfig
 # and the single shared W&B run. The launcher always sets these last, so allowing them in
 # `env_vars` would be a silent no-op (or, on multi-node, a footgun) — reject them instead.
 PROTECTED_ENV_VARS = frozenset(
-    {"CUDA_VISIBLE_DEVICES", "WANDB_SHARED_MODE", "WANDB_SHARED_RUN_ID", "WANDB_SHARED_LABEL"}
+    {"CUDA_VISIBLE_DEVICES", "PRL_RUN_ID", "WANDB_SHARED_MODE", "WANDB_SHARED_RUN_ID", "WANDB_SHARED_LABEL"}
 )
 
 
@@ -36,11 +36,10 @@ class RunConfig(BaseConfig):
 
 
 class RunInfoConfig(BaseConfig):
-    """Launcher-injected run identity — not user config. The launcher mints the id
-    (TODO: fetch it from the Prime SDK once runs are registered there) and resolves the
-    name from ``run.name``; sub-processes stamp it on traces and label sandboxes with it."""
+    """Launcher-resolved run info — not user config. The launcher resolves the name from
+    ``run.name``; sub-processes stamp it on traces and label sandboxes with it. The run
+    id is runtime-only and travels as ``$PRL_RUN_ID``, never through config."""
 
-    id: str | None = None
     name: str | None = None
 
 

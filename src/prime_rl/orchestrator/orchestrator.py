@@ -237,8 +237,8 @@ class Orchestrator:
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
         # Prefer the monitor identity (platform run id, else W&B id) so traces link
-        # back to it, then the launcher-injected run id; standalone runs mint a local one.
-        self.run_id = self.monitor.run_id or config.run.id or uuid.uuid4().hex
+        # back to it, then the launcher-set $PRL_RUN_ID; standalone runs mint a local one.
+        self.run_id = self.monitor.run_id or os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
         # Base labels for sandboxes created in this process; env-server processes get
         # them via their own config.
         if config.run.name:
