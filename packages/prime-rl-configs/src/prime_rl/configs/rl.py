@@ -1,3 +1,4 @@
+import uuid
 import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -238,7 +239,18 @@ class RLConfig(BaseConfig):
 
     @property
     def run_dir(self) -> Path:
-        return self.output_dir / self.run.name
+        assert self.run.dir is not None  # resolved at construction
+        return self.output_dir / self.run.dir
+
+    def _resolve_run_name(self) -> None:
+        """Fill the auto-generated run name and directory (idempotent — called by every
+        validator that reads them, so it does not depend on validator ordering)."""
+        if self.run.name is None:
+            envs = "+".join(dict.fromkeys(source.resolved_name for source in self.orchestrator.train.source))
+            model = self.trainer.model.name.split("/")[-1]
+            self.run.name = f"{envs or 'no-env'}--{model}--{uuid.uuid4().hex[:8]}"
+        if self.run.dir is None:
+            self.run.dir = self.run.name
 
     ### Shared configurations
 
@@ -374,6 +386,7 @@ class RLConfig(BaseConfig):
         The sub-configs' ``output_dir`` is fully derived here: sub-processes spawned by
         the launcher receive the resolved run directory and never re-derive it.
         """
+        self._resolve_run_name()
         run_dir = self.run_dir
         for sub in (self.trainer, self.orchestrator):
             if "output_dir" in sub.model_fields_set and sub.output_dir != run_dir:
@@ -395,6 +408,7 @@ class RLConfig(BaseConfig):
         set W&B name still takes precedence for the platform run name. The run id is
         minted by the launcher (see the ``rl`` entrypoint), not here.
         """
+        self._resolve_run_name()
         self.orchestrator.run.name = self.run.name
         for wandb in (self.wandb, self.trainer.wandb, self.orchestrator.wandb):
             if wandb is not None and wandb.name is None:

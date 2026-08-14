@@ -1,5 +1,4 @@
 import os
-import uuid
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -29,8 +28,11 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 
 
 class RunConfig(BaseConfig):
-    name: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    """Run name. The run writes all its artifacts to ``output_dir / name``. Defaults to a random UUID, so every launch gets a fresh run directory; set an explicit name (e.g. an experiment name) to get a predictable run directory, which is also required to resume a previous run. Unless set explicitly, the W&B run name and the Prime platform run name inherit it."""
+    name: str | None = None
+    """Run name. Auto-generated as ``<envs>--<model>--<short-id>`` when unset, so every launch gets a fresh, readable run directory; set an explicit name (e.g. an experiment name) to get a predictable run directory, which is also required to resume a previous run. Unless set explicitly, the W&B run name and the Prime platform run name inherit it."""
+
+    dir: str | None = None
+    """Run directory name — the run writes all its artifacts to ``output_dir / dir``. Defaults to ``run.name``; set it only when the directory should differ from the display name."""
 
 
 class RunInfoConfig(BaseConfig):

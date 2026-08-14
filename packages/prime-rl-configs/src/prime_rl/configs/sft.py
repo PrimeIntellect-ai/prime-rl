@@ -1,3 +1,4 @@
+import uuid
 import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
@@ -207,11 +208,20 @@ class SFTConfig(BaseConfig):
 
     @property
     def run_dir(self) -> Path:
-        return self.output_dir / self.run.name
+        assert self.run.dir is not None  # resolved at construction
+        return self.output_dir / self.run.dir
 
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
-        """Default the W&B run name to ``run.name`` when not set explicitly."""
+        """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
+        default the run directory and W&B run name to it when not set explicitly."""
+        if self.run.name is None:
+            dataset = str(getattr(self.data, "name", "")).split("/")[-1]
+            model = self.model.name.split("/")[-1]
+            parts = [part for part in (dataset, model) if part]
+            self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]])
+        if self.run.dir is None:
+            self.run.dir = self.run.name
         if self.wandb is not None and self.wandb.name is None:
             self.wandb.name = self.run.name
         return self
