@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig, WandbConfig
+from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig, WandbMonitorConfig
 from prime_rl.monitors.base import Monitor
 from prime_rl.monitors.file import FileMonitor
 from prime_rl.monitors.prime import PrimeMonitor
@@ -40,7 +40,7 @@ _monitors: list[Monitor] = []
 
 
 def setup(
-    wandb: WandbConfig | None = None,
+    wandb: WandbMonitorConfig | None = None,
     prime: PrimeMonitorConfig | None = None,
     file: FileMonitorConfig | None = None,
     *,

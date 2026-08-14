@@ -513,13 +513,13 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_prime_monitor_run_name(self):
-        """Default ``monitors.prime.run_name`` to the W&B run name when monitoring
+    def auto_setup_prime_monitor_name(self):
+        """Default ``monitors.prime.name`` to the W&B run name when monitoring
         is enabled and the user hasn't named the platform run explicitly."""
-        if self.monitors.prime is None or self.monitors.prime.run_name is not None:
+        if self.monitors.prime is None or self.monitors.prime.name is not None:
             return self
         if self.monitors.wandb is not None and self.monitors.wandb.name:
-            self.monitors.prime.run_name = self.monitors.wandb.name
+            self.monitors.prime.name = self.monitors.wandb.name
         return self
 
     @model_validator(mode="after")

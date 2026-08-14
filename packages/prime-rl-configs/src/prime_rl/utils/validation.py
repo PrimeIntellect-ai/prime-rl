@@ -105,7 +105,7 @@ def propagate_shared_fields(data: Any) -> Any:
         )
 
     # [monitors.file] leaf. (Bare empty ``[monitors.file]`` block enablement is at the end.)
-    propagate("monitors.file.filename", "trainer.monitors.file.filename", "orchestrator.monitors.file.filename")
+    propagate("monitors.file.path", "trainer.monitors.file.path", "orchestrator.monitors.file.path")
 
     # [tokenizer]. ``chat_template`` also flows to ``inference.vllm`` (vLLM's
     # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately

@@ -5,7 +5,6 @@ import atexit
 import io
 import json
 import os
-import random
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Coroutine
 
@@ -24,6 +23,9 @@ from prime_rl.monitors.base import Monitor, sanitize
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
 
+
+BASE_URL = "https://api.primeintellect.ai/api/v1/rft"
+API_KEY_VAR = "PRIME_API_KEY"
 
 _SAMPLE_SCHEMA = pa.schema(
     [
@@ -84,10 +86,10 @@ class PrimeMonitor(Monitor):
     config: PrimeMonitorConfig
 
     def init(self, run_config: OrchestratorConfig | None = None) -> None:
-        api_key = os.getenv(self.config.api_key_var) or PrimeConfig().api_key
+        api_key = os.getenv(API_KEY_VAR) or PrimeConfig().api_key
         if not api_key:
-            raise RuntimeError(f"API key not found - set {self.config.api_key_var} or run `prime login`")
-        self.base_url = self.config.base_url.rstrip("/")
+            raise RuntimeError(f"API key not found - set {API_KEY_VAR} or run `prime login`")
+        self.base_url = BASE_URL
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "x-api-key": api_key,
@@ -127,14 +129,7 @@ class PrimeMonitor(Monitor):
 
     def log_episodes(self, rollouts: list[Rollout], step: int) -> None:
         """Upload one platform sample per episode via the presigned-URL Parquet flow."""
-        config = self.config.log_episodes
-        if config is None or step % config.interval != 0:
-            return
-
         episodes = group_episodes(rollouts)
-        if config.sample_ratio is not None and config.sample_ratio < 1.0:
-            num_samples = max(1, int(len(episodes) * config.sample_ratio)) if config.sample_ratio > 0 else 0
-            episodes = random.sample(episodes, min(num_samples, len(episodes)))
         if not episodes:
             return
 
@@ -182,13 +177,9 @@ class PrimeMonitor(Monitor):
 
     def _register_run(self, run_config: OrchestratorConfig | None) -> str:
         """Register an external run with the platform and return its run id."""
-        config = self.config
-        team_id = config.team_id
-        frontend_url = config.frontend_url
-        if team_id is None or frontend_url is None:
-            prime_config = PrimeConfig()
-            team_id = team_id or prime_config.team_id
-            frontend_url = frontend_url or prime_config.frontend_url
+        prime_config = PrimeConfig()
+        team_id = self.config.team_id or prime_config.team_id
+        frontend_url = prime_config.frontend_url
 
         payload: dict[str, Any] = {
             "base_model": run_config.model.name if run_config else "unknown",
@@ -203,8 +194,8 @@ class PrimeMonitor(Monitor):
             payload["run_config"] = run_config.model_dump(exclude_none=True, mode="json")
             if run_config.monitors.wandb:
                 payload["wandb_project"] = run_config.monitors.wandb.project
-        if config.run_name:
-            payload["name"] = config.run_name
+        if self.config.name:
+            payload["name"] = self.config.name
         if team_id:
             payload["team_id"] = team_id
 

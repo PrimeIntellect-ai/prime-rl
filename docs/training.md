@@ -331,10 +331,10 @@ Or set it in TOML:
 
 ```toml
 [orchestrator.monitors.prime]
-run_name = "my-experiment"
+name = "my-experiment"
 ```
 
-Every 10 steps the orchestrator uploads the step's episodes (full conversations with rewards and advantages) to the run's sample viewer; tune via `--orchestrator.monitors.prime.log-episodes.interval` and `.sample-ratio`, or disable with `--no-orchestrator.monitors.prime.log-episodes`.
+Every step the orchestrator uploads the step's episodes (full conversations with rewards and advantages) to the run's sample viewer.
 
 Requires `PRIME_API_KEY` (set via `prime login` or env var) and an allowlisted team. Currently internal-only.
 

@@ -16,8 +16,8 @@ class FileMonitor(Monitor):
     file: TextIO | None = None
 
     def init(self, output_dir: Path) -> None:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        path = output_dir / self.config.filename
+        path = output_dir / self.config.path
+        path.parent.mkdir(parents=True, exist_ok=True)
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(path, "a", buffering=1)  # noqa: SIM115
         self.logger.info(f"Logging metrics to {path}")
@@ -29,7 +29,7 @@ class FileMonitor(Monitor):
         sanitized, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(
-                f"Dropping {len(dropped)} non-finite value(s) from {self.config.filename}: {', '.join(dropped[:5])}"
+                f"Dropping {len(dropped)} non-finite value(s) from {self.config.path}: {', '.join(dropped[:5])}"
             )
 
         row = {"step": step, "time": time.time(), **sanitized}

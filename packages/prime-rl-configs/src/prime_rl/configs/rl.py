@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
-from prime_rl.configs.monitors import SharedMonitorsConfig
+from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.configs.orchestrator import (
     FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
 )
@@ -60,6 +60,47 @@ class SharedLogConfig(BaseConfig):
 
     json_logging: bool = False
     """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.). Propagated to trainer, orchestrator, and inference."""
+
+
+class SharedWandbConfig(BaseConfig):
+    project: str | None = "prime-rl"
+    """W&B project."""
+
+    entity: str | None = None
+    """W&B entity."""
+
+    name: str | None = None
+    """W&B run name."""
+
+    group: str | None = None
+    """W&B group."""
+
+    tags: list[str] | None = None
+    """W&B tags attached to the run."""
+
+    offline: bool | None = False
+    """Run W&B in offline mode. Incompatible with shared mode, which is always on for the ``rl`` entrypoint."""
+
+    @model_validator(mode="after")
+    def validate_not_offline(self):
+        if self.offline:
+            raise ValueError(
+                "W&B shared mode is always on for the rl entrypoint and requires server "
+                "connectivity; monitors.wandb.offline = true is not supported. Use offline mode "
+                "via the sub-config wandb blocks (trainer.monitors.wandb.offline, "
+                "orchestrator.monitors.wandb.offline) if you really need it per-process."
+            )
+        return self
+
+
+class SharedMonitorsConfig(BaseConfig):
+    """The ``rl`` entrypoint's shared monitor configs, propagated to trainer and orchestrator."""
+
+    wandb: SharedWandbConfig | None = None
+    """Shared W&B config. Propagated to trainer and orchestrator."""
+
+    file: FileMonitorConfig | None = None
+    """Shared local JSONL metric sink. If set, enables ``<output_dir>/metrics.jsonl`` on both trainer and orchestrator."""
 
 
 class SharedCheckpointConfig(BaseConfig):
@@ -374,7 +415,7 @@ class RLConfig(BaseConfig):
         """Default the W&B and Prime platform run names to ``run.name``.
 
         Explicit names always win: only unset names inherit. Runs after the
-        orchestrator's own ``auto_setup_prime_monitor_run_name``, so an explicitly
+        orchestrator's own ``auto_setup_prime_monitor_name``, so an explicitly
         set W&B name still takes precedence for the platform run name. The run
         identity itself is runtime-only ($PRL_RUN_ID / $PRL_RUN_NAME, set by the
         ``rl`` entrypoint), never sub-config.
@@ -384,8 +425,8 @@ class RLConfig(BaseConfig):
             if wandb is not None and wandb.name is None:
                 wandb.name = self.run.name
         prime = self.orchestrator.monitors.prime
-        if prime is not None and prime.run_name is None:
-            prime.run_name = self.run.name
+        if prime is not None and prime.name is None:
+            prime.name = self.run.name
         return self
 
     ### Validate shared configs (after sub-config construction)
