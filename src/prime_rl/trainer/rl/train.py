@@ -109,7 +109,8 @@ def train(config: TrainerConfig):
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
     )
-    setup_full_cpu_optimizer_offload(config.model.full_optim_cpu_offload)
+    if config.model.full_optim_cpu_offload is not None:
+        setup_full_cpu_optimizer_offload(config.model.full_optim_cpu_offload)
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.

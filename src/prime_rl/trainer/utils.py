@@ -165,9 +165,7 @@ def configure_cpu_optimizer_threads() -> None:
     )
 
 
-def setup_full_cpu_optimizer_offload(config: "FullOptimizerOffloadingConfig | None") -> None:
-    if config is None:
-        return
+def setup_full_cpu_optimizer_offload(config: "FullOptimizerOffloadingConfig") -> None:
     if config.numa_bind:
         bind_process_to_gpu_numa_node()
     configure_cpu_optimizer_threads()
