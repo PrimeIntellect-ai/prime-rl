@@ -5,16 +5,19 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import wandb
 from wandb.errors import CommError
 from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
 
 from prime_rl.configs.monitors import WandbMonitorConfig
-from prime_rl.monitors.base import Monitor
+from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.wandb.overview import ensure_overview_view
 from prime_rl.utils.config import BaseConfig
+
+if TYPE_CHECKING:
+    import verifiers.v1 as vf
 
 
 class WandbMonitor(Monitor):
@@ -121,3 +124,6 @@ class WandbMonitor(Monitor):
 
     def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
         wandb.log({**metrics, "step": step})
+
+    def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
+        pass

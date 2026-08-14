@@ -93,10 +93,15 @@ def log(data: dict[str, Any], step: int) -> None: ...
 
 
 @overload
-def log(data: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None: ...
+def log(data: vf.Episode | list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None: ...
 
 
-def log(data: dict[str, Any] | list[vf.Episode], step: int, kind: Kind = "train", subset: Subset = "effective") -> None:
+def log(
+    data: dict[str, Any] | vf.Episode | list[vf.Episode],
+    step: int,
+    kind: Kind = "train",
+    subset: Subset = "effective",
+) -> None:
     """Log to all registered monitors: a dict of scalar metrics, or episodes
     with their cohort coordinates (train/eval x all/effective)."""
     for monitor in MONITORS:

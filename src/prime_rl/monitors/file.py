@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class FileMonitor(Monitor):
-    """Logs metrics to a local JSONL file and episodes to per-step trace files."""
+    """Logs metrics and episodes to a local JSONL files."""
 
     config: FileMonitorConfig
     file: TextIO | None = None
