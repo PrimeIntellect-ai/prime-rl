@@ -8,10 +8,6 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 from torch.distributed.tensor import DTensor
-from vllm.distributed.weight_transfer.nccl_engine import (
-    NCCLTrainerSendWeightsArgs,
-    NCCLWeightTransferEngine,
-)
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
 from prime_rl.trainer.conversion_utils import get_max_layer_num
@@ -70,6 +66,8 @@ class NCCLWeightBroadcastSender:
         self.dtype = dtype
 
         if self.world.is_master:
+            from vllm.distributed.weight_transfer.nccl_engine import NCCLWeightTransferEngine
+
             disable_nccl_p2p_if_unavailable()
             self.communicator = NCCLWeightTransferEngine.trainer_init(
                 {
@@ -88,6 +86,11 @@ class NCCLWeightBroadcastSender:
         self._broadcast_native_weights(model, save_dir)
 
     def _broadcast_native_weights(self, model: nn.Module, save_dir: Path) -> None:
+        from vllm.distributed.weight_transfer.nccl_engine import (
+            NCCLTrainerSendWeightsArgs,
+            NCCLWeightTransferEngine,
+        )
+
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
