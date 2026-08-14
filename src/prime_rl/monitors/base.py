@@ -16,9 +16,6 @@ Subset = Literal["all", "effective"]
 class Monitor(ABC):
     """Base class for monitors."""
 
-    run_id: str | None = None
-    """External identifier of the run this monitor reports to (platform / W&B), when it has one."""
-
     def __init__(self, config: BaseConfig):
         self.config = config
         self.logger = get_logger()

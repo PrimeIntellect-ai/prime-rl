@@ -68,27 +68,24 @@ class PrimeMonitor(Monitor):
         self._loop = asyncio.get_running_loop()
         self._tasks: set[Any] = set()
 
-        self.run = TrainRun(api_key, run_id=os.getenv("RUN_ID"))
-        if self.run.id is None:
-            run_fields: dict[str, Any] = {}
-            if config is not None:
-                run_fields = dict(
-                    base_model=config.model.name,
-                    max_steps=config.max_steps or 0,
-                    batch_size=config.batch_size,
-                    rollouts_per_example=config.group_size,
-                    seq_len=config.seq_len,
-                    environments=[env.env_id for env in config.train.source],
-                    run_config=config.model_dump(exclude_none=True, mode="json"),
-                    wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
-                )
-            self.run.create(name=self.config.name, team_id=self.config.team_id, **run_fields)
-            # A run this process created but never finalized did not exit cleanly;
-            # finalize unregisters the hook. atexit rather than __del__ because it runs
-            # before interpreter teardown, while httpx can still send.
-            atexit.register(self._mark_failed)
-        os.environ["RUN_ID"] = self.run.id
-        self.run_id = self.run.id
+        self.run = TrainRun(api_key)
+        run_fields: dict[str, Any] = {}
+        if config is not None:
+            run_fields = dict(
+                base_model=config.model.name,
+                max_steps=config.max_steps or 0,
+                batch_size=config.batch_size,
+                rollouts_per_example=config.group_size,
+                seq_len=config.seq_len,
+                environments=[env.env_id for env in config.train.source],
+                run_config=config.model_dump(exclude_none=True, mode="json"),
+                wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
+            )
+        self.run.create(name=self.config.name, team_id=self.config.team_id, **run_fields)
+        # A run that was created but never finalized did not exit cleanly; finalize
+        # unregisters the hook. atexit rather than __del__ because it runs before
+        # interpreter teardown, while httpx can still send.
+        atexit.register(self._mark_failed)
 
     def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
         metrics, dropped = sanitize(metrics)
@@ -163,7 +160,7 @@ class PrimeMonitor(Monitor):
 
             rows.append(
                 {
-                    "run_id": self.run_id,
+                    "run_id": self.run.id,
                     "step": step,
                     "tag": "",
                     "problem_id": problem_id,
@@ -202,8 +199,8 @@ class TrainRun:
     the W&B monitor. All calls are synchronous; the client is thread-safe.
     """
 
-    def __init__(self, api_key: str, run_id: str | None = None):
-        self.id = run_id
+    def __init__(self, api_key: str):
+        self.id: str | None = None
         self.logger = get_logger()
         self.client = httpx.Client(
             base_url=BASE_URL,

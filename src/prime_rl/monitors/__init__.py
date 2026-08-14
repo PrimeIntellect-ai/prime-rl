@@ -32,7 +32,6 @@ __all__ = [
     "get",
     "log",
     "finalize",
-    "run_id",
 ]
 
 # All monitors registered for the current run.
@@ -53,8 +52,7 @@ def setup(
 
     Only rank 0 registers monitors — on other ranks the fan-out functions are
     no-ops. A monitor whose ``init`` raises crashes the run: a configured
-    monitor must work. Prime registers first so ``run_id`` prefers the
-    platform run id over W&B's.
+    monitor must work.
     """
     assert not MONITORS, "Monitors already set up. Call `setup` only once per process."
     rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
@@ -88,11 +86,6 @@ def get(monitor_cls: type[Monitor]) -> Monitor | None:
     """The registered monitor of the given type, None when it isn't running
     (not configured, or a non-zero rank)."""
     return next((monitor for monitor in MONITORS if isinstance(monitor, monitor_cls)), None)
-
-
-def run_id() -> str | None:
-    """External run id of this run (platform run id when available, else W&B's)."""
-    return next((monitor.run_id for monitor in MONITORS if monitor.run_id), None)
 
 
 @overload
