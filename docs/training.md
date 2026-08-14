@@ -200,13 +200,11 @@ type = "subprocess"
 [inference]
 
 [deployment]
-num_gpus = 1        # trainer
+num_train_gpus = 1  # trainer
 num_infer_gpus = 1  # inference
 ```
 
 The launcher starts the inference server, one env server per eval source, and an `evaluator` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evaluator watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env.
-
-Eval metrics log exactly like RL evals — `eval/{env}/{all,effective}/...` plus `eval/{env}/policy_version` (the checkpoint step) — into the same W&B run as the trainer, and traces land under `rollouts/step_{n}/eval/`. Online evals require HF weight checkpoints (`[ckpt]` is auto-enabled). Eval-step weight checkpoints follow the usual `ckpt.keep_last` / `ckpt.keep_interval` retention; if cleaning outpaces the evaluator, the deleted steps are skipped with a warning instead of evaluated. Without an `[inference]` block the launcher starts no server and the evaluator connects to `eval.client.base_url`; the server must run with `weight_broadcast.type = "filesystem"`, and if a router fronts it, set `eval.client.admin_base_url` to the engine URLs (admin ops bypass routers). The evaluator also runs standalone against any weights directory: `uv run evaluator @ <config>` (`EvaluatorConfig`).
 
 #### Multi-Node (Decoupled Trainer and Inference Pool)
 
@@ -378,7 +376,7 @@ uv run rl @ rl.toml --wandb \
   --no-trainer.wandb.log-extras.distributions
 ```
 
-prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, W&B mode **auto-creates an `overview` saved view** on the first run into a project — curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first. SFT runs get the same treatment with an SFT-shaped `train` section — loss and perplexity (train + validation) instead of rollout metrics — alongside the same per-env `eval` sections and SFT-specific `stability` / `performance` panels.
+prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, every training run (RL and SFT) gets an **auto-created `overview` saved view** curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first.
 
 ### Platform Monitoring
 

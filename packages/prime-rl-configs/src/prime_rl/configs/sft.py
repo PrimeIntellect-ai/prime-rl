@@ -147,16 +147,16 @@ class BaseDeploymentConfig(BaseConfig):
 class SingleNodeDeploymentConfig(BaseDeploymentConfig):
     type: Literal["single_node"] = "single_node"
 
-    num_gpus: int = 1
-    """GPUs to use for training."""
+    num_train_gpus: int = 1
+    """GPUs allocated to the trainer."""
 
     num_infer_gpus: int = 1
     """GPUs allocated to inference. Only used when an ``[inference]`` block is configured for online evals."""
 
     @model_validator(mode="after")
     def validate_gpu_count(self):
-        if self.num_gpus > self.gpus_per_node:
-            raise ValueError(f"num_gpus ({self.num_gpus}) exceeds gpus_per_node ({self.gpus_per_node}).")
+        if self.num_train_gpus > self.gpus_per_node:
+            raise ValueError(f"num_train_gpus ({self.num_train_gpus}) exceeds gpus_per_node ({self.gpus_per_node}).")
         return self
 
 
@@ -292,7 +292,7 @@ class SFTConfig(BaseConfig):
             return data
         deployment = data.get("deployment")
         if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
-            for key in ("num_gpus", "num_infer_gpus"):
+            for key in ("num_train_gpus", "num_infer_gpus"):
                 deployment.pop(key, None)
         return data
 
@@ -408,10 +408,10 @@ class SFTConfig(BaseConfig):
             )
             return self
 
-        total_gpus = self.deployment.num_gpus + self.deployment.num_infer_gpus
+        total_gpus = self.deployment.num_train_gpus + self.deployment.num_infer_gpus
         if total_gpus > self.deployment.gpus_per_node:
             raise ValueError(
-                f"Total GPU count ({total_gpus} = {self.deployment.num_gpus} train + "
+                f"Total GPU count ({total_gpus} = {self.deployment.num_train_gpus} train + "
                 f"{self.deployment.num_infer_gpus} infer) exceeds gpus_per_node "
                 f"({self.deployment.gpus_per_node})."
             )

@@ -4,7 +4,6 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.orchestrator import EvalConfig
 from prime_rl.configs.shared import (
-    BaseModelConfig,
     ClientConfig,
     FileMonitorConfig,
     LogConfig,
@@ -49,8 +48,11 @@ class EvaluatorConfig(BaseConfig):
     config; it can also be run standalone against any trainer that writes
     ``weights/step_{n}`` HF checkpoints with ``STABLE`` markers."""
 
-    model: BaseModelConfig = BaseModelConfig()
-    """The model being evaluated — the name the inference server serves it under."""
+    model_name: str = "Qwen/Qwen3-0.6B"
+    """Name the inference server serves the model under — the ``model`` field of every
+    eval request and the startup model check. Auto-filled from ``model.name`` by the
+    ``sft`` launcher; the name stays fixed across checkpoint reloads (weights are
+    swapped in place), so per-step results are told apart by ``eval/{env}/policy_version``."""
 
     eval: OnlineEvalConfig
     """Eval sources, sampling, intervals, and the inference client."""

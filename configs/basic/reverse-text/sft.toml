@@ -4,7 +4,7 @@
 max_steps = 100
 
 [deployment]
-num_gpus = 1
+num_train_gpus = 1
 num_infer_gpus = 1
 
 [ckpt] # Checkpoint at the end of training

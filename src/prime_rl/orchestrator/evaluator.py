@@ -70,9 +70,9 @@ class Evaluator:
         self.run_id = self.monitor.run_id or uuid.uuid4().hex
 
         get_logger().info(
-            f"Initializing inference pool (base_url={config.eval.client.base_url}, model={config.model.name})"
+            f"Initializing inference pool (base_url={config.eval.client.base_url}, model={config.model_name})"
         )
-        self.pool = InferencePool(config.eval.client, model_name=config.model.name)
+        self.pool = InferencePool(config.eval.client, model_name=config.model_name)
 
         get_logger().info("Loading eval environment(s)")
         self.eval_envs = EvalEnvs(config.eval.source, config.eval.env_addresses)
@@ -80,7 +80,7 @@ class Evaluator:
         get_logger().success(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
         get_logger().info("Waiting for inference pool to be ready")
-        await self.pool.wait_for_ready(config.model.name)
+        await self.pool.wait_for_ready(config.model_name)
         get_logger().success("Inference pool ready")
 
         self.eval_source = EvalSource(self.eval_envs, config.eval, is_resumed=config.resume_step is not None)

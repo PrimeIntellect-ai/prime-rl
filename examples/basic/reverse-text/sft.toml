@@ -13,9 +13,6 @@ batch_size = 32
 [optim]
 lr = 2e-5
 
-# Online evals: the trainer writes an HF weight checkpoint every `interval` steps,
-# the inference server reloads it from disk, and the evaluator runs the eval envs
-# against it (plus the base model before step 1 and the final checkpoint).
 [eval]
 interval = 25
 num_examples = 32
@@ -38,5 +35,5 @@ type = "subprocess"
 [inference]
 
 [deployment]
-num_gpus = 1
+num_train_gpus = 1
 num_infer_gpus = 1

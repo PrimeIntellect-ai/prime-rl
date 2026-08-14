@@ -12,7 +12,7 @@ from threading import Event, Thread
 from prime_rl.configs.evaluator import EvaluatorConfig
 from prime_rl.configs.orchestrator import EvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
-from prime_rl.configs.shared import BaseModelConfig, LogConfig
+from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
@@ -84,7 +84,7 @@ def build_evaluator_config(config: SFTConfig) -> EvaluatorConfig:
     """Derive the evaluator subconfig from the resolved SFT config."""
     assert config.eval is not None
     return EvaluatorConfig(
-        model=BaseModelConfig(name=config.model.name),
+        model_name=config.model.name,
         eval=config.eval,
         weights_dir=get_weights_dir(get_ckpt_base(config)),
         output_dir=config.run_dir,
@@ -351,7 +351,7 @@ def sft_local(config: SFTConfig):
     trainer_gpu_ids: list[int] = []
     if config.inference is not None:
         num_infer_gpus = config.deployment.num_infer_gpus
-        total_requested_gpus = num_infer_gpus + config.deployment.num_gpus
+        total_requested_gpus = num_infer_gpus + config.deployment.num_train_gpus
         physical_gpu_ids = get_physical_gpu_ids()
         if total_requested_gpus > len(physical_gpu_ids):
             raise ValueError(
@@ -459,14 +459,14 @@ def sft_local(config: SFTConfig):
             f"--local-ranks-filter={','.join(map(str, config.log.ranks_filter))}",
             "--redirect=3",
             "--tee=3",
-            f"--nproc-per-node={config.deployment.num_gpus}",
+            f"--nproc-per-node={config.deployment.num_train_gpus}",
             "-m",
             "prime_rl.trainer.sft.train",
             "@",
             config_path.as_posix(),
         ]
         gpus_suffix = f" on GPU(s) {' '.join(map(str, trainer_gpu_ids))}" if trainer_gpu_ids else ""
-        logger.info(f"Starting SFT trainer with {config.deployment.num_gpus} GPU(s){gpus_suffix}")
+        logger.info(f"Starting SFT trainer with {config.deployment.num_train_gpus} GPU(s){gpus_suffix}")
         trainer_env = {
             **os.environ,
             **DEFAULT_COMMON_ENV_VARS,
