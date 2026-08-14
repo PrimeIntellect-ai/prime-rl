@@ -56,7 +56,8 @@ class Monitor(ABC):
     Construction takes only the monitor's config and must be side-effect free —
     runtime context is passed to ``init``, which creates the external resources
     (run registration, connections, file handles) and is called once per monitor
-    by ``monitors.setup``. An ``init`` that raises disables the monitor.
+    by ``monitors.setup``. An ``init`` that raises crashes the run — a
+    configured monitor must work.
     """
 
     run_id: str | None = None

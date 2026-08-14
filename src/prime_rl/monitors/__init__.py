@@ -52,8 +52,9 @@ def setup(
     """Construct, initialize, and register one monitor per non-None config.
 
     Only rank 0 registers monitors — on other ranks the fan-out functions are
-    no-ops. A monitor whose ``init`` raises is disabled with a warning. Prime
-    registers first so ``run_id`` prefers the platform run id over W&B's.
+    no-ops. A monitor whose ``init`` raises crashes the run: a configured
+    monitor must work. Prime registers first so ``run_id`` prefers the
+    platform run id over W&B's.
     """
     assert not _monitors, "Monitors already set up. Call `setup` only once per process."
     rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
@@ -79,17 +80,13 @@ def setup(
         monitors.append((FileMonitor(file), dict(output_dir=output_dir)))
 
     for monitor, init_kwargs in monitors:
-        try:
-            monitor.init(**init_kwargs)
-        except Exception as e:
-            get_logger().warning(f"Failed to initialize {monitor.__class__.__name__} - disabling it ({e})")
-            continue
+        monitor.init(**init_kwargs)
         _monitors.append(monitor)
 
 
 def get(monitor_cls: type[Monitor]) -> Monitor | None:
     """The registered monitor of the given type, None when it isn't running
-    (not configured, non-zero rank, or disabled by a failed ``init``)."""
+    (not configured, or a non-zero rank)."""
     return next((monitor for monitor in _monitors if isinstance(monitor, monitor_cls)), None)
 
 
