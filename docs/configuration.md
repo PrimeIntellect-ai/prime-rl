@@ -61,7 +61,7 @@ CLI flags mirror the TOML tree using dots:
 
 ```bash
 uv run rl --help                                       # full schema
-uv run rl @ rl.toml --dry-run --output-dir /tmp/check --run.name check  # write resolved configs
+uv run rl @ rl.toml --dry-run --output-dir /tmp --run.name check  # write resolved configs to /tmp/check/configs
 ```
 
 ## Syntax
