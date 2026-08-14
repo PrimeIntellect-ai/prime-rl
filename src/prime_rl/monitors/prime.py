@@ -64,8 +64,6 @@ class PrimeMonitor(Monitor):
         api_key = os.getenv(API_KEY_VAR) or PrimeConfig().api_key
         if not api_key:
             raise RuntimeError(f"API key not found - set {API_KEY_VAR} or run `prime login`")
-        self._tasks: set[asyncio.Task] = set()
-
         self.run = TrainRun(api_key)
         run_fields: dict[str, Any] = {}
         if config is not None:
@@ -85,7 +83,7 @@ class PrimeMonitor(Monitor):
         metrics, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
-        self._submit("metrics upload", self.run.log_metrics(metrics))
+        self.run.submit("metrics upload", self.run.log_metrics(metrics))
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         """Upload one platform sample per episode via the presigned-URL Parquet flow.
@@ -96,87 +94,14 @@ class PrimeMonitor(Monitor):
         async def upload() -> None:
             # Serialization dumps every episode's full model - heavy pure-Python work
             # that would stall the event loop (and with it dispatch) if run inline.
-            parquet_bytes = await asyncio.to_thread(self._episodes_to_parquet_bytes, episodes, step)
+            parquet_bytes = await asyncio.to_thread(episodes_to_parquet_bytes, episodes, self.run.id, step)
             if parquet_bytes is not None:
                 await self.run.upload_samples(parquet_bytes, step)
 
-        self._submit(f"episodes upload at step {step}", upload())
+        self.run.submit(f"episodes upload at step {step}", upload())
 
     async def finalize(self) -> None:
         await self.run.finalize()
-
-    def _submit(self, what: str, request: Coroutine[Any, Any, None]) -> None:
-        """Run a request as a fire-and-forget task; a failure only warns. The task set
-        keeps strong references - the loop alone won't."""
-
-        async def guarded() -> None:
-            try:
-                await request
-            except Exception as e:
-                self.logger.warning(f"Failed {what} to Prime Intellect API: {type(e).__name__}: {e}")
-
-        task = asyncio.get_running_loop().create_task(guarded())
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    def _episodes_to_parquet_bytes(self, episodes: list[vf.Episode], step: int) -> bytes | None:
-        """One row per episode. Sample construction is shared with verifiers' eval
-        ``--push`` (``build_samples``: complete native episode in ``info.native_wrapper``,
-        flat summary from one trainable trace), so a training episode and an eval sample
-        land on the platform identically; the RFT-only columns (run/step/advantage/
-        problem_id/env_name) are layered on here."""
-        advantages: dict[str, float | None] = {}
-        env_names: dict[str, str] = {}
-        for episode in episodes:
-            summary_trace = next((trace for trace in episode.traces if trace.agent.trainable), episode.traces[0])
-            advantages[episode.id] = summary_trace.scalar_advantage()
-            env_names[episode.id] = episode.env.id
-
-        now = datetime.now(timezone.utc)
-        rows = []
-        for sample_id, sample in enumerate(build_samples(episodes)):
-            trajectory = sample["trajectory"]
-            if not trajectory:  # no branches (e.g. an episode that errored before any message)
-                continue
-            advantage = advantages.get(sample["episode_id"])
-            trajectory = [{**branch, "advantage": advantage} for branch in trajectory]
-
-            try:
-                problem_id = int(sample["example_id"]) if sample["example_id"] is not None else sample_id
-            except (TypeError, ValueError):
-                problem_id = sample_id
-
-            rows.append(
-                {
-                    "run_id": self.run.id,
-                    "step": step,
-                    "tag": "",
-                    "problem_id": problem_id,
-                    "sample_id": sample_id,
-                    "prompt": "",
-                    "completion": json.dumps(sample["completion"]),
-                    "trajectory": json.dumps(trajectory),
-                    "answer": "",
-                    "env_name": env_names.get(sample["episode_id"], ""),
-                    "task": json.dumps(sample["task"]),
-                    "info": json.dumps(sample["info"]),
-                    "reward": sample["reward"],
-                    "advantage": advantage,
-                    "metrics": json.dumps(sample["metrics"]),
-                    "timing": json.dumps(sample["timing"]),
-                    "num_input_tokens": trajectory[-1]["num_input_tokens"],
-                    "num_output_tokens": trajectory[-1]["num_output_tokens"],
-                    "created_at": now,
-                }
-            )
-
-        if not rows:
-            return None
-
-        table = pa.Table.from_pylist(rows, schema=SAMPLE_SCHEMA)
-        buf = io.BytesIO()
-        pq.write_table(table, buf, compression="snappy", use_dictionary=True, write_statistics=True)
-        return buf.getvalue()
 
 
 class TrainRun:
@@ -193,6 +118,7 @@ class TrainRun:
     def __init__(self, api_key: str):
         self.id: str | None = None
         self.logger = get_logger()
+        self._tasks: set[asyncio.Task] = set()
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "x-api-key": api_key,
@@ -204,6 +130,20 @@ class TrainRun:
             timeout=30,
             transport=httpx.AsyncHTTPTransport(retries=3),
         )
+
+    def submit(self, what: str, request: Coroutine[Any, Any, None]) -> None:
+        """Run a request as a fire-and-forget task; a failure only warns. The task set
+        keeps strong references - the loop alone won't."""
+
+        async def guarded() -> None:
+            try:
+                await request
+            except Exception as e:
+                self.logger.warning(f"Failed {what}: {type(e).__name__}: {e}")
+
+        task = asyncio.get_running_loop().create_task(guarded())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def create(
         self,
@@ -310,3 +250,63 @@ class TrainRun:
             put.raise_for_status()
         except httpx.HTTPError as e:
             self.logger.warning(f"Failed to mark platform run {self.id} as {status}: {e}")
+
+
+def episodes_to_parquet_bytes(episodes: list[vf.Episode], run_id: str | None, step: int) -> bytes | None:
+    """One row per episode. Sample construction is shared with verifiers' eval
+    ``--push`` (``build_samples``: complete native episode in ``info.native_wrapper``,
+    flat summary from one trainable trace), so a training episode and an eval sample
+    land on the platform identically; the RFT-only columns (run/step/advantage/
+    problem_id/env_name) are layered on here."""
+    advantages: dict[str, float | None] = {}
+    env_names: dict[str, str] = {}
+    for episode in episodes:
+        summary_trace = next((trace for trace in episode.traces if trace.agent.trainable), episode.traces[0])
+        advantages[episode.id] = summary_trace.scalar_advantage()
+        env_names[episode.id] = episode.env.id
+
+    now = datetime.now(timezone.utc)
+    rows = []
+    for sample_id, sample in enumerate(build_samples(episodes)):
+        trajectory = sample["trajectory"]
+        if not trajectory:  # no branches (e.g. an episode that errored before any message)
+            continue
+        advantage = advantages.get(sample["episode_id"])
+        trajectory = [{**branch, "advantage": advantage} for branch in trajectory]
+
+        try:
+            problem_id = int(sample["example_id"]) if sample["example_id"] is not None else sample_id
+        except (TypeError, ValueError):
+            problem_id = sample_id
+
+        rows.append(
+            {
+                "run_id": run_id,
+                "step": step,
+                "tag": "",
+                "problem_id": problem_id,
+                "sample_id": sample_id,
+                "prompt": "",
+                "completion": json.dumps(sample["completion"]),
+                "trajectory": json.dumps(trajectory),
+                "answer": "",
+                "env_name": env_names.get(sample["episode_id"], ""),
+                "task": json.dumps(sample["task"]),
+                "info": json.dumps(sample["info"]),
+                "reward": sample["reward"],
+                "advantage": advantage,
+                "metrics": json.dumps(sample["metrics"]),
+                "timing": json.dumps(sample["timing"]),
+                "num_input_tokens": trajectory[-1]["num_input_tokens"],
+                "num_output_tokens": trajectory[-1]["num_output_tokens"],
+                "created_at": now,
+            }
+        )
+
+    if not rows:
+        return None
+
+    table = pa.Table.from_pylist(rows, schema=SAMPLE_SCHEMA)
+    buf = io.BytesIO()
+    pq.write_table(table, buf, compression="snappy", use_dictionary=True, write_statistics=True)
+    return buf.getvalue()
