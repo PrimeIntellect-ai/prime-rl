@@ -55,7 +55,7 @@ class ActivationOffloadingConfig(BaseConfig):
     """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
 
 
-class OptimizerOffloadingConfig(BaseConfig):
+class FullOptimizerOffloadingConfig(BaseConfig):
     """Full CPU optimizer offload: FP32 masters, moments, and accumulated gradients live in
     CPU RAM, each optimizer chunk runs on CPU as soon as its last gradient arrives, and the
     refreshed BF16 weights stream back while backward is still executing.
@@ -83,7 +83,7 @@ class OptimizerOffloadingConfig(BaseConfig):
     """Pin each rank's CPUs to its GPU's NUMA node so offloaded optimizer state and OMP threads stay memory-local. The CPU pipeline is DRAM-bandwidth-bound on multi-socket hosts; binding avoids cross-socket traffic. No-op on single-socket hosts."""
 
 
-def _normalize_optimizer_offloading(value: Any) -> Any:
+def _normalize_full_optimizer_offloading(value: Any) -> Any:
     if value is True:
         return {}
     if value is False:
@@ -91,7 +91,9 @@ def _normalize_optimizer_offloading(value: Any) -> Any:
     return value
 
 
-OptimizerOffloading = Annotated[OptimizerOffloadingConfig | None, BeforeValidator(_normalize_optimizer_offloading)]
+FullOptimizerOffloading = Annotated[
+    FullOptimizerOffloadingConfig | None, BeforeValidator(_normalize_full_optimizer_offloading)
+]
 
 
 class CompileConfig(BaseConfig):
@@ -204,8 +206,11 @@ class ModelConfig(BaseModelConfig):
     fsdp_cpu_offload: bool = False
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
-    optim_cpu_offload: OptimizerOffloading = None
-    """Full CPU optimizer offload: FP32 masters, moments, and gradients live in CPU RAM and the optimizer runs on CPU, overlapped with backward. Enable with ``true`` or an ``[model.optim_cpu_offload]`` section; disabled by default (optimizer state stays on GPU)."""
+    optim_cpu_offload: bool = True
+    """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
+
+    full_optim_cpu_offload: FullOptimizerOffloading = None
+    """Full CPU optimizer offload: FP32 masters, moments, and gradients live in CPU RAM and the optimizer runs on CPU, overlapped with backward. Enable with ``true`` or a ``[model.full_optim_cpu_offload]`` section; disabled by default."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
@@ -309,8 +314,13 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def cpu_offload_mutual_exclusion(self):
-        if self.fsdp_cpu_offload and self.optim_cpu_offload:
-            raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
+        if self.fsdp_cpu_offload and (self.optim_cpu_offload or self.full_optim_cpu_offload):
+            raise ValueError("Cannot combine fsdp_cpu_offload with optimizer CPU offloading.")
+        if self.optim_cpu_offload and self.full_optim_cpu_offload:
+            raise ValueError(
+                "Cannot enable both optim_cpu_offload and full_optim_cpu_offload. "
+                "Set optim_cpu_offload=false when enabling full optimizer offload."
+            )
         return self
 
     @model_validator(mode="after")
@@ -675,8 +685,8 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def optimizer_offload_disables_grad_clipping(self):
-        if self.model.optim_cpu_offload and self.optim.max_norm is not None:
+    def full_optimizer_offload_disables_grad_clipping(self):
+        if self.model.full_optim_cpu_offload and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping prevents optimizer-in-backward overlap with CPU optimizer offload. "
                 "Automatically setting optim.max_norm to None (disabled).",

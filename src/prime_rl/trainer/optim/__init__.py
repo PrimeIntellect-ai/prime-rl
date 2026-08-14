@@ -2,12 +2,13 @@ from dion import Muon
 from torch import nn
 from torch.optim import SGD, AdamW, Optimizer
 
-from prime_rl.configs.trainer import OptimizerConfig, OptimizerOffloadingConfig
+from prime_rl.configs.trainer import FullOptimizerOffloadingConfig, OptimizerConfig
 from prime_rl.trainer.optim.offload import (
-    CPUOffloadOptimizer,
+    FullCPUOffloadOptimizer,
     GradientOffloadManager,
     _create_cpu_master_weights,
 )
+from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
@@ -17,42 +18,49 @@ def setup_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
-    offload_config: OptimizerOffloadingConfig | None = None,
+    cpu_offload: bool = False,
+    full_offload_config: FullOptimizerOffloadingConfig | None = None,
     model: nn.Module | None = None,
-) -> tuple[Optimizer | CPUOffloadOptimizer, GradientOffloadManager | None]:
-    if offload_config is not None and config.type == "muon":
+) -> tuple[Optimizer | CPUOffloadOptimizer | FullCPUOffloadOptimizer, GradientOffloadManager | None]:
+    if cpu_offload and full_offload_config is not None:
+        raise ValueError("State-only and full optimizer CPU offload cannot both be enabled")
+    if full_offload_config is not None and config.type == "muon":
         raise ValueError("CPU optimizer offload does not support Muon because the optimizer step runs on CPU")
-    if offload_config is not None and config.max_norm is not None:
+    if full_offload_config is not None and config.max_norm is not None:
         get_logger().warning("Disabling gradient clipping because CPU optimizer offload updates during backward")
         config.max_norm = None
     optimizer_named_params = named_params
     master_weights = None
-    if offload_config is not None:
+    if full_offload_config is not None:
         if model is None:
             raise ValueError("CPU optimizer offload requires the model")
         optimizer_named_params, master_weights = _create_cpu_master_weights(
             model,
             named_params,
-            pin_memory=not (config.type == "adamw" and offload_config.cpu_optimizer_backend == "native"),
+            pin_memory=not (config.type == "adamw" and full_offload_config.cpu_optimizer_backend == "native"),
         )
 
     optimizer = _create_optimizer(
         config,
         optimizer_named_params,
         parallel_dims,
-        fused_adamw=offload_config is not None and config.type == "adamw",
+        fused_adamw=full_offload_config is not None and config.type == "adamw",
     )
 
-    if offload_config is not None:
+    if full_offload_config is not None:
         assert master_weights is not None
         get_logger().info("Using CPU offload for gradients and the optimizer step")
-        optimizer = CPUOffloadOptimizer(
+        optimizer = FullCPUOffloadOptimizer(
             optimizer,
-            offload_config=offload_config,
+            offload_config=full_offload_config,
             master_weights=master_weights,
             dp_replicate=parallel_dims.dp_replicate,
         )
         return optimizer, optimizer._gradient_manager
+
+    if cpu_offload:
+        get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
+        return CPUOffloadOptimizer(optimizer), None
 
     return optimizer, None
 

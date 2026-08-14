@@ -24,7 +24,11 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 - Validation aliases let renamed fields keep working; legacy keys can be remapped in a `model_validator(mode="before")`.
 - Auto-generated `--help` panels from `Field(description=...)` or PEP 224 docstrings.
 - Friendly errors: required-field boxes, validator errors point at the offending flag, unknown flags get a "did you mean" hint.
-- CPU optimizer offload (disabled by default) uses `model.optim_cpu_offload = true`.
+- State-only optimizer offload remains enabled by default with
+  `model.optim_cpu_offload = true`. It moves optimizer state to CPU between
+  steps while keeping model weights and gradients on GPU.
+- Full CPU optimizer offload is disabled by default. Enable it with
+  `model.optim_cpu_offload = false` and `model.full_optim_cpu_offload = true`.
   It keeps a persistent BF16 compute model on GPU, stores FP32 master weights,
   moments, and accumulated gradients in pageable CPU RAM, and moves BF16 values
   through bounded pinned D2H/H2D rings. Pinned allocation therefore depends on
@@ -48,7 +52,7 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
   (default true) pins each rank to its GPU's NUMA node. It does not create a
   Gloo process group. Set `cpu_optimizer_backend = "torch"` inside the offload
   table to use fused PyTorch AdamW for debugging or parity checks.
-- Any `optim_cpu_offload` mode raises the trainer's intra-op thread count at
+- Enabling `full_optim_cpu_offload` raises the trainer's intra-op thread count at
   startup. Launchers export `OMP_NUM_THREADS=1`, which would otherwise leave the
   bandwidth-bound CPU AdamW kernels on a single core. Each rank claims
   `cpu_count / local_world_size` threads, capped by its affinity mask, so the

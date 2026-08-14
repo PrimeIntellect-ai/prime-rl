@@ -14,7 +14,7 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 from torch.optim import AdamW, Optimizer
 
-from prime_rl.configs.trainer import OptimizerOffloadingConfig
+from prime_rl.configs.trainer import FullOptimizerOffloadingConfig
 from prime_rl.trainer.optim.cpu_adam import adamw_step as native_cpu_adamw_step
 from prime_rl.trainer.optim.cpu_adam import add_bfloat16_ as native_add_bfloat16_
 from prime_rl.trainer.optim.cpu_adam import copy_or_add_bfloat16_multi_ as native_copy_or_add_bfloat16_multi_
@@ -991,7 +991,7 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
         self._closed = True
 
 
-class CPUOffloadOptimizer:
+class FullCPUOffloadOptimizer:
     """Runs the optimizer on CPU-resident FP32 masters, overlapped with backward.
 
     The GPU keeps a persistent BF16 compute model; FP32 masters, moments, and
@@ -1006,7 +1006,7 @@ class CPUOffloadOptimizer:
     def __init__(
         self,
         optimizer: Optimizer,
-        offload_config: OptimizerOffloadingConfig,
+        offload_config: FullOptimizerOffloadingConfig,
         master_weights: dict[int, _MasterWeight],
         dp_replicate: int = 1,
     ):

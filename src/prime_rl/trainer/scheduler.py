@@ -4,12 +4,12 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
 
 from prime_rl.configs.trainer import SchedulerConfig
-from prime_rl.trainer.optim import CPUOffloadOptimizer
+from prime_rl.trainer.optim import CPUOffloadOptimizer, FullCPUOffloadOptimizer
 
 
-def _get_base_optimizer(optimizer: Optimizer | CPUOffloadOptimizer) -> Optimizer:
+def _get_base_optimizer(optimizer: Optimizer | CPUOffloadOptimizer | FullCPUOffloadOptimizer) -> Optimizer:
     """Extract the base optimizer from a potentially wrapped optimizer."""
-    if isinstance(optimizer, CPUOffloadOptimizer):
+    if isinstance(optimizer, (CPUOffloadOptimizer, FullCPUOffloadOptimizer)):
         return optimizer.optimizer
     return optimizer
 
@@ -85,7 +85,7 @@ def setup_cosine_scheduler(
 
 
 def setup_scheduler(
-    optimizer: Optimizer | CPUOffloadOptimizer,
+    optimizer: Optimizer | CPUOffloadOptimizer | FullCPUOffloadOptimizer,
     scheduler_config: SchedulerConfig,
     max_steps: int | None,
     lr: float,

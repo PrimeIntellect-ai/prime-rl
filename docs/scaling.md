@@ -86,7 +86,8 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 | `trainer.model.dp_replicate` | Number of dimensions to **replicate** instead of shard. Set to 2 to run 2-way DP replication × FSDP sharding within each replica — useful for very large clusters where pure FSDP communication dominates. |
 | `trainer.model.reshard_after_forward` | If `true` (default), parameters are resharded after the forward pass to free memory; the backward pass re-gathers. Set `false` to keep params resident — faster but more memory. |
 | `trainer.model.fsdp_cpu_offload` | Offload params + grads + optimizer state to CPU. Big memory win, large throughput hit. |
-| `trainer.model.optim_cpu_offload` | Run the full optimizer on CPU to reduce GPU memory. Disabled by default. |
+| `trainer.model.optim_cpu_offload` | Offload optimizer state to CPU between steps. Enabled by default. |
+| `trainer.model.full_optim_cpu_offload` | Offload gradients, FP32 masters, and optimizer state and run AdamW on CPU during backward. Disabled by default. |
 
 ### Expert Parallelism
 
@@ -137,7 +138,7 @@ targets = ["norm", "attn_proj"]  # see Reference for the full list per architect
 
 ### Optimizer Offloading
 
-Enable with `model.optim_cpu_offload = true`. Full offload keeps BF16 compute weights on GPU, stores FP32 masters, Adam state, and gradients on CPU, and runs native AdamW chunks as gradients become ready during backward. It is mutually exclusive with FSDP CPU offload, disables gradient clipping, and does not support Muon.
+State-only optimizer offload remains enabled by default with `model.optim_cpu_offload = true`. For full offload, set `model.optim_cpu_offload = false` and `model.full_optim_cpu_offload = true`; this keeps BF16 compute weights on GPU and runs CPU AdamW chunks as gradients become ready during backward. Full offload disables gradient clipping and does not support Muon.
 
 ### LM Head Chunking
 

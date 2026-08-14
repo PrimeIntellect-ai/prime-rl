@@ -25,7 +25,7 @@ from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
 from prime_rl.trainer.lora import get_lora_state, has_lora_layers, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
-from prime_rl.trainer.optim import CPUOffloadOptimizer
+from prime_rl.trainer.optim import CPUOffloadOptimizer, FullCPUOffloadOptimizer
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
     save_state_dict,
@@ -73,12 +73,25 @@ class AppState(Stateful):
 
     def _get_checkpoint_optimizers(self) -> list[Optimizer]:
         """Expose optimizers keyed by their model parameters for DCP."""
-        return [opt.checkpoint_optimizer() if isinstance(opt, CPUOffloadOptimizer) else opt for opt in self.optimizers]
+        checkpoint_optimizers = []
+        for optimizer in self.optimizers:
+            if isinstance(optimizer, FullCPUOffloadOptimizer):
+                checkpoint_optimizers.append(optimizer.checkpoint_optimizer())
+            elif isinstance(optimizer, CPUOffloadOptimizer):
+                checkpoint_optimizers.append(optimizer.base_optimizer)
+            else:
+                checkpoint_optimizers.append(optimizer)
+        return checkpoint_optimizers
 
     def _has_cpu_offload(self) -> bool:
-        return any(isinstance(opt, CPUOffloadOptimizer) for opt in self.optimizers)
+        return any(isinstance(opt, (CPUOffloadOptimizer, FullCPUOffloadOptimizer)) for opt in self.optimizers)
 
     def state_dict(self) -> dict[str, Any]:
+        for optimizer in self.optimizers:
+            if isinstance(optimizer, CPUOffloadOptimizer) and optimizer._initialized:
+                optimizer._move_states("cuda")
+                torch.cuda.synchronize()
+
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
         checkpoint_optimizers = self._get_checkpoint_optimizers()
         model_state_dict, optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
@@ -92,6 +105,10 @@ class AppState(Stateful):
         if self.progress is not None:
             progress_state_dict = asdict(self.progress)
             state_dict["progress"] = progress_state_dict
+
+        for optimizer in self.optimizers:
+            if isinstance(optimizer, CPUOffloadOptimizer):
+                optimizer._move_states("cpu")
 
         if self._has_cpu_offload():
             torch.cuda.synchronize()
@@ -117,9 +134,11 @@ class AppState(Stateful):
             # apply the model side here and flip the wrappers to initialized so
             # subsequent steps take the steady-state path.
             set_model_state_dict(self.model, model_state_dict=state_dict["model"])
-            for opt in self.optimizers:
-                if isinstance(opt, CPUOffloadOptimizer):
-                    opt.finish_checkpoint_load()
+            for optimizer in self.optimizers:
+                if isinstance(optimizer, FullCPUOffloadOptimizer):
+                    optimizer.finish_checkpoint_load()
+                elif isinstance(optimizer, CPUOffloadOptimizer):
+                    optimizer._initialized = True
         else:
             set_state_dict(
                 self.model,

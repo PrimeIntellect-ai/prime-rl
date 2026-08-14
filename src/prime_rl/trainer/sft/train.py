@@ -47,7 +47,7 @@ from prime_rl.trainer.utils import (
     prepare_gradient_offload,
     print_sample,
     scale_gradients_,
-    setup_cpu_optimizer_offload,
+    setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
@@ -83,7 +83,7 @@ def train(config: SFTConfig):
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
     )
-    setup_cpu_optimizer_offload(config.model.optim_cpu_offload)
+    setup_full_cpu_optimizer_offload(config.model.full_optim_cpu_offload)
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -179,7 +179,8 @@ def train(config: SFTConfig):
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
-        offload_config=config.model.optim_cpu_offload,
+        cpu_offload=config.model.optim_cpu_offload,
+        full_offload_config=config.model.full_optim_cpu_offload,
         model=model,
     )
 

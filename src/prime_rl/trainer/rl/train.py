@@ -56,7 +56,7 @@ from prime_rl.trainer.utils import (
     get_ckpt_disk_metrics,
     prepare_gradient_offload,
     scale_gradients_,
-    setup_cpu_optimizer_offload,
+    setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
@@ -110,7 +110,7 @@ def train(config: TrainerConfig):
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
     )
-    setup_cpu_optimizer_offload(config.model.optim_cpu_offload)
+    setup_full_cpu_optimizer_offload(config.model.full_optim_cpu_offload)
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -155,26 +155,15 @@ def train(config: TrainerConfig):
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
 
-    if config.max_concurrent_runs == 1:
-        optimizer, gradient_manager = setup_optimizer(
-            config.optim,
-            list(model.named_parameters()),
-            parallel_dims,
-            lora=config.model.lora is not None,
-            offload_config=config.model.optim_cpu_offload,
-            model=model,
-        )
-        scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
-    else:
-        optimizer = setup_multi_optimizer(config.optim, parallel_dims)
-        gradient_manager = None
-        scheduler = setup_multi_scheduler(optimizer, config.scheduler, config.max_steps)
-
-        # Register checkpoint loading callback at index 1 (after scheduler creation at index 0)
-        def load_run_checkpoint(_optimizer, idx: int) -> None:
-            ckpt_manager.load_run(idx, optimizer, scheduler)
-
-        optimizer.register_post_creation_callback(load_run_checkpoint, index=1)
+    optimizer, gradient_manager = setup_optimizer(
+        config.optim,
+        list(model.named_parameters()),
+        parallel_dims,
+        cpu_offload=config.model.optim_cpu_offload,
+        full_offload_config=config.model.full_optim_cpu_offload,
+        model=model,
+    )
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
 
     logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
 
