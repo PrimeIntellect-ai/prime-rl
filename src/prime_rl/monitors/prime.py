@@ -110,9 +110,9 @@ class TrainRun:
     Owns the HTTP client and the run lifecycle (create, log, finalize) — the
     natural seam to be subsumed by the train SDK, and it mirrors ``wandb.Run``'s
     exit behavior: a created run that is never finalized is marked failed at
-    process exit via an atexit hook that ``finalize`` disarms. Fully async;
-    ``set_status`` opens its own client so the atexit path can run it via
-    ``asyncio.run`` after the run's loop is gone.
+    process exit via an atexit hook that ``finalize`` disarms. Fully async,
+    except the atexit hook itself — at interpreter shutdown there is no event
+    loop, so it sends one synchronous request.
     """
 
     def __init__(self, api_key: str):
