@@ -1,0 +1,20 @@
+max_steps = 5
+
+[model]
+name = "samsja/mini-glm-moe"
+impl = "custom"
+compile = "None"
+# Pinned so that variants that don't test EP are not silently given it by `ep = "auto"`.
+ep = 1
+
+[optim]
+# Large enough that the loss moves per step, so a broken gradient reduction shows up.
+lr = 1e-4
+
+[data]
+type = "fake"
+input_ids = "random"
+batch_size = 4
+seq_len = 512
+
+[file_monitor]
