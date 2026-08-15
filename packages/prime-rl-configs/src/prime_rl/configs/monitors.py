@@ -11,7 +11,7 @@ class WandbMonitorConfig(BaseConfig):
     """W&B entity to log to."""
 
     name: str | None = None
-    """W&B run name."""
+    """W&B run name. Inherits ``run.name`` when unset."""
 
     group: str | None = None
     """W&B group."""
@@ -30,7 +30,7 @@ class FileMonitorConfig(BaseConfig):
 
 class PrimeMonitorConfig(BaseConfig):
     name: str | None = None
-    """Run name shown on the platform. Defaults to the W&B run name when set, otherwise the platform auto-generates one."""
+    """Run name shown on the platform. Inherits ``run.name`` when unset."""
 
 
 class MonitorsConfig(BaseConfig):

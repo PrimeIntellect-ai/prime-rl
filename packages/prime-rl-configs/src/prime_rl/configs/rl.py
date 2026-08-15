@@ -70,7 +70,7 @@ class SharedWandbConfig(BaseConfig):
     """W&B entity."""
 
     name: str | None = None
-    """W&B run name."""
+    """W&B run name. Inherits ``run.name`` when unset."""
 
     group: str | None = None
     """W&B group."""
