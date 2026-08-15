@@ -442,6 +442,26 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
         logger.info(f"Running {num_routers} MoE router gates in fp32")
 
 
+def get_full_offload_dtype_policy(
+    model: nn.Module,
+    config: ModelConfig,
+) -> dict[int, tuple[torch.dtype, torch.dtype]]:
+    """Return persistent parameter and reduced-gradient dtypes for full offload."""
+    # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
+    policy = {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
+    if config.moe_router_dtype != "float32":
+        return policy
+
+    language_model = get_language_model(model)
+    for layer in language_model.layers:
+        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
+        if isinstance(mlp, (MoE, LatentMoE)):
+            for param in mlp.router.parameters():
+                if param.is_floating_point():
+                    policy[id(param)] = (torch.float32, torch.float32)
+    return policy
+
+
 def freeze_sparse_indexer(model: nn.Module) -> None:
     """Freeze DSA sparse-attention indexer parameters.
 

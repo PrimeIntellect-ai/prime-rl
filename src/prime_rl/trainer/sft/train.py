@@ -27,6 +27,7 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
+    get_full_offload_dtype_policy,
     get_load_balance_stats,
     is_tt_moe_model,
     setup_processor,
@@ -183,6 +184,9 @@ def train(config: SFTConfig):
         cpu_offload=config.model.optim_cpu_offload,
         full_offload_config=config.model.full_offload,
         model=model,
+        full_offload_dtype_policy=(
+            get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
+        ),
     )
 
     # Set up the learning rate scheduler

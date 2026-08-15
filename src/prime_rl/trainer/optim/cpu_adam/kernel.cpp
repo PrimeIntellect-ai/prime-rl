@@ -12,10 +12,11 @@ namespace {
 struct TensorSpan {
   float* param;
   const void* grad;
-  at::BFloat16* compute_param;
+  void* compute_param;
   float* exp_avg;
   float* exp_avg_sq;
   bool grad_bfloat16;
+  bool compute_param_bfloat16;
   int64_t begin;
   int64_t end;
   float step_size;
@@ -140,7 +141,14 @@ void adamw_span(
   const float* float_grad = span.grad_bfloat16 ? nullptr : static_cast<const float*>(span.grad) + begin;
   const at::BFloat16* bfloat16_grad =
       span.grad_bfloat16 ? static_cast<const at::BFloat16*>(span.grad) + begin : nullptr;
-  at::BFloat16* compute_param = span.compute_param == nullptr ? nullptr : span.compute_param + begin;
+  at::BFloat16* bfloat16_compute_param =
+      span.compute_param != nullptr && span.compute_param_bfloat16
+      ? static_cast<at::BFloat16*>(span.compute_param) + begin
+      : nullptr;
+  float* float_compute_param =
+      span.compute_param != nullptr && !span.compute_param_bfloat16
+      ? static_cast<float*>(span.compute_param) + begin
+      : nullptr;
   float* exp_avg = span.exp_avg + begin;
   float* exp_avg_sq = span.exp_avg_sq + begin;
   const int64_t size = end - begin;
@@ -186,8 +194,11 @@ void adamw_span(
     }
     const Vec param0 = update(i, grad0);
     const Vec param1 = update(i + Vec::size(), grad1);
-    if (compute_param != nullptr) {
-      at::vec::convert_from_float<at::BFloat16>(param0, param1).store(compute_param + i);
+    if (bfloat16_compute_param != nullptr) {
+      at::vec::convert_from_float<at::BFloat16>(param0, param1).store(bfloat16_compute_param + i);
+    } else if (float_compute_param != nullptr) {
+      param0.store(float_compute_param + i);
+      param1.store(float_compute_param + i + Vec::size());
     }
   }
 
@@ -204,8 +215,10 @@ void adamw_span(
     param[i] = param_value;
     exp_avg[i] = exp_avg_value;
     exp_avg_sq[i] = exp_avg_sq_value;
-    if (compute_param != nullptr) {
-      compute_param[i] = at::BFloat16(param_value);
+    if (bfloat16_compute_param != nullptr) {
+      bfloat16_compute_param[i] = at::BFloat16(param_value);
+    } else if (float_compute_param != nullptr) {
+      float_compute_param[i] = param_value;
     }
   }
 }
@@ -250,7 +263,10 @@ void adamw_step(
     TORCH_CHECK(state_steps[i].numel() == 1, "state_step must contain one value");
     if (!compute_params.empty()) {
       TORCH_CHECK(compute_params[i].device().is_cpu(), "compute_param must be on CPU");
-      TORCH_CHECK(compute_params[i].scalar_type() == torch::kBFloat16, "compute_param must be bfloat16");
+      TORCH_CHECK(
+          compute_params[i].scalar_type() == torch::kBFloat16 ||
+              compute_params[i].scalar_type() == torch::kFloat32,
+          "compute_param must be bfloat16 or float32");
       TORCH_CHECK(compute_params[i].is_contiguous(), "compute_param must be contiguous");
       TORCH_CHECK(params[i].numel() == compute_params[i].numel(), "compute_param shape must match param shape");
     }
@@ -263,10 +279,11 @@ void adamw_step(
     spans.push_back(TensorSpan{
         params[i].data_ptr<float>(),
         grads[i].const_data_ptr(),
-        compute_params.empty() ? nullptr : compute_params[i].data_ptr<at::BFloat16>(),
+        compute_params.empty() ? nullptr : compute_params[i].data_ptr(),
         exp_avgs[i].data_ptr<float>(),
         exp_avg_sqs[i].data_ptr<float>(),
         grads[i].scalar_type() == torch::kBFloat16,
+        !compute_params.empty() && compute_params[i].scalar_type() == torch::kBFloat16,
         total_numel,
         total_numel + numel,
         static_cast<float>(lr / bias_correction1),

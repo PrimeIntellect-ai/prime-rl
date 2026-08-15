@@ -37,6 +37,7 @@ from prime_rl.trainer.rl.loss import (
 from prime_rl.trainer.rl.token_export import setup_token_exporter
 from prime_rl.trainer.model import (
     forward,
+    get_full_offload_dtype_policy,
     setup_tokenizer,
     setup_model,
     is_tt_moe_model,
@@ -162,6 +163,9 @@ def train(config: TrainerConfig):
         cpu_offload=config.model.optim_cpu_offload,
         full_offload_config=config.model.full_offload,
         model=model,
+        full_offload_dtype_policy=(
+            get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
+        ),
     )
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
 

@@ -1,3 +1,4 @@
+import torch
 from dion import Muon
 from torch import nn
 from torch.optim import SGD, AdamW, Optimizer
@@ -23,6 +24,7 @@ def setup_optimizer(
     cpu_offload: bool = False,
     full_offload_config: OptimizerInBackwardOffloadConfig | None = None,
     model: nn.Module | None = None,
+    full_offload_dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None = None,
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
     if cpu_offload and full_offload_config is not None:
         raise ValueError("State-only and full optimizer CPU offload cannot both be enabled")
@@ -36,10 +38,13 @@ def setup_optimizer(
     if full_offload_config is not None:
         if model is None:
             raise ValueError("CPU optimizer offload requires the model")
+        if full_offload_dtype_policy is None:
+            raise ValueError("CPU optimizer offload requires an explicit per-parameter dtype policy")
         optimizer_named_params, master_weights = _create_cpu_master_weights(
             model,
             named_params,
             pin_memory=not (config.type == "adamw" and full_offload_config.cpu_optimizer_backend == "native"),
+            dtype_policy=full_offload_dtype_policy,
         )
 
     optimizer = _create_optimizer(

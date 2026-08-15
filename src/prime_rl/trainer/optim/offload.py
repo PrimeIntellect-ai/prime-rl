@@ -84,6 +84,8 @@ class _BackwardBoundaryTask:
 class _MasterWeight:
     model_param: nn.Parameter
     cpu_tensor: torch.Tensor
+    compute_dtype: torch.dtype
+    gradient_dtype: torch.dtype
 
 
 class GradientOffloadManager:
@@ -479,6 +481,8 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
         timeout_seconds: float,
         target_chunk_numel: int,
         chunk_ready_callback: Callable[[int], None],
+        gradient_dtypes: dict[int, torch.dtype],
+        compute_dtypes: dict[int, torch.dtype],
     ):
         self._chunks = chunks
         self._dp_replicate = dp_replicate
@@ -495,6 +499,15 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
             param_id: chunk_idx for chunk_idx, param_ids in enumerate(self._chunk_param_ids) for param_id in param_ids
         }
         params = {id(param): param for chunk in chunks for param in chunk}
+        if gradient_dtypes.keys() != params.keys() or compute_dtypes.keys() != params.keys():
+            raise ValueError("Full-offload dtype policy must cover every optimizer parameter exactly")
+        supported_dtypes = {torch.bfloat16, torch.float32}
+        if not set(gradient_dtypes.values()) <= supported_dtypes:
+            raise TypeError(f"Unsupported full-offload gradient dtypes: {set(gradient_dtypes.values())}")
+        if not set(compute_dtypes.values()) <= supported_dtypes:
+            raise TypeError(f"Unsupported full-offload compute dtypes: {set(compute_dtypes.values())}")
+        self._gradient_dtypes = gradient_dtypes
+        self._compute_dtypes = compute_dtypes
         dtensor_params = [param for param in params.values() if isinstance(param.data, DTensor)]
         if len(dtensor_params) != len(params):
             raise TypeError("Bounded gradient offload requires FSDP2 DTensor parameters")
@@ -502,12 +515,13 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
         alignment = 256 // torch.empty((), dtype=torch.float32).element_size()
         offsets: dict[int, int] = {}
         slab_numel = 0
-        max_param_numel = 0
+        max_param_numel: dict[torch.dtype, int] = defaultdict(int)
         for param in dtensor_params:
             local = param.data.to_local()
             offsets[id(param)] = slab_numel
             slab_numel += (local.numel() + alignment - 1) // alignment * alignment
-            max_param_numel = max(max_param_numel, local.numel())
+            gradient_dtype = gradient_dtypes[id(param)]
+            max_param_numel[gradient_dtype] = max(max_param_numel[gradient_dtype], local.numel())
         accumulator_slab = torch.empty(slab_numel, dtype=torch.float32, device="cpu")
         self._buffers: dict[int, _CPUGradientBuffer] = {}
         self._ready_events: dict[int, list[torch.cuda.Event]] = {}
@@ -520,20 +534,31 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
             self._buffers[id(param)] = _CPUGradientBuffer(template, accumulator)
             self._ready_events[id(param)] = [torch.cuda.Event() for _ in range(max_inflight_backwards)]
 
-        chunk_numels = [sum(param.to_local().numel() for param in chunk) for chunk in chunks]
-        max_chunk_numel = max(chunk_numels)
-        self._input_normal_capacity = min(max_param_numel, target_chunk_numel)
-        self._output_normal_capacity = min(max_chunk_numel, target_chunk_numel)
-        self._input_slots, self._free_input_slots = self._allocate_slots(
-            buffer_count,
-            self._input_normal_capacity,
-            max_param_numel,
-        )
-        self._output_slots, self._free_output_slots = self._allocate_slots(
-            buffer_count,
-            self._output_normal_capacity,
-            max_chunk_numel,
-        )
+        max_chunk_numel: dict[torch.dtype, int] = defaultdict(int)
+        for chunk in chunks:
+            chunk_numel: dict[torch.dtype, int] = defaultdict(int)
+            for param in chunk:
+                chunk_numel[compute_dtypes[id(param)]] += param.to_local().numel()
+            for dtype, numel in chunk_numel.items():
+                max_chunk_numel[dtype] = max(max_chunk_numel[dtype], numel)
+        self._input_normal_capacity = {
+            dtype: min(numel, target_chunk_numel) for dtype, numel in max_param_numel.items()
+        }
+        self._output_normal_capacity = {
+            dtype: min(numel, target_chunk_numel) for dtype, numel in max_chunk_numel.items()
+        }
+        self._input_slots = {}
+        self._free_input_slots = {}
+        for dtype, max_numel in max_param_numel.items():
+            self._input_slots[dtype], self._free_input_slots[dtype] = self._allocate_slots(
+                buffer_count, self._input_normal_capacity[dtype], max_numel, dtype
+            )
+        self._output_slots = {}
+        self._free_output_slots = {}
+        for dtype, max_numel in max_chunk_numel.items():
+            self._output_slots[dtype], self._free_output_slots[dtype] = self._allocate_slots(
+                buffer_count, self._output_normal_capacity[dtype], max_numel, dtype
+            )
 
         self._d2h_stream = torch.cuda.Stream()
         self._transfer_requests: queue.SimpleQueue[_GradientTransferRequest | _BackwardBoundaryTask | None] = (
@@ -578,10 +603,12 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
         self._worker.start()
         self._release_worker.start()
 
-        pinned_bytes = sum(slot.tensor.nbytes for slot in self._input_slots + self._output_slots)
+        input_slots = [slot for slots in self._input_slots.values() for slot in slots]
+        output_slots = [slot for slots in self._output_slots.values() for slot in slots]
+        pinned_bytes = sum(slot.tensor.nbytes for slot in input_slots + output_slots)
         get_logger().info(
-            "Native full offload uses pageable FP32 gradients and bounded BF16 transfer rings "
-            f"({len(self._input_slots)} D2H slots, {len(self._output_slots)} H2D slots, "
+            "Native full offload uses pageable FP32 gradients and bounded mixed-dtype transfer rings "
+            f"({len(input_slots)} D2H slots, {len(output_slots)} H2D slots, "
             f"{pinned_bytes / 1024**3:.2f} GiB pinned, "
             f"{accumulator_slab.nbytes / 1024**3:.2f} GiB pageable accumulator)"
         )
@@ -591,11 +618,12 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
         count: int,
         normal_numel: int,
         max_numel: int,
+        dtype: torch.dtype,
     ) -> tuple[list[_PinnedTransferSlot], dict[str, queue.Queue[_PinnedTransferSlot]]]:
         slots = [
             _PinnedTransferSlot(
                 index=index,
-                tensor=torch.empty(normal_numel, dtype=torch.bfloat16, device="cpu", pin_memory=True),
+                tensor=torch.empty(normal_numel, dtype=dtype, device="cpu", pin_memory=True),
                 event=torch.cuda.Event(),
             )
             for index in range(count)
@@ -604,7 +632,7 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
             slots.append(
                 _PinnedTransferSlot(
                     index=count,
-                    tensor=torch.empty(max_numel, dtype=torch.bfloat16, device="cpu", pin_memory=True),
+                    tensor=torch.empty(max_numel, dtype=dtype, device="cpu", pin_memory=True),
                     event=torch.cuda.Event(),
                 )
             )
@@ -616,6 +644,16 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
     @staticmethod
     def _free_slot_count(slots: dict[str, queue.Queue[_PinnedTransferSlot]]) -> int:
         return sum(slot_queue.qsize() for slot_queue in slots.values())
+
+    @staticmethod
+    def _total_free_slot_count(
+        slots_by_dtype: dict[torch.dtype, dict[str, queue.Queue[_PinnedTransferSlot]]],
+    ) -> int:
+        return sum(BoundedGradientOffloadManager._free_slot_count(slots) for slots in slots_by_dtype.values())
+
+    @staticmethod
+    def _total_slot_count(slots_by_dtype: dict[torch.dtype, list[_PinnedTransferSlot]]) -> int:
+        return sum(len(slots) for slots in slots_by_dtype.values())
 
     def _worker_entry(self, target: Callable[[], None], name: str) -> None:
         try:
@@ -639,8 +677,10 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
             f"pending_gradients={len(pending)}, pending_sample={pending[:8]}, "
             f"completed_chunks={self._completed_chunks}/{len(self._chunks)}, "
             f"scheduled_chunks={len(self._scheduled_chunks)}, "
-            f"free_d2h_slots={self._free_slot_count(self._free_input_slots)}/{len(self._input_slots)}, "
-            f"free_h2d_slots={self._free_slot_count(self._free_output_slots)}/{len(self._output_slots)}"
+            f"free_d2h_slots={self._total_free_slot_count(self._free_input_slots)}/"
+            f"{self._total_slot_count(self._input_slots)}, "
+            f"free_h2d_slots={self._total_free_slot_count(self._free_output_slots)}/"
+            f"{self._total_slot_count(self._output_slots)}"
         )
 
     def _raise_worker_error(self) -> None:
@@ -687,11 +727,12 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
                 self._tasks.put(task)
                 continue
             acquire_start = time.perf_counter()
+            gradient_dtype = task.local_grad.dtype
             slot = self._acquire_slot(
-                self._free_input_slots,
+                self._free_input_slots[gradient_dtype],
                 "D2H",
                 task.local_grad.numel(),
-                self._input_normal_capacity,
+                self._input_normal_capacity[gradient_dtype],
             )
             self._timings["d2h_slot_wait"] = (
                 self._timings.get("d2h_slot_wait", 0.0) + time.perf_counter() - acquire_start
@@ -724,7 +765,7 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
                 continue
             batch = [task]
             batch_param_ids = {task.request.param_id}
-            while len(batch) < len(self._input_slots):
+            while len(batch) < self._total_slot_count(self._input_slots):
                 try:
                     next_task = self._tasks.get_nowait()
                 except queue.Empty:
@@ -750,17 +791,26 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
                 item.slot.tensor.narrow(0, 0, item.request.local_grad.numel()).view(item.request.local_grad.shape)
                 for item in batch
             ]
-            native_copy_or_add_bfloat16_multi_(
-                [buffer.accumulator for buffer in buffers],
-                sources,
-                [buffer.initialized for buffer in buffers],
-            )
+            bfloat16_indices = [index for index, source in enumerate(sources) if source.dtype == torch.bfloat16]
+            if bfloat16_indices:
+                native_copy_or_add_bfloat16_multi_(
+                    [buffers[index].accumulator for index in bfloat16_indices],
+                    [sources[index] for index in bfloat16_indices],
+                    [buffers[index].initialized for index in bfloat16_indices],
+                )
+            for buffer, source in zip(buffers, sources):
+                if source.dtype == torch.float32:
+                    if buffer.initialized:
+                        buffer.accumulator.add_(source)
+                    else:
+                        buffer.accumulator.copy_(source)
             self._timings["materialize"] = (
                 self._timings.get("materialize", 0.0) + time.perf_counter() - materialize_start
             )
             for item in batch:
-                slot_class = "normal" if item.slot.tensor.numel() == self._input_normal_capacity else "oversized"
-                self._free_input_slots[slot_class].put(item.slot)
+                dtype = item.slot.tensor.dtype
+                slot_class = "normal" if item.slot.tensor.numel() == self._input_normal_capacity[dtype] else "oversized"
+                self._free_input_slots[dtype][slot_class].put(item.slot)
             with self._condition:
                 for item, buffer in zip(batch, buffers):
                     request = item.request
@@ -790,8 +840,9 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
             if slot is None:
                 return
             slot.event.synchronize()
-            slot_class = "normal" if slot.tensor.numel() == self._output_normal_capacity else "oversized"
-            self._free_output_slots[slot_class].put(slot)
+            dtype = slot.tensor.dtype
+            slot_class = "normal" if slot.tensor.numel() == self._output_normal_capacity[dtype] else "oversized"
+            self._free_output_slots[dtype][slot_class].put(slot)
             with self._condition:
                 self._condition.notify_all()
 
@@ -861,8 +912,12 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
             if not isinstance(param.grad, DTensor):
                 raise TypeError(f"Expected FSDP2 DTensor gradient, got {type(param.grad)}")
             local_grad = param.grad.to_local()
-            if local_grad.dtype != torch.bfloat16:
-                raise TypeError(f"Bounded native offload requires BF16 gradients, got {local_grad.dtype}")
+            expected_dtype = self._gradient_dtypes[param_id]
+            if local_grad.dtype != expected_dtype:
+                raise TypeError(
+                    f"Full-offload gradient dtype mismatch in chunk {self._chunk_by_param_id[param_id]}: "
+                    f"expected {expected_dtype}, got {local_grad.dtype}"
+                )
             buffer = self._buffers[param_id]
             with self._condition:
                 self._raise_worker_error()
@@ -938,29 +993,36 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
         if self._overlap_optimizer:
             self._wait_for(lambda: self._completed_chunks == len(self._chunks), "CPU optimizer chunks")
 
-    def acquire_output_chunk(self, chunk_idx: int) -> tuple[_PinnedTransferSlot, list[torch.Tensor]]:
-        chunk_numel = sum(param.to_local().numel() for param in self._chunks[chunk_idx])
-        slot = self._acquire_slot(
-            self._free_output_slots,
-            "H2D",
-            chunk_numel,
-            self._output_normal_capacity,
-        )
+    def acquire_output_chunk(self, chunk_idx: int) -> tuple[list[_PinnedTransferSlot], list[torch.Tensor]]:
+        chunk_numel: dict[torch.dtype, int] = defaultdict(int)
+        for param in self._chunks[chunk_idx]:
+            chunk_numel[self._compute_dtypes[id(param)]] += param.to_local().numel()
+        slots = {
+            dtype: self._acquire_slot(
+                self._free_output_slots[dtype],
+                "H2D",
+                numel,
+                self._output_normal_capacity[dtype],
+            )
+            for dtype, numel in chunk_numel.items()
+        }
+        offsets: dict[torch.dtype, int] = defaultdict(int)
         views = []
-        offset = 0
         for param in self._chunks[chunk_idx]:
             local = param.to_local()
-            views.append(slot.tensor.narrow(0, offset, local.numel()).view(local.shape))
-            offset += local.numel()
-        return slot, views
+            dtype = self._compute_dtypes[id(param)]
+            views.append(slots[dtype].tensor.narrow(0, offsets[dtype], local.numel()).view(local.shape))
+            offsets[dtype] += local.numel()
+        return list(slots.values()), views
 
-    def release_output_chunk(self, slot: _PinnedTransferSlot, stream: torch.cuda.Stream) -> None:
-        slot.event.record(stream)
-        self._release_tasks.put(slot)
+    def release_output_chunk(self, slots: list[_PinnedTransferSlot], stream: torch.cuda.Stream) -> None:
+        for slot in slots:
+            slot.event.record(stream)
+            self._release_tasks.put(slot)
 
     def wait_for_output_slots(self) -> None:
         self._wait_for(
-            lambda: self._free_slot_count(self._free_output_slots) == len(self._output_slots),
+            lambda: self._total_free_slot_count(self._free_output_slots) == self._total_slot_count(self._output_slots),
             "H2D transfer slots",
         )
 
@@ -994,10 +1056,10 @@ class BoundedGradientOffloadManager(GradientOffloadManager):
 class FullCPUOffloadOptimizer(OffloadOptimizer):
     """Runs the optimizer on CPU-resident FP32 masters, overlapped with backward.
 
-    The GPU keeps a persistent BF16 compute model; FP32 masters, moments, and
-    accumulated gradients live in CPU RAM, each optimizer chunk runs as soon as
-    its last gradient arrives, and refreshed BF16 weights stream back while
-    backward is still executing.
+    The GPU keeps persistent mixed-precision compute parameters; FP32 masters,
+    moments, and accumulated gradients live in CPU RAM, each optimizer chunk
+    runs as soon as its last gradient arrives, and refreshed weights stream back
+    while backward is still executing.
     """
 
     _TARGET_CPU_CHUNK_NUMEL = 16 * 1024**2
@@ -1039,6 +1101,8 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             load_cpu_adamw_kernel()
         gradient_chunks = [[master_weights[id(param)].model_param for param in chunk] for chunk in self._chunks]
         if self._native_cpu_adamw:
+            gradient_dtypes = {id(master.model_param): master.gradient_dtype for master in master_weights.values()}
+            compute_dtypes = {id(master.model_param): master.compute_dtype for master in master_weights.values()}
             self._gradient_manager = BoundedGradientOffloadManager(
                 gradient_chunks,
                 dp_replicate,
@@ -1047,6 +1111,8 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
                 timeout_seconds=self._TIMEOUT_SECONDS,
                 target_chunk_numel=self._TARGET_CPU_CHUNK_NUMEL,
                 chunk_ready_callback=self._step_cpu_chunk,
+                gradient_dtypes=gradient_dtypes,
+                compute_dtypes=compute_dtypes,
             )
         else:
             self._gradient_manager = GradientOffloadManager(
@@ -1102,7 +1168,16 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
                 if not isinstance(master.model_param, DTensor):
                     raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(master.model_param)}")
                 source = sources[param_idx] if sources is not None else master.cpu_tensor
-                master.model_param.to_local().copy_(source, non_blocking=True)
+                local_param = master.model_param.to_local()
+                if local_param.dtype != master.compute_dtype:
+                    raise TypeError(
+                        f"Full-offload compute dtype changed: expected {master.compute_dtype}, got {local_param.dtype}"
+                    )
+                if sources is not None and source.dtype != master.compute_dtype:
+                    raise TypeError(
+                        f"Full-offload H2D source dtype mismatch: expected {master.compute_dtype}, got {source.dtype}"
+                    )
+                local_param.copy_(source, non_blocking=True)
 
     @torch.no_grad()
     def _step_chunk(self, chunk_idx: int):
@@ -1171,7 +1246,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
                 raise TypeError("Native CPU AdamW requires bounded gradient offload")
             timings = self._gradient_manager._timings
             acquire_start = time.perf_counter()
-            slot, compute_params = self._gradient_manager.acquire_output_chunk(chunk_idx)
+            output_slots, compute_params = self._gradient_manager.acquire_output_chunk(chunk_idx)
             adam_start = time.perf_counter()
             timings["output_slot_wait"] = timings.get("output_slot_wait", 0.0) + adam_start - acquire_start
             self._step_native_cpu_adamw_chunk(chunk_idx, gradients, compute_params)
@@ -1186,7 +1261,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
                 compute_params if self._native_cpu_adamw else None,
             )
             if self._native_cpu_adamw:
-                self._gradient_manager.release_output_chunk(slot, self._h2d_stream)
+                self._gradient_manager.release_output_chunk(output_slots, self._h2d_stream)
 
     def _prepare_fused_cpu_adamw(self) -> None:
         if not self._fused_cpu_adamw:
@@ -1235,11 +1310,11 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             if not isinstance(self._gradient_manager, BoundedGradientOffloadManager):
                 raise TypeError("Native CPU AdamW requires bounded gradient offload")
             for i in range(len(self._chunks)):
-                slot, compute_params = self._gradient_manager.acquire_output_chunk(i)
+                output_slots, compute_params = self._gradient_manager.acquire_output_chunk(i)
                 self._step_native_cpu_adamw_chunk(i, gradients_by_chunk[i], compute_params)
                 self._gradient_manager.release_chunk(i, self._chunks[i])
                 self._update_compute_weights(i, self._h2d_stream, compute_params)
-                self._gradient_manager.release_output_chunk(slot, self._h2d_stream)
+                self._gradient_manager.release_output_chunk(output_slots, self._h2d_stream)
         else:
             self.optimizer.step()
             for i in range(len(self._chunks)):
@@ -1368,11 +1443,11 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
                 if not isinstance(self._gradient_manager, BoundedGradientOffloadManager):
                     raise TypeError("Native CPU AdamW requires bounded gradient offload")
                 for i in range(len(self._chunks)):
-                    slot, compute_params = self._gradient_manager.acquire_output_chunk(i)
+                    output_slots, compute_params = self._gradient_manager.acquire_output_chunk(i)
                     for param, compute_param in zip(self._chunks[i], compute_params):
                         compute_param.copy_(self._master_weights[id(param)].cpu_tensor)
                     self._update_compute_weights(i, self._h2d_stream, compute_params)
-                    self._gradient_manager.release_output_chunk(slot, self._h2d_stream)
+                    self._gradient_manager.release_output_chunk(output_slots, self._h2d_stream)
             else:
                 for i in range(len(self._chunks)):
                     self._update_compute_weights(i, self._h2d_stream)
@@ -1395,11 +1470,57 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
 
 
 @torch.no_grad()
+def _cast_full_offload_compute_parameters(
+    model: nn.Module,
+    dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None,
+) -> None:
+    floating_params = {
+        id(param): (name, param) for name, param in model.named_parameters() if param.is_floating_point()
+    }
+    if dtype_policy is not None and dtype_policy.keys() != floating_params.keys():
+        raise ValueError("Full-offload dtype policy must cover every floating-point model parameter exactly")
+    fp32_param_ids = {
+        param_id
+        for param_id in floating_params
+        if dtype_policy is not None and dtype_policy[param_id][0] == torch.float32
+    }
+    fp32_snapshots = {param_id: floating_params[param_id][1].detach().clone() for param_id in fp32_param_ids}
+    original_buffers = {name: buffer.detach() for name, buffer in model.named_buffers() if buffer.is_floating_point()}
+    fp32_modules = []
+    covered_fp32_param_ids = set()
+    for module in model.modules():
+        direct_param_ids = {id(param) for param in module.parameters(recurse=False) if param.is_floating_point()}
+        module_fp32_param_ids = direct_param_ids & fp32_param_ids
+        if not module_fp32_param_ids:
+            continue
+        if direct_param_ids != module_fp32_param_ids:
+            raise ValueError("Full offload cannot preserve mixed compute dtypes within one parameter-owning module")
+        fp32_modules.append(module)
+        covered_fp32_param_ids.update(module_fp32_param_ids)
+    if covered_fp32_param_ids != fp32_param_ids:
+        raise ValueError("Full offload could not find an owning module for every FP32 parameter")
+
+    model.to(dtype=torch.bfloat16)
+    for module in fp32_modules:
+        module.to(dtype=torch.float32)
+    for param_id, snapshot in fp32_snapshots.items():
+        floating_params[param_id][1].copy_(snapshot)
+    for name, buffer in model.named_buffers():
+        if name in original_buffers:
+            buffer.data = original_buffers[name]
+    for param_id, (name, model_param) in floating_params.items():
+        compute_dtype = dtype_policy[param_id][0] if dtype_policy is not None else torch.bfloat16
+        if model_param.dtype != compute_dtype:
+            raise TypeError(f"Failed to cast {name} to its full-offload compute dtype {compute_dtype}")
+
+
+@torch.no_grad()
 def _create_cpu_master_weights(
     model: nn.Module,
     named_params: list[tuple[str, nn.Parameter]],
     *,
     pin_memory: bool = True,
+    dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None = None,
 ) -> tuple[list[tuple[str, nn.Parameter]], dict[int, _MasterWeight]]:
     trainable_params = [(name, model_param) for name, model_param in named_params if model_param.requires_grad]
     if not trainable_params:
@@ -1422,20 +1543,23 @@ def _create_cpu_master_weights(
         cpu_tensor.copy_(local_param, non_blocking=True)
         master_param = nn.Parameter(cpu_tensor, requires_grad=True)
         master_named_params.append((name, master_param))
-        master_weights[id(master_param)] = _MasterWeight(model_param, cpu_tensor)
+        compute_dtype, gradient_dtype = (
+            dtype_policy[id(model_param)] if dtype_policy is not None else (torch.bfloat16, torch.bfloat16)
+        )
+        if compute_dtype not in (torch.bfloat16, torch.float32):
+            raise TypeError(f"Full offload does not support {compute_dtype} compute parameters ({name})")
+        if gradient_dtype not in (torch.bfloat16, torch.float32):
+            raise TypeError(f"Full offload does not support {gradient_dtype} gradients ({name})")
+        master_weights[id(master_param)] = _MasterWeight(model_param, cpu_tensor, compute_dtype, gradient_dtype)
     torch.cuda.synchronize()
 
-    original_buffers = {name: buffer.detach() for name, buffer in model.named_buffers() if buffer.is_floating_point()}
-    model.to(dtype=torch.bfloat16)
-    for name, buffer in model.named_buffers():
-        if name in original_buffers:
-            buffer.data = original_buffers[name]
+    _cast_full_offload_compute_parameters(model, dtype_policy)
     del local_param
     torch.cuda.empty_cache()
 
     master_allocation = sum(master.cpu_tensor.nbytes for master in master_weights.values())
     get_logger().info(
         f"CPU optimizer step allocated {master_allocation / 1024**3:.2f} GiB of "
-        f"{'pinned' if pin_memory else 'pageable'} FP32 masters; persistent GPU parameters use BF16"
+        f"{'pinned' if pin_memory else 'pageable'} FP32 masters; persistent GPU parameters use configured compute dtypes"
     )
     return master_named_params, master_weights

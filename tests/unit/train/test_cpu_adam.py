@@ -6,6 +6,27 @@ from prime_rl.trainer.optim.cpu_adam import (
     copy_bfloat16_,
     copy_or_add_bfloat16_multi_,
 )
+from prime_rl.trainer.optim.offload import _cast_full_offload_compute_parameters
+
+
+def test_full_offload_preserves_per_parameter_compute_dtypes():
+    model = torch.nn.Sequential(torch.nn.Linear(2, 2, bias=False), torch.nn.Linear(2, 2, bias=False))
+    bfloat16_param, float32_param = model.parameters()
+    float32_param.data.fill_(1.0001)
+    original_float32 = float32_param.detach().clone()
+    model.register_buffer("statistics", torch.tensor([1.0001], dtype=torch.float32))
+    original_statistics = model.statistics.detach().clone()
+    policy = {
+        id(bfloat16_param): (torch.bfloat16, torch.bfloat16),
+        id(float32_param): (torch.float32, torch.float32),
+    }
+
+    _cast_full_offload_compute_parameters(model, policy)
+
+    assert bfloat16_param.dtype == torch.bfloat16
+    assert float32_param.dtype == torch.float32
+    torch.testing.assert_close(float32_param, original_float32, rtol=0, atol=0)
+    torch.testing.assert_close(model.statistics, original_statistics, rtol=0, atol=0)
 
 
 def test_native_cpu_adamw_matches_fused_torch_and_preserves_gradients():
@@ -35,7 +56,9 @@ def test_native_cpu_adamw_matches_fused_torch_and_preserves_gradients():
     float_gradient_exp_avgs = [torch.zeros_like(tensor) for tensor in native_params]
     float_gradient_exp_avg_sqs = [torch.zeros_like(tensor) for tensor in native_params]
     float_gradient_state_steps = [torch.zeros((), dtype=torch.float32) for _ in native_params]
-    compute_params = [torch.empty_like(tensor, dtype=torch.bfloat16) for tensor in native_params]
+    float_compute_params = [torch.empty_like(tensor) for tensor in native_params]
+    compute_dtypes = [torch.bfloat16, torch.float32, torch.bfloat16]
+    compute_params = [torch.empty_like(tensor, dtype=dtype) for tensor, dtype in zip(native_params, compute_dtypes)]
     torch_optimizer = torch.optim.AdamW(
         torch_params,
         lr=3e-4,
@@ -61,6 +84,7 @@ def test_native_cpu_adamw_matches_fused_torch_and_preserves_gradients():
             float_gradient_exp_avgs,
             float_gradient_exp_avg_sqs,
             float_gradient_state_steps,
+            float_compute_params,
             lr=3e-4,
             beta1=0.9,
             beta2=0.95,
@@ -86,7 +110,9 @@ def test_native_cpu_adamw_matches_fused_torch_and_preserves_gradients():
         for actual, expected in zip(native_gradients, gradients):
             torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         for compute_param, native_param in zip(compute_params, native_params):
-            torch.testing.assert_close(compute_param, native_param.bfloat16(), rtol=0, atol=0)
+            torch.testing.assert_close(compute_param, native_param.to(compute_param.dtype), rtol=0, atol=0)
+        for compute_param, native_param in zip(float_compute_params, float_gradient_params):
+            torch.testing.assert_close(compute_param, native_param, rtol=0, atol=0)
 
     for actual, expected in zip(native_params, float_gradient_params):
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
