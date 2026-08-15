@@ -107,6 +107,9 @@ def propagate_shared_fields(data: Any) -> Any:
     # [monitors.file] leaf. (Bare empty ``[monitors.file]`` block enablement is at the end.)
     propagate("monitors.file.path", "trainer.monitors.file.path", "orchestrator.monitors.file.path")
 
+    # [monitors.prime] leaf → orchestrator only (the trainer has no platform integration).
+    propagate("monitors.prime.name", "orchestrator.monitors.prime.name")
+
     # [tokenizer]. ``chat_template`` also flows to ``inference.vllm`` (vLLM's
     # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
     # differ between sub-configs (auto-derived from model names, which may
@@ -151,19 +154,29 @@ def propagate_shared_fields(data: Any) -> Any:
 
     # Bare ``[ckpt]`` / ``[monitors.wandb]`` block: presence-only signal that
     # enables the section with defaults on both sub-configs. Necessary because
-    # the sub-config fields are Optional[None] by default — without this an
-    # empty shared block would be a no-op. Leaf-level conflicts (e.g. shared
-    # ``ckpt.interval`` vs ``trainer.ckpt.interval``) are already caught above;
-    # the bare block is exempt because ``[ckpt]`` + ``[trainer.ckpt]
-    # keep_last = 3`` is a legitimate "enable + customise per side" pattern.
-    # The ``isinstance(dict)`` check (not ``is not None``) is what makes CLI
-    # ``--no-ckpt`` / ``--no-monitors.wandb`` work — those land as the *string*
-    # ``"None"`` until ``BaseConfig``'s parent-class validator converts it,
-    # which happens after this one.
-    for key in ("ckpt", "monitors.wandb", "monitors.file"):
-        if isinstance(get(key), dict):
-            fill(f"trainer.{key}", {})
-            fill(f"orchestrator.{key}", {})
+    # ``trainer.ckpt`` / ``orchestrator.ckpt`` are Optional[None] by default —
+    # without this an empty shared block would be a no-op. Leaf-level conflicts
+    # (e.g. shared ``ckpt.interval`` vs ``trainer.ckpt.interval``) are already
+    # caught above; the bare block is exempt because ``[ckpt]`` +
+    # ``[trainer.ckpt] keep_last = 3`` is a legitimate "enable + customise per
+    # side" pattern. CLI ``--no-ckpt`` / ``--no-monitors.wandb`` land as the
+    # *string* ``"None"`` until ``BaseConfig``'s parent-class validator converts
+    # it, which happens after this one — the disable must propagate too, since
+    # the monitor sub-configs default to enabled.
+    presence_targets = {
+        "ckpt": ("trainer", "orchestrator"),
+        "monitors.wandb": ("trainer", "orchestrator"),
+        "monitors.file": ("trainer", "orchestrator"),
+        "monitors.prime": ("orchestrator",),
+    }
+    for key, targets in presence_targets.items():
+        value = get(key)
+        if isinstance(value, dict):
+            for target in targets:
+                fill(f"{target}.{key}", {})
+        elif value == "None":
+            for target in targets:
+                fill(f"{target}.{key}", "None")
 
     if conflicts:
         lines = [

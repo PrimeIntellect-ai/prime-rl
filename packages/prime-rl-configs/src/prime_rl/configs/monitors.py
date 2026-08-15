@@ -32,9 +32,6 @@ class PrimeMonitorConfig(BaseConfig):
     name: str | None = None
     """Run name shown on the platform. Defaults to the W&B run name when set, otherwise the platform auto-generates one."""
 
-    team_id: str | None = None
-    """Team ID to associate the run with. Defaults to the Prime CLI team."""
-
 
 class MonitorsConfig(BaseConfig):
     wandb: WandbMonitorConfig | None = WandbMonitorConfig()

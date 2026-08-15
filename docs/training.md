@@ -71,7 +71,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. |
 | `orchestrator.log.vf_level` | Env-worker / [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) log level (`info` default; `debug` is noisy but useful for env debugging). |
 | `--monitors.wandb` (+ `--monitors.wandb.project`, `--monitors.wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
-| `--orchestrator.monitors.prime` | Stream metrics and episodes to the Prime Intellect platform (Prime Lab). See [Platform monitoring](#platform-monitoring). |
+| `--monitors.prime` | Stream metrics and episodes to the Prime Intellect platform (Prime Lab). See [Platform monitoring](#platform-monitoring). |
 
 **Run management:**
 
@@ -324,13 +324,13 @@ prime-rl deliberately logs a **large number of metrics** for maximum observabili
 Register a run on the Prime Intellect platform (Prime Lab) and stream training metrics and episodes to the platform dashboard. Bare flag uses defaults:
 
 ```bash
-uv run rl @ rl.toml --orchestrator.monitors.prime
+uv run rl @ rl.toml --monitors.prime
 ```
 
 Or set it in TOML:
 
 ```toml
-[orchestrator.monitors.prime]
+[monitors.prime]
 name = "my-experiment"
 ```
 

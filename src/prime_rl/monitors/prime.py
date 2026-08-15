@@ -77,7 +77,7 @@ class PrimeMonitor(Monitor):
                 run_config=config.model_dump(exclude_none=True, mode="json"),
                 wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
             )
-        await self.run.create(name=self.config.name, team_id=self.config.team_id, **run_fields)
+        await self.run.create(name=self.config.name, **run_fields)
 
     async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
         metrics, dropped = sanitize(metrics)
@@ -217,6 +217,9 @@ class TrainRun:
     async def finalize(self) -> None:
         """Finalize the run as completed."""
         self.logger.info(f"Finalizing platform run {self.id}")
+        # Drain in-flight uploads so the final step's metrics and episodes land
+        # before the run is marked completed.
+        await asyncio.gather(*self._tasks, return_exceptions=True)
         try:
             (await self.client.post("/finalize", json={"run_id": self.id, "summary": {}})).raise_for_status()
         except httpx.HTTPError as e:

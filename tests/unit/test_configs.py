@@ -522,6 +522,24 @@ def test_shared_wandb_fields_propagate_to_subconfigs():
         assert component.offline is False
 
 
+def test_shared_monitor_disable_and_prime_propagate():
+    """CLI ``--no-monitors.wandb`` / ``--no-monitors.file`` (which land as the string
+    "None") propagate the disable to both sub-configs, whose monitors default to
+    enabled; a shared ``[monitors.prime]`` reaches the orchestrator only."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "monitors": {"wandb": "None", "file": "None", "prime": {"name": "shared-prime"}},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    assert config.trainer.monitors.wandb is None and config.trainer.monitors.file is None
+    assert config.orchestrator.monitors.wandb is None and config.orchestrator.monitors.file is None
+    assert config.orchestrator.monitors.prime is not None
+    assert config.orchestrator.monitors.prime.name == "shared-prime"
+
+
 def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
     """An empty shared [ckpt] block is a presence-only signal, not a field
     setting — it should not conflict with a non-empty [trainer.ckpt]."""

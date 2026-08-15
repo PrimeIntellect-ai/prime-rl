@@ -17,24 +17,20 @@ if TYPE_CHECKING:
 
 
 class FileMonitor(Monitor):
-    """Logs metrics and episodes to a local JSONL files."""
+    """Logs metrics and episodes to local JSONL files."""
 
     config: FileMonitorConfig
-    file: TextIO | None = None
+    file: TextIO
 
     async def init(self, output_dir: Path) -> None:
         self.output_dir = output_dir
-        path = output_dir / self.config.path
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = output_dir / self.config.path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         # Line-buffered append so a concurrently-running dashboard can tail the file.
-        self.file = open(path, "a", buffering=1)  # noqa: SIM115
-        self.path = path
-        self.logger.info(f"Logging metrics to {path} and traces to {output_dir / 'rollouts'}")
+        self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
+        self.logger.info(f"Logging metrics to {self.path} and traces to {output_dir / 'rollouts'}")
 
     async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
-        if self.file is None:
-            return
-
         sanitized, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(

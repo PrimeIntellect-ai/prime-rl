@@ -111,7 +111,7 @@ summarize_at_tokens = [65536, 131072]
 [orchestrator.train.source.env.agent.runtime]
 labels = ["glm45air-swe"]
 
-[orchestrator.monitors.prime]
+[monitors.prime]
 
 # --- Eval: SWE-Bench Verified at step 0 + every 20 steps, rlm harness on prime ---
 

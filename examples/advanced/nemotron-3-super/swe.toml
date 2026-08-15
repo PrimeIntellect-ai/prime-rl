@@ -95,7 +95,7 @@ summarize_at_tokens = [65536, 131072]
 [orchestrator.train.source.env.agent.runtime]
 labels = ["nemotron-3-super-swe"]
 
-[orchestrator.monitors.prime]
+[monitors.prime]
 
 [orchestrator.eval]
 interval = 20

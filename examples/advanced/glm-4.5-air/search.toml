@@ -87,7 +87,7 @@ num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1
 num_turns_weight = 0.0
 
-[orchestrator.monitors.prime]
+[monitors.prime]
 
 # --- Train: the search envs with usable training data (rlm `search` skill, prime sandbox) ---
 
