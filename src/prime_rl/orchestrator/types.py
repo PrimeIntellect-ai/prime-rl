@@ -91,6 +91,9 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     # Links the traces of one episode; stamped into ``info`` on arrival so
     # saved records keep their grouping.
     episode_id: str = Field(default="", exclude=True)
+    # The original v1 envelope, retained only in memory so monitors can upload the
+    # complete multi-trace Episode without making Episode the orchestrator's unit.
+    native_episode: vf.WireEpisode | None = Field(default=None, exclude=True, repr=False)
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
