@@ -11,8 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
-exclude-newer-span = "P7D"
+exclude-newer = "2026-08-05T07:00:00Z"
 
 [options.exclude-newer-package]
 vllm = false
@@ -21,16 +20,19 @@ prime-pydantic-config = false
 vllm-router = false
 dion = false
 nixl-cu12 = false
+prime-rl = "2100-01-01T08:00:00Z"
 fastokens = false
 flash-attn-3 = false
 prime-tunnel = false
 deep-gemm = false
 prime-evals = false
 torchao = false
+tasksets = "2100-01-01T08:00:00Z"
 tokenspeed-mla = false
 deep-ep = false
 prime-sandboxes = false
 renderers = false
+harnesses = "2100-01-01T08:00:00Z"
 prime = false
 
 [manifest]

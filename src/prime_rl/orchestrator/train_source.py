@@ -25,11 +25,12 @@ class TrainSource:
     / ``load_state_dict()``: per-env ``{epoch, cursor}`` plus the env-choice
     RNG state, making the dispatch sequence reproducible across resumes. For
     a finite env, epochs are 1-indexed and seed that epoch's shuffle; for an
-    infinite env the epoch stays 1 and the cursor counts generator pulls,
-    replayed on restore by fast-forwarding the generator (exact iff it's
-    deterministic). Cursors advance at dispatch time (ahead of shipped
-    batches), so a resume skips the tasks that were in flight at checkpoint
-    time."""
+    infinite env the epoch stays 1 and the cursor counts generator pulls —
+    restored as a counter only, never by fast-forwarding the generator, since
+    an infinite taskset may be backed by live external state whose every pull
+    is a real draw with side effects. Cursors advance at dispatch time (ahead
+    of shipped batches), so a finite env's resume skips the tasks that were in
+    flight at checkpoint time."""
 
     def __init__(self, train_envs: TrainEnvs) -> None:
         self.rng = random.Random(42)
@@ -85,11 +86,14 @@ class TrainSource:
                 continue
             self.epochs[name] = position["epoch"]
             self.cursors[name] = position["cursor"]
-            if self.base_rows[name] is None:
-                for _ in range(position["cursor"]):
-                    next(self.iters[name])
-            else:
+            if self.base_rows[name] is not None:
                 self.examples[name] = self._shuffle(name)
+            # An infinite env restores its cursor as a counter only — never by
+            # fast-forwarding the generator. A fresh iterator is not the old one:
+            # replay is exact only for a pure deterministic generator, and for a
+            # taskset backed by live external state (a task server, a curriculum
+            # stream) every next() is a real draw with side effects, so replaying
+            # a thousands-deep cursor leaks work and stalls resume for hours.
 
     def next_example(self) -> dict | None:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
