@@ -1,0 +1,17 @@
+# .git stays in the context: docker-editable-pretend-versions.sh resolves
+# submodule versions from .git/modules via the build-context bind mount.
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/wandb
+**/checkpoints
+**/weights
+**/broadcasts
+**/rollouts
+**/torchrun
+.claude
+.vscode
+*.ipynb

@@ -4,6 +4,17 @@
 
 #inspired from https://github.com/astral-sh/uv-docker-example/blob/main/multistage.Dockerfile
 
+# Skeleton stage: collect every pyproject.toml plus the lockfile, so the
+# dependency sync in the builder caches independently of source edits. COPY
+# from this stage is content-hashed, so re-running this cheap stage on every
+# build is free and the sync layer only busts when project metadata changes.
+FROM nvidia/cuda:12.8.1-base-ubuntu24.04 AS manifests
+COPY . /ctx
+RUN mkdir -p /manifests \
+    && cd /ctx \
+    && find . -name .git -prune -o -type f -name pyproject.toml -exec cp --parents {} /manifests/ \; \
+    && cp uv.lock /manifests/
+
 # Build stage - multi-arch base (supports amd64 + arm64)
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS builder
 LABEL maintainer="prime intellect"
@@ -76,10 +87,25 @@ ENV UV_CACHE_DIR="/usr/local/share/uv/cache"
 # the runtime stage's `COPY /app`
 ENV UV_PROJECT_ENVIRONMENT="/app/.venv"
 
-# Install Python dependencies (The gradual copies help with caching)
+# Install Python dependencies
 WORKDIR /app
 
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+
+# Dependency layer: sync third-party deps against the pyproject skeleton only,
+# so source edits don't invalidate the multi-GB wheel install. The first-party
+# editables (skipped here) install in the source-layer sync below; they need
+# their source trees and git-derived pretend versions, which this layer must
+# not depend on. No build-context bind mount here either — .git changes every
+# commit and would bust this layer's cache.
+COPY --from=manifests /manifests /app
+RUN --mount=type=cache,target=/usr/local/share/uv/cache \
+    uv sync --all-packages --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra gpt-oss --extra quack --group mamba-ssm --locked --no-dev \
+        --no-install-workspace \
+        --no-install-package prime-rl-configs \
+        --no-install-package verifiers \
+        --no-install-package renderers \
+        --no-install-package prime-pydantic-config
 
 COPY pyproject.toml /app/pyproject.toml
 COPY uv.lock /app/uv.lock
@@ -98,7 +124,7 @@ COPY scripts/docker-editable-pretend-versions.sh /app/scripts/docker-editable-pr
 # /app/.git/modules to the read-only context before resolving versions.
 ARG VERIFIERS_PRETEND_VERSION
 ARG RENDERERS_PRETEND_VERSION
-RUN --mount=type=cache,target=/app/.cache/uv \
+RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     --mount=type=bind,source=.,target=/build-context,readonly \
     if [ -d /build-context/.git/modules ]; then mkdir -p /app/.git && ln -s /build-context/.git/modules /app/.git/modules; fi \
     && \
