@@ -27,7 +27,7 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 - State-only optimizer offload remains enabled by default with `model.optim_cpu_offload = true`.
 - For gradients, FP32 masters, optimizer state, and optimizer-in-backward CPU execution, set
   `model.optim_cpu_offload = false` and `model.full_offload = true`. This mode uses the native
-  CPU AdamW kernel, disables gradient clipping, and does not support Muon. Use a
+  CPU AdamW kernel, only supports AdamW, and disables gradient clipping. Use a
   `[model.full_offload]` table only to select the Torch debugging backend or disable NUMA binding.
 
 ## `rl` — RL training

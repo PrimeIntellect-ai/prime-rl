@@ -676,6 +676,12 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def full_optimizer_offload_requires_adamw(self):
+        if self.model.full_offload and self.optim.type != "adamw":
+            raise ValueError("Full optimizer offload only supports AdamW")
+        return self
+
+    @model_validator(mode="after")
     def full_optimizer_offload_disables_grad_clipping(self):
         if self.model.full_offload and self.optim.max_norm is not None:
             warnings.warn(

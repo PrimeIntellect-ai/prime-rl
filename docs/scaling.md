@@ -138,7 +138,7 @@ targets = ["norm", "attn_proj"]  # see Reference for the full list per architect
 
 ### Optimizer Offloading
 
-State-only optimizer offload remains enabled by default with `model.optim_cpu_offload = true`. For full offload, set `model.optim_cpu_offload = false` and `model.full_offload = true`; this keeps BF16 compute weights on GPU and runs CPU AdamW chunks as gradients become ready during backward. Full offload disables gradient clipping and does not support Muon.
+State-only optimizer offload remains enabled by default with `model.optim_cpu_offload = true`. For full offload, set `model.optim_cpu_offload = false` and `model.full_offload = true`; this keeps BF16 compute weights on GPU and runs CPU AdamW chunks as gradients become ready during backward. Full offload only supports AdamW and disables gradient clipping.
 
 ### LM Head Chunking
 

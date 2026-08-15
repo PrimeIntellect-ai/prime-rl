@@ -200,6 +200,18 @@ def test_full_optimizer_offload_accepts_debug_backend(config_cls):
     assert config.model.full_offload.cpu_optimizer_backend == "torch"
 
 
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+@pytest.mark.parametrize("optimizer_type", ["sgd", "muon", "sign_sgd"])
+def test_full_optimizer_offload_requires_adamw(config_cls, optimizer_type):
+    with pytest.raises(ValidationError, match="Full optimizer offload only supports AdamW"):
+        config_cls.model_validate(
+            {
+                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "optim": {"type": optimizer_type, "max_norm": None},
+            }
+        )
+
+
 def test_resolved_json_roundtrips_explicit_none(tmp_path):
     """An explicit None override survives the write/re-parse round-trip used by launches:
     resolved configs are JSON, which keeps nulls (TOML cannot)."""
