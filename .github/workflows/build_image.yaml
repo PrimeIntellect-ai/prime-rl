@@ -198,6 +198,12 @@ jobs:
           # rather than needlessly recompressed. Pulling zstd layers needs containerd >= 1.5
           # or Docker >= 23.
           outputs: type=image,push=true,compression=zstd,compression-level=3
+          # Registry-backed BuildKit cache: setup-buildx-action creates a fresh
+          # builder per job, so without this every build is cold and re-runs the
+          # full dependency sync. mode=max caches builder-stage layers (where the
+          # sync lives); blobs already in GHCR are not re-uploaded.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.suffix }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.suffix }},mode=max,image-manifest=true,oci-mediatypes=true,compression=zstd,compression-level=3
           platforms: ${{ matrix.platform }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}
