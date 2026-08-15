@@ -9,7 +9,10 @@
 # from this stage is content-hashed, so re-running this cheap stage on every
 # build is free and the sync layer only busts when project metadata changes.
 FROM nvidia/cuda:12.8.1-base-ubuntu24.04 AS manifests
-COPY . /ctx
+# --exclude=.git: .git holds no pyprojects but is ~735 MB and changes every
+# commit; without the exclude it lands in this stage's /ctx layer and gets
+# shipped to the registry cache (mode=max) on every build.
+COPY --exclude=.git . /ctx
 RUN mkdir -p /manifests \
     && cd /ctx \
     && find . -name .git -prune -o -type f -name pyproject.toml -exec cp --parents {} /manifests/ \; \
@@ -246,14 +249,10 @@ WORKDIR /app
 # own layers. BuildKit compresses and pushes layers in parallel, so shipping the whole
 # ~20 GB venv as one layer serialized the export behind a single compressor. Splitting
 # also lets nodes pull the image in parallel. Keep the excludes below in sync with the
-# per-tree copies that follow, or the data lands in the image twice.
-COPY --from=builder --chown=appuser:appuser \
-    --exclude=.venv/lib/python3.12/site-packages/nvidia \
-    --exclude=.venv/lib/python3.12/site-packages/torch \
-    --exclude=.venv/lib/python3.12/site-packages/vllm \
-    --exclude=.venv/lib/python3.12/site-packages/flash_attn \
-    --exclude=.venv/lib/python3.12/site-packages/flash_attn_2_cuda*.so \
-    /app /app
+# per-tree copies above, or the data lands in the image twice.
+# Layer order matters: the big trees only change on dependency bumps, while the
+# excluded /app remainder changes on every source edit — it goes last so a code
+# change re-executes and re-pushes one layer instead of all of them.
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/nvidia /app/.venv/lib/python3.12/site-packages/nvidia
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/torch /app/.venv/lib/python3.12/site-packages/torch
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/vllm /app/.venv/lib/python3.12/site-packages/vllm
@@ -264,6 +263,14 @@ COPY --from=builder /opt/ucx /opt/ucx
 # Copy and set up entrypoint script
 COPY --chown=appuser:appuser scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
+
+COPY --from=builder --chown=appuser:appuser \
+    --exclude=.venv/lib/python3.12/site-packages/nvidia \
+    --exclude=.venv/lib/python3.12/site-packages/torch \
+    --exclude=.venv/lib/python3.12/site-packages/vllm \
+    --exclude=.venv/lib/python3.12/site-packages/flash_attn \
+    --exclude=.venv/lib/python3.12/site-packages/flash_attn_2_cuda*.so \
+    /app /app
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"

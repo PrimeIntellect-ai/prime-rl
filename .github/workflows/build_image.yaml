@@ -161,7 +161,14 @@ jobs:
     steps:
       - name: Remove unnecessary packages
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          # Only reclaim space when the disk is actually tight — deleting the
+          # preinstalled toolchains costs ~70s on the amd64 image-builder runner.
+          avail_gb=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          if [ "${avail_gb:-0}" -lt 80 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          else
+            echo "Skipping cleanup: ${avail_gb}G available on /"
+          fi
 
       - name: Checkout
         uses: actions/checkout@v5
