@@ -34,8 +34,8 @@ class PrimeMonitorConfig(BaseConfig):
 
 
 class MonitorsConfig(BaseConfig):
-    wandb: WandbMonitorConfig | None = WandbMonitorConfig()
-    """Log metrics to Weights & Biases. On by default; disable with ``--no-monitors.wandb``."""
+    wandb: WandbMonitorConfig | None = None
+    """Log metrics to Weights & Biases. Off by default; enable with ``--monitors.wandb``."""
 
     file: FileMonitorConfig | None = FileMonitorConfig()
     """Log metrics and episode traces to the run's output directory. On by default; disable with ``--no-monitors.file``."""

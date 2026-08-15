@@ -307,11 +307,11 @@ Pass `-s <session>` and `-o <run_dir>` (the run directory, `<output_dir>/<run_na
 
 ### Weights & Biases
 
-W&B is on by default (as is the file monitor, which writes `metrics.jsonl` and the per-step trace files to the run directory):
+W&B is off by default (the file monitor, which writes `metrics.jsonl` and the per-step trace files to the run directory, is on by default):
 
 ```bash
+uv run rl @ rl.toml --monitors.wandb                      # default project, random name
 uv run rl @ rl.toml --monitors.wandb.project my-proj --monitors.wandb.name run-42
-uv run rl @ rl.toml --no-monitors.wandb                   # disable W&B
 uv run rl @ rl.toml --no-monitors.file                    # disable the local metric/trace files
 ```
 
