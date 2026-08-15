@@ -1,9 +1,11 @@
 max_steps = 6
 
 [ckpt]
-resume_step = 5
 skip_optimizer = true
 skip_scheduler = true
+
+[resume]
+step = 5
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B"

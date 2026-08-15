@@ -6,7 +6,7 @@ import time
 from collections import defaultdict
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist

@@ -112,6 +112,8 @@ def sft_full_offload_model_only_resume_process(
         f"{wandb_name}-full-offload-model-only-resume",
         "--output-dir",
         output_dir.as_posix(),
+        "--run.name",
+        RUN_NAME,
     ]
 
     return run_process(cmd, timeout=TIMEOUT)
@@ -147,13 +149,13 @@ def test_loss_goes_down_resume(sft_resume_process: ProcessResult, run_dir: Path)
 
 def test_full_offload_model_only_resume_preserves_weights(
     sft_full_offload_model_only_resume_process: ProcessResult,
-    output_dir: Path,
+    run_dir: Path,
 ):
     assert sft_full_offload_model_only_resume_process.returncode == 0, (
         f"Process has non-zero return code ({sft_full_offload_model_only_resume_process})"
     )
-    before_dir = output_dir / "weights" / "step_5"
-    after_dir = output_dir / "weights" / "step_6"
+    before_dir = run_dir / "weights" / "step_5"
+    after_dir = run_dir / "weights" / "step_6"
     before_files = sorted(before_dir.glob("*.safetensors"))
     after_files = sorted(after_dir.glob("*.safetensors"))
     assert before_files
