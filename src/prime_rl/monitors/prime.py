@@ -5,7 +5,6 @@ import atexit
 import io
 import json
 import os
-import random
 from datetime import datetime, timezone
 from typing import Any, Coroutine
 
@@ -92,9 +91,9 @@ class PrimeMonitor(Monitor):
         if kind != "train" or subset != "effective" or not episodes:
             return
 
-        # Sample 10% of the step's episodes (at most 128) to not overwhelm the
+        # Log 10% of the step's episodes (at most 128) to not overwhelm the
         # platform's ingestion. TODO: Lift once we integrate the prime traces SDK.
-        episodes = random.sample(episodes, min(max(1, len(episodes) // 10), 128))
+        episodes = episodes[: min(max(1, len(episodes) // 10), 128)]
 
         async def upload() -> None:
             # Serialization dumps every episode's full model - heavy pure-Python work
