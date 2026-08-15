@@ -156,10 +156,19 @@ share the step file) — untrainable traces (a frozen judge's) appear only in `a
 `runtime` (config + provisioned resource id, e.g. the sandbox id), plus `env_name`,
 `group_id`, `episode_id`, and `policy_version` under `info`.
 
+Each record also carries `advantage`, the scalar view of the credit the rollout was assigned.
+It is only populated in `train/effective` (written at ship time, after credit assignment);
+`null` everywhere else — in `all` (written on arrival, before the sink scores it), for eval
+rollouts, and for algorithms that assign no rl credit (sft, opd, opsd). `null` is distinct from
+`0.0`: the latter means the rollout *was* scored and its group cancelled out, so it carried no
+gradient.
+
 ```bash
 wc -l {run_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
 jq '.rewards' {run_dir}/rollouts/step_42/train/effective/traces.jsonl
 jq 'select(.ok | not) | {id, env: .info.env_name, runtime}' {run_dir}/rollouts/step_*/train/all/traces.jsonl
+# rollouts that scored but carried no gradient (group rewards were all equal)
+jq 'select(.advantage == 0)' {run_dir}/rollouts/step_42/train/effective/traces.jsonl
 ```
 
 The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_N/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the trace subtrees.

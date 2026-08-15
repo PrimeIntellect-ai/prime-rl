@@ -260,3 +260,27 @@ def test_assign_advantages_rejects_misaligned():
     # full length is 3 (prompt + 2 sampled); a 1-element list must be rejected
     with pytest.raises(ValueError, match="align"):
         rollout.assign_advantages([0.5])
+
+
+# --------------------------------------------------------------------------
+# to_record: the scalar advantage rides along on the trace record.
+# --------------------------------------------------------------------------
+
+
+def test_to_record_carries_scalar_advantage():
+    rollout = _build_rollout(0.0, sampled_lengths=[2])
+    rollout.assign_advantages(0.7)
+    assert rollout.to_record()["advantage"] == pytest.approx(0.7)
+
+
+def test_to_record_advantage_is_none_when_unassigned():
+    """An unscored rollout (an ``all`` record, an eval rollout, opd/opsd) records null —
+    distinct from the 0.0 of a scored group whose rewards cancelled out."""
+    rollout = _build_rollout(0.0, sampled_lengths=[2])
+    assert rollout.to_record()["advantage"] is None
+
+
+def test_to_record_distinguishes_zero_advantage_from_unassigned():
+    rollout = _build_rollout(0.0, sampled_lengths=[2])
+    rollout.assign_advantages(0.0)
+    assert rollout.to_record()["advantage"] == 0.0
