@@ -70,8 +70,8 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 |---|---|
 | `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. |
 | `orchestrator.log.vf_level` | Env-worker / [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) log level (`info` default; `debug` is noisy but useful for env debugging). |
-| `--wandb` (+ `--wandb.project`, `--wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
-| `--orchestrator.prime-monitor` | Stream metrics to the Prime Intellect platform (Prime Lab). See [Platform monitoring](#platform-monitoring). |
+| `--monitors.wandb` (+ `--monitors.wandb.project`, `--monitors.wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
+| `--monitors.prime` | Stream metrics and episodes to the Prime Intellect platform (Prime Lab). See [Platform monitoring](#platform-monitoring). |
 
 **Run management:**
 
@@ -171,7 +171,7 @@ See [Algorithms § Multi-Turn Trajectories](algorithms.md#multi-turn-trajectorie
 The minimal SFT run trains `Qwen3-0.6B` on the `reverse-text` SFT dataset:
 
 ```bash
-uv run sft @ examples/basic/reverse-text/sft.toml --wandb
+uv run sft @ examples/basic/reverse-text/sft.toml --monitors.wandb
 ```
 
 Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and Torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
@@ -358,40 +358,34 @@ Pass `-s <session>` and `-o <run_dir>` (the run directory, `<output_dir>/<run_na
 
 ### Weights & Biases
 
-W&B is off by default. Enable with `--wandb`:
+W&B is off by default (the file monitor, which writes `metrics.jsonl` and the per-step trace files to the run directory, is on by default):
 
 ```bash
-uv run rl @ rl.toml --wandb                               # default project, random name
-uv run rl @ rl.toml --wandb.project my-proj --wandb.name run-42
-uv run rl @ rl.toml --no-wandb                            # force-disable even if the TOML enables it
+uv run rl @ rl.toml --monitors.wandb                      # default project, random name
+uv run rl @ rl.toml --monitors.wandb.project my-proj --monitors.wandb.name run-42
+uv run rl @ rl.toml --no-monitors.file                    # disable the local metric/trace files
 ```
 
-The trainer and orchestrator log into a **single shared W&B run**, so all metrics from both processes land in one place. Shared mode requires the W&B SDK ≥ 0.19.9 and is incompatible with `wandb.offline = true`.
-
-By default, every 10 steps each process also logs a sample of prompts/completions (with rewards and advantages) and reward/advantage/entropy distributions as W&B tables. Tune via `--wandb.log-extras.interval` and `--wandb.log-extras.sample-ratio`, or disable subsets:
-
-```bash
-uv run rl @ rl.toml --wandb \
-  --orchestrator.wandb.log-extras.interval 50 \
-  --no-trainer.wandb.log-extras.distributions
-```
+The trainer and orchestrator log into a **single shared W&B run**, so all metrics from both processes land in one place. Shared mode requires the W&B SDK ≥ 0.19.9 and is incompatible with `monitors.wandb.offline = true`.
 
 prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, every training run (RL and SFT) gets an **auto-created `overview` saved view** curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first.
 
 ### Platform Monitoring
 
-Register a run on the Prime Intellect platform (Prime Lab) and stream training metrics, samples, and distributions to the platform dashboard. Bare flag uses defaults:
+Register a run on the Prime Intellect platform (Prime Lab) and stream training metrics and episodes to the platform dashboard. Bare flag uses defaults:
 
 ```bash
-uv run rl @ rl.toml --orchestrator.prime-monitor
+uv run rl @ rl.toml --monitors.prime
 ```
 
 Or set it in TOML:
 
 ```toml
-[orchestrator.prime_monitor]
-run_name = "my-experiment"
+[monitors.prime]
+name = "my-experiment"
 ```
+
+Every 10th step the orchestrator uploads the step's episodes (full conversations with rewards and advantages) to the run's sample viewer.
 
 Requires `PRIME_API_KEY` (set via `prime login` or env var) and an allowlisted team. Currently internal-only.
 

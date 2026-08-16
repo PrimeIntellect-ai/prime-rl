@@ -477,7 +477,7 @@ type = "repetition"
 threshold = 0.4
 ```
 
-Filtered rollouts still appear in W&B distributions, just not in the trainer batch — useful for spotting whether filtering is doing its job.
+Filtered rollouts still appear in the W&B metrics, just not in the trainer batch — useful for spotting whether filtering is doing its job.
 
 ## Multi-Turn Trajectories
 

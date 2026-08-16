@@ -91,8 +91,7 @@ def build_evaluator_config(config: SFTConfig) -> EvaluatorConfig:
         max_steps=config.max_steps,
         resume_step=resolve_resume_step(config),
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
-        wandb=config.wandb,
-        file_monitor=config.file_monitor,
+        monitors=config.monitors,
     )
 
 
@@ -254,7 +253,7 @@ def sft_slurm(config: SFTConfig):
     # Trainer and evaluator processes log to a single shared W&B run across both jobs,
     # keyed by the launcher's run id.
     prl_run_id: str | None = None
-    if decoupled_eval and config.wandb is not None:
+    if decoupled_eval and config.monitors.wandb is not None:
         prl_run_id = os.environ["PRL_RUN_ID"]
 
     script_path = config.run_dir / SFT_SBATCH

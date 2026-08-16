@@ -2,13 +2,9 @@ from pathlib import Path
 
 from pydantic import Field, model_validator
 
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.orchestrator import EvalConfig
-from prime_rl.configs.shared import (
-    ClientConfig,
-    FileMonitorConfig,
-    LogConfig,
-    WandbWithExtrasConfig,
-)
+from prime_rl.configs.shared import ClientConfig, LogConfig
 from prime_rl.utils.config import BaseConfig
 
 
@@ -77,10 +73,8 @@ class EvaluatorConfig(BaseConfig):
 
     log: LogConfig = LogConfig()
 
-    wandb: WandbWithExtrasConfig | None = None
-
-    file_monitor: FileMonitorConfig | None = None
-    """Local JSONL metric sink. If set, metrics are appended to ``<output_dir>/metrics.jsonl``."""
+    monitors: MonitorsConfig = MonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
 
     @model_validator(mode="after")
     def auto_setup_weights_dir(self):

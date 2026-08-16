@@ -5,7 +5,7 @@ seq_len = 2048
 num_train_gpus = 4
 num_infer_gpus = 4
 
-[wandb]
+[monitors.wandb]
 project = "alphabet-sort"
 name = "alphabet-sort"
 

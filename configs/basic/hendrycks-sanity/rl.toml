@@ -10,7 +10,7 @@ num_infer_gpus = 1
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
-[wandb]
+[monitors.wandb]
 project = "hendrycks-sanity"
 name = "hendrycks-sanity"
 

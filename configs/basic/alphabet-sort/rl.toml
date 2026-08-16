@@ -11,7 +11,7 @@ num_infer_gpus = 1
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
-[wandb]
+[monitors.wandb]
 project = "alphabet-sort"
 name = "alphabet-sort"
 

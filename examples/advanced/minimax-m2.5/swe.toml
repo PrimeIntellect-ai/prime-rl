@@ -20,7 +20,7 @@ job_name = "swe-minimax"
 [ckpt]
 interval = 100
 
-[wandb]
+[monitors.wandb]
 project = "minimax-swe"
 
 [trainer.model]

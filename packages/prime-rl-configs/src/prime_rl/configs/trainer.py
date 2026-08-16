@@ -4,16 +4,15 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     EnvVars,
-    FileMonitorConfig,
     HeartbeatConfig,
     MetricsServerConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
-    WandbConfig,
     ZMQTransportConfig,
 )
 from prime_rl.utils.config import BaseConfig
@@ -58,11 +57,6 @@ class ActivationOffloadingConfig(BaseConfig):
 class CompileConfig(BaseConfig):
     fullgraph: bool = False
     """Compile transformer blocks with ``fullgraph=True``."""
-
-
-class BenchConfig(BaseConfig):
-    output_json: Path | None = None
-    """Path to write benchmark results as JSON. If unset, results are only printed to the console."""
 
 
 class IndexCacheConfig(BaseConfig):
@@ -588,10 +582,8 @@ class TrainerConfig(BaseConfig):
 
     log: TrainerLogConfig = TrainerLogConfig()
 
-    wandb: WandbConfig | None = None
-
-    file_monitor: FileMonitorConfig | None = None
-    """Local JSONL metric sink. If set, trainer metrics are appended to ``<output_dir>/metrics.jsonl``."""
+    monitors: MonitorsConfig = MonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
@@ -607,9 +599,6 @@ class TrainerConfig(BaseConfig):
 
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""
-
-    bench: BenchConfig | None = None
-    """Benchmark-mode configuration. When set, ``max_steps`` is forced to 4 and fake data is used."""
 
     gc: GCConfig | None = GCConfig()
     """Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior."""
@@ -660,16 +649,6 @@ class TrainerConfig(BaseConfig):
                 "freeze_vision_encoder=false is incompatible with LoRA. "
                 "LoRA freezes all non-adapter parameters including the vision encoder."
             )
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_bench(self):
-        if self.bench is not None:
-            self.max_steps = 4  # 1 Warmup + 3 Benchmark
-            if not self.data.fake:
-                self.data.fake = FakeDataLoaderConfig()
-            if self.ckpt:  # Do not checkpoint
-                self.ckpt = None
         return self
 
     @model_validator(mode="after")

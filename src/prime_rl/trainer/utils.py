@@ -1,19 +1,14 @@
 import gc
-import json
 import pickle
 import shutil
 import time
 from collections import defaultdict
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
 
-import pandas as pd
 import torch
 import torch.distributed as dist
 from rich import print as rich_print
-from rich.console import Console
-from rich.table import Table
 from rich.text import Text
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -21,7 +16,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
-from prime_rl.utils.utils import format_num, format_time, get_step_path
+from prime_rl.utils.utils import get_step_path
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
 
@@ -58,7 +53,7 @@ def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
     Disk usage metrics for the checkpoint directory (<output_dir>/checkpoints).
 
     Intended to be called by trainer(s) on rank 0 and included in an existing
-    monitor.log(...) call (once per step).
+    monitors.log(...) call (once per step).
     """
     ckpt_dir = get_ckpt_dir(output_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -94,125 +89,6 @@ def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrai
     for token, mask in zip(tokenizer.convert_ids_to_tokens(input_ids), loss_mask):
         text.append(token.replace("Ġ", " ").replace("Ċ", "\n"), style="cyan" if mask else "white")
     rich_print(text)
-
-
-def print_benchmark(history: dict[str, list[Any]]) -> None:
-    """
-    Print benchmark results as rich table. Shows formatted values for the
-    training throughput and overall step time. First first N rows show the
-    per-step values, and the last row shows the mean, std, min, and max values.
-    """
-    history.pop("step")
-    assert all(len(v) for v in history.values()), "All metrics must have logged the same number of steps"
-
-    # Turn metric history into pd.DataFrame
-    df = pd.DataFrame(dict(history.items()))
-    columns = {
-        "perf/mfu": "MFU",
-        "perf/throughput": "Throughput",
-        "time/step": "Step Time",
-        "perf/peak_memory": "Peak Memory",
-    }
-    df = df[columns.keys()].rename(columns=columns)
-    df = df.iloc[1:]  # Exclude first row
-
-    # Setup console
-    console = Console()
-    table = Table(title="Benchmark")
-
-    # Add columns
-    table.add_column("Step", justify="right")
-    for col in df.columns:
-        table.add_column(col, justify="center", style="magenta")
-
-    # Add formatted rows
-    formatted_df = pd.DataFrame(columns=df.columns)
-    formatted_df["MFU"] = df["MFU"].apply(lambda x: f"{format_num(x, precision=2)}%")
-    formatted_df["Throughput"] = df["Throughput"].apply(lambda x: format_num(x, precision=2))
-    formatted_df["Step Time"] = df["Step Time"].apply(format_time)
-    formatted_df["Peak Memory"] = df["Peak Memory"].apply(lambda x: f"{format_num(x, precision=1)} GiB")
-    for step, row in formatted_df.iterrows():
-        table.add_row(*([str(step)] + [str(x) for x in row]))
-
-    # Separator
-    table.add_row(*([""] * len(formatted_df.columns)))
-
-    # Add row for formatted, aggregated statistics
-    mean_df = df.describe().loc[["mean", "std", "min", "max"], :]
-    formatted_mean_df = pd.DataFrame()
-    formatted_mean_df["MFU"] = mean_df["MFU"].apply(lambda x: f"{format_num(x, precision=2)}%")
-    formatted_mean_df["Throughput"] = mean_df["Throughput"].apply(format_num, precision=2)
-    formatted_mean_df["Step Time"] = mean_df["Step Time"].apply(format_time)
-    mean_row = (
-        ["Overall"]
-        + formatted_mean_df.T.apply(
-            lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
-        ).tolist()
-        + [
-            f"{format_num(mean_df['Peak Memory']['mean'], precision=1)} GiB ({mean_df['Peak Memory']['mean'] / (torch.cuda.mem_get_info()[1] / 1024**3) * 100:.1f}%)"
-        ]
-    )
-    table.add_row(*mean_row)
-
-    # Display table
-    console.print(table)
-
-
-def export_benchmark_json(history: dict[str, list[Any]], output_path: Path) -> None:
-    """
-    Export benchmark results to a JSON file.
-
-    The JSON contains aggregated statistics (mean, std, min, max) for each metric.
-    """
-    history = history.copy()
-    history.pop("step", None)
-
-    # Turn metric history into pd.DataFrame
-    df = pd.DataFrame(dict(history.items()))
-    columns = {
-        "perf/mfu": "mfu",
-        "perf/throughput": "throughput",
-        "time/step": "step_time",
-        "perf/peak_memory": "peak_memory",
-    }
-    df = df[columns.keys()].rename(columns=columns)
-    df = df.iloc[1:]  # Exclude first warmup row
-
-    # Calculate statistics
-    stats = df.describe().loc[["mean", "std", "min", "max"], :]
-
-    # Get peak memory percentage
-    total_memory_gib = torch.cuda.mem_get_info()[1] / 1024**3
-    peak_memory_pct = stats["peak_memory"]["mean"] / total_memory_gib * 100
-
-    result = {
-        "mfu": {
-            "mean": float(stats["mfu"]["mean"]),
-            "std": float(stats["mfu"]["std"]),
-            "min": float(stats["mfu"]["min"]),
-            "max": float(stats["mfu"]["max"]),
-        },
-        "throughput": {
-            "mean": float(stats["throughput"]["mean"]),
-            "std": float(stats["throughput"]["std"]),
-            "min": float(stats["throughput"]["min"]),
-            "max": float(stats["throughput"]["max"]),
-        },
-        "step_time": {
-            "mean": float(stats["step_time"]["mean"]),
-            "std": float(stats["step_time"]["std"]),
-            "min": float(stats["step_time"]["min"]),
-            "max": float(stats["step_time"]["max"]),
-        },
-        "peak_memory": {
-            "gib": float(stats["peak_memory"]["mean"]),
-            "pct": float(peak_memory_pct),
-        },
-    }
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(result, f, indent=2)
 
 
 def flexible_all_gather(tensor: Tensor) -> Tensor:

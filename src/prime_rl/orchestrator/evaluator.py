@@ -8,18 +8,20 @@ runs the configured evals against the updated weights, sequentially per
 checkpoint so every epoch measures exactly one policy version.
 
 Reuses the orchestrator's eval components — ``EvalEnvs`` / ``EvalSource`` /
-``EvalSink`` / ``EvalRollouts`` — and logs metrics and traces the same way
-(``eval/{env}/...`` metrics, ``rollouts/step_{n}/eval/...`` trace files).
+``EvalSink`` / ``EvalRollouts`` — and logs metrics and episodes through the same
+monitors (``eval/{env}/...`` metrics, episode traces via the file monitor).
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 
 import verifiers.v1 as vf
 
+from prime_rl import monitors
 from prime_rl.configs.evaluator import EvaluatorConfig
 from prime_rl.orchestrator.envs import EvalEnv, EvalEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
@@ -29,11 +31,10 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.types import EvalBatch, Rollout
-from prime_rl.orchestrator.utils import intercept_vf_logging, save_rollouts, set_default_executor
+from prime_rl.orchestrator.utils import group_episodes, intercept_vf_logging, set_default_executor
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pathing import get_all_ckpt_steps, get_step_path, get_trace_path
+from prime_rl.utils.pathing import get_all_ckpt_steps, get_step_path
 from prime_rl.utils.utils import clean_exit
 
 monkey_patch_oai_iterable_types()
@@ -58,16 +59,18 @@ class Evaluator:
         config = self.config
         set_default_executor()
 
-        get_logger().info(f"Initializing monitor ({config.wandb})")
-        self.monitor = setup_monitor(
-            wandb_config=config.wandb,
-            file_config=config.file_monitor,
+        get_logger().info(f"Initializing monitors ({config.monitors})")
+        await monitors.setup(
+            wandb=config.monitors.wandb,
+            file=config.monitors.file,
             output_dir=config.output_dir,
             run_config=config,
             eval_env_names=[source.resolved_name for source in config.eval.source],
             overview_flavor="sft",
         )
-        self.run_id = self.monitor.run_id or uuid.uuid4().hex
+        # The launcher-set $PRL_RUN_ID is the run identity; standalone runs mint a local one.
+        self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
+        self.run_name = os.environ.get("PRL_RUN_NAME")
 
         get_logger().info(
             f"Initializing inference pool (base_url={config.eval.client.base_url}, model={config.model_name})"
@@ -205,7 +208,7 @@ class Evaluator:
 
         for future in asyncio.as_completed(tasks):
             episode = await future
-            run = vf.EvalRunInfo(id=self.run_id, step=step)
+            run = vf.EvalRunInfo(id=self.run_id, name=self.run_name, step=step)
             for rollout in episode:
                 rollout.record_run(
                     run,
@@ -214,11 +217,7 @@ class Evaluator:
                     episode_id=rollout.episode_id,
                     policy_version=rollout.policy_version,
                 )
-            await asyncio.to_thread(
-                save_rollouts,
-                [rollout.to_record() for rollout in episode],
-                get_trace_path(self.config.output_dir, step, "eval", "all"),
-            )
+            await monitors.log(group_episodes(episode), step, "eval", "all")
             eval_batch = self.eval_sink.add(episode)
             if eval_batch is not None:
                 await self.finalize_eval_batch(eval_batch)
@@ -266,17 +265,13 @@ class Evaluator:
         return rollouts
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
-        """Persist + log one completed eval epoch, mirroring the orchestrator:
-        effective traces, ``monitor.log_eval_samples``, ``eval/{env}/...`` metrics."""
+        """Persist + log one completed eval epoch through the monitors, mirroring the
+        orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict."""
         if not batch.rollouts:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
             return
 
-        records = [r.to_record() for r in batch.rollouts.effective]
-        await asyncio.to_thread(
-            save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
-        )
-        self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
+        await monitors.log(group_episodes(batch.rollouts.effective.rollouts), batch.step, "eval", "effective")
 
         rollouts = batch.rollouts
         effective = rollouts.effective
@@ -285,7 +280,7 @@ class Evaluator:
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
         metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
         metrics["step"] = float(batch.step)
-        self.monitor.log(metrics, step=batch.step)
+        await monitors.log(metrics, step=batch.step)
 
         eff, full = effective.metrics, rollouts.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
@@ -299,9 +294,6 @@ class Evaluator:
 
     async def stop(self) -> None:
         """Best-effort teardown; tolerates a partially completed ``setup()``."""
-        monitor = getattr(self, "monitor", None)
-        if monitor is not None:
-            monitor.save_final_summary()
         pool = getattr(self, "pool", None)
         if pool is not None:
             await pool.stop()
@@ -312,6 +304,8 @@ async def run_evaluator(config: EvaluatorConfig) -> None:
     evaluator = Evaluator(config)
     try:
         await evaluator.run()
+        # Finalize only on a clean exit — a crashed evaluator must not mark the run completed.
+        await monitors.finalize()
     finally:
         await evaluator.stop()
 

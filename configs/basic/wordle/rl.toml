@@ -8,7 +8,7 @@ seq_len = 8192
 num_train_gpus = 1
 num_infer_gpus = 1
 
-[wandb]
+[monitors.wandb]
 project = "wordle"
 name = "wordle"
 

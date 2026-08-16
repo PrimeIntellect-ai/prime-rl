@@ -10,19 +10,17 @@ from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.evaluator import OnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     EnvVars,
-    FileMonitorConfig,
     HeartbeatConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
     TrainerLogConfig,
-    WandbWithExtrasConfig,
 )
 from prime_rl.configs.trainer import (
     AdamWConfig,
-    BenchConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
     GCConfig,
@@ -217,10 +215,8 @@ class SFTConfig(BaseConfig):
 
     log: TrainerLogConfig = TrainerLogConfig()
 
-    wandb: WandbWithExtrasConfig | None = None
-
-    file_monitor: FileMonitorConfig | None = None
-    """Local JSONL metric sink. If set, metrics are appended to ``<output_dir>/metrics.jsonl``."""
+    monitors: MonitorsConfig = MonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
 
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
@@ -247,8 +243,8 @@ class SFTConfig(BaseConfig):
             self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
         if self.run.dir is None:
             self.run.dir = self.run.name
-        if self.wandb is not None and self.wandb.name is None:
-            self.wandb.name = self.run.name
+        if self.monitors.wandb is not None and self.monitors.wandb.name is None:
+            self.monitors.wandb.name = self.run.name
         return self
 
     matmul_precision: Literal["highest", "high", "medium"] = "high"
@@ -259,9 +255,6 @@ class SFTConfig(BaseConfig):
 
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""
-
-    bench: BenchConfig | None = None
-    """Benchmark-mode configuration. When set, ``max_steps`` is forced to 4 and fake data is used."""
 
     gc: GCConfig | None = GCConfig()
     """Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior."""
@@ -553,17 +546,6 @@ class SFTConfig(BaseConfig):
         return self
 
     ### Auto-setup and validate shared configs
-
-    @model_validator(mode="after")
-    def auto_setup_bench(self):
-        if self.bench is not None:
-            self.max_steps = 4  # 1 Warmup + 3 Benchmark
-            if self.ckpt:  # Do not checkpoint
-                self.ckpt = None
-            # No checkpoints means nothing to evaluate
-            self.eval = None
-            self.inference = None
-        return self
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):

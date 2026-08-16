@@ -493,24 +493,26 @@ def test_trainer_chat_template_cascades_to_inference():
 
 def test_shared_wandb_fields_propagate_to_subconfigs():
     """Every ``SharedWandbConfig`` leaf (project, entity, name, group, tags,
-    offline) propagates to both trainer.wandb and orchestrator.wandb. Regression
-    for a miss in the inline propagator."""
+    offline) propagates to both trainer.monitors.wandb and
+    orchestrator.monitors.wandb. Regression for a miss in the inline propagator."""
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
-            "wandb": {
-                "project": "shared-proj",
-                "entity": "shared-entity",
-                "name": "shared-name",
-                "group": "shared-group",
-                "tags": ["a", "b"],
-                "offline": False,
+            "monitors": {
+                "wandb": {
+                    "project": "shared-proj",
+                    "entity": "shared-entity",
+                    "name": "shared-name",
+                    "group": "shared-group",
+                    "tags": ["a", "b"],
+                    "offline": False,
+                }
             },
             "trainer": {},
             "orchestrator": {"renderer": {"name": "default"}},
         }
     )
-    for component in (config.trainer.wandb, config.orchestrator.wandb):
+    for component in (config.trainer.monitors.wandb, config.orchestrator.monitors.wandb):
         assert component is not None
         assert component.project == "shared-proj"
         assert component.entity == "shared-entity"
@@ -518,6 +520,24 @@ def test_shared_wandb_fields_propagate_to_subconfigs():
         assert component.group == "shared-group"
         assert component.tags == ["a", "b"]
         assert component.offline is False
+
+
+def test_shared_monitor_disable_and_prime_propagate():
+    """CLI ``--no-monitors.wandb`` / ``--no-monitors.file`` (which land as the string
+    "None") propagate the disable to both sub-configs, whose monitors default to
+    enabled; a shared ``[monitors.prime]`` reaches the orchestrator only."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "monitors": {"wandb": "None", "file": "None", "prime": {"name": "shared-prime"}},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    assert config.trainer.monitors.wandb is None and config.trainer.monitors.file is None
+    assert config.orchestrator.monitors.wandb is None and config.orchestrator.monitors.file is None
+    assert config.orchestrator.monitors.prime is not None
+    assert config.orchestrator.monitors.prime.name == "shared-prime"
 
 
 def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
@@ -557,7 +577,7 @@ def test_run_dir_propagates_through_cli(tmp_path):
             "max_steps": 1,
             "seq_len": 128,
             "model": {"name": "Qwen/Qwen3-0.6B"},
-            "wandb": {},
+            "monitors": {"wandb": {}},
             "trainer": {},
             "orchestrator": {"batch_size": 16, "group_size": 1},
             "inference": {},
@@ -569,9 +589,9 @@ def test_run_dir_propagates_through_cli(tmp_path):
     assert config.trainer.output_dir == shared_out / "my-exp"
     assert config.orchestrator.output_dir == shared_out / "my-exp"
     # Unset monitor names inherit run.name
-    assert config.wandb is not None and config.wandb.name == "my-exp"
-    assert config.trainer.wandb is not None and config.trainer.wandb.name == "my-exp"
-    assert config.orchestrator.wandb is not None and config.orchestrator.wandb.name == "my-exp"
+    assert config.monitors.wandb is not None and config.monitors.wandb.name == "my-exp"
+    assert config.trainer.monitors.wandb is not None and config.trainer.monitors.wandb.name == "my-exp"
+    assert config.orchestrator.monitors.wandb is not None and config.orchestrator.monitors.wandb.name == "my-exp"
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():

@@ -2,6 +2,7 @@ import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before im
 
 from contextlib import nullcontext
 import time
+import asyncio
 from datetime import timedelta
 
 # Import environment before any other imports
@@ -48,21 +49,19 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     Tensors,
-    export_benchmark_json,
     filter_rl_trainer_tensor_stats_for_wandb,
     get_ckpt_disk_metrics,
     setup_torch_distributed,
-    print_benchmark,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer
-from prime_rl.utils.monitor import setup_monitor
+from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
+from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
@@ -77,14 +76,12 @@ def train(config: TrainerConfig):
     )
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
-    # Print warning if running in benchmark mode
-    if config.bench is not None:
-        logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
-
-    # Setup the monitor
-    logger.info(f"Initializing monitor ({config.wandb})")
-    monitor = setup_monitor(
-        config.wandb, file_config=config.file_monitor, output_dir=config.output_dir, run_config=config
+    # Setup the monitors
+    logger.info(f"Initializing monitors ({config.monitors})")
+    asyncio.run(
+        monitors.setup(
+            wandb=config.monitors.wandb, file=config.monitors.file, output_dir=config.output_dir, run_config=config
+        )
     )
 
     # Setup heartbeat (only on rank 0)
@@ -253,6 +250,7 @@ def train(config: TrainerConfig):
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function
     start_step = progress.step
+    max_peak_memory = 0.0
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -630,6 +628,7 @@ def train(config: TrainerConfig):
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
         mfu = perf_counter.get_step_mfu(num_tokens, forward_backward_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
+        max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
@@ -653,7 +652,7 @@ def train(config: TrainerConfig):
             "perf/peak_memory": peak_memory,
             "step": progress.step,
         }
-        monitor.log(perf_metrics, step=progress.step)
+        asyncio.run(monitors.log(perf_metrics, step=progress.step))
 
         # Log optimizer metrics
         optim_metrics = {
@@ -662,7 +661,7 @@ def train(config: TrainerConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
-        monitor.log(optim_metrics, step=progress.step)
+        asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         # Compute derived metrics
         entropy_mean = tensor_stats.get("entropy/all/mean", 0.0)
@@ -671,7 +670,7 @@ def train(config: TrainerConfig):
             tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
 
         tensor_stats["step"] = progress.step
-        monitor.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step)
+        asyncio.run(monitors.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step))
 
         # Log time metrics
         time_metrics = {
@@ -683,12 +682,12 @@ def train(config: TrainerConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        monitor.log(time_metrics, step=progress.step)
+        asyncio.run(monitors.log(time_metrics, step=progress.step))
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.output_dir)
         disk_metrics["step"] = progress.step
-        monitor.log(disk_metrics, step=progress.step)
+        asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
         # Update Prometheus metrics if configured
         if metrics_server is not None:
@@ -734,7 +733,7 @@ def train(config: TrainerConfig):
         weight_ckpt_manager.save(progress.step, model, tokenizer)
         weight_ckpt_manager.maybe_clean()
 
-    logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
+    logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished!")
 
     # Stop metrics/health server if configured
@@ -742,14 +741,6 @@ def train(config: TrainerConfig):
         metrics_server.stop()
     if health_server is not None:
         health_server.stop()
-
-    # Optionally, print benchmark table and export JSON
-    if config.bench is not None and world.is_master:
-        history = to_col_format(monitor.history)
-        print_benchmark(history)
-        if config.bench.output_json:
-            export_benchmark_json(history, config.bench.output_json)
-            logger.info(f"Benchmark results written to {config.bench.output_json}")
 
 
 def main():
