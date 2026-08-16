@@ -5,8 +5,8 @@ is — a bundle of sampling and the per-token training signal. This package
 turns the signal half into runtime objects (the sampling half is the env's
 :class:`~prime_rl.orchestrator.sampler.Sampler`):
 
-- one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``rae``,
-  ``hierarchical_grpo``, ``opd``, ``opsd``, ``sft``) — each named class owns
+- one module per algorithm (``grpo``, ``turn_credit``, ``echo``, ``max_rl``,
+  ``rae``, ``hierarchical_grpo``, ``opd``, ``opsd``, ``sft``) — each named class owns
   its scoring hooks
   (``score_rollout`` / ``score_group``) and declares what it needs (loss
   component, a "teacher", ...). One instance per env, built by
@@ -39,6 +39,7 @@ from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.rae import RAEAlgorithm
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
+from prime_rl.orchestrator.algo.turn_credit import TurnCreditAlgorithm
 from prime_rl.orchestrator.types import Rollout
 
 if TYPE_CHECKING:
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
 # each config class's defaults are its vetted parameterization.
 ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "grpo": GRPOAlgorithm,
+    "turn_credit": TurnCreditAlgorithm,
     "echo": EchoAlgorithm,
     "max_rl": MaxRLAlgorithm,
     "rae": RAEAlgorithm,
@@ -81,6 +83,7 @@ __all__ = [
     "RAEAlgorithm",
     "Rollout",
     "SFTDistillAlgorithm",
+    "TurnCreditAlgorithm",
     "build_algorithm",
     "connect_frozen_pool",
     "stamp_advantages",

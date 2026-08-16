@@ -60,7 +60,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
-| `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
+| `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `turn_credit`, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
 | `[[orchestrator.eval.source]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
@@ -90,6 +90,7 @@ The RL entrypoint supports several training algorithms, switched via `[orchestra
 | `algo.type` | Frozen model | Use case |
 |---|---|---|
 | `grpo` (default) | None | Standard group-relative RL |
+| `turn_credit` | None | GRPO plus within-rollout credit from per-turn state-of-the-world scores (`info["turn_rewards"]`), smeared backward with decay `gamma`; works without a final reward and at `group_size = 1` |
 | `max_rl` | None | [MaxRL](https://arxiv.org/abs/2602.02710): GRPO with mean-normalized advantages (maximum-likelihood RL) |
 | `rae` | None | [SPIRAL](https://arxiv.org/abs/2506.24119)'s role-conditioned advantage estimation: reward minus a per-agent EMA baseline, for multi-agent self-play envs (e.g. `kuhn-poker`) |
 | `hierarchical_grpo` | None | GRPO for proposer-solver envs: compare solvers only with attempts on the same proposed problem, and compare proposers with the other proposals in the group |
