@@ -103,6 +103,7 @@ class Evaluator:
 
         get_logger().info(f"Watching {config.weights_dir} for new weight checkpoints (max_steps={config.max_steps})")
         while True:
+            assert config.weights_dir is not None  # resolved by the config validator
             steps = get_all_ckpt_steps(config.weights_dir)
             stable = {step: (get_step_path(config.weights_dir, step) / "STABLE").exists() for step in steps}
             newest_stable = max((step for step in steps if stable[step]), default=None)
@@ -155,6 +156,7 @@ class Evaluator:
     async def maybe_run_evals(self, step: int, *, reload_weights: bool = False, force: bool = False) -> None:
         """Fire eligible envs for one checkpoint step and run the full epoch(s),
         reloading the inference weights first. No-op when no env is due."""
+        assert self.config.weights_dir is not None  # resolved by the config validator
         weight_dir = get_step_path(self.config.weights_dir, step)
         if reload_weights and not (weight_dir / "STABLE").exists():
             get_logger().warning(f"No stable weight checkpoint for step {step} ({weight_dir}) - skipping eval")

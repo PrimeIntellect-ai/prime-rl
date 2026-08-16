@@ -86,6 +86,7 @@ def build_evaluator_config(config: SFTConfig) -> EvaluatorConfig:
     return EvaluatorConfig(
         model=config.model.name,
         eval=config.eval,
+        weights_dir=get_weights_dir(get_ckpt_base(config)),
         output_dir=config.run_dir,
         max_steps=config.max_steps,
         resume_step=resolve_resume_step(config),
@@ -536,7 +537,7 @@ def clean_stale_eval_artifacts(config: SFTConfig) -> None:
         logger.warning("NEVER_CLEAN is set - keeping stale weight checkpoints; the evaluator may replay them")
         return
     resume_step = resolve_resume_step(config)
-    weights_dir = get_weights_dir(config.run_dir)
+    weights_dir = get_weights_dir(get_ckpt_base(config))
     stale_steps = [step for step in get_all_ckpt_steps(weights_dir) if resume_step is None or step > resume_step]
     if stale_steps:
         logger.info(

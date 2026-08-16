@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.orchestrator import EvalConfig
@@ -53,6 +53,11 @@ class EvaluatorConfig(BaseConfig):
     eval: OnlineEvalConfig
     """Eval sources, sampling, intervals, and the inference client."""
 
+    weights_dir: Path | None = None
+    """Directory to watch for ``step_{n}`` HF weight checkpoints. The ``sft`` launcher
+    fills it from ``ckpt.output_dir`` when checkpoints are redirected to another volume;
+    defaults to ``<output_dir>/weights``."""
+
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — rollout traces and logs are written as
     subdirectories. Shared with the trainer."""
@@ -72,7 +77,8 @@ class EvaluatorConfig(BaseConfig):
     monitors: MonitorsConfig = MonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
 
-    @property
-    def weights_dir(self) -> Path:
-        """Where the trainer's ``step_{n}`` HF weight checkpoints land."""
-        return self.output_dir / "weights"
+    @model_validator(mode="after")
+    def auto_setup_weights_dir(self):
+        if self.weights_dir is None:
+            self.weights_dir = self.output_dir / "weights"
+        return self
