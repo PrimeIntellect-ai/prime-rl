@@ -5,7 +5,6 @@ import atexit
 import io
 import json
 import os
-import random
 from datetime import datetime, timezone
 from typing import Any, Coroutine
 
@@ -96,14 +95,11 @@ class PrimeMonitor(Monitor):
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         """Upload one platform sample per episode via the presigned-URL Parquet flow.
         Only the trained cohort ships to the platform."""
-        if kind != "train" or subset != "effective" or not episodes:
+        # Upload every 10th step, unsampled - the pre-refactor cadence - to not
+        # overwhelm the platform's ingestion. TODO: Lift once we integrate the
+        # prime traces SDK.
+        if kind != "train" or subset != "effective" or not episodes or step % 10 != 0:
             return
-
-        # Sample 10% of the step's episodes (at most 128) to not overwhelm the
-        # platform's ingestion - random, since the batch is ordered by group finalization
-        # and a prefix would over-represent early-finishing envs.
-        # TODO: Lift once we integrate the prime traces SDK.
-        episodes = random.sample(episodes, min(max(1, len(episodes) // 10), 128))
 
         async def upload() -> None:
             # Serialization dumps every episode's full model - heavy pure-Python work
