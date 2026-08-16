@@ -161,8 +161,7 @@ jobs:
     steps:
       - name: Remove unnecessary packages
         run: |
-          # Only reclaim space when the disk is actually tight — deleting the
-          # preinstalled toolchains costs ~70s on the amd64 image-builder runner.
+          # Deleting the preinstalled toolchains costs ~70s; skip unless disk is tight.
           avail_gb=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
           if [ "${avail_gb:-0}" -lt 80 ]; then
             sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -205,10 +204,8 @@ jobs:
           # rather than needlessly recompressed. Pulling zstd layers needs containerd >= 1.5
           # or Docker >= 23.
           outputs: type=image,push=true,compression=zstd,compression-level=3
-          # Registry-backed BuildKit cache: setup-buildx-action creates a fresh
-          # builder per job, so without this every build is cold and re-runs the
-          # full dependency sync. mode=max caches builder-stage layers (where the
-          # sync lives); blobs already in GHCR are not re-uploaded.
+          # The per-job builder is ephemeral; mode=max caches builder-stage
+          # layers so warm builds skip the dependency sync.
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.suffix }}
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.suffix }},mode=max,image-manifest=true,oci-mediatypes=true,compression=zstd,compression-level=3
           platforms: ${{ matrix.platform }}

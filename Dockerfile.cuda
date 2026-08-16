@@ -4,14 +4,10 @@
 
 #inspired from https://github.com/astral-sh/uv-docker-example/blob/main/multistage.Dockerfile
 
-# Skeleton stage: collect every pyproject.toml plus the lockfile, so the
-# dependency sync in the builder caches independently of source edits. COPY
-# from this stage is content-hashed, so re-running this cheap stage on every
-# build is free and the sync layer only busts when project metadata changes.
+# Every pyproject.toml + uv.lock, so the dependency sync below caches
+# independently of source edits.
 FROM nvidia/cuda:12.8.1-base-ubuntu24.04 AS manifests
-# --exclude=.git: .git holds no pyprojects but is ~735 MB and changes every
-# commit; without the exclude it lands in this stage's /ctx layer and gets
-# shipped to the registry cache (mode=max) on every build.
+# .git is ~735 MB, changes every commit, and would land in the registry cache.
 COPY --exclude=.git . /ctx
 RUN mkdir -p /manifests \
     && cd /ctx \
@@ -95,12 +91,9 @@ WORKDIR /app
 
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
-# Dependency layer: sync third-party deps against the pyproject skeleton only,
-# so source edits don't invalidate the multi-GB wheel install. The first-party
-# editables (skipped here) install in the source-layer sync below; they need
-# their source trees and git-derived pretend versions, which this layer must
-# not depend on. No build-context bind mount here either — .git changes every
-# commit and would bust this layer's cache.
+# Third-party deps only — source edits don't bust this layer. First-party
+# editables install in the source-layer sync below. No build-context bind
+# mount here: .git would bust the cache every commit.
 COPY --from=manifests /manifests /app
 RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     uv sync --all-packages --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra gpt-oss --extra quack --group mamba-ssm --locked --no-dev \
@@ -250,9 +243,8 @@ WORKDIR /app
 # ~20 GB venv as one layer serialized the export behind a single compressor. Splitting
 # also lets nodes pull the image in parallel. Keep the excludes below in sync with the
 # per-tree copies above, or the data lands in the image twice.
-# Layer order matters: the big trees only change on dependency bumps, while the
-# excluded /app remainder changes on every source edit — it goes last so a code
-# change re-executes and re-pushes one layer instead of all of them.
+# The volatile /app remainder goes last so a source edit re-pushes one layer,
+# not all of them.
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/nvidia /app/.venv/lib/python3.12/site-packages/nvidia
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/torch /app/.venv/lib/python3.12/site-packages/torch
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/vllm /app/.venv/lib/python3.12/site-packages/vllm
