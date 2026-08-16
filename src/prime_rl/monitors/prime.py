@@ -66,6 +66,13 @@ class PrimeMonitor(Monitor):
         if not api_key:
             raise RuntimeError(f"API key not found - set {API_KEY_VAR} or run `prime login`")
         self.run = TrainRun(api_key)
+        if run_id := os.getenv("RUN_ID"):
+            # A managed launch pre-created the platform run and injected its id -
+            # attach instead of registering a duplicate. The backend owns the run's
+            # failure marking then; finalize still marks it completed on clean exit.
+            self.run.id = run_id
+            self.logger.info(f"Logging metrics and episodes to platform run {run_id} (attached via $RUN_ID)")
+            return
         run_fields: dict[str, Any] = {}
         if config is not None:
             run_fields = dict(
