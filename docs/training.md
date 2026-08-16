@@ -334,7 +334,7 @@ Or set it in TOML:
 name = "my-experiment"
 ```
 
-Every step the orchestrator uploads the step's episodes (full conversations with rewards and advantages) to the run's sample viewer.
+Every 10th step the orchestrator uploads the step's episodes (full conversations with rewards and advantages) to the run's sample viewer.
 
 Requires `PRIME_API_KEY` (set via `prime login` or env var) and an allowlisted team. Currently internal-only.
 
