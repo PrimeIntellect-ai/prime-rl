@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.orchestrator import EvalConfig
@@ -22,7 +22,7 @@ class OnlineEvalConfig(EvalConfig):
     served at ``tcp://127.0.0.1:<base + i>``. Sources with an explicit ``serve.address``
     keep it instead, without shifting the other sources' ports."""
 
-    max_inflight_episodes: int = Field(64, ge=1)
+    max_inflight_episodes: int = Field(128, ge=1)
     """Maximum eval episodes in flight — one episode is one agent run against an env server."""
 
     @property
@@ -44,7 +44,7 @@ class EvaluatorConfig(BaseConfig):
     config; it can also be run standalone against any trainer that writes
     ``weights/step_{n}`` HF checkpoints with ``STABLE`` markers."""
 
-    model_name: str = "Qwen/Qwen3-0.6B"
+    model: str = "Qwen/Qwen3-0.6B"
     """Name the inference server serves the model under — the ``model`` field of every
     eval request and the startup model check. Auto-filled from ``model.name`` by the
     ``sft`` launcher; the name stays fixed across checkpoint reloads (weights are
@@ -52,10 +52,6 @@ class EvaluatorConfig(BaseConfig):
 
     eval: OnlineEvalConfig
     """Eval sources, sampling, intervals, and the inference client."""
-
-    weights_dir: Path | None = None
-    """Directory to watch for ``step_{n}`` HF weight checkpoints. Defaults to
-    ``<output_dir>/weights``."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — rollout traces and logs are written as
@@ -76,8 +72,7 @@ class EvaluatorConfig(BaseConfig):
     monitors: MonitorsConfig = MonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
 
-    @model_validator(mode="after")
-    def auto_setup_weights_dir(self):
-        if self.weights_dir is None:
-            self.weights_dir = self.output_dir / "weights"
-        return self
+    @property
+    def weights_dir(self) -> Path:
+        """Where the trainer's ``step_{n}`` HF weight checkpoints land."""
+        return self.output_dir / "weights"

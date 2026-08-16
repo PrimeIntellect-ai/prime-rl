@@ -72,10 +72,8 @@ class Evaluator:
         self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
         self.run_name = os.environ.get("PRL_RUN_NAME")
 
-        get_logger().info(
-            f"Initializing inference pool (base_url={config.eval.client.base_url}, model={config.model_name})"
-        )
-        self.pool = InferencePool(config.eval.client, model_name=config.model_name)
+        get_logger().info(f"Initializing inference pool (base_url={config.eval.client.base_url}, model={config.model})")
+        self.pool = InferencePool(config.eval.client, model_name=config.model)
 
         get_logger().info("Loading eval environment(s)")
         self.eval_envs = EvalEnvs(config.eval.source, config.eval.env_addresses)
@@ -83,7 +81,7 @@ class Evaluator:
         get_logger().success(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
         get_logger().info("Waiting for inference pool to be ready")
-        await self.pool.wait_for_ready(config.model_name)
+        await self.pool.wait_for_ready(config.model)
         get_logger().success("Inference pool ready")
 
         self.eval_source = EvalSource(self.eval_envs, config.eval, is_resumed=config.resume_step is not None)
@@ -105,7 +103,6 @@ class Evaluator:
 
         get_logger().info(f"Watching {config.weights_dir} for new weight checkpoints (max_steps={config.max_steps})")
         while True:
-            assert config.weights_dir is not None  # resolved by the config validator
             steps = get_all_ckpt_steps(config.weights_dir)
             stable = {step: (get_step_path(config.weights_dir, step) / "STABLE").exists() for step in steps}
             newest_stable = max((step for step in steps if stable[step]), default=None)
@@ -158,7 +155,6 @@ class Evaluator:
     async def maybe_run_evals(self, step: int, *, reload_weights: bool = False, force: bool = False) -> None:
         """Fire eligible envs for one checkpoint step and run the full epoch(s),
         reloading the inference weights first. No-op when no env is due."""
-        assert self.config.weights_dir is not None  # resolved by the config validator
         weight_dir = get_step_path(self.config.weights_dir, step)
         if reload_weights and not (weight_dir / "STABLE").exists():
             get_logger().warning(f"No stable weight checkpoint for step {step} ({weight_dir}) - skipping eval")

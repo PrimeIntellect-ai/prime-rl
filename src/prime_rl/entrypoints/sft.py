@@ -84,9 +84,8 @@ def build_evaluator_config(config: SFTConfig) -> EvaluatorConfig:
     """Derive the evaluator subconfig from the resolved SFT config."""
     assert config.eval is not None
     return EvaluatorConfig(
-        model_name=config.model.name,
+        model=config.model.name,
         eval=config.eval,
-        weights_dir=get_weights_dir(get_ckpt_base(config)),
         output_dir=config.run_dir,
         max_steps=config.max_steps,
         resume_step=resolve_resume_step(config),
@@ -163,7 +162,7 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, 
             config_path=config_path,
             output_dir=config.run_dir,
             trainer_env_vars=trainer_env_vars,
-            num_nodes=config.deployment.num_nodes,
+            num_nodes=config.deployment.num_train_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
             ranks_filter=",".join(map(str, config.log.ranks_filter)),
             prl_run_id=prl_run_id,
@@ -273,7 +272,7 @@ def sft_slurm(config: SFTConfig):
         logger.info(f"Wrote eval SLURM script to {eval_script_path}")
         script_paths = [script_path, eval_script_path]
 
-    num_nodes = config.deployment.num_nodes if config.deployment.type == "multi_node" else 1
+    num_nodes = config.deployment.num_train_nodes if config.deployment.type == "multi_node" else 1
     log_message = format_log_message(
         log_dir=latest_log_dir(config.run_dir),
         trainer=True,
@@ -537,7 +536,7 @@ def clean_stale_eval_artifacts(config: SFTConfig) -> None:
         logger.warning("NEVER_CLEAN is set - keeping stale weight checkpoints; the evaluator may replay them")
         return
     resume_step = resolve_resume_step(config)
-    weights_dir = get_weights_dir(get_ckpt_base(config))
+    weights_dir = get_weights_dir(config.run_dir)
     stale_steps = [step for step in get_all_ckpt_steps(weights_dir) if resume_step is None or step > resume_step]
     if stale_steps:
         logger.info(

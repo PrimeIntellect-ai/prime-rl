@@ -213,7 +213,7 @@ On a `multi_node` deployment (SLURM), the trainer and the eval deployment are **
 ```toml
 [deployment]
 type = "multi_node"
-num_nodes = 2        # trainer job
+num_train_nodes = 2  # trainer job
 num_infer_nodes = 1  # eval job (inference pool + evaluator)
 
 [inference.vllm]

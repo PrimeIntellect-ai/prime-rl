@@ -161,7 +161,7 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
 class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     type: Literal["multi_node"] = "multi_node"
 
-    num_nodes: int = Field(2, ge=1)
+    num_train_nodes: int = Field(2, ge=1)
     """Training nodes."""
 
     num_infer_nodes: int = Field(0, ge=0)
@@ -171,7 +171,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     exits after evaluating the final checkpoint."""
 
     nodes_per_fsdp_group: int | None = None
-    """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_nodes / nodes_per_fsdp_group``."""
+    """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
 
 SFTDeploymentConfig: TypeAlias = Annotated[
@@ -336,6 +336,8 @@ class SFTConfig(BaseConfig):
         # The trainer's HF weight checkpoints are how inference picks up new policies.
         if self.ckpt is None:
             self.ckpt = CheckpointConfig()
+        if self.ckpt.output_dir is not None:
+            raise ValueError("Online evals watch <run_dir>/weights; ckpt.output_dir is not supported with [eval].")
         if self.ckpt.weights is None or self.ckpt.skip_gather_master_weights:
             raise ValueError(
                 "Online evals require HF weight checkpoints. Enable ckpt.weights and "
@@ -559,12 +561,12 @@ class SFTConfig(BaseConfig):
     def auto_setup_deployment(self):
         if self.deployment.type == "multi_node":
             if self.deployment.nodes_per_fsdp_group is not None:
-                if self.deployment.num_nodes % self.deployment.nodes_per_fsdp_group != 0:
+                if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:
                     raise ValueError(
-                        f"deployment.num_nodes ({self.deployment.num_nodes}) must be divisible by "
+                        f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
                         f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
                     )
-                self.model.dp_replicate = self.deployment.num_nodes // self.deployment.nodes_per_fsdp_group
+                self.model.dp_replicate = self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
         return self
 
     @model_validator(mode="after")
