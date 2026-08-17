@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+import random
+from collections import Counter, defaultdict
 from collections.abc import Iterator, Sequence
 from typing import Any
 
@@ -28,9 +29,17 @@ class DifficultyPools(TaskSampler):
         weights: dict[str, float] | None = None,
         seed: int = 42,
     ) -> None:
-        super().__init__(tasks, seed=seed)
-        if self.tasks is None:
+        if not isinstance(tasks, Sequence):
             raise ValueError("DifficultyPools requires a finite taskset")
+        self.tasks = tuple(tasks)
+        if not self.tasks:
+            raise ValueError("DifficultyPools requires at least one task")
+        keys = [task.key for task in self.tasks]
+        duplicates = {key for key, count in Counter(keys).items() if count > 1}
+        if duplicates:
+            raise ValueError(f"Task keys must be unique within a taskset: {sorted(duplicates)}")
+        self.tasks_by_key = dict(zip(keys, self.tasks))
+        self.rng = random.Random(seed)
         self.thresholds = {"hard": 0.25, "medium": 0.75, "easy": 1.0} if thresholds is None else thresholds
         self.weights = dict.fromkeys(self.thresholds, 1.0) if weights is None else weights
         if not self.thresholds:
@@ -78,13 +87,14 @@ class DifficultyPools(TaskSampler):
         self.task_rewards[result.task_key] = sum(rewards) / len(rewards)
 
     def state_dict(self) -> dict[str, Any]:
-        return super().state_dict() | {
+        return {
+            "rng": self.rng.getstate(),
             "sampled_task_keys": sorted(self.sampled_task_keys),
             "task_rewards": dict(self.task_rewards),
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        super().load_state_dict(state_dict)
+        self.rng.setstate(state_dict["rng"])
         self.task_rewards = dict(state_dict["task_rewards"])
         self.sampled_task_keys = set(state_dict.get("sampled_task_keys", self.task_rewards))
 

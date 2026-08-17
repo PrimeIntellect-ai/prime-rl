@@ -21,7 +21,7 @@ oversampling_factor = 2.0
 
 [[orchestrator.train.source]]
 name = "wiki-search"
-curriculum = { gates = { zero_advantage = { import_path = "prime_rl.orchestrator.curriculum.AdvantageRangeGate" } } }
+curriculum = { gates = { online_difficulty = { import_path = "prime_rl.orchestrator.curriculum.OnlineDifficultyFiltering" } } }
 
 [orchestrator.train.source.env.taskset]
 id = "wiki-search"

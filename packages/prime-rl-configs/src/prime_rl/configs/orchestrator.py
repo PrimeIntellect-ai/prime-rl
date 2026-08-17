@@ -167,7 +167,7 @@ class CurriculumComponentConfig(BaseConfig):
 
 class CurriculumConfig(BaseConfig):
     sampler: CurriculumComponentConfig | None = None
-    """Task selection policy. The default cycles through the taskset."""
+    """Task selection policy. The default cycles through the task iterator in source order."""
 
     gates: dict[str, CurriculumComponentConfig] = Field(default_factory=dict)
     """Named admission policies. Every gate observes every finalized group,

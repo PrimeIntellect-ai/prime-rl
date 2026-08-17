@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import random
-from collections import Counter
+from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -38,81 +37,23 @@ class CurriculumResult:
         return cls(task_key=task_key, rollouts=tuple(rollouts))
 
 
-class TaskSampler:
-    """Default task sampler and base class for user-authored selection policies."""
+class TaskSampler(ABC):
+    """Base class for user-authored task selection policies."""
 
-    def __init__(self, tasks: Sequence[vf.Task] | Iterator[vf.Task], *, seed: int = 42) -> None:
-        self.rng = random.Random(seed)
-        self.epoch = 1
-        self.cursor = 0
-
-        if isinstance(tasks, Sequence):
-            if not tasks:
-                raise ValueError("A finite curriculum needs at least one task")
-            self.tasks: tuple[vf.Task, ...] | None = tuple(tasks)
-            self.task_iterator: Iterator[vf.Task] | None = None
-            keys = [task.key for task in self.tasks]
-            duplicates = {key for key, count in Counter(keys).items() if count > 1}
-            if duplicates:
-                raise ValueError(f"Task keys must be unique within a taskset: {sorted(duplicates)}")
-            self.tasks_by_key = dict(zip(keys, self.tasks))
-            self._epoch_tasks = self._shuffle()
-        else:
-            self.tasks = None
-            self.task_iterator = tasks
-            self.tasks_by_key: dict[str, vf.Task] = {}
-            self._epoch_tasks: list[vf.Task] | None = None
-
-    def _shuffle(self) -> list[vf.Task] | None:
-        if self.tasks is None:
-            return None
-        tasks = list(self.tasks)
-        random.Random(self.epoch).shuffle(tasks)
-        return tasks
-
+    @abstractmethod
     def sample(self) -> vf.Task:
-        """Choose the next task.
-
-        The default preserves prime-rl's epoch-shuffled finite iteration and
-        sequential infinite-taskset iteration.
-        """
-        if self._epoch_tasks is None:
-            assert self.task_iterator is not None
-            task = next(self.task_iterator)
-            self.cursor += 1
-            return task
-        if self.cursor >= len(self._epoch_tasks):
-            self.epoch += 1
-            self.cursor = 0
-            self._epoch_tasks = self._shuffle()
-            assert self._epoch_tasks is not None
-        task = self._epoch_tasks[self.cursor]
-        self.cursor += 1
-        return task
+        """Choose the next task."""
+        raise NotImplementedError
 
     def observe(self, result: CurriculumResult) -> None:
         """Update sampling state from a finalized group."""
 
     def state_dict(self) -> dict[str, Any]:
         """Return checkpoint state owned by this sampler."""
-        return {
-            "rng": self.rng.getstate(),
-            "epoch": self.epoch,
-            "cursor": self.cursor,
-        }
+        return {}
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         """Restore checkpoint state before sampling resumes."""
-        if "rng" in state_dict:
-            self.rng.setstate(state_dict["rng"])
-        self.epoch = state_dict["epoch"]
-        self.cursor = state_dict["cursor"]
-        if self.tasks is None:
-            assert self.task_iterator is not None
-            for _ in range(self.cursor):
-                next(self.task_iterator)
-        else:
-            self._epoch_tasks = self._shuffle()
 
     def metrics(self) -> dict[str, float]:
         """Return metrics relative to this sampler's namespace."""
@@ -194,8 +135,10 @@ def setup_curriculum(
     config: CurriculumConfig | None,
     tasks: Sequence[vf.Task] | Iterator[vf.Task],
 ) -> Curriculum:
+    from prime_rl.orchestrator.curriculum.standard_sampler import StandardSampler
+
     sampler = (
-        TaskSampler(tasks)
+        StandardSampler(tasks)
         if config is None or config.sampler is None
         else _setup_component(config.sampler, TaskSampler, tasks)
     )

@@ -1,15 +1,15 @@
-"""Advantage-based training-sample admission."""
+"""Online-difficulty training-sample admission."""
 
 from __future__ import annotations
 
 from prime_rl.orchestrator.curriculum.base import AdmissionGate, CurriculumResult
 
 
-class AdvantageRangeGate(AdmissionGate):
+class OnlineDifficultyFiltering(AdmissionGate):
     """Reject groups whose trainable-token advantages all fall inside a range.
 
-    The default ``[0, 0]`` interval implements zero-advantage rejection.
-    Groups without an advantage stream are admitted.
+    The default ``[0, 0]`` interval filters groups with no online learning
+    signal. Groups without an advantage stream are admitted.
     """
 
     def __init__(
