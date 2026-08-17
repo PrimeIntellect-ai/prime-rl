@@ -689,11 +689,11 @@ class RolloutDispatcher:
     def gauges(self) -> dict[str, float]:
         """Instantaneous, read-only gauges sampled by the periodic logger."""
         return {
-            "dispatcher/inflight_train": float(self.inflight_train_count),
-            "dispatcher/inflight_eval": float(self.inflight_eval_count),
+            "dispatcher/inflight/train": float(self.inflight_train_count),
+            "dispatcher/inflight/eval": float(self.inflight_eval_count),
+            "dispatcher/inflight/groups": float(len(self.groups)),
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
-            "dispatcher/groups_in_flight": float(len(self.groups)),
-            "dispatcher/off_policy_level_max": float(self.max_off_policy_level),
-            "dispatcher/off_policy_level_mean": self.mean_off_policy_level,
+            "dispatcher/off_policy_level/max": float(self.max_off_policy_level),
+            "dispatcher/off_policy_level/mean": self.mean_off_policy_level,
         }
