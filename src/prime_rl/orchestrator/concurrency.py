@@ -34,8 +34,11 @@ from prime_rl.configs.orchestrator import ConcurrencyConfig
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.utils import format_num
 
-# EWMA smoothing for per-env cost/duration estimates
-ESTIMATE_ALPHA = 0.1
+# Per-step EWMA smoothing for the cost/duration estimates. Completions
+# accumulate between step boundaries and fold in as one interval mean, so a
+# step's worth of episodes (usually 100+) averages out the heavy-tailed
+# episode-length distribution before it can move the estimate.
+ESTIMATE_ALPHA = 0.3
 # Multiplicative backoff: the first cut, and the harsher follow-up when
 # overload survives a full drain
 BACKOFF_FACTOR = 0.75
@@ -70,17 +73,38 @@ class EngineLoadSample:
 
 @dataclass
 class EnvEstimate:
-    """EWMA of final context tokens and wall-clock duration for one
-    ``(kind, env)`` stream of completed episodes."""
+    """Step-clocked EWMA of final context tokens and wall-clock duration for
+    one ``(kind, env)`` stream: completions accumulate between steps and fold
+    in as one interval mean per step boundary."""
 
     tokens: float | None = None
     duration: float | None = None
+    pending_count: int = 0
+    pending_tokens: float = 0.0
+    pending_duration: float = 0.0
 
-    def update(self, tokens: int, duration: float) -> None:
-        self.tokens = tokens if self.tokens is None else (1 - ESTIMATE_ALPHA) * self.tokens + ESTIMATE_ALPHA * tokens
-        self.duration = (
-            duration if self.duration is None else (1 - ESTIMATE_ALPHA) * self.duration + ESTIMATE_ALPHA * duration
+    def accumulate(self, tokens: int, duration: float) -> None:
+        self.pending_count += 1
+        self.pending_tokens += tokens
+        self.pending_duration += duration
+
+    def fold(self) -> None:
+        """Fold the accumulated interval mean into the EWMA."""
+        if self.pending_count == 0:
+            return
+        mean_tokens = self.pending_tokens / self.pending_count
+        mean_duration = self.pending_duration / self.pending_count
+        self.tokens = (
+            mean_tokens if self.tokens is None else (1 - ESTIMATE_ALPHA) * self.tokens + ESTIMATE_ALPHA * mean_tokens
         )
+        self.duration = (
+            mean_duration
+            if self.duration is None
+            else (1 - ESTIMATE_ALPHA) * self.duration + ESTIMATE_ALPHA * mean_duration
+        )
+        self.pending_count = 0
+        self.pending_tokens = 0.0
+        self.pending_duration = 0.0
 
 
 class ConcurrencyController:
@@ -134,10 +158,11 @@ class ConcurrencyController:
 
     def record_episode(self, env_name: str, kind: str, tokens: int, duration: float) -> None:
         """One completed episode (from the dispatcher). Errored episodes with
-        no tokens carry no cost information and are skipped."""
+        no tokens carry no cost information and are skipped. Accumulates only —
+        the estimates move at step boundaries."""
         if tokens <= 0 or duration <= 0:
             return
-        self.estimates.setdefault((kind, env_name), EnvEstimate()).update(tokens, duration)
+        self.estimates.setdefault((kind, env_name), EnvEstimate()).accumulate(tokens, duration)
 
     def on_eval_epoch(self, census: dict[str, int]) -> None:
         """Eval fired: ``census`` maps env name to total scheduled episodes."""
@@ -210,6 +235,8 @@ class ConcurrencyController:
         once, recompute the cap. Inert while still inside the configured
         freeze window (``frozen_steps``)."""
         self.completed_steps += 1
+        for estimate in self.estimates.values():
+            estimate.fold()
         if not eval_in_flight and self.eval_census is not None:
             self.eval_census = None
         self.eval_active = eval_in_flight and self.eval_census is not None
