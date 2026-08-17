@@ -72,7 +72,7 @@ INFERENCE_PANELS = [
     ["inference/agg/prompt_tokens_total:rate/sum", "inference/agg/prompt_tokens_total:rate/max"],
     # Orchestrator-side load on the engines: in-flight episodes vs the adaptive cap.
     # Logged by the periodic logger on the same wall-time axis as inference/*.
-    ["dispatcher/inflight/train", "dispatcher/inflight/eval", "concurrency/max_inflight"],
+    ["dispatcher/inflight/train", "dispatcher/inflight/eval"],
 ]
 
 # Dense grid: more, smaller panels per row and enough rows that sections don't paginate.
