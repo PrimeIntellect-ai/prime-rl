@@ -481,7 +481,7 @@ class MyGate(AdmissionGate):
 Three small implementations are included:
 
 - `StandardSampler` is the default: it advances the task iterator and cycles finite tasksets in source order.
-- `DifficultyPools` samples every finite task once, tracks its latest valid mean group reward, then samples a named reward pool by weight and a task uniformly within that pool. Tasks without a valid result do not block pool sampling, and the final pool is a catch-all.
+- `DifficultyPools` samples every finite task once, tracks its latest valid mean group reward, then samples a named reward pool by weight and a task uniformly within that pool. Override `select_task()` to change how pool assignments affect sampling, or `prepare_task(task, pool)` to adapt a selected task for its pool, such as choosing a reasoning prompt. Prepared tasks must preserve the canonical `Task.key`.
 - `AdvantageRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Unlike the built-in post-batch zero-advantage filtering, rejection requests replacement work. Groups without an advantage stream are admitted.
 
 ```toml

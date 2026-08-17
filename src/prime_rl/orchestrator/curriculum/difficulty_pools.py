@@ -55,30 +55,51 @@ class DifficultyPools(TaskSampler):
         self.sampled_task_keys: set[str] = set()
         self.task_rewards: dict[str, float] = {}
 
-    def _pool(self, task_key: str) -> str:
-        score = self.task_rewards[task_key]
+    def task_pool(self, task_key: str) -> str | None:
+        """Return the task's current pool, or ``None`` until it has a score."""
+        score = self.task_rewards.get(task_key)
+        if score is None:
+            return None
         for name, maximum in self._ordered_pools:
             if score <= maximum:
                 return name
         return self._ordered_pools[-1][0]
 
-    def sample(self) -> vf.Task:
+    def select_task(self) -> vf.Task:
+        """Choose a canonical task using the current pool assignments."""
         unsampled = [task for task in self.tasks_by_key.values() if task.key not in self.sampled_task_keys]
         if unsampled:
-            task = self.rng.choice(unsampled)
-            self.sampled_task_keys.add(task.key)
-            return task
+            return self.rng.choice(unsampled)
 
         if not self.task_rewards:
             return self.rng.choice(tuple(self.tasks_by_key.values()))
 
         tasks_by_pool: dict[str, list[vf.Task]] = defaultdict(list)
         for task_key, task in self.tasks_by_key.items():
-            if task_key in self.task_rewards:
-                tasks_by_pool[self._pool(task_key)].append(task)
+            pool = self.task_pool(task_key)
+            if pool is not None:
+                tasks_by_pool[pool].append(task)
         nonempty = [name for name in self.weights if tasks_by_pool[name]]
         pool = self.rng.choices(nonempty, weights=[self.weights[name] for name in nonempty], k=1)[0]
         return self.rng.choice(tasks_by_pool[pool])
+
+    def prepare_task(self, task: vf.Task, pool: str | None) -> vf.Task:
+        """Adapt a selected task for its pool while preserving ``Task.key``."""
+        return task
+
+    def sample(self) -> vf.Task:
+        task = self.select_task()
+        task_key = task.key
+        if task_key not in self.tasks_by_key:
+            raise ValueError("DifficultyPools.select_task() must return a task from its taskset")
+        prepared = self.prepare_task(task, self.task_pool(task_key))
+        if prepared.key != task_key:
+            raise ValueError(
+                "DifficultyPools.prepare_task() must preserve Task.key; "
+                "override Task.key with a stable task identity when adapting task data"
+            )
+        self.sampled_task_keys.add(task_key)
+        return prepared
 
     def observe(self, result: CurriculumResult) -> None:
         rewards = [rollout.reward for rollout in result.rollouts if not rollout.has_error and rollout.agent.trainable]
@@ -101,7 +122,9 @@ class DifficultyPools(TaskSampler):
     def metrics(self) -> dict[str, float]:
         occupancy = dict.fromkeys(self.thresholds, 0)
         for task_key in self.task_rewards:
-            occupancy[self._pool(task_key)] += 1
+            pool = self.task_pool(task_key)
+            if pool is not None:
+                occupancy[pool] += 1
         return {
             "pool/unseen": float(len(self.tasks_by_key) - len(self.sampled_task_keys)),
             **{f"pool/{name}": float(count) for name, count in occupancy.items()},
