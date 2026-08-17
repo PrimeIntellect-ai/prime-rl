@@ -31,7 +31,8 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from prime_rl.configs.orchestrator import ConcurrencyConfig
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
+from prime_rl.utils.utils import format_num
 
 # EWMA smoothing for per-env cost/duration estimates
 ESTIMATE_ALPHA = 0.1
@@ -105,6 +106,7 @@ class ConcurrencyController:
 
         self.estimates: dict[tuple[str, str], EnvEstimate] = {}
         self.capacity_by_engine: dict[str, int] = {}
+        self.capacity_reported = False
         # Eval episodes still owed per env; set on trigger, cleared once the
         # dispatcher reports no eval work at a step boundary
         self.eval_census: dict[str, int] | None = None
@@ -155,6 +157,13 @@ class ConcurrencyController:
                 self.capacity_by_engine[sample.engine_id] = sample.kv_capacity_tokens
             if sample.max_model_len:
                 self.engine_max_len = max(self.engine_max_len or 0, sample.max_model_len)
+        if not self.capacity_reported and self.capacity is not None:
+            self.capacity_reported = True
+            max_len = format_num(self.engine_max_len, precision=1) if self.engine_max_len else "unknown"
+            get_logger().info(
+                f"Inference reports {format_num(self.capacity, precision=1)} tokens of KV cache capacity - "
+                f"max model len {max_len}"
+            )
 
         worst = Signal.CLEAR
         for sample in samples:
@@ -185,7 +194,12 @@ class ConcurrencyController:
             and self.config.initial_inflight is None
             and self.capacity is not None
         ):
-            self.apply_limit(self.clamp(self.capacity / self.cost_estimate()), reason="bootstrap")
+            derived = self.clamp(self.capacity / self.cost_estimate())
+            get_logger().info(
+                f"Derived initial max inflight {derived} - {format_num(self.capacity, precision=1)} KV cache tokens "
+                f"/ {format_num(self.bootstrap_cost, precision=1)} tokens per episode"
+            )
+            self.apply_limit(derived, reason=None)
 
     def on_step(self, *, inflight: int, eval_in_flight: bool) -> None:
         """Once per shipped train step: reweigh ``G``, grow ``kappa`` at most
@@ -211,7 +225,7 @@ class ConcurrencyController:
             if inflight >= BINDING_FRACTION * self.max_inflight:
                 self.kappa = min(KAPPA_MAX, self.kappa * GROWTH_FACTOR)
 
-        self.apply_limit(self.clamp(self.kappa * capacity / cost), reason="step")
+        self.apply_limit(self.clamp(self.kappa * capacity / cost), reason="re-evaluation")
         self.all_clear_since_step = True
 
     # ── control law internals ────────────────────────────────────────────────
@@ -233,12 +247,26 @@ class ConcurrencyController:
         self.draining = True
         # Escalate if overload survives the drain; reset on the next clear step
         self.backoff_factor = ESCALATED_BACKOFF_FACTOR
-        self.apply_limit(target, reason="overload cut")
+        self.apply_limit(target, reason="overload")
 
-    def apply_limit(self, n_max: int, *, reason: str) -> None:
+    def apply_limit(self, n_max: int, *, reason: str | None) -> None:
         if n_max == self.max_inflight:
             return
-        get_logger().info(f"Concurrency {reason}: max inflight {self.max_inflight} -> {n_max}")
+        if reason is not None:
+            verb = "Increased" if n_max > self.max_inflight else "Decreased"
+            kappa = f"{self.kappa:.2f}" if self.kappa is not None else "unset"
+            get_logger().info(
+                f"{verb} concurrency {self.max_inflight} -> {n_max} at step {self.completed_steps} ({reason}) - "
+                f"kappa={kappa} cost={format_num(self.cost_estimate(), precision=1)} "
+                f"capacity={format_num(self.capacity or 0, precision=1)} signal={self.signal.name.lower()}"
+            )
+            if self.estimates:
+                snapshot = " | ".join(
+                    f"{kind}/{env} tokens={format_num(estimate.tokens or 0, precision=1)} "
+                    f"duration={format_time(estimate.duration or 0)}"
+                    for (kind, env), estimate in sorted(self.estimates.items())
+                )
+                get_logger().debug(f"Concurrency estimates - {snapshot}")
         self.max_inflight = n_max
         if self._set_limit is not None:
             self._set_limit(n_max)

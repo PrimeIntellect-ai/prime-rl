@@ -414,6 +414,10 @@ class Orchestrator:
             self.policy_inference.admin_clients,
             roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
+            extra_metrics=lambda: {
+                "inference/dispatcher/inflight/train": float(self.dispatcher.inflight_train_count),
+                "inference/dispatcher/inflight/eval": float(self.dispatcher.inflight_eval_count),
+            },
             log_to_wandb=wandb_enabled and config.collect_inference_metrics,
         )
         await self.inference_metrics.start()

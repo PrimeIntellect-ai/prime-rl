@@ -275,6 +275,7 @@ class InferenceMetricsCollector:
         admin_clients: list[AsyncClient],
         roles: list[str | None] | None = None,
         on_load: Callable[[list[EngineLoadSample]], None] | None = None,
+        extra_metrics: Callable[[], dict[str, float]] | None = None,
         log_to_wandb: bool = True,
     ):
         self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
@@ -283,6 +284,9 @@ class InferenceMetricsCollector:
         self.task: asyncio.Task | None = None
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
         self.on_load = on_load
+        # Extra ``inference/*`` keys merged into each poll's W&B payload —
+        # orchestrator-side gauges worth reading on the engine time axis
+        self.extra_metrics = extra_metrics
         self.log_to_wandb = log_to_wandb
         get_logger().info(
             "Collecting inference metrics from "
@@ -335,6 +339,8 @@ class InferenceMetricsCollector:
             self.on_load(load_samples)
 
         if metrics:
+            if self.extra_metrics is not None:
+                metrics.update(self.extra_metrics())
             metrics["_timestamp"] = time.time()
             wandb.log(metrics)
 
