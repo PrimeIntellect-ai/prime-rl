@@ -275,7 +275,7 @@ class TrainSink:
         rollouts = self.pending_rollouts
         if samples:
             self.pending_rollouts = TrainRollouts()
-        return TrainBatch(rollouts=rollouts, samples=samples)
+        return TrainBatch(rollouts=rollouts, cohort=cohort, samples=samples)
 
     def reset_pre_filter_stats(self) -> None:
         self.pre_filter_seen = 0

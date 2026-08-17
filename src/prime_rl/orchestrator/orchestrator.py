@@ -595,11 +595,12 @@ class Orchestrator:
             return
         self.consecutive_empty_batches = 0
         effective = batch.rollouts.effective
-        n_trainable = sum(1 for r in effective if r.is_trainable)
-        if effective and n_trainable / len(effective) <= 0.1:
+        n_shipped = len(batch.cohort)
+        n_trainable = sum(1 for r in batch.cohort if not r.is_filtered and r.is_trainable)
+        if n_shipped and n_trainable / n_shipped <= 0.1:
             get_logger().warning(
-                f"Only {n_trainable}/{len(effective)} effective rollouts are trainable "
-                f"({n_trainable / len(effective):.1%}) — consider reviewing task difficulty / filter config"
+                f"Only {n_trainable}/{n_shipped} shipped rollouts are trainable "
+                f"({n_trainable / n_shipped:.1%}) — consider reviewing task difficulty / filter config"
             )
 
         # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}.
@@ -787,19 +788,21 @@ class Orchestrator:
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
         ``Error`` is the sink-level rate (errored arrivals / total arrivals, over the full window);
-        the quality metrics are over the effective (clean, trained-on) subset, as is ``Trainable``."""
+        the quality metrics are over the effective (clean, trained-on) subset. ``Trainable`` is over
+        the shipped cohort: gradient-carrying rollouts / batch size (a filtered or zero-advantage
+        rollout fills a batch slot without contributing gradient)."""
         rollouts = batch.rollouts
         effective = rollouts.effective
         eff = effective.metrics
         n_generated = len(rollouts)
-        n_effective = len(effective)
-        n_trainable = sum(1 for r in effective if r.is_trainable)
-        trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
+        n_shipped = len(batch.cohort)
+        n_trainable = sum(1 for r in batch.cohort if not r.is_filtered and r.is_trainable)
+        trainable_rate = (n_trainable / n_shipped) if n_shipped else 0.0
         max_off_policy = max((r.off_policy_steps for r in effective), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
-            f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
+            f"Trainable {n_trainable}/{n_shipped} ({trainable_rate:.1%}) | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Max Off-Policy {max_off_policy} | "
             f"Error {rollouts.metrics.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
