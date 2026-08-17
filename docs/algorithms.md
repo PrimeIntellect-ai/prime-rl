@@ -456,6 +456,8 @@ demo_key = "demonstration"
 
 Scoring runs at arrival, before curriculum admission, so a rollout that is later rejected still costs its reference compute.
 
+By default, zero-advantage RL tokens are removed after a complete batch cohort has been collected and before its payload is packed for the trainer. This does not backfill the batch. Samples that still carry CE or reference-KL components are retained, while pure zero-advantage RL samples are not shipped. Removing an RL token also removes its trainer/inference mismatch-KL contribution. Set `orchestrator.train.filter_zero_advantages = false` to retain them.
+
 ## Curricula
 
 Each training source has a `Curriculum` composed from one `TaskSampler` and any number of named `AdmissionGate`s. The sampler chooses tasks and observes every finalized result. All gates also observe every result; the group trains only if every gate admits it. Rejected groups remain observable while the orchestrator samples again to fill the batch.
@@ -480,7 +482,7 @@ Three small implementations are included:
 
 - `StandardSampler` is the default: it advances the task iterator and cycles finite tasksets in source order.
 - `DifficultyPools` samples every finite task once, tracks its latest valid mean group reward, then samples a named reward pool by weight and a task uniformly within that pool. Tasks without a valid result do not block pool sampling, and the final pool is a catch-all.
-- `AdvantageRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Its default `[0, 0]` range filters groups with no online learning signal. Groups without an advantage stream are admitted.
+- `AdvantageRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Unlike the built-in post-batch zero-advantage filtering, rejection requests replacement work. Groups without an advantage stream are admitted.
 
 ```toml
 [orchestrator.train.source.curriculum.sampler]
@@ -496,8 +498,12 @@ hard = 0.2
 medium = 0.6
 easy = 0.2
 
-[orchestrator.train.source.curriculum.gates.zero_advantage]
+[orchestrator.train.source.curriculum.gates.low_signal]
 import_path = "prime_rl.orchestrator.curriculum.AdvantageRangeGate"
+
+[orchestrator.train.source.curriculum.gates.low_signal.kwargs]
+reject_min = -0.05
+reject_max = 0.05
 ```
 
 ## Multi-Turn Trajectories

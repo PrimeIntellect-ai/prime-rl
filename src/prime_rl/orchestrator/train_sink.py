@@ -8,7 +8,8 @@
    survivors to the env algorithm's ``finalize_group`` (advantages +
    per-sample wire stamping), then asks the source curriculum whether the
    result should train.
-3. ``process_batch`` — assembles the trainer-bound ``TrainingSample`` list.
+3. ``process_batch`` — assembles the trainer-bound ``TrainingSample`` list
+   and optionally removes zero-advantage RL payload.
 
 ``add()`` takes one episode (``list[Rollout]``) and returns
 ``TrainBatch | None``; group accounting counts episodes, never loose traces.
@@ -43,6 +44,38 @@ def payload_tokens(rollout: Rollout) -> int:
     stream then ships empty batches and trips the orchestrator's
     consecutive-empty-batch abort instead of stalling the readiness check."""
     return sum(len(sample.token_ids) for sample in rollout.samples) or rollout.num_total_tokens
+
+
+def _prune_zero_advantages(sample: TrainingSample) -> bool:
+    """Remove zero-advantage tokens from the RL component.
+
+    Return whether the sample still carries any RL, CE, or reference-KL
+    component and therefore needs to be shipped.
+    """
+    if sample.advantages is None:
+        return True
+
+    if sample.rl_weights is None:
+        rl_weights = [1.0 if trainable else 0.0 for trainable in sample.mask]
+    else:
+        rl_weights = list(sample.rl_weights)
+
+    changed = False
+    for index, (trainable, advantage, weight) in enumerate(
+        zip(sample.mask, sample.advantages, rl_weights, strict=True)
+    ):
+        if trainable and advantage == 0.0 and weight != 0.0:
+            rl_weights[index] = 0.0
+            changed = True
+
+    if not changed:
+        return True
+
+    sample.rl_weights = rl_weights
+    has_rl = any(trainable and weight != 0.0 for trainable, weight in zip(sample.mask, rl_weights, strict=True))
+    has_ce = sample.ce_weights is not None and any(weight != 0.0 for weight in sample.ce_weights)
+    has_ref_kl = sample.ref_kl_weights is not None and any(weight != 0.0 for weight in sample.ref_kl_weights)
+    return has_rl or has_ce or has_ref_kl
 
 
 class TrainSink:
@@ -265,6 +298,9 @@ class TrainSink:
             self.pending_batch = self.pending_batch[cut:]
             self.pending_tokens -= running
 
+        if self.config.train.filter_zero_advantages:
+            for rollout in cohort:
+                rollout.samples = [sample for sample in rollout.samples if _prune_zero_advantages(sample)]
         samples: list[TrainingSample] = [sample for rollout in cohort for sample in rollout.samples]
 
         # ``rollouts`` is the observation window — every rollout of every group finalized since the
