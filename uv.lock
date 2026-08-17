@@ -17,6 +17,7 @@ exclude-newer-span = "P7D"
 [options.exclude-newer-package]
 vllm = false
 verifiers = false
+harbor = "2026-08-11T00:00:00Z"
 prime-pydantic-config = false
 vllm-router = false
 dion = false
@@ -2198,7 +2199,7 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.20.0"
+version = "0.21.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dirhash" },
@@ -2223,9 +2224,9 @@ dependencies = [
     { name = "typer" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1e/da/5a26998c6e7d9455321ab39bc8e9122993892ece13c3ad4f2b0de986aaf6/harbor-0.20.0.tar.gz", hash = "sha256:e2e5e88f772690fd121553ca34fd5d6dd6b4aaa51c8fae635abc84b112303112", size = 1590870, upload-time = "2026-07-18T21:25:22.578Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d1/30/c854dcf2b6cbc67f97265e1fd07de02b29419007d4258cded336c23d6356/harbor-0.21.0.tar.gz", hash = "sha256:93f7c2e4b150b2983a90b226c61daf071c35a9dd0f76e1053413d9ee0d738395", size = 1690211, upload-time = "2026-08-10T20:52:34.767Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/76/03/b6617f32385295729f3af0ae0d512cf87ba4793b9ce462ea020d776a9025/harbor-0.20.0-py3-none-any.whl", hash = "sha256:4b7e48223aea2384cdb8c9eff35eaebd482fc9b1ec09f8193a121c47356ff19a", size = 1792416, upload-time = "2026-07-18T21:25:19.206Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/a4/b3e8aafbc0a002501c11c91958fc31a5098c2bd9376c46225af615373329/harbor-0.21.0-py3-none-any.whl", hash = "sha256:c77d779a03f1a9e8ecb3c449e17f39a9728b82238832f1fd28632eb9426c0a21", size = 1896665, upload-time = "2026-08-10T20:52:32.305Z" },
 ]
 
 [[package]]
@@ -3031,7 +3032,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.87.0"
+version = "1.95.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -3047,9 +3048,10 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/77/0d/ccdf682ccfd7f18bf0e179c39d85616b8f8ef05a798588285310412db13d/litellm-1.87.0.tar.gz", hash = "sha256:cafc1882cb0cbab8374c41180af86e4a067796e4524e15f59e99f6e689cd1bd8", size = 15453755, upload-time = "2026-06-02T03:53:29.076Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0e/96/8cdfb9aaf584b57af35a0423c111a1c1264a78b548cebbb5ed96defacdab/litellm-1.95.0.tar.gz", hash = "sha256:0ef126d52c7a559f8353e50d60fd0d5e7e6c8767ad54df25ddaf79b9edca1afc", size = 17513577, upload-time = "2026-08-02T02:52:49.465Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/20/88a372fa7e50fc2c33458c6eef94a79afcf7bdfa43610079531b82b484a3/litellm-1.87.0-py3-none-any.whl", hash = "sha256:fbbba7e47ae29b55f878fe1acc80effb92761bc168f6236bd81a0cb6e147d855", size = 17103948, upload-time = "2026-06-02T03:53:25.677Z" },
+    { url = "https://files.pythonhosted.org/packages/33/d0/ad0272853cc450f8bb4a40a93d206e767e18ac2ff3f91870374e1d9fc090/litellm-1.95.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:cb667f84f08520f32b076e03c7a3fa51bf3f7e8b641dade34ab046bf00314d6b", size = 26421359, upload-time = "2026-08-02T02:52:16.048Z" },
+    { url = "https://files.pythonhosted.org/packages/02/c1/4301aa8ef6d2fb0e4a2b8dec973d7c4499f680b26d2e1b77643864235a4b/litellm-1.95.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:1bdf7153557cc0851fa9477b137fde476c56d5de92a5778ecfc6c3a75439a4e1", size = 26300401, upload-time = "2026-08-02T02:52:19.501Z" },
 ]
 
 [[package]]
@@ -5014,7 +5016,7 @@ requires-dist = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.36"
+version = "0.2.37"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5026,9 +5028,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d5/c8/ca5261ff5d5c2e944e198866ead91b09bc88eb0390a905925bb6d7f9cd28/prime_sandboxes-0.2.36.tar.gz", hash = "sha256:3a5c8a7912b1ea0fb775674650835f7f86aac1a05aa8566c2db129b9a622fe55", size = 88415, upload-time = "2026-08-12T23:30:15.214Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5d/18/837603f47eae2cc86bd6652dbbebe955caaca8c0f987dfc7cb947e4c993b/prime_sandboxes-0.2.37.tar.gz", hash = "sha256:44a7cb4bc97ee04bbef824b7ccf185da78cffa90c3f0345ef69fbfbd75ca6bce", size = 89684, upload-time = "2026-08-17T17:07:18.985Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0b/26/081296fc8e6d8ce962f2aee0e47ac843982094dedb34a1fad22d10086f37/prime_sandboxes-0.2.36-py3-none-any.whl", hash = "sha256:a5db92d927cf4a3dd37ce230027a9d83dbf21804d4f6ed2255d276c1962fa8f2", size = 49316, upload-time = "2026-08-12T23:30:14.047Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/4c/346abc72f6891267f490abfbe9de867c3ba2ed64ae8a4f964ffc4065492a/prime_sandboxes-0.2.37-py3-none-any.whl", hash = "sha256:9687e1b698c183798138b5e2ca116554773e3e300307a599beb7fbe8ed65e783", size = 49587, upload-time = "2026-08-17T17:07:17.403Z" },
 ]
 
 [[package]]
@@ -7448,7 +7450,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.78.0" },
     { name = "datasets", specifier = ">=3.3.0,<6.0.0" },
     { name = "gepa", specifier = ">=0.0.6" },
-    { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'harbor'", specifier = "==0.20.0" },
+    { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'harbor'", specifier = "==0.21.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "math-verify", specifier = ">=0.8.0" },
@@ -7463,7 +7465,7 @@ requires-dist = [
     { name = "openai-agents", specifier = ">=0.8.2" },
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.2" },
-    { name = "prime-sandboxes", specifier = ">=0.2.36" },
+    { name = "prime-sandboxes", specifier = ">=0.2.37" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
