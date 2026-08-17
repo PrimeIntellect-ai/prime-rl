@@ -97,9 +97,11 @@ class Evaluator:
             # unless ``skip_first_step``.
             await self.maybe_run_evals(step=0)
         elif config.eval.retrigger_on_resume:
-            # Re-fire interval-aligned evals at the resume step (e.g. after a crash
-            # that lost in-flight evals). Requires the resume step's weights on disk.
-            await self.maybe_run_evals(step=config.resume_step, reload_weights=True)
+            # Re-fire evals at the resume step (e.g. after a crash that lost in-flight
+            # evals). Requires the resume step's weights on disk. The final checkpoint
+            # force-fires every env, exactly like the watch loop below.
+            is_final = config.max_steps is not None and config.resume_step >= config.max_steps
+            await self.maybe_run_evals(step=config.resume_step, reload_weights=True, force=is_final)
 
         get_logger().info(f"Watching {config.weights_dir} for new weight checkpoints (max_steps={config.max_steps})")
         while True:
@@ -181,10 +183,8 @@ class Evaluator:
             try:
                 await self.pool.update_weights(weight_dir, step=step)
             except Exception as exc:
-                # Evals are auxiliary to training: a failed reload (checkpoint cleaned
-                # under us, misconfigured admin endpoint) skips this step's evals
-                # instead of killing the run. Drain the queued examples so they don't
-                # leak into a later step's epoch with the wrong eval_step.
+                # Skip this step instead of killing the run; drain the queued examples
+                # so they don't leak into a later epoch with the wrong eval_step.
                 while self.eval_source.next_example() is not None:
                     pass
                 get_logger().error(f"Failed to update inference weights to step {step} - skipping evals: {exc!r}")

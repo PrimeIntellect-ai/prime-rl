@@ -336,8 +336,6 @@ class SFTConfig(BaseConfig):
         # The trainer's HF weight checkpoints are how inference picks up new policies.
         if self.ckpt is None:
             self.ckpt = CheckpointConfig()
-        if self.ckpt.output_dir is not None:
-            raise ValueError("Online evals watch <run_dir>/weights; ckpt.output_dir is not supported with [eval].")
         if self.ckpt.weights is None or self.ckpt.skip_gather_master_weights:
             raise ValueError(
                 "Online evals require HF weight checkpoints. Enable ckpt.weights and "
