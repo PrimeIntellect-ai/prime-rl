@@ -227,13 +227,12 @@ n_max = clamp(κ · C / G, group_size, max_inflight_episodes)
 
 Refills are burst-capped (at most `max(group_size, 0.1 × n_max)` new admissions per poll interval) so recovery never lands a cap's worth of prefills at once. During step 1 (pipeline warmup) the controller is frozen — cold caches, the initial admission burst, and zero completions make every signal unrepresentative — while the estimators accumulate. At freeze exit, `κ` is initialized by continuity (`κ ← n_max · G / C`) so the cap never jumps when data-backed estimates replace the bootstrap.
 
-The controller is a self-contained abstraction (`ConcurrencyController`) with its own config:
+The controller is always on — a self-contained abstraction (`ConcurrencyController`) with its own config:
 
 ```toml
 [orchestrator.concurrency]
 max_inflight = 512       # hard ceiling (replaces orchestrator.max_inflight_episodes)
 initial_inflight = 64    # optional: start n_max here instead of the bootstrap, skipping the ramp
-adaptive = true          # false → n_max pinned to max_inflight
 ```
 
 All control constants are internal. The controller owns no tasks or clients: the `InferenceMetricsCollector` pushes per-engine load samples (capacity, KV usage, waiting, preemption deltas) each poll, the dispatcher reports episode completions (env, tokens, duration) and consumes the cap via `set_limit`, and the orchestrator's step loop drives the per-step re-evaluation.
