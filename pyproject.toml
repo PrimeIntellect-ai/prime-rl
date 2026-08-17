@@ -169,6 +169,9 @@ requires-dist = [
 ]
 
 [tool.uv.exclude-newer-package]
+# verifiers pins harbor==0.21.0, published minutes inside the rolling window;
+# bounded cutoff mirroring the one in deps/verifiers/pyproject.toml
+harbor = "2026-08-11T00:00:00Z"
 # we want latest vllm, remove next patch
 vllm = false
 tokenspeed-mla = false
