@@ -12,6 +12,7 @@ def apply_shared_vllm_patches():
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
+    register_rlm_tool_parser()
     monkey_patch_qwen3_coder_param_newline_trim()
     monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_return_routed_experts_with_nixl_connector()
@@ -102,6 +103,51 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     _update_from_kv_xfer_finished._prime_rl_tolerates_freed = True
     Scheduler._update_from_kv_xfer_finished = _update_from_kv_xfer_finished
     logger.warning("Patched Scheduler._update_from_kv_xfer_finished to tolerate freed (aborted) KV-transfer reqs.")
+
+
+def register_rlm_tool_parser():
+    """Tool parser for the RLM chat format: an assistant turn may end with exactly one
+    inline ``<ipython>{code}</ipython>`` call (single-token tags). Serving RLM-template
+    models over chat completions needs this so harnesses receive an OpenAI tool call —
+    no stock parser recognizes the tags, and without one every agent loop ends after a
+    single turn."""
+    import json
+
+    from vllm.entrypoints.openai.engine.protocol import (
+        ExtractedToolCallInformation,
+        FunctionCall,
+        ToolCall,
+    )
+    from vllm.tool_parsers.abstract_tool_parser import ToolParser, ToolParserManager
+
+    class RlmToolParser(ToolParser):
+        START, END = "<ipython>", "</ipython>"
+
+        def extract_tool_calls(self, model_output, request):
+            start = model_output.find(self.START)
+            if start == -1:
+                return ExtractedToolCallInformation(tools_called=False, tool_calls=[], content=model_output)
+            end = model_output.find(self.END, start)
+            code = model_output[start + len(self.START) : end if end != -1 else None]
+            content = model_output[:start].rstrip() or None
+            tool_call = ToolCall(
+                type="function",
+                function=FunctionCall(name="ipython", arguments=json.dumps({"code": code})),
+            )
+            return ExtractedToolCallInformation(tools_called=True, tool_calls=[tool_call], content=content)
+
+        def extract_tool_calls_streaming(
+            self, previous_text, current_text, delta_text, previous_token_ids, current_token_ids, delta_token_ids, request
+        ):
+            # Streaming emits nothing until the turn completes; callers doing agentic
+            # loops consume the final message, where extract_tool_calls has run.
+            if self.START in current_text:
+                return None
+            from vllm.entrypoints.openai.engine.protocol import DeltaMessage
+
+            return DeltaMessage(content=delta_text)
+
+    ToolParserManager.register_module("rlm", module=RlmToolParser)
 
 
 def monkey_patch_nano_v3_reasoning_parser():
