@@ -39,8 +39,9 @@ from prime_rl.trainer.sft.data import get_dataset_state, load_sft_dataset, setup
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
+    batched_item,
     export_benchmark_json,
-    get_zero_gradient_ratio,
+    zero_gradient_ratio_tensor,
     get_ckpt_disk_metrics,
     print_sample,
     setup_torch_distributed,
@@ -441,13 +442,12 @@ def train(config: SFTConfig):
         # divide by the true global token count instead.
         global_step_token_count = step_local_token_count.clone()
         dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        global_token_count_val = global_step_token_count.item()
 
-        if global_token_count_val > 0:
-            grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-            for param in model.parameters():
-                if param.grad is not None:
-                    param.grad.mul_(grad_scale)
+
+        grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_step_token_count.clamp_min(1)
+        for param in model.parameters():
+            if param.grad is not None:
+                param.grad.mul_(grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -457,14 +457,9 @@ def train(config: SFTConfig):
         ):
             run_validation(progress.step)
 
-        # Compute the global mean loss for logging.
+
         dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
-        if global_token_count_val > 0:
-            batch_loss = (step_loss_sum / global_token_count_val).item()
-        else:
-            batch_loss = 0.0
-        nan_loss_count = nan_loss_count.item()
 
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
@@ -474,7 +469,7 @@ def train(config: SFTConfig):
             )
             if grad_norm.device.type == "cpu":
                 grad_norm = grad_norm.to(torch.device("cuda"))
-        zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
+        zero_grad_ratio_tensor = zero_gradient_ratio_tensor(model.parameters(), parallel_dims.dp_replicate)
 
         logger.debug("Optimizer step")
         optimizer.step()
@@ -517,6 +512,23 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
+        # Single batched host readback fpr scalars needed for logging
+        moe_stat_names = list(moe_stats.keys())
+        pending = [global_step_token_count, step_loss_sum, nan_loss_count, zero_grad_ratio_tensor]
+        if grad_norm is not None:
+            pending.append(grad_norm)
+        pending.extend(moe_stats[name] for name in moe_stat_names)
+        values = iter(batched_item(*pending))
+
+        global_token_count_val = int(next(values))
+        step_loss_sum_val = next(values)
+        nan_loss_count = int(next(values))
+        zero_grad_ratio = next(values)
+        grad_norm_val = next(values) if grad_norm is not None else None
+        moe_stat_values = {name: next(values) for name in moe_stat_names}
+
+        batch_loss = step_loss_sum_val / global_token_count_val if global_token_count_val > 0 else 0.0
+
         # Compute step metrics. CP shards the same sequences across cp ranks
         # (sequence-sharded data parallelism on the seq dim), so the unique
         # training tokens per step is dp_size * (batch_per_dp_rank * seq).
@@ -536,12 +548,12 @@ def train(config: SFTConfig):
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
-        if grad_norm is not None:
-            step_message += f" | Grad. Norm {grad_norm:.4f}"
+        if grad_norm_val is not None:
+            step_message += f" | Grad. Norm {grad_norm_val:.4f}"
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
         if is_moe_model:
             for name, label in (("max_vio", "Max Vio"), ("routing_confidence", "Routing Conf.")):
-                value = moe_stats[name].item()
+                value = moe_stat_values[name]
                 if value > 0:
                     step_message += f" | {label} {value:.4f}"
         logger.success(step_message)
@@ -585,8 +597,8 @@ def train(config: SFTConfig):
             "optim/zero_grad_ratio": zero_grad_ratio,
             "step": progress.step,
         }
-        if grad_norm is not None:
-            optim_metrics["optim/grad_norm"] = grad_norm.item()
+        if grad_norm_val is not None:
+            optim_metrics["optim/grad_norm"] = grad_norm_val
         monitor.log(optim_metrics, step=progress.step)
 
         loss_log_metrics = {
@@ -611,7 +623,7 @@ def train(config: SFTConfig):
         disk_metrics["step"] = progress.step
         monitor.log(disk_metrics, step=progress.step)
 
-        moe_log_metrics = {f"{name}/mean": value.item() for name, value in moe_stats.items() if value.item() > 0}
+        moe_log_metrics = {f"{name}/mean": value for name, value in moe_stat_values.items() if value > 0}
         if moe_log_metrics:
             monitor.log({**moe_log_metrics, "step": progress.step}, step=progress.step)
 

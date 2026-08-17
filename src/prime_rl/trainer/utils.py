@@ -101,14 +101,23 @@ def count_zero_gradient_elements(parameters: Iterable[nn.Parameter]) -> tuple[Te
     return num_zeros, num_tracked
 
 
-def get_zero_gradient_ratio(parameters: Iterable[nn.Parameter], dp_replicate: int = 1) -> float:
+def zero_gradient_ratio_tensor(parameters: Iterable[nn.Parameter], dp_replicate: int = 1) -> Tensor:
+    """Same as `get_zero_gradient_ratio`, but stays on-device so the caller can defer the host sync."""
     num_zero_grad, num_grad_elements = count_zero_gradient_elements(parameters)
     dist.all_reduce(num_zero_grad, op=dist.ReduceOp.SUM)
     dist.all_reduce(num_grad_elements, op=dist.ReduceOp.SUM)
     if dp_replicate > 1:
         num_zero_grad = torch.div(num_zero_grad, dp_replicate, rounding_mode="floor")
         num_grad_elements = torch.div(num_grad_elements, dp_replicate, rounding_mode="floor")
-    return (num_zero_grad.float() / num_grad_elements.clamp_min(1).float()).item()
+    return num_zero_grad.float() / num_grad_elements.clamp_min(1).float()
+
+
+def get_zero_gradient_ratio(parameters: Iterable[nn.Parameter], dp_replicate: int = 1) -> float:
+    return zero_gradient_ratio_tensor(parameters, dp_replicate).item()
+
+
+def batched_item(*tensors: Tensor) -> list[float]:
+    return torch.stack([tensor.to(torch.float64) for tensor in tensors]).tolist()
 
 
 def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:

@@ -24,6 +24,22 @@ class CPUOffloadOptimizer:
         self.optimizer = optimizer
         self.pin_memory = pin_memory
         self._initialized = False
+        self._pinned_buffers: dict[tuple[int, str], torch.Tensor] = {}
+
+    def _pinned_buffer_for(self, p, k: str, like: torch.Tensor) -> torch.Tensor:
+        key = (id(p), k)
+        buf = self._pinned_buffers.get(key)
+        if buf is None or buf.shape != like.shape or buf.dtype != like.dtype:
+            buf = torch.empty(like.shape, dtype=like.dtype, pin_memory=True)
+            self._pinned_buffers[key] = buf
+        return buf
+
+    def _to_cpu(self, p, k: str, local_tensor: torch.Tensor) -> torch.Tensor:
+        if not self.pin_memory:
+            return local_tensor.to("cpu", non_blocking=True)
+        buf = self._pinned_buffer_for(p, k, local_tensor)
+        buf.copy_(local_tensor, non_blocking=True)
+        return buf
 
     def _move_states(self, device: str):
         """Move optimizer states to CPU or back to GPU (matching each parameter's device)."""
@@ -32,25 +48,16 @@ class CPUOffloadOptimizer:
             for k, v in state.items():
                 if isinstance(v, DTensor):
                     local_tensor = v._local_tensor
-                    if device == "cpu":
-                        non_blocking = not self.pin_memory
-                        new_local = local_tensor.to("cpu", non_blocking=non_blocking)
-                        if self.pin_memory and not new_local.is_pinned():
-                            new_local = new_local.pin_memory()
-                    else:
-                        new_local = local_tensor.to(device, non_blocking=True)
+                    new_local = (
+                        self._to_cpu(p, k, local_tensor)
+                        if device == "cpu"
+                        else local_tensor.to(device, non_blocking=True)
+                    )
                     new_dtensor = copy.copy(v)
                     new_dtensor._local_tensor = new_local
                     state[k] = new_dtensor
                 elif isinstance(v, torch.Tensor):
-                    if device == "cpu":
-                        non_blocking = not self.pin_memory
-                        cpu_tensor = v.to("cpu", non_blocking=non_blocking)
-                        if self.pin_memory and not cpu_tensor.is_pinned():
-                            cpu_tensor = cpu_tensor.pin_memory()
-                        state[k] = cpu_tensor
-                    else:
-                        state[k] = v.to(device, non_blocking=True)
+                    state[k] = self._to_cpu(p, k, v) if device == "cpu" else v.to(device, non_blocking=True)
 
     def step(self, closure=None):
         # First step initializes states on GPU - offload after
