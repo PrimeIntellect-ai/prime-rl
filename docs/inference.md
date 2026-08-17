@@ -221,7 +221,9 @@ n_max = clamp(κ · C / G, group_size, max_inflight_episodes)
 - **`κ` — over-commit trim**, starts at 1. Absorbs what the cost model cannot see: generate-call duty cycle, prefix sharing within groups, offload headroom. Adjusted by a binary per-engine overload signal, worst engine wins: **HARD** = preemptions in the poll window (`Δ vllm:num_preemptions_total > 0`), **SOFT** = waiting queue non-empty at two consecutive polls, **CLEAR** otherwise.
     - HARD: cut once, `n_max ← 0.75 × inflight` (relative to actual inflight — cutting a non-binding cap sheds nothing), then freeze cuts until inflight drains below the new cap; repeated cuts on the stale draining signal would ratchet to the floor. If HARD survives a full drain, cut `×0.5`.
     - SOFT: hold — saturated-but-not-thrashing is the operating point.
-    - CLEAR: grow `κ ×1.02`, only after a full population turnover of all-CLEAR polls (growth is clocked to the plant, not the wall clock) and only while the cap binds (`inflight ≥ 0.9 × n_max`).
+    - CLEAR: grow `κ ×1.02`, only if every poll since the last step was CLEAR and the cap binds (`inflight ≥ 0.9 × n_max`).
+
+`n_max` is re-evaluated **once per training step**: `G` reweighs (the eval census enters exactly when the step's eval gate opens) and `κ` grows at most once. Step time tracks the mean episode time, so this clocks the controller to the plant and avoids overeager adjustments. The one exception is the HARD cut, which fires immediately on the 5 s poll — preemptions mean thrash is happening now, and with long episodes the next step boundary is too far away to wait for.
 
 Refills are burst-capped (at most `max(group_size, 0.1 × n_max)` new admissions per poll interval) so recovery never lands a cap's worth of prefills at once. During step 1 (pipeline warmup) the controller is frozen at its bootstrap cap — cold caches, the initial admission burst, and zero completions make every signal unrepresentative — while the estimators accumulate. `max_inflight_episodes` keeps its meaning as the hard user-set ceiling; all controller constants are internal.
 
