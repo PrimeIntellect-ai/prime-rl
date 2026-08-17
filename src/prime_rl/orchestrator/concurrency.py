@@ -102,6 +102,7 @@ class ConcurrencyController:
         self.max_inflight = config.initial_inflight or floor
         # None until the first unfrozen on_step (or a cut initializes it early)
         self.kappa: float | None = None
+        self.bootstrapped = False
         self.completed_steps = 0
 
         self.estimates: dict[tuple[str, str], EnvEstimate] = {}
@@ -187,13 +188,16 @@ class ConcurrencyController:
 
         # First capacity observation before any step completed, without a
         # user-set start: raise the pre-capacity floor to the feedforward
-        # bootstrap
+        # bootstrap. Fires once — every later change goes through on_step
+        # (or a HARD cut), so the cap is stable between step boundaries.
         if (
-            not self.frozen
+            not self.bootstrapped
+            and not self.frozen
             and self.kappa is None
             and self.config.initial_inflight is None
             and self.capacity is not None
         ):
+            self.bootstrapped = True
             derived = self.clamp(self.capacity / self.cost_estimate())
             get_logger().info(
                 f"Derived initial max inflight {derived} - {format_num(self.capacity, precision=1)} KV cache tokens "
