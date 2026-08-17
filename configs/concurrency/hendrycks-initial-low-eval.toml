@@ -1,4 +1,4 @@
-# Adaptive-concurrency e2e 1: hendrycks-math sanity on 2 GPUs (1 trainer + 1 inference) with a
+# Adaptive-concurrency e2e: hendrycks-math sanity on 2 GPUs (1 trainer + 1 inference) with a
 # LOW starting cap and no ceiling. Expect: the cap holds at initial_inflight through step 1,
 # jumps to the capacity budget at freeze exit, then converges as per-env cost estimates replace
 # the seq_len bootstrap — with no preemptions (concurrency/signal stays clear of HARD). AIME
@@ -9,7 +9,7 @@
 max_steps = 50
 
 [run]
-name = "hendrycks-low"
+name = "hendrycks-initial-low-eval"
 
 [deployment]
 num_train_gpus = 1

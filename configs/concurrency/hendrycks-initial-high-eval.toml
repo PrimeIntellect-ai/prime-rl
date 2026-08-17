@@ -1,15 +1,15 @@
-# Adaptive-concurrency e2e 2: hendrycks-math sanity on 2 GPUs with a starting cap far past the
+# Adaptive-concurrency e2e: hendrycks-math sanity on 2 GPUs with a starting cap far past the
 # engine's KV capacity. Expect: the resulting preemptions trip a HARD cut during warmup (the
 # emergency brake is live even while the feedforward loop is frozen), the cap drops to
 # 0.75 x actual inflight, and after the drain the cap settles at the capacity budget — no
-# repeated cuts on the stale draining signal. AIME evals (avg@4) every 10 steps as in the low
-# variant.
+# repeated cuts on the stale draining signal. AIME evals (avg@4) every 10 steps as in the
+# low-eval variant.
 # Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
 
 max_steps = 50
 
 [run]
-name = "hendrycks-high"
+name = "hendrycks-initial-high-eval"
 
 [deployment]
 num_train_gpus = 1

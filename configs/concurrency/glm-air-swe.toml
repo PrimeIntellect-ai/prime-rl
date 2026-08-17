@@ -1,4 +1,4 @@
-# Adaptive-concurrency e2e 3: GLM-4.5-Air on the scaleswe taskset, 2 nodes (1 train + 1 infer),
+# Adaptive-concurrency e2e: GLM-4.5-Air on the scaleswe taskset, 2 nodes (1 train + 1 infer),
 # rlm harness on a prime sandbox runtime. Starts from a reasonable cap and converges from there.
 # Eval (SWE-Bench Verified, every 10 steps) is capped at 10 turns, so eval episodes are much
 # cheaper than train episodes — expect the cap to INCREASE at eval boundaries when the eval

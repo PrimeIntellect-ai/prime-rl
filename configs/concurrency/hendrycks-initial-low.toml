@@ -1,4 +1,4 @@
-# Adaptive-concurrency e2e 1b: like hendrycks-low but WITHOUT eval — the simplest case. The
+# Adaptive-concurrency e2e: like hendrycks-initial-low-eval but WITHOUT eval — the simplest case. The
 # cap holds at initial_inflight through step 1, jumps to the capacity budget at freeze exit,
 # then converges smoothly as the train cost estimate replaces the seq_len bootstrap, with no
 # eval-census repricing in the trace and no preemptions.
@@ -7,7 +7,7 @@
 max_steps = 50
 
 [run]
-name = "hendrycks-low-no-eval"
+name = "hendrycks-initial-low"
 
 [deployment]
 num_train_gpus = 1
