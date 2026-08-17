@@ -48,14 +48,14 @@ For quick A/B ablations on the same node, run two RL instances side-by-side in s
 ```bash
 # session 1, GPUs 0–1, default port 8000
 bash scripts/tmux.sh -s exp1 -o outputs/exp1
-CUDA_VISIBLE_DEVICES=0,1 uv run rl @ rl.toml --output-dir outputs/exp1
+CUDA_VISIBLE_DEVICES=0,1 uv run rl @ rl.toml --run.name exp1
 
 # session 2, GPUs 2–3, port 8001
 bash scripts/tmux.sh -s exp2 -o outputs/exp2
 CUDA_VISIBLE_DEVICES=2,3 uv run rl @ rl.toml \
   --inference.server.port 8001 \
   --orchestrator.model.client.base-url http://localhost:8001/v1 \
-  --output-dir outputs/exp2
+  --run.name exp2
 ```
 
 #### SFT and Torchrun
@@ -69,7 +69,7 @@ uv run torchrun \
   src/prime_rl/trainer/sft/train.py @ sft.toml
 ```
 
-`--local-ranks-filter 0` keeps console output to rank 0 only; per-rank stdout/stderr is still captured in `<output_dir>/logs/trainer/torchrun/`.
+`--local-ranks-filter 0` keeps console output to rank 0 only; per-rank stdout/stderr is still captured in `<run_dir>/logs/latest/trainer/torchrun/`.
 
 ### Multi-Node
 
@@ -86,7 +86,8 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 | `trainer.model.dp_replicate` | Number of dimensions to **replicate** instead of shard. Set to 2 to run 2-way DP replication × FSDP sharding within each replica — useful for very large clusters where pure FSDP communication dominates. |
 | `trainer.model.reshard_after_forward` | If `true` (default), parameters are resharded after the forward pass to free memory; the backward pass re-gathers. Set `false` to keep params resident — faster but more memory. |
 | `trainer.model.fsdp_cpu_offload` | Offload params + grads + optimizer state to CPU. Big memory win, large throughput hit. |
-| `trainer.model.optim_cpu_offload` | Offload only optimizer state. Mid-ground — small throughput cost, decent memory savings, especially at low GPU count. |
+| `trainer.model.optim_cpu_offload` | Offload optimizer state to CPU between steps. Enabled by default. |
+| `trainer.model.full_offload` | Offload gradients, FP32 masters, and optimizer state and run AdamW on CPU during backward. Disabled by default. |
 
 ### Expert Parallelism
 
@@ -137,14 +138,7 @@ targets = ["norm", "attn_proj"]  # see Reference for the full list per architect
 
 ### Optimizer Offloading
 
-Offloading optimizer states to CPU is enabled by default (`optim_cpu_offload = true`) — a near-free memory win at low GPU counts:
-
-```toml
-[trainer.model]
-optim_cpu_offload = true   # already the default
-```
-
-Mutually exclusive with `fsdp_cpu_offload`. Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
+State-only optimizer offload remains enabled by default with `model.optim_cpu_offload = true`. For full offload, set `model.optim_cpu_offload = false` and `model.full_offload = true`; this keeps BF16 compute weights on GPU and runs CPU AdamW chunks as gradients become ready during backward. Full offload only supports AdamW and disables gradient clipping.
 
 ### LM Head Chunking
 
@@ -245,22 +239,14 @@ The default templates live under [`src/prime_rl/templates/`](https://github.com/
 
 ## Benchmarking
 
-Every entrypoint supports a `--bench` flag that runs a few warm-up + measurement steps with fake data and prints a rich-formatted throughput / MFU table:
+To benchmark a parallelism config before committing a multi-day run, run a short training with fake data and a step cap, and read throughput / MFU / step time / peak memory from the logs:
 
 ```bash
 # SFT trainer alone
-uv run sft @ sft.toml --bench
-uv run sft ... --data.type fake --data.length variable --bench   # variable-length fake data
+uv run sft @ sft.toml --data.type fake --max-steps 4
 
 # RL trainer alone (no inference involved)
-uv run trainer @ train.toml --data.fake --bench
-
-# Inference alone — start the server normally, then bench the orchestrator
-uv run inference @ infer.toml
-uv run orchestrator @ orch.toml --bench
-
-# Full RL stack (trainer with fake data, inference with real data from orchestrator)
-uv run rl @ rl.toml --bench
+uv run trainer @ train.toml --data.fake --max-steps 4
 ```
 
-Persist results with `--bench.output-json`. Use this to compare parallelism configs before committing a multi-day run.
+Every step logs `Throughput`, `MFU`, and `Peak Mem.` to the console. For machine-readable numbers, the file monitor writes `metrics.jsonl` to the run's output directory by default (`monitors.file`); aggregate `perf/throughput`, `perf/mfu`, `time/step`, and `perf/peak_memory` from the run's `metrics.jsonl` — skip the first step, it is warmup. [`benchmarks/scripts/run_single_benchmark.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/benchmarks/scripts/run_single_benchmark.py) does exactly this and is what the CI benchmark matrix runs.

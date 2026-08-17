@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 import verifiers.v1 as vf
 from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
+from verifiers.v1.runtimes import set_base_sandbox_labels
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
@@ -38,8 +39,8 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.ckpt import CheckpointManager
     from prime_rl.transport.base import MicroBatchSender
     from prime_rl.utils.client import InferencePool
-    from prime_rl.utils.monitor.base import Monitor
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
+from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
@@ -64,8 +65,8 @@ from prime_rl.orchestrator.types import (
 )
 from prime_rl.orchestrator.utils import (
     get_weight_dir,
+    group_episodes,
     intercept_vf_logging,
-    save_rollouts,
     set_default_executor,
     setup_policy_inference_pool,
     trim_process_memory,
@@ -78,9 +79,6 @@ from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, s
 from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pathing import get_trace_path
-from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
     clean_exit,
     resolve_latest_ckpt_step,
@@ -118,13 +116,12 @@ class Orchestrator:
     last_batch_at: float | None
     consecutive_empty_batches: int
     eval_triggered_at: dict[tuple[str, int], float]
-    ckpt_manager: CheckpointManager | None
+    ckpt_manager: CheckpointManager
     component_tasks: list[asyncio.Task]
 
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
     policy_inference: InferencePool
-    monitor: Monitor
     sender: MicroBatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
@@ -139,7 +136,6 @@ class Orchestrator:
     renderer: Renderer | None
     mm_token_type_ids_mapping: dict[int, int] | None
     heart: Heartbeat | None
-    usage_reporter: UsageReporter | None
     inference_metrics: InferenceMetricsCollector | None
     eval_envs: EvalEnvs | None
     eval_sink: EvalSink | None
@@ -156,9 +152,6 @@ class Orchestrator:
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
         algorithms = sorted({env.algo.type for env in config.train.source if env.algo is not None})
         get_logger().info(f"Starting orchestrator (algorithm: {', '.join(algorithms)})")
-
-        if config.bench:
-            get_logger().warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
@@ -184,7 +177,6 @@ class Orchestrator:
         self.renderer = None
         self.mm_token_type_ids_mapping = None
         self.heart = None
-        self.usage_reporter = None
         self.inference_metrics = None
         self.eval_envs = None
         self.eval_sink = None
@@ -220,29 +212,26 @@ class Orchestrator:
         if self.mm_token_type_ids_mapping == {}:
             self.mm_token_type_ids_mapping = None
 
-        get_logger().info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
-        self.monitor = setup_monitor(
-            wandb_config=config.wandb,
-            prime_config=config.prime_monitor,
-            file_config=config.file_monitor,
+        get_logger().info(f"Initializing monitors ({config.monitors})")
+        await monitors.setup(
+            wandb=config.monitors.wandb,
+            prime=config.monitors.prime,
+            file=config.monitors.file,
             output_dir=config.output_dir,
-            tokenizer=self.tokenizer,
             run_config=config,
-            keep_full_history=config.bench,
             train_env_names=[env.resolved_name for env in config.train.source],
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
-        # ``RunInfo.id`` is required on the trace: fall back to a run-local uuid
-        # when no external monitor identity (W&B) exists.
-        self.run_id = self.monitor.run_id or uuid.uuid4().hex
+        # The launcher-set $PRL_RUN_ID is the run identity; standalone runs mint a local one.
+        self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
+        # Base labels for sandboxes created in this process; env-server processes read
+        # the same launcher-set env var themselves.
+        self.run_name = os.environ.get("PRL_RUN_NAME")
+        if self.run_name:
+            set_base_sandbox_labels([self.run_name])
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat.url)
-
-        usage_base_url = os.environ.get("PI_USAGE_BASE_URL")
-        usage_api_key = os.environ.get("PI_USAGE_API_KEY")
-        if usage_base_url and usage_api_key:
-            self.usage_reporter = UsageReporter()
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(
@@ -264,11 +253,13 @@ class Orchestrator:
             await self.eval_envs.start()
             get_logger().success("Eval environment(s) ready")
 
-        if config.ckpt is not None and config.ckpt.resume_step is not None and self.ckpt_manager is not None:
-            if config.ckpt.resume_step == -1:
-                self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
+        if config.resume is not None:
+            if config.resume.dir is not None:
+                self.resume_step = config.resume.dir_step
             else:
-                self.resume_step = config.ckpt.resume_step
+                self.resume_step = config.resume.step
+                if self.resume_step is None:
+                    self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
 
         # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.policy_inference.model_name
@@ -283,10 +274,13 @@ class Orchestrator:
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
-        if config.wandb is not None and config.collect_inference_metrics:
+        # Gate on the registered monitor, not the config - the collector logs to the global
+        # W&B session, which only exists when the monitor's init succeeded.
+        if monitors.get(monitors.WandbMonitor) is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(
                 self.policy_inference.admin_clients,
                 roles=config.inference_metrics_roles,
+                max_inflight_episodes=config.max_inflight_episodes,
             )
             await self.inference_metrics.start()
 
@@ -323,8 +317,10 @@ class Orchestrator:
 
         self.train_source = TrainSource(self.train_envs)
 
-        if self.resume_step is not None and self.ckpt_manager is not None:
-            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step)
+        if self.resume_step is not None:
+            resume = self.config.resume
+            resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
+            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
             # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
             # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
             # trainer even when ``ckpt.skip_progress`` left the counter unrestored.
@@ -334,50 +330,44 @@ class Orchestrator:
             get_logger().info("Training from scratch")
 
         self.packer = BatchPacker(config)
-        if config.bench:
-            # Bench runs have no trainer: nothing consumes shipped batches, and the
-            # ZMQ sender's READY barrier would block forever.
-            self.sender = None
-        else:
-            get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
-            self.sender = setup_micro_batch_sender(
-                config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
-            )
+        get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
+        self.sender = setup_micro_batch_sender(
+            config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
+        )
 
         # Sync inference to the incoming policy before the first step, rendezvousing
         # with the trainer's startup broadcast (v{resume_step} on resume, v0 from
-        # scratch). Bench runs have no trainer, so there is no broadcast to wait for.
-        if not config.bench:
-            sync_version = self.resume_step if self.resume_step is not None else 0
-            if config.weight_broadcast.type == "nixl":
-                weights_path = None
-            else:
-                check_exists = config.weight_broadcast.type == "filesystem"
-                # The trainer's startup broadcast is always coming, so wait for it
-                # rather than failing immediately when the directory is not there yet.
-                wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
-                    STARTUP_WEIGHT_WAIT_TIMEOUT_S
-                )
-                weights_path = get_weight_dir(
-                    config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
-                )
-            if self.model_express is not None:
-                await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
-            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
-            if self.model_express is not None:
-                await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
-                # Complete the startup rendezvous before the watcher begins its next cycle.
-                await asyncio.to_thread(
-                    self.model_express.wait_for,
-                    "trainer",
-                    count=1,
-                    status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                    timeout=config.weight_broadcast.timeout,
-                )
-            if self.lora_name is not None:
-                self.policy_inference.update_model_name(self.lora_name)
-                self.policy.model_name = self.lora_name
-            self.policy.version = sync_version
+        # scratch).
+        sync_version = self.resume_step if self.resume_step is not None else 0
+        if config.weight_broadcast.type == "nixl":
+            weights_path = None
+        else:
+            check_exists = config.weight_broadcast.type == "filesystem"
+            # The trainer's startup broadcast is always coming, so wait for it
+            # rather than failing immediately when the directory is not there yet.
+            wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
+                STARTUP_WEIGHT_WAIT_TIMEOUT_S
+            )
+            weights_path = get_weight_dir(
+                config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
+            )
+        if self.model_express is not None:
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
+        await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
+        if self.model_express is not None:
+            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            # Complete the startup rendezvous before the watcher begins its next cycle.
+            await asyncio.to_thread(
+                self.model_express.wait_for,
+                "trainer",
+                count=1,
+                status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
+                timeout=config.weight_broadcast.timeout,
+            )
+        if self.lora_name is not None:
+            self.policy_inference.update_model_name(self.lora_name)
+            self.policy.model_name = self.lora_name
+        self.policy.version = sync_version
 
         self.eval_source: EvalSource | None = (
             EvalSource(
@@ -391,7 +381,7 @@ class Orchestrator:
 
         assert config.max_inflight_episodes is not None, "max_inflight_episodes must be resolved before dispatcher init"
         log_interval = config.log.interval
-        wandb_enabled = config.wandb is not None
+        wandb_enabled = monitors.get(monitors.WandbMonitor) is not None
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
@@ -488,13 +478,15 @@ class Orchestrator:
             elapsed = format_time(time.perf_counter() - start_time)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
+                # Finalize only on a clean exit — a crashed run must not be marked
+                # completed; the platform run's atexit hook marks it failed instead.
+                await monitors.finalize()
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
-            self.monitor.save_final_summary()
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
             # first ship).
-            if self.ckpt_manager is not None and self.progress.step > 1:
+            if self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info("Writing final checkpoint")
                 self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
@@ -528,9 +520,9 @@ class Orchestrator:
             step = episode[0].eval_step if kind == "eval" else self.progress.step
             assert step is not None
             run: vf.RunInfo = (
-                vf.EvalRunInfo(id=self.run_id, step=step)
+                vf.EvalRunInfo(id=self.run_id, name=self.run_name, step=step)
                 if kind == "eval"
-                else vf.TrainRunInfo(id=self.run_id, step=step)
+                else vf.TrainRunInfo(id=self.run_id, name=self.run_name, step=step)
             )
             for rollout in episode:
                 rollout.record_run(
@@ -540,11 +532,7 @@ class Orchestrator:
                     episode_id=rollout.episode_id,
                     policy_version=rollout.policy_version,
                 )
-            await asyncio.to_thread(
-                save_rollouts,
-                [rollout.to_record() for rollout in episode],
-                get_trace_path(self.config.output_dir, step, kind, "all"),
-            )
+            await monitors.log(group_episodes(episode), step, kind, "all")
 
             if kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
@@ -561,7 +549,7 @@ class Orchestrator:
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
-        side-effects (ckpt, save_rollouts, reference scoring, sender.send,
+        side-effects (ckpt, monitors.log, reference scoring, sender.send,
         metrics, heartbeat, progress, eval trigger). The sink has already
         done all data-transformation work."""
         config = self.config
@@ -611,9 +599,9 @@ class Orchestrator:
         # orchestrator finishes early, and its teardown strands the trainer inside
         # an in-memory broadcast handshake that needs the live weight watcher.
         # Always satisfiable: the trainer skips only the final TARGET_LAG+1
-        # in-memory broadcasts. Bench runs have no trainer, so they ship freely.
+        # in-memory broadcasts.
         required_version = step - 1 - TARGET_LAG
-        if not config.bench and self.policy.version < required_version:
+        if self.policy.version < required_version:
             get_logger().info(
                 f"Holding batch {step} until the trainer publishes policy v{required_version} "
                 f"(currently v{self.policy.version})"
@@ -635,18 +623,14 @@ class Orchestrator:
             if self.train_envs.get(r.env_name).sampler.samples_from_live_policy:
                 r.off_policy_steps = (step - 1) - r.policy_version
 
-        # The effective (clean, trained-on) subset lands in the per-step ``effective`` trace file
-        # at ship time; the full arrival window already streamed into ``all`` on arrival.
-        # to_record drops the per-node training tensors — they're for training, not the rollout
-        # record, and can't round-trip json (raw numpy bytes).
-        records = [r.to_record() for r in effective]
-        await asyncio.to_thread(save_rollouts, records, get_trace_path(config.output_dir, step, "train", "effective"))
+        # The effective (clean, trained-on) subset is logged at ship time; the full arrival
+        # window already streamed into the ``all`` cohort on arrival.
+        await monitors.log(group_episodes(effective.rollouts), step, "train", "effective")
 
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
         pack_time = time.perf_counter() - pack_start_time
-        if self.sender is not None:
-            await self.sender.send(micro_batch_grid)
+        await self.sender.send(micro_batch_grid)
         self.progress.step += 1
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
@@ -688,25 +672,9 @@ class Orchestrator:
         for env_name, env_pool in batch.rollouts.by_env().items():
             metrics[f"batch/{env_name}"] = len(env_pool) / len(batch.rollouts)
         metrics |= self.train_source.metrics()
-        self.monitor.log(metrics, step=step)
+        await monitors.log(metrics, step=step)
         self.wait_for_policy_time = 0.0
-        self.monitor.log_samples(effective.rollouts, step=step)
-        self.monitor.log_distributions(
-            distributions={
-                "rewards": [r.reward for r in effective],
-                "advantages": [a for r in effective if (a := r.scalar_advantage()) is not None],
-            },
-            step=step,
-        )
 
-        if self.usage_reporter is not None:
-            run_id = os.getenv("RUN_ID", "")
-            if run_id:
-                self.usage_reporter.report_training_usage(
-                    run_id=run_id,
-                    step=step,
-                    tokens=num_input + num_output,
-                )
         if self.heart is not None:
             self.heart.beat()
 
@@ -843,21 +811,15 @@ class Orchestrator:
         get_logger().success("\n\t\t ".join(lines))
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
-        """Persist + log one completed eval epoch (save_rollouts,
-        monitor.log_eval_samples, monitor.log)."""
+        """Persist + log one completed eval epoch through the monitors."""
         if not batch.rollouts:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
             return
 
-        # The non-errored subset lands in the per-step ``effective`` trace file on epoch
-        # completion (multiple eval envs share the step file — each epoch appends its cohort
-        # once, and every record carries ``env_name``); the full returned cohort already
-        # streamed into ``all`` on arrival.
-        records = [r.to_record() for r in batch.rollouts.effective]
-        await asyncio.to_thread(
-            save_rollouts, records, get_trace_path(self.config.output_dir, batch.step, "eval", "effective")
-        )
-        self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
+        # The non-errored subset is logged on epoch completion (multiple eval envs share the
+        # step's trace file — each epoch appends its cohort once, and every record carries
+        # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
+        await monitors.log(group_episodes(batch.rollouts.effective.rollouts), batch.step, "eval", "effective")
         policy_versions = {r.policy_version for r in batch.rollouts}
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:
@@ -873,7 +835,7 @@ class Orchestrator:
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
-        self.monitor.log(metrics, step=batch.step)
+        await monitors.log(metrics, step=batch.step)
 
         # Success line — quality metrics over the effective set, error rate over the full returned
         # cohort. ``Stat.mean()`` is 0.0 for an empty set.
@@ -890,7 +852,7 @@ class Orchestrator:
     async def maybe_save_ckpt(self, step: int) -> float:
         """Checkpoint the step just shipped if it's an interval boundary. Returns
         elapsed time (0.0 when no save happened)."""
-        if self.ckpt_manager is None or self.config.ckpt is None or not self.config.ckpt.interval:
+        if self.config.ckpt is None or not self.config.ckpt.interval:
             return 0.0
         # The final step's checkpoint is written once in ``start()``'s teardown; skip it here so
         # we don't double-save. This mirrors the trainer (its is_last_step skips the in-loop save).
@@ -957,8 +919,7 @@ class Orchestrator:
         training artifacts are already persisted before this is reached."""
 
         async def teardown() -> None:
-            if self.sender is not None:
-                self.sender.close()
+            self.sender.close()
             if self.dispatcher is not None:
                 await self.dispatcher.stop()
             if self.watcher is not None:
@@ -979,8 +940,6 @@ class Orchestrator:
                 for env in self.train_envs:
                     for pool in (*env.sampler.connected_pools, *env.algorithm.connected_pools):
                         await pool.stop()
-            if self.usage_reporter is not None:
-                self.usage_reporter.close()
 
         task = asyncio.create_task(teardown())
         _, pending = await asyncio.wait({task}, timeout=SHUTDOWN_TIMEOUT_S)

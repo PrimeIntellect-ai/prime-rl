@@ -32,7 +32,7 @@ num_train_nodes = 2
 num_infer_nodes = 1
 num_infer_replicas = 4
 
-[wandb]
+[monitors.wandb]
 project = "swe-ablations"
 name = "glm45air-scaleswe"
 
@@ -43,7 +43,8 @@ timeout = 3600
 [ckpt]
 interval = 50
 keep_last = 1
-resume_step = -1
+
+[resume]
 
 [model]
 name = "zai-org/GLM-4.5-Air"
@@ -60,7 +61,6 @@ attn = "flash_attention_3"
 cp = 4
 cp_style = "ulysses"
 fused_lm_head_token_chunk_size = 1024
-optim_cpu_offload = true
 
 [trainer.model.ac]
 
@@ -108,12 +108,9 @@ id = "rlm"
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-swe"]
 
-[orchestrator.prime_monitor]
+[monitors.prime]
 
 # --- Eval: SWE-Bench Verified at step 0 + every 20 steps, rlm harness on prime ---
 
@@ -131,9 +128,6 @@ id = "rlm"
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["glm45air-swe"]
 
 [orchestrator.eval.source.env.agent.timeout]

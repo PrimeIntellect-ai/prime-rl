@@ -16,7 +16,7 @@ type = "filesystem"
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
-[wandb]
+[monitors.wandb]
 project = "reverse-text-ci"
 name = "ci-rl-opd"
 

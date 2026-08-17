@@ -61,7 +61,7 @@ CLI flags mirror the TOML tree using dots:
 
 ```bash
 uv run rl --help                                       # full schema
-uv run rl @ rl.toml --dry-run --output-dir /tmp/check  # write resolved configs
+uv run rl @ rl.toml --dry-run --output-dir /tmp --run.name check  # write resolved configs (JSON) to /tmp/check/configs
 ```
 
 ## Syntax
@@ -71,12 +71,12 @@ uv run rl @ rl.toml --dry-run --output-dir /tmp/check  # write resolved configs
 CLI uses paired flags: bare `--flag` sets `True`, `--no-flag` sets `False`. TOML must be explicit:
 
 ```bash
-uv run rl @ rl.toml --clean-output-dir       # True
-uv run rl @ rl.toml --no-clean-output-dir    # False
+uv run rl @ rl.toml --clean       # True
+uv run rl @ rl.toml --no-clean    # False
 ```
 
 ```toml
-clean_output_dir = true
+clean = true
 ```
 
 ### Lists
@@ -218,7 +218,7 @@ PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:False"
 VLLM_USE_DEEP_GEMM = "1"
 
 [orchestrator.env_vars]
-PI_USAGE_BASE_URL = "https://..."
+PRIME_LOG_LEVEL = "debug"
 ```
 
 The `rl` launcher applies these the same way in both single-node and multi-node (SLURM) runs. Precedence, low to high:
@@ -257,17 +257,18 @@ Start from a shipped base config, override two fields on the CLI, and dry-run:
 
 ```bash
 uv run rl @ examples/basic/reverse-text/rl.toml \
-  --wandb.name my-experiment \
+  --monitors.wandb.name my-experiment \
   --trainer.optim.lr 5e-6 \
   --output-dir /tmp/reverse-dry \
+  --run.name check \
   --dry-run
 ```
 
 Then inspect the resolved config:
 
 ```bash
-ls /tmp/reverse-dry/configs/
-# rl.toml  trainer.toml  orchestrator.toml  inference.toml
+ls /tmp/reverse-dry/check/configs/
+# rl.json  trainer.json  orchestrator.json  inference.json
 ```
 
-Each per-process TOML reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/configs/trainer.toml`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.
+Each per-process TOML reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/check/configs/trainer.json`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.

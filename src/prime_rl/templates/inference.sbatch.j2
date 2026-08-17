@@ -53,9 +53,13 @@ export RPC_PORT={{ data_parallel_rpc_port }}
 export PROJECT_DIR={{ project_dir }}
 export CONFIG_PATH={{ config_path }}
 export OUTPUT_DIR={{ output_dir }}
-mkdir -p $OUTPUT_DIR/logs/inference
-rm -f $OUTPUT_DIR/logs/inference/*.log
-ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
+# Per-attempt log dir: a relaunch never overwrites an earlier attempt's logs.
+ATTEMPT=1
+while [ -e $OUTPUT_DIR/logs/attempt_$ATTEMPT ]; do ATTEMPT=$((ATTEMPT+1)); done
+export LOG_DIR=$OUTPUT_DIR/logs/attempt_$ATTEMPT
+mkdir -p $LOG_DIR/inference
+ln -sfn attempt_$ATTEMPT $OUTPUT_DIR/logs/latest
+ln -sfn inference/node_0.log $LOG_DIR/inference.log
 
 # Setup environment
 cd $PROJECT_DIR
@@ -271,11 +275,11 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     fi
 
     echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
-        | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+        | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
     # Start the single global router on node 0 (external LB across all per-rank endpoints)
     if [ "$INFER_NODE_RANK" -eq 0 ]; then
-        launch_router pd "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log"
+        launch_router pd "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
     fi
 {%- if router.type == "llm-d" %}
     # pd-sidecar on each decode node: EPP routes decode -> sidecar (DECODE_SIDECAR_PORT
@@ -283,7 +287,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     # Every decode node fronts its own local ranks, so launch on each (not just the
     # replica head), or decode nodes beyond the head get advertised but unserved endpoints.
     if [ "$ROLE" = "decode" ]; then
-        SIDECAR_LOG="$OUTPUT_DIR/logs/inference/sidecar_${INFER_NODE_RANK}.log"
+        SIDECAR_LOG="$LOG_DIR/inference/sidecar_${INFER_NODE_RANK}.log"
         echo "Starting pd-sidecar on $LOCAL_IP:$DECODE_SIDECAR_PORT(+rank) -> vLLM $DECODE_PORT(+rank)" | tee $SIDECAR_LOG
         export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
         pd-sidecar \
@@ -311,7 +315,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     done
 {%- elif num_nodes > 1 %}
     echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
-        | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+        | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
     DP_PER_NODE={{ dp_per_node }}
     TP=$((GPUS_PER_NODE / DP_PER_NODE))
@@ -319,7 +323,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 
     # Start the single global router on node 0 (balances across per-rank endpoints — no intra-node DP header)
     if [ "$INFER_NODE_RANK" -eq 0 ]; then
-        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log"
+        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
     fi
 
     # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + dp_local),
@@ -340,11 +344,11 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         fi
     done
 {%- else %}
-    echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+    echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
     uv run inference \
         @ $CONFIG_PATH \
-        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
+        2>&1 | tee -a $LOG_DIR/inference/node_${INFER_NODE_RANK}.log &
 {%- endif %}
 
 # Wait for the first background job to exit and propagate its exit code. This

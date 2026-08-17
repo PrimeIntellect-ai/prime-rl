@@ -4,7 +4,7 @@ max_steps = 5000
 num_train_gpus = 4
 num_infer_gpus = 4
 
-[wandb]
+[monitors.wandb]
 project = "hendrycks-sanity"
 name = "hendrycks-sanity"
 

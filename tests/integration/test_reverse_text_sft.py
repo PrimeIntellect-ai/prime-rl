@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 from typing import Callable
 
@@ -7,6 +8,14 @@ from tests.conftest import ProcessResult
 from tests.utils import check_loss_goes_down, strip_escape_codes
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
+
+RUN_NAME = "reverse-text-sft"
+
+
+@pytest.fixture(scope="module")
+def run_dir(output_dir: Path) -> Path:
+    return output_dir / RUN_NAME
+
 
 TIMEOUT = 300  # 5 minutes
 
@@ -33,13 +42,15 @@ def sft_process(
         "configs/ci/integration/reverse-text-sft/start.toml",
         "--deployment.num-gpus",
         "2",
-        "--clean-output-dir",
-        "--wandb.project",
+        "--clean",
+        "--monitors.wandb.project",
         wandb_project,
-        "--wandb.name",
+        "--monitors.wandb.name",
         wandb_name,
         "--output-dir",
         output_dir.as_posix(),
+        "--run.name",
+        RUN_NAME,
     ]
 
     return run_process(cmd, timeout=TIMEOUT)
@@ -63,12 +74,46 @@ def sft_resume_process(
         "configs/ci/integration/reverse-text-sft/resume.toml",
         "--deployment.num-gpus",
         "2",
-        "--wandb.project",
+        "--monitors.wandb.project",
         wandb_project,
-        "--wandb.name",
+        "--monitors.wandb.name",
         wandb_name,
         "--output-dir",
         output_dir.as_posix(),
+        "--run.name",
+        RUN_NAME,
+    ]
+
+    return run_process(cmd, timeout=TIMEOUT)
+
+
+@pytest.fixture(scope="module")
+def sft_full_offload_model_only_resume_process(
+    sft_resume_process: ProcessResult,
+    run_process: Callable[..., ProcessResult],
+    wandb_project: str,
+    wandb_name: str,
+    output_dir: Path,
+) -> ProcessResult:
+    """Resume without optimizer state using full CPU offload."""
+    if sft_resume_process.returncode != 0:
+        pytest.skip("Regular SFT resume failed")
+    cmd = [
+        "uv",
+        "run",
+        "sft",
+        "@",
+        "configs/ci/integration/reverse-text-sft/full-offload-resume.toml",
+        "--deployment.num-gpus",
+        "2",
+        "--monitors.wandb.project",
+        wandb_project,
+        "--monitors.wandb.name",
+        f"{wandb_name}-full-offload-model-only-resume",
+        "--output-dir",
+        output_dir.as_posix(),
+        "--run.name",
+        RUN_NAME,
     ]
 
     return run_process(cmd, timeout=TIMEOUT)
@@ -79,9 +124,9 @@ def test_no_error(sft_process: ProcessResult):
     assert sft_process.returncode == 0, f"Process has non-zero return code ({sft_process})"
 
 
-def test_loss_goes_down(sft_process: ProcessResult, output_dir: Path):
+def test_loss_goes_down(sft_process: ProcessResult, run_dir: Path):
     """Tests that the loss goes down in the SFT process"""
-    trainer_log_path = output_dir / "logs" / "trainer.log"
+    trainer_log_path = run_dir / "logs" / "latest" / "trainer.log"
     print(f"Checking trainer path in {trainer_log_path}")
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
@@ -93,10 +138,31 @@ def test_no_error_resume(sft_resume_process: ProcessResult):
     assert sft_resume_process.returncode == 0, f"Process has non-zero return code ({sft_resume_process})"
 
 
-def test_loss_goes_down_resume(sft_resume_process: ProcessResult, output_dir: Path):
+def test_loss_goes_down_resume(sft_resume_process: ProcessResult, run_dir: Path):
     """Tests that the loss goes down in the SFT resume process"""
-    trainer_log_path = output_dir / "logs" / "trainer.log"
+    trainer_log_path = run_dir / "logs" / "latest" / "trainer.log"
     print(f"Checking trainer path in {trainer_log_path}")
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_loss_goes_down(trainer_stdout)
+
+
+def test_full_offload_model_only_resume_preserves_weights(
+    sft_full_offload_model_only_resume_process: ProcessResult,
+    run_dir: Path,
+):
+    assert sft_full_offload_model_only_resume_process.returncode == 0, (
+        f"Process has non-zero return code ({sft_full_offload_model_only_resume_process})"
+    )
+    before_dir = run_dir / "weights" / "step_5"
+    after_dir = run_dir / "weights" / "step_6"
+    before_files = sorted(before_dir.glob("*.safetensors"))
+    after_files = sorted(after_dir.glob("*.safetensors"))
+    assert before_files
+    assert [path.name for path in before_files] == [path.name for path in after_files]
+    for before, after in zip(before_files, after_files):
+        with before.open("rb") as before_handle, after.open("rb") as after_handle:
+            assert (
+                hashlib.file_digest(before_handle, "sha256").digest()
+                == hashlib.file_digest(after_handle, "sha256").digest()
+            )

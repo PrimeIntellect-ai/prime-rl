@@ -4,7 +4,7 @@ max_steps = 20
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 seq_len = 2048
 
-[wandb]
+[monitors.wandb]
 project = "reverse-text"
 name = "reverse-text"
 

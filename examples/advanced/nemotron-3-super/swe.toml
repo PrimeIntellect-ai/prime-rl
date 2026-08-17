@@ -18,7 +18,7 @@ num_train_nodes = 4
 num_infer_nodes = 1
 num_infer_replicas = 4
 
-[wandb]
+[monitors.wandb]
 project = "nemotron-3-super"
 name = "nemotron-3-super-swe"
 
@@ -29,7 +29,8 @@ timeout = 3600
 [ckpt]
 interval = 50
 keep_last = 1
-resume_step = -1
+
+[resume]
 
 [model]
 name = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
@@ -46,7 +47,6 @@ cp = 8
 cp_style = "ulysses"
 ep = 8
 fused_lm_head_token_chunk_size = 1024
-optim_cpu_offload = true
 
 [trainer.model.ac]
 
@@ -92,12 +92,9 @@ id = "rlm"
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["nemotron-3-super-swe"]
 
-[orchestrator.prime_monitor]
+[monitors.prime]
 
 [orchestrator.eval]
 interval = 20
@@ -113,9 +110,6 @@ id = "rlm"
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
-vm = true
-idle_timeout = "None"
 labels = ["nemotron-3-super-swe"]
 
 [orchestrator.eval.source.env.agent.timeout]

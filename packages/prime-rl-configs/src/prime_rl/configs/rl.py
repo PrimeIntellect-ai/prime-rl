@@ -1,3 +1,4 @@
+import uuid
 import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -6,6 +7,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
+from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
 from prime_rl.configs.orchestrator import (
     FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
 )
@@ -20,16 +22,11 @@ from prime_rl.configs.orchestrator import (
 )
 from prime_rl.configs.shared import (
     EnvVars,
-    FileMonitorConfig,
+    ResumeConfig,
+    RunConfig,
     SlurmConfig,
     TransportConfig,
     VLMConfig,
-)
-from prime_rl.configs.trainer import (
-    BenchConfig,
-    FakeDataLoaderConfig,
-    TokenizerConfig,
-    TrainerConfig,
 )
 from prime_rl.configs.trainer import (
     FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
@@ -40,13 +37,16 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
 )
+from prime_rl.configs.trainer import (
+    TokenizerConfig,
+    TrainerConfig,
+)
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
     validate_shared_ckpt_config,
     validate_shared_max_steps,
     validate_shared_model_name,
-    validate_shared_output_dir,
     validate_shared_seq_len,
     validate_shared_tokenizer,
     validate_shared_wandb_config,
@@ -70,7 +70,7 @@ class SharedWandbConfig(BaseConfig):
     """W&B entity."""
 
     name: str | None = None
-    """W&B run name."""
+    """W&B run name. Inherits ``run.name`` when unset."""
 
     group: str | None = None
     """W&B group."""
@@ -86,11 +86,24 @@ class SharedWandbConfig(BaseConfig):
         if self.offline:
             raise ValueError(
                 "W&B shared mode is always on for the rl entrypoint and requires server "
-                "connectivity; wandb.offline = true is not supported. Use offline mode "
-                "via the sub-config wandb blocks (trainer.wandb.offline, "
-                "orchestrator.wandb.offline) if you really need it per-process."
+                "connectivity; monitors.wandb.offline = true is not supported. Use offline mode "
+                "via the sub-config wandb blocks (trainer.monitors.wandb.offline, "
+                "orchestrator.monitors.wandb.offline) if you really need it per-process."
             )
         return self
+
+
+class SharedMonitorsConfig(BaseConfig):
+    """The ``rl`` entrypoint's shared monitor configs, propagated to trainer and orchestrator."""
+
+    wandb: SharedWandbConfig | None = None
+    """Shared W&B config. Propagated to trainer and orchestrator."""
+
+    file: FileMonitorConfig | None = None
+    """Shared local JSONL metric sink. If set, enables ``<output_dir>/metrics.jsonl`` on both trainer and orchestrator."""
+
+    prime: PrimeMonitorConfig | None = None
+    """Prime platform monitor. Propagated to the orchestrator only — the trainer has no platform integration."""
 
 
 class SharedCheckpointConfig(BaseConfig):
@@ -99,9 +112,6 @@ class SharedCheckpointConfig(BaseConfig):
 
     interval: int | None = None
     """Interval at which to save checkpoints."""
-
-    resume_step: int | None = None
-    """Step to resume from. If None, does not resume from a checkpoint."""
 
     keep_last: int | None = Field(None, ge=1)
     """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
@@ -227,11 +237,29 @@ class RLConfig(BaseConfig):
     env_vars: EnvVars = {}
     """Extra environment variables for every launched RL component. Component-specific env_vars override these."""
 
-    output_dir: Path = Path("outputs")
-    """Output directory. Should be unique per experiment."""
+    run: RunConfig = Field(default_factory=RunConfig)
+    """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
 
-    clean_output_dir: bool = False
-    """Delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming."""
+    output_dir: Path = Path("outputs")
+    """Directory that groups related runs. Each run writes its artifacts to ``output_dir / run.name``."""
+
+    clean: bool = False
+    """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""
+
+    @property
+    def run_dir(self) -> Path:
+        assert self.run.dir is not None  # resolved at construction
+        return self.output_dir / self.run.dir
+
+    def _resolve_run_name(self) -> None:
+        """Fill the auto-generated run name and directory (idempotent — called by every
+        validator that reads them, so it does not depend on validator ordering)."""
+        if self.run.name is None:
+            envs = "+".join(dict.fromkeys(source.resolved_name for source in self.orchestrator.train.source))
+            model = self.trainer.model.name.split("/")[-1]
+            self.run.name = f"{envs or 'no-env'}--{model}--{uuid.uuid4().hex[:8]}".lower()
+        if self.run.dir is None:
+            self.run.dir = self.run.name
 
     ### Shared configurations
 
@@ -241,11 +269,11 @@ class RLConfig(BaseConfig):
     ckpt: SharedCheckpointConfig | None = None
     """Shared checkpoint config. If None, falls back to the sub-config checkpoint settings."""
 
-    wandb: SharedWandbConfig | None = None
-    """Shared W&B config. If None, falls back to the sub-config W&B settings."""
+    resume: ResumeConfig | None = None
+    """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
 
-    file_monitor: FileMonitorConfig | None = None
-    """Shared local JSONL metric sink. If set, enables ``<output_dir>/metrics.jsonl`` on both trainer and orchestrator. If None, falls back to the sub-config settings."""
+    monitors: SharedMonitorsConfig = SharedMonitorsConfig()
+    """Shared monitor configs (``monitors.wandb``, ``monitors.file``). Propagated to trainer and orchestrator; ``[orchestrator.monitors.prime]`` configures the platform monitor."""
 
     model: SharedModelConfig | None = None
     """Shared model config. If None, falls back to the sub-config model settings."""
@@ -262,9 +290,6 @@ class RLConfig(BaseConfig):
     weight_broadcast: SharedWeightBroadcastConfig | None = None
 
     rollout_transport: TransportConfig | None = None
-
-    bench: bool = False
-    """Benchmark mode. Sets trainer and orchestrator to benchmark mode and, when set, suffixes the W&B project with ``-bench``."""
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
@@ -316,9 +341,9 @@ class RLConfig(BaseConfig):
                     "Cannot configure inference with num_infer_nodes = 0. "
                     "Either set num_infer_nodes > 0 or remove the inference config."
                 )
-            if num_infer_nodes == 0 and not self.trainer.data.fake and not self.bench:
+            if num_infer_nodes == 0 and not self.trainer.data.fake:
                 raise ValueError(
-                    "Must use fake data (trainer.data.fake or bench = true) when num_infer_nodes = 0, "
+                    "Must use fake data (trainer.data.fake) when num_infer_nodes = 0, "
                     "since no orchestrator or inference server will be running."
                 )
         return self
@@ -360,12 +385,58 @@ class RLConfig(BaseConfig):
         """
         return propagate_shared_fields(data)
 
+    @model_validator(mode="after")
+    def auto_setup_run_dir(self):
+        """Point trainer and orchestrator at the run directory (``output_dir / run.name``).
+
+        The sub-configs' ``output_dir`` is fully derived here: sub-processes spawned by
+        the launcher receive the resolved run directory and never re-derive it.
+        """
+        self._resolve_run_name()
+        run_dir = self.run_dir
+        for sub in (self.trainer, self.orchestrator):
+            if "output_dir" in sub.model_fields_set and sub.output_dir != run_dir:
+                raise ValueError(
+                    f"{type(sub).__name__}.output_dir ({sub.output_dir}) conflicts with the run directory "
+                    f"({run_dir}). Under the rl entrypoint, sub-config output directories are derived from "
+                    "output_dir / run.name — set those instead."
+                )
+            sub.output_dir = run_dir
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_resume(self):
+        """Propagate the top-level resume onto the sub-configs."""
+        if self.resume is None:
+            return self
+        self.trainer.resume = self.resume.model_copy()
+        self.orchestrator.resume = self.resume.model_copy()
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_run_identity(self):
+        """Default the W&B and Prime platform run names to ``run.name``.
+
+        Explicit names always win: only unset names inherit. Runs after the
+        orchestrator's own ``auto_setup_prime_monitor_name``, so an explicitly
+        set W&B name still takes precedence for the platform run name. The run
+        identity itself is runtime-only ($PRL_RUN_ID / $PRL_RUN_NAME, set by the
+        ``rl`` entrypoint), never sub-config.
+        """
+        self._resolve_run_name()
+        for wandb in (self.monitors.wandb, self.trainer.monitors.wandb, self.orchestrator.monitors.wandb):
+            if wandb is not None and wandb.name is None:
+                wandb.name = self.run.name
+        for prime in (self.monitors.prime, self.orchestrator.monitors.prime):
+            if prime is not None and prime.name is None:
+                prime.name = self.run.name
+        return self
+
     ### Validate shared configs (after sub-config construction)
 
     @model_validator(mode="after")
     def validate_shared_configs(self):
         """Validate consistency of shared configs across trainer, orchestrator, and inference."""
-        validate_shared_output_dir(self.trainer, self.orchestrator)
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
         validate_shared_tokenizer(self.trainer, self.orchestrator, self.inference)
         validate_shared_max_steps(self.trainer, self.orchestrator)
@@ -459,24 +530,6 @@ class RLConfig(BaseConfig):
             raise ValueError(
                 "inference.vllm.enable_eplb requires weight_broadcast.type = 'nccl' and "
                 "weight_broadcast.quantize_in_weight_transfer = true."
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_bench(self):
-        if self.bench:
-            self.trainer.bench = BenchConfig()
-            self.orchestrator.bench = True
-            self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=self.orchestrator.batch_size or 32,
-            )
-
-        trainer_bench_enabled = self.trainer.bench is not None
-        if trainer_bench_enabled != self.orchestrator.bench:
-            raise ValueError(
-                f"Trainer benchmark mode ({self.trainer.bench}) and orchestrator benchmark mode "
-                f"({self.orchestrator.bench}) must match. Use the top-level bench = true to set both."
             )
 
         return self

@@ -1,12 +1,15 @@
 max_steps = 10000000
 seq_len = 131072
-output_dir = "/shared/outputs/glm5-llmd" # FILL IN: point at your shared filesystem
-clean_output_dir = true
+output_dir = "/shared/outputs" # FILL IN: point at your shared filesystem
+clean = true
+
+[run]
+name = "glm5-llmd"
 
 [log]
 level = "debug"
 
-[wandb]
+[monitors.wandb]
 project = "glm5-llmd"
 name = "base"
 
@@ -90,7 +93,6 @@ attn = "flash_attention_2" # ignored with GLM5
 fused_lm_head_token_chunk_size = 1024
 cp = 4 # context parallel for the 131K seq len
 ep = 8
-optim_cpu_offload = true
 
 [trainer.model.quantization]
 type = "fp8"
@@ -137,7 +139,6 @@ id = "r2e-gym"
 id = "rlm"
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
 labels = ["glm5-llmd"]
 
 [inference]
