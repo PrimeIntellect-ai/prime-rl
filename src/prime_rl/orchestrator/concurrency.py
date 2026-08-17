@@ -96,12 +96,9 @@ class ConcurrencyController:
         self.bootstrap_cost = bootstrap_cost
 
         self.max_inflight = config.initial_inflight or floor
-        # None until the freeze exits (or a cut initializes it early)
+        # None until the first unfrozen on_step (or a cut initializes it early)
         self.kappa: float | None = None
-        # True until the first on_step (step 1 = pipeline warmup): no growth,
-        # no feedforward recompute. HARD cuts stay live — an emergency brake
-        # is never frozen.
-        self.frozen = True
+        self.completed_steps = 0
 
         self.estimates: dict[tuple[str, str], EnvEstimate] = {}
         self.capacity_by_engine: dict[str, int] = {}
@@ -174,41 +171,52 @@ class ConcurrencyController:
             self.cut(inflight)
             return
 
-        # First capacity observation while still frozen without a user-set
-        # start: raise the pre-capacity floor to the feedforward bootstrap
-        if self.frozen and self.kappa is None and self.config.initial_inflight is None and self.capacity is not None:
+        # First capacity observation before any step completed, without a
+        # user-set start: raise the pre-capacity floor to the feedforward
+        # bootstrap
+        if (
+            not self.frozen
+            and self.kappa is None
+            and self.config.initial_inflight is None
+            and self.capacity is not None
+        ):
             self.apply_limit(self.clamp(self.capacity / self.cost_estimate()), reason="bootstrap")
 
     def on_step(self, *, inflight: int, eval_in_flight: bool) -> None:
         """Once per shipped train step: reweigh ``G``, grow ``kappa`` at most
-        once, recompute the cap."""
+        once, recompute the cap. Inert while still inside the configured
+        freeze window (``frozen_steps``)."""
+        self.completed_steps += 1
         if not eval_in_flight and self.eval_census is not None:
             self.eval_census = None
         self.eval_active = eval_in_flight and self.eval_census is not None
 
         capacity = self.capacity
-        if capacity is None:
+        if self.frozen or capacity is None:
             self.all_clear_since_step = True
             return
 
         cost = self.cost_estimate()
-        if self.frozen:
-            self.frozen = False
-            if self.kappa is None:
-                # Continuity: respect a user-set start that implies over-commit;
-                # otherwise jump to the safe full budget (kappa = 1)
-                self.kappa = max(1.0, self.max_inflight * cost / capacity)
-        elif self.kappa is not None:
-            if self.all_clear_since_step:
-                self.backoff_factor = BACKOFF_FACTOR
-                if inflight >= BINDING_FRACTION * self.max_inflight:
-                    self.kappa = min(KAPPA_MAX, self.kappa * GROWTH_FACTOR)
+        if self.kappa is None:
+            # Continuity: respect a user-set start that implies over-commit;
+            # otherwise jump to the safe full budget (kappa = 1)
+            self.kappa = max(1.0, self.max_inflight * cost / capacity)
+        elif self.all_clear_since_step:
+            self.backoff_factor = BACKOFF_FACTOR
+            if inflight >= BINDING_FRACTION * self.max_inflight:
+                self.kappa = min(KAPPA_MAX, self.kappa * GROWTH_FACTOR)
 
-        assert self.kappa is not None
         self.apply_limit(self.clamp(self.kappa * capacity / cost), reason="step")
         self.all_clear_since_step = True
 
     # ── control law internals ────────────────────────────────────────────────
+
+    @property
+    def frozen(self) -> bool:
+        """Inside the configured freeze window: no feedforward recompute, no
+        growth, no bootstrap. HARD cuts stay live — an emergency brake is
+        never frozen."""
+        return self.completed_steps < self.config.frozen_steps
 
     def cut(self, inflight: int) -> None:
         """Multiplicative cut relative to what is actually running; freeze

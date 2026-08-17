@@ -8,6 +8,9 @@
 max_steps = 100
 seq_len = 131072
 
+[run]
+name = "glm-air-swe"
+
 [env_vars]
 TRITON_CACHE_DIR = "/tmp/.triton-cache"
 
@@ -23,7 +26,6 @@ num_infer_nodes = 1
 
 [monitors.wandb]
 project = "adaptive-concurrency"
-name = "glm45air-swe-concurrency"
 
 [weight_broadcast]
 type = "nccl"

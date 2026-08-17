@@ -223,7 +223,7 @@ n_max = clamp(κ · C / G, group_size, max_inflight)
 
 `n_max` is re-evaluated **once per training step**: `G` reweighs (the eval census enters exactly when the step's eval gate opens) and `κ` grows at most once. Step time tracks the mean episode time, so this clocks the controller to the plant and avoids overeager adjustments. The one exception is the HARD cut, which fires immediately on the 5 s poll — preemptions mean thrash is happening now, and with long episodes the next step boundary is too far away to wait for.
 
-Refills are burst-capped (at most `max(group_size, 0.1 × n_max)` new admissions per poll interval) so recovery never lands a cap's worth of prefills at once. During step 1 (pipeline warmup) the feedforward loop is frozen — cold caches, the initial admission burst, and zero completions make every signal unrepresentative — while the estimators accumulate; only the HARD cut stays live (the emergency brake is never frozen). At freeze exit, `κ ← max(1, n_max · G / C)`: a user-set start that implies over-commit is respected (continuity), otherwise the cap jumps to the safe full budget (`κ = 1` means the summed cost estimates of everything in flight fit in `C` even at peak size).
+Refills are burst-capped (at most `max(group_size, 0.1 × n_max)` new admissions per poll interval) so recovery never lands a cap's worth of prefills at once. The cap starts at `initial_inflight` (or a conservative capacity-derived bootstrap when unset) and can be pinned there for the first `frozen_steps` training steps — useful when pipeline warmup (cold caches, the initial admission burst, no completions yet) makes early signals unrepresentative. The estimators accumulate either way, and the HARD cut stays live inside the freeze — the emergency brake is never frozen. At the first re-evaluation, `κ ← max(1, n_max · G / C)`: a user-set start that implies over-commit is respected (continuity), otherwise the cap jumps to the safe full budget (`κ = 1` means the summed cost estimates of everything in flight fit in `C` even at peak size).
 
 The controller is always on — a self-contained abstraction (`ConcurrencyController`) with its own config:
 
@@ -231,6 +231,7 @@ The controller is always on — a self-contained abstraction (`ConcurrencyContro
 [orchestrator.concurrency]
 max_inflight = 512       # hard ceiling on the cap; None (default) leaves it capacity-driven
 initial_inflight = 64    # optional: start n_max here instead of the bootstrap, skipping the ramp
+frozen_steps = 0 # pin the cap for the first k steps; first re-evaluation at the k -> k+1 boundary
 ```
 
 All control constants are internal. The controller owns no tasks or clients: the `InferenceMetricsCollector` pushes per-engine load samples (capacity, KV usage, waiting, preemption deltas) each poll, the dispatcher reports episode completions (env, tokens, duration) and consumes the cap via `set_limit`, and the orchestrator's step loop drives the per-step re-evaluation.
