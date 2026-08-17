@@ -209,9 +209,7 @@ async def test_dynamo_nixl_update_uses_collective_rpc_and_commits_version():
     finally:
         await _close([*pool._admin_clients, *pool._collective_rpc_clients])
 
-    assert collective_requests == [
-        {"method": "update_weights_from_path", "timeout": 10, "args": [None], "kwargs": {}}
-    ]
+    assert collective_requests == [{"method": "update_weights_from_path", "timeout": 10, "args": [None], "kwargs": {}}]
     assert [path for path, _ in sidecar_requests] == [
         "/engine/control/pause_generation",
         "/engine/control/is_paused",
@@ -220,6 +218,58 @@ async def test_dynamo_nixl_update_uses_collective_rpc_and_commits_version():
         "/engine/control/resume_generation",
     ]
     assert sidecar_requests[2][1] == {"new_version": "3"}
+
+
+@pytest.mark.asyncio
+async def test_dynamo_filesystem_update_uses_native_reload_and_commits_version(tmp_path):
+    sidecar_requests: list[tuple[str, dict]] = []
+    collective_requests: list[dict] = []
+
+    def sidecar_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        body = json.loads(request.content or b"{}")
+        sidecar_requests.append((path, body))
+        if path.endswith("is_paused"):
+            return httpx.Response(200, json={"is_paused": True})
+        if path.endswith("get_weight_version"):
+            return httpx.Response(200, json={"weight_version": "4"})
+        return httpx.Response(200, json={"status": "ok"})
+
+    def collective_handler(request: httpx.Request) -> httpx.Response:
+        collective_requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"results": [None]})
+
+    pool = object.__new__(DynamoInferencePool)
+    pool.workers = (DynamoWorker.model_validate(worker("backend", 1, backend=None)),)
+    pool._weight_update_timeout = 10
+    pool._weight_update_backend = None
+    pool._admin_clients = [
+        httpx.AsyncClient(base_url="http://worker:8080", transport=httpx.MockTransport(sidecar_handler))
+    ]
+    pool._collective_rpc_clients = [
+        httpx.AsyncClient(base_url="http://worker:8120", transport=httpx.MockTransport(collective_handler))
+    ]
+    try:
+        await pool.update_weights(tmp_path, step=4, native_nccl=False)
+    finally:
+        await _close([*pool._admin_clients, *pool._collective_rpc_clients])
+
+    assert collective_requests == [
+        {
+            "method": "reload_weights",
+            "timeout": 10,
+            "args": [],
+            "kwargs": {"weights_path": tmp_path.as_posix()},
+        }
+    ]
+    assert [path for path, _ in sidecar_requests] == [
+        "/engine/control/pause_generation",
+        "/engine/control/is_paused",
+        "/engine/update/update_weight_version",
+        "/engine/control/get_weight_version",
+        "/engine/control/resume_generation",
+    ]
+    assert sidecar_requests[2][1] == {"new_version": "4"}
 
 
 async def _close(clients: list[httpx.AsyncClient]) -> None:

@@ -146,6 +146,7 @@ def test_prime_rl_generate_response_serializes_usage_block():
         "completion_tokens": 3,
         "total_tokens": 7,
         "prompt_tokens_details": None,
+        "completion_tokens_details": None,
     }
 
 

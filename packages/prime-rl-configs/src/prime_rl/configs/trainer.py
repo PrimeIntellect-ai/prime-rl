@@ -269,12 +269,6 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
-    def vlm_only_with_custom_impl(self):
-        if self.vlm is not None and self.impl != "custom":
-            raise ValueError("VLM training requires model.impl='custom'")
-        return self
-
-    @model_validator(mode="after")
     def vlm_cp_requires_ulysses(self):
         if self.vlm is not None and self.cp > 1 and self.cp_style != "ulysses":
             raise ValueError("VLM models require cp_style='ulysses' for context parallelism")

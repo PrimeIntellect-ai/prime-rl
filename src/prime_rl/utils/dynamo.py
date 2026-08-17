@@ -115,6 +115,12 @@ class DynamoVLLMWeightSyncClient:
             [{"weight_version": weight_version} for _ in self.clients],
         )
 
+    def update_weight_version(self, weight_version: str) -> None:
+        self._fanout(
+            "/engine/update/update_weight_version",
+            [{"new_version": weight_version} for _ in self.clients],
+        )
+
 
 def client_headers(
     headers: dict[str, str],
@@ -322,9 +328,7 @@ class DynamoInferencePool(InferencePool):
             )
         if len(self._collective_rpc_clients) != len(self.workers):
             missing = [
-                f"{worker.component}/{worker.instance_id}"
-                for worker in self.workers
-                if worker.admin_base_url is None
+                f"{worker.component}/{worker.instance_id}" for worker in self.workers if worker.admin_base_url is None
             ]
             raise ValueError(
                 "Dynamo NIXL requires vLLM HTTP admin endpoints for /collective_rpc; "
@@ -380,8 +384,10 @@ class DynamoInferencePool(InferencePool):
             raise ValueError("Dynamo does not support LoRA weight updates yet")
         if native_nccl and weight_dir is None:
             raise ValueError("Dynamo native NCCL updates require a weight directory")
-        if not native_nccl and (self._weight_update_backend != "nixl" or weight_dir is not None):
+        if not native_nccl and weight_dir is None and self._weight_update_backend != "nixl":
             raise ValueError("Dynamo custom weight updates require an initialized NIXL broadcaster")
+        if not native_nccl and len(self._collective_rpc_clients) != len(self.workers):
+            raise ValueError("Dynamo filesystem and NIXL updates require vLLM HTTP admin endpoints for /collective_rpc")
 
         await self._fanout_same("/engine/control/pause_generation", {"mode": "keep", "clear_cache": False})
         paused = await self._fanout_same("/engine/control/is_paused", {})
@@ -393,18 +399,25 @@ class DynamoInferencePool(InferencePool):
             assert weight_dir is not None
             (weight_dir / NCCL_READY_MARKER).touch()
         else:
+            if self._weight_update_backend == "nixl":
+                collective_body = {
+                    "method": "update_weights_from_path",
+                    "timeout": self._weight_update_timeout,
+                    "args": [None],
+                    "kwargs": {},
+                }
+            else:
+                assert weight_dir is not None
+                collective_body = {
+                    "method": "reload_weights",
+                    "timeout": self._weight_update_timeout,
+                    "args": [],
+                    "kwargs": {"weights_path": weight_dir.as_posix()},
+                }
             await self._fanout_to(
                 self._collective_rpc_clients,
                 "/collective_rpc",
-                [
-                    {
-                        "method": "update_weights_from_path",
-                        "timeout": self._weight_update_timeout,
-                        "args": [None],
-                        "kwargs": {},
-                    }
-                    for _ in self._collective_rpc_clients
-                ],
+                [collective_body for _ in self._collective_rpc_clients],
             )
             await self._fanout_same("/engine/update/update_weight_version", {"new_version": expected_version})
 

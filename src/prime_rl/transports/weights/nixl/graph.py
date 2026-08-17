@@ -301,6 +301,11 @@ class LazyWeight(torch.Tensor):
     @classmethod
     def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
+        if func is torch.ops.aten.copy_.default:
+            destination = args[0]
+            source = args[1]
+            if isinstance(source, cls):
+                return source._record_copy(destination)
         for value in (*args, *kwargs.values()):
             if isinstance(value, cls):
                 raise UnsupportedOpError(
@@ -339,7 +344,8 @@ def make_hf_lazy_weights(
     from prime_rl.trainer.models.conversion_ops import apply_prime_to_hf
 
     model_cls = get_custom_causal_lm_cls(hf_config)
-    apply_prime_to_hf(state, model_cls.conversion_chain(hf_config))
+    if model_cls is not None:
+        apply_prime_to_hf(state, model_cls.conversion_chain(hf_config))
 
     # AutoWeightsLoader groups adjacent names by module prefix. Stable sorting
     # matches normal checkpoint iterators and keeps every expert group intact.

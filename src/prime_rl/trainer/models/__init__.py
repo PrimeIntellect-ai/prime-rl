@@ -70,9 +70,9 @@ class AutoModelForCausalLMPrimeRL(_BaseAutoModelClass):
 AutoModelForCausalLMPrimeRL = auto_class_update(AutoModelForCausalLMPrimeRL, head_doc="causal language modeling")
 
 
-def get_custom_causal_lm_cls(model_config: PretrainedConfig) -> type[PreTrainedModelPrimeRL]:
+def get_custom_causal_lm_cls(model_config: PretrainedConfig) -> type[PreTrainedModelPrimeRL] | None:
     """Resolve the PrimeRL model class from a possibly non-PrimeRL config instance."""
-    return _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE[model_config.model_type]
+    return _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE.get(model_config.model_type)
 
 
 def supports_custom_impl(model_config: PretrainedConfig) -> bool:

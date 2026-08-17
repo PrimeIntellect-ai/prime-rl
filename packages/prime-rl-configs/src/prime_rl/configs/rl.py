@@ -445,8 +445,6 @@ class RLConfig(BaseConfig):
                 "LoRA training is not yet supported with in-memory weight broadcast. "
                 "Set weight_broadcast.type = 'filesystem'."
             )
-        if client.is_dynamo() and self.weight_broadcast.type == "filesystem":
-            raise ValueError("Dynamo does not support filesystem weight updates; use 'nccl' or 'nixl'.")
         if self.weight_broadcast.type in ("nccl", "nixl"):
             if (
                 client.is_dynamo()
@@ -459,9 +457,7 @@ class RLConfig(BaseConfig):
                     "to declare the static inference capacity."
                 )
             if self.inference is not None:
-                inference_world_size = (
-                    self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
-                )
+                inference_world_size = self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
             elif client.is_dynamo() and self.deployment.type == "single_node":
                 inference_world_size = self.deployment.num_infer_gpus
             else:

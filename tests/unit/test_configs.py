@@ -375,16 +375,18 @@ def test_external_dynamo_reuses_nixl_broadcast():
     assert config.orchestrator.weight_broadcast.session_id == "smoke"
 
 
-def test_external_dynamo_rejects_filesystem_weight_transfer():
-    with pytest.raises(ValueError, match="does not support filesystem"):
-        RLConfig.model_validate(
-            {
-                "trainer": {},
-                "orchestrator": {"model": {"client": {"dynamo": {"discovery_url": "http://dynamo-frontend:8001"}}}},
-                "weight_broadcast": {"type": "filesystem"},
-                "deployment": {"type": "single_node", "num_train_gpus": 1, "num_infer_gpus": 1},
-            }
-        )
+def test_external_dynamo_accepts_filesystem_weight_transfer_for_compatibility():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {"model": {"client": {"dynamo": {"discovery_url": "http://dynamo-frontend:8001"}}}},
+            "weight_broadcast": {"type": "filesystem"},
+            "deployment": {"type": "single_node", "num_train_gpus": 1, "num_infer_gpus": 1},
+        }
+    )
+
+    assert config.trainer.weight_broadcast.type == "filesystem"
+    assert config.orchestrator.weight_broadcast.type == "filesystem"
 
 
 def test_external_dynamo_uses_declared_inference_capacity():
@@ -462,6 +464,25 @@ def test_orchestrator_vlm_requires_renderer():
     )
 
     assert config.renderer is not None
+
+
+def test_trainer_accepts_registered_hf_vlm_configuration():
+    config = TrainerConfig.model_validate(
+        {
+            "model": {
+                "impl": "hf",
+                "attn": "flash_attention_2",
+                "optimization_dtype": "bfloat16",
+                "reduce_dtype": "bfloat16",
+                "vlm": {
+                    "vision_encoder_attr": "model.visual",
+                    "language_model_attr": "model.language_model",
+                },
+            },
+        }
+    )
+
+    assert config.model.impl == "hf"
 
 
 def test_trainer_rejects_vlm_cp_with_ring():

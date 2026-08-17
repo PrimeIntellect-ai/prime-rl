@@ -714,10 +714,10 @@ def get_model(
             "but this architecture resolved to model.impl='hf'."
         )
 
-    if config.vlm is not None and not (is_vlm_arch and custom_vlm_cls):
+    if config.vlm is not None and not is_vlm_arch:
         raise ValueError(
-            "VLM training requires a registered custom PrimeRL VLM implementation; "
-            f"{getattr(model_config, 'model_type', config.name)!r} has none."
+            "VLM training requires a registered VLM architecture; "
+            f"{getattr(model_config, 'model_type', config.name)!r} is not registered."
         )
 
     with device:

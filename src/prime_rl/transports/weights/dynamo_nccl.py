@@ -161,5 +161,7 @@ class DynamoNCCLWeightBroadcast(WeightBroadcast):
             sync_wait_for_path(save_dir / NCCL_READY_MARKER, interval=0.1, log_interval=10)
         if self.world.world_size > 1:
             dist.barrier()
-        self.engine.send_weights(weight_version=str(step))
+        self.engine.send_weights()
+        if self.world.is_master:
+            self.client.update_weight_version(str(step))
         get_logger().debug(f"Dynamo workers committed weight version {step}")

@@ -71,6 +71,7 @@ The built-in VLM registry covers:
 
 | Family | `model_type` | Vision attr | LM attr |
 |---|---|---|---|
+| Qwen3-VL | `qwen3_vl` | `model.visual` | `model.language_model` |
 | Qwen3.5 | `qwen3_5` | `model.visual` | `model.language_model` |
 | Qwen3.5-MoE | `qwen3_5_moe` | `model.visual` | `model.language_model` |
 
@@ -91,9 +92,7 @@ language_model_attr = "model.language_model"
 # freeze_vision_encoder = true  # default; set false to fine-tune the encoder
 ```
 
-The weight-broadcast key prefix is derived as `{language_model_attr}.layers.` automatically.
-
-VLM training requires a registered custom PrimeRL implementation.
+The weight-broadcast key prefix is derived as `{language_model_attr}.layers.` automatically. Qwen3-VL can use `model.impl = "hf"` or `"auto"`; the example above uses the custom Qwen3.5 implementation. VLM training requires a registered architecture with an explicitly supported packed multimodal forward path.
 
 ### Limitations
 
