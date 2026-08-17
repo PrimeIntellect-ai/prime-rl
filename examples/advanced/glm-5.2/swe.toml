@@ -65,7 +65,7 @@ weight_decay = 0.1
 [orchestrator]
 batch_size = 4096
 group_size = 16
-concurrency.max_inflight = 12288
+concurrency.initial_inflight = 12288
 max_off_policy_steps = 16
 
 [orchestrator.model]

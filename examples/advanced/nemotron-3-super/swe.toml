@@ -66,7 +66,7 @@ type = "adamw"
 batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
-concurrency.max_inflight = 1536
+concurrency.initial_inflight = 1536
 
 [orchestrator.algo]
 type = "grpo"

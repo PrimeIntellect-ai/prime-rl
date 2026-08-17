@@ -82,7 +82,7 @@ type = "muon"
 batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
-concurrency.max_inflight = 512
+concurrency.initial_inflight = 512
 
 [orchestrator.algo]
 type = "grpo"

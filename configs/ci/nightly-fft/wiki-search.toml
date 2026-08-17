@@ -17,7 +17,7 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 [orchestrator]
 batch_size = 512
 group_size = 16
-concurrency.max_inflight = 1024
+concurrency.initial_inflight = 1024
 
 [[orchestrator.pre_batch_filters]]
 type = "zero_advantage"
