@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
@@ -148,8 +148,8 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
     num_train_gpus: int = 1
     """GPUs allocated to the trainer."""
 
-    num_infer_gpus: int = 1
-    """GPUs allocated to inference. Only used when an ``[inference]`` block is configured for online evals."""
+    num_infer_gpus: int = Field(1, validation_alias=AliasChoices("num_infer_gpus", "num_eval_gpus"))
+    """GPUs allocated to inference for online evals (alias: ``num_eval_gpus``). Only used when an ``[inference]`` block is configured."""
 
     @model_validator(mode="after")
     def validate_gpu_count(self):
@@ -164,8 +164,8 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     num_train_nodes: int = Field(2, ge=1)
     """Training nodes."""
 
-    num_infer_nodes: int = Field(0, ge=0)
-    """Inference nodes for online evals. Submitted as a separate SLURM job, decoupled
+    num_infer_nodes: int = Field(0, ge=0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
+    """Inference nodes for online evals (alias: ``num_eval_nodes``). Submitted as a separate SLURM job, decoupled
     from the trainer job: the handoff is weight checkpoints on the shared filesystem,
     so the eval job can outlive the trainer job (evals drain after training ends) and
     exits after evaluating the final checkpoint."""
@@ -284,9 +284,16 @@ class SFTConfig(BaseConfig):
         if not isinstance(data, dict):
             return data
         deployment = data.get("deployment")
-        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
-            for key in ("num_train_gpus", "num_infer_gpus"):
-                deployment.pop(key, None)
+        if isinstance(deployment, dict):
+            # Collapse the num_eval_* aliases onto the canonical keys: pydantic rejects a
+            # dict carrying both spellings (e.g. canonical in the TOML, alias on the CLI),
+            # and the alias is the more recent write in that layering, so it wins.
+            for alias, canonical in (("num_eval_gpus", "num_infer_gpus"), ("num_eval_nodes", "num_infer_nodes")):
+                if alias in deployment:
+                    deployment[canonical] = deployment.pop(alias)
+            if deployment.get("type") == "multi_node":
+                for key in ("num_train_gpus", "num_infer_gpus"):
+                    deployment.pop(key, None)
         return data
 
     @model_validator(mode="before")
