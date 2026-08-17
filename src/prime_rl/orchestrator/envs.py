@@ -26,6 +26,7 @@ from itertools import islice
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
+from verifiers.v1.taskset import SEED as TASKSET_SHUFFLE_SEED
 from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
@@ -150,12 +151,13 @@ class EvalEnv(Env):
     async def start(self) -> None:
         await super().start()
         n = self.config.num_examples
-        if self.config.shuffle_seed is not None:
+        if self.config.shuffle:
             if self.num_tasks is None:
-                raise ValueError(f"Eval env {self.name} has an infinite taskset — shuffle_seed requires a finite one")
-            # Deterministic random sample: shuffle the full taskset, then cut to n.
+                raise ValueError(f"Eval env {self.name} has an infinite taskset — shuffle requires a finite one")
+            # Deterministic random sample: shuffle the full taskset (verifiers' fixed
+            # seed, same order every run), then cut to n.
             tasks = list(self.tasks)
-            random.Random(self.config.shuffle_seed).shuffle(tasks)
+            random.Random(TASKSET_SHUFFLE_SEED).shuffle(tasks)
             if n >= 0:
                 tasks = tasks[:n]
         else:

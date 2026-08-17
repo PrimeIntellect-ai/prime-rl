@@ -178,10 +178,10 @@ class EvalSourceConfig(EnvConfig):
     num_examples: int = -1
     """Eval examples to sample from the dataset. ``-1`` uses all available examples."""
 
-    shuffle_seed: int | None = None
-    """Shuffle the taskset with this seed before applying ``num_examples``, turning the
-    first-N cut into a deterministic random sample. Requires a finite taskset. If None,
-    examples are taken in taskset order."""
+    shuffle: bool = False
+    """Shuffle the taskset before applying ``num_examples``, turning the first-N cut
+    into a deterministic random sample (verifiers' fixed shuffle seed — the same items
+    every run, mirroring the vf CLI flag). Requires a finite taskset."""
 
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
