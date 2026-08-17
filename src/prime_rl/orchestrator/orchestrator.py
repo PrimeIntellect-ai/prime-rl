@@ -388,7 +388,7 @@ class Orchestrator:
             config.concurrency,
             train_env_ratios={env.resolved_name: env.ratio for env in config.train.source},
             floor=max(group_sizes, default=config.group_size),
-            bootstrap_cost=config.seq_len,
+            fallback_cost=config.seq_len,
         )
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,

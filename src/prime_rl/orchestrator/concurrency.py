@@ -61,6 +61,7 @@ class EngineLoadSample:
     engine_id: str
     role: str | None
     kv_capacity_tokens: int | None
+    max_model_len: int | None
     kv_usage: float
     waiting: int
     preemptions_delta: int
@@ -88,12 +89,14 @@ class ConcurrencyController:
         *,
         train_env_ratios: dict[str, float],
         floor: int,
-        bootstrap_cost: int,
+        fallback_cost: int,
     ) -> None:
         self.config = config
         self.train_env_ratios = train_env_ratios
         self.floor = floor
-        self.bootstrap_cost = bootstrap_cost
+        self.fallback_cost = fallback_cost
+        # Engine-reported max context; the pessimistic per-episode cost bound
+        self.engine_max_len: int | None = None
 
         self.max_inflight = config.initial_inflight or floor
         # None until the first unfrozen on_step (or a cut initializes it early)
@@ -150,6 +153,8 @@ class ConcurrencyController:
         for sample in samples:
             if sample.kv_capacity_tokens and sample.role != "prefill":
                 self.capacity_by_engine[sample.engine_id] = sample.kv_capacity_tokens
+            if sample.max_model_len:
+                self.engine_max_len = max(self.engine_max_len or 0, sample.max_model_len)
 
         worst = Signal.CLEAR
         for sample in samples:
@@ -246,6 +251,13 @@ class ConcurrencyController:
     def capacity(self) -> int | None:
         """Total KV tokens across decode engines; None until the first poll."""
         return sum(self.capacity_by_engine.values()) or None
+
+    @property
+    def bootstrap_cost(self) -> int:
+        """Pessimistic per-episode cost before completions exist: the
+        engine-reported max context length (an episode cannot exceed it),
+        falling back to the configured training sequence length."""
+        return self.engine_max_len or self.fallback_cost
 
     def cost_estimate(self) -> float:
         """``G``: duration-weighted per-env cost mix over the work being

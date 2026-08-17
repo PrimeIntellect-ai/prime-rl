@@ -279,6 +279,7 @@ class InferenceMetricsCollector:
     ):
         self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
         self.previous: dict[tuple[str, str], TimedSnapshot] = {}
+        self.max_model_len_by_endpoint: dict[str, int] = {}
         self.task: asyncio.Task | None = None
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
         self.on_load = on_load
@@ -324,6 +325,7 @@ class InferenceMetricsCollector:
         if not samples:
             return
 
+        await asyncio.gather(*[self.fetch_max_model_len(endpoint) for endpoint in self.endpoints])
         metrics = self.build_metrics(samples) if self.log_to_wandb else {}
         load_samples = [self.build_load_sample(sample) for sample in samples]
         for sample in samples:
@@ -335,6 +337,22 @@ class InferenceMetricsCollector:
         if metrics:
             metrics["_timestamp"] = time.time()
             wandb.log(metrics)
+
+    async def fetch_max_model_len(self, endpoint: MetricsEndpoint) -> None:
+        """Cache the engine's max context length from ``/v1/models`` (set
+        explicitly or derived from the model config). Static per engine
+        lifetime; retried next poll on failure."""
+        if endpoint.key in self.max_model_len_by_endpoint:
+            return
+        try:
+            response = await endpoint.client.get("/v1/models", timeout=FETCH_TIMEOUT)
+            response.raise_for_status()
+            lengths = [card.get("max_model_len") for card in response.json().get("data", [])]
+            lengths = [length for length in lengths if length]
+            if lengths:
+                self.max_model_len_by_endpoint[endpoint.key] = max(lengths)
+        except Exception as e:
+            get_logger().debug(f"Failed to fetch max_model_len from {endpoint.client.base_url}: {e!r}")
 
     def build_load_sample(self, sample: EngineSample) -> EngineLoadSample:
         """Raw per-engine load facts for the concurrency controller."""
@@ -358,6 +376,7 @@ class InferenceMetricsCollector:
             engine_id=sample.engine_id,
             role=sample.endpoint.role,
             kv_capacity_tokens=kv_capacity_tokens,
+            max_model_len=self.max_model_len_by_endpoint.get(sample.endpoint.key),
             kv_usage=sample.snapshot.gauges.get("kv_cache_usage_perc", 0.0),
             waiting=int(sample.snapshot.gauges.get("num_requests_waiting", 0.0)),
             preemptions_delta=preemptions_delta,

@@ -395,7 +395,7 @@ class ConcurrencyConfig(BaseConfig):
     """Hard ceiling on in-flight episodes — one episode is one agent run at a time, whatever the env's agents are. None leaves the cap purely capacity-driven."""
 
     initial_inflight: int | None = Field(None, ge=1)
-    """In-flight cap to start from. Set it when a good value is known to skip the initial ramp; None starts from a conservative capacity-derived bootstrap."""
+    """In-flight cap to start from. Set it when a good value is known to skip the initial ramp; None derives a pessimistic bound at runtime — engine KV capacity divided by the engine's max context length (``max_model_len``, whether set explicitly or taken from the model config)."""
 
     frozen_steps: int = Field(0, ge=0)
     """Training steps during which the cap stays pinned at its starting value. ``0`` adapts from the start (first re-evaluation at the step 1 -> 2 boundary); ``k`` allows the first re-evaluation at the ``k -> k+1`` boundary. Higher values let the per-env EWMA cost estimates accumulate more completions before the first update, which is useful when episode length has high variance (e.g. large-scale mixed RL training). Emergency overload cuts stay live regardless."""

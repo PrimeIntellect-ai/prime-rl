@@ -215,7 +215,7 @@ n_max = clamp(κ · C / G, group_size, max_inflight)
 ```
 
 - **`C` — GPU KV capacity in tokens**, summed over decode engines: `num_gpu_blocks × block_size`, read from the labels of the `vllm:cache_config_info` gauge on `/metrics`. With [KV cache offload](#kv-cache-offload), `C` stays GPU-only — active requests must live in HBM. The offload tier only raises the achievable `κ`, which is learned.
-- **`G` — expected episode cost in tokens.** Per env, EWMAs over completed episodes of final context size `G_e` and duration `d_e` (bootstrap: `seq_len`), aggregated as `G = Σ w_e G_e / Σ w_e`. Train envs weigh in by sampling `ratio × d_e`; eval envs, while an eval epoch is in flight, by scheduled episodes (`num_examples × group_size`) `× d_e`. The `d_e` factor corrects length bias: long-episode envs are overrepresented in flight. Cost never influences *which* episode is admitted — scheduling stays FIFO and env-unbiased; the estimates only size the shared permit pool.
+- **`G` — expected episode cost in tokens.** Per env, EWMAs over completed episodes of final context size `G_e` and duration `d_e` (bootstrap: the engine's `max_model_len`), aggregated as `G = Σ w_e G_e / Σ w_e`. Train envs weigh in by sampling `ratio × d_e`; eval envs, while an eval epoch is in flight, by scheduled episodes (`num_examples × group_size`) `× d_e`. The `d_e` factor corrects length bias: long-episode envs are overrepresented in flight. Cost never influences *which* episode is admitted — scheduling stays FIFO and env-unbiased; the estimates only size the shared permit pool.
 - **`κ` — over-commit factor**, starts at 1. Absorbs what the cost model cannot see: generate-call duty cycle, prefix sharing within groups, offload headroom. Adjusted by a binary per-engine overload signal, worst engine wins: **HARD** = preemptions in the poll window (`Δ vllm:num_preemptions_total > 0`), **SOFT** = waiting queue non-empty at two consecutive polls, **CLEAR** otherwise.
     - HARD: cut once, `n_max ← 0.75 × inflight` (relative to actual inflight — cutting a non-binding cap sheds nothing), then freeze cuts until inflight drains below the new cap; repeated cuts on the stale draining signal would ratchet to the floor. If HARD survives a full drain, cut `×0.5`.
     - SOFT: hold — saturated-but-not-thrashing is the operating point.
@@ -223,14 +223,14 @@ n_max = clamp(κ · C / G, group_size, max_inflight)
 
 `n_max` is re-evaluated **once per training step**: `G` reweighs (the eval census enters exactly when the step's eval gate opens) and `κ` grows at most once. Step time tracks the mean episode time, so this clocks the controller to the plant and avoids overeager adjustments. The one exception is the HARD cut, which fires immediately on the 5 s poll — preemptions mean thrash is happening now, and with long episodes the next step boundary is too far away to wait for.
 
-Refills are burst-capped (at most `max(group_size, 0.1 × n_max)` new admissions per poll interval) so recovery never lands a cap's worth of prefills at once. The cap starts at `initial_inflight` (or a conservative capacity-derived bootstrap when unset) and can be pinned there for the first `frozen_steps` training steps — useful when pipeline warmup (cold caches, the initial admission burst, no completions yet) makes early signals unrepresentative. The estimators accumulate either way, and the HARD cut stays live inside the freeze — the emergency brake is never frozen. At the first re-evaluation, `κ ← max(1, n_max · G / C)`: a user-set start that implies over-commit is respected (continuity), otherwise the cap jumps to the safe full budget (`κ = 1` means the summed cost estimates of everything in flight fit in `C` even at peak size).
+Refills are burst-capped (at most `max(group_size, 0.1 × n_max)` new admissions per poll interval) so recovery never lands a cap's worth of prefills at once. The cap starts at `initial_inflight` (or, when unset, a pessimistic runtime bound: KV capacity / the engine's `max_model_len`, read from `/v1/models`) and can be pinned there for the first `frozen_steps` training steps — useful when pipeline warmup (cold caches, the initial admission burst, no completions yet) makes early signals unrepresentative. The estimators accumulate either way, and the HARD cut stays live inside the freeze — the emergency brake is never frozen. At the first re-evaluation, `κ ← max(1, n_max · G / C)`: a user-set start that implies over-commit is respected (continuity), otherwise the cap jumps to the safe full budget (`κ = 1` means the summed cost estimates of everything in flight fit in `C` even at peak size).
 
 The controller is always on — a self-contained abstraction (`ConcurrencyController`) with its own config:
 
 ```toml
 [orchestrator.concurrency]
 max_inflight = 512       # hard ceiling on the cap; None (default) leaves it capacity-driven
-initial_inflight = 64    # optional: start n_max here instead of the bootstrap, skipping the ramp
+initial_inflight = 64    # optional: start n_max here instead of the pessimistic C / max_model_len bound
 frozen_steps = 0 # pin the cap for the first k steps; first re-evaluation at the k -> k+1 boundary
 ```
 
