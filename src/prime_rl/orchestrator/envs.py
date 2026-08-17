@@ -20,6 +20,7 @@ keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 from __future__ import annotations
 
 import asyncio
+import random
 from collections.abc import Iterator, Sequence
 from itertools import islice
 from typing import Generic, TypeVar
@@ -149,10 +150,19 @@ class EvalEnv(Env):
     async def start(self) -> None:
         await super().start()
         n = self.config.num_examples
-        if self.num_tasks is None and n < 0:
-            raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
+        if self.config.shuffle_seed is not None:
+            if self.num_tasks is None:
+                raise ValueError(f"Eval env {self.name} has an infinite taskset — shuffle_seed requires a finite one")
+            # Deterministic random sample: shuffle the full taskset, then cut to n.
+            tasks = list(self.tasks)
+            random.Random(self.config.shuffle_seed).shuffle(tasks)
+            if n >= 0:
+                tasks = tasks[:n]
+        else:
+            if self.num_tasks is None and n < 0:
+                raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
+            tasks = list(self.tasks) if n < 0 else list(islice(self.tasks, n))
         # A fixed eval set, pulled off the tasks once and reused every epoch.
-        tasks = list(self.tasks) if n < 0 else list(islice(self.tasks, n))
         self.examples = [{"task": task} for task in tasks]
 
 
