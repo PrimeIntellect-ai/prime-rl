@@ -514,6 +514,19 @@ class IPOLossConfig(BaseConfig):
     """Temperature for the KL term."""
 
 
+class KPopLossConfig(BaseConfig):
+    type: Literal["kpop"] = "kpop"
+
+    kpop_threshold: float = Field(0.1, ge=0)
+    """Symmetric binary KL masking threshold (phi in the KPop paper)."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    kl_tau: float = Field(1e-3, ge=0)
+    """Temperature for the KL term."""
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -524,7 +537,9 @@ class CustomLossConfig(BaseConfig):
     """Kwargs forwarded to the loss function."""
 
 
-LossConfig: TypeAlias = Annotated[DefaultLossConfig | IPOLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[
+    DefaultLossConfig | IPOLossConfig | KPopLossConfig | CustomLossConfig, Field(discriminator="type")
+]
 
 
 class FakeDataLoaderConfig(BaseConfig):
