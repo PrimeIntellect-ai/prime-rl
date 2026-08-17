@@ -12,6 +12,7 @@ This page covers the inference configuration and the supported features/deployme
 - [P/D Disaggregation](#pd-disaggregation)
 - [Router](#router)
     - [Routing policies](#routing-policies)
+- [Adaptive Concurrency](#adaptive-concurrency)
 - [Advanced Configuration](#advanced-configuration)
     - [KV Cache Offload](#kv-cache-offload)
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
@@ -202,6 +203,27 @@ X-Session-ID = "trajectory_id" # this is the default - each rollout has a unique
 
 - `round_robin` - this policy will round-robin the requests between the available replicas. This is useful if you want to balance the load between the replicas. This might give you better results if you don't have enough rollouts to make `consistent_hash` hashing saturated.
 
+
+## Adaptive Concurrency
+
+> Status: design — not implemented yet.
+
+The orchestrator caps concurrent episodes with a static `max_inflight_episodes`. Too low starves the engines; too high triggers KV thrash (preemption → re-prefill churn → prefix-cache eviction → pile-up), and recovery is slow. Reactive throttling alone cannot prevent this: episodes run for minutes to hours and build KV the whole time, so once overload is visible, the pressure already in flight is unsheddable. Safety must come from admission-time budgeting; feedback only trims the budget's error.
+
+The controller sets the cap dynamically:
+
+```
+n_max = clamp(κ · C / G, group_size, max_inflight_episodes)
+```
+
+- **`C` — GPU KV capacity in tokens**, summed over decode engines: `num_gpu_blocks × block_size`, read from the labels of the `vllm:cache_config_info` gauge on `/metrics`. With [KV cache offload](#kv-cache-offload), `C` stays GPU-only — active requests must live in HBM. The offload tier only raises the achievable `κ`, which is learned.
+- **`G` — expected episode cost in tokens.** Per env, EWMAs over completed episodes of final context size `G_e` and duration `d_e` (bootstrap: `seq_len`), aggregated as `G = Σ w_e G_e / Σ w_e`. Train envs weigh in by sampling `ratio × d_e`; eval envs, while an eval epoch is in flight, by scheduled episodes (`num_examples × group_size`) `× d_e`. The `d_e` factor corrects length bias: long-episode envs are overrepresented in flight. Cost never influences *which* episode is admitted — scheduling stays FIFO and env-unbiased; the estimates only size the shared permit pool.
+- **`κ` — over-commit trim**, starts at 1. Absorbs what the cost model cannot see: generate-call duty cycle, prefix sharing within groups, offload headroom. Adjusted by a binary per-engine overload signal, worst engine wins: **HARD** = preemptions in the poll window (`Δ vllm:num_preemptions_total > 0`), **SOFT** = waiting queue non-empty at two consecutive polls, **CLEAR** otherwise.
+    - HARD: cut once, `n_max ← 0.75 × inflight` (relative to actual inflight — cutting a non-binding cap sheds nothing), then freeze cuts until inflight drains below the new cap; repeated cuts on the stale draining signal would ratchet to the floor. If HARD survives a full drain, cut `×0.5`.
+    - SOFT: hold — saturated-but-not-thrashing is the operating point.
+    - CLEAR: grow `κ ×1.02`, only after a full population turnover of all-CLEAR polls (growth is clocked to the plant, not the wall clock) and only while the cap binds (`inflight ≥ 0.9 × n_max`).
+
+Refills are burst-capped (at most `max(group_size, 0.1 × n_max)` new admissions per poll interval) so recovery never lands a cap's worth of prefills at once. During step 1 (pipeline warmup) the controller is frozen at its bootstrap cap — cold caches, the initial admission burst, and zero completions make every signal unrepresentative — while the estimators accumulate. `max_inflight_episodes` keeps its meaning as the hard user-set ceiling; all controller constants are internal.
 
 ## Advanced Configuration
 
