@@ -161,6 +161,57 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+def test_optimizer_state_offload_keeps_legacy_default(config_cls):
+    config = config_cls.model_validate({})
+
+    assert config.model.optim_cpu_offload is True
+    assert config.model.full_offload is None
+
+
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
+    with pytest.warns(UserWarning, match="Gradient clipping prevents optimizer-in-backward"):
+        config = config_cls.model_validate(
+            {
+                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "optim": {"max_norm": 1.0},
+            }
+        )
+
+    assert config.optim.max_norm is None
+
+
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+def test_full_optimizer_offload_accepts_debug_backend(config_cls):
+    config = config_cls.model_validate(
+        {
+            "model": {
+                "optim_cpu_offload": False,
+                "full_offload": {
+                    "cpu_optimizer_backend": "torch",
+                },
+            },
+            "optim": {"max_norm": None},
+        }
+    )
+
+    assert config.model.full_offload is not None
+    assert config.model.full_offload.cpu_optimizer_backend == "torch"
+
+
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+@pytest.mark.parametrize("optimizer_type", ["sgd", "muon", "sign_sgd"])
+def test_full_optimizer_offload_requires_adamw(config_cls, optimizer_type):
+    with pytest.raises(ValidationError, match="Full optimizer offload only supports AdamW"):
+        config_cls.model_validate(
+            {
+                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "optim": {"type": optimizer_type, "max_norm": None},
+            }
+        )
+
+
 def test_resolved_json_roundtrips_explicit_none(tmp_path):
     """An explicit None override survives the write/re-parse round-trip used by launches:
     resolved configs are JSON, which keeps nulls (TOML cannot)."""

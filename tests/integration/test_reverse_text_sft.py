@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 from typing import Callable
 
@@ -86,6 +87,38 @@ def sft_resume_process(
     return run_process(cmd, timeout=TIMEOUT)
 
 
+@pytest.fixture(scope="module")
+def sft_full_offload_model_only_resume_process(
+    sft_resume_process: ProcessResult,
+    run_process: Callable[..., ProcessResult],
+    wandb_project: str,
+    wandb_name: str,
+    output_dir: Path,
+) -> ProcessResult:
+    """Resume without optimizer state using full CPU offload."""
+    if sft_resume_process.returncode != 0:
+        pytest.skip("Regular SFT resume failed")
+    cmd = [
+        "uv",
+        "run",
+        "sft",
+        "@",
+        "configs/ci/integration/reverse-text-sft/full-offload-resume.toml",
+        "--deployment.num-gpus",
+        "2",
+        "--monitors.wandb.project",
+        wandb_project,
+        "--monitors.wandb.name",
+        f"{wandb_name}-full-offload-model-only-resume",
+        "--output-dir",
+        output_dir.as_posix(),
+        "--run.name",
+        RUN_NAME,
+    ]
+
+    return run_process(cmd, timeout=TIMEOUT)
+
+
 def test_no_error(sft_process: ProcessResult):
     """Tests that the SFT process does not fail."""
     assert sft_process.returncode == 0, f"Process has non-zero return code ({sft_process})"
@@ -112,3 +145,24 @@ def test_loss_goes_down_resume(sft_resume_process: ProcessResult, run_dir: Path)
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_loss_goes_down(trainer_stdout)
+
+
+def test_full_offload_model_only_resume_preserves_weights(
+    sft_full_offload_model_only_resume_process: ProcessResult,
+    run_dir: Path,
+):
+    assert sft_full_offload_model_only_resume_process.returncode == 0, (
+        f"Process has non-zero return code ({sft_full_offload_model_only_resume_process})"
+    )
+    before_dir = run_dir / "weights" / "step_5"
+    after_dir = run_dir / "weights" / "step_6"
+    before_files = sorted(before_dir.glob("*.safetensors"))
+    after_files = sorted(after_dir.glob("*.safetensors"))
+    assert before_files
+    assert [path.name for path in before_files] == [path.name for path in after_files]
+    for before, after in zip(before_files, after_files):
+        with before.open("rb") as before_handle, after.open("rb") as after_handle:
+            assert (
+                hashlib.file_digest(before_handle, "sha256").digest()
+                == hashlib.file_digest(after_handle, "sha256").digest()
+            )

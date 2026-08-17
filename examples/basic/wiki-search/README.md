@@ -94,8 +94,8 @@ Train with the unified config file:
 # In the `Trainer` pane
 uv run rl @ examples/basic/wiki-search/rl.toml \
   --run.name rl \
-  --wandb.project your-project-name \
-  --wandb.name your-run-name
+  --monitors.wandb.project your-project-name \
+  --monitors.wandb.name your-run-name
 ```
 
 The unified config file automatically configures:

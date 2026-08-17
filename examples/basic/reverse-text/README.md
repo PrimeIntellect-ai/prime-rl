@@ -44,8 +44,8 @@ To train on a single GPU, run
 # In the `Trainer` pane
 uv run sft @ examples/basic/reverse-text/sft.toml \
   --run.name sft \
-  --wandb.project ... \
-  --wandb.name ...
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ...
 ```
 
 To train on multiple GPUs, run
@@ -56,8 +56,8 @@ uv run torchrun \
   --local-ranks-filter 0 \
   --nproc-per-node ... \
   src/prime_rl/trainer/sft/train.py @ examples/basic/reverse-text/sft.toml \
-  --wandb.project ... \
-  --wandb.name ...
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ...
 ```
 
 This should write a weight checkpoint in `outputs/sft/weights/step_100`. Upload it to HF to be able to use it as the base model for RL.
@@ -79,8 +79,8 @@ For the RL we will only do 20 steps at 8x16 rollouts, for a total batch size of 
 uv run rl @ examples/basic/reverse-text/rl.toml \
   --model.name ... \
   --run.name rl \
-  --wandb.project ... \
-  --wandb.name ...
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ...
 ```
 
 This will write a weight checkpoint in `outputs/rl/weights/step_20`. As before, let's upload it to HF.

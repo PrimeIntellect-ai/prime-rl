@@ -47,7 +47,6 @@ cp = 8
 cp_style = "ulysses"
 ep = 8
 fused_lm_head_token_chunk_size = 1024
-optim_cpu_offload = true
 
 [trainer.model.ac]
 

@@ -4,6 +4,16 @@
 
 #inspired from https://github.com/astral-sh/uv-docker-example/blob/main/multistage.Dockerfile
 
+# Every pyproject.toml + uv.lock, so the dependency sync below caches
+# independently of source edits.
+FROM nvidia/cuda:12.8.1-base-ubuntu24.04 AS manifests
+# .git is ~735 MB, changes every commit, and would land in the registry cache.
+COPY --exclude=.git . /ctx
+RUN mkdir -p /manifests \
+    && cd /ctx \
+    && find . -name .git -prune -o -type f -name pyproject.toml -exec cp --parents {} /manifests/ \; \
+    && cp uv.lock /manifests/
+
 # Build stage - multi-arch base (supports amd64 + arm64)
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS builder
 LABEL maintainer="prime intellect"
@@ -76,10 +86,22 @@ ENV UV_CACHE_DIR="/usr/local/share/uv/cache"
 # the runtime stage's `COPY /app`
 ENV UV_PROJECT_ENVIRONMENT="/app/.venv"
 
-# Install Python dependencies (The gradual copies help with caching)
+# Install Python dependencies
 WORKDIR /app
 
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+
+# Third-party deps only — source edits don't bust this layer. First-party
+# editables install in the source-layer sync below. No build-context bind
+# mount here: .git would bust the cache every commit.
+COPY --from=manifests /manifests /app
+RUN --mount=type=cache,target=/usr/local/share/uv/cache \
+    uv sync --all-packages --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra gpt-oss --extra quack --group mamba-ssm --locked --no-dev \
+        --no-install-workspace \
+        --no-install-package prime-rl-configs \
+        --no-install-package verifiers \
+        --no-install-package renderers \
+        --no-install-package prime-pydantic-config
 
 COPY pyproject.toml /app/pyproject.toml
 COPY uv.lock /app/uv.lock
@@ -98,7 +120,7 @@ COPY scripts/docker-editable-pretend-versions.sh /app/scripts/docker-editable-pr
 # /app/.git/modules to the read-only context before resolving versions.
 ARG VERIFIERS_PRETEND_VERSION
 ARG RENDERERS_PRETEND_VERSION
-RUN --mount=type=cache,target=/app/.cache/uv \
+RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     --mount=type=bind,source=.,target=/build-context,readonly \
     if [ -d /build-context/.git/modules ]; then mkdir -p /app/.git && ln -s /build-context/.git/modules /app/.git/modules; fi \
     && \
@@ -220,14 +242,9 @@ WORKDIR /app
 # own layers. BuildKit compresses and pushes layers in parallel, so shipping the whole
 # ~20 GB venv as one layer serialized the export behind a single compressor. Splitting
 # also lets nodes pull the image in parallel. Keep the excludes below in sync with the
-# per-tree copies that follow, or the data lands in the image twice.
-COPY --from=builder --chown=appuser:appuser \
-    --exclude=.venv/lib/python3.12/site-packages/nvidia \
-    --exclude=.venv/lib/python3.12/site-packages/torch \
-    --exclude=.venv/lib/python3.12/site-packages/vllm \
-    --exclude=.venv/lib/python3.12/site-packages/flash_attn \
-    --exclude=.venv/lib/python3.12/site-packages/flash_attn_2_cuda*.so \
-    /app /app
+# per-tree copies above, or the data lands in the image twice.
+# The volatile /app remainder goes last so a source edit re-pushes one layer,
+# not all of them.
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/nvidia /app/.venv/lib/python3.12/site-packages/nvidia
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/torch /app/.venv/lib/python3.12/site-packages/torch
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/vllm /app/.venv/lib/python3.12/site-packages/vllm
@@ -238,6 +255,14 @@ COPY --from=builder /opt/ucx /opt/ucx
 # Copy and set up entrypoint script
 COPY --chown=appuser:appuser scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
+
+COPY --from=builder --chown=appuser:appuser \
+    --exclude=.venv/lib/python3.12/site-packages/nvidia \
+    --exclude=.venv/lib/python3.12/site-packages/torch \
+    --exclude=.venv/lib/python3.12/site-packages/vllm \
+    --exclude=.venv/lib/python3.12/site-packages/flash_attn \
+    --exclude=.venv/lib/python3.12/site-packages/flash_attn_2_cuda*.so \
+    /app /app
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
