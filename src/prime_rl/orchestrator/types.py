@@ -39,7 +39,7 @@ RolloutKind = Literal["train", "eval"]
 
 
 @dataclass
-class InflightRollout:
+class InflightEpisode:
     """Per-task scheduling state in the dispatcher; one entry per in-flight
     ``run`` task."""
 

@@ -591,9 +591,9 @@ class Orchestrator:
         if config.max_steps is not None and step > config.max_steps:
             self.draining = True
             self.dispatcher.disable_train_scheduling()
-            n_cancelled = await self.dispatcher.cancel_inflight_train_rollouts()
+            n_cancelled = await self.dispatcher.cancel_inflight_train_episodes()
             get_logger().info(
-                f"Draining pipeline (cancelled {n_cancelled} in-flight train rollout(s); "
+                f"Draining pipeline (cancelled {n_cancelled} in-flight train episode(s); "
                 f"any in-flight evals will complete)"
             )
             return
@@ -786,7 +786,7 @@ class Orchestrator:
         # Unified inflight tail: total, then train/eval split, then per-env
         # (only when more than one env of a kind makes the split ambiguous)
         inflight_part = (
-            f"{inflight_train + inflight_eval} inflight rollouts (train={inflight_train}, eval={inflight_eval}"
+            f"{inflight_train + inflight_eval} inflight episodes (train={inflight_train}, eval={inflight_eval}"
         )
         if multi_train or multi_eval:
             env_pairs = [(e.name, inflight_by_env.get(("train", e.name), 0)) for e in self.train_envs]
