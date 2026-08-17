@@ -25,6 +25,7 @@ name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 batch_size = 64
 group_size = 8
 seq_len = 8192
+max_off_policy_steps = 16
 
 [orchestrator.concurrency]
 initial_inflight = 2048
