@@ -101,7 +101,6 @@ class InferencePool:
 
     async def init_nccl_broadcast(
         self,
-        *,
         host: str,
         port: int,
         timeout: int,
@@ -117,7 +116,6 @@ class InferencePool:
 
     async def init_nixl_broadcast(
         self,
-        *,
         host: str,
         port: int,
         timeout: int,

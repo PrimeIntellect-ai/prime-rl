@@ -278,18 +278,18 @@ class Orchestrator:
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await self.policy_inference.init_nccl_broadcast(
-                host=config.weight_broadcast.host,
-                port=config.weight_broadcast.port,
-                timeout=config.weight_broadcast.timeout,
+                config.weight_broadcast.host,
+                config.weight_broadcast.port,
+                config.weight_broadcast.timeout,
                 inference_world_size=config.weight_broadcast.inference_world_size,
             )
         elif config.weight_broadcast.type == "nixl":
             await self.policy_inference.init_nixl_broadcast(
-                host=config.weight_broadcast.host,
-                port=config.weight_broadcast.port,
-                timeout=config.weight_broadcast.timeout,
-                inference_world_size=config.weight_broadcast.inference_world_size,
-                session_id=config.weight_broadcast.session_id,
+                config.weight_broadcast.host,
+                config.weight_broadcast.port,
+                config.weight_broadcast.timeout,
+                config.weight_broadcast.inference_world_size,
+                config.weight_broadcast.session_id,
             )
             self.model_express = ModelExpressSession(
                 client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),

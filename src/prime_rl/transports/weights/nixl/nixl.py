@@ -20,6 +20,7 @@ from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
 from prime_rl.configs.trainer import NIXLWeightBroadcastConfig
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightBroadcast
@@ -40,13 +41,6 @@ from prime_rl.transports.weights.nixl.trainer_tensor_table import (
 LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
 BUFFER_POLL_INTERVAL = 0.01
 MAX_STAGING_BUFFER_COUNT = 8
-
-
-def get_keep_in_fp32_for_weight_transfer(model: nn.Module) -> Callable[[str], bool]:
-    keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
-    if callable(keep_in_fp32):
-        return keep_in_fp32
-    return lambda _name: False
 
 
 @dataclass
@@ -345,6 +339,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
     def initialize_transfer(self, model: nn.Module) -> None:
         if self.initialized:
             return
+        model = cast(PreTrainedModelPrimeRL, model)
         state_dict = model.state_dict()
         transfer_groups = self.build_transfer_group_index(state_dict)
         self.transfer_group_names = transfer_groups.group_names
@@ -352,7 +347,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
             self.staged_shards = self.collect_local_tensor_shards(
                 state_dict,
                 transfer_groups,
-                get_keep_in_fp32_for_weight_transfer(model),
+                model.keep_in_fp32_for_weight_transfer,
             )
         self.prepare_staging_buffers()
         table_fragments = self.gather_trainer_table_fragments()

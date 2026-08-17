@@ -34,7 +34,6 @@ VLM_REGISTRY: dict[str, VLMModelInfo] = {
 
 # Text-only default
 DEFAULT_LAYER_PREFIX = "model.layers."
-PACKED_MULTIMODAL_TRAINING_MODEL_TYPES = frozenset({"qwen3_vl"})
 
 
 # ---------------------------------------------------------------------------
@@ -86,14 +85,6 @@ def get_language_model(model: nn.Module, override: str | None = None) -> nn.Modu
 def is_vlm_architecture(model_config: PretrainedConfig) -> bool:
     """Check if the model config belongs to a known VLM architecture."""
     return _get_model_info_from_config(model_config) is not None
-
-
-def supports_packed_multimodal_training(model: nn.Module) -> bool:
-    declared_support = getattr(model, "supports_packed_multimodal_training", None)
-    if declared_support is not None:
-        return bool(declared_support)
-    model_type = getattr(getattr(model, "config", None), "model_type", None)
-    return model_type in PACKED_MULTIMODAL_TRAINING_MODEL_TYPES
 
 
 def get_final_logit_softcapping(model_config: PretrainedConfig) -> float | None:

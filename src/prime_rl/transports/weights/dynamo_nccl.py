@@ -12,6 +12,7 @@ from torch import Tensor
 from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightBroadcast
 from prime_rl.utils.client import NCCL_READY_MARKER
@@ -27,6 +28,27 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 from prime_rl.utils.vlm import get_layer_prefix
+
+
+def _filter_state_dict_by_layers(
+    state_dict: dict[str, Tensor], num_layers: int, layer_prefix: str
+) -> Iterator[tuple[int, dict[str, Tensor]]]:
+    yield -1, {name: tensor for name, tensor in state_dict.items() if not name.startswith(layer_prefix)}
+    for layer_idx in range(num_layers):
+        yield (
+            layer_idx,
+            {name: tensor for name, tensor in state_dict.items() if name.startswith(f"{layer_prefix}{layer_idx}.")},
+        )
+
+
+def _preprocess_layer_checkpoint(model: nn.Module, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+    if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
+        model.convert_layer_to_hf(state_dict, layer_idx)
+        return state_dict
+
+    from transformers.core_model_loading import revert_weight_conversion
+
+    return revert_weight_conversion(model, state_dict)
 
 
 class PrimeWeightSource:
@@ -46,18 +68,17 @@ class PrimeWeightSource:
         if self.model is None:
             raise RuntimeError("Prime weight source has no model")
         from prime_rl.trainer.conversion_utils import get_max_layer_num
-        from prime_rl.transports.weights.nccl import filter_state_dict_by_layers, preprocess_layer_checkpoint
 
         state_dict = self.model.state_dict()
         layer_prefix = get_layer_prefix(self.model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
-        for layer_idx, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
+        for layer_idx, layer_state_dict in _filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
             resolved = {}
             for name, tensor in layer_state_dict.items():
                 if isinstance(tensor, DTensor):
                     tensor = cast(DTensor, tensor.to(self.dtype)).full_tensor()
                 resolved[name] = tensor
-            yield from preprocess_layer_checkpoint(self.model, resolved, layer_idx).items()
+            yield from _preprocess_layer_checkpoint(self.model, resolved, layer_idx).items()
 
     def metadata(self):
         from vllm.distributed.weight_transfer import ParamMeta
@@ -66,7 +87,6 @@ class PrimeWeightSource:
             if self.model is None:
                 raise RuntimeError("Prime weight source has no model")
             from prime_rl.trainer.conversion_utils import get_max_layer_num
-            from prime_rl.transports.weights.nccl import filter_state_dict_by_layers, preprocess_layer_checkpoint
 
             state_dict = {
                 name: torch.empty(
@@ -79,8 +99,8 @@ class PrimeWeightSource:
             layer_prefix = get_layer_prefix(self.model.config)
             num_layers = get_max_layer_num(state_dict, layer_prefix)
             metadata = []
-            for layer_idx, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
-                converted = preprocess_layer_checkpoint(self.model, layer_state_dict, layer_idx)
+            for layer_idx, layer_state_dict in _filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
+                converted = _preprocess_layer_checkpoint(self.model, layer_state_dict, layer_idx)
                 metadata.extend(
                     ParamMeta(name, tensor.dtype, tuple(tensor.shape)) for name, tensor in converted.items()
                 )

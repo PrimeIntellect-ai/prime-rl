@@ -69,7 +69,6 @@ from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
-from prime_rl.utils.vlm import supports_packed_multimodal_training
 from ring_flash_attn import substitute_hf_flash_attn
 
 
@@ -150,7 +149,7 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
-    if config.model.vlm is not None and not supports_packed_multimodal_training(model):
+    if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")
 
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)

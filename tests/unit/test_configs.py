@@ -466,25 +466,6 @@ def test_orchestrator_vlm_requires_renderer():
     assert config.renderer is not None
 
 
-def test_trainer_accepts_registered_hf_vlm_configuration():
-    config = TrainerConfig.model_validate(
-        {
-            "model": {
-                "impl": "hf",
-                "attn": "flash_attention_2",
-                "optimization_dtype": "bfloat16",
-                "reduce_dtype": "bfloat16",
-                "vlm": {
-                    "vision_encoder_attr": "model.visual",
-                    "language_model_attr": "model.language_model",
-                },
-            },
-        }
-    )
-
-    assert config.model.impl == "hf"
-
-
 def test_trainer_rejects_vlm_cp_with_ring():
     config = {
         "model": {

@@ -288,7 +288,6 @@ class DynamoInferencePool(InferencePool):
 
     async def init_nccl_broadcast(
         self,
-        *,
         host: str,
         port: int,
         timeout: int,
@@ -313,7 +312,6 @@ class DynamoInferencePool(InferencePool):
 
     async def init_nixl_broadcast(
         self,
-        *,
         host: str,
         port: int,
         timeout: int,
