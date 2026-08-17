@@ -787,3 +787,26 @@ def monkey_patch_dp_coordinator_startup_timeout():
             zmq_addr_pipe.close()
 
     DPCoordinator._wait_for_zmq_addrs = _patched_wait_for_zmq_addrs
+
+
+def monkey_patch_out_of_vocab_detokenization():
+    """Tolerate out-of-vocab token ids in logprobs detokenization.
+
+    Models with padded embeddings (e.g. Qwen: logits dim 151936 vs 151646
+    tokenizer entries) can sample ids the tokenizer does not know, especially
+    once RL updates shift the untrained tail logits. For those ids
+    ``convert_ids_to_tokens`` returns None and vLLM's
+    ``_restore_leading_spaces`` crashes the async output processor, taking the
+    whole engine down. Treat the raw piece as empty instead — the id still
+    detokenizes via ``decode`` (empty string), and generation continues.
+    """
+    from vllm.tokenizers import detokenizer_utils
+
+    original = detokenizer_utils._restore_leading_spaces
+
+    def _safe_restore_leading_spaces(raw_token: str | None, token_str: str, marker: str) -> str:
+        if raw_token is None:
+            return token_str
+        return original(raw_token, token_str, marker)
+
+    detokenizer_utils._restore_leading_spaces = _safe_restore_leading_spaces

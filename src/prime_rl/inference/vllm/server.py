@@ -22,6 +22,7 @@ from prime_rl.inference.patches import (
     monkey_patch_dp_coordinator_startup_timeout,
     monkey_patch_harmony_stop_token_propagation,
     monkey_patch_nano_v3_reasoning_parser,
+    monkey_patch_out_of_vocab_detokenization,
     monkey_patch_strip_routed_experts_from_chat,
     monkey_patch_tokenize_params_validation,
 )
@@ -35,6 +36,9 @@ monkey_patch_tokenize_params_validation()
 # NOTE: Register Nano V3 reasoning parser so configs can use
 # `reasoning_parser = "nano_v3"` without a vLLM plugin file.
 monkey_patch_nano_v3_reasoning_parser()
+# NOTE: Padded-vocab models (Qwen) can sample out-of-vocab ids under RL drift;
+# vLLM's logprobs detokenization crashes the engine on them (None raw piece).
+monkey_patch_out_of_vocab_detokenization()
 # NOTE: routed_experts are consumed only via the serialized /generate path (router
 # replay). The chat-completions path encodes them as a base64 np.save string the PD
 # router cannot merge, which fails eval rollouts (they use chat completions). Strip
