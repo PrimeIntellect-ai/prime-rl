@@ -65,8 +65,10 @@ weight_decay = 0.1
 [orchestrator]
 batch_size = 4096
 group_size = 16
-concurrency.initial_inflight = 12288
 max_off_policy_steps = 16
+
+[orchestrator.concurrency]
+initial_inflight = 12288
 
 [orchestrator.model]
 name = "zai-org/GLM-5-FP8"

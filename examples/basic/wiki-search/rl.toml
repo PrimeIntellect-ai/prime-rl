@@ -32,7 +32,9 @@ target_modules = [
 [orchestrator]
 batch_size = 512
 group_size = 16
-concurrency.initial_inflight = 1024
+
+[orchestrator.concurrency]
+initial_inflight = 1024
 
 [orchestrator.model.lora]
 name = "qwen3-4b-wiki-search"

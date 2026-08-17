@@ -43,8 +43,10 @@ lr = 1e-6
 
 [orchestrator]
 batch_size = 512
-concurrency.initial_inflight = 1024
 max_off_policy_steps = 16
+
+[orchestrator.concurrency]
+initial_inflight = 1024
 
 [[orchestrator.train.source]]
 name = "swe"
