@@ -3,7 +3,7 @@
 # Eval (SWE-Bench Verified, every 10 steps) is capped at 10 turns, so eval episodes are much
 # cheaper than train episodes — expect the cap to INCREASE at eval boundaries when the eval
 # census reprices the cost estimate, and to fall back once the epoch drains.
-# Verify via concurrency/* in <output_dir>/orchestrator/metrics.jsonl (or W&B).
+# Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
 
 max_steps = 100
 seq_len = 131072

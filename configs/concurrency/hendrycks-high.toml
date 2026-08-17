@@ -3,7 +3,7 @@
 # emergency brake is live even while the feedforward loop is frozen), the cap drops to
 # 0.75 x actual inflight, and after the drain the cap settles at the capacity budget — no
 # repeated cuts on the stale draining signal. Eval every 5 steps as in the low variant.
-# Verify via concurrency/* in <output_dir>/orchestrator/metrics.jsonl.
+# Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
 
 max_steps = 12
 

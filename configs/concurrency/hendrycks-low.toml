@@ -3,7 +3,7 @@
 # jumps to the capacity budget at freeze exit, then tightens as per-env cost estimates replace
 # the seq_len bootstrap — with no preemptions (concurrency/signal stays clear of HARD). Eval
 # epochs (every 5 steps) reprice the cap from the eval env's own cost estimate.
-# Verify via concurrency/* in <output_dir>/orchestrator/metrics.jsonl.
+# Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
 
 max_steps = 12
 

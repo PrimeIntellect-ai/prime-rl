@@ -8,8 +8,8 @@ Sets ``n_max = clamp(kappa * C / G, floor, max_inflight)``:
   size and duration over completed episodes, aggregated with
   duration-corrected weights (train envs by sampling ratio, eval envs by
   scheduled episodes while an eval epoch is in flight).
-- ``kappa`` — learned over-commit trim. Grows slowly while the engines are
-  clear and the cap binds; cut multiplicatively on overload.
+- ``kappa`` — learned over-commit factor. Grows slowly while the engines are
+  clear and the cap binds; backs off multiplicatively on overload.
 
 The controller is a pure state machine — it owns no tasks or clients. Three
 drivers call into it:
@@ -35,10 +35,10 @@ from prime_rl.utils.logger import get_logger
 
 # EWMA smoothing for per-env cost/duration estimates
 ESTIMATE_ALPHA = 0.1
-# Multiplicative cut factors: first cut, and the harsher follow-up when
+# Multiplicative backoff: the first cut, and the harsher follow-up when
 # overload survives a full drain
-CUT_FACTOR = 0.75
-REPEAT_CUT_FACTOR = 0.5
+BACKOFF_FACTOR = 0.75
+ESCALATED_BACKOFF_FACTOR = 0.5
 # Per-step growth once the engines are clear and the cap binds
 GROWTH_FACTOR = 1.02
 # Grow only when the cap actually constrains admission
@@ -116,7 +116,7 @@ class ConcurrencyController:
         # After a cut, ignore further HARD signals until inflight has drained
         # below the new cap — the overload during drain is stale
         self.draining = False
-        self.cut_factor = CUT_FACTOR
+        self.backoff_factor = BACKOFF_FACTOR
 
         self._set_limit: Callable[[int], None] | None = None
         self._get_inflight: Callable[[], int] | None = None
@@ -200,7 +200,7 @@ class ConcurrencyController:
                 self.kappa = max(1.0, self.max_inflight * cost / capacity)
         elif self.kappa is not None:
             if self.all_clear_since_step:
-                self.cut_factor = CUT_FACTOR
+                self.backoff_factor = BACKOFF_FACTOR
                 if inflight >= BINDING_FRACTION * self.max_inflight:
                     self.kappa = min(KAPPA_MAX, self.kappa * GROWTH_FACTOR)
 
@@ -213,13 +213,13 @@ class ConcurrencyController:
     def cut(self, inflight: int) -> None:
         """Multiplicative cut relative to what is actually running; freeze
         further cuts until the drain completes."""
-        target = self.clamp(self.cut_factor * max(inflight, self.floor))
+        target = self.clamp(self.backoff_factor * max(inflight, self.floor))
         capacity = self.capacity
         if capacity is not None:
             self.kappa = max(KAPPA_MIN, target * self.cost_estimate() / capacity)
         self.draining = True
         # Escalate if overload survives the drain; reset on the next clear step
-        self.cut_factor = REPEAT_CUT_FACTOR
+        self.backoff_factor = ESCALATED_BACKOFF_FACTOR
         self.apply_limit(target, reason="overload cut")
 
     def apply_limit(self, n_max: int, *, reason: str) -> None:
