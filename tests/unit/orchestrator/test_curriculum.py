@@ -7,10 +7,10 @@ import verifiers.v1 as vf
 from prime_rl.configs.orchestrator import CurriculumComponentConfig, CurriculumConfig
 from prime_rl.orchestrator.curriculum import (
     AdmissionGate,
+    AdvantageRangeGate,
     Curriculum,
     CurriculumResult,
     DifficultyPools,
-    OnlineDifficultyFiltering,
     StandardSampler,
 )
 from prime_rl.orchestrator.train_source import TrainSource
@@ -158,11 +158,11 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     }
 
 
-def test_difficulty_pools_stack_with_online_difficulty_filtering_and_resume_sampling() -> None:
+def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> None:
     tasks = [make_task(i) for i in range(3)]
     curriculum = Curriculum(
         DifficultyPools(tasks, seed=7),
-        {"online_difficulty": OnlineDifficultyFiltering()},
+        {"zero_advantage": AdvantageRangeGate()},
     )
     rewards = {0: 0.1, 1: 0.5, 2: 0.9}
     decisions = []
@@ -182,20 +182,20 @@ def test_difficulty_pools_stack_with_online_difficulty_filtering_and_resume_samp
     expected = [curriculum.sample().key for _ in range(10)]
     restored = Curriculum(
         DifficultyPools(tasks, seed=7),
-        {"online_difficulty": OnlineDifficultyFiltering()},
+        {"zero_advantage": AdvantageRangeGate()},
     )
     restored.load_state_dict(state)
     assert [restored.sample().key for _ in range(10)] == expected
 
 
-def test_online_difficulty_filtering_generalizes_zero_advantage_rejection() -> None:
+def test_advantage_range_gate_generalizes_zero_advantage_rejection() -> None:
     task = make_task(0)
-    zero_gate = OnlineDifficultyFiltering()
+    zero_gate = AdvantageRangeGate()
     assert zero_gate.admit(CurriculumResult.from_rollouts([make_rollout(task, advantages=[0.0, 0.0])])) is False
     assert zero_gate.admit(CurriculumResult.from_rollouts([make_rollout(task, advantages=[0.0, 0.2])])) is True
     assert zero_gate.admit(CurriculumResult.from_rollouts([make_rollout(task)])) is True
 
-    tolerance_gate = OnlineDifficultyFiltering(reject_min=-0.1, reject_max=0.1)
+    tolerance_gate = AdvantageRangeGate(reject_min=-0.1, reject_max=0.1)
     assert (
         tolerance_gate.admit(CurriculumResult.from_rollouts([make_rollout(task, advantages=[-0.05, 0.0, 0.05])]))
         is False
@@ -203,5 +203,5 @@ def test_online_difficulty_filtering_generalizes_zero_advantage_rejection() -> N
 
     masked = make_rollout(task, advantages=[0.0, 0.5])
     masked.samples[0].mask = [False, True]
-    positive_gate = OnlineDifficultyFiltering(reject_min=0.5, reject_max=0.5)
+    positive_gate = AdvantageRangeGate(reject_min=0.5, reject_max=0.5)
     assert positive_gate.admit(CurriculumResult.from_rollouts([masked])) is False

@@ -480,7 +480,7 @@ Three small implementations are included:
 
 - `StandardSampler` is the default: it advances the task iterator and cycles finite tasksets in source order.
 - `DifficultyPools` samples every finite task once, tracks its latest valid mean group reward, then samples a named reward pool by weight and a task uniformly within that pool. Tasks without a valid result do not block pool sampling, and the final pool is a catch-all.
-- `OnlineDifficultyFiltering` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Its default `[0, 0]` range filters groups with no online learning signal. Groups without an advantage stream are admitted.
+- `AdvantageRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Its default `[0, 0]` range filters groups with no online learning signal. Groups without an advantage stream are admitted.
 
 ```toml
 [orchestrator.train.source.curriculum.sampler]
@@ -496,8 +496,8 @@ hard = 0.2
 medium = 0.6
 easy = 0.2
 
-[orchestrator.train.source.curriculum.gates.online_difficulty]
-import_path = "prime_rl.orchestrator.curriculum.OnlineDifficultyFiltering"
+[orchestrator.train.source.curriculum.gates.zero_advantage]
+import_path = "prime_rl.orchestrator.curriculum.AdvantageRangeGate"
 ```
 
 ## Multi-Turn Trajectories
