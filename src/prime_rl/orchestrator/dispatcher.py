@@ -691,7 +691,6 @@ class RolloutDispatcher:
         return {
             "dispatcher/inflight/train": float(self.inflight_train_count),
             "dispatcher/inflight/eval": float(self.inflight_eval_count),
-            "dispatcher/inflight/groups": float(len(self.groups)),
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
             "dispatcher/off_policy_level/max": float(self.max_off_policy_level),
