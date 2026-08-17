@@ -43,6 +43,7 @@ import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before tr
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
+from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
@@ -131,6 +132,7 @@ class Orchestrator:
     train_source: TrainSource
     train_sink: TrainSink
     dispatcher: RolloutDispatcher
+    concurrency: ConcurrencyController
     watcher: WeightWatcher
     lag_monitor: EventLoopLagMonitor
     periodic_logger: PeriodicLogger
@@ -281,16 +283,6 @@ class Orchestrator:
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
-        # Gate on the registered monitor, not the config - the collector logs to the global
-        # W&B session, which only exists when the monitor's init succeeded.
-        if monitors.get(monitors.WandbMonitor) is not None and config.collect_inference_metrics:
-            self.inference_metrics = InferenceMetricsCollector(
-                self.policy_inference.admin_clients,
-                roles=config.inference_metrics_roles,
-                max_inflight_episodes=config.max_inflight_episodes,
-            )
-            await self.inference_metrics.start()
-
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
@@ -386,9 +378,18 @@ class Orchestrator:
             else None
         )
 
-        assert config.max_inflight_episodes is not None, "max_inflight_episodes must be resolved before dispatcher init"
         log_interval = config.log.interval
         wandb_enabled = monitors.get(monitors.WandbMonitor) is not None
+
+        group_sizes = [env.group_size for env in config.train.source]
+        if config.eval is not None:
+            group_sizes += [source.group_size for source in config.eval.source]
+        self.concurrency = ConcurrencyController(
+            config.concurrency,
+            train_env_ratios={env.resolved_name: env.ratio for env in config.train.source},
+            floor=max(group_sizes, default=config.group_size),
+            bootstrap_cost=config.seq_len,
+        )
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
@@ -396,10 +397,26 @@ class Orchestrator:
             eval_source=self.eval_source,
             policy_pool=self.policy_inference,
             policy=self.policy,
-            max_inflight_episodes=config.max_inflight_episodes,
+            max_inflight_episodes=self.concurrency.max_inflight,
+            max_inflight_ceiling=config.concurrency.max_inflight,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
+            on_episode_complete=self.concurrency.record_episode,
         )
+        self.concurrency.bind(
+            set_limit=self.dispatcher.set_limit,
+            get_inflight=lambda: self.dispatcher.inflight_permits,
+        )
+        # The collector always polls — it feeds the concurrency controller;
+        # W&B mirroring is gated on the registered monitor (the collector logs
+        # to the global W&B session, which only exists when init succeeded).
+        self.inference_metrics = InferenceMetricsCollector(
+            self.policy_inference.admin_clients,
+            roles=config.inference_metrics_roles,
+            on_load=self.concurrency.observe,
+            log_to_wandb=wandb_enabled and config.collect_inference_metrics,
+        )
+        await self.inference_metrics.start()
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
@@ -428,6 +445,7 @@ class Orchestrator:
             collect=self.collect_pipeline_view,
             metric_keys=[
                 *list(self.dispatcher.gauges().keys()),
+                *list(self.concurrency.gauges().keys()),
                 *DispatcherMetrics.drain_keys(
                     train_envs={e.name for e in self.train_envs},
                     eval_envs={e.name for e in self.eval_envs} if self.eval_envs is not None else set(),
@@ -699,6 +717,11 @@ class Orchestrator:
 
         self.train_sink.reset_pre_filter_stats()
         self.maybe_trigger_eval(self.progress.step)
+        # After the eval trigger, so a fired epoch's census reprices the cap now
+        self.concurrency.on_step(
+            inflight=self.dispatcher.inflight_permits,
+            eval_in_flight=self.dispatcher.eval_has_work or self.dispatcher.inflight_eval_count > 0,
+        )
         trim_process_memory()
 
     def maybe_trigger_eval(self, step: int) -> None:
@@ -715,11 +738,12 @@ class Orchestrator:
         for env_name in fired:
             self.eval_triggered_at[(env_name, step)] = now
         assert self.eval_envs is not None
-        total_rollouts = sum(
-            self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
+        census = {
+            env_name: self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
             for env_name in fired
-        )
-        get_logger().info(f"Starting evals in {', '.join(fired)} ({total_rollouts} total rollouts)")
+        }
+        self.concurrency.on_eval_epoch(census)
+        get_logger().info(f"Starting evals in {', '.join(fired)} ({sum(census.values())} total rollouts)")
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:
         """Pipeline view for the orchestrator's ``PeriodicLogger``. Returns
@@ -773,7 +797,7 @@ class Orchestrator:
 
         body = train_batch_part + eval_batch_part + "; " + inflight_part
 
-        payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges}
+        payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges, **self.concurrency.gauges()}
         if lag_stats.n > 0:
             payload["event_loop_lag/min"] = lag_stats.min
             payload["event_loop_lag/mean"] = lag_stats.mean

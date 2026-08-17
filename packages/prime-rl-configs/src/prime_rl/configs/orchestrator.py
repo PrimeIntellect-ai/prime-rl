@@ -386,6 +386,25 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
+class ConcurrencyConfig(BaseConfig):
+    """Adaptive in-flight concurrency control. The orchestrator sizes the
+    in-flight episode cap from engine KV capacity and learned per-env episode
+    costs; these fields only bound and seed it."""
+
+    max_inflight: int | None = Field(None, ge=1)
+    """Hard ceiling on in-flight episodes — one episode is one agent run at a time, whatever the env's agents are. None leaves the cap purely capacity-driven."""
+
+    initial_inflight: int | None = Field(None, ge=1)
+    """In-flight cap to start from (held through step 1). Set it when a good value is known to skip the initial ramp; None starts from a conservative capacity-derived bootstrap."""
+
+    @model_validator(mode="after")
+    def validate_bounds(self):
+        if self.max_inflight is not None and self.initial_inflight is not None:
+            if self.initial_inflight > self.max_inflight:
+                raise ValueError("concurrency.initial_inflight must not exceed concurrency.max_inflight")
+        return self
+
+
 class OrchestratorConfig(BaseConfig):
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm: sampling plus the per-token training signal (credit
@@ -439,7 +458,7 @@ class OrchestratorConfig(BaseConfig):
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     collect_inference_metrics: bool = True
-    """Collect inference-server metrics (requires wandb)."""
+    """Mirror inference-server metrics to W&B (requires wandb). The ``/metrics`` poll itself always runs — it feeds the concurrency controller."""
 
     inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
     """Role for each policy admin client when collecting P/D inference metrics."""
@@ -471,11 +490,8 @@ class OrchestratorConfig(BaseConfig):
     token_batch_size: int | None = Field(None, ge=1)
     """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
 
-    oversampling_factor: float | None = Field(None, gt=0)
-    """Rollout-mode batching only. Multiplier used to derive ``max_inflight_episodes`` from ``batch_size`` when ``max_inflight_episodes`` is unset. Values below 1.0 intentionally cap in-flight episode capacity below ``batch_size``."""
-
-    max_inflight_episodes: int | None = Field(None, ge=1)
-    """Maximum number of episodes kept in-flight — one episode is one agent run at a time, whatever the env's agents are. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
+    concurrency: ConcurrencyConfig = ConcurrencyConfig()
+    """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
 
     group_size: int = Field(1, ge=1)
     """Output sequences returned per example during training."""
@@ -599,29 +615,15 @@ class OrchestratorConfig(BaseConfig):
         if not has_rollout_batch and not has_token_batch:
             self.batch_size = 128
 
-        if has_token_batch:
-            if self.oversampling_factor is not None:
-                raise ValueError("oversampling_factor can only be set when batch_size is set")
-            if self.max_inflight_episodes is None:
-                raise ValueError("max_inflight_episodes must be set when token_batch_size is set")
-        else:
+        if has_rollout_batch:
             assert self.batch_size is not None
             if self.batch_size % self.group_size != 0:
                 raise ValueError("Batch size must be divisible by the number of samples per problem")
-            oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
-            resolved_max_inflight_episodes = max(
-                self.group_size,
-                int(self.batch_size * oversampling_factor),
-            )
-            if self.max_inflight_episodes is not None and self.oversampling_factor is not None:
-                expected_max_inflight_episodes = resolved_max_inflight_episodes
-                if self.max_inflight_episodes != expected_max_inflight_episodes:
-                    raise ValueError("max_inflight_episodes conflicts with oversampling_factor * batch_size")
-            if self.max_inflight_episodes is None:
-                self.max_inflight_episodes = resolved_max_inflight_episodes
 
-        if self.max_inflight_episodes is not None and self.max_inflight_episodes < self.group_size:
-            raise ValueError("max_inflight_episodes must be at least the number of rollouts per example")
+        for field in ("max_inflight", "initial_inflight"):
+            value = getattr(self.concurrency, field)
+            if value is not None and value < self.group_size:
+                raise ValueError(f"concurrency.{field} must be at least the number of rollouts per example")
 
         # Propagate the top-level ``group_size`` into each train env that didn't set its own.
         for env_cfg in self.train.source:

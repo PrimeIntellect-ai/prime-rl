@@ -42,7 +42,7 @@ lr = 1e-6
 
 [orchestrator]
 batch_size = 512
-oversampling_factor = 2
+concurrency.max_inflight = 1024
 max_off_policy_steps = 8
 
 [orchestrator.train.sampling]

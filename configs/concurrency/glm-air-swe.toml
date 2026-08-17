@@ -1,39 +1,38 @@
-max_steps = 1000
-# 131k context requires 4 train nodes on the optim-offload profile (on 2 nodes the params/grads
-# baseline stays on GPU and long contexts OOM).
+# Adaptive-concurrency e2e 3: GLM-4.5-Air on the scaleswe taskset, 2 nodes (1 train + 1 infer),
+# rlm harness on a prime sandbox runtime. Starts from a reasonable cap and converges from there.
+# Eval (SWE-Bench Verified, every 10 steps) is capped at 10 turns, so eval episodes are much
+# cheaper than train episodes — expect the cap to INCREASE at eval boundaries when the eval
+# census reprices the cost estimate, and to fall back once the epoch drains.
+# Verify via concurrency/* in <output_dir>/orchestrator/metrics.jsonl (or W&B).
+
+max_steps = 100
 seq_len = 131072
 
 [env_vars]
-PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+TRITON_CACHE_DIR = "/tmp/.triton-cache"
 
 [slurm]
-job_name = "nemotron-3-super-swe"
-partition = "prod"
-# Nemotron-H needs the mamba-ssm kernels; sync that group, then clear this run's orphaned sandboxes.
-pre_run_command = 'uv sync --all-extras --all-packages --group mamba-ssm ; timeout 120 prime sandbox delete --label "nemotron-3-super-swe" -y || true'
+job_name = "glm45air-swe-concurrency"
+partition = "all"
+pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-swe-concurrency" -y || true'
 
 [deployment]
 type = "multi_node"
-num_train_nodes = 4
+num_train_nodes = 1
 num_infer_nodes = 1
-num_infer_replicas = 4
 
 [monitors.wandb]
-project = "nemotron-3-super"
-name = "nemotron-3-super-swe"
+project = "adaptive-concurrency"
+name = "glm45air-swe-concurrency"
 
 [weight_broadcast]
 type = "nccl"
 timeout = 3600
 
-[ckpt]
-interval = 50
-keep_last = 1
-
-[resume]
-
 [model]
-name = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
+name = "zai-org/GLM-4.5-Air"
+
+# --- Trainer ---
 
 [trainer]
 dist_timeout_seconds = 3600
@@ -42,10 +41,8 @@ enable_router_replay = true
 [trainer.model]
 impl = "custom"
 attn = "flash_attention_3"
-# Hybrid-Mamba model: ring CP is unsupported, so use ulysses (capped at 8 by n_groups).
-cp = 8
+cp = 4
 cp_style = "ulysses"
-ep = 8
 fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
@@ -55,18 +52,18 @@ max_inflight_activations = 1
 
 [trainer.model.compile]
 
-[trainer.ckpt]
-skip_gather_master_weights = true
-skip_optimizer = true
-
 [trainer.optim]
-type = "adamw"
+type = "muon"
+
+# --- Orchestrator ---
 
 [orchestrator]
 batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
-concurrency.max_inflight = 1536
+
+[orchestrator.concurrency]
+initial_inflight = 256
 
 [orchestrator.algo]
 type = "grpo"
@@ -78,8 +75,8 @@ num_input_tokens_weight = 0.1
 num_turns_weight = 0.1
 
 [orchestrator.renderer]
-name = "nemotron-3"
-truncate_history_thinking = false
+name = "glm-4.5"
+thinking_retention = "all"
 
 [[orchestrator.train.source]]
 name = "scaleswe"
@@ -92,15 +89,18 @@ id = "rlm"
 summarize_at_tokens = [65536, 131072]
 
 [orchestrator.train.source.env.agent.runtime]
-labels = ["nemotron-3-super-swe"]
+labels = ["glm45air-swe-concurrency"]
 
-[monitors.prime]
+# --- Eval: SWE-Bench Verified every 10 steps, capped at 10 turns ---
 
 [orchestrator.eval]
-interval = 20
+interval = 10
 
 [[orchestrator.eval.source]]
 name = "swebench-verified"
+
+[orchestrator.eval.source.env.agent]
+max_turns = 10
 
 [orchestrator.eval.source.env.taskset]
 id = "swebench-verified"
@@ -110,17 +110,20 @@ id = "rlm"
 summarize_at_tokens = 98304
 
 [orchestrator.eval.source.env.agent.runtime]
-labels = ["nemotron-3-super-swe"]
+labels = ["glm45air-swe-concurrency"]
 
 [orchestrator.eval.source.env.agent.timeout]
 rollout = 3600
 
+# --- Inference ---
+
 [inference]
-# vLLM disables prefix caching by default for hybrid-Mamba models; SWE turns share long prefixes.
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 
 [inference.vllm]
 max_model_len = 131072
 tensor_parallel_size = 8
-enable_prefix_caching = true
-enable_expert_parallel = true
 enable_return_routed_experts = true

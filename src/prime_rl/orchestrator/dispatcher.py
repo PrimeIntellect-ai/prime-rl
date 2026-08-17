@@ -1,7 +1,10 @@
 """RolloutDispatcher: schedules rollouts under a shared permit counter.
 
-- Capacity (``max_inflight_episodes``) is shared across train + eval. One permit is
-  one episode: one ``run`` request against an env server.
+- Capacity (``max_inflight``) is shared across train + eval. One permit is
+  one episode: one ``run`` request against an env server. The cap is dynamic —
+  the concurrency controller moves it via ``set_limit``; refills are
+  burst-capped so a raised (or drained) cap never lands all its prefills at
+  once.
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched episode eventually reaches
   ``out_q`` exactly once, as a ``list[Rollout]``. Failures
@@ -25,8 +28,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Literal
@@ -130,8 +135,10 @@ class RolloutDispatcher:
         policy_pool: InferencePool,
         policy: Policy,
         max_inflight_episodes: int,
+        max_inflight_ceiling: int | None,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
+        on_episode_complete: Callable[[str, str, int, float], None] | None = None,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -142,19 +149,31 @@ class RolloutDispatcher:
         self.train_source = train_source
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
+        # ``(env_name, kind, total_tokens, duration_s)`` per completed episode
+        self.on_episode_complete = on_episode_complete
 
         self.max_inflight = max_inflight_episodes
         self.inflight_permits = 0
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
         )
+        # Refill smoothing: at most ``burst_cap`` new admissions per window,
+        # so a raised cap (or a post-drain refill) never lands its full
+        # prefill burst at once
+        self.admission_window_s = 5.0
+        self.admission_window_start = time.monotonic()
+        self.admissions_in_window = 0
+        self.min_burst = max((env.config.group_size for env in train_envs), default=8)
 
         self.inflight: dict[asyncio.Task, InflightRollout] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
 
-        # Bounded so the dispatcher backpressures on a slow sink. One entry per
-        # episode — the sinks count episodes, never loose traces.
-        self.out_q: asyncio.Queue[list[Rollout]] = asyncio.Queue(maxsize=max(8, self.max_inflight))
+        # Bounded so the dispatcher backpressures on a slow sink (unbounded
+        # when no hard ceiling is configured — the dynamic cap still bounds
+        # in-flight work). One entry per episode — the sinks count episodes,
+        # never loose traces.
+        maxsize = max(8, max_inflight_ceiling) if max_inflight_ceiling is not None else 0
+        self.out_q: asyncio.Queue[list[Rollout]] = asyncio.Queue(maxsize=maxsize)
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -190,6 +209,21 @@ class RolloutDispatcher:
     @property
     def available_permits(self) -> int:
         return self.max_inflight - self.inflight_permits
+
+    def set_limit(self, max_inflight: int) -> None:
+        """Move the in-flight cap (concurrency controller hook). A cap below
+        the current in-flight count sheds nothing — admissions just stay
+        blocked until enough episodes finish."""
+        self.max_inflight = max_inflight
+
+    def admission_budget(self) -> int:
+        """Admissions still allowed in the current burst window."""
+        now = time.monotonic()
+        if now - self.admission_window_start >= self.admission_window_s:
+            self.admission_window_start = now
+            self.admissions_in_window = 0
+        burst_cap = max(self.min_burst, self.max_inflight // 10)
+        return burst_cap - self.admissions_in_window
 
     @property
     def inflight_by_env(self) -> dict[tuple[RolloutKind, str], int]:
@@ -310,7 +344,7 @@ class RolloutDispatcher:
         respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
         ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
         while True:
-            if self.available_permits <= 0:
+            if self.available_permits <= 0 or self.admission_budget() <= 0:
                 return
 
             if self.mode == DispatcherMode.PREFER_EVAL:
@@ -424,6 +458,7 @@ class RolloutDispatcher:
 
         group.rollouts_to_schedule -= 1
         await self.acquire()
+        self.admissions_in_window += 1
         task = asyncio.create_task(
             env.run(
                 client=client,
@@ -440,6 +475,7 @@ class RolloutDispatcher:
             policy_version=group.policy_version_at_start,
             client_config=client,
             eval_step=group.eval_step,
+            started_at=time.monotonic(),
         )
         return True
 
@@ -500,6 +536,9 @@ class RolloutDispatcher:
                     get_logger().warning(
                         f"Rollout failed in group {meta.group_id} ({meta.env_name}) — {r.last_error.type}: {r.last_error.message}"
                     )
+        if not is_synth_exception and self.on_episode_complete is not None and meta.started_at > 0:
+            total_tokens = sum(r.num_total_tokens for r in rollouts)
+            self.on_episode_complete(meta.env_name, meta.kind, total_tokens, time.monotonic() - meta.started_at)
         await self.emit_episode(meta, group, rollouts)
 
     async def emit_episode(self, meta: InflightRollout, group: GroupState | None, rollouts: list[Rollout]) -> None:

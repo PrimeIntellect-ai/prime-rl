@@ -50,6 +50,8 @@ class InflightRollout:
     client_config: vf.ClientConfig | None = None
     off_policy_steps: int = 0
     eval_step: int | None = None
+    started_at: float = 0.0
+    """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
 
 
 @dataclass

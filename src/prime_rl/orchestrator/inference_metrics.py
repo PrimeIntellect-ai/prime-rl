@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from statistics import mean, median
 
@@ -10,16 +11,16 @@ import wandb
 from httpx import AsyncClient
 from prometheus_client.parser import text_string_to_metric_families
 
+from prime_rl.orchestrator.concurrency import EngineLoadSample
 from prime_rl.utils.logger import get_logger
 
 POLL_INTERVAL = 5.0
 FETCH_TIMEOUT = 5.0
 METRIC_PREFIX = "vllm:"
+CACHE_CONFIG_FAMILY = "vllm:cache_config_info"
 PD_ROLES = {"prefill", "decode"}
 QUANTILES = {"p50": 0.5, "p90": 0.9, "p99": 0.99}
 AGGREGATIONS = {"min": min, "max": max, "sum": sum, "mean": mean, "median": median}
-OVERLOAD_WAITING_FRACTION = 0.2
-OVERLOAD_WARN_INTERVAL = 60.0
 
 # Scope-level ratios derived from counter deltas; each operand lists legacy and
 # OpenMetrics sample names, whichever the running vLLM version emits.
@@ -50,6 +51,8 @@ class EngineSnapshot:
     gauges: dict[str, float] = field(default_factory=dict)
     counters: dict[str, float] = field(default_factory=dict)
     histograms: dict[str, HistogramSnapshot] = field(default_factory=dict)
+    cache_config: dict[str, str] = field(default_factory=dict)
+    """Labels of ``vllm:cache_config_info`` (e.g. ``num_gpu_blocks``, ``block_size``)."""
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,9 @@ def parse_prometheus_text(text: str) -> dict[str, EngineSnapshot]:
             if sample.name.endswith("_created") or not math.isfinite(sample.value):
                 continue
             engine = engines.setdefault(sample.labels.get("engine", "0"), EngineSnapshot())
+            if family.name == CACHE_CONFIG_FAMILY:
+                engine.cache_config.update(sample.labels)
+                continue
             name = sample.name.removeprefix(METRIC_PREFIX)
             if family.type == "gauge":
                 engine.gauges[name] = engine.gauges.get(name, 0.0) + sample.value
@@ -268,28 +274,30 @@ class InferenceMetricsCollector:
         self,
         admin_clients: list[AsyncClient],
         roles: list[str | None] | None = None,
-        max_inflight_episodes: int | None = None,
+        on_load: Callable[[list[EngineLoadSample]], None] | None = None,
+        log_to_wandb: bool = True,
     ):
         self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
         self.previous: dict[tuple[str, str], TimedSnapshot] = {}
         self.task: asyncio.Task | None = None
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
-        self.max_inflight_episodes = max_inflight_episodes
-        self.last_overload_warning = float("-inf")
+        self.on_load = on_load
+        self.log_to_wandb = log_to_wandb
         get_logger().info(
             "Collecting inference metrics from "
             + ", ".join(f"{endpoint.name}={endpoint.key}" for endpoint in self.endpoints)
         )
 
     async def start(self):
-        wandb.define_metric("inference/*", step_metric="_timestamp")
+        if self.log_to_wandb:
+            wandb.define_metric("inference/*", step_metric="_timestamp")
 
         async def poll_loop():
             while True:
                 try:
                     await self.collect_and_log()
                 except Exception as e:
-                    get_logger().debug(f"Inference metrics poll failed: {e!r}")
+                    get_logger().warning(f"Inference metrics poll failed: {e!r}")
                 await asyncio.sleep(POLL_INTERVAL)
 
         self.task = asyncio.create_task(poll_loop())
@@ -316,27 +324,44 @@ class InferenceMetricsCollector:
         if not samples:
             return
 
-        metrics = self.build_metrics(samples)
+        metrics = self.build_metrics(samples) if self.log_to_wandb else {}
+        load_samples = [self.build_load_sample(sample) for sample in samples]
         for sample in samples:
             self.previous[sample.key] = TimedSnapshot(timestamp=sample.timestamp, snapshot=sample.snapshot)
 
-        waiting_requests = metrics.get("inference/agg/num_requests_waiting/sum", 0.0)
-        if (
-            self.max_inflight_episodes is not None
-            and waiting_requests > OVERLOAD_WAITING_FRACTION * self.max_inflight_episodes
-            and now - self.last_overload_warning >= OVERLOAD_WARN_INTERVAL
-        ):
-            self.last_overload_warning = now
-            get_logger().warning(
-                f"Inference is overloaded: {waiting_requests:.0f} waiting request(s), more than "
-                f"{OVERLOAD_WAITING_FRACTION:.0%} of max_inflight_episodes={self.max_inflight_episodes} - "
-                "training is slowed by queued requests. If intermittent, wait it out - if persistent, "
-                "lower concurrency by decreasing max_inflight_episodes"
-            )
+        if self.on_load is not None:
+            self.on_load(load_samples)
 
         if metrics:
             metrics["_timestamp"] = time.time()
             wandb.log(metrics)
+
+    def build_load_sample(self, sample: EngineSample) -> EngineLoadSample:
+        """Raw per-engine load facts for the concurrency controller."""
+        cache_config = sample.snapshot.cache_config
+        kv_capacity_tokens: int | None = None
+        num_gpu_blocks, block_size = cache_config.get("num_gpu_blocks", ""), cache_config.get("block_size", "")
+        if num_gpu_blocks.isdigit() and block_size.isdigit():
+            kv_capacity_tokens = int(num_gpu_blocks) * int(block_size)
+
+        # First poll has no baseline — a nonzero cumulative counter (e.g. after
+        # an orchestrator restart) is not a fresh preemption
+        previous = self.previous.get(sample.key)
+        preemptions_delta = 0
+        if previous is not None:
+            for name in ("num_preemptions", "num_preemptions_total"):
+                if name in sample.snapshot.counters:
+                    delta = sample.snapshot.counters[name] - previous.snapshot.counters.get(name, 0.0)
+                    preemptions_delta = max(preemptions_delta, int(delta))
+
+        return EngineLoadSample(
+            engine_id=sample.engine_id,
+            role=sample.endpoint.role,
+            kv_capacity_tokens=kv_capacity_tokens,
+            kv_usage=sample.snapshot.gauges.get("kv_cache_usage_perc", 0.0),
+            waiting=int(sample.snapshot.gauges.get("num_requests_waiting", 0.0)),
+            preemptions_delta=preemptions_delta,
+        )
 
     def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:
         values_per_engine = [engine_values(sample, self.previous.get(sample.key)) for sample in samples]
