@@ -63,6 +63,9 @@ class FakeDataConfig(BaseDataConfig):
     input_ids: Literal["increasing", "random"] = "increasing"
     """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
 
+    seed: int = 0
+    """Seed for the per-rank packing/token generator, combined with the data rank."""
+
 
 class LossMaskConfig(BaseConfig):
     system: bool = False

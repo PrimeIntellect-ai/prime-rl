@@ -79,14 +79,28 @@ class FakeDataset(StatefulIterableDataset):
         seq_len: int,
         length: Literal["fixed", "variable"] = "fixed",
         input_ids: Literal["increasing", "random"] = "random",
+        seed: int = 0,
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.seq_len = seq_len
         self.length = length
         self.input_ids = input_ids
+        self.seed = seed
+
+    def _draws_per_sample(self) -> int:
+        return (self.length == "variable") + (self.input_ids == "random")
 
     def __iter__(self):
+        # use a rank seeded PRNG instead of torch global default PRNG because with num workers > 0
+        # the data loader reseeds the global PRNG per worker process
+        generator = torch.Generator().manual_seed(self.seed + self.data_rank)
+        if self.fast_forward:
+            already_emitted = self.step // self.data_world_size
+            for _ in range(already_emitted * self._draws_per_sample()):
+                torch.rand((), generator=generator)
+            self.fast_forward = False
+
         while True:
             self.step += 1
 
@@ -94,11 +108,15 @@ class FakeDataset(StatefulIterableDataset):
             if (self.step - 1) % self.data_world_size != self.data_rank:
                 continue
 
-            seq_len = int(torch.randint(1, self.seq_len, (1,)).item()) if self.length == "variable" else self.seq_len
+            seq_len = (
+                int(torch.randint(1, self.seq_len, (1,), generator=generator).item())
+                if self.length == "variable"
+                else self.seq_len
+            )
             input_ids = (
                 [self.step - 1] * (seq_len + 1)
                 if self.input_ids == "increasing"
-                else torch.randint(0, self.vocab_size, (self.seq_len + 1,)).long().tolist()
+                else torch.randint(0, self.vocab_size, (self.seq_len + 1,), generator=generator).long().tolist()
             )
             position_ids = list(range(seq_len))
             loss_mask = [True] * seq_len
@@ -632,6 +650,7 @@ def setup_dataset(
             seq_len=config.seq_len,
             length=config.length,
             input_ids=config.input_ids,
+            seed=config.seed,
         )
     elif config.type == "sft":
         if renderer is None:
