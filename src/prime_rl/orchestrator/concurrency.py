@@ -57,6 +57,11 @@ QUEUE_RATIO = 0.5
 QUEUE_PERSISTENCE_POLLS = 12
 # Cut to just under what the engines are actually serving
 QUEUE_CUT_FRACTION = 0.9
+# Cap raises at most this factor per re-evaluation. A raise floods in fresh
+# episodes whose fast finishers drag the cost EWMA down, inviting a bigger
+# raise — the slew limit turns that spiral into a ramp the overload cut can
+# interrupt early. Cuts are never limited.
+MAX_STEP_GROWTH = 1.25
 
 
 class Signal(Enum):
@@ -286,7 +291,8 @@ class ConcurrencyController:
             if inflight >= BINDING_FRACTION * self.max_inflight:
                 self.kappa = min(KAPPA_MAX, self.kappa * GROWTH_FACTOR)
 
-        self.apply_limit(self.clamp(self.kappa * capacity / cost), reason="re-evaluation")
+        target = min(self.kappa * capacity / cost, MAX_STEP_GROWTH * self.max_inflight)
+        self.apply_limit(self.clamp(target), reason="re-evaluation")
         self.all_clear_since_step = True
 
     # ── control law internals ────────────────────────────────────────────────
