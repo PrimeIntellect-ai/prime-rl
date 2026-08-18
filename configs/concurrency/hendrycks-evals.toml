@@ -10,6 +10,10 @@ max_steps = 50
 [run]
 name = "hendrycks-evals"
 
+[slurm]
+job_name = "hendrycks-evals"
+partition = "all"
+
 [deployment]
 num_train_gpus = 4
 num_infer_gpus = 4
