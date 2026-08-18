@@ -23,6 +23,16 @@ struct TensorSpan {
   float bias_correction2_sqrt;
 };
 
+struct SignSgdTensorSpan {
+  float* param;
+  const void* grad;
+  void* compute_param;
+  bool grad_bfloat16;
+  bool compute_param_bfloat16;
+  int64_t begin;
+  int64_t end;
+};
+
 struct BFloat16CopySpan {
   float* destination;
   const at::BFloat16* source;
@@ -324,6 +334,154 @@ void adamw_step(
   });
 }
 
+void sign_sgd_span(
+    const SignSgdTensorSpan& span,
+    int64_t begin,
+    int64_t end,
+    float minus_lr,
+    float minus_lr_weight_decay,
+    bool apply_weight_decay) {
+  using Vec = at::vec::Vectorized<float>;
+  using BVec = at::vec::Vectorized<at::BFloat16>;
+
+  float* param = span.param + begin;
+  const float* float_grad = span.grad_bfloat16 ? nullptr : static_cast<const float*>(span.grad) + begin;
+  const at::BFloat16* bfloat16_grad =
+      span.grad_bfloat16 ? static_cast<const at::BFloat16*>(span.grad) + begin : nullptr;
+  at::BFloat16* bfloat16_compute_param =
+      span.compute_param != nullptr && span.compute_param_bfloat16
+      ? static_cast<at::BFloat16*>(span.compute_param) + begin
+      : nullptr;
+  float* float_compute_param =
+      span.compute_param != nullptr && !span.compute_param_bfloat16
+      ? static_cast<float*>(span.compute_param) + begin
+      : nullptr;
+  const int64_t size = end - begin;
+
+  const Vec zero_vec(0.0f);
+  const Vec one_vec(1.0f);
+  const Vec minus_lr_vec(minus_lr);
+  const Vec minus_lr_weight_decay_vec(minus_lr_weight_decay);
+
+  auto update = [&](int64_t offset, const Vec& grad_vec) {
+    // Comparisons yield all-ones masks; bitwise-and with 1.0f turns them into
+    // {0.0f, 1.0f} so the difference is sign(g) with sign(0) == 0.
+    const Vec sign_vec = ((zero_vec < grad_vec) & one_vec) - ((grad_vec < zero_vec) & one_vec);
+    Vec param_vec = Vec::loadu(param + offset);
+    if (apply_weight_decay) {
+      param_vec = at::vec::fmadd(param_vec, minus_lr_weight_decay_vec, param_vec);
+    }
+    param_vec = at::vec::fmadd(sign_vec, minus_lr_vec, param_vec);
+    param_vec.store(param + offset);
+    return param_vec;
+  };
+
+  int64_t i = 0;
+  constexpr int64_t block_size = 2 * Vec::size();
+  for (; i <= size - block_size; i += block_size) {
+    Vec grad0;
+    Vec grad1;
+    if (span.grad_bfloat16) {
+      const BVec grad_bvec = BVec::loadu(bfloat16_grad + i);
+      std::tie(grad0, grad1) = at::vec::convert_to_float<at::BFloat16>(grad_bvec);
+    } else {
+      grad0 = Vec::loadu(float_grad + i);
+      grad1 = Vec::loadu(float_grad + i + Vec::size());
+    }
+    const Vec param0 = update(i, grad0);
+    const Vec param1 = update(i + Vec::size(), grad1);
+    if (bfloat16_compute_param != nullptr) {
+      at::vec::convert_from_float<at::BFloat16>(param0, param1).store(bfloat16_compute_param + i);
+    } else if (float_compute_param != nullptr) {
+      param0.store(float_compute_param + i);
+      param1.store(float_compute_param + i + Vec::size());
+    }
+  }
+
+  for (; i < size; ++i) {
+    const float grad_value = span.grad_bfloat16 ? static_cast<float>(bfloat16_grad[i]) : float_grad[i];
+    const float sign_value = grad_value > 0.0f ? 1.0f : (grad_value < 0.0f ? -1.0f : 0.0f);
+    float param_value = param[i];
+    if (apply_weight_decay) {
+      param_value = std::fma(param_value, minus_lr_weight_decay, param_value);
+    }
+    param_value = std::fma(sign_value, minus_lr, param_value);
+    param[i] = param_value;
+    if (bfloat16_compute_param != nullptr) {
+      bfloat16_compute_param[i] = at::BFloat16(param_value);
+    } else if (float_compute_param != nullptr) {
+      float_compute_param[i] = param_value;
+    }
+  }
+}
+
+void sign_sgd_step(
+    const std::vector<torch::Tensor>& params,
+    const std::vector<torch::Tensor>& grads,
+    const std::vector<torch::Tensor>& compute_params,
+    double lr,
+    double weight_decay) {
+  const auto count = params.size();
+  TORCH_CHECK(grads.size() == count, "grads and params must have the same length");
+  TORCH_CHECK(
+      compute_params.empty() || compute_params.size() == count,
+      "compute_params must be empty or have the same length as params");
+  if (count == 0) {
+    return;
+  }
+
+  std::vector<SignSgdTensorSpan> spans;
+  spans.reserve(count);
+  int64_t total_numel = 0;
+  for (size_t i = 0; i < count; ++i) {
+    check_tensor(params[i], "param");
+    check_grad(grads[i]);
+    TORCH_CHECK(params[i].numel() == grads[i].numel(), "grad shape must match param shape");
+    if (!compute_params.empty()) {
+      TORCH_CHECK(compute_params[i].device().is_cpu(), "compute_param must be on CPU");
+      TORCH_CHECK(
+          compute_params[i].scalar_type() == torch::kBFloat16 ||
+              compute_params[i].scalar_type() == torch::kFloat32,
+          "compute_param must be bfloat16 or float32");
+      TORCH_CHECK(compute_params[i].is_contiguous(), "compute_param must be contiguous");
+      TORCH_CHECK(params[i].numel() == compute_params[i].numel(), "compute_param shape must match param shape");
+    }
+
+    const int64_t numel = params[i].numel();
+    spans.push_back(SignSgdTensorSpan{
+        params[i].data_ptr<float>(),
+        grads[i].const_data_ptr(),
+        compute_params.empty() ? nullptr : compute_params[i].data_ptr(),
+        grads[i].scalar_type() == torch::kBFloat16,
+        !compute_params.empty() && compute_params[i].scalar_type() == torch::kBFloat16,
+        total_numel,
+        total_numel + numel,
+    });
+    total_numel += numel;
+  }
+
+  const float minus_lr = static_cast<float>(-lr);
+  const float minus_lr_weight_decay = static_cast<float>(-lr * weight_decay);
+  const bool apply_weight_decay = weight_decay > 0.0;
+  constexpr int64_t grain_size = 32 * 1024;
+
+  at::parallel_for(0, total_numel, grain_size, [&](int64_t begin, int64_t end) {
+    auto span_it = std::upper_bound(
+        spans.begin(),
+        spans.end(),
+        begin,
+        [](int64_t offset, const SignSgdTensorSpan& span) { return offset < span.end; });
+    while (begin < end) {
+      TORCH_INTERNAL_ASSERT(span_it != spans.end());
+      const int64_t span_begin = begin - span_it->begin;
+      const int64_t span_end = std::min(end, span_it->end) - span_it->begin;
+      sign_sgd_span(*span_it, span_begin, span_end, minus_lr, minus_lr_weight_decay, apply_weight_decay);
+      begin = std::min(end, span_it->end);
+      ++span_it;
+    }
+  });
+}
+
 }  // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
@@ -346,5 +504,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
       "adamw_step",
       &adamw_step,
       "Read-only-gradient multi-tensor CPU AdamW",
+      pybind11::call_guard<pybind11::gil_scoped_release>());
+  module.def(
+      "sign_sgd_step",
+      &sign_sgd_step,
+      "Read-only-gradient multi-tensor CPU SignSGD",
       pybind11::call_guard<pybind11::gil_scoped_release>());
 }

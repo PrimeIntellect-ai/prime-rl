@@ -5,8 +5,10 @@ from prime_rl.trainer.optim.cpu_adam import (
     add_bfloat16_,
     copy_bfloat16_,
     copy_or_add_bfloat16_multi_,
+    sign_sgd_step,
 )
 from prime_rl.trainer.optim.offload import _cast_full_offload_compute_parameters
+from prime_rl.trainer.sign_sgd import SignSGD
 
 
 def test_full_offload_preserves_per_parameter_compute_dtypes():
@@ -130,3 +132,43 @@ def test_native_cpu_adamw_matches_fused_torch_and_preserves_gradients():
         torch.testing.assert_close(exp_avgs[index], state["exp_avg"], rtol=1e-6, atol=1e-8)
         torch.testing.assert_close(exp_avg_sqs[index], state["exp_avg_sq"], rtol=1e-6, atol=1e-8)
         assert state_steps[index].item() == state["step"].item() == 5
+
+
+def test_native_cpu_sign_sgd_matches_python_reference():
+    torch.manual_seed(0)
+    # Sizes deliberately off vector-width multiples to exercise the scalar tail.
+    shapes = [(17,), (33, 65), (257, 129), (1000,)]
+    gradient_dtypes = [torch.bfloat16, torch.float32, torch.bfloat16, torch.float32]
+    compute_dtypes = [torch.bfloat16, torch.float32, torch.bfloat16, torch.bfloat16]
+    for weight_decay in (0.0, 0.1):
+        initial = [torch.randn(shape) for shape in shapes]
+        native_params = [tensor.clone() for tensor in initial]
+        reference_params = [torch.nn.Parameter(tensor.clone()) for tensor in initial]
+        compute_params = [torch.empty_like(tensor, dtype=dtype) for tensor, dtype in zip(native_params, compute_dtypes)]
+        reference = SignSGD(reference_params, lr=3e-4, weight_decay=weight_decay)
+        for iteration in range(1, 6):
+            gradient_scale = 1.0 / (iteration * 7 + 3)
+            gradients = []
+            for tensor, dtype in zip(native_params, gradient_dtypes):
+                gradient = torch.randn_like(tensor).to(dtype)
+                gradient.view(-1)[::7] = 0.0  # exercise sign(0) == 0
+                gradients.append(gradient)
+            # The reference sees scaled FP32 gradients; the native kernel consumes the raw
+            # unscaled gradients because sign(scale * g) == sign(g) for scale > 0.
+            for param, gradient in zip(reference_params, gradients):
+                param.grad = gradient.float() * gradient_scale
+            reference.step()
+            native_gradients = [gradient.clone() for gradient in gradients]
+            sign_sgd_step(
+                native_params,
+                native_gradients,
+                compute_params,
+                lr=3e-4,
+                weight_decay=weight_decay,
+            )
+            for actual, expected in zip(native_gradients, gradients):
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            for native_param, reference_param in zip(native_params, reference_params):
+                torch.testing.assert_close(native_param, reference_param, rtol=0, atol=0)
+            for compute_param, native_param in zip(compute_params, native_params):
+                torch.testing.assert_close(compute_param, native_param.to(compute_param.dtype), rtol=0, atol=0)

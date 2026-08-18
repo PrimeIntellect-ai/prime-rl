@@ -94,3 +94,21 @@ def adamw_step(
         eps,
         gradient_scale,
     )
+
+
+@torch.no_grad()
+def sign_sgd_step(
+    params: list[torch.Tensor],
+    grads: list[torch.Tensor],
+    compute_params: list[torch.Tensor] | None = None,
+    *,
+    lr: float,
+    weight_decay: float,
+) -> None:
+    _extension().sign_sgd_step(
+        params,
+        grads,
+        compute_params or [],
+        lr,
+        weight_decay,
+    )
