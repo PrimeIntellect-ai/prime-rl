@@ -1,8 +1,9 @@
 name: Build Kernels
 
-# Builds the `prime-kernels` wheel (kernels/) for x86_64 and aarch64. Runs on any change
-# under kernels/ to catch build breakage, and with `release_tag` to attach the wheels to a
-# GitHub release — which is how they are consumed (see kernels/README.md).
+# Builds the `prime-kernels` wheel for x86_64 and aarch64 from the kernels/ submodule.
+# Runs on every bump of that submodule to catch build breakage, and with `release_tag` to
+# attach the wheels to a GitHub release — which is how they are consumed (see the `kernels`
+# skill).
 #
 # `tag-and-release.yaml` calls this for every release, before it promotes the draft, so a
 # published release always carries the wheels its `[tool.uv.sources]` pin can point at.
@@ -13,12 +14,14 @@ name: Build Kernels
 on:
   pull_request:
     paths:
-      - "kernels/**"
+      - "kernels"
+      - ".gitmodules"
       - ".github/workflows/build_kernels.yaml"
   push:
     branches: [main]
     paths:
-      - "kernels/**"
+      - "kernels"
+      - ".gitmodules"
       - ".github/workflows/build_kernels.yaml"
   workflow_dispatch:
     inputs:
@@ -75,11 +78,11 @@ jobs:
           submodules: false
           ref: ${{ inputs.ref }}
 
-      # Kernel sources come from public submodules under kernels/; only those are needed.
-      - name: Init kernel submodules
+      # kernels/ is the prime-kernels submodule and carries every kernel's sources.
+      - name: Init the kernels submodule
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git submodule update --init --recursive -- kernels/prime_kernels/flash_moe/prime-flash-moe
+          git submodule update --init -- kernels
 
       - name: Install uv
         run: |

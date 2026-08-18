@@ -276,7 +276,7 @@ known-third-party = ["verifiers", "renderers", "pydantic_config"]
 
 [tool.ruff]
 line-length = 120
-extend-exclude = ["deps", "kernels/prime_kernels/flash_moe/prime-flash-moe"]
+extend-exclude = ["deps", "kernels"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"

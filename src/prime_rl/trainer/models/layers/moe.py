@@ -196,7 +196,7 @@ def _load_fused_moe_kernel() -> ModuleType:
     if _fused_moe is None:
         if importlib.util.find_spec("prime_kernels") is None:
             raise ModuleNotFoundError(
-                "The Prime-Flash-MoE kernel lives in the prime-kernels wheel, which is not available. See kernels/README.md"
+                "The Prime-Flash-MoE kernel lives in the prime-kernels wheel, which is not available. Install it with `uv sync --extra kernels`."
             )
         import prime_kernels
 
