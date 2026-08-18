@@ -61,7 +61,7 @@ KAPPA_CEILING_RELIEF = 1.00002
 # SOFT (growth veto) once any engine's live-request KV usage crosses this —
 # an earlier warning than queueing: thrash onset is a cliff at ~1.0, so stop
 # feeding the cap while there is still headroom to absorb context growth
-KV_USAGE_SOFT = 0.8
+KV_USAGE_SOFT = 0.7
 # Queue-overload HARD: capacity-queued requests exceed this fraction of
 # running requests for QUEUE_PERSISTENCE_POLLS consecutive polls. Agentic
 # rollouts overload by queueing, not preempting — admission control parks
