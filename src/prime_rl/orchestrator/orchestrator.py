@@ -406,6 +406,7 @@ class Orchestrator:
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.current_inflight,
+            get_inflight_mix=self.dispatcher.inflight_mix,
             on_overload=self.dispatcher.cancel_inflight,
         )
         # The collector always polls — it feeds the concurrency controller;
@@ -718,11 +719,7 @@ class Orchestrator:
 
         self.train_sink.reset_pre_filter_stats()
         self.maybe_trigger_eval(self.progress.step)
-        # After the eval trigger, so a fired epoch's census reprices the cap now
-        self.concurrency.on_step(
-            inflight=self.dispatcher.current_inflight,
-            eval_in_flight=self.dispatcher.eval_has_work or self.dispatcher.inflight_eval_count > 0,
-        )
+        self.concurrency.on_step(inflight=self.dispatcher.current_inflight)
         trim_process_memory()
 
     def maybe_trigger_eval(self, step: int) -> None:
@@ -743,7 +740,6 @@ class Orchestrator:
             env_name: self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
             for env_name in fired
         }
-        self.concurrency.on_eval_epoch(census)
         get_logger().info(f"Starting evals in {', '.join(fired)} ({sum(census.values())} total rollouts)")
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:

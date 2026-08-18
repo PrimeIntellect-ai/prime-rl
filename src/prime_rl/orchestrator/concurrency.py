@@ -7,8 +7,8 @@ treats it as a black box with a token cost and a duration. Sets
 - ``C`` — GPU KV capacity in tokens, summed over decode engines (from
   ``vllm:cache_config_info`` labels, pushed by ``InferenceMetricsCollector``).
 - ``G`` — expected cost per unit in tokens: the max of the per-env completion
-  EWMAs (duration-weighted mix) and the size-biased live request cost
-  measured off the engines.
+  EWMAs (weighted by the dispatcher's live in-flight mix) and the size-biased
+  live request cost measured off the engines.
 - ``kappa`` — learned over-commit factor. Grows slowly while the engines are
   clear and the cap binds; backs off multiplicatively on overload.
 
@@ -18,8 +18,7 @@ drivers call into it:
 - the metrics collector pushes ``observe(samples)`` every poll (where all
   cap control happens, clocked by pipeline turnovers),
 - the dispatcher reports ``record_episode(...)`` per completed unit,
-- the orchestrator's step loop calls ``on_step(...)`` once per shipped step
-  and ``on_eval_epoch(census)`` when evals fire.
+- the orchestrator's step loop calls ``on_step(...)`` once per shipped step.
 
 Outbound it calls the hooks bound via :meth:`bind`.
 """
@@ -176,10 +175,6 @@ class ConcurrencyController:
         self.observed_cost_weight = 0.0
         self.capacity_by_engine: dict[str, int] = {}
         self.capacity_reported = False
-        # Eval episodes still in flight or owed, per env; set on trigger,
-        # decremented per completion, force-cleared once the dispatcher
-        # reports no eval work at a step boundary
-        self.eval_remaining: dict[str, int] = {}
 
         self.signal = Signal.CLEAR
         self.all_clear_since_step = True
@@ -196,6 +191,7 @@ class ConcurrencyController:
 
         self._set_limit: Callable[[int], None] | None = None
         self._get_inflight: Callable[[], int] | None = None
+        self._get_inflight_mix: Callable[[], dict[tuple[str, str], int]] | None = None
         self._on_overload: Callable[[int], None] | None = None
 
     def bind(
@@ -203,14 +199,18 @@ class ConcurrencyController:
         *,
         set_limit: Callable[[int], None],
         get_inflight: Callable[[], int],
+        get_inflight_mix: Callable[[], dict[tuple[str, str], int]] | None = None,
         on_overload: Callable[[int], None] | None = None,
     ) -> None:
         """Attach the outbound hooks. The dispatcher is constructed with this
         controller's initial cap, so no ``set_limit`` fires here.
-        ``on_overload`` receives the episode excess on an overload cut so the
-        dispatcher can shed in-flight work instead of just blocking admission."""
+        ``get_inflight_mix`` supplies the live per-``(kind, env)`` in-flight
+        counts that weight the cost mix; ``on_overload`` receives the unit
+        excess on an overload cut so the dispatcher can cancel in-flight work
+        instead of just blocking admission."""
         self._set_limit = set_limit
         self._get_inflight = get_inflight
+        self._get_inflight_mix = get_inflight_mix
         self._on_overload = on_overload
 
     # ── inbound hooks ────────────────────────────────────────────────────────
@@ -223,18 +223,9 @@ class ConcurrencyController:
         fraction = 1 / max(inflight, self.floor, 1)
         self.turnover += fraction
         self.slew_allowance = max(self.slew_allowance, float(self.max_inflight)) * MAX_TURNOVER_GROWTH**fraction
-        if kind == "eval" and env_name in self.eval_remaining:
-            self.eval_remaining[env_name] = max(0, self.eval_remaining[env_name] - 1)
         if tokens <= 0 or duration <= 0:
             return
         self.estimates.setdefault((kind, env_name), EnvEstimate()).update(tokens, duration)
-
-    def on_eval_epoch(self, census: dict[str, int]) -> None:
-        """Eval fired: ``census`` maps env name to total scheduled episodes.
-        Decremented per completion, so the eval share of the cost mix decays
-        continuously as the epoch drains."""
-        for env_name, count in census.items():
-            self.eval_remaining[env_name] = self.eval_remaining.get(env_name, 0) + count
 
     def observe(self, samples: list[EngineLoadSample]) -> None:
         """Per-poll engine load push from the metrics collector. Classifies
@@ -366,14 +357,10 @@ class ConcurrencyController:
             self.apply_limit(target, reason="re-evaluation")
             self.slew_allowance = float(self.max_inflight)
 
-    def on_step(self, *, inflight: int, eval_in_flight: bool) -> None:
-        """Once per shipped train step: eval bookkeeping and backoff reset.
-        All cap control is poll-clocked in ``observe``."""
+    def on_step(self, *, inflight: int) -> None:
+        """Once per shipped train step: backoff reset. All cap control is
+        poll-clocked in ``observe``."""
         self.completed_steps += 1
-        # Safety net for eval episodes that never report a completion
-        # (task exceptions surface as synthetic markers)
-        if not eval_in_flight and self.eval_remaining:
-            self.eval_remaining.clear()
         if self.all_clear_since_step:
             self.backoff_factor = BACKOFF_FACTOR
         self.all_clear_since_step = True
@@ -441,19 +428,16 @@ class ConcurrencyController:
         return self.engine_max_len or self.fallback_cost
 
     def cost_estimate(self) -> float:
-        """``G``: duration-weighted per-env cost mix of the in-flight pool.
-        The train mix (by sampling ratio) and the eval mix (by remaining
-        census episodes) interpolate on the eval share of the cap — the share
-        starts at ``min(1, census / n_max)`` when an epoch fires and decays
-        continuously to zero as it drains, so the cap glides back to the
-        train price instead of snapping."""
-        train_cost = self.mix_cost({("train", env): ratio for env, ratio in self.train_env_ratios.items()})
-        remaining = sum(self.eval_remaining.values())
-        if remaining <= 0:
-            return max(train_cost, self.observed_cost)
-        eval_cost = self.mix_cost({("eval", env): float(n) for env, n in self.eval_remaining.items() if n > 0})
-        eval_share = min(1.0, remaining / max(self.max_inflight, 1))
-        return max(eval_share * eval_cost + (1 - eval_share) * train_cost, self.observed_cost)
+        """``G``: per-env cost mix weighted by the dispatcher's live in-flight
+        counts — a measurement of the standing pool, so train and eval need no
+        separate treatment (eval episodes enter the mix as they are admitted).
+        Before anything is in flight, the configured train ratios stand in."""
+        mix: dict[tuple[str, str], float] = {}
+        if self._get_inflight_mix is not None:
+            mix = {key: float(n) for key, n in self._get_inflight_mix().items()}
+        if not mix:
+            mix = {("train", env): ratio for env, ratio in self.train_env_ratios.items()}
+        return max(self.mix_cost(mix), self.observed_cost)
 
     @property
     def observed_cost(self) -> float:
@@ -463,19 +447,18 @@ class ConcurrencyController:
         return self.observed_cost_sum / self.observed_cost_weight if self.observed_cost_weight > 0 else 0.0
 
     def mix_cost(self, weights: dict[tuple[str, str], float]) -> float:
-        """Duration-weighted mean episode cost over one ``(kind, env)`` weight
-        mix. Envs without completions fall back to the observed request cost
-        (the best available measurement), and to the pessimistic bootstrap
-        cost only before any traffic exists."""
+        """Mean per-unit cost over one ``(kind, env)`` weight mix. Envs
+        without completions fall back to the observed request cost (the best
+        available measurement), and to the pessimistic bootstrap cost only
+        before any traffic exists."""
         fallback = self.observed_cost or float(self.bootstrap_cost)
         weighted_cost = 0.0
         total_weight = 0.0
         for key, weight in weights.items():
             estimate = self.estimates.get(key)
             tokens = estimate.tokens if estimate is not None and estimate.tokens is not None else fallback
-            duration = estimate.duration if estimate is not None and estimate.duration is not None else 1.0
-            weighted_cost += weight * duration * tokens
-            total_weight += weight * duration
+            weighted_cost += weight * tokens
+            total_weight += weight
         return weighted_cost / total_weight if total_weight > 0 else fallback
 
     # ── observability ────────────────────────────────────────────────────────
