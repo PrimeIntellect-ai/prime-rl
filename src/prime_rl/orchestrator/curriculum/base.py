@@ -12,7 +12,7 @@ import verifiers.v1 as vf
 from prime_rl.utils.utils import import_object
 
 if TYPE_CHECKING:
-    from prime_rl.configs.orchestrator import CurriculumComponentConfig, CurriculumConfig
+    from prime_rl.configs.orchestrator import AdmissionGateConfig, CurriculumConfig, TaskSamplerConfig
     from prime_rl.orchestrator.types import Rollout
 
 
@@ -123,12 +123,23 @@ class Curriculum:
         return metrics
 
 
-def _setup_component(config: CurriculumComponentConfig, base_type: type, *args: Any) -> Any:
-    component_type = import_object(config.import_path)
-    component = component_type(*args, **config.kwargs)
-    if not isinstance(component, base_type):
-        raise TypeError(f"{config.import_path} must subclass {base_type.__name__}")
-    return component
+def _setup_sampler(
+    config: TaskSamplerConfig,
+    tasks: Sequence[vf.Task] | Iterator[vf.Task],
+) -> TaskSampler:
+    sampler_type = import_object(config.import_path)
+    sampler = sampler_type(tasks, **config.kwargs)
+    if not isinstance(sampler, TaskSampler):
+        raise TypeError(f"{config.import_path} must subclass TaskSampler")
+    return sampler
+
+
+def _setup_gate(config: AdmissionGateConfig) -> AdmissionGate:
+    gate_type = import_object(config.import_path)
+    gate = gate_type(**config.kwargs)
+    if not isinstance(gate, AdmissionGate):
+        raise TypeError(f"{config.import_path} must subclass AdmissionGate")
+    return gate
 
 
 def setup_curriculum(
@@ -138,11 +149,7 @@ def setup_curriculum(
     from prime_rl.orchestrator.curriculum.standard_sampler import StandardSampler
 
     sampler = (
-        StandardSampler(tasks)
-        if config is None or config.sampler is None
-        else _setup_component(config.sampler, TaskSampler, tasks)
+        StandardSampler(tasks) if config is None or config.sampler is None else _setup_sampler(config.sampler, tasks)
     )
-    gates = (
-        {} if config is None else {name: _setup_component(gate, AdmissionGate) for name, gate in config.gates.items()}
-    )
+    gates = {} if config is None else {name: _setup_gate(gate) for name, gate in config.gates.items()}
     return Curriculum(sampler, gates)

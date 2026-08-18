@@ -157,19 +157,27 @@ class EnvConfig(BaseConfig):
         return self
 
 
-class CurriculumComponentConfig(BaseConfig):
+class TaskSamplerConfig(BaseConfig):
     import_path: str
-    """Dotted path to a task sampler or admission gate subclass."""
+    """Dotted path to a task sampler subclass."""
 
     kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Keyword arguments passed to the component constructor."""
+    """Keyword arguments passed to the task sampler constructor."""
+
+
+class AdmissionGateConfig(BaseConfig):
+    import_path: str
+    """Dotted path to an admission gate subclass."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments passed to the admission gate constructor."""
 
 
 class CurriculumConfig(BaseConfig):
-    sampler: CurriculumComponentConfig | None = None
+    sampler: TaskSamplerConfig | None = None
     """Task selection policy. The default cycles through the task iterator in source order."""
 
-    gates: dict[str, CurriculumComponentConfig] = Field(default_factory=dict)
+    gates: dict[str, AdmissionGateConfig] = Field(default_factory=dict)
     """Named admission policies. Every gate observes every finalized group,
     and a group trains only when every gate admits it."""
 

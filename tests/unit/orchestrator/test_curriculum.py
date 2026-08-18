@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import verifiers.v1 as vf
 
-from prime_rl.configs.orchestrator import CurriculumComponentConfig, CurriculumConfig
+from prime_rl.configs.orchestrator import AdmissionGateConfig, CurriculumConfig, TaskSamplerConfig
 from prime_rl.orchestrator.curriculum import (
     AdmissionGate,
     AdvantageRangeGate,
@@ -129,10 +129,10 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     config = SimpleNamespace(
         ratio=1.0,
         curriculum=CurriculumConfig(
-            sampler=CurriculumComponentConfig(import_path=f"{__name__}.CountingSampler"),
+            sampler=TaskSamplerConfig(import_path=f"{__name__}.CountingSampler"),
             gates={
-                "reject": CurriculumComponentConfig(import_path=f"{__name__}.CountingGate", kwargs={"decision": False}),
-                "observe": CurriculumComponentConfig(import_path=f"{__name__}.CountingGate", kwargs={"decision": True}),
+                "reject": AdmissionGateConfig(import_path=f"{__name__}.CountingGate", kwargs={"decision": False}),
+                "observe": AdmissionGateConfig(import_path=f"{__name__}.CountingGate", kwargs={"decision": True}),
             },
         ),
     )
