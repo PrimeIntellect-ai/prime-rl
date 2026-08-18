@@ -62,8 +62,11 @@ KAPPA_CEILING_RELIEF = 1.00002
 KV_USAGE_SOFT = 0.7
 """SOFT (growth veto) once any decode engine's KV usage crosses this."""
 
-KV_USAGE_TARGET = 0.85
-"""Above this usage, trim the cap and the in-flight pool to inflight * target / usage."""
+KV_USAGE_TRIGGER = 0.85
+"""Above this usage, trim the cap and the in-flight pool."""
+
+KV_USAGE_TARGET = 0.75
+"""A trim resizes to inflight * target / usage — below the trigger, so pool growth has headroom before the next trim."""
 
 KV_TRIM_COOLDOWN_POLLS = 6
 """Polls between kv-headroom trims, letting each trim propagate before the next is sized."""
@@ -333,7 +336,7 @@ class ConcurrencyController:
 
         max_usage = max((s.kv_usage for s in samples if s.role != "prefill"), default=0.0)
         self.trim_cooldown = max(0, self.trim_cooldown - 1)
-        if max_usage > KV_USAGE_TARGET and inflight > 0 and not self.draining and self.trim_cooldown == 0:
+        if max_usage > KV_USAGE_TRIGGER and inflight > 0 and not self.draining and self.trim_cooldown == 0:
             sustainable = self.clamp(inflight * KV_USAGE_TARGET / max_usage)
             if sustainable < self.max_inflight:
                 # Re-derive kappa like a cut does — otherwise the feedforward
