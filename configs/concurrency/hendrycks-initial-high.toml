@@ -1,5 +1,5 @@
 # Adaptive-concurrency e2e: hendrycks-math sanity, single node (4 train + 4 infer GPUs),
-# HIGH starting cap (700, well over the ~350-400 usage band; vLLM's API frontend dies under a full 1024-client storm). Expect: overload trips a cut (queue or
+# HIGH starting cap (1024, the ceiling; prime VM sandboxes — 1024 local subprocesses thrash the host). Expect: overload trips a cut (queue or
 # preemptions), the excess is cancelled, and the cap settles into the usage band.
 # gpu_memory_utilization is lowered artificially so the KV budget is small enough that the
 # controller operates well below max_inflight. No evals — the trace isolates the controller.
@@ -13,6 +13,7 @@ name = "hendrycks-initial-high"
 [slurm]
 job_name = "hendrycks-initial-high"
 partition = "all"
+pre_run_command = 'timeout 120 prime sandbox delete --label "hendrycks-initial-high" -y || true' 
 
 [deployment]
 num_train_gpus = 4
@@ -32,7 +33,7 @@ max_off_policy_steps = 16
 
 [orchestrator.concurrency]
 max_inflight = 1024
-initial_inflight = 700
+initial_inflight = 1024
 
 [[orchestrator.train.source]]
 name = "hendrycks-math"
@@ -46,7 +47,8 @@ dataset_subset = "default"
 id = "null"
 
 [orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+type = "prime"
+labels = ["hendrycks-initial-high"]
 
 [orchestrator.renderer]
 name = "default"
