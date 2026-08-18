@@ -42,8 +42,12 @@ ESTIMATE_ALPHA = 1 / 512
 # overload survives a full drain
 BACKOFF_FACTOR = 0.75
 ESCALATED_BACKOFF_FACTOR = 0.5
-# Per-step growth once the engines are clear and the cap binds
-GROWTH_FACTOR = 1.02
+# Per-poll growth while the engines are clear and the cap binds. Clocked on
+# polls, not steps: step duration varies from seconds to tens of minutes
+# across workloads, so step-clocked growth adapts at wildly different speeds
+# — and a binding check sampled only at the boundary instant misses caps
+# that bind all step long (episodes complete in bursts at boundaries).
+GROWTH_FACTOR = 1.003
 # Grow only when the cap actually constrains admission
 BINDING_FRACTION = 0.9
 KAPPA_MIN = 0.25
@@ -255,6 +259,15 @@ class ConcurrencyController:
         if self.draining and inflight <= self.max_inflight:
             self.draining = False
 
+        if (
+            worst == Signal.CLEAR
+            and not self.draining
+            and not self.frozen
+            and self.kappa is not None
+            and inflight >= BINDING_FRACTION * self.max_inflight
+        ):
+            self.kappa = min(KAPPA_MAX, self.kappa * GROWTH_FACTOR)
+
         if queue_overload and not self.draining:
             self.queue_overload_polls = 0
             self.cut(inflight, target=self.clamp(QUEUE_CUT_FRACTION * total_running), reason="queue overload")
@@ -283,9 +296,9 @@ class ConcurrencyController:
             self.apply_limit(derived, reason=None)
 
     def on_step(self, *, inflight: int, eval_in_flight: bool) -> None:
-        """Once per shipped train step: reweigh ``G``, grow ``kappa`` at most
-        once, recompute the cap. Inert while still inside the configured
-        freeze window (``frozen_steps``)."""
+        """Once per shipped train step: recompute the cap from the current
+        cost estimate (kappa grows per poll in ``observe``). Inert while
+        still inside the configured freeze window (``frozen_steps``)."""
         frozen = self.frozen
         self.completed_steps += 1
         # Safety net for eval episodes that never report a completion
@@ -305,8 +318,6 @@ class ConcurrencyController:
             self.kappa = max(1.0, self.max_inflight * cost / capacity)
         elif self.all_clear_since_step:
             self.backoff_factor = BACKOFF_FACTOR
-            if inflight >= BINDING_FRACTION * self.max_inflight:
-                self.kappa = min(KAPPA_MAX, self.kappa * GROWTH_FACTOR)
 
         target = min(self.kappa * capacity / cost, MAX_STEP_GROWTH * self.max_inflight)
         self.apply_limit(self.clamp(target), reason="re-evaluation")
@@ -403,16 +414,19 @@ class ConcurrencyController:
 
     def mix_cost(self, weights: dict[tuple[str, str], float]) -> float:
         """Duration-weighted mean episode cost over one ``(kind, env)`` weight
-        mix. Envs without completions fall back to the bootstrap cost."""
+        mix. Envs without completions fall back to the observed request cost
+        (the best available measurement), and to the pessimistic bootstrap
+        cost only before any traffic exists."""
+        fallback = self.observed_cost or float(self.bootstrap_cost)
         weighted_cost = 0.0
         total_weight = 0.0
         for key, weight in weights.items():
             estimate = self.estimates.get(key)
-            tokens = estimate.tokens if estimate is not None and estimate.tokens is not None else self.bootstrap_cost
+            tokens = estimate.tokens if estimate is not None and estimate.tokens is not None else fallback
             duration = estimate.duration if estimate is not None and estimate.duration is not None else 1.0
             weighted_cost += weight * duration * tokens
             total_weight += weight * duration
-        return weighted_cost / total_weight if total_weight > 0 else float(self.bootstrap_cost)
+        return weighted_cost / total_weight if total_weight > 0 else fallback
 
     # ── observability ────────────────────────────────────────────────────────
 
