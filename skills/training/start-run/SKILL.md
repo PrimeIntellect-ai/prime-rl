@@ -47,8 +47,10 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
   `uv run python -c "import importlib.util; print(importlib.util.find_spec('r2e_gym'))"`).
   If a local env exists under `deps/prime-envs/environments/` or
   `deps/verifiers/environments/` but does not import, install the env workspace
-  members with `uv sync --all-packages` (all) or `uv sync --package prime-rl
-  --package <env>` (one) — they're auto-discovered, no `pyproject.toml` edit needed.
+  members with `uv sync --all-extras --all-packages` (all) or `uv sync --all-extras
+  --package prime-rl --package <env>` (one) — they're auto-discovered, no
+  `pyproject.toml` edit needed. Keep `--all-extras` for training so a targeted
+  package sync does not prune accelerator dependencies from the environment.
 
 ## `sft` — SFT training
 
