@@ -59,4 +59,5 @@ attn = "flash_attention_2"
 [inference.vllm]
 max_model_len = 8192
 max_num_seqs = 1024
+api_server_count = 4
 gpu_memory_utilization = 0.2
