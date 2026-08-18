@@ -32,6 +32,8 @@ from prime_rl.orchestrator.types import Rollout, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
+MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS = 10
+
 
 def payload_tokens(rollout: Rollout) -> int:
     """Token cost of the rollout's trainer-bound payload — the samples built by
@@ -119,9 +121,10 @@ class TrainSink:
         # runs), kept in sync on append/pop so the readiness check never
         # re-sums per arrival.
         self.pending_tokens: int = 0
-        # Discarded work since the most recent admitted group, measured in
-        # the active batch unit.
-        self.no_progress: int = 0
+        # Finalized work since the most recent positive contribution, measured
+        # in the active batch unit.
+        self.zero_output_units: int = 0
+        self.reported_zero_output_windows: int = 0
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -173,9 +176,6 @@ class TrainSink:
         )
         if ready:
             return self.process_batch()
-        if self._no_progress_ready():
-            self.no_progress = 0
-            return TrainBatch(rollouts=self.pending_rollouts, samples=[])
         return None
 
     async def process_rollout(self, rollout: Rollout) -> None:
@@ -219,7 +219,7 @@ class TrainSink:
         survivors = [r for r in survivors if r.agent.trainable]
         if not survivors:
             self._admit(group)
-            self._record_no_progress(group)
+            self._record_zero_output(group)
             get_logger().debug(
                 f"Finished group | env={env_name} task_idx={task_idx} | "
                 f"rollouts={len(group)} (errored={num_errored}) | dropped: no trainable survivors"
@@ -239,7 +239,7 @@ class TrainSink:
                 sample.temperatures = [temperature] * len(sample.token_ids)
 
         if not self._admit(group):
-            self._record_no_progress(group)
+            self._record_zero_output(group)
             get_logger().debug(
                 f"Finished group | env={env_name} task_idx={task_idx} | "
                 f"rollouts={len(group)} (errored={num_errored}) | rejected by curriculum"
@@ -250,7 +250,8 @@ class TrainSink:
             self.pending_batch.append(r)
             if self.token_batch_size is not None:
                 self.pending_tokens += payload_tokens(r)
-        self.no_progress = 0
+        self.zero_output_units = 0
+        self.reported_zero_output_windows = 0
 
         rewards = [r.reward for r in survivors]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
@@ -265,17 +266,31 @@ class TrainSink:
             rollout.is_admitted = admitted
         return admitted
 
-    def _record_no_progress(self, group: list[Rollout]) -> None:
+    def _record_zero_output(self, group: list[Rollout]) -> None:
         if self.batch_size is not None:
-            self.no_progress += len(group)
-            return
-        payload = sum(payload_tokens(rollout) for rollout in group)
-        self.no_progress += payload or self.config.seq_len * len(group)
+            self.zero_output_units += len(group)
+        else:
+            payload = sum(payload_tokens(rollout) for rollout in group)
+            self.zero_output_units += payload or self.config.seq_len * len(group)
+        self._check_zero_output_budget()
 
-    def _no_progress_ready(self) -> bool:
+    def _check_zero_output_budget(self) -> None:
         target = self.batch_size if self.batch_size is not None else self.token_batch_size
         assert target is not None
-        return self.no_progress >= target
+        windows = self.zero_output_units // target
+        if windows <= self.reported_zero_output_windows:
+            return
+        self.reported_zero_output_windows = windows
+        get_logger().warning(
+            f"No admitted train payload after {self.zero_output_units} finalized units "
+            f"(consecutive zero-output batch equivalents: "
+            f"{windows}/{MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS})"
+        )
+        if windows >= MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS:
+            raise RuntimeError(
+                f"{windows} consecutive zero-output batch equivalents — "
+                "check the curriculum admission policy and task difficulty."
+            )
 
     def process_batch(self) -> TrainBatch:
         """Pop a cohort off ``pending_batch`` (by rollout count when
