@@ -211,7 +211,7 @@ class ConcurrencyController:
             self.cap = self.clamp(self.capacity / cost)
             get_logger().info(
                 f"Derived initial max inflight {int(self.cap)} - {format_num(self.capacity, precision=1)} "
-                f"KV cache tokens / {format_num(cost, precision=1)} tokens per unit"
+                f"KV cache tokens / {format_num(cost, precision=1)} tokens per episode"
             )
             self.apply_limit(int(self.cap), reason=None)
 

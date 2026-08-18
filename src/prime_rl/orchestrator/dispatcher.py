@@ -238,7 +238,7 @@ class Dispatcher:
                 break
             shed += await self.drop_group(group_id)
         if shed:
-            get_logger().warning(f"Cancelled {shed} youngest in-flight units after overload cut")
+            get_logger().warning(f"Cancelled {shed} youngest in-flight episodes after overload cut")
 
     def admission_budget(self) -> int:
         """Admissions still allowed in the current burst window."""
