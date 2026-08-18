@@ -27,7 +27,7 @@ class TrainSource:
             if env.tasks is None:
                 raise RuntimeError(f"env {env.name} not started")
             tasks = env.tasks if env.num_tasks is None else list(env.tasks)
-            self.curricula[env.name] = Curriculum.from_config(env.config.curriculum, tasks)
+            self.curricula[env.name] = Curriculum(env.config.curriculum, tasks)
 
         self.env_names = [env.name for env in self.envs]
         self.weights = [float(env.config.ratio) for env in self.envs]

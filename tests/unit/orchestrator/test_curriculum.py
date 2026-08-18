@@ -16,7 +16,6 @@ from prime_rl.orchestrator.curriculum import (
     AdmissionGate,
     AdvRangeGate,
     Curriculum,
-    DifficultyPoolSampler,
     StandardSampler,
 )
 from prime_rl.orchestrator.train_source import TrainSource
@@ -173,10 +172,11 @@ def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> Non
     }
     sampler_config = DifficultyPoolSamplerConfig(pools=pools, seed=7)
     gate_config = AdvRangeGateConfig()
-    curriculum = Curriculum(
-        DifficultyPoolSampler(sampler_config, tasks),
-        {"zero_advantage": AdvRangeGate(gate_config)},
+    config = CurriculumConfig(
+        sampler=sampler_config,
+        gates={"zero_advantage": gate_config},
     )
+    curriculum = Curriculum(config, tasks)
     rewards = {0: 0.1, 1: 0.5, 2: 0.9}
     decisions = []
     for index, task in enumerate(tasks):
@@ -192,10 +192,7 @@ def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> Non
     }
     state = curriculum.state_dict()
     expected = [next(curriculum.sampler).key for _ in range(10)]
-    restored = Curriculum(
-        DifficultyPoolSampler(sampler_config, tasks),
-        {"zero_advantage": AdvRangeGate(gate_config)},
-    )
+    restored = Curriculum(config, tasks)
     restored.load_state_dict(state)
     assert [next(restored.sampler).key for _ in range(10)] == expected
 

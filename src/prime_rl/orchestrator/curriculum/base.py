@@ -60,16 +60,11 @@ class AdmissionGate:
 class Curriculum:
     """One task sampler composed with zero or more admission gates."""
 
-    def __init__(self, sampler: TaskSampler, gates: dict[str, AdmissionGate] | None = None) -> None:
-        self.sampler = sampler
-        self.gates = {} if gates is None else dict(gates)
-
-    @classmethod
-    def from_config(
-        cls,
+    def __init__(
+        self,
         config: CurriculumConfig | None,
         tasks: Sequence[vf.Task] | Iterator[vf.Task],
-    ) -> Curriculum:
+    ) -> None:
         from prime_rl.configs.orchestrator import (
             AdvRangeGateConfig,
             CurriculumConfig,
@@ -84,18 +79,18 @@ class Curriculum:
 
         config = CurriculumConfig() if config is None else config
         if isinstance(config.sampler, StandardSamplerConfig):
-            sampler: TaskSampler = StandardSampler(tasks)
+            self.sampler: TaskSampler = StandardSampler(tasks)
         elif isinstance(config.sampler, DifficultyPoolSamplerConfig):
-            sampler = DifficultyPoolSampler(config.sampler, tasks)
+            self.sampler = DifficultyPoolSampler(config.sampler, tasks)
         elif isinstance(config.sampler, CustomTaskSamplerConfig):
             sampler_type = import_object(config.sampler.import_path)
-            sampler = sampler_type(tasks, **config.sampler.kwargs)
-            if not isinstance(sampler, TaskSampler):
+            self.sampler = sampler_type(tasks, **config.sampler.kwargs)
+            if not isinstance(self.sampler, TaskSampler):
                 raise TypeError(f"{config.sampler.import_path} must subclass TaskSampler")
         else:
             raise TypeError(f"Unsupported task sampler config: {type(config.sampler).__name__}")
 
-        gates: dict[str, AdmissionGate] = {}
+        self.gates: dict[str, AdmissionGate] = {}
         for name, gate_config in config.gates.items():
             if isinstance(gate_config, AdvRangeGateConfig):
                 gate: AdmissionGate = AdvRangeGate(gate_config)
@@ -106,8 +101,7 @@ class Curriculum:
                     raise TypeError(f"{gate_config.import_path} must subclass AdmissionGate")
             else:
                 raise TypeError(f"Unsupported admission gate config: {type(gate_config).__name__}")
-            gates[name] = gate
-        return cls(sampler, gates)
+            self.gates[name] = gate
 
     def on_result(self, group: list[Rollout]) -> bool:
         """Observe every result, evaluate every gate, and combine with AND."""
