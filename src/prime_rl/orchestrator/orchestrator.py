@@ -386,7 +386,6 @@ class Orchestrator:
             group_sizes += [source.group_size for source in config.eval.source]
         self.concurrency = ConcurrencyController(
             config.concurrency,
-            train_env_ratios={env.resolved_name: env.ratio for env in config.train.source},
             floor=max(group_sizes, default=config.group_size),
             fallback_cost=config.seq_len,
         )
@@ -406,7 +405,6 @@ class Orchestrator:
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.current_inflight,
-            get_inflight_mix=self.dispatcher.inflight_mix,
             on_overload=self.dispatcher.cancel_inflight,
         )
         # The collector always polls — it feeds the concurrency controller;
@@ -719,7 +717,6 @@ class Orchestrator:
 
         self.train_sink.reset_pre_filter_stats()
         self.maybe_trigger_eval(self.progress.step)
-        self.concurrency.on_step(inflight=self.dispatcher.current_inflight)
         trim_process_memory()
 
     def maybe_trigger_eval(self, step: int) -> None:

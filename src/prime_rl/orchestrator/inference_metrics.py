@@ -147,30 +147,6 @@ def build_metrics_endpoints(
     return endpoints
 
 
-def interval_size_biased_mean(hist: HistogramSnapshot, prev: HistogramSnapshot, tail_le: float) -> float | None:
-    """Size-biased mean (``E[X^2]/E[X]``) of one poll interval's samples,
-    from cumulative bucket deltas with midpoint approximation. Weighs each
-    sample by its own magnitude — the average token cost of a random *token*
-    in the interval, not of a random request. ``tail_le`` bounds the +Inf
-    bucket (engine max context); 1.5x the last finite edge if unknown."""
-    sum_x = 0.0
-    sum_xx = 0.0
-    prev_cum = 0.0
-    prev_le = 0.0
-    last_finite = max((le for le in hist.buckets if math.isfinite(le)), default=0.0)
-    for le in sorted(hist.buckets):
-        cum = hist.buckets[le] - prev.buckets.get(le, 0.0)
-        count = cum - prev_cum
-        if count > 0:
-            upper = le if math.isfinite(le) else (tail_le or last_finite * 1.5)
-            midpoint = (prev_le + max(upper, prev_le)) / 2
-            sum_x += count * midpoint
-            sum_xx += count * midpoint * midpoint
-        prev_cum = cum
-        prev_le = le if math.isfinite(le) else prev_le
-    return sum_xx / sum_x if sum_x > 0 else None
-
-
 def histogram_quantile(buckets: dict[float, float], quantile: float) -> float | None:
     """Estimate a quantile from cumulative bucket deltas, Prometheus-style."""
     total = max(buckets.values(), default=0.0)
@@ -400,29 +376,6 @@ class InferenceMetricsCollector:
                     delta = sample.snapshot.counters[name] - previous.snapshot.counters.get(name, 0.0)
                     preemptions_delta = max(preemptions_delta, int(delta))
 
-        # Interval KV cost per request (prompt + generation): each turn
-        # resends its episode's full context, so the request stream is a live
-        # census of in-flight episode sizes. The prompt term is size-biased
-        # (E[X^2]/E[X] from bucket deltas): a plain per-request mean
-        # under-prices the pool because small contexts take turns far more
-        # often than the large residents that actually fill the KV cache.
-        mean_request_cost: float | None = None
-        interval_requests = 0
-        if previous is not None:
-            prompt_hist = sample.snapshot.histograms.get("request_prompt_tokens")
-            gen_hist = sample.snapshot.histograms.get("request_generation_tokens")
-            if prompt_hist is not None and gen_hist is not None:
-                prev_prompt = previous.snapshot.histograms.get("request_prompt_tokens", HistogramSnapshot())
-                prev_gen = previous.snapshot.histograms.get("request_generation_tokens", HistogramSnapshot())
-                prompt_cost = interval_size_biased_mean(
-                    prompt_hist, prev_prompt, tail_le=float(self.max_model_len_by_endpoint.get(sample.endpoint.key) or 0)
-                )
-                gen_count = gen_hist.count - prev_gen.count
-                if prompt_cost is not None and gen_count > 0:
-                    mean_gen = (gen_hist.sum - prev_gen.sum) / gen_count
-                    mean_request_cost = prompt_cost + max(mean_gen, 0.0)
-                    interval_requests = int(prompt_hist.count - prev_prompt.count)
-
         return EngineLoadSample(
             engine_id=sample.engine_id,
             role=sample.endpoint.role,
@@ -435,8 +388,6 @@ class InferenceMetricsCollector:
                 int(capacity_waiting) if (capacity_waiting := sample.snapshot.gauges.get("num_requests_waiting_reason_capacity")) is not None else None
             ),
             preemptions_delta=preemptions_delta,
-            mean_request_cost=mean_request_cost,
-            interval_requests=interval_requests,
         )
 
     def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:

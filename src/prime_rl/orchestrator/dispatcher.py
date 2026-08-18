@@ -216,15 +216,6 @@ class Dispatcher:
         blocked until enough episodes finish."""
         self.max_inflight = max_inflight
 
-    def inflight_mix(self) -> dict[tuple[str, str], int]:
-        """Live in-flight counts per ``(kind, env)`` — the standing mix the
-        concurrency controller prices."""
-        counts: dict[tuple[str, str], int] = {}
-        for meta in self.inflight.values():
-            key = (meta.kind, meta.env_name)
-            counts[key] = counts.get(key, 0) + 1
-        return counts
-
     def cancel_inflight(self, n: int) -> None:
         """Cancel roughly ``n`` in-flight train episodes, youngest groups
         first (least inference spend so far). Called on an overload cut so
