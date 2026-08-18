@@ -385,7 +385,9 @@ class InferenceMetricsCollector:
             running=int(sample.snapshot.gauges.get("num_requests_running", 0.0)),
             waiting=int(sample.snapshot.gauges.get("num_requests_waiting", 0.0)),
             waiting_capacity=(
-                int(capacity_waiting) if (capacity_waiting := sample.snapshot.gauges.get("num_requests_waiting_reason_capacity")) is not None else None
+                int(capacity_waiting)
+                if (capacity_waiting := sample.snapshot.gauges.get("num_requests_waiting_reason_capacity")) is not None
+                else None
             ),
             preemptions_delta=preemptions_delta,
         )

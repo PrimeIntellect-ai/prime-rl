@@ -1,9 +1,8 @@
 # Adaptive-concurrency e2e: hendrycks-math sanity on 2 GPUs with a starting cap far past the
-# engine's KV capacity. Expect: the resulting preemptions trip a HARD cut during warmup (the
-# emergency brake is live even while the feedforward loop is frozen), the cap drops to
-# 0.75 x actual inflight, and after the drain the cap settles at the capacity budget — no
-# repeated cuts on the stale draining signal. AIME evals (avg@4) every 10 steps as in the
-# low-eval variant.
+# engine's KV capacity. Expect: the overload trips a cut during warmup (preemptions or the
+# capacity queue), the excess is cancelled, and after the drain the cap settles into the
+# usage band — no repeated cuts on the stale draining signal. AIME evals (avg@4) every
+# 10 steps as in the low-eval variant.
 # Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
 
 max_steps = 50
@@ -28,7 +27,7 @@ seq_len = 8192
 max_off_policy_steps = 16
 
 [orchestrator.concurrency]
-max_inflight = 1024
+max_inflight = 2048
 initial_inflight = 2048
 
 [[orchestrator.train.source]]

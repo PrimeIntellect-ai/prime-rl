@@ -1,7 +1,6 @@
-# Adaptive-concurrency e2e: like hendrycks-initial-low-eval but WITHOUT eval — the simplest case. The
-# cap holds at initial_inflight through step 1, jumps to the capacity budget at freeze exit,
-# then converges smoothly as the train cost estimate replaces the seq_len bootstrap, with no
-# eval-census repricing in the trace and no preemptions.
+# Adaptive-concurrency e2e: like hendrycks-initial-low-eval but WITHOUT eval — the simplest case.
+# The cap grows from the low start at the turnover pace while the engines stay clear, then
+# settles into the KV usage band, with no preemptions in the trace.
 # Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
 
 max_steps = 50

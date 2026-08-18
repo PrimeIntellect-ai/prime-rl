@@ -1,7 +1,7 @@
 # Adaptive-concurrency e2e: hendrycks-math sanity on 2 GPUs (1 trainer + 1 inference) with a
-# LOW starting cap and no ceiling. Expect: the cap holds at initial_inflight through step 1,
-# jumps to the capacity budget at freeze exit, then converges as per-env cost estimates replace
-# the seq_len bootstrap — with no preemptions (concurrency/signal stays clear of HARD). AIME
+# LOW starting cap. Expect: the cap grows from initial_inflight at the turnover pace while the
+# engines stay clear, then settles into the KV usage band — with no preemptions
+# (concurrency/signal stays clear of HARD). AIME
 # evals (avg@4, every 10 steps) have a different length profile than train, so the eval census
 # visibly reprices the cap at epoch boundaries.
 # Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
