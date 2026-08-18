@@ -59,13 +59,13 @@ KAPPA_CEILING_FRACTION = 0.9
 KAPPA_CEILING_RELIEF = 1.00002
 """Per-poll relief of the kappa ceiling (~+2% per 10 minutes), so a lightened workload can re-probe."""
 
-KV_USAGE_SOFT = 0.7
+KV_USAGE_SOFT = 0.6
 """SOFT (growth veto) once any decode engine's KV usage crosses this."""
 
-KV_USAGE_TRIGGER = 0.85
+KV_USAGE_TRIGGER = 0.8
 """Above this usage, trim the cap and the in-flight pool."""
 
-KV_USAGE_TARGET = 0.75
+KV_USAGE_TARGET = 0.7
 """A trim resizes to inflight * target / usage — below the trigger, so pool growth has headroom before the next trim."""
 
 KV_TRIM_COOLDOWN_POLLS = 6
