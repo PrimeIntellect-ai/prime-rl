@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.curriculum.base import TaskSampler
+from prime_rl.orchestrator.curriculum.samplers.base import TaskSampler
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import DifficultyPoolSamplerConfig

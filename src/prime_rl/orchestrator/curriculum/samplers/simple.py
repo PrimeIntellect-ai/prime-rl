@@ -9,7 +9,7 @@ from typing import Any
 
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.curriculum.base import TaskSampler
+from prime_rl.orchestrator.curriculum.samplers.base import TaskSampler
 
 
 class StandardSampler(TaskSampler):

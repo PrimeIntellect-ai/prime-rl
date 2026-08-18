@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from prime_rl.orchestrator.curriculum.base import AdmissionGate
+from prime_rl.orchestrator.curriculum.gates.base import AdmissionGate
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import AdvRangeGateConfig

@@ -1,58 +1,18 @@
-"""Task sampling and admission interfaces."""
+"""Curriculum composition and lifecycle."""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 import verifiers.v1 as vf
 
+from prime_rl.orchestrator.curriculum.gates import AdmissionGate
+from prime_rl.orchestrator.curriculum.samplers import TaskSampler
+
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import CurriculumConfig
     from prime_rl.orchestrator.types import Rollout
-
-
-class TaskSampler(Iterator[vf.Task], ABC):
-    """Base class for user-authored task selection policies."""
-
-    @abstractmethod
-    def __next__(self) -> vf.Task:
-        """Choose the next task."""
-        raise NotImplementedError
-
-    def observe(self, group: list[Rollout]) -> None:
-        """Update sampling state from a finalized group."""
-
-    def state_dict(self) -> dict[str, Any]:
-        """Return checkpoint state owned by this sampler."""
-        return {}
-
-    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        """Restore checkpoint state before sampling resumes."""
-
-    def metrics(self) -> dict[str, float]:
-        """Return metrics relative to this sampler's namespace."""
-        return {}
-
-
-class AdmissionGate:
-    """Base class for user-authored training-sample admission policies."""
-
-    def admit(self, group: list[Rollout]) -> bool:
-        """Return whether a finalized group should enter the training batch."""
-        return True
-
-    def state_dict(self) -> dict[str, Any]:
-        """Return checkpoint state owned by this gate."""
-        return {}
-
-    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        """Restore checkpoint state before results resume."""
-
-    def metrics(self) -> dict[str, float]:
-        """Return metrics relative to this gate's namespace."""
-        return {}
 
 
 class Curriculum:
@@ -69,9 +29,8 @@ class Curriculum:
             DifficultyPoolSamplerConfig,
             StandardSamplerConfig,
         )
-        from prime_rl.orchestrator.curriculum.adv_range_gate import AdvRangeGate
-        from prime_rl.orchestrator.curriculum.difficulty_pool_sampler import DifficultyPoolSampler
-        from prime_rl.orchestrator.curriculum.standard_sampler import StandardSampler
+        from prime_rl.orchestrator.curriculum.gates import AdvRangeGate
+        from prime_rl.orchestrator.curriculum.samplers import DifficultyPoolSampler, StandardSampler
 
         config = CurriculumConfig() if config is None else config
         if isinstance(config.sampler, StandardSamplerConfig):
