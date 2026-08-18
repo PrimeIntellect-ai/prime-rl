@@ -132,10 +132,10 @@ class ConcurrencyController:
         self.estimates: dict[tuple[str, str], EnvEstimate] = {}
         self.capacity_by_engine: dict[str, int] = {}
         self.capacity_reported = False
-        # Eval episodes still owed per env; set on trigger, cleared once the
-        # dispatcher reports no eval work at a step boundary
-        self.eval_census: dict[str, int] | None = None
-        self.eval_active = False
+        # Eval episodes still in flight or owed, per env; set on trigger,
+        # decremented per completion, force-cleared once the dispatcher
+        # reports no eval work at a step boundary
+        self.eval_remaining: dict[str, int] = {}
 
         self.signal = Signal.CLEAR
         self.all_clear_since_step = True
@@ -160,18 +160,18 @@ class ConcurrencyController:
         """One completed episode (from the dispatcher). Errored episodes with
         no tokens carry no cost information and are skipped. Accumulates only —
         the estimates move at step boundaries."""
+        if kind == "eval" and env_name in self.eval_remaining:
+            self.eval_remaining[env_name] = max(0, self.eval_remaining[env_name] - 1)
         if tokens <= 0 or duration <= 0:
             return
         self.estimates.setdefault((kind, env_name), EnvEstimate()).accumulate(tokens, duration)
 
     def on_eval_epoch(self, census: dict[str, int]) -> None:
-        """Eval fired: ``census`` maps env name to total scheduled episodes."""
-        if self.eval_census is None:
-            self.eval_census = dict(census)
-        else:
-            for env_name, count in census.items():
-                self.eval_census[env_name] = self.eval_census.get(env_name, 0) + count
-        self.eval_active = True
+        """Eval fired: ``census`` maps env name to total scheduled episodes.
+        Decremented per completion, so the eval share of the cost mix decays
+        continuously as the epoch drains."""
+        for env_name, count in census.items():
+            self.eval_remaining[env_name] = self.eval_remaining.get(env_name, 0) + count
 
     def observe(self, samples: list[EngineLoadSample]) -> None:
         """Per-poll engine load push from the metrics collector. Classifies
@@ -237,9 +237,10 @@ class ConcurrencyController:
         self.completed_steps += 1
         for estimate in self.estimates.values():
             estimate.fold()
-        if not eval_in_flight and self.eval_census is not None:
-            self.eval_census = None
-        self.eval_active = eval_in_flight and self.eval_census is not None
+        # Safety net for eval episodes that never report a completion
+        # (task exceptions surface as synthetic markers)
+        if not eval_in_flight and self.eval_remaining:
+            self.eval_remaining.clear()
 
         capacity = self.capacity
         if self.frozen or capacity is None:
@@ -319,14 +320,23 @@ class ConcurrencyController:
         return self.engine_max_len or self.fallback_cost
 
     def cost_estimate(self) -> float:
-        """``G``: duration-weighted per-env cost mix over the work being
-        admitted — eval census while an eval epoch is in flight, train ratios
-        otherwise. Envs without completions fall back to the bootstrap cost."""
-        if self.eval_active and self.eval_census:
-            weights = {("eval", env): float(count) for env, count in self.eval_census.items()}
-        else:
-            weights = {("train", env): ratio for env, ratio in self.train_env_ratios.items()}
+        """``G``: duration-weighted per-env cost mix of the in-flight pool.
+        The train mix (by sampling ratio) and the eval mix (by remaining
+        census episodes) interpolate on the eval share of the cap — the share
+        starts at ``min(1, census / n_max)`` when an epoch fires and decays
+        continuously to zero as it drains, so the cap glides back to the
+        train price instead of snapping."""
+        train_cost = self.mix_cost({("train", env): ratio for env, ratio in self.train_env_ratios.items()})
+        remaining = sum(self.eval_remaining.values())
+        if remaining <= 0:
+            return train_cost
+        eval_cost = self.mix_cost({("eval", env): float(n) for env, n in self.eval_remaining.items() if n > 0})
+        eval_share = min(1.0, remaining / max(self.max_inflight, 1))
+        return eval_share * eval_cost + (1 - eval_share) * train_cost
 
+    def mix_cost(self, weights: dict[tuple[str, str], float]) -> float:
+        """Duration-weighted mean episode cost over one ``(kind, env)`` weight
+        mix. Envs without completions fall back to the bootstrap cost."""
         weighted_cost = 0.0
         total_weight = 0.0
         for key, weight in weights.items():
