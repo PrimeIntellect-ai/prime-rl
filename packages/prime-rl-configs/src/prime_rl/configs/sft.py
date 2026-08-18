@@ -284,16 +284,9 @@ class SFTConfig(BaseConfig):
         if not isinstance(data, dict):
             return data
         deployment = data.get("deployment")
-        if isinstance(deployment, dict):
-            # Collapse the num_eval_* aliases onto the canonical keys: pydantic rejects a
-            # dict carrying both spellings (e.g. canonical in the TOML, alias on the CLI),
-            # and the alias is the more recent write in that layering, so it wins.
-            for alias, canonical in (("num_eval_gpus", "num_infer_gpus"), ("num_eval_nodes", "num_infer_nodes")):
-                if alias in deployment:
-                    deployment[canonical] = deployment.pop(alias)
-            if deployment.get("type") == "multi_node":
-                for key in ("num_train_gpus", "num_infer_gpus"):
-                    deployment.pop(key, None)
+        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
+            for key in ("num_train_gpus", "num_infer_gpus"):
+                deployment.pop(key, None)
         return data
 
     @model_validator(mode="before")
