@@ -9,7 +9,7 @@ from prime_rl.orchestrator.algo.base import Algorithm
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import TrainingTrace
     from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
 
@@ -50,18 +50,18 @@ class OPSDAlgorithm(Algorithm):
 
         self.renderer = create_renderer(load_tokenizer(self.policy_pool.model_name), self.renderer_config)
 
-    def _demonstration(self, rollout: Rollout) -> str:
-        demonstration = rollout.info.get(self.demo_key)
+    def _demonstration(self, rollout: TrainingTrace) -> str:
+        demonstration = rollout.trace.info.get(self.demo_key)
         if demonstration is None:
-            demonstration = getattr(rollout.task.data, self.demo_key, None)
+            demonstration = getattr(rollout.context.task.data, self.demo_key, None)
         if demonstration is None:
             raise ValueError(
                 f"opsd requires '{self.demo_key}' in the trace info dict or on the task "
-                f"(env '{rollout.env_name}', task {rollout.task.data.idx})."
+                f"(env '{rollout.context.env_name}', task {rollout.context.task.data.idx})."
             )
         return demonstration
 
-    async def score_rollout(self, rollout: Rollout) -> None:
+    async def score_trace(self, rollout: TrainingTrace) -> None:
         pool = self.teacher_pool
         renderer = self.renderer
         assert renderer is not None, "renderer not built — Algorithm.setup() must run first"

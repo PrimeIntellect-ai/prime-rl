@@ -11,7 +11,7 @@ from prime_rl.utils.utils import import_object
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import TrainingTrace
     from prime_rl.utils.client import InferencePool
 
 
@@ -34,12 +34,12 @@ class EchoAlgorithm(GRPOAlgorithm):
         if config.filter is not None:
             self.filter_fn = partial(import_object(config.filter.import_path), **config.filter.kwargs)
 
-    async def score_rollout(self, rollout: Rollout) -> None:
+    async def score_trace(self, rollout: TrainingTrace) -> None:
         # Observation weighting is rollout-local; the group-relative GRPO
         # baseline is inherited unchanged as ``score_group``.
         self._weight_observations(rollout)
 
-    def _weight_observations(self, rollout: Rollout) -> None:
+    def _weight_observations(self, rollout: TrainingTrace) -> None:
         """Write each sample's ``ce_weights`` stream over the env-provided
         observation tokens of later turns. Provenance is structural under v1:
         within a branch, the non-sampled nodes that follow the first model
@@ -58,8 +58,8 @@ class EchoAlgorithm(GRPOAlgorithm):
         fall back to weighting the whole non-sampled span."""
         # Same branch selection as ``trace_to_samples``, so the zip with ``rollout.samples``
         # stays aligned when fork dedup drops a branch.
-        trainable_branches = [branch for branch, _ in iter_trainable_branches(rollout)]
-        filter_masks = self._filter_masks(rollout, trainable_branches) if self.filter_fn is not None else None
+        trainable_branches = [branch for branch, _ in iter_trainable_branches(rollout.trace)]
+        filter_masks = self._filter_masks(rollout.trace, trainable_branches) if self.filter_fn is not None else None
         for sample_idx, (sample, branch) in enumerate(zip(rollout.samples, trainable_branches)):
             weights = [0.0] * len(sample.token_ids)
             offset = 0

@@ -2,7 +2,7 @@
 
 Each named class in this package *is* one training algorithm, one module per
 algorithm: it owns the algorithm's two scoring hooks directly —
-``score_rollout`` (per arrival) and ``score_group`` (per group) — and declares
+``score_trace`` (per arrival) and ``score_group`` (per group) — and declares
 which loss component its action tokens feed (``action_loss_type``). Reading a
 module top to bottom reads the algorithm; writing your own is subclassing
 :class:`Algorithm` and overriding the hooks its signal needs. Shared math (group
@@ -14,8 +14,8 @@ The two hooks are one scope-and-timing ladder — the wider scope is unlocked by
 a later barrier, so the two axes coincide. Both are ``async`` (either may do
 I/O); a hook that only does advantage math never awaits:
 
-- ``score_rollout(rollout)`` — one rollout, on arrival: rollout-local signals
-  (raw reward, process rewards, echo's observation weighting) *and* per-rollout
+- ``score_trace(item)`` — one training trace on arrival: trace-local signals
+  (raw reward, process rewards, echo's observation weighting) *and* per-trace
   I/O against another model — an inference pool the algorithm connected in
   ``setup()`` (a frozen teacher) or the live policy (opsd's self-distillation),
   queried with bounded concurrency. No siblings.
@@ -28,7 +28,7 @@ How rollouts are *produced* is not the algorithm's concern: that is the env's
 attribution) is pure pipeline.
 
 The pipeline (train sink) drives each algorithm through its non-virtual
-:meth:`Algorithm.finalize_rollout` / :meth:`Algorithm.finalize_group` methods
+:meth:`Algorithm.finalize_trace` / :meth:`Algorithm.finalize_group` methods
 and reads the class declarations; it never branches on algorithm config fields
 or model roles — liveness of a reference is the only runtime distinction.
 prime-rl hosts exactly one model — the trainable policy, whose pool every
@@ -49,7 +49,7 @@ from prime_rl.utils.logger import get_logger
 if TYPE_CHECKING:
     from renderers import RendererConfig
 
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import TrainingTrace
     from prime_rl.utils.client import InferencePool
 
 
@@ -84,29 +84,29 @@ class Algorithm:
     interprets the ``sampling`` half).
 
     Everything on this class is yours to override; the pipeline drives the
-    compilation through the non-virtual :meth:`finalize_rollout` /
+    compilation through the non-virtual :meth:`finalize_trace` /
     :meth:`finalize_group` methods and never calls anything else. The surface is:
 
     - declarations — which loss component the action tokens feed
       (``action_loss_type``);
     - lifecycle — :meth:`setup` connects client pools to the frozen models
       the algorithm declares, resolving each reference via :meth:`connect`;
-    - the two scoring hooks, each ``async`` and given the :class:`Rollout`
-      directly — read the trace, write credit via
-      :meth:`Rollout.assign_advantages`. They are
+    - the two scoring hooks, each ``async`` and given a ``TrainingTrace``
+      directly — read its plain verifiers trace and write credit via
+      ``TrainingTrace.assign_advantages``. They are
       async so either stage may do I/O — e.g. a process-reward model or a
       teacher at arrival, or a judge at group time; a hook that only does
       advantage math simply never awaits.
 
-      - :meth:`score_rollout` — one rollout, on arrival: rollout-local credit,
+      - :meth:`score_trace` — one training trace on arrival: trace-local credit,
         observation ce weights, or per-token results from a model the algorithm
         connected in :meth:`setup` (e.g. teacher reference logprobs). Default:
         nothing.
       - :meth:`score_group` — the cohort: group-relative credit. Default:
-        nothing — rollouts keep ``advantages=None``.
+        nothing — training traces keep ``advantages=None``.
 
-    Model I/O lives in :meth:`score_rollout`: it runs at arrival, so it pays
-    compute on rollouts that the curriculum may later reject.
+    Model I/O lives in :meth:`score_trace`: it runs at arrival, so it pays
+    compute on traces that the curriculum may later reject.
 
     Constructed with the algorithm config it interprets plus the live policy
     pool (``self.policy_pool`` — always available, never closed by the
@@ -134,23 +134,23 @@ class Algorithm:
         self.connected_pools.append(pool)
         return pool
 
-    async def score_rollout(self, rollout: Rollout) -> None:
-        """Arrival phase, one rollout, before its group is complete: write
-        rollout-local credit (``rollout.assign_advantages``), observation ce
+    async def score_trace(self, rollout: TrainingTrace) -> None:
+        """Arrival phase, one training trace before its group is complete: write
+        trace-local credit (``rollout.assign_advantages``), observation ce
         weights (echo), or per-token results from a model — an inference pool
         connected in :meth:`setup`, or the live policy (opsd). No siblings, no
         group stats."""
 
-    async def score_group(self, group: list[Rollout]) -> None:
+    async def score_group(self, group: list[TrainingTrace]) -> None:
         """Group phase over the finalized cohort: write group-relative credit."""
 
-    async def finalize_rollout(self, rollout: Rollout) -> None:
-        """Arrival phase (non-virtual): rollout-local scoring as each rollout is
+    async def finalize_trace(self, rollout: TrainingTrace) -> None:
+        """Arrival phase (non-virtual): trace-local scoring as each trace is
         tokenized."""
         if rollout.samples:
-            await self.score_rollout(rollout)
+            await self.score_trace(rollout)
 
-    async def finalize_group(self, rollouts: list[Rollout]) -> None:
+    async def finalize_group(self, rollouts: list[TrainingTrace]) -> None:
         """Group phase (non-virtual): group-relative scoring, then stamp each
         sample's wire fields (the advantage stream + loss routing). After this
         the records are frozen — groups die at stamping."""

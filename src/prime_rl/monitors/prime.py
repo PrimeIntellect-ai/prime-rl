@@ -275,7 +275,7 @@ def episodes_to_parquet_bytes(episodes: list[vf.Episode], run_id: str | None, st
     env_names: dict[str, str] = {}
     for episode in episodes:
         summary_trace = next((trace for trace in episode.traces if trace.agent.trainable), episode.traces[0])
-        advantages[episode.id] = summary_trace.scalar_advantage()
+        advantages[episode.id] = summary_trace.info.get("advantage")
         env_names[episode.id] = episode.env.id
 
     now = datetime.now(timezone.utc)

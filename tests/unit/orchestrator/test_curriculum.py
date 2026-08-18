@@ -1,8 +1,10 @@
+import uuid
 from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
 import verifiers.v1 as vf
+from verifiers.v1.episode import EnvInfo
 
 from prime_rl.configs.orchestrator import (
     AdvRangeGateConfig,
@@ -16,7 +18,7 @@ from prime_rl.orchestrator.curriculum import (
     StandardSampler,
 )
 from prime_rl.orchestrator.train_source import TrainSource
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import EpisodeRun, RunContext, TrainingTrace
 from prime_rl.transport import TrainingSample
 
 
@@ -30,7 +32,7 @@ def make_rollout(
     env_name: str = "test",
     reward: float = 0.0,
     advantages: list[float] | None = None,
-) -> Rollout:
+) -> EpisodeRun:
     samples = []
     if advantages is not None:
         samples = [
@@ -43,7 +45,7 @@ def make_rollout(
                 env_name=env_name,
             )
         ]
-    return Rollout(
+    trace = vf.Trace(
         task=vf.TraceTask(
             type=type(task).__name__,
             data=task.data,
@@ -51,12 +53,29 @@ def make_rollout(
             hash=task.hash,
         ),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
-        env_name=env_name,
         rewards={"reward": vf.Reward(score=reward)},
-        advantages=advantages,
-        samples=samples,
         ok=True,
     )
+    episode = vf.Episode(env=EnvInfo(id=env_name), traces=[trace])
+    context = RunContext(
+        kind="train",
+        env_name=env_name,
+        group_id=uuid.uuid4(),
+        task=task,
+        policy_version=0,
+    )
+    training = []
+    if advantages is not None:
+        training.append(
+            TrainingTrace(
+                context=context,
+                episode=episode,
+                trace=trace,
+                samples=samples,
+                advantages=advantages,
+            )
+        )
+    return EpisodeRun(context=context, episode=episode, training=training)
 
 
 def test_default_curriculum_resumes_finite_and_infinite_tasksets() -> None:
@@ -168,6 +187,6 @@ def test_advantage_range_gate_generalizes_zero_advantage_rejection() -> None:
     assert tolerance_gate.admit([make_rollout(task, advantages=[-0.05, 0.0, 0.05])]) is False
 
     masked = make_rollout(task, advantages=[0.0, 0.5])
-    masked.samples[0].mask = [False, True]
+    masked.training[0].samples[0].mask = [False, True]
     positive_gate = AdvRangeGate(AdvRangeGateConfig(reject_min=0.5, reject_max=0.5))
     assert positive_gate.admit([masked]) is False

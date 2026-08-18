@@ -7,7 +7,7 @@ from prime_rl.configs.algorithm import OPDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import TrainingTrace
     from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
 
@@ -32,7 +32,7 @@ class OPDAlgorithm(Algorithm):
     async def setup(self) -> None:
         self.teacher_pool = await self.connect(self.teacher)
 
-    async def score_rollout(self, rollout: Rollout) -> None:
+    async def score_trace(self, rollout: TrainingTrace) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
 

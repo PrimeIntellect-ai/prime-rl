@@ -7,7 +7,7 @@ from prime_rl.configs.algorithm import HierarchicalGRPOAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import TrainingTrace
     from prime_rl.utils.client import InferencePool
 
 
@@ -28,13 +28,13 @@ class HierarchicalGRPOAlgorithm(Algorithm):
         super().__init__(config, policy_pool)
         self.episode_agents = set(config.episode_agents)
 
-    async def score_group(self, group: list[Rollout]) -> None:
-        peers: dict[tuple[str, str | None], list[Rollout]] = defaultdict(list)
+    async def score_group(self, group: list[TrainingTrace]) -> None:
+        peers: dict[tuple[str, str | None], list[TrainingTrace]] = defaultdict(list)
         for rollout in group:
-            episode_scoped = rollout.agent.name in self.episode_agents
-            key = (rollout.agent.name, rollout.episode_id if episode_scoped else None)
+            episode_scoped = rollout.trace.agent.name in self.episode_agents
+            key = (rollout.trace.agent.name, str(rollout.episode.id) if episode_scoped else None)
             peers[key].append(rollout)
         for members in peers.values():
-            baseline = sum(rollout.reward for rollout in members) / len(members)
+            baseline = sum(rollout.trace.reward for rollout in members) / len(members)
             for rollout in members:
-                rollout.assign_advantages(rollout.reward - baseline)
+                rollout.assign_advantages(rollout.trace.reward - baseline)

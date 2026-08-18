@@ -1,7 +1,9 @@
 import asyncio
+import uuid
 
 import pytest
 import verifiers.v1 as vf
+from verifiers.v1.episode import EnvInfo
 
 from prime_rl.configs.algorithm import (
     GRPOAlgoConfig,
@@ -11,7 +13,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import RunContext, TrainingTrace
 
 
 def _build_rollout(
@@ -21,8 +23,8 @@ def _build_rollout(
     obs_lengths: list[int] | None = None,
     env_name: str = "test",
     metrics: dict | None = None,
-) -> Rollout:
-    """Build a ``Rollout`` (a ``vf.Trace``) as an alternating message graph.
+) -> TrainingTrace:
+    """Build a training trace as an alternating message graph.
 
     ``sampled_lengths`` gives the token count of each model turn (a sampled
     ``AssistantMessage`` node); ``obs_lengths`` (one shorter, if given) gives the
@@ -97,7 +99,8 @@ def _build_rollout(
             )
             parent = len(nodes) - 1
 
-    rollout = Rollout[vf.TaskData](
+    task = vf.Task(vf.TaskData(idx=0, prompt=None))
+    trace = vf.Trace[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=nodes,
@@ -105,9 +108,20 @@ def _build_rollout(
         rewards={"reward": vf.Reward(score=reward)},
         metrics=metrics or {},
     )
-    rollout.env_name = env_name
-    rollout.samples = trace_to_samples(rollout, env_name=env_name)
-    return rollout
+    episode = vf.Episode(env=EnvInfo(id=env_name), traces=[trace])
+    context = RunContext(
+        kind="train",
+        env_name=env_name,
+        group_id=uuid.uuid4(),
+        task=task,
+        policy_version=0,
+    )
+    return TrainingTrace(
+        context=context,
+        episode=episode,
+        trace=trace,
+        samples=trace_to_samples(trace, env_name=env_name),
+    )
 
 
 def _make_rollout(
@@ -116,8 +130,8 @@ def _make_rollout(
     num_turns: int = 1,
     env_name: str = "test",
     metrics: dict | None = None,
-) -> Rollout:
-    """Build a ``Rollout`` carrying ``completion_len`` model-sampled tokens split
+) -> TrainingTrace:
+    """Build a training trace carrying ``completion_len`` model-sampled tokens split
     across ``num_turns`` sampled turns. Always carries at least one trainable
     token so credit broadcasts somewhere."""
     num_turns = max(num_turns, 1)
@@ -127,8 +141,8 @@ def _make_rollout(
     return _build_rollout(reward, sampled_lengths=sampled_lengths, env_name=env_name, metrics=metrics)
 
 
-def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[Rollout]:
-    """Build one group of ``Rollout``\\ s from 1D arrays of rewards/lengths/turns —
+def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[TrainingTrace]:
+    """Build one group of training traces from 1D arrays of rewards/lengths/turns —
     exactly what ``score_group`` sees."""
     rollouts = []
     for i, reward in enumerate(rewards):
@@ -138,21 +152,21 @@ def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[Rollou
     return rollouts
 
 
-def _scalar(rollout: Rollout) -> float:
+def _scalar(rollout: TrainingTrace) -> float:
     """The per-rollout advantage scalar an algorithm assigned — broadcast over
     the rollout's trainable (mask-True) tokens, so any trainable position holds it."""
     mask = [m for sample in rollout.samples for m in sample.mask]
     return rollout.advantages[mask.index(True)]
 
 
-def _grpo(group: list[Rollout], length_penalty=None) -> list[float]:
+def _grpo(group: list[TrainingTrace], length_penalty=None) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
     algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), policy_pool=None)
     asyncio.run(algo.score_group(group))
     return [_scalar(rollout) for rollout in group]
 
 
-def _max_rl(group: list[Rollout]) -> list[float]:
+def _max_rl(group: list[TrainingTrace]) -> list[float]:
     """Drive ``MaxRLAlgorithm.score_group`` and read back each per-rollout scalar."""
     algo = MaxRLAlgorithm(MaxRLAlgoConfig(), policy_pool=None)
     asyncio.run(algo.score_group(group))

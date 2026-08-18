@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import pytest
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.metrics import EvalRollouts, Stat, TrainRollouts
+from prime_rl.orchestrator.metrics import EvalEpisodes, Stat, TrainEpisodes
+from prime_rl.orchestrator.types import EpisodeRun, RunContext, TrainingTrace
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 _ids = count()
@@ -40,12 +41,9 @@ def mk(
     finalize: float = 0.0,
     scoring: float = 0.0,
 ):
-    """Duck-typed stand-in for ``Rollout``, exposing only the Trace properties the metrics read.
-    Without an ``episode_id`` each rollout is its own single-trace episode (the unique ``id``
-    is the grouping fallback)."""
-    return SimpleNamespace(
+    """Build one episode run around a trace-shaped metrics fixture."""
+    trace = SimpleNamespace(
         id=f"t{next(_ids)}",
-        episode_id=episode_id,
         reward=reward,
         rewards=rewards or {},
         num_total_tokens=num_total_tokens,
@@ -59,11 +57,7 @@ def mk(
         last_error=SimpleNamespace(type=error_type) if has_error else None,
         stop_condition=stop_condition,
         metrics=metrics or {},
-        env_name=env_name,
-        group_id=group_id,
         agent=SimpleNamespace(trainable=trainable, name=agent_name),
-        is_trainable=is_trainable,
-        is_admitted=is_admitted,
         timing=SimpleNamespace(
             setup=SimpleNamespace(duration=setup),
             agent=SimpleNamespace(
@@ -75,10 +69,38 @@ def mk(
             scoring=SimpleNamespace(duration=scoring),
         ),
     )
+    episode = SimpleNamespace(
+        id=episode_id or f"e{next(_ids)}",
+        traces=[trace],
+        ok=not has_error,
+    )
+    context = RunContext(
+        kind="train",
+        env_name=env_name,
+        group_id=group_id,
+        task=SimpleNamespace(),
+        policy_version=0,
+    )
+    training = TrainingTrace(
+        context=context,
+        episode=episode,
+        trace=trace,
+        samples=[],
+        advantages=[1.0] if is_trainable else [0.0],
+    )
+    return EpisodeRun(context=context, episode=episode, training=[training], is_admitted=is_admitted)
+
+
+def combine(*runs: EpisodeRun) -> EpisodeRun:
+    """Combine trace fixtures into one multi-trace episode."""
+    first = runs[0]
+    first.episode.traces = [trace for run in runs for trace in run.traces]
+    first.training = [training for run in runs for training in run.training]
+    return first
 
 
 def train_wandb(rollouts, subset: str = "all") -> dict:
-    return TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset=subset)
+    return TrainEpisodes(rollouts).metrics.to_wandb(prefix="train/agg", subset=subset)
 
 
 def test_stat():
@@ -90,7 +112,7 @@ def test_stat():
 
 
 def test_container_effective_by_env_and_listlike():
-    rc = TrainRollouts(
+    rc = TrainEpisodes(
         [
             mk(env_name="a"),
             mk(env_name="a", has_error=True),
@@ -98,18 +120,18 @@ def test_container_effective_by_env_and_listlike():
             mk(env_name="b"),
         ]
     )
-    assert len(rc) == 4 and [r.env_name for r in rc] == ["a", "a", "b", "b"]  # sized + iterable
+    assert len(rc) == 4 and [r.context.env_name for r in rc] == ["a", "a", "b", "b"]
     eff = rc.effective
-    assert isinstance(eff, TrainRollouts) and len(eff) == 2
-    assert all(r.is_admitted and not r.has_error and r in rc.rollouts for r in eff)
+    assert isinstance(eff, TrainEpisodes) and len(eff) == 2
+    assert all(r.is_admitted and not r.traces[0].has_error and r in rc.episodes for r in eff)
     by_env = rc.by_env()
-    assert set(by_env) == {"a", "b"} and len(by_env["a"]) == 2 and isinstance(by_env["a"], TrainRollouts)
+    assert set(by_env) == {"a", "b"} and len(by_env["a"]) == 2 and isinstance(by_env["a"], TrainEpisodes)
     rc.append(mk())
     assert len(rc) == 5
 
 
 def test_to_wandb_distributions():
-    m = TrainRollouts(
+    m = TrainEpisodes(
         [
             mk(reward=1.0, num_total_tokens=10, num_input_tokens=4),
             mk(reward=0.0, num_total_tokens=20, num_input_tokens=6),
@@ -127,15 +149,19 @@ def test_to_wandb_distributions():
 
 def test_episode_and_agent_levels():
     # Two proposer-solver episodes: one proposer + two solvers each (the solver fan-out).
-    rollouts = [
-        mk(reward=1.0, num_turns=1, agent_name="proposer", episode_id="e1"),
-        mk(reward=0.0, num_turns=2, agent_name="solver", episode_id="e1"),
-        mk(reward=1.0, num_turns=4, agent_name="solver", episode_id="e1"),
-        mk(reward=0.0, num_turns=3, agent_name="proposer", episode_id="e2"),
-        mk(reward=1.0, num_turns=6, agent_name="solver", episode_id="e2"),
-        mk(reward=0.0, num_turns=8, agent_name="solver", episode_id="e2"),
+    episodes = [
+        combine(
+            mk(reward=1.0, num_turns=1, agent_name="proposer", episode_id="e1"),
+            mk(reward=0.0, num_turns=2, agent_name="solver", episode_id="e1"),
+            mk(reward=1.0, num_turns=4, agent_name="solver", episode_id="e1"),
+        ),
+        combine(
+            mk(reward=0.0, num_turns=3, agent_name="proposer", episode_id="e2"),
+            mk(reward=1.0, num_turns=6, agent_name="solver", episode_id="e2"),
+            mk(reward=0.0, num_turns=8, agent_name="solver", episode_id="e2"),
+        ),
     ]
-    m = TrainRollouts(rollouts).metrics
+    m = TrainEpisodes(episodes).metrics
     assert m.num_turns.mean() == 12.0  # episode-level sums: 1+2+4 and 3+6+8
     assert m.num_total_tokens.values == [30.0, 30.0]  # summed across the episode's traces
     out = m.to_wandb(prefix="train/agg", subset="all")
@@ -157,7 +183,7 @@ def test_agent_metrics_are_flat_over_traces():
         mk(agent_name="solver", episode_id="e1", is_truncated=True, reward=1.0),
         *[mk(agent_name="solver", episode_id="e2", is_truncated=False, reward=0.0) for _ in range(3)],
     ]
-    out = TrainRollouts(rollouts).metrics.to_wandb(prefix="train/agg", subset="all")
+    out = TrainEpisodes(rollouts).metrics.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/solver/is_truncated/mean"] == 0.25  # 1 of 4 traces, not (1.0 + 0.0) / 2
     assert out["train/agg/all/solver/is_completed/mean"] == 1.0
     assert out["train/agg/all/solver/is_trainable/mean"] == 1.0  # sibling rates agree
@@ -165,7 +191,7 @@ def test_agent_metrics_are_flat_over_traces():
 
 
 def test_boolean_rates_and_error_breakdown_all_only():
-    rc = TrainRollouts([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_admitted=False)])
+    rc = TrainEpisodes([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_admitted=False)])
     out = rc.metrics.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/agent/is_truncated/mean"] == 1 / 3
     assert out["train/agg/all/agent/is_completed/mean"] == 1.0
@@ -203,7 +229,7 @@ def test_nested_metrics_and_rewards():
         # scoring failed after seeding: unscored (None) entries count as 0.0 on `all`
         mk(has_error=True, metrics={"acc": None}, rewards={"correct": None, "format": None}),
     ]
-    rc = TrainRollouts(rollouts)
+    rc = TrainEpisodes(rollouts)
     m = rc.metrics
     agent = m.by_agent()["agent"]
     assert agent.metrics["acc"].mean() == pytest.approx(4 / 3)  # nested group access
@@ -218,13 +244,13 @@ def test_nested_metrics_and_rewards():
     assert eff["train/agg/effective/agent/rewards/format/mean"] == 0.5
     # cross-env agg: another env's unscored trace carries different keys, so it can't dilute these
     other = mk(env_name="other", has_error=True, rewards={"solved": None})
-    agg = TrainRollouts(rollouts + [other]).metrics.to_wandb(prefix="train/agg", subset="all")
+    agg = TrainEpisodes(rollouts + [other]).metrics.to_wandb(prefix="train/agg", subset="all")
     assert agg["train/agg/all/agent/rewards/format/mean"] == pytest.approx(1 / 3)
     assert agg["train/agg/all/agent/rewards/solved/mean"] == 0.0
 
 
 def test_nested_timing():
-    m = TrainRollouts([mk(setup=1.0, agent=2.0, agent_model=1.5, agent_harness=0.5, finalize=0.5, scoring=0.5)]).metrics
+    m = TrainEpisodes([mk(setup=1.0, agent=2.0, agent_model=1.5, agent_harness=0.5, finalize=0.5, scoring=0.5)]).metrics
     timing = m.by_agent()["agent"].timing
     assert timing.setup.mean() == 1.0 and timing.total.mean() == 4.0  # total sums all four phases
     assert timing.agent_model.mean() == 1.5 and timing.agent_harness.mean() == 0.5
@@ -244,12 +270,12 @@ def test_train_only_metrics_absent_from_eval():
     assert out["train/agg/all/agent/is_trainable/mean"] == 0.5
     assert out["train/agg/all/agent/is_admitted/mean"] == 0.5
     assert "train/agg/all/is_trainable/mean" not in out  # pipeline verdicts are per-trace
-    eval_out = EvalRollouts(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
+    eval_out = EvalEpisodes(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
     assert not any("is_trainable" in key or "is_admitted" in key for key in eval_out)
 
 
 def test_eval_avg_at_k_and_pass_k():
-    binary = EvalRollouts([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")])
+    binary = EvalEpisodes([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")])
     eff = binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
     assert eff["eval/x/effective/agent/avg@2"] == 0.5  # mean reward under avg@<k> (k from the groups)
     assert "eval/x/effective/avg@2" not in eff  # scores are per-agent, never pooled
@@ -257,7 +283,7 @@ def test_eval_avg_at_k_and_pass_k():
     all_out = binary.metrics.to_wandb(prefix="eval/x", subset="all")
     assert all_out["eval/x/all/agent/avg@2"] == 0.5
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
-    non_binary = EvalRollouts([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
+    non_binary = EvalEpisodes([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
 
 

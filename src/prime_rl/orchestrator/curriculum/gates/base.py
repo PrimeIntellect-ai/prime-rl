@@ -5,13 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import EpisodeRun
 
 
 class AdmissionGate:
     """Base class for user-authored training-sample admission policies."""
 
-    def admit(self, group: list[Rollout]) -> bool:
+    def admit(self, group: list[EpisodeRun]) -> bool:
         """Return whether a finalized group should enter the training batch."""
         return True
 

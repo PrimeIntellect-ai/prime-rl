@@ -8,17 +8,17 @@ turns the signal half into runtime objects (the sampling half is the env's
 - one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``rae``,
   ``hierarchical_grpo``, ``opd``, ``opsd``, ``sft``) — each named class owns
   its scoring hooks
-  (``score_rollout`` / ``score_group``) and declares what it needs (loss
+  (``score_trace`` / ``score_group``) and declares what it needs (loss
   component, a "teacher", ...). One instance per env, built by
   :func:`build_algorithm`. A new credit-assignment scheme is a new named class:
   subclass :class:`Algorithm`, assign advantages in the hook whose timing fits,
   and register it below.
 - ``base`` — the :class:`Algorithm` base class, whose non-virtual
-  ``finalize_rollout`` / ``finalize_group`` methods the pipeline drives.
+  ``finalize_trace`` / ``finalize_group`` methods the pipeline drives.
   Advantages are per-token everywhere they are stored or shipped — there is no
   scalar advantage in the pipeline. An algorithm assigns credit in its scoring
-  hook via ``Rollout.assign_advantages``: a scalar that is *broadcast* over the
-  rollout's completion tokens (uniform credit, the common case), or an explicit
+  hook via ``TrainingTrace.assign_advantages``: a scalar that is *broadcast* over the
+  trace's completion tokens (uniform credit, the common case), or an explicit
   full-length-N per-token list aligned to the concatenated sample token_ids
   (0.0 off-mask).
 - ``routing`` — wire-field stamping: per-token component weight streams
@@ -39,7 +39,7 @@ from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.rae import RAEAlgorithm
 from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.types import TrainingTrace
 
 if TYPE_CHECKING:
     from prime_rl.configs.algorithm import AlgoConfig
@@ -79,7 +79,7 @@ __all__ = [
     "OPDAlgorithm",
     "OPSDAlgorithm",
     "RAEAlgorithm",
-    "Rollout",
+    "TrainingTrace",
     "SFTDistillAlgorithm",
     "build_algorithm",
     "connect_frozen_pool",

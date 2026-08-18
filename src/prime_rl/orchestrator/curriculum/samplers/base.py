@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import verifiers.v1 as vf
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import EpisodeRun
 
 
 class TaskSampler(Iterator[vf.Task], ABC):
@@ -20,7 +20,7 @@ class TaskSampler(Iterator[vf.Task], ABC):
         """Choose the next task."""
         raise NotImplementedError
 
-    def observe(self, group: list[Rollout]) -> None:
+    def observe(self, group: list[EpisodeRun]) -> None:
         """Update sampling state from a finalized group."""
 
     def state_dict(self) -> dict[str, Any]:

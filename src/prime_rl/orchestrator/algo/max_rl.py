@@ -7,7 +7,7 @@ import torch
 from prime_rl.orchestrator.algo.base import Algorithm
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+    from prime_rl.orchestrator.types import TrainingTrace
 
 
 class MaxRLAlgorithm(Algorithm):
@@ -22,8 +22,8 @@ class MaxRLAlgorithm(Algorithm):
     Assumes non-negative (canonically binary) rewards; a group with mean reward
     <= 0 carries no signal and gets zero advantages."""
 
-    async def score_group(self, group: list[Rollout]) -> None:
-        rewards = torch.tensor([rollout.reward for rollout in group], dtype=torch.float32)
+    async def score_group(self, group: list[TrainingTrace]) -> None:
+        rewards = torch.tensor([rollout.trace.reward for rollout in group], dtype=torch.float32)
         mean = rewards.mean()
         advantages = torch.zeros_like(rewards) if mean <= 0 else (rewards - mean) / mean
         for rollout, advantage in zip(group, advantages.tolist(), strict=True):
