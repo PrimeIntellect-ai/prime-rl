@@ -381,14 +381,7 @@ class Orchestrator:
         log_interval = config.log.interval
         wandb_enabled = monitors.get(monitors.WandbMonitor) is not None
 
-        group_sizes = [env.group_size for env in config.train.source]
-        if config.eval is not None:
-            group_sizes += [source.group_size for source in config.eval.source]
-        self.concurrency = ConcurrencyController(
-            config.concurrency,
-            floor=max(group_sizes, default=config.group_size),
-            fallback_cost=config.seq_len,
-        )
+        self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
         self.dispatcher = Dispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,

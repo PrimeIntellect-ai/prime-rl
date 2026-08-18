@@ -17,7 +17,7 @@ pressure off the engines and reacts at the pipeline's own pace (AIMD):
 
 The cap starts at ``initial_inflight`` (else the pessimistic bound
 ``KV capacity / max_model_len``) and is clamped to
-``[floor, config.max_inflight]`` throughout.
+``[min_inflight, max_inflight]`` throughout.
 
 The controller is a pure state machine — it owns no tasks or clients. The
 metrics collector pushes ``observe(samples)`` every poll; the dispatcher
@@ -95,13 +95,13 @@ class EngineLoadSample:
 
 
 class ConcurrencyController:
-    def __init__(self, config: ConcurrencyConfig, *, floor: int, fallback_cost: int) -> None:
+    def __init__(self, config: ConcurrencyConfig, *, fallback_cost: int) -> None:
         self.config = config
-        self.floor = floor
+        self.floor = config.min_inflight or 1
         self.fallback_cost = fallback_cost
         """Pessimistic per-unit cost for the starting cap when the engine reports no max context."""
 
-        self.cap = float(config.initial_inflight or floor)
+        self.cap = float(config.initial_inflight or self.floor)
         self.max_inflight = self.clamp(self.cap)
         self.bootstrapped = config.initial_inflight is not None
         self.engine_max_len: int | None = None
@@ -146,7 +146,7 @@ class ConcurrencyController:
         clock and, while the last poll was green, grows the cap — so growth
         is paced by the pipeline itself at any concurrency scale."""
         inflight = self.get_inflight() if self.get_inflight is not None else 0
-        fraction = 1 / max(inflight, self.floor, 1)
+        fraction = 1 / max(inflight, 1)
         self.turnover += fraction
         if self.can_grow and inflight >= BINDING_FRACTION * self.max_inflight:
             self.cap = self.clamp(self.cap * TURNOVER_GROWTH**fraction)
@@ -256,7 +256,7 @@ class ConcurrencyController:
 
     def clamp(self, n_max: float) -> float:
         ceiling = self.config.max_inflight or math.inf
-        return min(max(n_max, float(self.floor), float(self.config.min_inflight or 1)), float(ceiling))
+        return min(max(n_max, float(self.floor)), float(ceiling))
 
     @property
     def capacity(self) -> int | None:
