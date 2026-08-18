@@ -29,7 +29,7 @@ class StandardSampler(TaskSampler):
             self.task_iterator = tasks
         self.cursor = 0
 
-    def sample(self) -> vf.Task:
+    def __next__(self) -> vf.Task:
         task = next(self.task_iterator)
         self.cursor += 1
         return task

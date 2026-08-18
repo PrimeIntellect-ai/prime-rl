@@ -460,50 +460,48 @@ By default, zero-advantage RL tokens are removed after a complete batch cohort h
 
 ## Curricula
 
-Each training source has a `Curriculum` composed from one `TaskSampler` and any number of named `AdmissionGate`s. The sampler chooses tasks and observes every finalized result. All gates also observe every result; the group trains only if every gate admits it. Rejected groups remain observable while the orchestrator samples again to fill the batch.
+Each training source has a `Curriculum` composed from one `TaskSampler` and any number of named `AdmissionGate`s. The sampler chooses tasks and observes every finalized result. Every gate evaluates every result; the group trains only if every gate admits it. Rejected groups remain observable while the orchestrator samples again to fill the batch.
 
-Samplers and gates can be stateful. Their `state_dict`, `load_state_dict`, and `metrics` methods are included in orchestrator checkpoints and logged under `curriculum/<env>/`. Custom implementations are ordinary subclasses loaded by import path:
+Samplers and gates can be stateful. Their `state_dict`, `load_state_dict`, and `metrics` methods are included in orchestrator checkpoints and logged under `curriculum/<env>/`. Custom implementations are ordinary subclasses selected with `type = "custom"`, an `import_path`, and optional `kwargs`:
 
 ```python
 from prime_rl.orchestrator.curriculum import AdmissionGate, StandardSampler
 
 
 class MySampler(StandardSampler):
-    def observe(self, result):
+    def observe(self, group):
         ...
 
 
 class MyGate(AdmissionGate):
-    def admit(self, result):
+    def admit(self, group):
         return True
 ```
 
 Three small implementations are included:
 
 - `StandardSampler` is the default: it advances the task iterator and cycles finite tasksets in source order.
-- `DifficultyPools` samples finite tasksets with replacement and tracks each task's latest valid mean group reward. Each named pool has an inclusive reward threshold and a relative per-task sampling weight. Unseen tasks use neutral weight `1.0`, so pool observations affect sampling immediately without waiting for a full taskset pass.
-- `AdvantageRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Unlike the built-in post-batch zero-advantage filtering, rejection requests replacement work. Groups without an advantage stream are admitted.
+- `DifficultyPoolSampler` samples finite tasksets with replacement and tracks each task's latest valid mean group reward. Each named pool has an inclusive reward threshold and a relative per-task sampling weight. Unseen tasks use neutral weight `1.0`, so pool observations affect sampling immediately without waiting for a full taskset pass.
+- `AdvRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Unlike the built-in post-batch zero-advantage filtering, rejection requests replacement work. Groups without an advantage stream are admitted.
 
 ```toml
 [orchestrator.train.source.curriculum.sampler]
-import_path = "prime_rl.orchestrator.curriculum.DifficultyPools"
+type = "difficulty_pool"
 
-[orchestrator.train.source.curriculum.sampler.kwargs.pools.hard]
+[orchestrator.train.source.curriculum.sampler.pools.hard]
 threshold = 0.25
 weight = 0.2
 
-[orchestrator.train.source.curriculum.sampler.kwargs.pools.normal]
+[orchestrator.train.source.curriculum.sampler.pools.normal]
 threshold = 0.75
 weight = 1.0
 
-[orchestrator.train.source.curriculum.sampler.kwargs.pools.easy]
+[orchestrator.train.source.curriculum.sampler.pools.easy]
 threshold = 1.0
 weight = 0.2
 
 [orchestrator.train.source.curriculum.gates.low_signal]
-import_path = "prime_rl.orchestrator.curriculum.AdvantageRangeGate"
-
-[orchestrator.train.source.curriculum.gates.low_signal.kwargs]
+type = "advantage_range"
 reject_min = -0.05
 reject_max = 0.05
 ```

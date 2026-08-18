@@ -6,7 +6,7 @@ import random
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
-from prime_rl.orchestrator.curriculum import Curriculum, CurriculumResult, setup_curriculum
+from prime_rl.orchestrator.curriculum import Curriculum
 from prime_rl.orchestrator.envs import TrainEnvs
 
 if TYPE_CHECKING:
@@ -27,7 +27,7 @@ class TrainSource:
             if env.tasks is None:
                 raise RuntimeError(f"env {env.name} not started")
             tasks = env.tasks if env.num_tasks is None else list(env.tasks)
-            self.curricula[env.name] = setup_curriculum(env.config.curriculum, tasks)
+            self.curricula[env.name] = Curriculum.from_config(env.config.curriculum, tasks)
 
         self.env_names = [env.name for env in self.envs]
         self.weights = [float(env.config.ratio) for env in self.envs]
@@ -38,7 +38,7 @@ class TrainSource:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
         return {
             "env_name": env_name,
-            "task": self.curricula[env_name].sample(),
+            "task": next(self.curricula[env_name].sampler),
         }
 
     def on_result(self, group: list[Rollout]) -> bool:
@@ -46,8 +46,7 @@ class TrainSource:
         if not group:
             raise ValueError("Cannot report an empty rollout group")
         env_name = group[0].env_name
-        result = CurriculumResult.from_rollouts(group)
-        admitted = self.curricula[env_name].on_result(result)
+        admitted = self.curricula[env_name].on_result(group)
         if not isinstance(admitted, bool):
             raise TypeError(f"Curriculum.on_result() must return bool, got {type(admitted).__name__}")
         if admitted:

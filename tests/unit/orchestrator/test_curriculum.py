@@ -4,14 +4,19 @@ from types import SimpleNamespace
 import pytest
 import verifiers.v1 as vf
 
-from prime_rl.configs.orchestrator import AdmissionGateConfig, CurriculumConfig, TaskSamplerConfig
+from prime_rl.configs.orchestrator import (
+    AdvRangeGateConfig,
+    CurriculumConfig,
+    CustomAdmissionGateConfig,
+    CustomTaskSamplerConfig,
+    DifficultyPoolConfig,
+    DifficultyPoolSamplerConfig,
+)
 from prime_rl.orchestrator.curriculum import (
     AdmissionGate,
-    AdvantageRangeGate,
+    AdvRangeGate,
     Curriculum,
-    CurriculumResult,
-    DifficultyPool,
-    DifficultyPools,
+    DifficultyPoolSampler,
     StandardSampler,
 )
 from prime_rl.orchestrator.train_source import TrainSource
@@ -63,7 +68,7 @@ class CountingSampler(StandardSampler):
         super().__init__(tasks)
         self.seen = 0
 
-    def observe(self, result: CurriculumResult) -> None:
+    def observe(self, group: list[Rollout]) -> None:
         self.seen += 1
 
     def state_dict(self) -> dict:
@@ -82,7 +87,7 @@ class CountingGate(AdmissionGate):
         self.decision = decision
         self.seen = 0
 
-    def admit(self, result: CurriculumResult) -> bool:
+    def admit(self, group: list[Rollout]) -> bool:
         self.seen += 1
         return self.decision
 
@@ -100,23 +105,23 @@ def test_default_curriculum_resumes_finite_and_infinite_tasksets() -> None:
     tasks = [make_task(i) for i in range(5)]
     finite = StandardSampler(tasks)
     for _ in range(3):
-        finite.sample()
+        next(finite)
     state = finite.state_dict()
-    expected = [finite.sample().key for _ in range(4)]
+    expected = [next(finite).key for _ in range(4)]
 
     restored = StandardSampler(tasks)
     restored.load_state_dict(state)
-    assert [restored.sample().key for _ in range(4)] == expected
+    assert [next(restored).key for _ in range(4)] == expected
 
     def task_stream() -> Iterator[vf.Task]:
         yield from (make_task(i) for i in range(10))
 
     infinite = StandardSampler(task_stream())
-    infinite.sample()
-    infinite.sample()
+    next(infinite)
+    next(infinite)
     restored_infinite = StandardSampler(task_stream())
     restored_infinite.load_state_dict(infinite.state_dict())
-    assert restored_infinite.sample().key == make_task(2).key
+    assert next(restored_infinite).key == make_task(2).key
 
 
 def test_curriculum_requires_unique_finite_task_keys() -> None:
@@ -130,10 +135,10 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     config = SimpleNamespace(
         ratio=1.0,
         curriculum=CurriculumConfig(
-            sampler=TaskSamplerConfig(import_path=f"{__name__}.CountingSampler"),
+            sampler=CustomTaskSamplerConfig(import_path=f"{__name__}.CountingSampler"),
             gates={
-                "reject": AdmissionGateConfig(import_path=f"{__name__}.CountingGate", kwargs={"decision": False}),
-                "observe": AdmissionGateConfig(import_path=f"{__name__}.CountingGate", kwargs={"decision": True}),
+                "reject": CustomAdmissionGateConfig(import_path=f"{__name__}.CountingGate", kwargs={"decision": False}),
+                "observe": CustomAdmissionGateConfig(import_path=f"{__name__}.CountingGate", kwargs={"decision": True}),
             },
         ),
     )
@@ -162,19 +167,21 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
 def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> None:
     tasks = [make_task(i) for i in range(3)]
     pools = {
-        "hard": DifficultyPool(threshold=0.25, weight=0.2),
-        "normal": DifficultyPool(threshold=0.75, weight=1.0),
-        "easy": DifficultyPool(threshold=1.0, weight=0.2),
+        "hard": DifficultyPoolConfig(threshold=0.25, weight=0.2),
+        "normal": DifficultyPoolConfig(threshold=0.75, weight=1.0),
+        "easy": DifficultyPoolConfig(threshold=1.0, weight=0.2),
     }
+    sampler_config = DifficultyPoolSamplerConfig(pools=pools, seed=7)
+    gate_config = AdvRangeGateConfig()
     curriculum = Curriculum(
-        DifficultyPools(tasks, pools=pools, seed=7),
-        {"zero_advantage": AdvantageRangeGate()},
+        DifficultyPoolSampler(sampler_config, tasks),
+        {"zero_advantage": AdvRangeGate(gate_config)},
     )
     rewards = {0: 0.1, 1: 0.5, 2: 0.9}
     decisions = []
     for index, task in enumerate(tasks):
         rollout = make_rollout(task, reward=rewards[task.data.idx], advantages=[float(index > 0)])
-        decisions.append(curriculum.on_result(CurriculumResult.from_rollouts([rollout])))
+        decisions.append(curriculum.on_result([rollout]))
 
     assert decisions == [False, True, True]
     assert curriculum.metrics() == {
@@ -184,29 +191,26 @@ def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> Non
         "sampler/pool/easy": 1.0,
     }
     state = curriculum.state_dict()
-    expected = [curriculum.sample().key for _ in range(10)]
+    expected = [next(curriculum.sampler).key for _ in range(10)]
     restored = Curriculum(
-        DifficultyPools(tasks, pools=pools, seed=7),
-        {"zero_advantage": AdvantageRangeGate()},
+        DifficultyPoolSampler(sampler_config, tasks),
+        {"zero_advantage": AdvRangeGate(gate_config)},
     )
     restored.load_state_dict(state)
-    assert [restored.sample().key for _ in range(10)] == expected
+    assert [next(restored.sampler).key for _ in range(10)] == expected
 
 
 def test_advantage_range_gate_generalizes_zero_advantage_rejection() -> None:
     task = make_task(0)
-    zero_gate = AdvantageRangeGate()
-    assert zero_gate.admit(CurriculumResult.from_rollouts([make_rollout(task, advantages=[0.0, 0.0])])) is False
-    assert zero_gate.admit(CurriculumResult.from_rollouts([make_rollout(task, advantages=[0.0, 0.2])])) is True
-    assert zero_gate.admit(CurriculumResult.from_rollouts([make_rollout(task)])) is True
+    zero_gate = AdvRangeGate(AdvRangeGateConfig())
+    assert zero_gate.admit([make_rollout(task, advantages=[0.0, 0.0])]) is False
+    assert zero_gate.admit([make_rollout(task, advantages=[0.0, 0.2])]) is True
+    assert zero_gate.admit([make_rollout(task)]) is True
 
-    tolerance_gate = AdvantageRangeGate(reject_min=-0.1, reject_max=0.1)
-    assert (
-        tolerance_gate.admit(CurriculumResult.from_rollouts([make_rollout(task, advantages=[-0.05, 0.0, 0.05])]))
-        is False
-    )
+    tolerance_gate = AdvRangeGate(AdvRangeGateConfig(reject_min=-0.1, reject_max=0.1))
+    assert tolerance_gate.admit([make_rollout(task, advantages=[-0.05, 0.0, 0.05])]) is False
 
     masked = make_rollout(task, advantages=[0.0, 0.5])
     masked.samples[0].mask = [False, True]
-    positive_gate = AdvantageRangeGate(reject_min=0.5, reject_max=0.5)
-    assert positive_gate.admit(CurriculumResult.from_rollouts([masked])) is False
+    positive_gate = AdvRangeGate(AdvRangeGateConfig(reject_min=0.5, reject_max=0.5))
+    assert positive_gate.admit([masked]) is False

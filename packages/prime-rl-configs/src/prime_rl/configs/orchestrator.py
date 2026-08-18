@@ -157,24 +157,91 @@ class EnvConfig(BaseConfig):
         return self
 
 
-class TaskSamplerConfig(BaseConfig):
+class StandardSamplerConfig(BaseConfig):
+    type: Literal["standard"] = "standard"
+
+
+class DifficultyPoolConfig(BaseConfig):
+    threshold: float
+    """Inclusive maximum reward assigned to this pool."""
+
+    weight: float = Field(gt=0)
+    """Relative per-task sampling weight."""
+
+
+def default_difficulty_pools() -> dict[str, DifficultyPoolConfig]:
+    return {
+        "hard": DifficultyPoolConfig(threshold=0.25, weight=0.2),
+        "normal": DifficultyPoolConfig(threshold=0.75, weight=1.0),
+        "easy": DifficultyPoolConfig(threshold=1.0, weight=0.2),
+    }
+
+
+class DifficultyPoolSamplerConfig(BaseConfig):
+    type: Literal["difficulty_pool"] = "difficulty_pool"
+
+    pools: dict[str, DifficultyPoolConfig] = Field(default_factory=default_difficulty_pools)
+    """Named pools ordered by their reward thresholds."""
+
+    seed: int = 42
+
+    @model_validator(mode="after")
+    def validate_pools(self):
+        if not self.pools:
+            raise ValueError("DifficultyPoolSampler requires at least one pool")
+        thresholds = [pool.threshold for pool in self.pools.values()]
+        if len(set(thresholds)) != len(thresholds):
+            raise ValueError("Difficulty pool thresholds must be unique")
+        return self
+
+
+class CustomTaskSamplerConfig(BaseConfig):
+    type: Literal["custom"] = "custom"
+
     import_path: str
-    """Dotted path to a task sampler subclass."""
+    """Dotted path to a custom task sampler subclass."""
 
     kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Keyword arguments passed to the task sampler constructor."""
+    """Keyword arguments passed to the custom sampler constructor."""
 
 
-class AdmissionGateConfig(BaseConfig):
+TaskSamplerConfig: TypeAlias = Annotated[
+    StandardSamplerConfig | DifficultyPoolSamplerConfig | CustomTaskSamplerConfig,
+    Field(discriminator="type"),
+]
+
+
+class AdvRangeGateConfig(BaseConfig):
+    type: Literal["advantage_range"] = "advantage_range"
+
+    reject_min: float = 0.0
+    reject_max: float = 0.0
+
+    @model_validator(mode="after")
+    def validate_range(self):
+        if self.reject_min > self.reject_max:
+            raise ValueError("reject_min must be less than or equal to reject_max")
+        return self
+
+
+class CustomAdmissionGateConfig(BaseConfig):
+    type: Literal["custom"] = "custom"
+
     import_path: str
-    """Dotted path to an admission gate subclass."""
+    """Dotted path to a custom admission gate subclass."""
 
     kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Keyword arguments passed to the admission gate constructor."""
+    """Keyword arguments passed to the custom gate constructor."""
+
+
+AdmissionGateConfig: TypeAlias = Annotated[
+    AdvRangeGateConfig | CustomAdmissionGateConfig,
+    Field(discriminator="type"),
+]
 
 
 class CurriculumConfig(BaseConfig):
-    sampler: TaskSamplerConfig | None = None
+    sampler: TaskSamplerConfig = Field(default_factory=StandardSamplerConfig)
     """Task selection policy. The default cycles through the task iterator in source order."""
 
     gates: dict[str, AdmissionGateConfig] = Field(default_factory=dict)

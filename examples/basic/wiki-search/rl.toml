@@ -42,7 +42,7 @@ max_completion_tokens = 512
 
 [[orchestrator.train.source]]
 name = "wiki-search"
-curriculum = { gates = { zero_advantage = { import_path = "prime_rl.orchestrator.curriculum.AdvantageRangeGate" } } }
+curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
 
 [orchestrator.train.source.env.taskset]
 id = "wiki-search"

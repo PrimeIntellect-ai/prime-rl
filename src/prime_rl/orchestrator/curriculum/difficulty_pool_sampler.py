@@ -4,31 +4,19 @@ from __future__ import annotations
 
 import random
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Iterator, Sequence
+from typing import TYPE_CHECKING, Any
 
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.curriculum.base import CurriculumResult, TaskSampler
+from prime_rl.orchestrator.curriculum.base import TaskSampler
+
+if TYPE_CHECKING:
+    from prime_rl.configs.orchestrator import DifficultyPoolSamplerConfig
+    from prime_rl.orchestrator.types import Rollout
 
 
-@dataclass(frozen=True)
-class DifficultyPool:
-    """An inclusive reward threshold and a relative per-task sampling weight."""
-
-    threshold: float
-    weight: float
-
-
-DEFAULT_POOLS = {
-    "hard": DifficultyPool(threshold=0.25, weight=0.2),
-    "normal": DifficultyPool(threshold=0.75, weight=1.0),
-    "easy": DifficultyPool(threshold=1.0, weight=0.2),
-}
-
-
-class DifficultyPools(TaskSampler):
+class DifficultyPoolSampler(TaskSampler):
     """Weight finite tasks by a pool derived from their latest group mean.
 
     Each pool's threshold is its inclusive maximum reward; the final pool is
@@ -38,34 +26,22 @@ class DifficultyPools(TaskSampler):
 
     def __init__(
         self,
+        config: DifficultyPoolSamplerConfig,
         tasks: Sequence[vf.Task] | Iterator[vf.Task],
-        *,
-        pools: Mapping[str, DifficultyPool | Mapping[str, float]] | None = None,
-        seed: int = 42,
     ) -> None:
         if not isinstance(tasks, Sequence):
-            raise ValueError("DifficultyPools requires a finite taskset")
+            raise ValueError("DifficultyPoolSampler requires a finite taskset")
         self.tasks = tuple(tasks)
         if not self.tasks:
-            raise ValueError("DifficultyPools requires at least one task")
+            raise ValueError("DifficultyPoolSampler requires at least one task")
         keys = [task.key for task in self.tasks]
         duplicates = {key for key, count in Counter(keys).items() if count > 1}
         if duplicates:
             raise ValueError(f"Task keys must be unique within a taskset: {sorted(duplicates)}")
         self.tasks_by_key = dict(zip(keys, self.tasks))
-        self.rng = random.Random(seed)
-        configured_pools = DEFAULT_POOLS if pools is None else pools
-        self.pools = {
-            name: pool if isinstance(pool, DifficultyPool) else DifficultyPool(**pool)
-            for name, pool in configured_pools.items()
-        }
-        if not self.pools:
-            raise ValueError("DifficultyPools requires at least one pool")
-        if any(pool.weight <= 0 for pool in self.pools.values()):
-            raise ValueError("Difficulty pool weights must be positive")
+        self.rng = random.Random(config.seed)
+        self.pools = config.pools
         ordered = sorted(self.pools.items(), key=lambda item: item[1].threshold)
-        if len({pool.threshold for _, pool in ordered}) != len(ordered):
-            raise ValueError("Difficulty pool thresholds must be unique")
         self._ordered_pools = tuple(ordered)
         self.task_rewards: dict[str, float] = {}
 
@@ -79,7 +55,7 @@ class DifficultyPools(TaskSampler):
                 return name
         return self._ordered_pools[-1][0]
 
-    def sample(self) -> vf.Task:
+    def __next__(self) -> vf.Task:
         ceiling = max(pool.weight for pool in self.pools.values())
         if len(self.task_rewards) < len(self.tasks):
             ceiling = max(1.0, ceiling)
@@ -90,11 +66,14 @@ class DifficultyPools(TaskSampler):
             if self.rng.random() * ceiling < weight:
                 return task
 
-    def observe(self, result: CurriculumResult) -> None:
-        rewards = [rollout.reward for rollout in result.rollouts if not rollout.has_error and rollout.agent.trainable]
+    def observe(self, group: list[Rollout]) -> None:
+        rewards = [rollout.reward for rollout in group if not rollout.has_error and rollout.agent.trainable]
         if not rewards:
             return
-        self.task_rewards[result.task_key] = sum(rewards) / len(rewards)
+        task_key = group[0].task.key
+        if task_key is None:
+            raise ValueError("A finalized group is missing Task.key")
+        self.task_rewards[task_key] = sum(rewards) / len(rewards)
 
     def state_dict(self) -> dict[str, Any]:
         return {

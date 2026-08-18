@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import verifiers.v1 as vf
@@ -12,40 +11,19 @@ import verifiers.v1 as vf
 from prime_rl.utils.utils import import_object
 
 if TYPE_CHECKING:
-    from prime_rl.configs.orchestrator import AdmissionGateConfig, CurriculumConfig, TaskSamplerConfig
+    from prime_rl.configs.orchestrator import CurriculumConfig
     from prime_rl.orchestrator.types import Rollout
 
 
-@dataclass(frozen=True)
-class CurriculumResult:
-    """One finalized task group, after its training samples and credit are built."""
-
-    task_key: str
-    rollouts: tuple[Rollout, ...]
-
-    @classmethod
-    def from_rollouts(cls, rollouts: list[Rollout]) -> CurriculumResult:
-        if not rollouts:
-            raise ValueError("A curriculum result needs at least one rollout")
-        keys = {rollout.task.key for rollout in rollouts}
-        if None in keys:
-            raise ValueError("A curriculum result is missing Task.key")
-        if len(keys) != 1:
-            raise ValueError(f"A curriculum result contains multiple task keys: {keys}")
-        task_key = keys.pop()
-        assert task_key is not None
-        return cls(task_key=task_key, rollouts=tuple(rollouts))
-
-
-class TaskSampler(ABC):
+class TaskSampler(Iterator[vf.Task], ABC):
     """Base class for user-authored task selection policies."""
 
     @abstractmethod
-    def sample(self) -> vf.Task:
+    def __next__(self) -> vf.Task:
         """Choose the next task."""
         raise NotImplementedError
 
-    def observe(self, result: CurriculumResult) -> None:
+    def observe(self, group: list[Rollout]) -> None:
         """Update sampling state from a finalized group."""
 
     def state_dict(self) -> dict[str, Any]:
@@ -63,7 +41,7 @@ class TaskSampler(ABC):
 class AdmissionGate:
     """Base class for user-authored training-sample admission policies."""
 
-    def admit(self, result: CurriculumResult) -> bool:
+    def admit(self, group: list[Rollout]) -> bool:
         """Return whether a finalized group should enter the training batch."""
         return True
 
@@ -86,15 +64,64 @@ class Curriculum:
         self.sampler = sampler
         self.gates = {} if gates is None else dict(gates)
 
-    def sample(self) -> vf.Task:
-        return self.sampler.sample()
+    @classmethod
+    def from_config(
+        cls,
+        config: CurriculumConfig | None,
+        tasks: Sequence[vf.Task] | Iterator[vf.Task],
+    ) -> Curriculum:
+        from prime_rl.configs.orchestrator import (
+            AdvRangeGateConfig,
+            CurriculumConfig,
+            CustomAdmissionGateConfig,
+            CustomTaskSamplerConfig,
+            DifficultyPoolSamplerConfig,
+            StandardSamplerConfig,
+        )
+        from prime_rl.orchestrator.curriculum.adv_range_gate import AdvRangeGate
+        from prime_rl.orchestrator.curriculum.difficulty_pool_sampler import DifficultyPoolSampler
+        from prime_rl.orchestrator.curriculum.standard_sampler import StandardSampler
 
-    def on_result(self, result: CurriculumResult) -> bool:
+        config = CurriculumConfig() if config is None else config
+        if isinstance(config.sampler, StandardSamplerConfig):
+            sampler: TaskSampler = StandardSampler(tasks)
+        elif isinstance(config.sampler, DifficultyPoolSamplerConfig):
+            sampler = DifficultyPoolSampler(config.sampler, tasks)
+        elif isinstance(config.sampler, CustomTaskSamplerConfig):
+            sampler_type = import_object(config.sampler.import_path)
+            sampler = sampler_type(tasks, **config.sampler.kwargs)
+            if not isinstance(sampler, TaskSampler):
+                raise TypeError(f"{config.sampler.import_path} must subclass TaskSampler")
+        else:
+            raise TypeError(f"Unsupported task sampler config: {type(config.sampler).__name__}")
+
+        gates: dict[str, AdmissionGate] = {}
+        for name, gate_config in config.gates.items():
+            if isinstance(gate_config, AdvRangeGateConfig):
+                gate: AdmissionGate = AdvRangeGate(gate_config)
+            elif isinstance(gate_config, CustomAdmissionGateConfig):
+                gate_type = import_object(gate_config.import_path)
+                gate = gate_type(**gate_config.kwargs)
+                if not isinstance(gate, AdmissionGate):
+                    raise TypeError(f"{gate_config.import_path} must subclass AdmissionGate")
+            else:
+                raise TypeError(f"Unsupported admission gate config: {type(gate_config).__name__}")
+            gates[name] = gate
+        return cls(sampler, gates)
+
+    def on_result(self, group: list[Rollout]) -> bool:
         """Observe every result, evaluate every gate, and combine with AND."""
-        self.sampler.observe(result)
+        if not group:
+            raise ValueError("Cannot report an empty rollout group")
+        task_keys = {rollout.task.key for rollout in group}
+        if None in task_keys:
+            raise ValueError("A finalized group is missing Task.key")
+        if len(task_keys) != 1:
+            raise ValueError(f"A finalized group contains multiple task keys: {task_keys}")
+        self.sampler.observe(group)
         decisions: list[bool] = []
         for name, gate in self.gates.items():
-            decision = gate.admit(result)
+            decision = gate.admit(group)
             if not isinstance(decision, bool):
                 raise TypeError(f"AdmissionGate {name!r}.admit() must return bool, got {type(decision).__name__}")
             decisions.append(decision)
@@ -121,35 +148,3 @@ class Curriculum:
         for gate_name, gate in self.gates.items():
             metrics |= {f"gate/{gate_name}/{name}": float(value) for name, value in gate.metrics().items()}
         return metrics
-
-
-def _setup_sampler(
-    config: TaskSamplerConfig,
-    tasks: Sequence[vf.Task] | Iterator[vf.Task],
-) -> TaskSampler:
-    sampler_type = import_object(config.import_path)
-    sampler = sampler_type(tasks, **config.kwargs)
-    if not isinstance(sampler, TaskSampler):
-        raise TypeError(f"{config.import_path} must subclass TaskSampler")
-    return sampler
-
-
-def _setup_gate(config: AdmissionGateConfig) -> AdmissionGate:
-    gate_type = import_object(config.import_path)
-    gate = gate_type(**config.kwargs)
-    if not isinstance(gate, AdmissionGate):
-        raise TypeError(f"{config.import_path} must subclass AdmissionGate")
-    return gate
-
-
-def setup_curriculum(
-    config: CurriculumConfig | None,
-    tasks: Sequence[vf.Task] | Iterator[vf.Task],
-) -> Curriculum:
-    from prime_rl.orchestrator.curriculum.standard_sampler import StandardSampler
-
-    sampler = (
-        StandardSampler(tasks) if config is None or config.sampler is None else _setup_sampler(config.sampler, tasks)
-    )
-    gates = {} if config is None else {name: _setup_gate(gate) for name, gate in config.gates.items()}
-    return Curriculum(sampler, gates)
