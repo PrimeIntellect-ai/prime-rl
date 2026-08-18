@@ -481,22 +481,24 @@ class MyGate(AdmissionGate):
 Three small implementations are included:
 
 - `StandardSampler` is the default: it advances the task iterator and cycles finite tasksets in source order.
-- `DifficultyPools` samples every finite task once, tracks its latest valid mean group reward, then samples a named reward pool by weight and a task uniformly within that pool. Override `select_task()` to change how pool assignments affect sampling, or `prepare_task(task, pool)` to adapt a selected task for its pool, such as choosing a reasoning prompt. Prepared tasks must preserve the canonical `Task.key`.
+- `DifficultyPools` samples finite tasksets with replacement and tracks each task's latest valid mean group reward. Each named pool has an inclusive reward threshold and a relative per-task sampling weight. Unseen tasks use neutral weight `1.0`, so pool observations affect sampling immediately without waiting for a full taskset pass.
 - `AdvantageRangeGate` rejects a group when every trainable-token advantage falls inside `reject_min` through `reject_max`. Unlike the built-in post-batch zero-advantage filtering, rejection requests replacement work. Groups without an advantage stream are admitted.
 
 ```toml
 [orchestrator.train.source.curriculum.sampler]
 import_path = "prime_rl.orchestrator.curriculum.DifficultyPools"
 
-[orchestrator.train.source.curriculum.sampler.kwargs.thresholds]
-hard = 0.25
-medium = 0.75
-easy = 1.0
+[orchestrator.train.source.curriculum.sampler.kwargs.pools.hard]
+threshold = 0.25
+weight = 0.2
 
-[orchestrator.train.source.curriculum.sampler.kwargs.weights]
-hard = 0.2
-medium = 0.6
-easy = 0.2
+[orchestrator.train.source.curriculum.sampler.kwargs.pools.normal]
+threshold = 0.75
+weight = 1.0
+
+[orchestrator.train.source.curriculum.sampler.kwargs.pools.easy]
+threshold = 1.0
+weight = 0.2
 
 [orchestrator.train.source.curriculum.gates.low_signal]
 import_path = "prime_rl.orchestrator.curriculum.AdvantageRangeGate"

@@ -10,6 +10,7 @@ from prime_rl.orchestrator.curriculum import (
     AdvantageRangeGate,
     Curriculum,
     CurriculumResult,
+    DifficultyPool,
     DifficultyPools,
     StandardSampler,
 )
@@ -160,14 +161,18 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
 
 def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> None:
     tasks = [make_task(i) for i in range(3)]
+    pools = {
+        "hard": DifficultyPool(threshold=0.25, weight=0.2),
+        "normal": DifficultyPool(threshold=0.75, weight=1.0),
+        "easy": DifficultyPool(threshold=1.0, weight=0.2),
+    }
     curriculum = Curriculum(
-        DifficultyPools(tasks, seed=7),
+        DifficultyPools(tasks, pools=pools, seed=7),
         {"zero_advantage": AdvantageRangeGate()},
     )
     rewards = {0: 0.1, 1: 0.5, 2: 0.9}
     decisions = []
-    for index in range(len(tasks)):
-        task = curriculum.sample()
+    for index, task in enumerate(tasks):
         rollout = make_rollout(task, reward=rewards[task.data.idx], advantages=[float(index > 0)])
         decisions.append(curriculum.on_result(CurriculumResult.from_rollouts([rollout])))
 
@@ -175,13 +180,13 @@ def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> Non
     assert curriculum.metrics() == {
         "sampler/pool/unseen": 0.0,
         "sampler/pool/hard": 1.0,
-        "sampler/pool/medium": 1.0,
+        "sampler/pool/normal": 1.0,
         "sampler/pool/easy": 1.0,
     }
     state = curriculum.state_dict()
     expected = [curriculum.sample().key for _ in range(10)]
     restored = Curriculum(
-        DifficultyPools(tasks, seed=7),
+        DifficultyPools(tasks, pools=pools, seed=7),
         {"zero_advantage": AdvantageRangeGate()},
     )
     restored.load_state_dict(state)

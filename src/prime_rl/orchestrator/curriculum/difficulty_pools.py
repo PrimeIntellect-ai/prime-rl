@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import random
-from collections import Counter, defaultdict
-from collections.abc import Iterator, Sequence
+from collections import Counter
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import verifiers.v1 as vf
@@ -12,21 +13,34 @@ import verifiers.v1 as vf
 from prime_rl.orchestrator.curriculum.base import CurriculumResult, TaskSampler
 
 
-class DifficultyPools(TaskSampler):
-    """Sample finite tasks through named pools based on the latest group mean.
+@dataclass(frozen=True)
+class DifficultyPool:
+    """An inclusive reward threshold and a relative per-task sampling weight."""
 
-    Unsampled tasks are chosen first. Afterwards, a nonempty pool is selected
-    by its configured weight and a task is sampled uniformly from that pool.
-    ``thresholds`` maps each pool name to its inclusive maximum mean reward;
-    the final pool is the catch-all.
+    threshold: float
+    weight: float
+
+
+DEFAULT_POOLS = {
+    "hard": DifficultyPool(threshold=0.25, weight=0.2),
+    "normal": DifficultyPool(threshold=0.75, weight=1.0),
+    "easy": DifficultyPool(threshold=1.0, weight=0.2),
+}
+
+
+class DifficultyPools(TaskSampler):
+    """Weight finite tasks by a pool derived from their latest group mean.
+
+    Each pool's threshold is its inclusive maximum reward; the final pool is
+    the catch-all. Unseen tasks have neutral weight, so observations affect
+    sampling immediately without requiring a full taskset pass.
     """
 
     def __init__(
         self,
         tasks: Sequence[vf.Task] | Iterator[vf.Task],
         *,
-        thresholds: dict[str, float] | None = None,
-        weights: dict[str, float] | None = None,
+        pools: Mapping[str, DifficultyPool | Mapping[str, float]] | None = None,
         seed: int = 42,
     ) -> None:
         if not isinstance(tasks, Sequence):
@@ -40,19 +54,19 @@ class DifficultyPools(TaskSampler):
             raise ValueError(f"Task keys must be unique within a taskset: {sorted(duplicates)}")
         self.tasks_by_key = dict(zip(keys, self.tasks))
         self.rng = random.Random(seed)
-        self.thresholds = {"hard": 0.25, "medium": 0.75, "easy": 1.0} if thresholds is None else thresholds
-        self.weights = dict.fromkeys(self.thresholds, 1.0) if weights is None else weights
-        if not self.thresholds:
+        configured_pools = DEFAULT_POOLS if pools is None else pools
+        self.pools = {
+            name: pool if isinstance(pool, DifficultyPool) else DifficultyPool(**pool)
+            for name, pool in configured_pools.items()
+        }
+        if not self.pools:
             raise ValueError("DifficultyPools requires at least one pool")
-        if self.thresholds.keys() != self.weights.keys():
-            raise ValueError("Difficulty pool thresholds and weights must name the same pools")
-        if any(weight <= 0 for weight in self.weights.values()):
+        if any(pool.weight <= 0 for pool in self.pools.values()):
             raise ValueError("Difficulty pool weights must be positive")
-        ordered = sorted(self.thresholds.items(), key=lambda item: item[1])
-        if len({maximum for _, maximum in ordered}) != len(ordered):
+        ordered = sorted(self.pools.items(), key=lambda item: item[1].threshold)
+        if len({pool.threshold for _, pool in ordered}) != len(ordered):
             raise ValueError("Difficulty pool thresholds must be unique")
         self._ordered_pools = tuple(ordered)
-        self.sampled_task_keys: set[str] = set()
         self.task_rewards: dict[str, float] = {}
 
     def task_pool(self, task_key: str) -> str | None:
@@ -60,46 +74,21 @@ class DifficultyPools(TaskSampler):
         score = self.task_rewards.get(task_key)
         if score is None:
             return None
-        for name, maximum in self._ordered_pools:
-            if score <= maximum:
+        for name, pool in self._ordered_pools:
+            if score <= pool.threshold:
                 return name
         return self._ordered_pools[-1][0]
 
-    def select_task(self) -> vf.Task:
-        """Choose a canonical task using the current pool assignments."""
-        unsampled = [task for task in self.tasks_by_key.values() if task.key not in self.sampled_task_keys]
-        if unsampled:
-            return self.rng.choice(unsampled)
-
-        if not self.task_rewards:
-            return self.rng.choice(tuple(self.tasks_by_key.values()))
-
-        tasks_by_pool: dict[str, list[vf.Task]] = defaultdict(list)
-        for task_key, task in self.tasks_by_key.items():
-            pool = self.task_pool(task_key)
-            if pool is not None:
-                tasks_by_pool[pool].append(task)
-        nonempty = [name for name in self.weights if tasks_by_pool[name]]
-        pool = self.rng.choices(nonempty, weights=[self.weights[name] for name in nonempty], k=1)[0]
-        return self.rng.choice(tasks_by_pool[pool])
-
-    def prepare_task(self, task: vf.Task, pool: str | None) -> vf.Task:
-        """Adapt a selected task for its pool while preserving ``Task.key``."""
-        return task
-
     def sample(self) -> vf.Task:
-        task = self.select_task()
-        task_key = task.key
-        if task_key not in self.tasks_by_key:
-            raise ValueError("DifficultyPools.select_task() must return a task from its taskset")
-        prepared = self.prepare_task(task, self.task_pool(task_key))
-        if prepared.key != task_key:
-            raise ValueError(
-                "DifficultyPools.prepare_task() must preserve Task.key; "
-                "override Task.key with a stable task identity when adapting task data"
-            )
-        self.sampled_task_keys.add(task_key)
-        return prepared
+        ceiling = max(pool.weight for pool in self.pools.values())
+        if len(self.task_rewards) < len(self.tasks):
+            ceiling = max(1.0, ceiling)
+        while True:
+            task = self.rng.choice(self.tasks)
+            pool = self.task_pool(task.key)
+            weight = 1.0 if pool is None else self.pools[pool].weight
+            if self.rng.random() * ceiling < weight:
+                return task
 
     def observe(self, result: CurriculumResult) -> None:
         rewards = [rollout.reward for rollout in result.rollouts if not rollout.has_error and rollout.agent.trainable]
@@ -110,22 +99,20 @@ class DifficultyPools(TaskSampler):
     def state_dict(self) -> dict[str, Any]:
         return {
             "rng": self.rng.getstate(),
-            "sampled_task_keys": sorted(self.sampled_task_keys),
             "task_rewards": dict(self.task_rewards),
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         self.rng.setstate(state_dict["rng"])
         self.task_rewards = dict(state_dict["task_rewards"])
-        self.sampled_task_keys = set(state_dict.get("sampled_task_keys", self.task_rewards))
 
     def metrics(self) -> dict[str, float]:
-        occupancy = dict.fromkeys(self.thresholds, 0)
+        occupancy = dict.fromkeys(self.pools, 0)
         for task_key in self.task_rewards:
             pool = self.task_pool(task_key)
             if pool is not None:
                 occupancy[pool] += 1
         return {
-            "pool/unseen": float(len(self.tasks_by_key) - len(self.sampled_task_keys)),
+            "pool/unseen": float(len(self.tasks_by_key) - len(self.task_rewards)),
             **{f"pool/{name}": float(count) for name, count in occupancy.items()},
         }

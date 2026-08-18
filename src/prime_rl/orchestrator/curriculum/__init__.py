@@ -8,7 +8,7 @@ from prime_rl.orchestrator.curriculum.base import (
     TaskSampler,
     setup_curriculum,
 )
-from prime_rl.orchestrator.curriculum.difficulty_pools import DifficultyPools
+from prime_rl.orchestrator.curriculum.difficulty_pools import DifficultyPool, DifficultyPools
 from prime_rl.orchestrator.curriculum.standard_sampler import StandardSampler
 
 __all__ = [
@@ -16,6 +16,7 @@ __all__ = [
     "AdvantageRangeGate",
     "Curriculum",
     "CurriculumResult",
+    "DifficultyPool",
     "DifficultyPools",
     "StandardSampler",
     "TaskSampler",
