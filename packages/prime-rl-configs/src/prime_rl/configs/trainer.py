@@ -674,8 +674,8 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def full_optimizer_offload_requires_adamw(self):
-        if self.model.full_offload and self.optim.type != "adamw":
-            raise ValueError("Full optimizer offload only supports AdamW")
+        if self.model.full_offload and self.optim.type not in ("adamw", "sign_sgd"):
+            raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
         return self
 
     @model_validator(mode="after")
