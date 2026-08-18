@@ -52,6 +52,12 @@ GROWTH_FACTOR = 1.003
 BINDING_FRACTION = 0.9
 KAPPA_MIN = 0.25
 KAPPA_MAX = 16.0
+# Ceiling memory: an overload cut pins future growth just under the kappa
+# that overloaded, so the ceiling is rediscovered by a wobble instead of a
+# fresh thrash episode every cycle. The slow relief lets a genuinely
+# lightened workload re-probe (~+2% per 10 minutes).
+KAPPA_CEILING_FRACTION = 0.9
+KAPPA_CEILING_RELIEF = 1.00002
 # Queue-overload HARD: capacity-queued requests exceed this fraction of
 # running requests for QUEUE_PERSISTENCE_POLLS consecutive polls. Agentic
 # rollouts overload by queueing, not preempting — admission control parks
@@ -165,6 +171,7 @@ class ConcurrencyController:
         self.prev_waiting: dict[str, int] = {}
         # Consecutive polls with the capacity queue above QUEUE_RATIO of running
         self.queue_overload_polls = 0
+        self.kappa_ceiling = KAPPA_MAX
         # After a cut, ignore further HARD signals until inflight has drained
         # below the new cap — the overload during drain is stale
         self.draining = False
@@ -259,14 +266,19 @@ class ConcurrencyController:
         if self.draining and inflight <= self.max_inflight:
             self.draining = False
 
+        self.kappa_ceiling = min(KAPPA_MAX, self.kappa_ceiling * KAPPA_CEILING_RELIEF)
         if (
             worst == Signal.CLEAR
+            and total_queued == 0
             and not self.draining
             and not self.frozen
             and self.kappa is not None
             and inflight >= BINDING_FRACTION * self.max_inflight
         ):
-            self.kappa = min(KAPPA_MAX, self.kappa * GROWTH_FACTOR)
+            # total_queued == 0: any capacity-queuing means the KV blocks are
+            # full right now — unlike generic waiting it is never a benign
+            # burst, and thrash onset is a cliff, not a slope
+            self.kappa = min(self.kappa_ceiling, self.kappa * GROWTH_FACTOR)
 
         if queue_overload and not self.draining:
             self.queue_overload_polls = 0
@@ -342,6 +354,8 @@ class ConcurrencyController:
         # A cut never raises: a queue-derived target can exceed the cap when
         # ``running`` is inflated by work the dispatcher no longer tracks
         target = min(target, self.max_inflight)
+        if self.kappa is not None:
+            self.kappa_ceiling = max(KAPPA_MIN, self.kappa * KAPPA_CEILING_FRACTION)
         capacity = self.capacity
         if capacity is not None:
             self.kappa = max(KAPPA_MIN, target * self.cost_estimate() / capacity)
