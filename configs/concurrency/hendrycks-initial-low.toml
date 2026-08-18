@@ -26,6 +26,7 @@ seq_len = 8192
 max_off_policy_steps = 16
 
 [orchestrator.concurrency]
+max_inflight = 1024
 initial_inflight = 16
 
 [[orchestrator.train.source]]
