@@ -222,6 +222,7 @@ The controller is always on — a self-contained abstraction (`ConcurrencyContro
 [orchestrator.concurrency]
 max_inflight = 512       # hard ceiling on the cap; None (default) leaves it capacity-driven
 initial_inflight = 256   # optional: start here instead of the pessimistic C / max_model_len bound
+min_inflight = 1         # hard floor (default); min_inflight = max_inflight pins a fixed concurrency (escape hatch)
 ```
 
 All control constants are internal. The controller owns no tasks or clients: the `InferenceMetricsCollector` pushes per-engine load samples (capacity, KV usage, running/waiting counts, preemption deltas) each poll, and the dispatcher reports completions and consumes the cap via `set_limit` / `cancel_inflight`.

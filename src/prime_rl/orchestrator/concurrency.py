@@ -260,7 +260,7 @@ class ConcurrencyController:
 
     def clamp_f(self, n_max: float) -> float:
         ceiling = self.config.max_inflight or math.inf
-        return min(max(n_max, float(self.floor)), float(ceiling))
+        return min(max(n_max, float(self.floor), float(self.config.min_inflight or 1)), float(ceiling))
 
     @property
     def capacity(self) -> int | None:
