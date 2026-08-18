@@ -104,7 +104,7 @@ def sft_full_offload_model_only_resume_process(
         "sft",
         "@",
         "configs/ci/integration/reverse-text-sft/full-offload-resume.toml",
-        "--deployment.num-gpus",
+        "--deployment.num-train-gpus",
         "2",
         "--monitors.wandb.project",
         wandb_project,
