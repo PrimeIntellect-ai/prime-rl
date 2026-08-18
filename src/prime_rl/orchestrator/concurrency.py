@@ -190,7 +190,13 @@ class ConcurrencyController:
         self.signal = worst
 
         inflight = self.get_inflight() if self.get_inflight is not None else 0
-        if self.draining and inflight <= self.max_inflight:
+        # Release the drain only once the engines have settled too: cuts
+        # cancel episodes, so dispatcher inflight drops below the cap almost
+        # immediately while the engines are still churning through their own
+        # backlog — preemption deltas from that stale churn must not trigger
+        # follow-up cuts (observed: an escalated-cut cascade 1024 -> 8, one
+        # halving per poll).
+        if self.draining and inflight <= self.max_inflight and not preempted and not queue_overload:
             self.draining = False
             if worst == Signal.CLEAR:
                 self.escalated = False
