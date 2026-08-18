@@ -74,7 +74,8 @@ group_size = 16
 max_off_policy_steps = 32
 
 [orchestrator.concurrency]
-initial_inflight = 512
+initial_inflight = 256
+max_inflight = 512
 
 [orchestrator.renderer]
 name = "glm-4.5"

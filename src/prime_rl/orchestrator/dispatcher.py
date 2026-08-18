@@ -1,4 +1,4 @@
-"""RolloutDispatcher: schedules rollouts under a shared permit counter.
+"""Dispatcher: schedules rollouts under a shared permit counter.
 
 - Capacity (``max_inflight``) is shared across train + eval. One permit is
   one episode: one ``run`` request against an env server. The cap is dynamic —
@@ -65,7 +65,7 @@ class DispatcherMode(Enum):
 class DispatcherMetrics:
     """Per-tick drain counters for the orchestrator's periodic log.
     ``drained()`` returns the current values and clears them; point-in-time
-    gauges live on ``RolloutDispatcher.gauges`` instead."""
+    gauges live on ``Dispatcher.gauges`` instead."""
 
     cancelled_by_kind_env: dict[tuple[Literal["train", "eval"], str], int] = field(
         default_factory=lambda: defaultdict(int)
@@ -118,7 +118,7 @@ class DispatcherMetrics:
         return keys
 
 
-class RolloutDispatcher:
+class Dispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules
     rollouts under shared capacity, and emits ``Rollout``\\ s to
@@ -153,7 +153,7 @@ class RolloutDispatcher:
         self.on_episode_complete = on_episode_complete
 
         self.max_inflight = max_inflight_episodes
-        self.inflight_permits = 0
+        self.current_inflight = 0
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
         )
@@ -208,7 +208,7 @@ class RolloutDispatcher:
 
     @property
     def available_permits(self) -> int:
-        return self.max_inflight - self.inflight_permits
+        return self.max_inflight - self.current_inflight
 
     def set_limit(self, max_inflight: int) -> None:
         """Move the in-flight cap (concurrency controller hook). A cap below
@@ -216,16 +216,16 @@ class RolloutDispatcher:
         blocked until enough episodes finish."""
         self.max_inflight = max_inflight
 
-    def shed_youngest(self, n: int) -> None:
+    def cancel_inflight(self, n: int) -> None:
         """Cancel roughly ``n`` in-flight train episodes, youngest groups
         first (least inference spend so far). Called on an overload cut so
         the working set shrinks immediately instead of waiting for the
         over-admitted episodes to finish at thrashed throughput."""
         if n <= 0:
             return
-        asyncio.create_task(self._shed_youngest(n))
+        asyncio.create_task(self._cancel_inflight(n))
 
-    async def _shed_youngest(self, n: int) -> None:
+    async def _cancel_inflight(self, n: int) -> None:
         group_age: dict[uuid.UUID, float] = {}
         for meta in self.inflight.values():
             if meta.kind != "train":
@@ -237,7 +237,7 @@ class RolloutDispatcher:
                 break
             shed += await self.drop_group(group_id)
         if shed:
-            get_logger().warning(f"Shed {shed} youngest in-flight train episodes after overload cut")
+            get_logger().warning(f"Cancelled {shed} youngest in-flight units after overload cut")
 
     def admission_budget(self) -> int:
         """Admissions still allowed in the current burst window."""
@@ -507,10 +507,10 @@ class RolloutDispatcher:
         ``available_permits >= 1``; this is not a blocking acquire."""
         if self.rate_limiter is not None:
             await self.rate_limiter.acquire()
-        self.inflight_permits += 1
+        self.current_inflight += 1
 
     def release(self) -> None:
-        self.inflight_permits -= 1
+        self.current_inflight -= 1
 
     async def handle_completed_rollout(self, task: asyncio.Task) -> None:
         """Emit every dispatched episode exactly once to ``out_q``. Task

@@ -68,7 +68,8 @@ group_size = 16
 max_off_policy_steps = 16
 
 [orchestrator.concurrency]
-initial_inflight = 12288
+initial_inflight = 4096
+max_inflight = 8192
 
 [orchestrator.model]
 name = "zai-org/GLM-5-FP8"

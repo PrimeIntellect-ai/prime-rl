@@ -3,7 +3,7 @@
 ``Orchestrator`` owns the shared state (policy, progress, ckpt, monitor)
 and drives the pipeline. Components are single-purpose:
 
-- ``RolloutDispatcher`` schedules rollouts; emits ``Rollout`` (train/eval
+- ``Dispatcher`` schedules rollouts; emits ``Rollout`` (train/eval
   discriminated by ``kind``) on its queue.
 - ``TrainSink`` ingests train rollouts (tokenize → advantages → filters)
   and returns a ``TrainBatch`` when the threshold is met.
@@ -44,7 +44,7 @@ from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.concurrency import ConcurrencyController
-from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
+from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -131,7 +131,7 @@ class Orchestrator:
     train_envs: TrainEnvs
     train_source: TrainSource
     train_sink: TrainSink
-    dispatcher: RolloutDispatcher
+    dispatcher: Dispatcher
     concurrency: ConcurrencyController
     watcher: WeightWatcher
     lag_monitor: EventLoopLagMonitor
@@ -390,7 +390,7 @@ class Orchestrator:
             floor=max(group_sizes, default=config.group_size),
             fallback_cost=config.seq_len,
         )
-        self.dispatcher = RolloutDispatcher(
+        self.dispatcher = Dispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
             train_source=self.train_source,
@@ -405,8 +405,8 @@ class Orchestrator:
         )
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
-            get_inflight=lambda: self.dispatcher.inflight_permits,
-            on_overload=self.dispatcher.shed_youngest,
+            get_inflight=lambda: self.dispatcher.current_inflight,
+            on_overload=self.dispatcher.cancel_inflight,
         )
         # The collector always polls — it feeds the concurrency controller;
         # W&B mirroring is gated on the registered monitor (the collector logs
@@ -720,7 +720,7 @@ class Orchestrator:
         self.maybe_trigger_eval(self.progress.step)
         # After the eval trigger, so a fired epoch's census reprices the cap now
         self.concurrency.on_step(
-            inflight=self.dispatcher.inflight_permits,
+            inflight=self.dispatcher.current_inflight,
             eval_in_flight=self.dispatcher.eval_has_work or self.dispatcher.inflight_eval_count > 0,
         )
         trim_process_memory()

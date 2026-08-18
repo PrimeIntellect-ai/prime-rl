@@ -19,7 +19,8 @@ batch_size = 512
 group_size = 16
 
 [orchestrator.concurrency]
-initial_inflight = 1024
+initial_inflight = 512
+max_inflight = 1024
 
 [[orchestrator.pre_batch_filters]]
 type = "zero_advantage"

@@ -1,26 +1,27 @@
-"""ConcurrencyController: adaptive in-flight episode cap for the dispatcher.
+"""ConcurrencyController: adaptive cap on in-flight units of inference work.
 
-Sets ``n_max = clamp(kappa * C / G, floor, max_inflight)``:
+A unit is whatever the dispatcher admits against one permit — the controller
+treats it as a black box with a token cost and a duration. Sets
+``n_max = clamp(kappa * C / G, floor, max_inflight)``:
 
 - ``C`` — GPU KV capacity in tokens, summed over decode engines (from
   ``vllm:cache_config_info`` labels, pushed by ``InferenceMetricsCollector``).
-- ``G`` — expected episode cost in tokens: per-env EWMAs of final context
-  size and duration over completed episodes, aggregated with
-  duration-corrected weights (train envs by sampling ratio, eval envs by
-  scheduled episodes while an eval epoch is in flight).
+- ``G`` — expected cost per unit in tokens: the max of the per-env completion
+  EWMAs (duration-weighted mix) and the size-biased live request cost
+  measured off the engines.
 - ``kappa`` — learned over-commit factor. Grows slowly while the engines are
   clear and the cap binds; backs off multiplicatively on overload.
 
 The controller is a pure state machine — it owns no tasks or clients. Three
 drivers call into it:
 
-- the metrics collector pushes ``observe(samples)`` every poll (the only
-  path that may cut the cap outside a step boundary),
-- the dispatcher reports ``record_episode(...)`` per completion,
+- the metrics collector pushes ``observe(samples)`` every poll (where all
+  cap control happens, clocked by pipeline turnovers),
+- the dispatcher reports ``record_episode(...)`` per completed unit,
 - the orchestrator's step loop calls ``on_step(...)`` once per shipped step
   and ``on_eval_epoch(census)`` when evals fire.
 
-Outbound it only calls the ``set_limit`` hook bound via :meth:`bind`.
+Outbound it calls the hooks bound via :meth:`bind`.
 """
 
 from __future__ import annotations
@@ -34,65 +35,54 @@ from prime_rl.configs.orchestrator import ConcurrencyConfig
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.utils import format_num
 
-# Per-episode EWMA smoothing for the cost/duration estimates: an effective
-# window of ~1/alpha episodes per env, independent of batch size and step
-# cadence, wide enough to average out heavy-tailed episode lengths.
-ESTIMATE_ALPHA = 1 / 512
-# Multiplicative backoff: the first cut, and the harsher follow-up when
-# overload survives a full drain
-BACKOFF_FACTOR = 0.75
+ESTIMATE_ALPHA = 1 / 1024
+"""EWMA smoothing for the per-env cost/duration estimates: an effective window of ~1/alpha completed units per env."""
+
+BACKOFF_FACTOR = 0.8
+"""Multiplicative backoff of the first overload cut."""
+
 ESCALATED_BACKOFF_FACTOR = 0.5
-# Per-poll growth while the engines are clear and the cap binds. Clocked on
-# polls, not steps: step duration varies from seconds to tens of minutes
-# across workloads, so step-clocked growth adapts at wildly different speeds
-# — and a binding check sampled only at the boundary instant misses caps
-# that bind all step long (episodes complete in bursts at boundaries).
+"""Backoff of a follow-up cut when overload survives a full drain."""
+
 GROWTH_FACTOR = 1.003
-# Grow only when the cap actually constrains admission
+"""Per-poll kappa growth while the engines are clear and the cap binds."""
+
 BINDING_FRACTION = 0.9
+"""The cap counts as binding when inflight reaches this fraction of it."""
+
 KAPPA_MIN = 0.25
-KAPPA_MAX = 16.0
-# Ceiling memory: an overload cut pins future growth just under the kappa
-# that overloaded, so the ceiling is rediscovered by a wobble instead of a
-# fresh thrash episode every cycle. The slow relief lets a genuinely
-# lightened workload re-probe (~+2% per 10 minutes).
+KAPPA_MAX = 8.0
+"""Bounds on the learned over-commit factor."""
+
 KAPPA_CEILING_FRACTION = 0.9
+"""An overload cut pins future kappa growth at this fraction of the kappa that overloaded."""
+
 KAPPA_CEILING_RELIEF = 1.00002
-# SOFT (growth veto) once any engine's live-request KV usage crosses this —
-# an earlier warning than queueing: thrash onset is a cliff at ~1.0, so stop
-# feeding the cap while there is still headroom to absorb context growth
+"""Per-poll relief of the kappa ceiling (~+2% per 10 minutes), so a lightened workload can re-probe."""
+
 KV_USAGE_SOFT = 0.7
-# Headroom feedback: above this usage, trim the cap AND the pool itself to
-# inflight * KV_USAGE_TARGET / usage. Cap moves alone cannot relieve
-# pressure from episodes maturing in place (they only block admissions —
-# observed: contexts grew ~15%/step under a frozen, falling cap and crossed
-# the thrash cliff in minutes), so the excess is shed, youngest first. The
-# cooldown lets each trim propagate before the next is sized.
+"""SOFT (growth veto) once any decode engine's KV usage crosses this."""
+
 KV_USAGE_TARGET = 0.85
+"""Above this usage, trim the cap and the in-flight pool to inflight * target / usage."""
+
 KV_TRIM_COOLDOWN_POLLS = 6
-# Queue-overload HARD: capacity-queued requests exceed this fraction of
-# running requests for QUEUE_PERSISTENCE_POLLS consecutive polls. Agentic
-# rollouts overload by queueing, not preempting — admission control parks
-# excess load in the waiting queue, so preemptions alone miss it. The
-# persistence window filters natural turn-completion bursts.
+"""Polls between kv-headroom trims, letting each trim propagate before the next is sized."""
+
 QUEUE_RATIO = 0.5
-QUEUE_PERSISTENCE_POLLS = 12
-# Cut to just under what the engines are actually serving
+"""HARD once capacity-queued requests exceed this fraction of running requests for the persistence window."""
+
+QUEUE_PERSISTENCE_POLLS = 6
+"""Consecutive polls of queue overload before the HARD cut; filters natural turn-completion bursts."""
+
 QUEUE_CUT_FRACTION = 0.9
-# Cap raises at most this factor per pipeline turnover (one turnover = the
-# in-flight pool has been replaced once: each completion advances it by
-# 1/inflight). The turnover is the controller's clock: it advances at the
-# pipeline's own timescale regardless of step cadence or concurrency scale,
-# so 100 completions at concurrency 10 buy 10x the raise budget of 100
-# completions at concurrency 1000 — matching how much less biased their
-# estimates are. A raise floods in fresh episodes whose fast finishers bias
-# the estimators toward a bigger raise; the slew turns that spiral into a
-# ramp the overload cut can interrupt early. Cuts are never limited.
+"""A queue cut targets this fraction of what the engines are serving."""
+
 MAX_TURNOVER_GROWTH = 1.25
-# Ignore re-evaluation moves smaller than this fraction of the cap — the
-# cap is applied per poll, and admission churn should not follow estimate
-# noise episode by episode
+"""Maximum cap raise per pipeline turnover (each completion advances the turnover by 1/inflight)."""
+
 REEVAL_DEADBAND = 0.02
+"""Minimum relative cap move a per-poll re-evaluation applies."""
 
 
 class Signal(Enum):

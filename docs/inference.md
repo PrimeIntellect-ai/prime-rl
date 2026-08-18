@@ -73,7 +73,7 @@ data_parallel_size = 4
 type = "single_node"
 ```
 
-We reccomend choosing your parallelism based on the expected throughput and latency requirements. High `dp` might create high latency, however it will also give you the highest throughput. This is a tradeoff you need to make based on your use case and required rollout concurrency (see [Adaptive Concurrency](#adaptive-concurrency)). Setting `tp` to a higher value will usually give you lower latency, but the inference server also will become saturated faster with lower number of requests.
+We reccomend choosing your parallelism based on the expected throughput and latency requirements. High `dp` might create high latency, however it will also give you the highest throughput. This is a tradeoff you need to make based on your use case and required concurrency (see [Adaptive Concurrency](#adaptive-concurrency)). Setting `tp` to a higher value will usually give you lower latency, but the inference server also will become saturated faster with lower number of requests.
 
 Another thing to consider, is the memory usage. You need to make sure that the model will fit into the available GPU memory. We will not go into the details on how to do this in this document. Related thing to consider, is the space for the KV cache. This will heavily affect the amount of requests your inference server can handle. You want to shard your model, either using `inference.vllm.enable_expert_parallel` or `inference.vllm.tensor_parallel_size` to maximize the available GPU memory.
 
@@ -206,7 +206,7 @@ X-Session-ID = "trajectory_id" # this is the default - each rollout has a unique
 
 ## Adaptive Concurrency
 
-The orchestrator sizes its in-flight episode cap adaptively. A static cap is workload-dependent: too low starves the engines; too high triggers KV thrash (preemption → re-prefill churn → prefix-cache eviction → pile-up), and recovery is slow. Reactive throttling alone cannot prevent this: episodes run for minutes to hours and build KV the whole time, so once overload is visible, the pressure already in flight is unsheddable. Safety must come from admission-time budgeting; feedback only trims the budget's error.
+The orchestrator sizes its in-flight episode cap adaptively. A static cap is workload-dependent: too low starves the engines; too high triggers KV thrash (preemption → re-prefill churn → prefix-cache eviction → pile-up), and recovery is slow.
 
 The controller sets the cap dynamically:
 
