@@ -99,6 +99,10 @@ def parse_prometheus_text(text: str) -> dict[str, EngineSnapshot]:
                 engine.cache_config.update(sample.labels)
                 continue
             name = sample.name.removeprefix(METRIC_PREFIX)
+            # Keep the queue-reason breakdown instead of summing it away — the
+            # concurrency controller keys on capacity-queued requests
+            if name == "num_requests_waiting_by_reason":
+                name = f"num_requests_waiting_reason_{sample.labels.get('reason', 'unknown')}"
             if family.type == "gauge":
                 engine.gauges[name] = engine.gauges.get(name, 0.0) + sample.value
             elif family.type == "counter":
@@ -378,7 +382,11 @@ class InferenceMetricsCollector:
             kv_capacity_tokens=kv_capacity_tokens,
             max_model_len=self.max_model_len_by_endpoint.get(sample.endpoint.key),
             kv_usage=sample.snapshot.gauges.get("kv_cache_usage_perc", 0.0),
+            running=int(sample.snapshot.gauges.get("num_requests_running", 0.0)),
             waiting=int(sample.snapshot.gauges.get("num_requests_waiting", 0.0)),
+            waiting_capacity=(
+                int(capacity_waiting) if (capacity_waiting := sample.snapshot.gauges.get("num_requests_waiting_reason_capacity")) is not None else None
+            ),
             preemptions_delta=preemptions_delta,
         )
 

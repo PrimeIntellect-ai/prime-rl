@@ -48,6 +48,15 @@ GROWTH_FACTOR = 1.02
 BINDING_FRACTION = 0.9
 KAPPA_MIN = 0.25
 KAPPA_MAX = 16.0
+# Queue-overload HARD: capacity-queued requests exceed this fraction of
+# running requests for QUEUE_PERSISTENCE_POLLS consecutive polls. Agentic
+# rollouts overload by queueing, not preempting — admission control parks
+# excess load in the waiting queue, so preemptions alone miss it. The
+# persistence window filters natural turn-completion bursts.
+QUEUE_RATIO = 0.5
+QUEUE_PERSISTENCE_POLLS = 12
+# Cut to just under what the engines are actually serving
+QUEUE_CUT_FRACTION = 0.9
 
 
 class Signal(Enum):
@@ -66,7 +75,11 @@ class EngineLoadSample:
     kv_capacity_tokens: int | None
     max_model_len: int | None
     kv_usage: float
+    running: int
     waiting: int
+    # Requests queued specifically for KV capacity (None if the engine does
+    # not report the by-reason breakdown; fall back to ``waiting``)
+    waiting_capacity: int | None
     preemptions_delta: int
 
 
@@ -129,6 +142,8 @@ class ConcurrencyController:
         self.signal = Signal.CLEAR
         self.all_clear_since_step = True
         self.prev_waiting: dict[str, int] = {}
+        # Consecutive polls with the capacity queue above QUEUE_RATIO of running
+        self.queue_overload_polls = 0
         # After a cut, ignore further HARD signals until inflight has drained
         # below the new cap — the overload during drain is stale
         self.draining = False
@@ -187,6 +202,19 @@ class ConcurrencyController:
             if sample.waiting > 0 and self.prev_waiting.get(sample.engine_id, 0) > 0:
                 worst = Signal.SOFT
         self.prev_waiting = {sample.engine_id: sample.waiting for sample in samples}
+
+        total_running = sum(sample.running for sample in samples)
+        total_queued = sum(
+            sample.waiting_capacity if sample.waiting_capacity is not None else sample.waiting for sample in samples
+        )
+        if total_running > 0 and total_queued > QUEUE_RATIO * total_running:
+            self.queue_overload_polls += 1
+        else:
+            self.queue_overload_polls = 0
+        queue_overload = self.queue_overload_polls >= QUEUE_PERSISTENCE_POLLS
+        if queue_overload:
+            worst = Signal.HARD
+
         self.signal = worst
         if worst != Signal.CLEAR:
             self.all_clear_since_step = False
@@ -194,6 +222,11 @@ class ConcurrencyController:
         inflight = self._get_inflight() if self._get_inflight is not None else 0
         if self.draining and inflight <= self.max_inflight:
             self.draining = False
+
+        if queue_overload and not self.draining:
+            self.queue_overload_polls = 0
+            self.cut(inflight, target=self.clamp(QUEUE_CUT_FRACTION * total_running), reason="queue overload")
+            return
 
         if worst == Signal.HARD and not self.draining:
             self.cut(inflight)
@@ -256,17 +289,19 @@ class ConcurrencyController:
         value and the emergency brake are never frozen."""
         return self.completed_steps < self.config.frozen_steps
 
-    def cut(self, inflight: int) -> None:
-        """Multiplicative cut relative to what is actually running; freeze
-        further cuts until the drain completes."""
-        target = self.clamp(self.backoff_factor * max(inflight, self.floor))
+    def cut(self, inflight: int, target: int | None = None, reason: str = "overload") -> None:
+        """Cut the cap and freeze further cuts until the drain completes.
+        Preemption cuts back off multiplicatively from what is in flight; a
+        queue cut passes an explicit target — what the engines actually serve."""
+        if target is None:
+            target = self.clamp(self.backoff_factor * max(inflight, self.floor))
         capacity = self.capacity
         if capacity is not None:
             self.kappa = max(KAPPA_MIN, target * self.cost_estimate() / capacity)
         self.draining = True
         # Escalate if overload survives the drain; reset on the next clear step
         self.backoff_factor = ESCALATED_BACKOFF_FACTOR
-        self.apply_limit(target, reason="overload")
+        self.apply_limit(target, reason=reason)
 
     def apply_limit(self, n_max: int, *, reason: str | None) -> None:
         if n_max == self.max_inflight:
@@ -345,4 +380,5 @@ class ConcurrencyController:
             "concurrency/signal": float(
                 {Signal.CLEAR: 0, Signal.SOFT: 1, Signal.HARD: 2}[self.signal],
             ),
+            "concurrency/queue_overload_polls": float(self.queue_overload_polls),
         }
