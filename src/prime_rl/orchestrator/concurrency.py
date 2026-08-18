@@ -58,6 +58,10 @@ KAPPA_MAX = 16.0
 # lightened workload re-probe (~+2% per 10 minutes).
 KAPPA_CEILING_FRACTION = 0.9
 KAPPA_CEILING_RELIEF = 1.00002
+# SOFT (growth veto) once any engine's live-request KV usage crosses this —
+# an earlier warning than queueing: thrash onset is a cliff at ~1.0, so stop
+# feeding the cap while there is still headroom to absorb context growth
+KV_USAGE_SOFT = 0.8
 # Queue-overload HARD: capacity-queued requests exceed this fraction of
 # running requests for QUEUE_PERSISTENCE_POLLS consecutive polls. Agentic
 # rollouts overload by queueing, not preempting — admission control parks
@@ -261,6 +265,8 @@ class ConcurrencyController:
                 worst = Signal.HARD
                 break
             if sample.waiting > 0 and self.prev_waiting.get(sample.engine_id, 0) > 0:
+                worst = Signal.SOFT
+            if sample.role != "prefill" and sample.kv_usage > KV_USAGE_SOFT:
                 worst = Signal.SOFT
         self.prev_waiting = {sample.engine_id: sample.waiting for sample in samples}
 
