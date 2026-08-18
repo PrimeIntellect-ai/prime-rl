@@ -134,7 +134,7 @@ class Dispatcher:
         eval_source: EvalSource | None,
         policy_pool: InferencePool,
         policy: Policy,
-        max_inflight_episodes: int,
+        initial_max_inflight: int,
         max_inflight_ceiling: int | None,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
@@ -152,7 +152,10 @@ class Dispatcher:
         # ``(env_name, kind, total_tokens, duration_s)`` per completed episode
         self.on_episode_complete = on_episode_complete
 
-        self.max_inflight = max_inflight_episodes
+        # Starting value of the dynamic cap (the concurrency controller moves
+        # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
+        # bound ``out_q``
+        self.max_inflight = initial_max_inflight
         self.current_inflight = 0
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
@@ -221,8 +224,6 @@ class Dispatcher:
         first (least inference spend so far). Called on an overload cut so
         the working set shrinks immediately instead of waiting for the
         over-admitted episodes to finish at thrashed throughput."""
-        if n <= 0:
-            return
         asyncio.create_task(self._cancel_inflight(n))
 
     async def _cancel_inflight(self, n: int) -> None:

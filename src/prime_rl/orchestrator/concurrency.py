@@ -119,9 +119,9 @@ class ConcurrencyController:
         self.draining = False
         self.escalated = False
 
-        self._set_limit: Callable[[int], None] | None = None
-        self._get_inflight: Callable[[], int] | None = None
-        self._on_overload: Callable[[int], None] | None = None
+        self.set_limit: Callable[[int], None] | None = None
+        self.get_inflight: Callable[[], int] | None = None
+        self.on_overload: Callable[[int], None] | None = None
 
     def bind(
         self,
@@ -135,9 +135,9 @@ class ConcurrencyController:
         ``on_overload`` receives the unit excess on a downward resize so the
         dispatcher can cancel in-flight work instead of just blocking
         admission."""
-        self._set_limit = set_limit
-        self._get_inflight = get_inflight
-        self._on_overload = on_overload
+        self.set_limit = set_limit
+        self.get_inflight = get_inflight
+        self.on_overload = on_overload
 
     # ── inbound hooks ────────────────────────────────────────────────────────
 
@@ -145,13 +145,12 @@ class ConcurrencyController:
         """One completed unit (from the dispatcher). Advances the turnover
         clock and, while the last poll was green, grows the cap — so growth
         is paced by the pipeline itself at any concurrency scale."""
-        inflight = self._get_inflight() if self._get_inflight is not None else 0
+        inflight = self.get_inflight() if self.get_inflight is not None else 0
         fraction = 1 / max(inflight, self.floor, 1)
         self.turnover += fraction
         if self.can_grow and inflight >= BINDING_FRACTION * self.max_inflight:
-            self.cap = self.clamp_f(self.cap * TURNOVER_GROWTH**fraction)
-            if int(self.cap) > self.max_inflight:
-                self.apply_limit(int(self.cap), reason=None)
+            self.cap = self.clamp(self.cap * TURNOVER_GROWTH**fraction)
+            self.apply_limit(int(self.cap), reason=None)
 
     def observe(self, samples: list[EngineLoadSample]) -> None:
         """Per-poll engine load push from the metrics collector: classify the
@@ -190,7 +189,7 @@ class ConcurrencyController:
             worst = max(worst, Signal.HARD if queue_overload else Signal.SOFT, key=lambda s: s.value)
         self.signal = worst
 
-        inflight = self._get_inflight() if self._get_inflight is not None else 0
+        inflight = self.get_inflight() if self.get_inflight is not None else 0
         if self.draining and inflight <= self.max_inflight:
             self.draining = False
             if worst == Signal.CLEAR:
@@ -203,7 +202,7 @@ class ConcurrencyController:
         if not self.bootstrapped and self.capacity is not None:
             self.bootstrapped = True
             cost = float(self.engine_max_len or self.fallback_cost)
-            self.cap = self.clamp_f(self.capacity / cost)
+            self.cap = self.clamp(self.capacity / cost)
             get_logger().info(
                 f"Derived initial max inflight {int(self.cap)} - {format_num(self.capacity, precision=1)} "
                 f"KV cache tokens / {format_num(cost, precision=1)} tokens per unit"
@@ -217,10 +216,10 @@ class ConcurrencyController:
             fraction = ESCALATED_CUT_FRACTION if self.escalated else None
             if queue_overload:
                 self.queue_overload_polls = 0
-                target = self.clamp(total_running * (fraction or QUEUE_CUT_FRACTION))
+                target = int(self.clamp(total_running * (fraction or QUEUE_CUT_FRACTION)))
                 reason = "queue overload"
             else:
-                target = self.clamp(inflight * (fraction or PREEMPTION_CUT_FRACTION))
+                target = int(self.clamp(inflight * (fraction or PREEMPTION_CUT_FRACTION)))
                 reason = "preemptions"
             self.resize_down(target, inflight, reason=reason)
             self.draining = True
@@ -228,7 +227,7 @@ class ConcurrencyController:
             return
 
         if max_usage > KV_USAGE_TRIGGER and inflight > 0 and self.trim_cooldown == 0:
-            target = self.clamp(inflight * KV_USAGE_TARGET / max_usage)
+            target = int(self.clamp(inflight * KV_USAGE_TARGET / max_usage))
             self.resize_down(target, inflight, reason=f"kv headroom (usage {max_usage:.2f})")
             self.trim_cooldown = KV_TRIM_COOLDOWN_POLLS
 
@@ -239,8 +238,8 @@ class ConcurrencyController:
         target = min(target, self.max_inflight)
         self.cap = float(target)
         self.apply_limit(target, reason=reason)
-        if self._on_overload is not None and inflight > target:
-            self._on_overload(inflight - target)
+        if self.on_overload is not None and inflight > target:
+            self.on_overload(inflight - target)
 
     def apply_limit(self, n_max: int, *, reason: str | None) -> None:
         if n_max == self.max_inflight:
@@ -252,13 +251,10 @@ class ConcurrencyController:
                 f"turnover={self.turnover:.1f} signal={self.signal.name.lower()}"
             )
         self.max_inflight = n_max
-        if self._set_limit is not None:
-            self._set_limit(n_max)
+        if self.set_limit is not None:
+            self.set_limit(n_max)
 
-    def clamp(self, n_max: float) -> int:
-        return int(self.clamp_f(n_max))
-
-    def clamp_f(self, n_max: float) -> float:
+    def clamp(self, n_max: float) -> float:
         ceiling = self.config.max_inflight or math.inf
         return min(max(n_max, float(self.floor), float(self.config.min_inflight or 1)), float(ceiling))
 
@@ -273,9 +269,8 @@ class ConcurrencyController:
         return {
             "concurrency/max_inflight": float(self.max_inflight),
             "concurrency/turnover": self.turnover,
-            "concurrency/capacity_tokens": float(self.capacity or 0),
+            "concurrency/capacity": float(self.capacity or 0),
             "concurrency/signal": float(
                 {Signal.CLEAR: 0, Signal.SOFT: 1, Signal.HARD: 2}[self.signal],
             ),
-            "concurrency/queue_overload_polls": float(self.queue_overload_polls),
         }

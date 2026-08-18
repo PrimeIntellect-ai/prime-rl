@@ -396,7 +396,7 @@ class Orchestrator:
             eval_source=self.eval_source,
             policy_pool=self.policy_inference,
             policy=self.policy,
-            max_inflight_episodes=self.concurrency.max_inflight,
+            initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
