@@ -1,0 +1,131 @@
+# Adaptive-concurrency e2e: GLM-4.5-Air on the scaleswe taskset, 2 nodes (1 train + 1 infer),
+# bash harness on a prime sandbox runtime, reasonable starting cap (256) WITH SWE-Bench Verified evals
+# (10-turn-capped, every 10 steps). Expect: eval waves shift the in-flight mix and the
+# usage-driven cap absorbs them reactively.
+# Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
+
+max_steps = 40
+seq_len = 65536
+
+[run]
+name = "glm-air-evals"
+
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/mika-triton-cache"
+
+[slurm]
+job_name = "glm-air-evals"
+partition = "all"
+pre_run_command = 'timeout 120 prime sandbox delete --label "glm-air-evals" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+
+[monitors.wandb]
+project = "adaptive-concurrency"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+
+# --- Trainer ---
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 4
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = false
+full_offload = true
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.optim]
+type = "adamw"
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 128
+group_size = 8
+max_off_policy_steps = 32
+
+[orchestrator.concurrency]
+max_inflight = 1024
+initial_inflight = 256
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.renderer]
+name = "glm-4.5"
+thinking_retention = "all"
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+
+[orchestrator.train.source.env.taskset]
+id = "scaleswe"
+
+[orchestrator.train.source.env.agent.harness]
+id = "bash"
+
+[orchestrator.train.source.env.agent.runtime]
+labels = ["glm-air-evals"]
+
+# --- Eval: SWE-Bench Verified every 10 steps, capped at 10 turns ---
+
+[orchestrator.eval]
+interval = 10
+
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+
+[orchestrator.eval.source.env.agent]
+max_turns = 10
+
+[orchestrator.eval.source.env.taskset]
+id = "swebench-verified"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "bash"
+
+[orchestrator.eval.source.env.agent.runtime]
+labels = ["glm-air-evals"]
+
+[orchestrator.eval.source.env.agent.timeout]
+rollout = 3600
+
+# --- Inference ---
+
+[inference]
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/mika-vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/mika-flashinfer-cache"
+
+[inference.vllm]
+max_model_len = 65536
+tensor_parallel_size = 8
+enable_return_routed_experts = true

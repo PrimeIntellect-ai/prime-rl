@@ -1,6 +1,6 @@
 # Adaptive-concurrency e2e: hendrycks-math sanity, single node (4 train + 4 infer GPUs),
-# LOW starting cap (16). Expect: growth from near zero at the turnover pace
-# until the KV usage band binds.
+# HIGH starting cap (1024, the ceiling). Expect: overload trips a cut (queue or
+# preemptions), the excess is cancelled, and the cap settles into the usage band.
 # gpu_memory_utilization is lowered artificially so the KV budget is small enough that the
 # controller operates well below max_inflight. No evals — the trace isolates the controller.
 # Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
@@ -8,7 +8,7 @@
 max_steps = 50
 
 [run]
-name = "hendrycks-initial-low"
+name = "hendrycks-initial-high"
 
 [deployment]
 num_train_gpus = 4
@@ -28,7 +28,7 @@ max_off_policy_steps = 16
 
 [orchestrator.concurrency]
 max_inflight = 1024
-initial_inflight = 16
+initial_inflight = 1024
 
 [[orchestrator.train.source]]
 name = "hendrycks-math"

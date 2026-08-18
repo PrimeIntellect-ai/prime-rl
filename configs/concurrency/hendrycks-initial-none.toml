@@ -1,18 +1,18 @@
-# Adaptive-concurrency e2e: hendrycks-math sanity on 2 GPUs with a starting cap far past the
-# engine's KV capacity. Expect: the overload trips a cut during warmup (preemptions or the
-# capacity queue), the excess is cancelled, and after the drain the cap settles into the
-# usage band — no repeated cuts on the stale draining signal. AIME evals (avg@4) every
-# 10 steps as in the low-eval variant.
+# Adaptive-concurrency e2e: hendrycks-math sanity, single node (4 train + 4 infer GPUs),
+# NO starting cap. Expect: the pessimistic C / max_model_len derivation seeds the cap,
+# then turnover-paced growth into the usage band.
+# gpu_memory_utilization is lowered artificially so the KV budget is small enough that the
+# controller operates well below max_inflight. No evals — the trace isolates the controller.
 # Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
 
 max_steps = 50
 
 [run]
-name = "hendrycks-initial-high-eval"
+name = "hendrycks-initial-none"
 
 [deployment]
-num_train_gpus = 1
-num_infer_gpus = 1
+num_train_gpus = 4
+num_infer_gpus = 4
 
 [monitors.wandb]
 project = "adaptive-concurrency"
@@ -21,14 +21,14 @@ project = "adaptive-concurrency"
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
 [orchestrator]
-batch_size = 64
+batch_size = 512
 group_size = 8
 seq_len = 8192
 max_off_policy_steps = 16
 
 [orchestrator.concurrency]
-max_inflight = 2048
-initial_inflight = 2048
+max_inflight = 1024
+# initial_inflight unset: derived at runtime as C / max_model_len
 
 [[orchestrator.train.source]]
 name = "hendrycks-math"
@@ -44,22 +44,6 @@ id = "null"
 [orchestrator.train.source.env.agent.runtime]
 type = "subprocess"
 
-[orchestrator.eval]
-interval = 10
-group_size = 4
-
-[[orchestrator.eval.source]]
-name = "aime2024"
-
-[orchestrator.eval.source.env.taskset]
-id = "aime24"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "null"
-
-[orchestrator.eval.source.env.agent.runtime]
-type = "subprocess"
-
 [orchestrator.renderer]
 name = "default"
 reasoning_parser = "think"
@@ -70,3 +54,4 @@ seq_len = 16384
 [inference.vllm]
 max_model_len = 8192
 max_num_seqs = 1024
+gpu_memory_utilization = 0.2

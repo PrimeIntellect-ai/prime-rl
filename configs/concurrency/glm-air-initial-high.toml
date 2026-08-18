@@ -1,21 +1,21 @@
 # Adaptive-concurrency e2e: GLM-4.5-Air on the scaleswe taskset, 2 nodes (1 train + 1 infer),
-# bash harness on a prime sandbox runtime, train-only (no evals). Starts at 256 inflight,
-# no freeze: the measured request-cost estimator prices the pool from the first turns.
+# bash harness on a prime sandbox runtime, HIGH starting cap (1024, the ceiling). Expect: overload trips a
+# queue cut, the excess is cancelled, and the cap settles into the usage band. No evals.
 # Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
 
-max_steps = 100
+max_steps = 40
 seq_len = 65536
 
 [run]
-name = "glm-air-swe"
+name = "glm-air-initial-high"
 
 [env_vars]
 TRITON_CACHE_DIR = "/tmp/mika-triton-cache"
 
 [slurm]
-job_name = "glm45air-swe-concurrency"
+job_name = "glm-air-initial-high"
 partition = "all"
-pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-swe-concurrency" -y || true'
+pre_run_command = 'timeout 120 prime sandbox delete --label "glm-air-initial-high" -y || true'
 
 [deployment]
 type = "multi_node"
@@ -65,8 +65,8 @@ group_size = 8
 max_off_policy_steps = 32
 
 [orchestrator.concurrency]
-initial_inflight = 256
 max_inflight = 1024
+initial_inflight = 1024
 
 [orchestrator.algo]
 type = "grpo"
@@ -91,7 +91,7 @@ id = "scaleswe"
 id = "bash"
 
 [orchestrator.train.source.env.agent.runtime]
-labels = ["glm45air-swe-concurrency"]
+labels = ["glm-air-initial-high"]
 
 # --- Inference ---
 

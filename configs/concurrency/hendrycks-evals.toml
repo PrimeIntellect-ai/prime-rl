@@ -1,19 +1,18 @@
-# Adaptive-concurrency e2e: hendrycks-math sanity on 2 GPUs (1 trainer + 1 inference) with a
-# LOW starting cap. Expect: the cap grows from initial_inflight at the turnover pace while the
-# engines stay clear, then settles into the KV usage band — with no preemptions
-# (concurrency/signal stays clear of HARD). AIME
-# evals (avg@4, every 10 steps) have a different length profile than train, so the eval census
-# visibly reprices the cap at epoch boundaries.
+# Adaptive-concurrency e2e: hendrycks-math sanity, single node (4 train + 4 infer GPUs),
+# reasonable starting cap (256) WITH AIME evals (avg@4 every 10 steps). Expect: the
+# eval waves shift the in-flight mix and the usage-driven cap absorbs them reactively.
+# gpu_memory_utilization is lowered artificially so the KV budget is small enough that the
+# controller operates well below max_inflight. No evals — the trace isolates the controller.
 # Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
 
 max_steps = 50
 
 [run]
-name = "hendrycks-initial-low-eval"
+name = "hendrycks-evals"
 
 [deployment]
-num_train_gpus = 1
-num_infer_gpus = 1
+num_train_gpus = 4
+num_infer_gpus = 4
 
 [monitors.wandb]
 project = "adaptive-concurrency"
@@ -22,14 +21,14 @@ project = "adaptive-concurrency"
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
 [orchestrator]
-batch_size = 64
+batch_size = 512
 group_size = 8
 seq_len = 8192
 max_off_policy_steps = 16
 
 [orchestrator.concurrency]
 max_inflight = 1024
-initial_inflight = 16
+initial_inflight = 256
 
 [[orchestrator.train.source]]
 name = "hendrycks-math"
@@ -71,3 +70,4 @@ seq_len = 16384
 [inference.vllm]
 max_model_len = 8192
 max_num_seqs = 1024
+gpu_memory_utilization = 0.2
