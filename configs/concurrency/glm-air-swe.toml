@@ -67,7 +67,6 @@ max_off_policy_steps = 32
 [orchestrator.concurrency]
 initial_inflight = 256
 max_inflight = 1024
-frozen_steps = 0
 
 [orchestrator.algo]
 type = "grpo"

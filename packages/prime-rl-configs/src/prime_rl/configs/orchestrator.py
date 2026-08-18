@@ -397,9 +397,6 @@ class ConcurrencyConfig(BaseConfig):
     initial_inflight: int | None = Field(None, ge=1)
     """In-flight cap to start from. Set it when a good value is known to skip the initial ramp; None derives a pessimistic bound at runtime — engine KV capacity divided by the engine's max context length (``max_model_len``, whether set explicitly or taken from the model config)."""
 
-    frozen_steps: int = Field(1, ge=0)
-    """Number of initial training steps during which the cap stays pinned at its starting value. Raise it to give the cost estimates more completions before the first re-evaluation. The initial bootstrap derivation and emergency overload cuts stay live regardless."""
-
     @model_validator(mode="after")
     def validate_bounds(self):
         if self.max_inflight is not None and self.initial_inflight is not None:

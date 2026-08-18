@@ -67,11 +67,20 @@ QUEUE_RATIO = 0.5
 QUEUE_PERSISTENCE_POLLS = 12
 # Cut to just under what the engines are actually serving
 QUEUE_CUT_FRACTION = 0.9
-# Cap raises at most this factor per re-evaluation. A raise floods in fresh
-# episodes whose fast finishers drag the cost EWMA down, inviting a bigger
-# raise — the slew limit turns that spiral into a ramp the overload cut can
-# interrupt early. Cuts are never limited.
-MAX_STEP_GROWTH = 1.25
+# Cap raises at most this factor per pipeline turnover (one turnover = the
+# in-flight pool has been replaced once: each completion advances it by
+# 1/inflight). The turnover is the controller's clock: it advances at the
+# pipeline's own timescale regardless of step cadence or concurrency scale,
+# so 100 completions at concurrency 10 buy 10x the raise budget of 100
+# completions at concurrency 1000 — matching how much less biased their
+# estimates are. A raise floods in fresh episodes whose fast finishers bias
+# the estimators toward a bigger raise; the slew turns that spiral into a
+# ramp the overload cut can interrupt early. Cuts are never limited.
+MAX_TURNOVER_GROWTH = 1.25
+# Ignore re-evaluation moves smaller than this fraction of the cap — the
+# cap is applied per poll, and admission churn should not follow estimate
+# noise episode by episode
+REEVAL_DEADBAND = 0.02
 
 
 class Signal(Enum):
@@ -145,10 +154,14 @@ class ConcurrencyController:
         self.engine_max_len: int | None = None
 
         self.max_inflight = config.initial_inflight or floor
-        # None until the first unfrozen on_step (or a cut initializes it early)
+        # None until the first poll with real cost data (or a cut initializes it early)
         self.kappa: float | None = None
         self.bootstrapped = False
         self.completed_steps = 0
+        # Pipeline turnovers completed; the controller's clock (see MAX_TURNOVER_GROWTH)
+        self.turnover = 0.0
+        # Highest cap the slew currently permits; compounds with the turnover
+        self.slew_allowance = float(self.max_inflight)
 
         self.estimates: dict[tuple[str, str], EnvEstimate] = {}
         # Request-weighted decayed mean of measured per-request KV cost.
@@ -199,8 +212,13 @@ class ConcurrencyController:
     # ── inbound hooks ────────────────────────────────────────────────────────
 
     def record_episode(self, env_name: str, kind: str, tokens: int, duration: float) -> None:
-        """One completed episode (from the dispatcher). Errored episodes with
-        no tokens carry no cost information and are skipped."""
+        """One completed episode (from the dispatcher). Every completion
+        advances the turnover clock and the slew allowance (errored episodes
+        free a slot too); only episodes with tokens carry cost information."""
+        inflight = self._get_inflight() if self._get_inflight is not None else 0
+        fraction = 1 / max(inflight, self.floor, 1)
+        self.turnover += fraction
+        self.slew_allowance = max(self.slew_allowance, float(self.max_inflight)) * MAX_TURNOVER_GROWTH**fraction
         if kind == "eval" and env_name in self.eval_remaining:
             self.eval_remaining[env_name] = max(0, self.eval_remaining[env_name] - 1)
         if tokens <= 0 or duration <= 0:
@@ -271,7 +289,6 @@ class ConcurrencyController:
             worst == Signal.CLEAR
             and total_queued == 0
             and not self.draining
-            and not self.frozen
             and self.kappa is not None
             and inflight >= BINDING_FRACTION * self.max_inflight
         ):
@@ -289,10 +306,8 @@ class ConcurrencyController:
             self.cut(inflight)
             return
 
-        # First capacity observation before any step completed, without a
-        # user-set start: raise the pre-capacity floor to the feedforward
-        # bootstrap. Fires once — every later change goes through on_step
-        # (or a HARD cut), so the cap is stable between step boundaries.
+        # First capacity observation without a user-set start: raise the
+        # pre-capacity floor to the feedforward bootstrap, once
         if (
             not self.bootstrapped
             and self.kappa is None
@@ -307,43 +322,38 @@ class ConcurrencyController:
             )
             self.apply_limit(derived, reason=None)
 
+        capacity = self.capacity
+        if capacity is None:
+            return
+        if self.kappa is None:
+            # Wait for real cost data — the pre-traffic max-context fallback
+            # would read a user-set start as intentional over-commit
+            if self.observed_cost <= 0 and not self.estimates:
+                return
+            # Continuity: respect a user-set start that implies over-commit;
+            # otherwise jump to the safe full budget (kappa = 1)
+            self.kappa = max(1.0, self.max_inflight * self.cost_estimate() / capacity)
+
+        target = self.clamp(min(self.kappa * capacity / self.cost_estimate(), self.slew_allowance))
+        if self.draining:
+            target = min(target, self.max_inflight)
+        if abs(target - self.max_inflight) >= REEVAL_DEADBAND * self.max_inflight:
+            self.apply_limit(target, reason="re-evaluation")
+            self.slew_allowance = float(self.max_inflight)
+
     def on_step(self, *, inflight: int, eval_in_flight: bool) -> None:
-        """Once per shipped train step: recompute the cap from the current
-        cost estimate (kappa grows per poll in ``observe``). Inert while
-        still inside the configured freeze window (``frozen_steps``)."""
-        frozen = self.frozen
+        """Once per shipped train step: eval bookkeeping and backoff reset.
+        All cap control is poll-clocked in ``observe``."""
         self.completed_steps += 1
         # Safety net for eval episodes that never report a completion
         # (task exceptions surface as synthetic markers)
         if not eval_in_flight and self.eval_remaining:
             self.eval_remaining.clear()
-
-        capacity = self.capacity
-        if frozen or capacity is None:
-            self.all_clear_since_step = True
-            return
-
-        cost = self.cost_estimate()
-        if self.kappa is None:
-            # Continuity: respect a user-set start that implies over-commit;
-            # otherwise jump to the safe full budget (kappa = 1)
-            self.kappa = max(1.0, self.max_inflight * cost / capacity)
-        elif self.all_clear_since_step:
+        if self.all_clear_since_step:
             self.backoff_factor = BACKOFF_FACTOR
-
-        target = min(self.kappa * capacity / cost, MAX_STEP_GROWTH * self.max_inflight)
-        self.apply_limit(self.clamp(target), reason="re-evaluation")
         self.all_clear_since_step = True
 
     # ── control law internals ────────────────────────────────────────────────
-
-    @property
-    def frozen(self) -> bool:
-        """Inside the configured freeze window: the first ``frozen_steps``
-        step boundaries do not recompute the cap or grow ``kappa``. The
-        initial bootstrap derivation and HARD cuts stay live — the starting
-        value and the emergency brake are never frozen."""
-        return self.completed_steps < self.config.frozen_steps
 
     def cut(self, inflight: int, target: int | None = None, reason: str = "overload") -> None:
         """Cut the cap and freeze further cuts until the drain completes.
@@ -363,6 +373,7 @@ class ConcurrencyController:
         # Escalate if overload survives the drain; reset on the next clear step
         self.backoff_factor = ESCALATED_BACKOFF_FACTOR
         self.apply_limit(target, reason=reason)
+        self.slew_allowance = float(self.max_inflight)
         if self._on_overload is not None and inflight > target:
             self._on_overload(inflight - target)
 
@@ -455,4 +466,6 @@ class ConcurrencyController:
             ),
             "concurrency/queue_overload_polls": float(self.queue_overload_polls),
             "concurrency/observed_cost": self.observed_cost,
+            "concurrency/turnover": self.turnover,
+            "concurrency/slew_allowance": self.slew_allowance,
         }
