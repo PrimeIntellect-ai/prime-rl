@@ -49,6 +49,7 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
+from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.packing import BatchPacker
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
@@ -594,9 +595,12 @@ class Orchestrator:
                 )
             return
         self.consecutive_empty_batches = 0
-        effective = batch.rollouts.effective
-        n_shipped = sum(1 for r in batch.cohort if not r.is_filtered)
-        n_trainable = sum(1 for r in batch.cohort if not r.is_filtered and r.is_trainable)
+        # The effective (trained-on) subset is the shipped batch: the cohort's non-filtered
+        # members. It is not a subset of ``batch.rollouts`` — cohort overflow ships from an
+        # earlier window.
+        effective = TrainRollouts(batch.cohort).effective
+        n_shipped = len(effective)
+        n_trainable = sum(1 for r in effective if r.is_trainable)
         if n_shipped and n_trainable / n_shipped <= 0.1:
             get_logger().warning(
                 f"Only {n_trainable}/{n_shipped} shipped rollouts are trainable "
@@ -628,11 +632,13 @@ class Orchestrator:
         # off-policy — queue time included, unlike the dispatcher's in-flight
         # counter, which only sees weight updates during generation. Frozen-
         # sourced rollouts stay 0 (their sampler doesn't follow the policy).
-        for r in batch.rollouts:
+        # The cohort needs its own pass: overflow members left the window at an
+        # earlier ship and their stamp is stale by the steps spent queued.
+        for r in [*batch.rollouts, *batch.cohort]:
             if self.train_envs.get(r.env_name).sampler.samples_from_live_policy:
                 r.off_policy_steps = (step - 1) - r.policy_version
 
-        # The effective (clean, trained-on) subset is logged at ship time; the full arrival
+        # The effective (shipped, trained-on) subset is logged at ship time; the full arrival
         # window already streamed into the ``all`` cohort on arrival.
         await monitors.log(group_episodes(effective.rollouts), step, "train", "effective")
 
@@ -646,8 +652,8 @@ class Orchestrator:
         save_ckpt_time = await self.maybe_save_ckpt(step)
         trim_process_memory()
 
-        # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``batch.rollouts`` is the
-        # full arrival window (errored + filtered included); ``.effective`` is the clean subset.
+        # Rollout metrics over the {agg,<env>} × {all,effective} matrix. ``all`` is the full
+        # arrival window (errored + filtered included); ``effective`` is the shipped batch.
         metrics: dict[str, float] = {}
         for subset, pool in (("all", batch.rollouts), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
@@ -787,16 +793,15 @@ class Orchestrator:
 
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
-        ``Error`` is the sink-level rate (errored arrivals / total arrivals, over the full window);
-        the quality metrics are over the effective (clean, trained-on) subset. ``Trainable`` is over
-        the shipped batch: gradient-carrying rollouts / the cohort's non-filtered members (a
-        zero-advantage rollout ships without contributing gradient)."""
+        Every metric describes the shipped batch (the cohort's non-filtered members) except
+        ``Error``, which is over the full arrival window — errored rollouts never reach a batch.
+        ``Trainable`` = gradient-carrying shipped rollouts (a zero-advantage rollout ships without
+        contributing gradient); ``Ratio`` = the env's share of the shipped batch."""
         rollouts = batch.rollouts
-        effective = rollouts.effective
+        effective = TrainRollouts(batch.cohort).effective
         eff = effective.metrics
-        n_generated = len(rollouts)
-        n_shipped = sum(1 for r in batch.cohort if not r.is_filtered)
-        n_trainable = sum(1 for r in batch.cohort if not r.is_filtered and r.is_trainable)
+        n_shipped = len(effective)
+        n_trainable = sum(1 for r in effective if r.is_trainable)
         trainable_rate = (n_trainable / n_shipped) if n_shipped else 0.0
         max_off_policy = max((r.off_policy_steps for r in effective), default=0)
 
@@ -811,19 +816,21 @@ class Orchestrator:
             get_logger().success(head)
             return
 
-        by_env = rollouts.by_env()
-        name_width = max((len(n) for n in by_env), default=0)
+        window_by_env = rollouts.by_env()
+        shipped_by_env = effective.by_env()
+        env_names = sorted(set(window_by_env) | set(shipped_by_env))
+        name_width = max((len(n) for n in env_names), default=0)
         lines = [head]
-        for env_name in sorted(by_env):
-            pool = by_env[env_name]
-            env_eff_pool = pool.effective
+        for env_name in env_names:
+            window_pool = window_by_env.get(env_name, TrainRollouts())
+            env_eff_pool = shipped_by_env.get(env_name, TrainRollouts())
             env_eff = env_eff_pool.metrics
-            ratio = (len(pool) / n_generated) if n_generated else 0.0
+            ratio = (len(env_eff_pool) / n_shipped) if n_shipped else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
                 f"Max Off-Policy {max((r.off_policy_steps for r in env_eff_pool), default=0)} | "
-                f"Error {pool.metrics.has_error.mean():.1%} | Truncation {env_eff.is_truncated.mean():.1%}"
+                f"Error {window_pool.metrics.has_error.mean():.1%} | Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
 

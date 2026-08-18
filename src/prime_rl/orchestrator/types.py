@@ -141,11 +141,13 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
 class TrainBatch:
     """``rollouts`` is the observation window since the last ship — every rollout of every group
     finalized in that span (errored + filtered included; rollouts of still-incomplete groups wait
-    for a later window). Its ``.effective`` / ``.metrics`` views drive logging. ``cohort`` is the
+    for a later window). It drives the ``all``-subset metrics and error rates. ``cohort`` is the
     batch-sized slice popped for the trainer (post-batch filter annotations applied) — its
-    non-filtered members are the shipped rollouts, so trainable counts are over exactly what fills
-    the batch. ``samples`` is the trainer-bound payload (the cohort's post-filter survivors) — an
-    empty list means nothing ships, which would stall the trainer."""
+    non-filtered members are the shipped batch, the ``effective`` (trained-on) subset all quality
+    metrics describe. Neither contains the other: the window holds errored/filtered rollouts that
+    never ship, the cohort holds overflow that finalized in an earlier window. ``samples`` is the
+    trainer-bound payload (the cohort's post-filter survivors) — an empty list means nothing
+    ships, which would stall the trainer."""
 
     rollouts: TrainRollouts
     cohort: list[Rollout]
