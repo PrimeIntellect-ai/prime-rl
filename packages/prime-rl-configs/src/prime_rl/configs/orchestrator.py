@@ -165,7 +165,7 @@ class DifficultyPoolConfig(BaseConfig):
     threshold: float
     """Inclusive maximum reward assigned to this pool."""
 
-    weight: float = Field(gt=0)
+    weight: float = Field(ge=0)
     """Relative per-task sampling weight."""
 
 
@@ -192,6 +192,8 @@ class DifficultyPoolSamplerConfig(BaseConfig):
         thresholds = [pool.threshold for pool in self.pools.values()]
         if len(set(thresholds)) != len(thresholds):
             raise ValueError("Difficulty pool thresholds must be unique")
+        if not any(pool.weight > 0 for pool in self.pools.values()):
+            raise ValueError("At least one difficulty pool must have a positive weight")
         return self
 
 

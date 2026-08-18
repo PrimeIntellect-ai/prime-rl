@@ -56,15 +56,13 @@ class DifficultyPoolSampler(TaskSampler):
         return self._ordered_pools[-1][0]
 
     def __next__(self) -> vf.Task:
-        ceiling = max(pool.weight for pool in self.pools.values())
-        if len(self.task_rewards) < len(self.tasks):
-            ceiling = max(1.0, ceiling)
-        while True:
-            task = self.rng.choice(self.tasks)
+        weights = []
+        for task in self.tasks:
             pool = self.task_pool(task.key)
-            weight = 1.0 if pool is None else self.pools[pool].weight
-            if self.rng.random() * ceiling < weight:
-                return task
+            weights.append(1.0 if pool is None else self.pools[pool].weight)
+        if not any(weights):
+            raise RuntimeError("DifficultyPoolSampler has no tasks in a pool with positive weight")
+        return self.rng.choices(self.tasks, weights=weights, k=1)[0]
 
     def observe(self, group: list[Rollout]) -> None:
         rewards = [rollout.reward for rollout in group if not rollout.has_error and rollout.agent.trainable]

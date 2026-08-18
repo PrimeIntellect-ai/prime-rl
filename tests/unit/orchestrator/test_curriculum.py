@@ -125,9 +125,9 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
 def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> None:
     tasks = [make_task(i) for i in range(3)]
     pools = {
-        "hard": DifficultyPoolConfig(threshold=0.25, weight=0.2),
+        "hard": DifficultyPoolConfig(threshold=0.25, weight=0.0),
         "normal": DifficultyPoolConfig(threshold=0.75, weight=1.0),
-        "easy": DifficultyPoolConfig(threshold=1.0, weight=0.2),
+        "easy": DifficultyPoolConfig(threshold=1.0, weight=0.0),
     }
     sampler_config = DifficultyPoolSamplerConfig(pools=pools, seed=7)
     gate_config = AdvRangeGateConfig()
@@ -151,6 +151,7 @@ def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> Non
     }
     state = curriculum.state_dict()
     expected = [next(curriculum.sampler).key for _ in range(10)]
+    assert set(expected) == {tasks[1].key}
     restored = Curriculum(config, tasks)
     restored.load_state_dict(state)
     assert [next(restored.sampler).key for _ in range(10)] == expected
