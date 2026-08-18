@@ -355,6 +355,13 @@ class ConcurrencyController:
         if max_usage > KV_USAGE_TARGET and inflight > 0 and not self.draining and self.trim_cooldown == 0:
             sustainable = self.clamp(inflight * KV_USAGE_TARGET / max_usage)
             if sustainable < self.max_inflight:
+                # Re-derive kappa like a cut does — otherwise the feedforward
+                # pushes the cap straight back into the trim zone and the
+                # controller sheds young episodes every cooldown. Growth
+                # resumes once usage falls below KV_USAGE_SOFT, giving a
+                # grow / hold / trim band instead of a shed loop.
+                if self.kappa is not None:
+                    self.kappa = max(KAPPA_MIN, sustainable * self.cost_estimate() / capacity)
                 self.apply_limit(sustainable, reason=f"kv headroom (usage {max_usage:.2f})")
                 self.slew_allowance = float(self.max_inflight)
             if self._on_overload is not None and inflight > sustainable:
