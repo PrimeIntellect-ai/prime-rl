@@ -1,4 +1,4 @@
-"""User-authored task sampling and admission interfaces."""
+"""Task sampling and admission interfaces."""
 
 from __future__ import annotations
 
@@ -7,8 +7,6 @@ from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 import verifiers.v1 as vf
-
-from prime_rl.utils.utils import import_object
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import CurriculumConfig
@@ -68,8 +66,6 @@ class Curriculum:
         from prime_rl.configs.orchestrator import (
             AdvRangeGateConfig,
             CurriculumConfig,
-            CustomAdmissionGateConfig,
-            CustomTaskSamplerConfig,
             DifficultyPoolSamplerConfig,
             StandardSamplerConfig,
         )
@@ -82,11 +78,6 @@ class Curriculum:
             self.sampler: TaskSampler = StandardSampler(tasks)
         elif isinstance(config.sampler, DifficultyPoolSamplerConfig):
             self.sampler = DifficultyPoolSampler(config.sampler, tasks)
-        elif isinstance(config.sampler, CustomTaskSamplerConfig):
-            sampler_type = import_object(config.sampler.import_path)
-            self.sampler = sampler_type(tasks, **config.sampler.kwargs)
-            if not isinstance(self.sampler, TaskSampler):
-                raise TypeError(f"{config.sampler.import_path} must subclass TaskSampler")
         else:
             raise TypeError(f"Unsupported task sampler config: {type(config.sampler).__name__}")
 
@@ -94,11 +85,6 @@ class Curriculum:
         for name, gate_config in config.gates.items():
             if isinstance(gate_config, AdvRangeGateConfig):
                 gate: AdmissionGate = AdvRangeGate(gate_config)
-            elif isinstance(gate_config, CustomAdmissionGateConfig):
-                gate_type = import_object(gate_config.import_path)
-                gate = gate_type(**gate_config.kwargs)
-                if not isinstance(gate, AdmissionGate):
-                    raise TypeError(f"{gate_config.import_path} must subclass AdmissionGate")
             else:
                 raise TypeError(f"Unsupported admission gate config: {type(gate_config).__name__}")
             self.gates[name] = gate

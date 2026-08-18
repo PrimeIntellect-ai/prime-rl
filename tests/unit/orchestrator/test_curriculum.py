@@ -7,13 +7,10 @@ import verifiers.v1 as vf
 from prime_rl.configs.orchestrator import (
     AdvRangeGateConfig,
     CurriculumConfig,
-    CustomAdmissionGateConfig,
-    CustomTaskSamplerConfig,
     DifficultyPoolConfig,
     DifficultyPoolSamplerConfig,
 )
 from prime_rl.orchestrator.curriculum import (
-    AdmissionGate,
     AdvRangeGate,
     Curriculum,
     StandardSampler,
@@ -62,44 +59,6 @@ def make_rollout(
     )
 
 
-class CountingSampler(StandardSampler):
-    def __init__(self, tasks):
-        super().__init__(tasks)
-        self.seen = 0
-
-    def observe(self, group: list[Rollout]) -> None:
-        self.seen += 1
-
-    def state_dict(self) -> dict:
-        return super().state_dict() | {"seen": self.seen}
-
-    def load_state_dict(self, state_dict: dict) -> None:
-        super().load_state_dict(state_dict)
-        self.seen = state_dict["seen"]
-
-    def metrics(self) -> dict[str, float]:
-        return {"seen": float(self.seen)}
-
-
-class CountingGate(AdmissionGate):
-    def __init__(self, *, decision: bool):
-        self.decision = decision
-        self.seen = 0
-
-    def admit(self, group: list[Rollout]) -> bool:
-        self.seen += 1
-        return self.decision
-
-    def state_dict(self) -> dict:
-        return {"seen": self.seen}
-
-    def load_state_dict(self, state_dict: dict) -> None:
-        self.seen = state_dict["seen"]
-
-    def metrics(self) -> dict[str, float]:
-        return {"seen": float(self.seen)}
-
-
 def test_default_curriculum_resumes_finite_and_infinite_tasksets() -> None:
     tasks = [make_task(i) for i in range(5)]
     finite = StandardSampler(tasks)
@@ -131,13 +90,14 @@ def test_curriculum_requires_unique_finite_task_keys() -> None:
 
 def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() -> None:
     tasks = [make_task(i) for i in range(3)]
+    pools = {"all": DifficultyPoolConfig(threshold=1.0, weight=1.0)}
     config = SimpleNamespace(
         ratio=1.0,
         curriculum=CurriculumConfig(
-            sampler=CustomTaskSamplerConfig(import_path=f"{__name__}.CountingSampler"),
+            sampler=DifficultyPoolSamplerConfig(pools=pools),
             gates={
-                "reject": CustomAdmissionGateConfig(import_path=f"{__name__}.CountingGate", kwargs={"decision": False}),
-                "observe": CustomAdmissionGateConfig(import_path=f"{__name__}.CountingGate", kwargs={"decision": True}),
+                "reject": AdvRangeGateConfig(),
+                "admit": AdvRangeGateConfig(reject_min=0.5, reject_max=0.5),
             },
         ),
     )
@@ -145,21 +105,20 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     source = TrainSource([env])
 
     sampled = source.next_example()["task"]
-    assert source.on_result([make_rollout(sampled)]) is False
+    assert source.on_result([make_rollout(sampled, reward=0.25, advantages=[0.0])]) is False
     assert source.metrics() == {
         "curriculum/test/admission_rate": 0.0,
-        "curriculum/test/sampler/seen": 1.0,
-        "curriculum/test/gate/reject/seen": 1.0,
-        "curriculum/test/gate/observe/seen": 1.0,
+        "curriculum/test/sampler/pool/unseen": 2.0,
+        "curriculum/test/sampler/pool/all": 1.0,
     }
 
     state = source.state_dict()
     restored = TrainSource([SimpleNamespace(name="test", tasks=iter(tasks), num_tasks=len(tasks), config=config)])
     restored.load_state_dict(state)
-    assert restored.curricula["test"].state_dict()["sampler"]["seen"] == 1
+    assert restored.curricula["test"].state_dict()["sampler"]["task_rewards"] == {sampled.key: 0.25}
     assert restored.curricula["test"].state_dict()["gates"] == {
-        "reject": {"seen": 1},
-        "observe": {"seen": 1},
+        "reject": {},
+        "admit": {},
     }
 
 

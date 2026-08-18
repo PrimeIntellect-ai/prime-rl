@@ -195,18 +195,8 @@ class DifficultyPoolSamplerConfig(BaseConfig):
         return self
 
 
-class CustomTaskSamplerConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Dotted path to a custom task sampler subclass."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Keyword arguments passed to the custom sampler constructor."""
-
-
 TaskSamplerConfig: TypeAlias = Annotated[
-    StandardSamplerConfig | DifficultyPoolSamplerConfig | CustomTaskSamplerConfig,
+    StandardSamplerConfig | DifficultyPoolSamplerConfig,
     Field(discriminator="type"),
 ]
 
@@ -224,20 +214,7 @@ class AdvRangeGateConfig(BaseConfig):
         return self
 
 
-class CustomAdmissionGateConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Dotted path to a custom admission gate subclass."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Keyword arguments passed to the custom gate constructor."""
-
-
-AdmissionGateConfig: TypeAlias = Annotated[
-    AdvRangeGateConfig | CustomAdmissionGateConfig,
-    Field(discriminator="type"),
-]
+AdmissionGateConfig: TypeAlias = AdvRangeGateConfig
 
 
 class CurriculumConfig(BaseConfig):

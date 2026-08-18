@@ -462,21 +462,7 @@ By default, zero-advantage RL tokens are removed after a complete batch cohort h
 
 Each training source has a `Curriculum` composed from one `TaskSampler` and any number of named `AdmissionGate`s. The sampler chooses tasks and observes every finalized result. Every gate evaluates every result; the group trains only if every gate admits it. Rejected groups remain observable while the orchestrator samples again to fill the batch.
 
-Samplers and gates can be stateful. Their `state_dict`, `load_state_dict`, and `metrics` methods are included in orchestrator checkpoints and logged under `curriculum/<env>/`. Custom implementations are ordinary subclasses selected with `type = "custom"`, an `import_path`, and optional `kwargs`:
-
-```python
-from prime_rl.orchestrator.curriculum import AdmissionGate, StandardSampler
-
-
-class MySampler(StandardSampler):
-    def observe(self, group):
-        ...
-
-
-class MyGate(AdmissionGate):
-    def admit(self, group):
-        return True
-```
+Samplers and gates can be stateful. Their `state_dict`, `load_state_dict`, and `metrics` methods are included in orchestrator checkpoints and logged under `curriculum/<env>/`.
 
 Three small implementations are included:
 
