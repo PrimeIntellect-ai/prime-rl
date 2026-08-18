@@ -376,6 +376,30 @@ class InferenceMetricsCollector:
                     delta = sample.snapshot.counters[name] - previous.snapshot.counters.get(name, 0.0)
                     preemptions_delta = max(preemptions_delta, int(delta))
 
+        # Interval mean KV cost per request (prompt + generation): each turn
+        # resends its episode's full context, so the request stream is a live
+        # census of in-flight episode sizes
+        mean_request_cost: float | None = None
+        interval_requests = 0
+        if previous is not None:
+            total = 0.0
+            for name in ("request_prompt_tokens", "request_generation_tokens"):
+                hist = sample.snapshot.histograms.get(name)
+                if hist is None:
+                    total = 0.0
+                    break
+                prev_hist = previous.snapshot.histograms.get(name, HistogramSnapshot())
+                dcount = hist.count - prev_hist.count
+                if dcount <= 0:
+                    total = 0.0
+                    break
+                total += (hist.sum - prev_hist.sum) / dcount
+                interval_requests = int(dcount)
+            if total > 0:
+                mean_request_cost = total
+            else:
+                interval_requests = 0
+
         return EngineLoadSample(
             engine_id=sample.engine_id,
             role=sample.endpoint.role,
@@ -388,6 +412,8 @@ class InferenceMetricsCollector:
                 int(capacity_waiting) if (capacity_waiting := sample.snapshot.gauges.get("num_requests_waiting_reason_capacity")) is not None else None
             ),
             preemptions_delta=preemptions_delta,
+            mean_request_cost=mean_request_cost,
+            interval_requests=interval_requests,
         )
 
     def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:

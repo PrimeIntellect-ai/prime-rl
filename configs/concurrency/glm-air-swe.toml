@@ -1,18 +1,16 @@
 # Adaptive-concurrency e2e: GLM-4.5-Air on the scaleswe taskset, 2 nodes (1 train + 1 infer),
-# rlm harness on a prime sandbox runtime. Starts from a reasonable cap and converges from there.
-# Eval (SWE-Bench Verified, every 10 steps) is capped at 10 turns, so eval episodes are much
-# cheaper than train episodes — expect the cap to INCREASE at eval boundaries when the eval
-# census reprices the cost estimate, and to fall back once the epoch drains.
+# bash harness on a prime sandbox runtime, train-only (no evals). Starts at 256 inflight,
+# no freeze: the measured request-cost estimator prices the pool from the first turns.
 # Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
 
 max_steps = 100
-seq_len = 131072
+seq_len = 65536
 
 [run]
 name = "glm-air-swe"
 
 [env_vars]
-TRITON_CACHE_DIR = "/tmp/.triton-cache"
+TRITON_CACHE_DIR = "/tmp/mika-triton-cache"
 
 [slurm]
 job_name = "glm45air-swe-concurrency"
@@ -46,6 +44,8 @@ attn = "flash_attention_3"
 cp = 4
 cp_style = "ulysses"
 fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = false
+full_offload = true
 
 [trainer.model.ac]
 
@@ -55,17 +55,19 @@ max_inflight_activations = 1
 [trainer.model.compile]
 
 [trainer.optim]
-type = "muon"
+type = "adamw"
 
 # --- Orchestrator ---
 
 [orchestrator]
-batch_size = 256
-group_size = 16
+batch_size = 128
+group_size = 8
 max_off_policy_steps = 32
 
 [orchestrator.concurrency]
 initial_inflight = 256
+max_inflight = 1024
+frozen_steps = 0
 
 [orchestrator.algo]
 type = "grpo"
@@ -87,45 +89,20 @@ name = "scaleswe"
 id = "scaleswe"
 
 [orchestrator.train.source.env.agent.harness]
-id = "rlm"
-summarize_at_tokens = [65536, 131072]
+id = "bash"
 
 [orchestrator.train.source.env.agent.runtime]
 labels = ["glm45air-swe-concurrency"]
-
-# --- Eval: SWE-Bench Verified every 10 steps, capped at 10 turns ---
-
-[orchestrator.eval]
-interval = 10
-
-[[orchestrator.eval.source]]
-name = "swebench-verified"
-
-[orchestrator.eval.source.env.agent]
-max_turns = 10
-
-[orchestrator.eval.source.env.taskset]
-id = "swebench-verified"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "rlm"
-summarize_at_tokens = 98304
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["glm45air-swe-concurrency"]
-
-[orchestrator.eval.source.env.agent.timeout]
-rollout = 3600
 
 # --- Inference ---
 
 [inference]
 
 [inference.env_vars]
-VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
-FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
+VLLM_CACHE_ROOT = "/tmp/mika-vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/mika-flashinfer-cache"
 
 [inference.vllm]
-max_model_len = 131072
+max_model_len = 65536
 tensor_parallel_size = 8
 enable_return_routed_experts = true

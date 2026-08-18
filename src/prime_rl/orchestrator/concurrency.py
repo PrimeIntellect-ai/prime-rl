@@ -86,6 +86,10 @@ class EngineLoadSample:
     # not report the by-reason breakdown; fall back to ``waiting``)
     waiting_capacity: int | None
     preemptions_delta: int
+    # Mean prompt+generation tokens per request this poll interval and the
+    # request count behind it (None/0 when the interval saw no completions)
+    mean_request_cost: float | None
+    interval_requests: int
 
 
 @dataclass
@@ -137,6 +141,14 @@ class ConcurrencyController:
         self.completed_steps = 0
 
         self.estimates: dict[tuple[str, str], EnvEstimate] = {}
+        # Request-weighted decayed mean of measured per-request KV cost.
+        # Completion-based estimates only see episodes that finished — after a
+        # cap raise the fast short episodes finish first and drag them down,
+        # inviting a bigger raise. The request stream has no such bias: every
+        # turn resends its episode's full context, so in-flight episodes are
+        # counted at their current size the whole time they run.
+        self.observed_cost_sum = 0.0
+        self.observed_cost_weight = 0.0
         self.capacity_by_engine: dict[str, int] = {}
         self.capacity_reported = False
         # Eval episodes still in flight or owed, per env; set on trigger,
@@ -201,6 +213,11 @@ class ConcurrencyController:
                 self.capacity_by_engine[sample.engine_id] = sample.kv_capacity_tokens
             if sample.max_model_len:
                 self.engine_max_len = max(self.engine_max_len or 0, sample.max_model_len)
+        for sample in samples:
+            if sample.mean_request_cost is not None and sample.interval_requests > 0:
+                decay = 1 - ESTIMATE_ALPHA
+                self.observed_cost_sum = decay * self.observed_cost_sum + sample.interval_requests * sample.mean_request_cost
+                self.observed_cost_weight = decay * self.observed_cost_weight + sample.interval_requests
         if not self.capacity_reported and self.capacity is not None:
             self.capacity_reported = True
             max_len = format_num(self.engine_max_len, precision=1) if self.engine_max_len else "unknown"
@@ -372,10 +389,17 @@ class ConcurrencyController:
         train_cost = self.mix_cost({("train", env): ratio for env, ratio in self.train_env_ratios.items()})
         remaining = sum(self.eval_remaining.values())
         if remaining <= 0:
-            return train_cost
+            return max(train_cost, self.observed_cost)
         eval_cost = self.mix_cost({("eval", env): float(n) for env, n in self.eval_remaining.items() if n > 0})
         eval_share = min(1.0, remaining / max(self.max_inflight, 1))
-        return eval_share * eval_cost + (1 - eval_share) * train_cost
+        return max(eval_share * eval_cost + (1 - eval_share) * train_cost, self.observed_cost)
+
+    @property
+    def observed_cost(self) -> float:
+        """Measured mean per-request KV cost off the live request stream;
+        floors the completion-based estimate, which under-prices the pool
+        whenever completions lag admissions (cap raises, cold start)."""
+        return self.observed_cost_sum / self.observed_cost_weight if self.observed_cost_weight > 0 else 0.0
 
     def mix_cost(self, weights: dict[tuple[str, str], float]) -> float:
         """Duration-weighted mean episode cost over one ``(kind, env)`` weight
@@ -402,4 +426,5 @@ class ConcurrencyController:
                 {Signal.CLEAR: 0, Signal.SOFT: 1, Signal.HARD: 2}[self.signal],
             ),
             "concurrency/queue_overload_polls": float(self.queue_overload_polls),
+            "concurrency/observed_cost": self.observed_cost,
         }
