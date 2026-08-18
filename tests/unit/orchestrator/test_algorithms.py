@@ -9,6 +9,7 @@ from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.filters import ZeroAdvantageFilter, apply_filters
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.transport.types import TrainingSample
@@ -244,7 +245,7 @@ def _node(message, *, parent, sampled, token_ids, logprobs=None, is_content=None
     )
 
 
-def _two_turn_rollout(observation_role: str = "tool") -> Rollout:
+def _two_turn_rollout(observation_role: str = "tool", reward: float = 1.0) -> Rollout:
     """A single linear branch: user prompt, an assistant response, an
     env-provided observation (tool output / user feedback), then a second
     assistant response. Tokens: prompt [1,2], action [3,4], observation
@@ -263,11 +264,46 @@ def _two_turn_rollout(observation_role: str = "tool") -> Rollout:
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=nodes,
-        rewards={"r": vf.Reward(score=1.0)},
+        rewards={"r": vf.Reward(score=reward)},
         env_name="test-env",
     )
     rollout.samples = trace_to_samples(rollout, env_name="test-env")
     return rollout
+
+
+@pytest.mark.parametrize(
+    ("rewards", "observation_role", "expected_samples"),
+    [
+        pytest.param([1.0, 1.0], "tool", 2, id="zero-advantage-with-ce"),
+        pytest.param([1.0, 1.0], "user", 0, id="zero-advantage-without-ce"),
+        pytest.param([0.0, 1.0], "tool", 2, id="nonzero-advantage-with-ce"),
+        pytest.param([0.0, 1.0], "user", 2, id="nonzero-advantage-without-ce"),
+    ],
+)
+def test_echo_zero_advantage_filter_preserves_ce_supervision(rewards, observation_role, expected_samples):
+    algo = _echo_algorithm()
+    group = [_two_turn_rollout(observation_role, reward) for reward in rewards]
+
+    async def finalize_group():
+        for rollout in group:
+            await algo.finalize_rollout(rollout)
+        await algo.finalize_group(group)
+
+    asyncio.run(finalize_group())
+    apply_filters([ZeroAdvantageFilter(name="zero_advantage")], group)
+
+    trainer_bound_samples = [sample for rollout in group if not rollout.is_filtered for sample in rollout.samples]
+    assert len(trainer_bound_samples) == expected_samples
+
+
+def test_zero_advantage_filter_preserves_ref_kl_supervision():
+    sample = _make_sample()
+    stamp_loss_routing(sample, "ref_kl")
+    rollout = _make_rollout([sample], advantages=[0.0] * len(sample.token_ids))
+
+    apply_filters([ZeroAdvantageFilter(name="zero_advantage")], [rollout])
+
+    assert rollout.is_filtered is False
 
 
 def test_echo_weights_observations_by_role():
