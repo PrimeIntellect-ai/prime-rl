@@ -311,6 +311,9 @@ class ConcurrencyController:
         queue cut passes an explicit target — what the engines actually serve."""
         if target is None:
             target = self.clamp(self.backoff_factor * max(inflight, self.floor))
+        # A cut never raises: a queue-derived target can exceed the cap when
+        # ``running`` is inflated by work the dispatcher no longer tracks
+        target = min(target, self.max_inflight)
         capacity = self.capacity
         if capacity is not None:
             self.kappa = max(KAPPA_MIN, target * self.cost_estimate() / capacity)

@@ -403,10 +403,14 @@ class Orchestrator:
             max_off_policy_steps=config.max_off_policy_steps,
             on_episode_complete=self.concurrency.record_episode,
         )
+        # on_overload is deliberately not bound to Dispatcher.shed_youngest:
+        # cancelling the orchestrator-side task does not abort the env-side
+        # rollout, so shedding leaves zombies hitting inference while the
+        # freed permits admit new work on top of them. Wire it once rollout
+        # abort propagates to the env server.
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.inflight_permits,
-            on_overload=self.dispatcher.shed_youngest,
         )
         # The collector always polls — it feeds the concurrency controller;
         # W&B mirroring is gated on the registered monitor (the collector logs
