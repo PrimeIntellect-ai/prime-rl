@@ -70,35 +70,37 @@ def count_zero_gradient_elements(parameters: Iterable[nn.Parameter]) -> tuple[Te
     """
 
     device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
-    num_zeros = torch.zeros((), dtype=torch.long, device=device)
-    num_tracked = torch.zeros((), dtype=torch.long, device=device)
+    num_tracked = 0
+    num_zero_missing_grad = 0
+    grads_by_key: dict[tuple[torch.device, torch.dtype], list[Tensor]] = defaultdict(list)
 
     for param in parameters:
         if not param.requires_grad:
             continue
 
         local_param = _to_local_tensor(param.detach())
-        if local_param.numel() == 0:
+        numel = local_param.numel()
+        if numel == 0:
             continue
-
-        if local_param.device != num_zeros.device:
-            num_zeros = num_zeros.to(local_param.device)
-            num_tracked = num_tracked.to(local_param.device)
-
-        local_numel = torch.tensor(local_param.numel(), dtype=torch.long, device=local_param.device)
-        num_tracked += local_numel
+        num_tracked += numel
 
         if param.grad is None:
-            num_zeros += local_numel
+            num_zero_missing_grad += numel
             continue
 
         local_grad = _to_local_tensor(param.grad.detach())
-        if local_grad.numel() != local_param.numel():
+        if local_grad.numel() != numel:
             raise ValueError("Local gradient shape does not match the local parameter shape")
 
-        num_zeros += local_numel - torch.count_nonzero(local_grad)
+        grads_by_key[(local_grad.device, local_grad.dtype)].append(local_grad.reshape(-1))
 
-    return num_zeros, num_tracked
+    num_zeros = torch.tensor(num_zero_missing_grad, dtype=torch.long, device=device)
+    for (grad_device, _dtype), grads in grads_by_key.items():
+        flat = torch.cat(grads)
+        num_zeros = num_zeros.to(grad_device) + (flat.numel() - torch.count_nonzero(flat))
+
+    num_tracked_tensor = torch.tensor(num_tracked, dtype=torch.long, device=num_zeros.device)
+    return num_zeros, num_tracked_tensor
 
 
 def zero_gradient_ratio_tensor(parameters: Iterable[nn.Parameter], dp_replicate: int = 1) -> Tensor:
