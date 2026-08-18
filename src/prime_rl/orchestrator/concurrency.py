@@ -205,7 +205,6 @@ class ConcurrencyController:
         # (or a HARD cut), so the cap is stable between step boundaries.
         if (
             not self.bootstrapped
-            and not self.frozen
             and self.kappa is None
             and self.config.initial_inflight is None
             and self.capacity is not None
@@ -222,6 +221,7 @@ class ConcurrencyController:
         """Once per shipped train step: reweigh ``G``, grow ``kappa`` at most
         once, recompute the cap. Inert while still inside the configured
         freeze window (``frozen_steps``)."""
+        frozen = self.frozen
         self.completed_steps += 1
         # Safety net for eval episodes that never report a completion
         # (task exceptions surface as synthetic markers)
@@ -229,7 +229,7 @@ class ConcurrencyController:
             self.eval_remaining.clear()
 
         capacity = self.capacity
-        if self.frozen or capacity is None:
+        if frozen or capacity is None:
             self.all_clear_since_step = True
             return
 
@@ -250,9 +250,10 @@ class ConcurrencyController:
 
     @property
     def frozen(self) -> bool:
-        """Inside the configured freeze window: no feedforward recompute, no
-        growth, no bootstrap. HARD cuts stay live — an emergency brake is
-        never frozen."""
+        """Inside the configured freeze window: the first ``frozen_steps``
+        step boundaries do not recompute the cap or grow ``kappa``. The
+        initial bootstrap derivation and HARD cuts stay live — the starting
+        value and the emergency brake are never frozen."""
         return self.completed_steps < self.config.frozen_steps
 
     def cut(self, inflight: int) -> None:
