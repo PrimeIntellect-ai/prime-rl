@@ -147,7 +147,9 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             logprobs[start:end] = target_logits - logz_chunk
             entropy[start:end] = logz_chunk - (t / s)
 
-        ctx.set_materialize_grads(False) # Without materialized grads unused outputs get grad None instead of zeros and backward can reject them without a sync
+        ctx.set_materialize_grads(
+            False
+        )  # Without materialized grads unused outputs get grad None instead of zeros and backward can reject them without a sync
         ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz)
         ctx.chunk_size = chunk_size
 
