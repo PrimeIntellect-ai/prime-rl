@@ -4,7 +4,7 @@ seq_len = 4096
 [model]
 name = "Qwen/Qwen3-0.6B"
 
-[wandb]
+[monitors.wandb]
 project = "algorithms-debug"
 name = "debug-rae"
 

@@ -20,7 +20,7 @@ The three processes communicate through configurable transports — by default t
 curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/scripts/install.sh | bash
 ```
 
-The script clones the repo, initializes the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) / [`renderers`](https://github.com/PrimeIntellect-ai/renderers) / [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) submodules, installs `uv`, and runs `uv sync --all-extras`. For manual setup, or troubleshooting, see the [README](https://github.com/PrimeIntellect-ai/prime-rl#setup).
+The script clones the repo, initializes the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) / [`renderers`](https://github.com/PrimeIntellect-ai/renderers) / [`prime-envs`](https://github.com/PrimeIntellect-ai/prime-envs) submodules, installs `uv`, and runs `uv sync --all-extras`. For manual setup, or troubleshooting, see the [README](https://github.com/PrimeIntellect-ai/prime-rl#setup).
 
 You need at least one NVIDIA GPU (RTX 3090/4090/5090, A100, H100, H200, or B200). Single-GPU runs are supported for debugging; production RL is typically 1× inference node + 1+ trainer nodes.
 
@@ -32,7 +32,7 @@ Train an SFT-warmed `Qwen3-0.6B` on the `reverse-text` task — the env is bundl
 uv run rl @ examples/basic/reverse-text/rl.toml
 ```
 
-The `rl` entrypoint reads `examples/basic/reverse-text/rl.toml`, splits it into per-process sub-configs, picks GPU 0 for inference and GPU 1 for the trainer, launches all three processes, and tees their stdout into `outputs/logs/{trainer,orchestrator,inference}.log`. Within a minute the trainer should log `step 1` and a reward sample; after 20 steps the run completes and final HF-compatible weights land at `outputs/weights/step_20`.
+The `rl` entrypoint reads `examples/basic/reverse-text/rl.toml`, splits it into per-process sub-configs, picks GPU 0 for inference and GPU 1 for the trainer, launches all three processes, and tees their stdout into the run directory at `outputs/<run_name>/logs/{trainer,orchestrator,inference}.log` (`run.name` auto-generates as `<envs>--<model>--<short-id>`; pass `--run.name <name>` for a predictable path). Within a minute the trainer should log `step 1` and a reward sample; after 20 steps the run completes and final HF-compatible weights land at `outputs/<run_name>/weights/step_20`.
 
 ## Documentation
 

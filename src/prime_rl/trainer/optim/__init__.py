@@ -1,109 +1,20 @@
-import copy
-
 import torch
 from dion import Muon
 from torch import nn
-from torch.distributed.tensor import DTensor
 from torch.optim import SGD, AdamW, Optimizer
 
-from prime_rl.configs.trainer import OptimizerConfig
+from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
+from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
+from prime_rl.trainer.optim.base import OptimizerLike
+from prime_rl.trainer.optim.offload import (
+    FullCPUOffloadOptimizer,
+    GradientOffloadManager,
+    _create_cpu_master_weights,
+)
+from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
-
-
-class CPUOffloadOptimizer:
-    """Wraps an optimizer to keep states on CPU, moving to GPU only for step().
-
-    Unlike FSDP's CPUOffload which offloads weights too, this keeps weights on GPU.
-    With activation checkpointing, activations and optimizer states are never on GPU
-    at the same time: peak memory becomes max(activations, opt_states) instead of sum.
-    """
-
-    def __init__(self, optimizer: Optimizer, pin_memory: bool = True):
-        self.optimizer = optimizer
-        self.pin_memory = pin_memory
-        self._initialized = False
-
-    def _move_states(self, device: str):
-        """Move optimizer states to CPU or back to GPU (matching each parameter's device)."""
-        for p in self.optimizer.state:
-            state = self.optimizer.state[p]
-            for k, v in state.items():
-                if isinstance(v, DTensor):
-                    local_tensor = v._local_tensor
-                    if device == "cpu":
-                        non_blocking = not self.pin_memory
-                        new_local = local_tensor.to("cpu", non_blocking=non_blocking)
-                        if self.pin_memory and not new_local.is_pinned():
-                            new_local = new_local.pin_memory()
-                    else:
-                        new_local = local_tensor.to(device, non_blocking=True)
-                    new_dtensor = copy.copy(v)
-                    new_dtensor._local_tensor = new_local
-                    state[k] = new_dtensor
-                elif isinstance(v, torch.Tensor):
-                    if device == "cpu":
-                        non_blocking = not self.pin_memory
-                        cpu_tensor = v.to("cpu", non_blocking=non_blocking)
-                        if self.pin_memory and not cpu_tensor.is_pinned():
-                            cpu_tensor = cpu_tensor.pin_memory()
-                        state[k] = cpu_tensor
-                    else:
-                        state[k] = v.to(device, non_blocking=True)
-
-    def step(self, closure=None):
-        # First step initializes states on GPU - offload after
-        if not self._initialized:
-            result = self.optimizer.step(closure)
-            self._move_states("cpu")
-            self._initialized = True
-            return result
-
-        # Move states to GPU
-        self._move_states("cuda")
-
-        # Run optimizer step
-        result = self.optimizer.step(closure)
-
-        # Move states back to CPU
-        self._move_states("cpu")
-
-        return result
-
-    def zero_grad(self, set_to_none: bool = True):
-        self.optimizer.zero_grad(set_to_none=set_to_none)
-
-    def state_dict(self):
-        # Move to GPU temporarily for consistent state dict
-        if self._initialized:
-            self._move_states("cuda")
-            torch.cuda.synchronize()
-        sd = self.optimizer.state_dict()
-        if self._initialized:
-            self._move_states("cpu")
-        return sd
-
-    def load_state_dict(self, state_dict):
-        self.optimizer.load_state_dict(state_dict)
-        self._move_states("cpu")
-        self._initialized = True
-
-    @property
-    def param_groups(self):
-        return self.optimizer.param_groups
-
-    @param_groups.setter
-    def param_groups(self, value):
-        self.optimizer.param_groups = value
-
-    @property
-    def state(self):
-        return self.optimizer.state
-
-    @property
-    def base_optimizer(self) -> Optimizer:
-        return self.optimizer
 
 
 def setup_optimizer(
@@ -111,14 +22,54 @@ def setup_optimizer(
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     cpu_offload: bool = False,
-) -> Optimizer | CPUOffloadOptimizer:
-    optimizer = _create_optimizer(config, named_params, parallel_dims)
+    full_offload_config: OptimizerInBackwardOffloadConfig | None = None,
+    model: nn.Module | None = None,
+    full_offload_dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None = None,
+) -> tuple[OptimizerLike, GradientOffloadManager | None]:
+    if cpu_offload and full_offload_config is not None:
+        raise ValueError("State-only and full optimizer CPU offload cannot both be enabled")
+    if full_offload_config is not None and config.type != "adamw":
+        raise ValueError("Full optimizer offload only supports AdamW")
+    if full_offload_config is not None and config.max_norm is not None:
+        get_logger().warning("Disabling gradient clipping because CPU optimizer offload updates during backward")
+        config.max_norm = None
+    optimizer_named_params = named_params
+    master_weights = None
+    if full_offload_config is not None:
+        if model is None:
+            raise ValueError("CPU optimizer offload requires the model")
+        if full_offload_dtype_policy is None:
+            raise ValueError("CPU optimizer offload requires an explicit per-parameter dtype policy")
+        optimizer_named_params, master_weights = _create_cpu_master_weights(
+            model,
+            named_params,
+            pin_memory=not (config.type == "adamw" and full_offload_config.cpu_optimizer_backend == "native"),
+            dtype_policy=full_offload_dtype_policy,
+        )
+
+    optimizer = _create_optimizer(
+        config,
+        optimizer_named_params,
+        parallel_dims,
+        fused_adamw=full_offload_config is not None and config.type == "adamw",
+    )
+
+    if full_offload_config is not None:
+        assert master_weights is not None
+        get_logger().info("Using CPU offload for gradients and the optimizer step")
+        optimizer = FullCPUOffloadOptimizer(
+            optimizer,
+            offload_config=full_offload_config,
+            master_weights=master_weights,
+            dp_replicate=parallel_dims.dp_replicate,
+        )
+        return optimizer, optimizer._gradient_manager
 
     if cpu_offload:
         get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
-        return CPUOffloadOptimizer(optimizer)
+        return CPUOffloadOptimizer(optimizer), None
 
-    return optimizer
+    return optimizer, None
 
 
 def _create_optimizer(
@@ -126,6 +77,7 @@ def _create_optimizer(
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
     lr: float | None = None,
+    fused_adamw: bool = False,
 ) -> Optimizer:
     """Create optimizer. If lr is None, uses config.lr."""
     if lr is None:
@@ -150,6 +102,7 @@ def _create_optimizer(
                 lr=lr,
                 weight_decay=config.weight_decay,
                 betas=(config.betas1, config.betas2),
+                fused=fused_adamw,
             )
         case "muon":
             return _create_muon_optimizer(config, named_params, parallel_dims, lr)

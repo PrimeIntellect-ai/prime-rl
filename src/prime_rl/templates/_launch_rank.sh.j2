@@ -6,9 +6,9 @@
 # ranks 1+ get their own node_<rank>_rank<k>.log.
 rank_log() {
     if [ "$2" -eq 0 ]; then
-        echo "$OUTPUT_DIR/logs/inference/node_$1.log"
+        echo "$LOG_DIR/inference/node_$1.log"
     else
-        echo "$OUTPUT_DIR/logs/inference/node_$1_rank$2.log"
+        echo "$LOG_DIR/inference/node_$1_rank$2.log"
     fi
 }
 

@@ -17,6 +17,7 @@ configs/endpoints.py
 **/rollouts
 **/logs
 **/wandb
+!src/prime_rl/monitors/wandb/
 **/evals
 **/run_*/
 !configs/**/evals

@@ -90,23 +90,25 @@ def propagate_shared_fields(data: Any) -> Any:
     # ``orchestrator.ckpt`` has no ``output_dir`` field — trainer-only.
     propagate("ckpt.output_dir", "trainer.ckpt.output_dir")
     propagate("ckpt.interval", "trainer.ckpt.interval", "orchestrator.ckpt.interval")
-    propagate("ckpt.resume_step", "trainer.ckpt.resume_step", "orchestrator.ckpt.resume_step")
     propagate("ckpt.keep_last", "trainer.ckpt.keep_last", "orchestrator.ckpt.keep_last")
     propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval", "orchestrator.ckpt.keep_interval")
 
-    # [wandb] leaves. (Bare empty ``[wandb]`` block enablement is at the end.)
-    # ``wandb.name`` flows verbatim to both sub-configs — shared W&B mode is
+    # [monitors.wandb] leaves. (Bare empty ``[monitors.wandb]`` block enablement is at the end.)
+    # ``monitors.wandb.name`` flows verbatim to both sub-configs — shared W&B mode is
     # always on for the rl entrypoint, so the legacy ``-trainer`` /
     # ``-orchestrator`` suffix split is gone.
-    propagate("wandb.project", "trainer.wandb.project", "orchestrator.wandb.project")
-    propagate("wandb.entity", "trainer.wandb.entity", "orchestrator.wandb.entity")
-    propagate("wandb.name", "trainer.wandb.name", "orchestrator.wandb.name")
-    propagate("wandb.group", "trainer.wandb.group", "orchestrator.wandb.group")
-    propagate("wandb.tags", "trainer.wandb.tags", "orchestrator.wandb.tags")
-    propagate("wandb.offline", "trainer.wandb.offline", "orchestrator.wandb.offline")
+    for leaf in ("project", "entity", "name", "group", "tags", "offline"):
+        propagate(
+            f"monitors.wandb.{leaf}",
+            f"trainer.monitors.wandb.{leaf}",
+            f"orchestrator.monitors.wandb.{leaf}",
+        )
 
-    # [file_monitor] leaf. (Bare empty ``[file_monitor]`` block enablement is at the end.)
-    propagate("file_monitor.filename", "trainer.file_monitor.filename", "orchestrator.file_monitor.filename")
+    # [monitors.file] leaf. (Bare empty ``[monitors.file]`` block enablement is at the end.)
+    propagate("monitors.file.path", "trainer.monitors.file.path", "orchestrator.monitors.file.path")
+
+    # [monitors.prime] leaf → orchestrator only (the trainer has no platform integration).
+    propagate("monitors.prime.name", "orchestrator.monitors.prime.name")
 
     # [tokenizer]. ``chat_template`` also flows to ``inference.vllm`` (vLLM's
     # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
@@ -138,8 +140,6 @@ def propagate_shared_fields(data: Any) -> Any:
     # pass (the per-rank inference.toml drops slurm, so each rank still runs locally).
     propagate("slurm", "inference.slurm")
 
-    propagate("output_dir", "trainer.output_dir", "orchestrator.output_dir")
-
     # Cascade trainer.tokenizer.chat_template → inference.vllm.chat_template
     # (vLLM ``--chat-template``). Read trainer's value *after* the shared
     # propagation above so we cover both:
@@ -152,21 +152,31 @@ def propagate_shared_fields(data: Any) -> Any:
     if trainer_chat_template is not None:
         fill("inference.vllm.chat_template", trainer_chat_template)
 
-    # Bare ``[ckpt]`` / ``[wandb]`` block: presence-only signal that enables
-    # the section with defaults on both sub-configs. Necessary because
+    # Bare ``[ckpt]`` / ``[monitors.wandb]`` block: presence-only signal that
+    # enables the section with defaults on both sub-configs. Necessary because
     # ``trainer.ckpt`` / ``orchestrator.ckpt`` are Optional[None] by default —
-    # without this an empty shared block would be a no-op. Leaf-level
-    # conflicts (e.g. shared ``ckpt.interval`` vs ``trainer.ckpt.interval``)
-    # are already caught above; the bare block is exempt because
-    # ``[ckpt]`` + ``[trainer.ckpt] keep_last = 3`` is a legitimate
-    # "enable + customise per side" pattern. The ``isinstance(dict)`` check
-    # (not ``is not None``) is what makes CLI ``--no-wandb`` / ``--no-ckpt``
-    # work — those land as the *string* ``"None"`` until ``BaseConfig``'s
-    # parent-class validator converts it, which happens after this one.
-    for key in ("ckpt", "wandb", "file_monitor"):
-        if isinstance(get(key), dict):
-            fill(f"trainer.{key}", {})
-            fill(f"orchestrator.{key}", {})
+    # without this an empty shared block would be a no-op. Leaf-level conflicts
+    # (e.g. shared ``ckpt.interval`` vs ``trainer.ckpt.interval``) are already
+    # caught above; the bare block is exempt because ``[ckpt]`` +
+    # ``[trainer.ckpt] keep_last = 3`` is a legitimate "enable + customise per
+    # side" pattern. CLI ``--no-ckpt`` / ``--no-monitors.wandb`` land as the
+    # *string* ``"None"`` until ``BaseConfig``'s parent-class validator converts
+    # it, which happens after this one — the disable must propagate too, since
+    # the monitor sub-configs default to enabled.
+    presence_targets = {
+        "ckpt": ("trainer", "orchestrator"),
+        "monitors.wandb": ("trainer", "orchestrator"),
+        "monitors.file": ("trainer", "orchestrator"),
+        "monitors.prime": ("orchestrator",),
+    }
+    for key, targets in presence_targets.items():
+        value = get(key)
+        if isinstance(value, dict):
+            for target in targets:
+                fill(f"{target}.{key}", {})
+        elif value == "None":
+            for target in targets:
+                fill(f"{target}.{key}", "None")
 
     if conflicts:
         lines = [
@@ -197,9 +207,9 @@ def validate_shared_ckpt_config(
         raise ValueError(
             f"Trainer checkpoint interval ({trainer.ckpt.interval}) and orchestrator checkpoint interval ({orchestrator.ckpt.interval}) are not the same. Please specify the same checkpoint interval for both."
         )
-    if trainer.ckpt and orchestrator.ckpt and trainer.ckpt.resume_step != orchestrator.ckpt.resume_step:
+    if trainer.resume != orchestrator.resume:
         raise ValueError(
-            f"Trainer checkpoint resume step ({trainer.ckpt.resume_step}) and orchestrator checkpoint resume step ({orchestrator.ckpt.resume_step}) are not the same. Please specify the same checkpoint resume step for both."
+            f"Trainer resume ({trainer.resume}) and orchestrator resume ({orchestrator.resume}) are not the same. Please specify the same resume config for both."
         )
 
 
@@ -225,37 +235,26 @@ def validate_shared_model_name(
         )
 
 
-def validate_shared_output_dir(
-    trainer: TrainerConfig,
-    orchestrator: OrchestratorConfig,
-) -> None:
-    if trainer.output_dir != orchestrator.output_dir:
-        raise ValueError(
-            f"Trainer outputs directory ({trainer.output_dir}) and orchestrator outputs directory ({orchestrator.output_dir}) are not the same. "
-            "Please specify the same outputs directory for both (the orchestrator no longer nests under a run_default subdirectory)."
-        )
-
-
 def validate_shared_wandb_config(
     trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,
 ) -> None:
-    if trainer.wandb and not orchestrator.wandb:
+    if trainer.monitors.wandb and not orchestrator.monitors.wandb:
         raise ValueError(
             "Trainer W&B config is specified, but orchestrator W&B config is not. "
-            "This means only trainer metrics will be logged. Please specify [orchestrator.wandb] to log orchestrator metrics as well, "
-            "or use [wandb] to configure both at once."
+            "This means only trainer metrics will be logged. Please specify [orchestrator.monitors.wandb] to log orchestrator metrics as well, "
+            "or use [monitors.wandb] to configure both at once."
         )
-    if orchestrator.wandb and not trainer.wandb:
+    if orchestrator.monitors.wandb and not trainer.monitors.wandb:
         raise ValueError(
             "Orchestrator W&B config is specified, but trainer W&B config is not. "
-            "This means only orchestrator metrics will be logged. Please specify [trainer.wandb] to log trainer metrics as well, "
-            "or use [wandb] to configure both at once."
+            "This means only orchestrator metrics will be logged. Please specify [trainer.monitors.wandb] to log trainer metrics as well, "
+            "or use [monitors.wandb] to configure both at once."
         )
-    if trainer.wandb and orchestrator.wandb:
-        if trainer.wandb.project != orchestrator.wandb.project:
+    if trainer.monitors.wandb and orchestrator.monitors.wandb:
+        if trainer.monitors.wandb.project != orchestrator.monitors.wandb.project:
             raise ValueError(
-                f"Trainer W&B project ({trainer.wandb.project}) and orchestrator W&B project ({orchestrator.wandb.project}) are not the same. Please specify the same W&B project for both."
+                f"Trainer W&B project ({trainer.monitors.wandb.project}) and orchestrator W&B project ({orchestrator.monitors.wandb.project}) are not the same. Please specify the same W&B project for both."
             )
 
 

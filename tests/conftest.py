@@ -74,7 +74,7 @@ def branch_name() -> str:
 @pytest.fixture(scope="session")
 def output_dir(tmp_path_factory: pytest.TempPathFactory) -> Generator[Path, None, None]:
     """Fixture for the tests' output directory. Never deleted — CI uploads run logs
-    from it on failure; runs start with ``--clean-output-dir`` for a fresh workspace."""
+    from it on failure; runs start with ``--clean`` for a fresh workspace."""
     output_dir = Path(os.environ.get("PYTEST_OUTPUT_DIR", tmp_path_factory.mktemp("outputs")))
     output_dir.mkdir(parents=True, exist_ok=True)
     yield output_dir

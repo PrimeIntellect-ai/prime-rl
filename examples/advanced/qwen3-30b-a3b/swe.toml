@@ -20,7 +20,7 @@ job_name = "swe-qwen30b"
 [ckpt]
 interval = 100
 
-[wandb]
+[monitors.wandb]
 project = "qwen30b-swe"
 
 [trainer.model]
@@ -56,7 +56,6 @@ id = "r2e-gym"
 id = "bash"
 
 [orchestrator.train.source.env.agent.runtime]
-type = "prime"
 labels = ["qwen30b-swe", "swe"]
 
 [orchestrator.eval]
@@ -72,7 +71,6 @@ id = "swebench-verified"
 id = "bash"
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "prime"
 labels = ["qwen30b-swe", "swe-bench-verified"]
 
 [inference.vllm]

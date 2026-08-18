@@ -13,7 +13,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.utils.config import BaseConfig, cli, to_toml_dict
+from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
 
 # All config config classes
 CONFIG_CLASSES = [
@@ -161,20 +161,72 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_to_toml_dict_roundtrips_explicit_none(tmp_path):
-    """An explicit None override survives the write/re-parse round-trip used by SLURM launches."""
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+def test_optimizer_state_offload_keeps_legacy_default(config_cls):
+    config = config_cls.model_validate({})
+
+    assert config.model.optim_cpu_offload is True
+    assert config.model.full_offload is None
+
+
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
+    with pytest.warns(UserWarning, match="Gradient clipping prevents optimizer-in-backward"):
+        config = config_cls.model_validate(
+            {
+                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "optim": {"max_norm": 1.0},
+            }
+        )
+
+    assert config.optim.max_norm is None
+
+
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+def test_full_optimizer_offload_accepts_debug_backend(config_cls):
+    config = config_cls.model_validate(
+        {
+            "model": {
+                "optim_cpu_offload": False,
+                "full_offload": {
+                    "cpu_optimizer_backend": "torch",
+                },
+            },
+            "optim": {"max_norm": None},
+        }
+    )
+
+    assert config.model.full_offload is not None
+    assert config.model.full_offload.cpu_optimizer_backend == "torch"
+
+
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+@pytest.mark.parametrize("optimizer_type", ["sgd", "muon", "sign_sgd"])
+def test_full_optimizer_offload_requires_adamw(config_cls, optimizer_type):
+    with pytest.raises(ValidationError, match="Full optimizer offload only supports AdamW"):
+        config_cls.model_validate(
+            {
+                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "optim": {"type": optimizer_type, "max_norm": None},
+            }
+        )
+
+
+def test_resolved_json_roundtrips_explicit_none(tmp_path):
+    """An explicit None override survives the write/re-parse round-trip used by launches:
+    resolved configs are JSON, which keeps nulls (TOML cannot)."""
+    import json
+
     config = cli(TrainerConfig, args=["--model.compile", "None", "--optim.max_norm", "None"])
     assert config.model.compile is None
     assert config.optim.max_norm is None
 
-    write_toml(tmp_path / "cfg.toml", to_toml_dict(config))
-    reloaded = cli(TrainerConfig, args=["@", str(tmp_path / "cfg.toml")])
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps(dump_resolved_config(config)))
+    reloaded = cli(TrainerConfig, args=["@", str(path)])
     assert reloaded.model.compile is None
     assert reloaded.optim.max_norm is None
     assert reloaded == config
-
-    # Unset None fields stay dropped, so defaults still resolve on re-parse
-    assert "max_steps" not in to_toml_dict(cli(TrainerConfig, args=[]))
 
 
 def test_env_algo_overrides_top_level():
@@ -492,24 +544,26 @@ def test_trainer_chat_template_cascades_to_inference():
 
 def test_shared_wandb_fields_propagate_to_subconfigs():
     """Every ``SharedWandbConfig`` leaf (project, entity, name, group, tags,
-    offline) propagates to both trainer.wandb and orchestrator.wandb. Regression
-    for a miss in the inline propagator."""
+    offline) propagates to both trainer.monitors.wandb and
+    orchestrator.monitors.wandb. Regression for a miss in the inline propagator."""
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
-            "wandb": {
-                "project": "shared-proj",
-                "entity": "shared-entity",
-                "name": "shared-name",
-                "group": "shared-group",
-                "tags": ["a", "b"],
-                "offline": False,
+            "monitors": {
+                "wandb": {
+                    "project": "shared-proj",
+                    "entity": "shared-entity",
+                    "name": "shared-name",
+                    "group": "shared-group",
+                    "tags": ["a", "b"],
+                    "offline": False,
+                }
             },
             "trainer": {},
             "orchestrator": {"renderer": {"name": "default"}},
         }
     )
-    for component in (config.trainer.wandb, config.orchestrator.wandb):
+    for component in (config.trainer.monitors.wandb, config.orchestrator.monitors.wandb):
         assert component is not None
         assert component.project == "shared-proj"
         assert component.entity == "shared-entity"
@@ -517,6 +571,24 @@ def test_shared_wandb_fields_propagate_to_subconfigs():
         assert component.group == "shared-group"
         assert component.tags == ["a", "b"]
         assert component.offline is False
+
+
+def test_shared_monitor_disable_and_prime_propagate():
+    """CLI ``--no-monitors.wandb`` / ``--no-monitors.file`` (which land as the string
+    "None") propagate the disable to both sub-configs, whose monitors default to
+    enabled; a shared ``[monitors.prime]`` reaches the orchestrator only."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "monitors": {"wandb": "None", "file": "None", "prime": {"name": "shared-prime"}},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    assert config.trainer.monitors.wandb is None and config.trainer.monitors.file is None
+    assert config.orchestrator.monitors.wandb is None and config.orchestrator.monitors.file is None
+    assert config.orchestrator.monitors.prime is not None
+    assert config.orchestrator.monitors.prime.name == "shared-prime"
 
 
 def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
@@ -547,8 +619,8 @@ def test_shared_and_subconfig_disjoint_fields_coexist():
     assert config.trainer.model.impl == "custom"
 
 
-def test_shared_output_dir_propagates_through_cli(tmp_path):
-    """Shared output_dir from CLI reaches sub-configs even when tyro constructs sub-configs before the before-validator."""
+def test_run_dir_propagates_through_cli(tmp_path):
+    """Sub-configs receive the run directory (output_dir / run.name) resolved from the CLI."""
     toml_path = tmp_path / "cfg.toml"
     write_toml(
         toml_path,
@@ -556,15 +628,21 @@ def test_shared_output_dir_propagates_through_cli(tmp_path):
             "max_steps": 1,
             "seq_len": 128,
             "model": {"name": "Qwen/Qwen3-0.6B"},
+            "monitors": {"wandb": {}},
             "trainer": {},
             "orchestrator": {"batch_size": 16, "group_size": 1},
             "inference": {},
         },
     )
     shared_out = tmp_path / "shared"
-    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out)])
-    assert config.trainer.output_dir == shared_out
-    assert config.orchestrator.output_dir == shared_out
+    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out), "--run.name", "my-exp"])
+    assert config.run_dir == shared_out / "my-exp"
+    assert config.trainer.output_dir == shared_out / "my-exp"
+    assert config.orchestrator.output_dir == shared_out / "my-exp"
+    # Unset monitor names inherit run.name
+    assert config.monitors.wandb is not None and config.monitors.wandb.name == "my-exp"
+    assert config.trainer.monitors.wandb is not None and config.trainer.monitors.wandb.name == "my-exp"
+    assert config.orchestrator.monitors.wandb is not None and config.orchestrator.monitors.wandb.name == "my-exp"
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():

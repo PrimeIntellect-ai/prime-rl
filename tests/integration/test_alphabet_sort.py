@@ -14,6 +14,13 @@ from tests.utils import (
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
+RUN_NAME = "alphabet-sort"
+
+
+@pytest.fixture(scope="module")
+def run_dir(output_dir: Path) -> Path:
+    return output_dir / RUN_NAME
+
 
 TIMEOUT = 1200  # 20 minutes (was 900s — alphabet-sort steps can take 2+ min
 # each on contended CI GPU runners, and vLLM warm-up eats ~2 min)
@@ -38,39 +45,41 @@ def rl_process(
         "rl",
         "@",
         "configs/ci/integration/alphabet_sort.toml",
-        "--clean-output-dir",
-        "--wandb.project",
+        "--clean",
+        "--monitors.wandb.project",
         wandb_project,
-        "--wandb.name",
+        "--monitors.wandb.name",
         wandb_name,
         "--output-dir",
         output_dir.as_posix(),
+        "--run.name",
+        RUN_NAME,
     ]
     return run_process(cmd, timeout=TIMEOUT)
 
 
 @pytest.fixture(scope="module")
-def test_no_error(rl_process: ProcessResult, output_dir: Path):
+def test_no_error(rl_process: ProcessResult, run_dir: Path):
     """Tests that the RL process does not fail."""
-    check_no_error(rl_process, output_dir)
+    check_no_error(rl_process, run_dir)
 
 
-def test_reward_goes_up(rl_process: ProcessResult, test_no_error, output_dir: Path):
+def test_reward_goes_up(rl_process: ProcessResult, test_no_error, run_dir: Path):
     """Tests that the reward goes up in the RL process."""
-    with open(output_dir / "logs" / "orchestrator.log", "r") as f:
+    with open(run_dir / "logs" / "latest" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
     check_reward_goes_up(orchestrator_stdout)
 
 
-def test_reward_in_range(rl_process: ProcessResult, test_no_error, output_dir: Path):
+def test_reward_in_range(rl_process: ProcessResult, test_no_error, run_dir: Path):
     """Tests that the reward is in range in the RL process."""
-    with open(output_dir / "logs" / "orchestrator.log", "r") as f:
+    with open(run_dir / "logs" / "latest" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
     check_reward_in_range(orchestrator_stdout, min_threshold=0.10)
 
 
-def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, output_dir: Path):
+def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, run_dir: Path):
     """Tests that the average mismatch KL is below 0.15 across the last 5 steps."""
-    with open(output_dir / "logs" / "trainer.log", "r") as f:
+    with open(run_dir / "logs" / "latest" / "trainer.log", "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_avg_mismatch_kl_in_range(trainer_stdout, last_n_steps=5, max_threshold=0.15)

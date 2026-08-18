@@ -69,14 +69,23 @@ from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
 
 
-def pre_download_model(model_name: str) -> None:
-    """Pre-download model from HuggingFace Hub so all nodes have cached weights before training."""
+def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
+    """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
+
+    With ``skip_weights`` (random-init debug runs), only config and tokenizer files are fetched.
+    """
     if Path(model_name).exists():
         get_logger().info(f"Model {model_name} found at local path, skipping download")
         return
-    get_logger().info(f"Pre-downloading model {model_name}")
     t0 = time.perf_counter()
-    path = snapshot_download(repo_id=model_name, repo_type="model")
+    if skip_weights:
+        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (random init, skipping weights)")
+        path = snapshot_download(
+            repo_id=model_name, repo_type="model", allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"]
+        )
+    else:
+        get_logger().info(f"Pre-downloading model {model_name}")
+        path = snapshot_download(repo_id=model_name, repo_type="model")
     get_logger().debug(
         f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
     )
@@ -461,6 +470,26 @@ def apply_fused_moe_kernel(model: nn.Module, quantization: QuantizationConfig | 
 
     _load_fused_moe_kernel()
     logger.info(f"Using the fused {dtype} MoE kernel for {num_moe_layers} MoE layers")
+
+
+def get_full_offload_dtype_policy(
+    model: nn.Module,
+    config: ModelConfig,
+) -> dict[int, tuple[torch.dtype, torch.dtype]]:
+    """Return persistent parameter and reduced-gradient dtypes for full offload."""
+    # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
+    policy = {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
+    if config.moe_router_dtype != "float32":
+        return policy
+
+    language_model = get_language_model(model)
+    for layer in language_model.layers:
+        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
+        if isinstance(mlp, (MoE, LatentMoE)):
+            for param in mlp.router.parameters():
+                if param.is_floating_point():
+                    policy[id(param)] = (torch.float32, torch.float32)
+    return policy
 
 
 def freeze_sparse_indexer(model: nn.Module) -> None:

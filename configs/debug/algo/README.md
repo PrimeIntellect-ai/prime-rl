@@ -32,7 +32,7 @@ CUDA_VISIBLE_DEVICES=1 uv run inference \
 
 ## Run the debug configs
 
-Every config writes to the default `outputs/` directory, so running two back-to-back — or re-running one — fails with `FileExistsError`. Pass a distinct `--output-dir outputs/<algo>` per config (recommended for a sweep) or `--clean-output-dir` to wipe and restart.
+Every config writes to the default `outputs/` directory, so running two back-to-back — or re-running one — fails with `FileExistsError`. Pass a distinct `--output-dir outputs/<algo>` per config (recommended for a sweep) or `--clean` to wipe and restart.
 
 ```bash
 # GRPO (no frozen model)

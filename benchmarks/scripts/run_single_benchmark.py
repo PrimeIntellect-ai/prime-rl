@@ -2,15 +2,18 @@
 """
 Run a single benchmark configuration and output JSON results.
 
-This script wraps the prime-rl training with --bench.output-json to get
-metrics directly without parsing console output.
+This script runs a normal short training (--max-steps) with the file monitor
+enabled and aggregates throughput / MFU / step time / peak memory from the
+run's metrics.jsonl.
 """
 
 from __future__ import annotations
 
 import json
+import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +86,8 @@ class BenchmarkConfig(BaseConfig):
 
     timeout: Annotated[int, Field(description="Timeout in seconds")] = 3600
 
+    max_steps: Annotated[int, Field(ge=2, description="Training steps to run. The first step is warmup.")] = 4
+
     micro_batches: Annotated[int, Field(ge=1, description="Number of micro batches")] = 2
 
     ep: Annotated[int, Field(ge=1, description="Expert parallelism size (1 = no EP)")] = 1
@@ -115,7 +120,7 @@ class BenchmarkConfig(BaseConfig):
     ] = None
 
 
-def build_command(config: BenchmarkConfig) -> list[str]:
+def build_command(config: BenchmarkConfig, output_dir: Path) -> list[str]:
     """Build the benchmark command from config."""
     # Determine training script
     if config.type == "rl":
@@ -137,12 +142,18 @@ def build_command(config: BenchmarkConfig) -> list[str]:
         str(config.seq_len),
         "--model.attn",
         config.attention,
-        "--bench.output-json",
-        str(config.output),
+        "--max-steps",
+        str(config.max_steps),
+        "--output-dir",
+        str(output_dir),
+        "--monitors.file.path",
+        "metrics.jsonl",
         "--model.compile",
         "--dist-timeout-seconds",
         str(config.timeout),
     ]
+    if config.type == "sft":
+        cmd.extend(["--run.name", "bench"])
 
     # Add activation checkpointing if enabled
     if config.ac == "Recompute":
@@ -198,13 +209,60 @@ def dummy_metrics() -> dict:
     }
 
 
+def aggregate_metrics(metrics_path: Path) -> dict:
+    """Aggregate per-step metrics from a run's metrics.jsonl.
+
+    Each metrics.jsonl line is one monitor.log call (``{"step": N, ...}``);
+    merge the lines per step, drop the first (warmup) step, and compute
+    mean/std/min/max per metric like the old --bench JSON export did.
+    """
+    per_step: dict[int, dict] = {}
+    with open(metrics_path) as f:
+        for line in f:
+            row = json.loads(line)
+            per_step.setdefault(row["step"], {}).update(row)
+
+    steps = sorted(per_step)[1:]  # Exclude first warmup step
+    columns = {
+        "perf/mfu": "mfu",
+        "perf/throughput": "throughput",
+        "time/step": "step_time",
+        "perf/peak_memory": "peak_memory",
+    }
+    series = {name: [per_step[step][key] for step in steps] for key, name in columns.items()}
+
+    def stats(values: list[float]) -> dict:
+        return {
+            "mean": statistics.mean(values),
+            "std": statistics.stdev(values) if len(values) > 1 else 0.0,
+            "min": min(values),
+            "max": max(values),
+        }
+
+    total_memory_gib = torch.cuda.mem_get_info()[1] / 1024**3
+    peak_memory_gib = statistics.mean(series["peak_memory"])
+    return {
+        "mfu": stats(series["mfu"]),
+        "throughput": stats(series["throughput"]),
+        "step_time": stats(series["step_time"]),
+        "peak_memory": {
+            "gib": peak_memory_gib,
+            "pct": peak_memory_gib / total_memory_gib * 100,
+        },
+    }
+
+
 def run_benchmark(config: BenchmarkConfig) -> None:
     """Run a single benchmark and write results to output path."""
-    cmd = build_command(config)
+    output_dir = Path(tempfile.mkdtemp(prefix="benchmark-run-"))
+    cmd = build_command(config, output_dir)
     print(f"Running: {' '.join(cmd)}")
 
     if config.dry_run:
         return
+
+    # The SFT entrypoint writes to output_dir/<run.name>, the RL trainer to output_dir directly
+    metrics_path = output_dir / "bench" / "metrics.jsonl" if config.type == "sft" else output_dir / "metrics.jsonl"
 
     start_time = time.perf_counter()
     try:
@@ -221,14 +279,13 @@ def run_benchmark(config: BenchmarkConfig) -> None:
             config.success = False
             config.error_reason = extract_oom_error_reason(output) or f"Non-zero exit code: {result.returncode}"
             print(f"Process exited with code {result.returncode}: {output}")
-        if not config.output.exists():
+        if not metrics_path.exists():
             config.success = False
-            config.error_reason = config.error_reason or extract_oom_error_reason(output) or "No JSON output written"
+            config.error_reason = config.error_reason or extract_oom_error_reason(output) or "No metrics.jsonl written"
             print(f"Process exited with code {result.returncode}: {output}")
-            print("Benchmark completed but no JSON output was written")
+            print("Benchmark completed but no metrics.jsonl was written")
         else:
-            with open(config.output) as f:
-                metrics = json.load(f)
+            metrics = aggregate_metrics(metrics_path)
             lines = output.splitlines()
             print("\n".join(lines))
     except subprocess.TimeoutExpired:

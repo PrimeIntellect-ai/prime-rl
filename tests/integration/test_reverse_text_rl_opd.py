@@ -14,6 +14,14 @@ from tests.utils import check_final_eval_reward_above, check_no_error, strip_esc
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
+RUN_NAME = "reverse-text-rl-opd"
+
+
+@pytest.fixture(scope="module")
+def run_dir(output_dir: Path) -> Path:
+    return output_dir / RUN_NAME
+
+
 TIMEOUT = 900  # 15 minutes (was 600s — the OPD orchestrator finishes in ~8m but
 # the rl entrypoint cleanup phase can push total wall-clock past the old limit)
 REF_PORT = 8001
@@ -40,7 +48,7 @@ def ref_inference(output_dir: Path) -> Generator[subprocess.Popen, None, None]:
     """Spawn a `uv run inference` frozen reference server on GPU 0 (shared with the rl-launched
     policy) at 40% gpu_memory_utilization. Tears down at module scope.
     """
-    # The rl entrypoint's --clean-output-dir wipes the rl output_dir on start,
+    # The rl entrypoint's --clean wipes the rl output_dir on start,
     # so park the reference-server log next to it instead of inside it.
     ref_log_dir = output_dir.parent / f"{output_dir.name}_ref"
     ref_log_dir.mkdir(parents=True, exist_ok=True)
@@ -92,23 +100,25 @@ def rl_opd_process(
         "rl",
         "@",
         "configs/ci/integration/reverse-text-rl-opd/start.toml",
-        "--clean-output-dir",
-        "--wandb.project",
+        "--clean",
+        "--monitors.wandb.project",
         wandb_project,
-        "--wandb.name",
+        "--monitors.wandb.name",
         wandb_name,
         "--output-dir",
         output_dir.as_posix(),
+        "--run.name",
+        RUN_NAME,
     ]
     return run_process(cmd, timeout=TIMEOUT)
 
 
 @pytest.fixture(scope="module")
-def test_no_error(rl_opd_process: ProcessResult, output_dir: Path):
-    check_no_error(rl_opd_process, output_dir)
+def test_no_error(rl_opd_process: ProcessResult, run_dir: Path):
+    check_no_error(rl_opd_process, run_dir)
 
 
-def test_eval_reward_converges(rl_opd_process: ProcessResult, test_no_error, output_dir: Path):
-    with open(output_dir / "logs" / "orchestrator.log", "r") as f:
+def test_eval_reward_converges(rl_opd_process: ProcessResult, test_no_error, run_dir: Path):
+    with open(run_dir / "logs" / "latest" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
     check_final_eval_reward_above(orchestrator_stdout, env_name="reverse-text", min_threshold=0.5)

@@ -60,7 +60,7 @@ if [[ ${#POSITIONAL[@]} -ge 2 ]]; then
   OUTPUT_DIR="${POSITIONAL[1]}"
 fi
 
-LOG_DIR="${OUTPUT_DIR}/logs"
+LOG_DIR="${OUTPUT_DIR}/logs/latest"
 
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   echo "Attaching to tmux session: $SESSION_NAME"
