@@ -62,6 +62,14 @@ KAPPA_CEILING_RELIEF = 1.00002
 # an earlier warning than queueing: thrash onset is a cliff at ~1.0, so stop
 # feeding the cap while there is still headroom to absorb context growth
 KV_USAGE_SOFT = 0.7
+# Headroom feedback: above this usage, trim the cap AND the pool itself to
+# inflight * KV_USAGE_TARGET / usage. Cap moves alone cannot relieve
+# pressure from episodes maturing in place (they only block admissions —
+# observed: contexts grew ~15%/step under a frozen, falling cap and crossed
+# the thrash cliff in minutes), so the excess is shed, youngest first. The
+# cooldown lets each trim propagate before the next is sized.
+KV_USAGE_TARGET = 0.85
+KV_TRIM_COOLDOWN_POLLS = 6
 # Queue-overload HARD: capacity-queued requests exceed this fraction of
 # running requests for QUEUE_PERSISTENCE_POLLS consecutive polls. Agentic
 # rollouts overload by queueing, not preempting — admission control parks
@@ -189,6 +197,8 @@ class ConcurrencyController:
         # Consecutive polls with the capacity queue above QUEUE_RATIO of running
         self.queue_overload_polls = 0
         self.kappa_ceiling = KAPPA_MAX
+        # Polls until the next kv-headroom trim may fire
+        self.trim_cooldown = 0
         # After a cut, ignore further HARD signals until inflight has drained
         # below the new cap — the overload during drain is stale
         self.draining = False
@@ -339,6 +349,18 @@ class ConcurrencyController:
             # Continuity: respect a user-set start that implies over-commit;
             # otherwise jump to the safe full budget (kappa = 1)
             self.kappa = max(1.0, self.max_inflight * self.cost_estimate() / capacity)
+
+        max_usage = max((s.kv_usage for s in samples if s.role != "prefill"), default=0.0)
+        self.trim_cooldown = max(0, self.trim_cooldown - 1)
+        if max_usage > KV_USAGE_TARGET and inflight > 0 and not self.draining and self.trim_cooldown == 0:
+            sustainable = self.clamp(inflight * KV_USAGE_TARGET / max_usage)
+            if sustainable < self.max_inflight:
+                self.apply_limit(sustainable, reason=f"kv headroom (usage {max_usage:.2f})")
+                self.slew_allowance = float(self.max_inflight)
+            if self._on_overload is not None and inflight > sustainable:
+                self._on_overload(inflight - sustainable)
+            self.trim_cooldown = KV_TRIM_COOLDOWN_POLLS
+            return
 
         target = self.clamp(min(self.kappa * capacity / self.cost_estimate(), self.slew_allowance))
         if self.draining:
