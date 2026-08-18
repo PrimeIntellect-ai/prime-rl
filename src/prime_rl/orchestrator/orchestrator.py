@@ -406,6 +406,7 @@ class Orchestrator:
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.inflight_permits,
+            on_overload=self.dispatcher.shed_youngest,
         )
         # The collector always polls — it feeds the concurrency controller;
         # W&B mirroring is gated on the registered monitor (the collector logs

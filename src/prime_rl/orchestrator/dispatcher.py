@@ -216,6 +216,29 @@ class RolloutDispatcher:
         blocked until enough episodes finish."""
         self.max_inflight = max_inflight
 
+    def shed_youngest(self, n: int) -> None:
+        """Cancel roughly ``n`` in-flight train episodes, youngest groups
+        first (least inference spend so far). Called on an overload cut so
+        the working set shrinks immediately instead of waiting for the
+        over-admitted episodes to finish at thrashed throughput."""
+        if n <= 0:
+            return
+        asyncio.create_task(self._shed_youngest(n))
+
+    async def _shed_youngest(self, n: int) -> None:
+        group_age: dict[uuid.UUID, float] = {}
+        for meta in self.inflight.values():
+            if meta.kind != "train":
+                continue
+            group_age[meta.group_id] = max(group_age.get(meta.group_id, 0.0), meta.started_at)
+        shed = 0
+        for group_id in sorted(group_age, key=lambda gid: group_age[gid], reverse=True):
+            if shed >= n:
+                break
+            shed += await self.drop_group(group_id)
+        if shed:
+            get_logger().warning(f"Shed {shed} youngest in-flight train episodes after overload cut")
+
     def admission_budget(self) -> int:
         """Admissions still allowed in the current burst window."""
         now = time.monotonic()

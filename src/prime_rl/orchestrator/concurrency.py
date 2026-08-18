@@ -151,12 +151,22 @@ class ConcurrencyController:
 
         self._set_limit: Callable[[int], None] | None = None
         self._get_inflight: Callable[[], int] | None = None
+        self._on_overload: Callable[[int], None] | None = None
 
-    def bind(self, *, set_limit: Callable[[int], None], get_inflight: Callable[[], int]) -> None:
+    def bind(
+        self,
+        *,
+        set_limit: Callable[[int], None],
+        get_inflight: Callable[[], int],
+        on_overload: Callable[[int], None] | None = None,
+    ) -> None:
         """Attach the outbound hooks. The dispatcher is constructed with this
-        controller's initial cap, so no ``set_limit`` fires here."""
+        controller's initial cap, so no ``set_limit`` fires here.
+        ``on_overload`` receives the episode excess on an overload cut so the
+        dispatcher can shed in-flight work instead of just blocking admission."""
         self._set_limit = set_limit
         self._get_inflight = get_inflight
+        self._on_overload = on_overload
 
     # ── inbound hooks ────────────────────────────────────────────────────────
 
@@ -302,6 +312,8 @@ class ConcurrencyController:
         # Escalate if overload survives the drain; reset on the next clear step
         self.backoff_factor = ESCALATED_BACKOFF_FACTOR
         self.apply_limit(target, reason=reason)
+        if self._on_overload is not None and inflight > target:
+            self._on_overload(inflight - target)
 
     def apply_limit(self, n_max: int, *, reason: str | None) -> None:
         if n_max == self.max_inflight:
