@@ -1,0 +1,21 @@
+max_steps = 6
+
+[ckpt]
+skip_optimizer = true
+skip_scheduler = true
+
+[resume]
+step = 5
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+optim_cpu_offload = false
+full_offload = true
+
+[optim]
+lr = 0.0
+
+[data]
+name = "PrimeIntellect/Reverse-Text-SFT"
+batch_size = 4
+seq_len = 1024

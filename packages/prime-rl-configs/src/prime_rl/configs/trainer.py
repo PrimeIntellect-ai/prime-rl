@@ -2,18 +2,17 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import BeforeValidator, Field, model_validator
 
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     EnvVars,
-    FileMonitorConfig,
     HeartbeatConfig,
     MetricsServerConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
-    WandbConfig,
     ZMQTransportConfig,
 )
 from prime_rl.utils.config import BaseConfig
@@ -55,14 +54,41 @@ class ActivationOffloadingConfig(BaseConfig):
     """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
 
 
+class OptimizerInBackwardOffloadConfig(BaseConfig):
+    """Full CPU optimizer offload: FP32 masters, moments, and accumulated gradients live in
+    CPU RAM, each optimizer chunk runs on CPU as soon as its last gradient arrives, and the
+    refreshed BF16 weights stream back while backward is still executing.
+
+    Gradient numerics: gradients are reduced across ranks in FP32 (``reduce_dtype``) but FSDP2
+    materializes them in the sharded parameter's dtype, which is BF16 for the offload compute
+    model — so each gradient is rounded to BF16 once before the FP32 CPU update. Masters,
+    moments, accumulation, and Adam arithmetic remain FP32. For gradient numerics bit-faithful
+    to that path, disable offloading.
+    """
+
+    cpu_optimizer_backend: Literal["native", "torch"] = "native"
+    """CPU AdamW implementation used by full offload. ``native`` is the production kernel; ``torch`` is a slower debugging and parity fallback."""
+
+    numa_bind: bool = True
+    """Pin each rank's CPUs to its GPU's NUMA node. Disable when the launcher already manages CPU affinity or GPU sysfs topology is unavailable."""
+
+
+def _normalize_optimizer_in_backward_offload(value: Any) -> Any:
+    if value is True:
+        return {}
+    if value is False:
+        return None
+    return value
+
+
+OptimizerInBackwardOffload = Annotated[
+    OptimizerInBackwardOffloadConfig | None, BeforeValidator(_normalize_optimizer_in_backward_offload)
+]
+
+
 class CompileConfig(BaseConfig):
     fullgraph: bool = False
     """Compile transformer blocks with ``fullgraph=True``."""
-
-
-class BenchConfig(BaseConfig):
-    output_json: Path | None = None
-    """Path to write benchmark results as JSON. If unset, results are only printed to the console."""
 
 
 class IndexCacheConfig(BaseConfig):
@@ -173,6 +199,9 @@ class ModelConfig(BaseModelConfig):
     optim_cpu_offload: bool = True
     """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
 
+    full_offload: OptimizerInBackwardOffload = None
+    """Full CPU optimizer offload: FP32 masters, moments, and gradients live in CPU RAM and the optimizer runs on CPU, overlapped with backward. Enable with ``true`` or a ``[model.full_offload]`` section; disabled by default."""
+
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
 
@@ -275,8 +304,13 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def cpu_offload_mutual_exclusion(self):
-        if self.fsdp_cpu_offload and self.optim_cpu_offload:
-            raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
+        if self.fsdp_cpu_offload and (self.optim_cpu_offload or self.full_offload):
+            raise ValueError("Cannot combine fsdp_cpu_offload with optimizer CPU offloading.")
+        if self.optim_cpu_offload and self.full_offload:
+            raise ValueError(
+                "Cannot enable both optim_cpu_offload and full_offload. "
+                "Set optim_cpu_offload=false when enabling full optimizer offload."
+            )
         return self
 
     @model_validator(mode="after")
@@ -588,10 +622,8 @@ class TrainerConfig(BaseConfig):
 
     log: TrainerLogConfig = TrainerLogConfig()
 
-    wandb: WandbConfig | None = None
-
-    file_monitor: FileMonitorConfig | None = None
-    """Local JSONL metric sink. If set, trainer metrics are appended to ``<output_dir>/metrics.jsonl``."""
+    monitors: MonitorsConfig = MonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
@@ -607,9 +639,6 @@ class TrainerConfig(BaseConfig):
 
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""
-
-    bench: BenchConfig | None = None
-    """Benchmark-mode configuration. When set, ``max_steps`` is forced to 4 and fake data is used."""
 
     gc: GCConfig | None = GCConfig()
     """Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior."""
@@ -644,6 +673,23 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def full_optimizer_offload_requires_adamw(self):
+        if self.model.full_offload and self.optim.type != "adamw":
+            raise ValueError("Full optimizer offload only supports AdamW")
+        return self
+
+    @model_validator(mode="after")
+    def full_optimizer_offload_disables_grad_clipping(self):
+        if self.model.full_offload and self.optim.max_norm is not None:
+            warnings.warn(
+                "Gradient clipping prevents optimizer-in-backward overlap with CPU optimizer offload. "
+                "Automatically setting optim.max_norm to None (disabled).",
+                stacklevel=1,
+            )
+            self.optim.max_norm = None
+        return self
+
+    @model_validator(mode="after")
     def vlms_require_bfloat16(self):
         if self.model.vlm is not None and (
             self.model.optimization_dtype != "bfloat16" or self.model.reduce_dtype != "bfloat16"
@@ -660,16 +706,6 @@ class TrainerConfig(BaseConfig):
                 "freeze_vision_encoder=false is incompatible with LoRA. "
                 "LoRA freezes all non-adapter parameters including the vision encoder."
             )
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_bench(self):
-        if self.bench is not None:
-            self.max_steps = 4  # 1 Warmup + 3 Benchmark
-            if not self.data.fake:
-                self.data.fake = FakeDataLoaderConfig()
-            if self.ckpt:  # Do not checkpoint
-                self.ckpt = None
         return self
 
     @model_validator(mode="after")

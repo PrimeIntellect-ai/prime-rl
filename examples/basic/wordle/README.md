@@ -46,8 +46,8 @@ To train on a single GPU, run
 # In the `Trainer` pane
 uv run sft @ examples/basic/wordle/sft.toml \
   --run.name sft \
-  --wandb.project ... \
-  --wandb.name ...
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ...
 ```
 
 To train on multiple GPUs, run
@@ -58,8 +58,8 @@ uv run torchrun \
   --local-ranks-filter 0 \
   --nproc-per-node ... \
   src/prime_rl/trainer/sft/train.py @ examples/basic/wordle/sft.toml \
-  --wandb.project ... \
-  --wandb.name ... 
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ... 
 ```
 
 After training completes, you will find the final weight checkpoint in `outputs/sft/weights/step_20`. Upload it to HF to be able to use it as the base model for RL we will do in the next section.
@@ -82,8 +82,8 @@ Finally, we will do multi-turn RL against the `wordle` environment using the mod
 uv run rl @ examples/basic/wordle/rl.toml \
   --model.name ... \
   --run.name rl \
-  --wandb.project ... \
-  --wandb.name ... 
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ... 
 ```
 
 This will write a weight checkpoint in `outputs/rl/weights/step_100`. As before, let's upload it to HF.

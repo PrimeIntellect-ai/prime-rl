@@ -9,7 +9,7 @@ name = "glm5-llmd"
 [log]
 level = "debug"
 
-[wandb]
+[monitors.wandb]
 project = "glm5-llmd"
 name = "base"
 
@@ -93,7 +93,6 @@ attn = "flash_attention_2" # ignored with GLM5
 fused_lm_head_token_chunk_size = 1024
 cp = 4 # context parallel for the 131K seq len
 ep = 8
-optim_cpu_offload = true
 
 [trainer.model.quantization]
 type = "fp8"

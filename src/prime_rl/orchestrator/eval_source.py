@@ -43,15 +43,17 @@ class EvalSource:
         # trigger fires every env (subject to ``skip_first_step``)
         self.first_trigger = not is_resumed
 
-    def trigger(self, step: int) -> list[str]:
+    def trigger(self, step: int, *, force: bool = False) -> list[str]:
         """Fire eligible envs for ``step`` and return their names. On resume
-        ``first_trigger`` is False, so the startup/base eval doesn't re-run."""
+        ``first_trigger`` is False, so the startup/base eval doesn't re-run.
+        ``force`` fires every env regardless of interval (e.g. the evaluator's
+        final-checkpoint eval)."""
         is_first, self.first_trigger = self.first_trigger, False
         if is_first and self.eval_config.skip_first_step:
             return []
         fired: list[str] = []
         for name, interval in self.intervals.items():
-            if is_first or step % interval == 0:
+            if is_first or force or step % interval == 0:
                 fired.append(name)
         # Round-robin across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates at example granularity. ``try_schedule``'s

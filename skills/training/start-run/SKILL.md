@@ -19,11 +19,16 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 - Nested groups via dotted CLI paths — kebab-case on the CLI, snake_case in TOML.
 - Bool toggles: bare `--flag` enables, `--no-flag` disables (nested too).
 - Lists: space-separated or JSON literal. Dicts: JSON literal, deep-merged with file values.
-- Optional sub-configs (`WandbConfig | None`): bare `--wandb` enables defaults; `--wandb @ wandb.toml` enables from a file; `--no-wandb` disables.
+- Optional sub-configs (`WandbMonitorConfig | None`): bare `--monitors.wandb` enables defaults; `--monitors.wandb @ wandb.toml` enables from a file; `--no-monitors.wandb` disables.
 - Discriminated unions are switched by the `type` tag (e.g. `--optimizer.type muon`).
 - Validation aliases let renamed fields keep working; legacy keys can be remapped in a `model_validator(mode="before")`.
 - Auto-generated `--help` panels from `Field(description=...)` or PEP 224 docstrings.
 - Friendly errors: required-field boxes, validator errors point at the offending flag, unknown flags get a "did you mean" hint.
+- State-only optimizer offload remains enabled by default with `model.optim_cpu_offload = true`.
+- For gradients, FP32 masters, optimizer state, and optimizer-in-backward CPU execution, set
+  `model.optim_cpu_offload = false` and `model.full_offload = true`. This mode uses the native
+  CPU AdamW kernel, only supports AdamW, and disables gradient clipping. Use a
+  `[model.full_offload]` table only to select the Torch debugging backend or disable NUMA binding.
 
 ## `rl` — RL training
 

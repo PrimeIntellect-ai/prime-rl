@@ -3,7 +3,7 @@ seq_len = 131072
 [log]
 level = "debug"
 
-[wandb]
+[monitors.wandb]
 project = "glm5-pd-disag"
 
 [weight_broadcast]
@@ -43,7 +43,6 @@ name = "zai-org/GLM-5"
 impl = "custom"
 attn = "flash_attention_2" # dsa is skipping flash attn anyway
 fused_lm_head_token_chunk_size = 2048
-optim_cpu_offload = true
 ep = 8
 
 [trainer.model.ac]

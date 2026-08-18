@@ -21,7 +21,7 @@ num_train_nodes = 2
 num_infer_nodes = 1
 num_infer_replicas = 4
 
-[wandb]
+[monitors.wandb]
 project = "search-ablations"
 name = "glm45air-search"
 
@@ -50,7 +50,6 @@ attn = "flash_attention_3"
 cp = 4
 cp_style = "ulysses"
 fused_lm_head_token_chunk_size = 1024
-optim_cpu_offload = true
 
 [trainer.model.ac]
 
@@ -87,7 +86,7 @@ num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1
 num_turns_weight = 0.0
 
-[orchestrator.prime_monitor]
+[monitors.prime]
 
 # --- Train: the search envs with usable training data (rlm `search` skill, prime sandbox) ---
 

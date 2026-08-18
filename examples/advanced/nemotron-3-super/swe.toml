@@ -18,7 +18,7 @@ num_train_nodes = 4
 num_infer_nodes = 1
 num_infer_replicas = 4
 
-[wandb]
+[monitors.wandb]
 project = "nemotron-3-super"
 name = "nemotron-3-super-swe"
 
@@ -47,7 +47,6 @@ cp = 8
 cp_style = "ulysses"
 ep = 8
 fused_lm_head_token_chunk_size = 1024
-optim_cpu_offload = true
 
 [trainer.model.ac]
 
@@ -95,7 +94,7 @@ summarize_at_tokens = [65536, 131072]
 [orchestrator.train.source.env.agent.runtime]
 labels = ["nemotron-3-super-swe"]
 
-[orchestrator.prime_monitor]
+[monitors.prime]
 
 [orchestrator.eval]
 interval = 20

@@ -9,17 +9,15 @@ from prime_rl.configs.algorithm import (
     AlgoConfig,
     GRPOAlgoConfig,
 )
+from prime_rl.configs.monitors import OrchestratorMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
     EnvVars,
-    FileMonitorConfig,
     HeartbeatConfig,
     LogConfig,
-    PrimeMonitorConfig,
     ResumeConfig,
     TransportConfig,
-    WandbWithExtrasConfig,
     ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
@@ -437,12 +435,8 @@ class OrchestratorConfig(BaseConfig):
     env_vars: EnvVars = {}
     """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
 
-    wandb: WandbWithExtrasConfig | None = None
-
-    prime_monitor: PrimeMonitorConfig | None = None
-
-    file_monitor: FileMonitorConfig | None = None
-    """Local JSONL metric sink. If set, orchestrator metrics are appended to ``<output_dir>/metrics.jsonl``."""
+    monitors: OrchestratorMonitorsConfig = OrchestratorMonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     collect_inference_metrics: bool = True
     """Collect inference-server metrics (requires wandb)."""
@@ -501,9 +495,6 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
 
-    bench: bool = False
-    """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
-
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
@@ -522,13 +513,13 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_prime_monitor_run_name(self):
-        """Default ``prime_monitor.run_name`` to the W&B run name when monitoring
-        is enabled and the user hasn't named the prime-monitor run explicitly."""
-        if self.prime_monitor is None or self.prime_monitor.run_name is not None:
+    def auto_setup_prime_monitor_name(self):
+        """Default ``monitors.prime.name`` to the W&B run name when monitoring
+        is enabled and the user hasn't named the platform run explicitly."""
+        if self.monitors.prime is None or self.monitors.prime.name is not None:
             return self
-        if self.wandb is not None and self.wandb.name:
-            self.prime_monitor.run_name = self.wandb.name
+        if self.monitors.wandb is not None and self.monitors.wandb.name:
+            self.monitors.prime.name = self.monitors.wandb.name
         return self
 
     @model_validator(mode="after")
@@ -636,20 +627,6 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.source:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_bench(self):
-        if self.bench:
-            self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
-
-            # Disable evaluation
-            self.eval = None
-            if self.wandb:
-                self.wandb.log_extras = None
-            if self.prime_monitor:
-                self.prime_monitor.log_extras = None
 
         return self
 

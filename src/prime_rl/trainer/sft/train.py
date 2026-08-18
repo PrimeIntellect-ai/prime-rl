@@ -1,6 +1,8 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
+import math
 import time
+import asyncio
 from contextlib import nullcontext
 from datetime import timedelta
 
@@ -27,6 +29,7 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
+    get_full_offload_dtype_policy,
     get_load_balance_stats,
     is_tt_moe_model,
     setup_processor,
@@ -40,21 +43,23 @@ from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
-    export_benchmark_json,
+    begin_backward,
+    clip_grad_norm_,
+    finish_backward,
     get_ckpt_disk_metrics,
+    prepare_gradient_offload,
     print_sample,
+    scale_gradients_,
+    setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
-    print_benchmark,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.monitor import setup_monitor
+from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, to_col_format
+from prime_rl.utils.utils import clean_exit
 import torch.distributed as dist
-
-from torchtitan.distributed.utils import clip_grad_norm_
 
 
 @clean_exit
@@ -67,13 +72,18 @@ def train(config: SFTConfig):
     )
     logger.info(f"Starting SFT trainer in {world}")
 
-    # Print warning if running in benchmark mode
-    if config.bench is not None:
-        logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
-
-    # Setup the monitor
-    logger.info(f"Initializing monitor ({config.wandb})")
-    monitor = setup_monitor(config.wandb, file_config=config.file_monitor, output_dir=config.run_dir, run_config=config)
+    # Setup the monitors
+    logger.info(f"Initializing monitors ({config.monitors})")
+    asyncio.run(
+        monitors.setup(
+            wandb=config.monitors.wandb,
+            file=config.monitors.file,
+            output_dir=config.run_dir,
+            run_config=config,
+            eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval else [],
+            overview_flavor="sft",
+        )
+    )
 
     # Setup heartbeat (only on rank 0)
     heart = None
@@ -85,6 +95,8 @@ def train(config: SFTConfig):
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
     )
+    if config.model.full_offload is not None:
+        setup_full_cpu_optimizer_offload(config.model.full_offload)
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -176,8 +188,16 @@ def train(config: SFTConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    optimizer = setup_optimizer(
-        config.optim, list(model.named_parameters()), parallel_dims, cpu_offload=config.model.optim_cpu_offload
+    optimizer, gradient_manager = setup_optimizer(
+        config.optim,
+        list(model.named_parameters()),
+        parallel_dims,
+        cpu_offload=config.model.optim_cpu_offload,
+        full_offload_config=config.model.full_offload,
+        model=model,
+        full_offload_dtype_policy=(
+            get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
+        ),
     )
 
     # Set up the learning rate scheduler
@@ -364,9 +384,21 @@ def train(config: SFTConfig):
             logger.warning(f"Validation at step {step} had no valid tokens")
         else:
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        monitor.log({"val/loss": mean_loss, "step": step}, step=step)
+        asyncio.run(
+            monitors.log(
+                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
+            )
+        )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
+
+    # Online evals reload the trainer's HF weight checkpoints from disk, so a weight
+    # checkpoint must land at every step an eval env is due (deterministic from the
+    # config — all ranks agree on the collective save).
+    online_eval_intervals = sorted({source.interval for source in config.eval.source}) if config.eval else []
+
+    def is_online_eval_step(step: int) -> bool:
+        return any(step % interval == 0 for interval in online_eval_intervals)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
@@ -375,12 +407,13 @@ def train(config: SFTConfig):
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
+    max_peak_memory = 0.0
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
-        is_last_step = config.max_steps is not None and progress.step == config.max_steps
+        is_last_step = config.max_steps is not None and progress.step >= config.max_steps
 
         memory_profiler = (
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
@@ -390,7 +423,6 @@ def train(config: SFTConfig):
         forward_backward_start_time = time.perf_counter()
 
         step_loss_sum = torch.tensor(0.0, device="cuda")
-        step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_loss_count = torch.tensor(0, device="cuda")
         is_moe_model = is_tt_moe_model(model)
         moe_stats = (
@@ -401,18 +433,41 @@ def train(config: SFTConfig):
             if is_moe_model
             else {}
         )
-        for micro_step in range(grad_accum_steps):
-            micro_batch = next(dataiter)
+        run_validation_this_step = config.val is not None and (
+            (is_first_step and config.val.eval_on_start)
+            or (not is_first_step and progress.step % config.val.interval == 0)
+        )
+        if gradient_manager is None:
+            micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
+            step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+        else:
+            micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
+            local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
+            global_step_token_count = torch.tensor(local_token_count, dtype=torch.int64, device="cuda")
+            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_token_count_val = global_step_token_count.item() // cp_size
+            grad_scale = (
+                parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+                if global_token_count_val > 0
+                else 1.0
+            )
+            prepare_gradient_offload(
+                gradient_manager,
+                grad_scale,
+                overlap_optimizer=not run_validation_this_step,
+            )
 
+        for micro_step, micro_batch in enumerate(micro_batches):
             if config.log.log_data:
                 print_sample(
                     micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
                 )
 
             with maybe_record_function("forward"):
-                local_loss_sum, local_token_count = compute_loss(micro_batch)
+                local_loss_sum, batch_token_count = compute_loss(micro_batch)
 
-            step_local_token_count += local_token_count
+            if gradient_manager is None:
+                step_local_token_count += batch_token_count
 
             if torch.isnan(local_loss_sum.detach()):
                 nan_loss_count += 1
@@ -423,7 +478,9 @@ def train(config: SFTConfig):
                 scaled_loss = local_loss_sum / grad_accum_steps
 
             with maybe_record_function("backward"):
+                begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
                 scaled_loss.backward()
+                finish_backward(gradient_manager)
 
             if is_moe_model:
                 for name, values in get_load_balance_stats(model).items():
@@ -438,25 +495,17 @@ def train(config: SFTConfig):
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
-        # All-reduce token counts and rescale gradients to get a global token-weighted mean.
-        # FSDP already divided grads by fsdp_gradient_divide_factor, so we undo that and
-        # divide by the true global token count instead.
-        global_step_token_count = step_local_token_count.clone()
-        dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        global_token_count_val = global_step_token_count.item()
-
-        if global_token_count_val > 0:
-            grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-            for param in model.parameters():
-                if param.grad is not None:
-                    param.grad.mul_(grad_scale)
+        if gradient_manager is None:
+            global_step_token_count = step_local_token_count.clone()
+            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_token_count_val = global_step_token_count.item()
+            if global_token_count_val > 0:
+                grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+                scale_gradients_(None, model, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
-        if config.val is not None and (
-            (is_first_step and config.val.eval_on_start)
-            or (not is_first_step and progress.step % config.val.interval == 0)
-        ):
+        if run_validation_this_step:
             run_validation(progress.step)
 
         # Compute the global mean loss for logging.
@@ -471,11 +520,7 @@ def train(config: SFTConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-            grad_norm = clip_grad_norm_(
-                model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
-            )
-            if grad_norm.device.type == "cpu":
-                grad_norm = grad_norm.to(torch.device("cuda"))
+            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, parallel_dims.ep_enabled)
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
@@ -485,10 +530,11 @@ def train(config: SFTConfig):
         scheduler.step()
 
         # Checkpoint the step we just finished. The last step's checkpoint is written once after
-        # the loop, so skip it here to avoid a double-save.
-        if (config.ckpt and config.ckpt.interval) and not is_last_step and progress.step % config.ckpt.interval == 0:
-            save_ckpt_time = 0
-
+        # the loop, so skip it here to avoid a double-save. Weight checkpoints additionally land
+        # at online-eval steps — they are how the inference server picks up the new policy.
+        save_ckpt_time = 0
+        is_ckpt_step = bool(config.ckpt and config.ckpt.interval) and progress.step % config.ckpt.interval == 0
+        if ckpt_manager is not None and is_ckpt_step and not is_last_step:
             if not config.ckpt.weights_only:
                 # Save full checkpoint
                 logger.info(f"Saving checkpoint at step {progress.step}")
@@ -498,15 +544,16 @@ def train(config: SFTConfig):
 
             ckpt_manager.maybe_clean()
 
-            # Save weight checkpoint
-            if weight_ckpt_manager is not None:
-                logger.info(f"Saving weight checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
-                weight_ckpt_manager.maybe_clean()
-        else:
-            save_ckpt_time = 0
+        if (
+            weight_ckpt_manager is not None
+            and not is_last_step
+            and (is_ckpt_step or is_online_eval_step(progress.step))
+        ):
+            logger.info(f"Saving weight checkpoint at step {progress.step}")
+            save_ckpt_start_time = time.perf_counter()
+            weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
+            save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+            weight_ckpt_manager.maybe_clean()
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
@@ -527,6 +574,7 @@ def train(config: SFTConfig):
         throughput = perf_counter.get_tokens_per_second() or 0
         mfu = perf_counter.get_mfu() or 0
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
+        max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
@@ -562,7 +610,7 @@ def train(config: SFTConfig):
                     for subset_or_split, num_tokens in dataset.num_tokens.items()
                 },
             )
-        monitor.log(progress_metrics, step=progress.step)
+        asyncio.run(monitors.log(progress_metrics, step=progress.step))
 
         # Log performance metrics
         perf_metrics = {
@@ -572,7 +620,7 @@ def train(config: SFTConfig):
             "perf/mfu": mfu,
             "step": progress.step,
         }
-        monitor.log(perf_metrics, step=progress.step)
+        asyncio.run(monitors.log(perf_metrics, step=progress.step))
 
         # Log optimizer metrics
         optim_metrics = {
@@ -581,15 +629,16 @@ def train(config: SFTConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
-        monitor.log(optim_metrics, step=progress.step)
+        asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         loss_log_metrics = {
             "loss/mean": batch_loss,
+            "loss/perplexity": math.exp(min(batch_loss, 20)),
             "loss/nan_count": nan_loss_count,
             "step": progress.step,
         }
         # Log tensor stats
-        monitor.log(loss_log_metrics, step=progress.step)
+        asyncio.run(monitors.log(loss_log_metrics, step=progress.step))
 
         # Log time metrics
         time_metrics = {
@@ -598,16 +647,16 @@ def train(config: SFTConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        monitor.log(time_metrics, step=progress.step)
+        asyncio.run(monitors.log(time_metrics, step=progress.step))
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.run_dir)
         disk_metrics["step"] = progress.step
-        monitor.log(disk_metrics, step=progress.step)
+        asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
         moe_log_metrics = {f"{name}/mean": value.item() for name, value in moe_stats.items() if value.item() > 0}
         if moe_log_metrics:
-            monitor.log({**moe_log_metrics, "step": progress.step}, step=progress.step)
+            asyncio.run(monitors.log({**moe_log_metrics, "step": progress.step}, step=progress.step))
 
         is_first_step = False
 
@@ -640,16 +689,11 @@ def train(config: SFTConfig):
         weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
         weight_ckpt_manager.maybe_clean()
 
-    logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
-    logger.success("SFT trainer finished!")
+    if gradient_manager is not None:
+        gradient_manager.close()
 
-    # Optionally, print benchmark table and export JSON
-    if config.bench is not None and world.is_master:
-        history = to_col_format(monitor.history)
-        print_benchmark(history)
-        if config.bench.output_json:
-            export_benchmark_json(history, config.bench.output_json)
-            logger.info(f"Benchmark results written to {config.bench.output_json}")
+    logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
+    logger.success("SFT trainer finished!")
 
 
 def main():

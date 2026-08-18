@@ -218,7 +218,7 @@ PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:False"
 VLLM_USE_DEEP_GEMM = "1"
 
 [orchestrator.env_vars]
-PI_USAGE_BASE_URL = "https://..."
+PRIME_LOG_LEVEL = "debug"
 ```
 
 The `rl` launcher applies these the same way in both single-node and multi-node (SLURM) runs. Precedence, low to high:
@@ -257,7 +257,7 @@ Start from a shipped base config, override two fields on the CLI, and dry-run:
 
 ```bash
 uv run rl @ examples/basic/reverse-text/rl.toml \
-  --wandb.name my-experiment \
+  --monitors.wandb.name my-experiment \
   --trainer.optim.lr 5e-6 \
   --output-dir /tmp/reverse-dry \
   --run.name check \
