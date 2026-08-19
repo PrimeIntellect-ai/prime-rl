@@ -206,26 +206,17 @@ X-Session-ID = "trajectory_id" # this is the default - each rollout has a unique
 
 ## Adaptive Concurrency
 
-The orchestrator sizes its cap on in-flight units of inference work adaptively. A static cap is workload-dependent: too low starves the engines; too high triggers KV thrash (prefix-cache eviction -> re-prefill churn -> pile-up).
+The orchestrator continuously sizes how many episodes run against the inference engines at once. A static cap cannot be right: too low starves the engines, too high crosses into KV thrash — the engines evict prefix cache, re-prefill the evicted work, and throughput collapses. The optimal value depends on the model, the deployment, and the workload's episode lengths, and it moves as training changes the policy.
 
-The controller has no model of unit cost — it measures KV pressure off the engines every poll (5 s) and reacts at the pipeline's own pace (AIMD):
+The controller's idea is to treat the engines as ground truth and probe, instead of modeling episode cost: while the engines show headroom, admit a little more; when they show pressure, back off and actively shed work. Three behaviors, in increasing severity:
 
-- **Grow** the cap `x1.25` per **pipeline turnover** while the engines are clear, KV usage is below `0.6`, and the cap binds admission (`inflight >= 0.9 x cap`). Each completed unit advances the turnover by `1/inflight`, so one turnover means the in-flight pool has been replaced once — 100 completions at concurrency 10 buy 10x the growth of 100 completions at concurrency 1000, and ramp speed scales with the pipeline's demonstrated stability at any concurrency, batch size, or step cadence.
-- **Trim** above `0.8` KV usage: resize the cap *and the pool* to what the engines hold at `0.7` usage and cancel the excess, youngest first (least sunk cost). Cap moves alone cannot relieve pressure from units maturing in place — they only block admissions — and thrash onset is a cliff, not a slope. The trigger/target gap gives pool growth headroom before the next trim; a short cooldown lets each trim propagate.
-- **Cut** on overload, immediately on the poll: preemptions (single-shot workloads overload by out-growing KV mid-decode) cut to `0.8 x inflight`; a capacity queue above `0.5 x` running sustained for 30 s (agentic workloads never preempt — admission control parks excess load in the waiting queue) cuts to `0.9 x` what the engines are demonstrably serving. Every cut cancels the stranded excess, then freezes further cuts until the pool drains below the new cap; if overload survives a full drain, the follow-up cut halves.
+- **Grow**: while the engines look healthy and the current cap is fully used, raise it multiplicatively. Growth is clocked by the pipeline itself — the cap rises by a fixed factor each time the in-flight pool has turned over once — so a fast single-turn workload ramps in seconds while a slow agentic workload ramps at its own pace, with no tuning per workload.
+- **Trim**: episodes grow their context *while running*, so a pool that fit comfortably an hour ago can outgrow memory without a single new admission. When KV usage nears the ceiling, the controller shrinks the cap *and* the pool, cancelling the youngest episodes (least work lost) until the engines are comfortable again.
+- **Cut**: when the engines are demonstrably overloaded — requests being preempted, or piling up in the waiting queue — cut the pool hard, cancel the excess, and hold further cuts until the system settles.
 
-The cap starts at `initial_inflight` (or, when unset, the pessimistic bound `KV capacity / max_model_len`, both read from the engines) and is clamped to `[min_inflight, max_inflight]` throughout. Cancelling a unit aborts its rollout end-to-end (the env server kills the episode and its engine requests), so downward resizes take effect in seconds. Refills are burst-capped (at most `max(group_size, 0.1 x n_max)` new admissions per poll interval) so recovery never lands a cap's worth of prefills at once. Admission stays FIFO and env-unbiased — the controller only sizes the shared permit pool.
+Cancellation is what makes shrinking effective: aborting an episode propagates end-to-end (the env server kills the rollout and its engine requests), so a downward move takes effect in seconds instead of waiting out thrashed episodes. Admissions are smoothed so a ramp or recovery never lands a wall of prefills at once.
 
-The controller is always on — a self-contained abstraction (`ConcurrencyController`) with its own config:
-
-```toml
-[orchestrator.concurrency]
-max_inflight = 512       # hard ceiling on the cap; None (default) leaves it capacity-driven
-initial_inflight = 256   # optional: start here instead of the pessimistic C / max_model_len bound
-min_inflight = 1         # hard floor (default); min_inflight = max_inflight pins a fixed concurrency (escape hatch)
-```
-
-All control constants are internal. The controller owns no tasks or clients: the `InferenceMetricsCollector` pushes per-engine load samples (capacity, KV usage, running/waiting counts, preemption deltas) each poll, and the dispatcher reports completions and consumes the cap via `set_limit` / `cancel_inflight`.
+The cap starts from a safe bound derived from the engines (KV capacity divided by the maximum context length), or from `initial_inflight` when a good value is known, and always stays within `[min_inflight, max_inflight]`.
 
 ## Advanced Configuration
 
