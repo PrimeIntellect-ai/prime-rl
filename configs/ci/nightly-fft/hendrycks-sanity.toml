@@ -19,7 +19,7 @@ group_size = 8
 seq_len = 8192
 
 [orchestrator.concurrency]
-max_inflight = 512
+max_inflight = 128
 
 [[orchestrator.train.source]]
 name = "hendrycks-math"
