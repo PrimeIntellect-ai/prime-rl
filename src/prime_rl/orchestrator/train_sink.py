@@ -200,7 +200,9 @@ class TrainSink:
 
     def _record_zero_output(self, group: list[EpisodeRun]) -> None:
         if self.batch_size is not None:
-            self.zero_output_units += len(group)
+            training_traces = sum(len(run.training) for run in group)
+            returned_traces = sum(len(run.traces) for run in group)
+            self.zero_output_units += training_traces or returned_traces or len(group)
         else:
             payload = sum(payload_tokens(trace) for run in group for trace in run.training)
             episode_tokens = sum(run.episode.num_total_tokens for run in group)
