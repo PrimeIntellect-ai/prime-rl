@@ -31,7 +31,7 @@ jobs:
 
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v7
               with:
                   submodules: false
 
@@ -70,7 +70,7 @@ jobs:
 
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v7
               with:
                   submodules: false
 
@@ -159,7 +159,7 @@ jobs:
                   echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@v10.0.1
 
             - name: Install prime CLI (latest)
               run: uv tool install prime
