@@ -1,6 +1,6 @@
 ---
 name: start-run
-description: How to launch prime-rl training runs — the `rl`, `sft`, `inference`, and `evaluator` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint.
+description: How to launch prime-rl training runs — the `rl`, `sft`, `inference`, and `evals` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint.
 ---
 
 # Start a run
@@ -88,13 +88,13 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
-## `evaluator` — multi-env evals
+## `evals` — multi-env evals
 
 Runs the configured eval sources against a live inference server. Standalone (no `[online]` block): one epoch of every source against the served weights, then exit. With `[online]` (`weights_dir`, `max_steps`, `resume_step`): watch the weights dir for stable `step_{n}` HF checkpoints and evaluate each — the `sft` launcher writes this config for online evals.
 
 ```bash
 uv run inference --vllm.model Qwen/Qwen3-4B   # start inference separately
-uv run evaluator @ eval.toml
+uv run evals @ eval.toml
 ```
 
 Minimal standalone `eval.toml`:
@@ -125,8 +125,8 @@ type = "subprocess"
 
 - Env servers: spawned by the evaluator, one per source without an explicit `serve.address`, at `tcp://127.0.0.1:<eval.env_server_base_port + index>`; logs at `{output_dir}/logs/envs/eval/{name}.log`.
 - External inference APIs (no vLLM `/metrics`, e.g. Prime Inference) have no load signal for adaptive concurrency: the startup `/metrics` probe fails fast unless the band is pinned (`min_inflight = max_inflight`). Full example: `examples/evals/swe.toml` (SWE-bench Verified + Terminal-Bench 2 on Prime Inference, `agent.timeout.rollout = 3600`).
-- Config: `EvaluatorConfig` (`packages/prime-rl-configs/src/prime_rl/configs/evaluator.py`)
-- Entrypoint: `src/prime_rl/entrypoints/evaluator.py` (implementation: `src/prime_rl/evaluator/evaluator.py`)
+- Config: `EvalsConfig` (`packages/prime-rl-configs/src/prime_rl/configs/evals.py`)
+- Entrypoint: `src/prime_rl/entrypoints/evals.py` (implementation: `src/prime_rl/evals/evaluator.py`)
 
 ## Summary
 
@@ -135,7 +135,7 @@ type = "subprocess"
 | `rl` | Full RL pipeline | Production RL training |
 | `sft` | Supervised fine-tuning | SFT and hard-distill |
 | `inference` | vLLM server | Standalone serving / debugging |
-| `evaluator` | Multi-env evals | Standalone evals / SFT online evals |
+| `evals` | Multi-env evals | Standalone evals / SFT online evals |
 
 ## Key paths
 

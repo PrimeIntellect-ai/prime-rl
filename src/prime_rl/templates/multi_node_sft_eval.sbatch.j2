@@ -65,7 +65,7 @@ export PRL_RUN_NAME={{ run_name }}
 export WANDB_RUN_ID=$PRL_RUN_ID
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_PRIMARY=trainer
-export WANDB_SHARED_FINISHER=evaluator
+export WANDB_SHARED_FINISHER=evals
 export WANDB_PROGRAM="uv run sft"
 {% endif %}
 # Networking
@@ -219,11 +219,11 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 {%- for key, value in evaluator_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {%- endfor %}
-        WANDB_SHARED_LABEL=evaluator uv run evaluator \
-            @ $CONFIG_DIR/evaluator.json \
+        WANDB_SHARED_LABEL=evals uv run evals \
+            @ $CONFIG_DIR/evals.json \
             --eval.client.base-url $INFER_URLS \
             --eval.client.admin-base-url $ADMIN_URLS \
-            2>&1 | tee $OUTPUT_DIR/logs/evaluator.log &
+            2>&1 | tee $OUTPUT_DIR/logs/evals.log &
         EVALUATOR_PID=$!
     else
         # Watch for the completion sentinel so this node's wait below returns when

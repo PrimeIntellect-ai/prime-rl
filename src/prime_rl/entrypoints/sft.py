@@ -9,7 +9,7 @@ from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
 
-from prime_rl.configs.evaluator import EvaluatorConfig, OnlineConfig
+from prime_rl.configs.evals import EvalsConfig, OnlineConfig
 from prime_rl.configs.orchestrator import EvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
@@ -46,7 +46,7 @@ EVAL_SBATCH = "eval.sbatch"
 EVAL_TEMPLATE = "multi_node_sft_eval.sbatch.j2"
 
 INFERENCE_CONFIG = "inference.json"
-EVALUATOR_CONFIG = "evaluator.json"
+EVALS_CONFIG = "evals.json"
 
 ENVS_DIR = "envs"
 
@@ -80,7 +80,7 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
     return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
-def build_evaluator_config(config: SFTConfig) -> EvaluatorConfig:
+def build_evals_config(config: SFTConfig) -> EvalsConfig:
     """Derive the evaluator subconfig from the resolved SFT config. The launcher
     spawns the env servers itself, so each source's derived address is stamped in,
     marking it externally managed for the evaluator."""
@@ -89,7 +89,7 @@ def build_evaluator_config(config: SFTConfig) -> EvaluatorConfig:
     addresses = config.eval.env_addresses
     for source in eval_config.source:
         source.serve.address = addresses[("eval", source.resolved_name)]
-    return EvaluatorConfig(
+    return EvalsConfig(
         model=config.model.name,
         eval=eval_config,
         online=OnlineConfig(
@@ -124,8 +124,8 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: boo
         with open(config_dir / INFERENCE_CONFIG, "w") as f:
             json.dump(inference_dict, f, indent=2)
 
-    with open(config_dir / EVALUATOR_CONFIG, "w") as f:
-        json.dump(dump_resolved_config(build_evaluator_config(config)), f, indent=2)
+    with open(config_dir / EVALS_CONFIG, "w") as f:
+        json.dump(dump_resolved_config(build_evals_config(config)), f, indent=2)
 
     # One EnvServerConfig per launcher-managed eval source: `env-server @ <path>`
     # binds at the source's deterministic address, where the evaluator connects.
@@ -378,7 +378,7 @@ def sft_local(config: SFTConfig):
             "WANDB_SHARED_MODE": "1",
             "WANDB_RUN_ID": os.environ["PRL_RUN_ID"],
             "WANDB_SHARED_PRIMARY": "trainer",
-            "WANDB_SHARED_FINISHER": "evaluator",
+            "WANDB_SHARED_FINISHER": "evals",
             "WANDB_PROGRAM": "uv run sft",
             "WANDB_ARGS": json.dumps(sys.argv),
         }
@@ -442,17 +442,17 @@ def sft_local(config: SFTConfig):
         if config.eval is not None:
             logger.info("Starting evaluator process")
             start_process(
-                "evaluator",
-                ["evaluator", "@", (config_dir / EVALUATOR_CONFIG).as_posix()],
+                "evals",
+                ["evals", "@", (config_dir / EVALS_CONFIG).as_posix()],
                 env={
                     **os.environ,
                     **DEFAULT_COMMON_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",
                     **config.env_vars,
                     **wandb_shared_env,
-                    "WANDB_SHARED_LABEL": "evaluator",
+                    "WANDB_SHARED_LABEL": "evals",
                 },
-                log_path=log_dir / "evaluator.log",
+                log_path=log_dir / "evals.log",
             )
 
         from prime_rl.utils.utils import get_free_port
@@ -498,8 +498,8 @@ def sft_local(config: SFTConfig):
         # Wait for the trainer (and the evaluator, which drains its final evals after
         # the trainer's last checkpoint) while surfacing any process failure.
         terminal_events = [stop_events["trainer"]]
-        if "evaluator" in stop_events:
-            terminal_events.append(stop_events["evaluator"])
+        if "evals" in stop_events:
+            terminal_events.append(stop_events["evals"])
         while True:
             pending = [event for event in terminal_events if not event.is_set()]
             if error_queue:

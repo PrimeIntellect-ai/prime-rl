@@ -17,7 +17,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Launch](#launch-1)
   - [SFT-Specific Knobs](#sft-specific-knobs)
   - [Important Metrics](#important-metrics-1)
-- [Standalone Evals](#standalone-evals)
+- [Evals](#evals)
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
@@ -38,7 +38,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run trainer` | Standalone trainer process group. | Use only when launching the trainer separately from the orchestrator (e.g. multi-node RL without the `rl` wrapper). |
 | `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched trainer, inference, and one `env-server` per source. |
-| `uv run evaluator` | Multi-env evals against a live inference server. | Standalone one-shot evals (see [Standalone Evals](#standalone-evals)), or checkpoint-watching online evals with an `[online]` block (the `sft` launcher configures this). Spawns its own env servers. |
+| `uv run evals` | Multi-env evals against a live inference server. | Standalone one-shot evals (see [Evals](#evals)), or checkpoint-watching online evals with an `[online]` block (the `sft` launcher configures this). Spawns its own env servers. |
 | `uv run env-server` | Standalone env server for one environment. | The `rl` launcher starts these automatically (one per train/eval source, at a derived loopback address); only needed when running the orchestrator standalone, or for sources with an explicit `serve.address` — those are externally managed (e.g. their own k8s pod) and the launcher expects the server to already run there. |
 
 ## RL Trainer
@@ -206,7 +206,7 @@ num_train_gpus = 1  # trainer
 num_infer_gpus = 1  # inference
 ```
 
-The launcher starts the inference server, one env server per eval source, and an `evaluator` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evaluator watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (see [Standalone Evals](#standalone-evals)).
+The launcher starts the inference server, one env server per eval source, and an `evaluator` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evaluator watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (see [Evals](#evals)).
 
 #### Multi-Node (Decoupled Trainer and Inference Pool)
 
@@ -265,9 +265,9 @@ Pulled from the console log and mirrored to W&B.
 | `perf/peak_memory` | peak GPU memory (GiB) |
 | `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
 
-## Standalone Evals
+## Evals
 
-`uv run evaluator` runs multi-env evals against a live inference server — the same evaluator that powers SFT online evals. Without an `[online]` block it runs one epoch of every eval source against the weights the server currently serves, then exits. Start inference separately and point the eval client at it:
+`uv run evals` runs multi-env evals against a live inference server — the same evaluator that powers SFT online evals. Without an `[online]` block it runs one epoch of every eval source against the weights the server currently serves, then exits. Start inference separately and point the eval client at it:
 
 ```toml
 model = "Qwen/Qwen3-4B"

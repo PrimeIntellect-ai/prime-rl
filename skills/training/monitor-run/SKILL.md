@@ -66,7 +66,7 @@ After a restart, verify all processes are back up and progress resumed before th
 {run_dir}/logs/latest/
 ├── trainer.log                # rank 0 stdout
 ├── orchestrator.log           # orchestrator stdout
-├── evaluator.log              # SFT online-eval evaluator stdout (single-node; the decoupled multi-node eval job logs at {run_dir}/logs/evaluator.log)
+├── evals.log                  # SFT online-eval evals stdout (single-node; the decoupled multi-node eval job logs at {run_dir}/logs/evals.log)
 ├── inference.log              # vLLM stdout
 ├── trainer/
 │   ├── node_*.log             # per-node (multi-node only)

@@ -8,7 +8,7 @@ from prime_rl.configs.shared import ClientConfig, LogConfig
 from prime_rl.utils.config import BaseConfig
 
 
-class EvaluatorEvalConfig(EvalConfig):
+class EvalsEvalConfig(EvalConfig):
     """Evals against a live inference server. Extends the orchestrator ``EvalConfig``
     (sources, sampling, intervals) with the client of the inference deployment and
     evaluator-side knobs."""
@@ -60,8 +60,8 @@ class OnlineConfig(BaseConfig):
     this step."""
 
 
-class EvaluatorConfig(BaseConfig):
-    """``uv run evaluator``: run the configured evals against a live inference server.
+class EvalsConfig(BaseConfig):
+    """``uv run evals``: run the configured evals against a live inference server.
     Standalone (no ``[online]``), one epoch of every eval source runs against the
     served weights and the evaluator exits. With ``[online]``, the evaluator watches a
     weights directory for new HF checkpoints, points the inference server at each one
@@ -75,7 +75,7 @@ class EvaluatorConfig(BaseConfig):
     ``sft`` launcher; the name stays fixed across checkpoint reloads (weights are
     swapped in place), so per-step results are told apart by ``eval/{env}/policy_version``."""
 
-    eval: EvaluatorEvalConfig
+    eval: EvalsEvalConfig
     """Eval sources, sampling, intervals, concurrency, and the inference client."""
 
     online: OnlineConfig | None = None

@@ -2,7 +2,7 @@
 # against DeepSeek V4 Flash on Prime Inference.
 #
 #   export PRIME_API_KEY=<your Prime Inference key>
-#   uv run evaluator @ examples/evals/swe.toml
+#   uv run evals @ examples/evals/swe.toml
 #
 # The tasksets run in prime sandboxes (the default runtime), so the key also
 # authenticates sandbox creation. External API endpoints expose no vLLM

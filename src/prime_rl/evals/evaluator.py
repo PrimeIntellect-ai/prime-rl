@@ -32,7 +32,7 @@ from subprocess import Popen
 import verifiers.v1 as vf
 
 from prime_rl import monitors
-from prime_rl.configs.evaluator import EvaluatorConfig
+from prime_rl.configs.evals import EvalsConfig
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
@@ -61,7 +61,7 @@ POLL_INTERVAL_S = 2.0
 
 
 class Evaluator:
-    def __init__(self, config: EvaluatorConfig) -> None:
+    def __init__(self, config: EvalsConfig) -> None:
         self.config = config
         setup_logger(config.log.level, json_logging=config.log.json_logging)
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
@@ -421,7 +421,7 @@ class Evaluator:
 
 
 @clean_exit
-async def run_evaluator(config: EvaluatorConfig) -> None:
+async def run_evaluator(config: EvalsConfig) -> None:
     evaluator = Evaluator(config)
     try:
         await evaluator.run()
@@ -436,7 +436,7 @@ def main() -> None:
     from prime_rl.utils.process import set_proc_title
 
     set_proc_title("Evaluator")
-    asyncio.run(run_evaluator(cli(EvaluatorConfig)))
+    asyncio.run(run_evaluator(cli(EvalsConfig)))
 
 
 if __name__ == "__main__":

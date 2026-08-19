@@ -50,7 +50,7 @@ export PRL_RUN_NAME={{ run_name }}
 export WANDB_RUN_ID=$PRL_RUN_ID
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_PRIMARY=trainer
-export WANDB_SHARED_FINISHER=evaluator
+export WANDB_SHARED_FINISHER=evals
 export WANDB_SHARED_LABEL=trainer
 export WANDB_PROGRAM="uv run sft"
 {% endif %}
