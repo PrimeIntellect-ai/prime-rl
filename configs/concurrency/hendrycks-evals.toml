@@ -13,7 +13,6 @@ name = "hendrycks-evals"
 [slurm]
 job_name = "hendrycks-evals"
 partition = "all"
-exclude = "qpn01gpu049"
 pre_run_command = 'timeout 120 prime sandbox delete --label "hendrycks-evals" -y || true' 
 
 [deployment]
