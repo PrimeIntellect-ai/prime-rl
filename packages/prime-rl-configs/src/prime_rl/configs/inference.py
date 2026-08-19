@@ -209,7 +209,7 @@ class VllmConfig(BaseConfig):
 
 
 class WeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem", "nixl"] = "filesystem"
+    type: Literal["nccl", "filesystem", "sparse_filesystem", "nixl"] = "filesystem"
     """Weight broadcast transport."""
 
 

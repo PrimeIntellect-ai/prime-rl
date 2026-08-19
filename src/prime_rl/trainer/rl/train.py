@@ -243,6 +243,30 @@ def train(config: TrainerConfig):
     else:
         logger.info("Starting from scratch")
 
+    if config.weight_broadcast.type == "sparse_filesystem" and weight_sender is not None:
+        from prime_rl.trainer.models import PreTrainedModelPrimeRL
+        from prime_rl.trainer.sparse_update import OptimizerSparseUpdateHook, SparseUpdateWriter
+
+        if checkpoint_step is not None:
+            raise ValueError("Sparse filesystem weight updates do not support checkpoint resume in this POC")
+        state_dict = model.state_dict()
+        if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
+            raise ValueError(
+                "Sparse filesystem updates currently require trainer state-dict names/shapes to match HF format."
+            )
+        sparse_writer = SparseUpdateWriter(
+            config.output_dir / ".sparse_weight_updates",
+            rank=world.rank,
+        )
+        sparse_writer.initialize(state_dict, base_step=0)
+        sparse_writer.write(state_dict, target_step=0)
+        OptimizerSparseUpdateHook(
+            optimizer,
+            sparse_writer,
+            model.state_dict,
+            lambda: progress.step,
+        )
+
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
     t0 = time.perf_counter()

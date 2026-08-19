@@ -9,6 +9,7 @@ from prime_rl.transports.weights.base import WeightReceiver, WeightSender, prune
 from prime_rl.transports.weights.filesystem import FileSystemWeightReceiver, FileSystemWeightSender
 from prime_rl.transports.weights.nccl import NCCLWeightReceiver, NCCLWeightSender
 from prime_rl.transports.weights.nixl import NIXLWeightReceiver, NIXLWeightSender
+from prime_rl.transports.weights.sparse_filesystem import SparseFileSystemWeightSender
 
 __all__ = [
     "WeightReceiver",
@@ -29,6 +30,8 @@ def setup_weight_sender(
         return NCCLWeightSender(output_dir, config, torch.cuda.current_device())
     elif config.type == "filesystem":
         return FileSystemWeightSender(output_dir, config, lora_config)
+    elif config.type == "sparse_filesystem":
+        return SparseFileSystemWeightSender(output_dir, config, lora_config)
     elif config.type == "nixl":
         return NIXLWeightSender(output_dir, config, parallel_dims)
     else:
@@ -44,6 +47,8 @@ def setup_weight_receiver(
     if config.type == "nccl":
         return NCCLWeightReceiver(broadcast_dir, config, admin_clients, model_name)
     elif config.type == "filesystem":
+        return FileSystemWeightReceiver(broadcast_dir, config, admin_clients, model_name)
+    elif config.type == "sparse_filesystem":
         return FileSystemWeightReceiver(broadcast_dir, config, admin_clients, model_name)
     elif config.type == "nixl":
         return NIXLWeightReceiver(broadcast_dir, config, admin_clients, model_name)

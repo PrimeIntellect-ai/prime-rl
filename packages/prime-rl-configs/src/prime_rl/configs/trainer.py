@@ -550,6 +550,11 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
 
+class SparseFileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    type: Literal["sparse_filesystem"] = "sparse_filesystem"
+    """Experimental per-rank sorted-index/absolute-value filesystem updates."""
+
+
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"
     """Weight transfer host."""
@@ -583,7 +588,10 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig
+    | SparseFileSystemWeightBroadcastConfig
+    | NCCLWeightBroadcastConfig
+    | NIXLWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 

@@ -20,6 +20,9 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.orchestrator import (
     OrchestratorConfig,
 )
+from prime_rl.configs.orchestrator import (
+    SparseFileSystemWeightBroadcastConfig as OrchestratorSparseFileSystemWeightBroadcastConfig,
+)
 from prime_rl.configs.shared import (
     EnvVars,
     ResumeConfig,
@@ -36,6 +39,9 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.configs.trainer import (
     NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
+)
+from prime_rl.configs.trainer import (
+    SparseFileSystemWeightBroadcastConfig as TrainerSparseFileSystemWeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
     TokenizerConfig,
@@ -166,8 +172,18 @@ class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     """Timeout in seconds for the broadcast handshake and transfer."""
 
 
+class SharedSparseFileSystemWeightBroadcastConfig(BaseConfig):
+    type: Literal["sparse_filesystem"] = "sparse_filesystem"
+
+    timeout: int = 1200
+    """Timeout in seconds for the broadcast handshake and transfer."""
+
+
 SharedWeightBroadcastConfig: TypeAlias = Annotated[
-    SharedFileSystemWeightBroadcastConfig | SharedNCCLWeightBroadcastConfig | SharedNIXLWeightBroadcastConfig,
+    SharedFileSystemWeightBroadcastConfig
+    | SharedSparseFileSystemWeightBroadcastConfig
+    | SharedNCCLWeightBroadcastConfig
+    | SharedNIXLWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 
@@ -504,6 +520,13 @@ class RLConfig(BaseConfig):
                 timeout=self.weight_broadcast.timeout, broadcast_final=broadcast_final
             )
             self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
+                timeout=self.weight_broadcast.timeout, broadcast_final=broadcast_final
+            )
+        elif self.weight_broadcast.type == "sparse_filesystem":
+            self.trainer.weight_broadcast = TrainerSparseFileSystemWeightBroadcastConfig(
+                timeout=self.weight_broadcast.timeout, broadcast_final=broadcast_final
+            )
+            self.orchestrator.weight_broadcast = OrchestratorSparseFileSystemWeightBroadcastConfig(
                 timeout=self.weight_broadcast.timeout, broadcast_final=broadcast_final
             )
         if self.inference is not None:
