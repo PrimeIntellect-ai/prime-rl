@@ -426,13 +426,13 @@ class ConcurrencyConfig(BaseConfig):
     costs; these fields only bound and seed it."""
 
     initial_inflight: int | None = Field(None, ge=1)
-    """In-flight cap to start from. Set it when a good value is known to skip the initial ramp; None derives a pessimistic bound at runtime — engine KV capacity divided by the engine's max context length (``max_model_len``, whether set explicitly or taken from the model config)."""
+    """Optional initial in-flight episodes to start from. Set it when a good value is known to skip the initial ramp; otherwise auto-derive a pessimistic bound at runtime."""
 
     min_inflight: int = Field(1, ge=1)
-    """Hard floor on the cap. Escape hatch: ``min_inflight = max_inflight`` pins the cap for a fixed concurrency; not recommended in practice."""
+    """Minimum number of in-flight episodes. Set ``min_inflight = max_inflight`` to recover fixed concurrency."""
 
     max_inflight: int | None = Field(1024, ge=1)
-    """Hard ceiling on in-flight episodes — one episode is one agent run at a time, whatever the env's agents are. None removes the ceiling and leaves the cap purely capacity-driven."""
+    """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
 
     @model_validator(mode="after")
     def validate_bounds(self):

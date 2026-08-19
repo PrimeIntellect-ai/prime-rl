@@ -208,13 +208,11 @@ X-Session-ID = "trajectory_id" # this is the default - each rollout has a unique
 
 The orchestrator continuously sizes how many episodes run against the inference engines at once. A static cap cannot be right: too low starves the engines, too high crosses into KV thrash — the engines evict prefix cache, re-prefill the evicted work, and throughput collapses. The optimal value depends on the model, the deployment, and the workload's episode lengths, and it moves as training changes the policy.
 
-The controller's idea is to treat the engines as ground truth and probe, instead of modeling episode cost: while the engines show headroom, admit a little more; when they show pressure, back off and actively shed work. Three behaviors, in increasing severity:
+The controller's idea is to treat the engines as ground truth and probe, instead of modeling episode cost: while the engines show headroom, admit a little more; when they show pressure, back off. Three behaviors, in increasing severity:
 
 - **Grow**: while the engines look healthy and the current cap is fully used, raise it multiplicatively. Growth is clocked by the pipeline itself — the cap rises by a fixed factor each time the in-flight pool has turned over once — so a fast single-turn workload ramps in seconds while a slow agentic workload ramps at its own pace, with no tuning per workload.
 - **Trim**: episodes grow their context *while running*, so a pool that fit comfortably an hour ago can outgrow memory without a single new admission. When KV usage nears the ceiling, the controller shrinks the cap *and* the pool, cancelling the youngest episodes (least work lost) until the engines are comfortable again.
 - **Cut**: when the engines are demonstrably overloaded — requests being preempted, or piling up in the waiting queue — cut the pool hard, cancel the excess, and hold further cuts until the system settles.
-
-Cancellation is what makes shrinking effective: aborting an episode propagates end-to-end (the env server kills the rollout and its engine requests), so a downward move takes effect in seconds instead of waiting out thrashed episodes. Admissions are smoothed so a ramp or recovery never lands a wall of prefills at once.
 
 The cap starts from a safe bound derived from the engines (KV capacity divided by the maximum context length), or from `initial_inflight` when a good value is known, and always stays within `[min_inflight, max_inflight]`.
 
