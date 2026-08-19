@@ -362,8 +362,13 @@ class InferenceMetricsCollector:
         """Raw per-engine load facts for the concurrency controller."""
         cache_config = sample.snapshot.cache_config
         kv_capacity_tokens: int | None = None
+        # ``kv_cache_size_tokens`` is authoritative; the ``num_gpu_blocks``
+        # label does not reflect ``num_gpu_blocks_override`` (observed 4x off)
+        size_tokens = cache_config.get("kv_cache_size_tokens", "")
         num_gpu_blocks, block_size = cache_config.get("num_gpu_blocks", ""), cache_config.get("block_size", "")
-        if num_gpu_blocks.isdigit() and block_size.isdigit():
+        if size_tokens.isdigit():
+            kv_capacity_tokens = int(size_tokens)
+        elif num_gpu_blocks.isdigit() and block_size.isdigit():
             kv_capacity_tokens = int(num_gpu_blocks) * int(block_size)
 
         # First poll has no baseline — a nonzero cumulative counter (e.g. after
