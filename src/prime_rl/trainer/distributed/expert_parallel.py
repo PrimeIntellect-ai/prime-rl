@@ -7,7 +7,8 @@ from torch.distributed.tensor import DeviceMesh, Shard, distribute_module, distr
 from torch.distributed.tensor.parallel import ParallelStyle
 from torchao.prototype.moe_training.ep import a2a_combine_hp_fwd_mxfp8_bwd, a2a_dispatch_mxfp8_fwd_hp_bwd
 from torchao.prototype.mx_formats.mx_tensor import MXTensor
-from torchtitan.distributed.expert_parallel import ExpertParallel
+
+from prime_rl.trainer.distributed.tt_expert_parallel import ExpertParallel
 
 
 class _MXFP8Dispatch(torch.autograd.Function):
@@ -85,3 +86,15 @@ class DeepEPExpertParallel(ParallelStyle):
 
 def get_ep_group(experts: nn.Module) -> ProcessGroup:
     return experts._ep_group
+
+
+class DeepEPv2ExpertParallel(DeepEPExpertParallel):
+    """Weight sharding for DeepEP v2 (same Shard(0) as v1)."""
+
+
+class HybridEPExpertParallel(DeepEPExpertParallel):
+    """Weight sharding for HybridEP (same Shard(0) as v1)."""
+
+
+class MinimalAsyncEPExpertParallel(DeepEPExpertParallel):
+    """Weight sharding for MinimalAsyncEP (same Shard(0) as v1)."""
