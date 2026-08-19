@@ -489,6 +489,10 @@ class Orchestrator:
             elapsed = format_time(time.perf_counter() - start_time)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
+                # The collector logs to the W&B run, so it must stop before
+                # finalize marks the run finished
+                if self.inference_metrics is not None:
+                    await self.inference_metrics.stop()
                 # Finalize only on a clean exit — a crashed run must not be marked
                 # completed; the platform run's atexit hook marks it failed instead.
                 await monitors.finalize()
