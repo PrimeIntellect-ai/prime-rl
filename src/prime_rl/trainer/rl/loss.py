@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, IPOLossConfig, LossConfig
+from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, IPOLossConfig, KPopLossConfig, LossConfig
 from prime_rl.utils.utils import import_object
 
 
@@ -196,6 +196,58 @@ def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+def kpop_loss_fn(inputs: LossInputs, loss_config: KPopLossConfig) -> LossOutputs:
+    """KPop loss type (https://ringtech.notion.site/kpop): a symmetric binary-KL
+    trust region (mask tokens whose binary KL divergence between the trainer and
+    inference token probabilities exceeds ``kpop_threshold`` in either
+    direction), policy gradient via the importance ratio, and a squared-log-ratio
+    KL regularizer.
+
+    The binary KL treats the vocabulary as a two-event partition (this token vs.
+    everything else), so the acceptance band adapts to the token probability:
+    wide in ratio terms for rare tokens, tight for confident ones.
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
+
+    # Clamp away from {0, 1} so the complement terms cannot produce nan/inf,
+    # which would silently drop tokens from the mask comparisons.
+    eps = 1e-6
+    trainer_probs = torch.exp(trainer_logprobs).clamp(min=eps, max=1 - eps)
+    inference_probs = torch.exp(inference_logprobs).clamp(min=eps, max=1 - eps)
+
+    def binary_kl(p: Tensor, q: Tensor) -> Tensor:
+        return p * torch.log(p / q) + (1 - p) * torch.log((1 - p) / (1 - q))
+
+    forward_kl = binary_kl(trainer_probs, inference_probs)
+    reverse_kl = binary_kl(inference_probs, trainer_probs)
+
+    is_masked = (forward_kl > loss_config.kpop_threshold) | (reverse_kl > loss_config.kpop_threshold)
+    keep_mask = loss_mask & ~is_masked
+
+    advantages = loss_config.adv_tau * advantages
+    pg_loss = keep_mask * advantages * importance_ratio
+    kl_loss = loss_mask * log_importance_ratio**2
+    per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+    loss = per_token_loss.sum()
+
+    metrics = {
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
+        "is_masked": _safe_mean(is_masked, loss_mask),
+    }
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
     Ref-KL loss type (on-policy distillation): the reverse KL to the reference
@@ -262,7 +314,8 @@ def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
 def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
     """Build the loss fn for the rl component from ``trainer.loss``:
     ``default_loss_fn`` (``DefaultLossConfig``), ``ipo_loss_fn``
-    (``IPOLossConfig``), or the imported function (``CustomLossConfig``).
+    (``IPOLossConfig``), ``kpop_loss_fn`` (``KPopLossConfig``), or the imported
+    function (``CustomLossConfig``).
     The ce / ref_kl loss types are fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
         custom_fn = import_object(loss_config.import_path)
@@ -274,6 +327,10 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return ipo_loss_fn(inputs, loss_config)
+    elif isinstance(loss_config, KPopLossConfig):
+
+        def rl_fn(inputs: LossInputs) -> LossOutputs:
+            return kpop_loss_fn(inputs, loss_config)
     else:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
