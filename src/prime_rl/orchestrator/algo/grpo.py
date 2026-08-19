@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig
-from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.base import Algorithm, assert_single_trainable_agent
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
@@ -22,6 +22,7 @@ class GRPOAlgorithm(Algorithm):
         self.length_penalty = config.length_penalty
 
     async def score_group(self, group: list[Rollout]) -> None:
+        assert_single_trainable_agent(group)
         rewards = torch.tensor([rollout.reward for rollout in group], dtype=torch.float32)
         length_penalty = self.length_penalty
         if length_penalty is None:
