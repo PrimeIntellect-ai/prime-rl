@@ -17,7 +17,6 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Launch](#launch-1)
   - [SFT-Specific Knobs](#sft-specific-knobs)
   - [Important Metrics](#important-metrics-1)
-- [Evals](#evals)
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
@@ -38,7 +37,6 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run trainer` | Standalone trainer process group. | Use only when launching the trainer separately from the orchestrator (e.g. multi-node RL without the `rl` wrapper). |
 | `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched trainer, inference, and one `env-server` per source. |
-| `uv run evals` | Multi-env evals against a live inference server. | Standalone one-shot evals (see [Evals](#evals)), or checkpoint-watching online evals with an `[online]` block (the `sft` launcher configures this). Spawns its own env servers. |
 | `uv run env-server` | Standalone env server for one environment. | The `rl` launcher starts these automatically (one per train/eval source, at a derived loopback address); only needed when running the orchestrator standalone, or for sources with an explicit `serve.address` — those are externally managed (e.g. their own k8s pod) and the launcher expects the server to already run there. |
 
 ## RL Trainer
@@ -206,7 +204,7 @@ num_train_gpus = 1  # trainer
 num_infer_gpus = 1  # inference
 ```
 
-The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evals process watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (see [Evals](#evals)).
+The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evals process watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
 
 #### Multi-Node (Decoupled Trainer and Inference Pool)
 
@@ -264,45 +262,6 @@ Pulled from the console log and mirrored to W&B.
 | `perf/mfu` | MFU |
 | `perf/peak_memory` | peak GPU memory (GiB) |
 | `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
-
-## Evals
-
-`uv run evals` runs multi-env evals against a live inference server — the same evals that powers SFT online evals. Without an `[online]` block it runs one epoch of every eval source against the weights the server currently serves, then exits. Start inference separately and point the eval client at it:
-
-```toml
-model = "Qwen/Qwen3-4B"
-
-[eval.client]
-base_url = "http://localhost:8000/v1"
-
-[eval.concurrency]
-min_inflight = 8
-max_inflight = 128
-
-[eval.sampling]
-temperature = 0.6
-top_p = 0.95
-
-[[eval.source]]
-name = "aime2025"
-group_size = 4
-
-[eval.source.env.taskset]
-id = "aime25"
-
-[eval.source.env.agent.harness]
-id = "null"
-
-[eval.source.env.agent.runtime]
-type = "subprocess"
-```
-
-- **Env servers**: the evals process spawns one env server per source at its derived loopback address (`eval.env_server_base_port` + source index). Sources with an explicit `serve.address` are externally managed — the evals process only connects.
-- **Concurrency**: in-flight episodes are sized by the same adaptive concurrency controller as the orchestrator, driven by engine KV pressure from the inference `/metrics` polls. Bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight` / `initial_inflight`). Eval episodes are measurements: an overload cut only blocks new admissions, in-flight episodes always run to completion.
-- **External inference APIs** (e.g. Prime Inference) expose no vLLM `/metrics`, so adaptive concurrency has no load signal. The evals process probes `/metrics` at startup and fails fast unless the band is pinned (`min_inflight = max_inflight`), which runs fixed concurrency. See [`examples/evals/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/evals/swe.toml) for a full example (SWE-bench Verified + Terminal-Bench 2 against Prime Inference, 1h agent cap).
-- **Results** land in the configured monitors (`eval/{env}/...` metrics, episode traces via the file monitor) plus a console success line per env.
-
-With an `[online]` block (`weights_dir`, `max_steps`, `resume_step`) the evals process instead watches the weights directory for stable `step_{n}` checkpoints and evaluates each eligible one — the mode the `sft` launcher configures for [Online Evals](#online-evals).
 
 ## Checkpointing
 
