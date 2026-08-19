@@ -2,7 +2,7 @@
 # reasonable starting cap (256) WITH AIME evals (avg@4 every 10 steps). Expect: the
 # eval waves shift the in-flight mix and the usage-driven cap absorbs them reactively.
 # gpu_memory_utilization is lowered artificially so the KV budget is small enough that the
-# controller operates well below max_inflight. No evals — the trace isolates the controller.
+# controller operates well below max_inflight.
 # Verify via the concurrency/* gauges in W&B or the "Concurrency ..." lines in the orchestrator log.
 
 max_steps = 50
@@ -32,8 +32,8 @@ seq_len = 8192
 max_off_policy_steps = 16
 
 [orchestrator.concurrency]
-max_inflight = 1024
-initial_inflight = 256
+max_inflight = 256
+initial_inflight = 128
 
 [[orchestrator.train.source]]
 name = "hendrycks-math"
@@ -80,8 +80,9 @@ max_model_len = 8192
 max_num_seqs = 1024
 api_server_count = 4
 gpu_memory_utilization = 0.3
-# Pin the KV budget directly: the 1.5B model gets ~13M KV tokens even at low
-# utilization, putting the usage band above the max_inflight ceiling. 8192
-# blocks/engine x 64-token blocks x 4 engines ~= 2.1M tokens -> derived start
-# ~256, band ~350-400.
-num_gpu_blocks_override = 32768
+# Pin the KV budget directly: the 1.5B model gets ~9M KV tokens even at low
+# utilization, putting the usage band above the max_inflight ceiling. 12288
+# blocks/engine x 16-token blocks (FA2) x 4 engines ~= 786K tokens -> optimal
+# band ~175, below every run's ceiling. Peak sandbox load across the three
+# runs stays under 1k (400 + 300 + 256) to avoid gateway 429s.
+num_gpu_blocks_override = 12288
