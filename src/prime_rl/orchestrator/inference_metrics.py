@@ -307,6 +307,22 @@ class InferenceMetricsCollector:
 
         self.task = asyncio.create_task(poll_loop())
 
+    async def probe(self, attempts: int = 3, interval: float = 2.0) -> bool:
+        """Scrape once, outside the poll loop, and report whether any engine
+        answered with metrics. External API endpoints (no vLLM ``/metrics``)
+        fail every attempt immediately; the retries only cover a real engine
+        racing its first exposition."""
+        for attempt in range(attempts):
+            if attempt > 0:
+                await asyncio.sleep(interval)
+            try:
+                await self.collect_and_log()
+            except Exception as e:
+                get_logger().warning(f"Inference metrics probe failed: {e!r}")
+            if self.previous:
+                return True
+        return False
+
     async def collect_and_log(self):
         now = time.monotonic()
 

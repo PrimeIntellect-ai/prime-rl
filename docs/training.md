@@ -299,6 +299,7 @@ type = "subprocess"
 
 - **Env servers**: the evaluator spawns one env server per source at its derived loopback address (`eval.env_server_base_port` + source index). Sources with an explicit `serve.address` are externally managed — the evaluator only connects.
 - **Concurrency**: in-flight episodes are sized by the same adaptive concurrency controller as the orchestrator, driven by engine KV pressure from the inference `/metrics` polls. Bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight` / `initial_inflight`). Eval episodes are measurements: an overload cut only blocks new admissions, in-flight episodes always run to completion.
+- **External inference APIs** (e.g. Prime Inference) expose no vLLM `/metrics`, so adaptive concurrency has no load signal. The evaluator probes `/metrics` at startup and fails fast unless the band is pinned (`min_inflight = max_inflight`), which runs fixed concurrency. See [`examples/evals/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/evals/swe.toml) for a full example (SWE-bench Verified + Terminal-Bench 2 against Prime Inference, 1h agent cap).
 - **Results** land in the configured monitors (`eval/{env}/...` metrics, episode traces via the file monitor) plus a console success line per env.
 
 With an `[online]` block (`weights_dir`, `max_steps`, `resume_step`) the evaluator instead watches the weights directory for stable `step_{n}` checkpoints and evaluates each eligible one — the mode the `sft` launcher configures for [Online Evals](#online-evals).

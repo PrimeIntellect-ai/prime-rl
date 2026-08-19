@@ -141,6 +141,21 @@ class Evaluator:
             on_load=self.concurrency.observe,
             log_to_wandb=wandb_enabled,
         )
+        # Fail fast when adaptivity has no signal: external API endpoints
+        # (e.g. Prime Inference) expose no vLLM /metrics, so without a probe
+        # hit the cap would silently sit at min_inflight forever. A pinned
+        # band (min_inflight = max_inflight) makes the controller inert and
+        # is the supported way to run against such endpoints.
+        if not await self.inference_metrics.probe():
+            concurrency = config.eval.concurrency
+            if concurrency.min_inflight != concurrency.max_inflight:
+                urls = ", ".join(str(client.base_url) for client in self.pool.admin_clients)
+                raise ValueError(
+                    f"No engine metrics at {urls} - adaptive concurrency has no load signal. "
+                    "The endpoint does not expose vLLM /metrics (e.g. an external inference API); "
+                    "pin the concurrency by setting eval.concurrency.min_inflight = max_inflight."
+                )
+            get_logger().warning(f"No engine metrics - running with concurrency pinned at {concurrency.min_inflight}")
         await self.inference_metrics.start()
 
         self.periodic_logger = PeriodicLogger(
