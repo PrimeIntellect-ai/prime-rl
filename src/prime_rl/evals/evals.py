@@ -1,4 +1,4 @@
-"""Evaluator: multi-env evals against a live inference server.
+"""Evals: multi-env evals against a live inference server.
 
 Standalone (no ``[online]``), it runs one epoch of every configured eval
 source against the weights the inference server currently serves, then exits.
@@ -16,7 +16,7 @@ are version-pinned measurements, so an overload cut only blocks admission and
 the in-flight pool drains through natural completions.
 
 Env servers: sources without an explicit ``serve.address`` get an env server
-spawned by the evaluator at their derived address; sources with one are
+spawned by the evals process at their derived address; sources with one are
 externally managed (e.g. spawned by the ``sft`` launcher, which stamps the
 derived addresses into this config)."""
 
@@ -60,13 +60,13 @@ monkey_patch_chat_completion_logprobs()
 POLL_INTERVAL_S = 2.0
 
 
-class Evaluator:
+class Evals:
     def __init__(self, config: EvalsConfig) -> None:
         self.config = config
         setup_logger(config.log.level, json_logging=config.log.json_logging)
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
         mode = f"online (weights_dir={config.online.weights_dir})" if config.online is not None else "standalone"
-        get_logger().info(f"Starting evaluator ({mode})")
+        get_logger().info(f"Starting evals ({mode})")
 
         # The last weight-checkpoint step already handled (evaluated or skipped).
         self.last_step = (config.online.resume_step if config.online is not None else None) or 0
@@ -159,7 +159,7 @@ class Evaluator:
         await self.inference_metrics.start()
 
         self.periodic_logger = PeriodicLogger(
-            name="Evaluator",
+            name="Evals",
             collect=self.collect_pipeline_view,
             metric_keys=[
                 *list(self.dispatcher.gauges().keys()),
@@ -217,7 +217,7 @@ class Evaluator:
         # must stop before finalize marks the run finished.
         await self.periodic_logger.stop()
         await self.inference_metrics.stop()
-        get_logger().success("Evaluator finished!")
+        get_logger().success("Evals finished!")
 
     async def watch(self) -> None:
         """Online mode: evaluate each eligible weight checkpoint as it appears."""
@@ -252,7 +252,7 @@ class Evaluator:
                 if step not in stable:
                     get_logger().warning(
                         f"Weight checkpoint for eval step {step} was deleted before it could be "
-                        "evaluated (checkpoint cleaning outpaced the evaluator) - skipping its evals"
+                        "evaluated (checkpoint cleaning outpaced the evals process) - skipping its evals"
                     )
                     self.last_step = max(self.last_step, step)
                     continue
@@ -421,22 +421,22 @@ class Evaluator:
 
 
 @clean_exit
-async def run_evaluator(config: EvalsConfig) -> None:
-    evaluator = Evaluator(config)
+async def run_evals(config: EvalsConfig) -> None:
+    evals = Evals(config)
     try:
-        await evaluator.run()
-        # Finalize only on a clean exit — a crashed evaluator must not mark the run completed.
+        await evals.run()
+        # Finalize only on a clean exit — a crashed evals must not mark the run completed.
         await monitors.finalize()
     finally:
-        await evaluator.stop()
+        await evals.stop()
 
 
 def main() -> None:
     from prime_rl.utils.config import cli
     from prime_rl.utils.process import set_proc_title
 
-    set_proc_title("Evaluator")
-    asyncio.run(run_evaluator(cli(EvalsConfig)))
+    set_proc_title("Evals")
+    asyncio.run(run_evals(cli(EvalsConfig)))
 
 
 if __name__ == "__main__":

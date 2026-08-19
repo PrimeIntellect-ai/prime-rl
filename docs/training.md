@@ -206,17 +206,17 @@ num_train_gpus = 1  # trainer
 num_infer_gpus = 1  # inference
 ```
 
-The launcher starts the inference server, one env server per eval source, and an `evaluator` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evaluator watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (see [Evals](#evals)).
+The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evals process watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (see [Evals](#evals)).
 
 #### Multi-Node (Decoupled Trainer and Inference Pool)
 
-On a `multi_node` deployment (SLURM), the trainer and the eval deployment are **two independent SLURM jobs**. `deployment.num_nodes` sizes the trainer job; `deployment.num_infer_nodes` sizes the eval job, which runs the inference pool (one vLLM engine per DP rank behind a single router, `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node), one env server per eval source, and the evaluator:
+On a `multi_node` deployment (SLURM), the trainer and the eval deployment are **two independent SLURM jobs**. `deployment.num_nodes` sizes the trainer job; `deployment.num_infer_nodes` sizes the eval job, which runs the inference pool (one vLLM engine per DP rank behind a single router, `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node), one env server per eval source, and the evals process:
 
 ```toml
 [deployment]
 type = "multi_node"
 num_train_nodes = 2  # trainer job
-num_infer_nodes = 1  # eval job (inference pool + evaluator)
+num_infer_nodes = 1  # eval job (inference pool + evals)
 
 [inference.vllm]
 tensor_parallel_size = 8
@@ -225,7 +225,7 @@ tensor_parallel_size = 8
 job_name = "my-run"
 ```
 
-The only coupling is weight checkpoints on the shared filesystem, so the jobs' lifetimes are independent: when training finishes, the trainer job exits and releases its nodes even while evals are still running; the eval job keeps draining pending checkpoints and exits after evaluating the final one (`max_steps` — without it the eval job never sees a final checkpoint and holds its allocation until walltime). Trainer and evaluator log to a single shared W&B run across both jobs — the trainer creates it, the evaluator finalizes it. Any train × inference layout works: `num_nodes` and `num_infer_nodes` are fully independent.
+The only coupling is weight checkpoints on the shared filesystem, so the jobs' lifetimes are independent: when training finishes, the trainer job exits and releases its nodes even while evals are still running; the eval job keeps draining pending checkpoints and exits after evaluating the final one (`max_steps` — without it the eval job never sees a final checkpoint and holds its allocation until walltime). Trainer and evals log to a single shared W&B run across both jobs — the trainer creates it, the evals process finalizes it. Any train × inference layout works: `num_nodes` and `num_infer_nodes` are fully independent.
 
 ### SFT-Specific Knobs
 
@@ -267,7 +267,7 @@ Pulled from the console log and mirrored to W&B.
 
 ## Evals
 
-`uv run evals` runs multi-env evals against a live inference server — the same evaluator that powers SFT online evals. Without an `[online]` block it runs one epoch of every eval source against the weights the server currently serves, then exits. Start inference separately and point the eval client at it:
+`uv run evals` runs multi-env evals against a live inference server — the same evals that powers SFT online evals. Without an `[online]` block it runs one epoch of every eval source against the weights the server currently serves, then exits. Start inference separately and point the eval client at it:
 
 ```toml
 model = "Qwen/Qwen3-4B"
@@ -297,12 +297,12 @@ id = "null"
 type = "subprocess"
 ```
 
-- **Env servers**: the evaluator spawns one env server per source at its derived loopback address (`eval.env_server_base_port` + source index). Sources with an explicit `serve.address` are externally managed — the evaluator only connects.
+- **Env servers**: the evals process spawns one env server per source at its derived loopback address (`eval.env_server_base_port` + source index). Sources with an explicit `serve.address` are externally managed — the evals process only connects.
 - **Concurrency**: in-flight episodes are sized by the same adaptive concurrency controller as the orchestrator, driven by engine KV pressure from the inference `/metrics` polls. Bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight` / `initial_inflight`). Eval episodes are measurements: an overload cut only blocks new admissions, in-flight episodes always run to completion.
-- **External inference APIs** (e.g. Prime Inference) expose no vLLM `/metrics`, so adaptive concurrency has no load signal. The evaluator probes `/metrics` at startup and fails fast unless the band is pinned (`min_inflight = max_inflight`), which runs fixed concurrency. See [`examples/evals/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/evals/swe.toml) for a full example (SWE-bench Verified + Terminal-Bench 2 against Prime Inference, 1h agent cap).
+- **External inference APIs** (e.g. Prime Inference) expose no vLLM `/metrics`, so adaptive concurrency has no load signal. The evals process probes `/metrics` at startup and fails fast unless the band is pinned (`min_inflight = max_inflight`), which runs fixed concurrency. See [`examples/evals/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/evals/swe.toml) for a full example (SWE-bench Verified + Terminal-Bench 2 against Prime Inference, 1h agent cap).
 - **Results** land in the configured monitors (`eval/{env}/...` metrics, episode traces via the file monitor) plus a console success line per env.
 
-With an `[online]` block (`weights_dir`, `max_steps`, `resume_step`) the evaluator instead watches the weights directory for stable `step_{n}` checkpoints and evaluates each eligible one — the mode the `sft` launcher configures for [Online Evals](#online-evals).
+With an `[online]` block (`weights_dir`, `max_steps`, `resume_step`) the evals process instead watches the weights directory for stable `step_{n}` checkpoints and evaluates each eligible one — the mode the `sft` launcher configures for [Online Evals](#online-evals).
 
 ## Checkpointing
 

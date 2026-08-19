@@ -11,7 +11,7 @@ from prime_rl.utils.config import BaseConfig
 class EvalsEvalConfig(EvalConfig):
     """Evals against a live inference server. Extends the orchestrator ``EvalConfig``
     (sources, sampling, intervals) with the client of the inference deployment and
-    evaluator-side knobs."""
+    evals-side knobs."""
 
     client: ClientConfig = ClientConfig()
     """Client of the inference server evals run against. Auto-wired from the
@@ -30,7 +30,7 @@ class EvalsEvalConfig(EvalConfig):
     def env_addresses(self) -> dict[tuple[str, str], str]:
         """Where each eval source's env server lives, keyed by ``("eval", resolved_name)``.
         Same contract as ``OrchestratorConfig.env_addresses``: sources with an explicit
-        ``serve.address`` are externally managed; the evaluator spawns an env server at
+        ``serve.address`` are externally managed; the evals process spawns an env server at
         the derived address for every other source."""
         return {
             ("eval", source.resolved_name): source.serve.address
@@ -41,7 +41,7 @@ class EvalsEvalConfig(EvalConfig):
 
 class OnlineConfig(BaseConfig):
     """Checkpoint-driven online evals: watch a weights directory for new HF checkpoints
-    and evaluate each eligible one. Without this block the evaluator runs every eval
+    and evaluate each eligible one. Without this block the evals process runs every eval
     source once against the weights the inference server currently serves, then exits."""
 
     weights_dir: Path | None = None
@@ -51,7 +51,7 @@ class OnlineConfig(BaseConfig):
 
     max_steps: int | None = None
     """Trainer step at which the run ends. The final checkpoint always fires every
-    eval env, and the evaluator exits after processing it. If None, the evaluator
+    eval env, and the evals process exits after processing it. If None, the evals process
     runs until terminated."""
 
     resume_step: int | None = None
@@ -63,7 +63,7 @@ class OnlineConfig(BaseConfig):
 class EvalsConfig(BaseConfig):
     """``uv run evals``: run the configured evals against a live inference server.
     Standalone (no ``[online]``), one epoch of every eval source runs against the
-    served weights and the evaluator exits. With ``[online]``, the evaluator watches a
+    served weights and the evals process exits. With ``[online]``, the evals process watches a
     weights directory for new HF checkpoints, points the inference server at each one
     (``/update_weights`` from disk), and runs the configured evals against the updated
     weights — the ``sft`` launcher writes this config; it also works standalone against

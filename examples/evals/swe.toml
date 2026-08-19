@@ -7,7 +7,7 @@
 # The tasksets run in prime sandboxes (the default runtime), so the key also
 # authenticates sandbox creation. External API endpoints expose no vLLM
 # /metrics, so adaptive concurrency has no load signal - the band must be
-# pinned (min_inflight = max_inflight) or the evaluator refuses to start.
+# pinned (min_inflight = max_inflight) or the evals process refuses to start.
 
 model = "deepseek/deepseek-v4-flash"
 

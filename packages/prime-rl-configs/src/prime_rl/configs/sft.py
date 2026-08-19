@@ -362,18 +362,18 @@ class SFTConfig(BaseConfig):
         if self.ckpt.keep_last is not None or self.ckpt.keep_interval is not None:
             warnings.warn(
                 "ckpt.keep_last / ckpt.keep_interval can delete a weight checkpoint before the "
-                "evaluator consumes it when evals run slower than training - such steps are "
+                "evals consumes it when evals run slower than training - such steps are "
                 "skipped with a warning instead of evaluated.",
                 stacklevel=2,
             )
 
         if self.deployment.type == "multi_node":
             # Decoupled deployment: the launcher submits a dedicated SLURM job running the
-            # inference pool (one engine per DP rank behind a router) plus the evaluator.
+            # inference pool (one engine per DP rank behind a router) plus the evals process.
             if self.inference is None:
                 raise ValueError(
                     "Multi-node online evals require an [inference] block - the launcher submits "
-                    "a dedicated SLURM job running the inference pool and the evaluator."
+                    "a dedicated SLURM job running the inference pool and the evals process."
                 )
             if self.deployment.num_infer_nodes < 1:
                 raise ValueError("Online evals on a multi-node deployment require deployment.num_infer_nodes >= 1.")
@@ -398,7 +398,7 @@ class SFTConfig(BaseConfig):
                 )
             if self.max_steps is None:
                 warnings.warn(
-                    "Online evals without max_steps: the evaluator never sees a final checkpoint, "
+                    "Online evals without max_steps: the evals process never sees a final checkpoint, "
                     "so the eval SLURM job holds its allocation until its walltime.",
                     stacklevel=2,
                 )
@@ -411,7 +411,7 @@ class SFTConfig(BaseConfig):
                 "Online evals are configured without an [inference] block - the launcher will not "
                 f"start an inference server. Make sure one is running at eval.client.base_url "
                 f"({self.eval.client.base_url}) with weight_broadcast.type = 'filesystem', "
-                "otherwise the evaluator will hang waiting for it. If a router fronts the "
+                "otherwise the evals process will hang waiting for it. If a router fronts the "
                 "deployment, set eval.client.admin_base_url to the engine URLs - admin ops "
                 "(pause/update_weights/resume) must bypass the router.",
                 stacklevel=2,

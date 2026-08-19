@@ -82,7 +82,7 @@ Usually tailing `trainer.log`, `orchestrator.log`, and `inference.log` is enough
 Scan for problems:
 
 ```bash
-grep -E "WARNING|ERROR" {run_dir}/logs/latest/{trainer,orchestrator,evaluator,inference}.log
+grep -E "WARNING|ERROR" {run_dir}/logs/latest/{trainer,orchestrator,evals,inference}.log
 grep -E "WARNING|ERROR" {run_dir}/logs/latest/envs/{train,eval}/*.log
 ```
 

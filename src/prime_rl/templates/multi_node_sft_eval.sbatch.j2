@@ -22,7 +22,7 @@
 #SBATCH --error={{ output_dir }}/eval_job_%j.log
 
 # Online-eval job for a decoupled SFT run: the inference pool (one vLLM engine per
-# DP rank behind a single router) plus the evaluator and its env servers. The trainer
+# DP rank behind a single router) plus the evals process and its env servers. The trainer
 # runs in a separate SLURM job and hands weights over via checkpoints on the shared
 # filesystem, so this job outlives the trainer and exits after evaluating the final
 # checkpoint (max_steps).
@@ -50,15 +50,15 @@ export OUTPUT_DIR={{ output_dir }}
 mkdir -p $OUTPUT_DIR/logs/inference
 ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 
-# A clean evaluator exit cannot trip srun --kill-on-bad-exit (which only propagates
+# A clean evals exit cannot trip srun --kill-on-bad-exit (which only propagates
 # failures), so node 0 publishes completion through this job-scoped sentinel and the
 # other nodes watch for it to release their engines. Stale sentinels from other job
 # IDs are inert, so only this job's own path needs clearing.
 export EVAL_DONE=$OUTPUT_DIR/.eval_done_$SLURM_JOB_ID
 rm -f "$EVAL_DONE"
 {% if prl_run_id %}
-# Trainer (separate SLURM job) and evaluator log to a single shared W&B run whose id
-# ($WANDB_RUN_ID) equals $PRL_RUN_ID: the trainer creates it, the evaluator (which
+# Trainer (separate SLURM job) and evals log to a single shared W&B run whose id
+# ($WANDB_RUN_ID) equals $PRL_RUN_ID: the trainer creates it, the evals process (which
 # outlives the trainer) finalizes it.
 export PRL_RUN_ID={{ prl_run_id }}
 export PRL_RUN_NAME={{ run_name }}
@@ -139,7 +139,7 @@ CLEANUP_SH
 
 # Run the eval deployment
 # --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other
-# tasks so a crashed engine/router/evaluator terminates the SLURM job instead
+# tasks so a crashed engine/router/evals terminates the SLURM job instead
 # of leaving the surviving ranks holding nodes.
 #
 # The body goes to bash on stdin through a quoted heredoc instead of a
@@ -204,9 +204,9 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log"
 {%- if eval_env_names %}
 
-        # One env server per eval source next to the evaluator, which connects to each
+        # One env server per eval source next to the evals process, which connects to each
         # source at its deterministic loopback address (so this node), polling until
-        # they are up - the servers and the evaluator start in parallel.
+        # they are up - the servers and the evals process start in parallel.
 {%- for name in eval_env_names %}
         mkdir -p $OUTPUT_DIR/logs/envs/eval
         uv run env-server @ $CONFIG_DIR/envs/eval/{{ name }}.json \
@@ -214,9 +214,9 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 {%- endfor %}
 {%- endif %}
 
-        # The evaluator watches the trainer's weights dir on the shared filesystem and
+        # The evals process watches the trainer's weights dir on the shared filesystem and
         # drives the pool: data plane through the router, admin ops per rank.
-{%- for key, value in evaluator_env_vars.items() %}
+{%- for key, value in evals_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {%- endfor %}
         WANDB_SHARED_LABEL=evals uv run evals \
@@ -224,20 +224,20 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
             --eval.client.base-url $INFER_URLS \
             --eval.client.admin-base-url $ADMIN_URLS \
             2>&1 | tee $OUTPUT_DIR/logs/evals.log &
-        EVALUATOR_PID=$!
+        EVALS_PID=$!
     else
         # Watch for the completion sentinel so this node's wait below returns when
-        # the evaluator (on node 0) finishes cleanly.
+        # the evals process (on node 0) finishes cleanly.
         ( until [ -f "$EVAL_DONE" ]; do sleep 10; done ) &
     fi
 
 # Wait for the first background job to exit and propagate its exit code. This
-# turns background process crashes (engines, router, env servers, evaluator)
+# turns background process crashes (engines, router, env servers, evals)
 # into task failures that --kill-on-bad-exit=1 can broadcast to the other nodes
 # so the whole job tears down instead of leaving zombies holding the allocation.
 wait -n -p FINISHED_PID
 EXIT_CODE=$?
-if [ "${FINISHED_PID:-}" = "${EVALUATOR_PID:-none}" ]; then
+if [ "${FINISHED_PID:-}" = "${EVALS_PID:-none}" ]; then
     # Publish completion so the sentinel watchers on the other nodes release too
     # (a zero exit here never trips --kill-on-bad-exit).
     touch "$EVAL_DONE"
