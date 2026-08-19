@@ -2,7 +2,7 @@ from transformers import AutoConfig
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.trainer.batch import build_bin_cost, prepare_batch
-from prime_rl.transport.types import MicroBatch, TrainingSample
+from prime_rl.transports.rollouts.types import MicroBatch, TrainingSample
 from prime_rl.utils.logger import get_logger
 
 

@@ -8,13 +8,13 @@ from torch.distributed.tensor import DTensor
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, LoRAConfig
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
-from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.utils import maybe_clean
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.transports.weights.base import WeightBroadcast
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
 

@@ -11,7 +11,7 @@ from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import EchoAlgorithm, stamp_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout
-from prime_rl.transport.types import TrainingSample
+from prime_rl.transports.rollouts.types import TrainingSample
 
 FROZEN = {"name": "org/ref-model", "base_url": "http://ref:8001/v1"}
 

@@ -20,8 +20,8 @@ from collections.abc import Iterator
 import numpy as np
 import verifiers.v1 as vf
 
-from prime_rl.transport import TrainingSample
-from prime_rl.transport.types import EncodedTensor, RoutedExperts
+from prime_rl.transports.rollouts import TrainingSample
+from prime_rl.transports.rollouts.types import EncodedTensor, RoutedExperts
 from prime_rl.utils.logger import get_logger
 
 

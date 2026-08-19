@@ -10,7 +10,7 @@ import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
 from verifiers.v1.task import DataT
 
-from prime_rl.transport import TrainingSample
+from prime_rl.transports.rollouts import TrainingSample
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.metrics import EvalRollouts, TrainRollouts

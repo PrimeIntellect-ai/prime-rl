@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
 
     from prime_rl.orchestrator.ckpt import CheckpointManager
-    from prime_rl.transport.base import MicroBatchSender
+    from prime_rl.transports.rollouts.base import MicroBatchSender
     from prime_rl.utils.client import InferencePool
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
@@ -74,8 +74,8 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
-from prime_rl.trainer.rl.broadcast.nixl.model_express import ModelExpressSession
-from prime_rl.transport import setup_micro_batch_sender
+from prime_rl.transports.rollouts import setup_micro_batch_sender
+from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat

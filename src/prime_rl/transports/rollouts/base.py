@@ -3,7 +3,7 @@ from pathlib import Path
 
 import msgspec
 
-from prime_rl.transport.types import MicroBatch
+from prime_rl.transports.rollouts.types import MicroBatch
 from prime_rl.utils.logger import get_logger
 
 
