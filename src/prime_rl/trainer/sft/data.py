@@ -43,12 +43,12 @@ class Batch(TypedDict):
 class StatefulIterableDataset(Stateful, IterableDataset):
     """SFT dataset are iterable (infinite) and stateful (can be checkpointed)."""
 
-    def __init__(self):
+    def __init__(self, non_dp_size: int = 1):
         self.step, self.epoch = 0, 0
         self.num_samples = defaultdict(int)
         self.num_tokens = defaultdict(int)
         self.fast_forward = False
-        self._setup_world_info()
+        self._setup_world_info(non_dp_size)
 
     def state_dict(self) -> dict:
         return {"step": self.step, "epoch": self.epoch}
@@ -59,19 +59,26 @@ class StatefulIterableDataset(Stateful, IterableDataset):
         self.step = state_dict["step"]
         self.epoch = state_dict["epoch"]
 
-    def _setup_world_info(self):
+    def _setup_world_info(self, non_dp_size: int = 1):
+        """Shard samples over the data parallel ranks. Ranks of a non-DP group (e.g. CP)
+        share a data rank: they consume the same sample and split it along another dim."""
         worker_info = get_worker_info()
         if worker_info is not None:
             worker_id = worker_info.id
             num_workers = worker_info.num_workers
         else:
             worker_id, num_workers = 0, 1
-        self.data_rank = get_world().rank * num_workers + worker_id
-        self.data_world_size = get_world().world_size * num_workers
+        assert get_world().world_size % non_dp_size == 0, "world_size must be divisible by non_dp_size"
+        self.data_rank = get_world().rank // non_dp_size * num_workers + worker_id
+        self.data_world_size = get_world().world_size // non_dp_size * num_workers
 
 
 class FakeDataset(StatefulIterableDataset):
-    """A dataset of fake tokens"""
+    """A dataset of fake tokens.
+
+    Every sample is a pure function of its global index, so the same (vocab_size, seq_len)
+    yields the same data under any parallelism layout.
+    """
 
     def __init__(
         self,
@@ -79,8 +86,9 @@ class FakeDataset(StatefulIterableDataset):
         seq_len: int,
         length: Literal["fixed", "variable"] = "fixed",
         input_ids: Literal["increasing", "random"] = "random",
+        non_dp_size: int = 1,
     ):
-        super().__init__()
+        super().__init__(non_dp_size)
         self.vocab_size = vocab_size
         self.seq_len = seq_len
         self.length = length
@@ -94,11 +102,16 @@ class FakeDataset(StatefulIterableDataset):
             if (self.step - 1) % self.data_world_size != self.data_rank:
                 continue
 
-            seq_len = int(torch.randint(1, self.seq_len, (1,)).item()) if self.length == "variable" else self.seq_len
+            generator = torch.Generator().manual_seed(self.step)
+            seq_len = (
+                int(torch.randint(1, self.seq_len, (1,), generator=generator).item())
+                if self.length == "variable"
+                else self.seq_len
+            )
             input_ids = (
                 [self.step - 1] * (seq_len + 1)
                 if self.input_ids == "increasing"
-                else torch.randint(0, self.vocab_size, (self.seq_len + 1,)).long().tolist()
+                else torch.randint(0, self.vocab_size, (seq_len + 1,), generator=generator).tolist()
             )
             position_ids = list(range(seq_len))
             loss_mask = [True] * seq_len
@@ -193,7 +206,7 @@ class SFTDataset(StatefulIterableDataset):
         max_epochs: int | None = None,
         multimodal: bool = False,
     ):
-        super().__init__()
+        super().__init__(non_dp_size)
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
@@ -210,16 +223,6 @@ class SFTDataset(StatefulIterableDataset):
         if self.max_examples is not None:
             self.num_examples = min(self.num_examples, self.max_examples)
             self.dataset = self.dataset.take(self.max_examples)
-
-        # Get the data rank and world size
-        worker_info = get_worker_info()
-        worker_id, num_workers = 0, 1
-        if worker_info is not None:
-            worker_id = worker_info.id
-            num_workers = worker_info.num_workers
-        assert get_world().world_size % non_dp_size == 0, "world_size must be divisible by non_dp_size"
-        self.data_rank = get_world().rank // non_dp_size * num_workers + worker_id
-        self.data_world_size = get_world().world_size // non_dp_size * num_workers
 
     def _process(self, example: dict) -> dict | None:
         def resolve_messages(example: dict) -> list[dict]:
@@ -633,6 +636,7 @@ def setup_dataset(
             seq_len=config.seq_len,
             length=config.length,
             input_ids=config.input_ids,
+            non_dp_size=non_dp_size,
         )
     elif config.type == "sft":
         if renderer is None:
