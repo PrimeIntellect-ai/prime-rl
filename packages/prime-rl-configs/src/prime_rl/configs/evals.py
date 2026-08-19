@@ -95,3 +95,15 @@ class EvalsConfig(BaseConfig):
         if self.online is not None and self.online.weights_dir is None:
             self.online.weights_dir = self.output_dir / "weights"
         return self
+
+    @model_validator(mode="after")
+    def validate_skip_first_step_is_online_only(self):
+        """``skip_first_step`` gates the base-model eval between checkpoints; a
+        standalone run has only that one epoch, so skipping it would exit
+        successfully without evaluating anything."""
+        if self.online is None and self.eval.skip_first_step:
+            raise ValueError(
+                "eval.skip_first_step only applies to online evals - a standalone run "
+                "would skip its only eval epoch. Remove it or add an [online] block."
+            )
+        return self
