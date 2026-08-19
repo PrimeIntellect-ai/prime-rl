@@ -48,6 +48,7 @@ batch_size = 2048
 
 [orchestrator.concurrency]
 initial_inflight = 4096
+max_inflight = 4096
 
 [[orchestrator.train.source]]
 name = "swe"

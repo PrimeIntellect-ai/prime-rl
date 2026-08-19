@@ -49,6 +49,7 @@ max_off_policy_steps = 16
 
 [orchestrator.concurrency]
 initial_inflight = 4096
+max_inflight = 4096
 
 [[orchestrator.train.source]]
 name = "swe"
