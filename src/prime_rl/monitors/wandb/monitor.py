@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import wandb
 from wandb.errors import CommError
@@ -32,6 +32,7 @@ class WandbMonitor(Monitor):
         config: BaseConfig | None = None,
         train_env_names: list[str] | None = None,
         eval_env_names: list[str] | None = None,
+        overview_flavor: Literal["rl", "sft"] = "rl",
     ) -> None:
         # W&B reads the start command off sys.argv; the launcher passes the original
         # command to subprocesses via $WANDB_ARGS.
@@ -50,14 +51,19 @@ class WandbMonitor(Monitor):
             # W&B's native run-id var, set by the launcher to $PRL_RUN_ID.
             run_id = os.environ.get("WANDB_RUN_ID")
             label = os.environ.get("WANDB_SHARED_LABEL")
-            primary = label == "orchestrator"
+            primary_label = os.environ.get("WANDB_SHARED_PRIMARY", "orchestrator")
+            primary = label == primary_label
+            # The primary creates the run; the finisher writes its final state. They can
+            # differ when the run's creator is not its last-alive writer (e.g. the SFT
+            # trainer creates the run, the evaluator outlives it and finalizes).
+            finisher = label == os.environ.get("WANDB_SHARED_FINISHER", primary_label)
             settings = wandb.Settings(
                 mode="shared",
                 x_label=label,
                 x_primary=primary,
-                x_update_finish_state=primary,
+                x_update_finish_state=finisher,
             )
-            self.logger.info(f"Using shared W&B mode ({label=}, {primary=})")
+            self.logger.info(f"Using shared W&B mode ({label=}, {primary=}, {finisher=})")
             is_online = True
         else:
             run_id = None
@@ -117,6 +123,7 @@ class WandbMonitor(Monitor):
                     self.wandb.project,
                     train_envs=train_env_names or [],
                     eval_envs=eval_env_names or [],
+                    flavor=overview_flavor,
                 )
                 if url:
                     self.logger.info(f"Created W&B overview view - {url}")

@@ -11,7 +11,16 @@ from prime_rl.utils.config import BaseConfig
 # and the single shared W&B run. The launcher always sets these last, so allowing them in
 # `env_vars` would be a silent no-op (or, on multi-node, a footgun) — reject them instead.
 PROTECTED_ENV_VARS = frozenset(
-    {"CUDA_VISIBLE_DEVICES", "PRL_RUN_ID", "PRL_RUN_NAME", "WANDB_RUN_ID", "WANDB_SHARED_MODE", "WANDB_SHARED_LABEL"}
+    {
+        "CUDA_VISIBLE_DEVICES",
+        "PRL_RUN_ID",
+        "PRL_RUN_NAME",
+        "WANDB_RUN_ID",
+        "WANDB_SHARED_MODE",
+        "WANDB_SHARED_LABEL",
+        "WANDB_SHARED_PRIMARY",
+        "WANDB_SHARED_FINISHER",
+    }
 )
 
 

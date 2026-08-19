@@ -100,7 +100,7 @@ def trace_to_samples(
     Each `trace.branches` entry is already a flat token sequence (`branch.token_ids` /
     `branch.sampled_mask` / `branch.logprobs`), so a sample carries it directly: `mask` marks
     the trainable (model-sampled) tokens, the context tokens between completions stay masked
-    out. Errored rollouts are dropped upstream (`TrainSink.process_rollout`), so no error
+    out. Errored traces are dropped upstream (`TrainSink.process_episode`), so no error
     handling happens here. A branch carrying images also gets `mm_kwargs` (the concatenated
     pixel tensors) and `mm_token_type_ids` (the renderer's `mm_token_type_id_map` applied to
     the branch tokens). Branches with no sampled tokens (e.g. an openai client carrying none)

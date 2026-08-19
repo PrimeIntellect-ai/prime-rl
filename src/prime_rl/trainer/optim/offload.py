@@ -20,6 +20,8 @@ from prime_rl.trainer.optim.cpu_adam import adamw_step as native_cpu_adamw_step
 from prime_rl.trainer.optim.cpu_adam import add_bfloat16_ as native_add_bfloat16_
 from prime_rl.trainer.optim.cpu_adam import copy_or_add_bfloat16_multi_ as native_copy_or_add_bfloat16_multi_
 from prime_rl.trainer.optim.cpu_adam import load_cpu_adamw_kernel
+from prime_rl.trainer.optim.cpu_adam import sign_sgd_step as native_cpu_sign_sgd_step
+from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
 
 
@@ -1089,6 +1091,8 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         self._all_param_groups = self.optimizer.param_groups
         self._chunk_groups = self._build_chunk_groups()
         self._native_cpu_adamw = isinstance(optimizer, AdamW) and offload_config.cpu_optimizer_backend == "native"
+        self._native_cpu_sign_sgd = isinstance(optimizer, SignSGD) and offload_config.cpu_optimizer_backend == "native"
+        self._native_cpu_optimizer = self._native_cpu_adamw or self._native_cpu_sign_sgd
         self._fused_cpu_adamw = (
             isinstance(optimizer, AdamW)
             and all(group["fused"] for group in optimizer.param_groups)
@@ -1096,11 +1100,12 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         )
         self._adamw_grad_scale = torch.ones((), dtype=torch.float32) if self._fused_cpu_adamw else None
         self._adamw_found_inf = torch.zeros((), dtype=torch.float32) if self._fused_cpu_adamw else None
-        if self._native_cpu_adamw:
-            get_logger().info("Loading native read-only-gradient multi-tensor CPU AdamW kernel")
+        if self._native_cpu_optimizer:
+            kernel_name = "AdamW" if self._native_cpu_adamw else "SignSGD"
+            get_logger().info(f"Loading native read-only-gradient multi-tensor CPU {kernel_name} kernel")
             load_cpu_adamw_kernel()
         gradient_chunks = [[master_weights[id(param)].model_param for param in chunk] for chunk in self._chunks]
-        if self._native_cpu_adamw:
+        if self._native_cpu_optimizer:
             gradient_dtypes = {id(master.model_param): master.gradient_dtype for master in master_weights.values()}
             compute_dtypes = {id(master.model_param): master.compute_dtype for master in master_weights.values()}
             self._gradient_manager = BoundedGradientOffloadManager(
@@ -1231,6 +1236,49 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
                 gradient_scale=self._gradient_manager.gradient_scale,
             )
 
+    def _step_native_cpu_sign_sgd_chunk(
+        self,
+        chunk_idx: int,
+        gradients: list[torch.Tensor | None],
+        compute_params: list[torch.Tensor],
+    ) -> None:
+        assert self._gradient_manager is not None
+        assert self._master_weights is not None
+        # The kernel consumes unscaled gradients: sign(scale * g) == sign(g) for scale > 0,
+        # so the positive gradient scale can be dropped entirely.
+        assert self._gradient_manager.gradient_scale > 0
+        gradient_by_param_id = {
+            id(param): gradient for param, gradient in zip(self._chunks[chunk_idx], gradients) if gradient is not None
+        }
+        compute_by_param_id = {
+            id(param): compute_param for param, compute_param in zip(self._chunks[chunk_idx], compute_params)
+        }
+        for param, gradient, compute_param in zip(self._chunks[chunk_idx], gradients, compute_params):
+            if gradient is None:
+                compute_param.copy_(self._master_weights[id(param)].cpu_tensor)
+        for group, params in self._chunk_groups[chunk_idx]:
+            params_with_grad = [param for param in params if id(param) in gradient_by_param_id]
+            if not params_with_grad:
+                continue
+            native_cpu_sign_sgd_step(
+                params_with_grad,
+                [gradient_by_param_id[id(param)] for param in params_with_grad],
+                [compute_by_param_id[id(param)] for param in params_with_grad],
+                lr=group["lr"],
+                weight_decay=group["weight_decay"],
+            )
+
+    def _step_native_cpu_chunk(
+        self,
+        chunk_idx: int,
+        gradients: list[torch.Tensor | None],
+        compute_params: list[torch.Tensor],
+    ) -> None:
+        if self._native_cpu_adamw:
+            self._step_native_cpu_adamw_chunk(chunk_idx, gradients, compute_params)
+        else:
+            self._step_native_cpu_sign_sgd_chunk(chunk_idx, gradients, compute_params)
+
     def _step_cpu_chunk(self, chunk_idx: int) -> None:
         assert self._gradient_manager is not None
         self._prepare_fused_cpu_adamw()
@@ -1238,19 +1286,19 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             chunk_idx,
             self._chunks[chunk_idx],
             wait=False,
-            apply_scale=not (self._native_cpu_adamw or self._fused_cpu_adamw),
-            assign_grad=not self._native_cpu_adamw,
+            apply_scale=not (self._native_cpu_optimizer or self._fused_cpu_adamw),
+            assign_grad=not self._native_cpu_optimizer,
         )
-        if self._native_cpu_adamw:
+        if self._native_cpu_optimizer:
             if not isinstance(self._gradient_manager, BoundedGradientOffloadManager):
-                raise TypeError("Native CPU AdamW requires bounded gradient offload")
+                raise TypeError("Native CPU optimizers require bounded gradient offload")
             timings = self._gradient_manager._timings
             acquire_start = time.perf_counter()
             output_slots, compute_params = self._gradient_manager.acquire_output_chunk(chunk_idx)
-            adam_start = time.perf_counter()
-            timings["output_slot_wait"] = timings.get("output_slot_wait", 0.0) + adam_start - acquire_start
-            self._step_native_cpu_adamw_chunk(chunk_idx, gradients, compute_params)
-            timings["adam_kernel"] = timings.get("adam_kernel", 0.0) + time.perf_counter() - adam_start
+            kernel_start = time.perf_counter()
+            timings["output_slot_wait"] = timings.get("output_slot_wait", 0.0) + kernel_start - acquire_start
+            self._step_native_cpu_chunk(chunk_idx, gradients, compute_params)
+            timings["optimizer_kernel"] = timings.get("optimizer_kernel", 0.0) + time.perf_counter() - kernel_start
         else:
             self._step_chunk(chunk_idx)
         self._gradient_manager.release_chunk(chunk_idx, self._chunks[chunk_idx])
@@ -1258,9 +1306,9 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             self._update_compute_weights(
                 chunk_idx,
                 self._h2d_stream,
-                compute_params if self._native_cpu_adamw else None,
+                compute_params if self._native_cpu_optimizer else None,
             )
-            if self._native_cpu_adamw:
+            if self._native_cpu_optimizer:
                 self._gradient_manager.release_output_chunk(output_slots, self._h2d_stream)
 
     def _prepare_fused_cpu_adamw(self) -> None:
@@ -1274,7 +1322,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         self.optimizer.found_inf = self._adamw_found_inf
 
     def _record_native_optimizer_step(self) -> None:
-        if self._native_cpu_adamw:
+        if self._native_cpu_optimizer:
             # LRScheduler normally sets this marker through its optimizer.step wrapper.
             self.optimizer._opt_called = True
 
@@ -1302,16 +1350,16 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
                 self._gradient_manager.load_cpu_chunk(
                     i,
                     self._chunks[i],
-                    apply_scale=not (self._native_cpu_adamw or self._fused_cpu_adamw),
-                    assign_grad=not self._native_cpu_adamw,
+                    apply_scale=not (self._native_cpu_optimizer or self._fused_cpu_adamw),
+                    assign_grad=not self._native_cpu_optimizer,
                 )
             )
-        if self._native_cpu_adamw:
+        if self._native_cpu_optimizer:
             if not isinstance(self._gradient_manager, BoundedGradientOffloadManager):
-                raise TypeError("Native CPU AdamW requires bounded gradient offload")
+                raise TypeError("Native CPU optimizers require bounded gradient offload")
             for i in range(len(self._chunks)):
                 output_slots, compute_params = self._gradient_manager.acquire_output_chunk(i)
-                self._step_native_cpu_adamw_chunk(i, gradients_by_chunk[i], compute_params)
+                self._step_native_cpu_chunk(i, gradients_by_chunk[i], compute_params)
                 self._gradient_manager.release_chunk(i, self._chunks[i])
                 self._update_compute_weights(i, self._h2d_stream, compute_params)
                 self._gradient_manager.release_output_chunk(output_slots, self._h2d_stream)
@@ -1354,6 +1402,9 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
 
     @torch.no_grad()
     def _initialize_cpu_optimizer_state(self) -> None:
+        if isinstance(self.optimizer, SignSGD):
+            # SignSGD is stateless: no moments or step counters to materialize.
+            return
         if self.optimizer.state:
             return
         if self._native_cpu_adamw:
@@ -1439,9 +1490,9 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
     @torch.no_grad()
     def finish_checkpoint_load(self) -> None:
         if self._master_weights is not None:
-            if self._native_cpu_adamw:
+            if self._native_cpu_optimizer:
                 if not isinstance(self._gradient_manager, BoundedGradientOffloadManager):
-                    raise TypeError("Native CPU AdamW requires bounded gradient offload")
+                    raise TypeError("Native CPU optimizers require bounded gradient offload")
                 for i in range(len(self._chunks)):
                     output_slots, compute_params = self._gradient_manager.acquire_output_chunk(i)
                     for param, compute_param in zip(self._chunks[i], compute_params):

@@ -1,27 +1,13 @@
 .vscode/*
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+.codex/
 *.ipynb
 *.jsonl
 configs/endpoints.py
 
-# Artifacts
-**/slurm
-!src/prime_rl/slurm
-!examples/slurm
-!docs/slurm.md
-**/torchrun
-**/weights
-**/checkpoints
-**/broadcasts
-**/rollouts
-**/logs
-**/wandb
-!src/prime_rl/monitors/wandb/
-**/evals
-**/run_*/
-!configs/**/evals
-final_summary.json
+# Run artifacts
+outputs/
 .pydantic_config
 .chroma_db
 deps/nixl_*
@@ -201,7 +187,5 @@ cython_debug/
 # Files created while testing
 debug_I2_zero_band
 .idea
-
-outputs/
 
 third_party/

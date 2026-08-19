@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from typing import Literal
 
 import wandb
 import wandb_workspaces.reports.v2 as wr
@@ -72,6 +73,18 @@ INFERENCE_PANELS = [
     ["inference/agg/prompt_tokens_total:rate/sum", "inference/agg/prompt_tokens_total:rate/max"],
 ]
 
+# SFT flavor: no rollout-based train sections — the training signal is the loss curve.
+SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perplexity", "progress/epoch"]
+SFT_STABILITY_METRICS = ["optim/grad_norm", "optim/lr", "loss/nan_count"]
+SFT_PERFORMANCE_METRICS = [
+    "perf/mfu",
+    "perf/throughput",
+    "perf/peak_memory",
+    "time/step",
+    "time/forward_backward",
+    "time/save_ckpt",
+]
+
 # Dense grid: more, smaller panels per row and enough rows that sections don't paginate.
 COLUMNS = 4
 ROWS = 6
@@ -129,7 +142,20 @@ def eval_section(name: str, env_pattern: str) -> ws.Section:
     )
 
 
-def build_sections(train_envs: Sequence[str] = (), eval_envs: Sequence[str] = ()) -> list[ws.Section]:
+def build_sections(
+    train_envs: Sequence[str] = (), eval_envs: Sequence[str] = (), flavor: Literal["rl", "sft"] = "rl"
+) -> list[ws.Section]:
+    # SFT trains on a dataset, not rollouts: the train section is the loss/perplexity
+    # curves, eval sections are the same rollout-based ones as RL.
+    if flavor == "sft":
+        sections = [section("train", metrics=SFT_TRAIN_METRICS)]
+        if eval_envs:
+            sections += [eval_section(f"eval/{env}", re.escape(env)) for env in eval_envs]
+        else:
+            sections.append(eval_section("eval", ".*"))
+        sections.append(section("stability", metrics=SFT_STABILITY_METRICS))
+        sections.append(section("performance", metrics=SFT_PERFORMANCE_METRICS))
+        return sections
     # With one env the aggregate == that env, so show only its section. With several, put the
     # cross-env aggregate on top followed by a section per env.
     if len(train_envs) == 1:
@@ -193,11 +219,12 @@ def ensure_overview_view(
     name: str = OVERVIEW_NAME,
     train_envs: Sequence[str] = (),
     eval_envs: Sequence[str] = (),
+    flavor: Literal["rl", "sft"] = "rl",
 ) -> str | None:
     """Ensure an overview saved view exists for this run's env set. Reuses an existing overview built
     for the same envs; when the env set is new, creates a fresh versioned view (``overview`` →
     ``overview-v2`` → …). Returns the URL of a newly created view, else None."""
-    sections = build_sections(train_envs, eval_envs)
+    sections = build_sections(train_envs, eval_envs, flavor)
     target = view_signature(sections)
     overviews = [(dn, iname) for dn, iname in list_views(entity, project) if dn == name or dn.startswith(f"{name}-v")]
     for _, internal_name in overviews:

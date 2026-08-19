@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig, WandbMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
@@ -47,6 +47,7 @@ async def setup(
     run_config: BaseConfig | None = None,
     train_env_names: list[str] | None = None,
     eval_env_names: list[str] | None = None,
+    overview_flavor: Literal["rl", "sft"] = "rl",
 ) -> None:
     """Construct, initialize, and register one monitor per non-None config.
 
@@ -71,6 +72,7 @@ async def setup(
                     config=run_config,
                     train_env_names=train_env_names,
                     eval_env_names=eval_env_names,
+                    overview_flavor=overview_flavor,
                 ),
             )
         )

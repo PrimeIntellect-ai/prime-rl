@@ -22,6 +22,7 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import sanitize
 
 BASE_URL = "https://api.primeintellect.ai/api/v1/rft"
+BASE_URL_VAR = "PRIME_API_BASE"
 API_KEY_VAR = "PRIME_API_KEY"
 
 SAMPLE_SCHEMA = pa.schema(
@@ -129,13 +130,14 @@ class TrainRun:
         self.id: str | None = None
         self.logger = get_logger()
         self._tasks: set[asyncio.Task] = set()
+        self.base_url = (os.getenv(BASE_URL_VAR) or BASE_URL).rstrip("/")
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "x-api-key": api_key,
             "Content-Type": "application/json",
         }
         self.client = httpx.AsyncClient(
-            base_url=BASE_URL,
+            base_url=self.base_url,
             headers=self.headers,
             timeout=30,
             transport=httpx.AsyncHTTPTransport(retries=3),
@@ -246,7 +248,7 @@ class TrainRun:
         self.logger.info(f"Marking platform run {self.id} as failed")
         try:
             httpx.put(
-                f"{BASE_URL}/external-runs/{self.id}/status",
+                f"{self.base_url}/external-runs/{self.id}/status",
                 headers=self.headers,
                 json={"status": "failed"},
                 timeout=30,
