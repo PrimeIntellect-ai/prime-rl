@@ -240,7 +240,11 @@ class Dispatcher:
         for group_id in sorted(group_age, key=lambda gid: group_age[gid], reverse=True):
             if shed >= n:
                 break
-            shed += await self.drop_group(group_id)
+            # Count only live cancellations toward the excess: drop_group's
+            # return includes never-dispatched markers, which free no permits
+            live = sum(1 for meta in self.inflight.values() if meta.group_id == group_id)
+            await self.drop_group(group_id)
+            shed += live
         if shed:
             get_logger().warning(f"Cancelled {shed} youngest in-flight episodes after overload cut")
 

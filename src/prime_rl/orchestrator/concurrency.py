@@ -28,6 +28,7 @@ the hooks bound in :meth:`bind`.
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -61,13 +62,25 @@ QUEUE_PERSISTENCE_POLLS = 6
 """Consecutive polls of queue overload before the HARD cut; filters natural turn-completion bursts."""
 
 QUEUE_CUT_FRACTION = 0.9
-"""A queue cut targets this fraction of what the engines are serving."""
+"""A queue cut targets this fraction of the in-flight pool. Pool units, not
+engine requests: agentic episodes idle between turns, so engine ``running``
+undercounts the pool by the duty cycle and cutting to it over-cuts."""
 
 PREEMPTION_CUT_FRACTION = 0.8
 """A preemption cut targets this fraction of the in-flight pool."""
 
 ESCALATED_CUT_FRACTION = 0.5
 """Cut fraction when overload survives a full drain."""
+
+ESCALATION_GRACE_POLLS = 6
+"""Polls after a drain completes during which a repeat overload cuts at the
+escalated fraction; past the grace window the system is considered recovered
+and escalation resets."""
+
+GROWTH_GATE_TTL_S = 15.0
+"""The growth gate expires this long after the poll that set it — if the
+metrics path stalls (an API server too loaded to answer is exactly the state
+runaway growth creates), growth freezes instead of compounding blind."""
 
 
 class Signal(Enum):
@@ -111,9 +124,11 @@ class ConcurrencyController:
         self.signal = Signal.CLEAR
         # Growth gate from the last poll, consumed by per-completion growth
         self.can_grow = False
+        self.can_grow_until = 0.0
         self.prev_waiting: dict[str, int] = {}
         self.queue_overload_polls = 0
         self.trim_cooldown = 0
+        self.escalation_grace = 0
         # After a cut, ignore further cuts until inflight has drained below
         # the new cap — the overload during drain is stale
         self.draining = False
@@ -145,10 +160,22 @@ class ConcurrencyController:
         """One completed unit (from the dispatcher). Advances the turnover
         clock and, while the last poll was green, grows the cap — so growth
         is paced by the pipeline itself at any concurrency scale."""
-        inflight = self.get_inflight() if self.get_inflight is not None else 0
-        fraction = 1 / max(inflight, 1)
+        # The dispatcher releases the permit before this hook fires, so the
+        # completing episode is already off the count — add it back, or the
+        # binding check is unsatisfiable for caps below 10 (0.9 * cap > cap - 1)
+        inflight = (self.get_inflight() if self.get_inflight is not None else 0) + 1
+        fraction = 1 / inflight
         self.turnover += fraction
-        if self.can_grow and inflight >= BINDING_FRACTION * self.max_inflight:
+        if tokens <= 0:
+            # Error markers consumed no engine capacity: a slow-failing error
+            # storm keeps the pool binding while idle engines read CLEAR, and
+            # growing on it floods the engines once the environment recovers
+            return
+        if (
+            self.can_grow
+            and time.monotonic() < self.can_grow_until
+            and inflight >= BINDING_FRACTION * self.max_inflight
+        ):
             self.cap = self.clamp(self.cap * TURNOVER_GROWTH**fraction)
             self.apply_limit(int(self.cap), reason=None)
 
@@ -198,10 +225,18 @@ class ConcurrencyController:
         # halving per poll).
         if self.draining and inflight <= self.max_inflight and not preempted and not queue_overload:
             self.draining = False
-            if worst == Signal.CLEAR:
+            self.escalation_grace = ESCALATION_GRACE_POLLS
+        if not self.draining and self.escalated:
+            # Escalation persists only through the grace window after a
+            # drain: a repeat overload inside it cuts harder, anything later
+            # means the system recovered (steady state post-cut is SOFT, so
+            # gating the reset on a CLEAR poll would latch escalation forever)
+            self.escalation_grace -= 1
+            if self.escalation_grace <= 0:
                 self.escalated = False
         self.trim_cooldown = max(0, self.trim_cooldown - 1)
         self.can_grow = worst == Signal.CLEAR and total_queued == 0 and not self.draining
+        self.can_grow_until = time.monotonic() + GROWTH_GATE_TTL_S
 
         # First capacity observation without a user-set start: derive the
         # pessimistic starting cap, once
@@ -222,7 +257,7 @@ class ConcurrencyController:
             fraction = ESCALATED_CUT_FRACTION if self.escalated else None
             if queue_overload:
                 self.queue_overload_polls = 0
-                target = int(self.clamp(total_running * (fraction or QUEUE_CUT_FRACTION)))
+                target = int(self.clamp(inflight * (fraction or QUEUE_CUT_FRACTION)))
                 reason = "queue overload"
             else:
                 target = int(self.clamp(inflight * (fraction or PREEMPTION_CUT_FRACTION)))
