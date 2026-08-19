@@ -140,9 +140,9 @@ class Dispatcher:
     def __init__(
         self,
         *,
-        train_envs: TrainEnvs,
+        train_envs: TrainEnvs | None,
         eval_envs: EvalEnvs | None,
-        train_source: TrainSource,
+        train_source: TrainSource | None,
         eval_source: EvalSource | None,
         policy_pool: InferencePool,
         policy: Policy,
@@ -181,7 +181,7 @@ class Dispatcher:
         self.admission_window_s = 5.0
         self.admission_window_start = time.monotonic()
         self.admissions_in_window = 0
-        self.min_burst = max((env.config.group_size for env in train_envs), default=8)
+        self.min_burst = max((env.config.group_size for env in train_envs or ()), default=8)
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
@@ -211,6 +211,7 @@ class Dispatcher:
     def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
         """``(pool, model_name, is_live)`` for *train* rollouts of this env —
         the env sampler's pool. (Eval always uses the policy.)"""
+        assert self.train_envs is not None  # train groups only exist when train is configured
         sampler = self.train_envs.get(env_name).sampler
         if sampler.samples_from_live_policy:
             return sampler.pool, self.policy.model_name, True
@@ -365,6 +366,7 @@ class Dispatcher:
                 continue
             # Frozen-sourced rollouts never go stale — their sampler doesn't
             # change with policy updates.
+            assert self.train_envs is not None
             if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
                 continue
             meta.off_policy_steps += 1
@@ -448,6 +450,7 @@ class Dispatcher:
         """Pop the next example from the corresponding source and wrap it in
         a ``GroupState``. Returns ``None`` if the source is empty."""
         if kind == "train":
+            assert self.train_source is not None
             source = self.train_source
         else:
             assert self.eval_source is not None

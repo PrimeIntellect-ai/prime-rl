@@ -9,7 +9,7 @@ from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
 
-from prime_rl.configs.evaluator import EvaluatorConfig
+from prime_rl.configs.evaluator import EvaluatorConfig, OnlineConfig
 from prime_rl.configs.orchestrator import EvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
@@ -81,15 +81,23 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
 
 
 def build_evaluator_config(config: SFTConfig) -> EvaluatorConfig:
-    """Derive the evaluator subconfig from the resolved SFT config."""
+    """Derive the evaluator subconfig from the resolved SFT config. The launcher
+    spawns the env servers itself, so each source's derived address is stamped in,
+    marking it externally managed for the evaluator."""
     assert config.eval is not None
+    eval_config = config.eval.model_copy(deep=True)
+    addresses = config.eval.env_addresses
+    for source in eval_config.source:
+        source.serve.address = addresses[("eval", source.resolved_name)]
     return EvaluatorConfig(
         model=config.model.name,
-        eval=config.eval,
-        weights_dir=get_weights_dir(get_ckpt_base(config)),
+        eval=eval_config,
+        online=OnlineConfig(
+            weights_dir=get_weights_dir(get_ckpt_base(config)),
+            max_steps=config.max_steps,
+            resume_step=resolve_resume_step(config),
+        ),
         output_dir=config.run_dir,
-        max_steps=config.max_steps,
-        resume_step=resolve_resume_step(config),
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
         monitors=config.monitors,
     )

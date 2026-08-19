@@ -2,7 +2,7 @@
 
 Defers heavy ML imports until after ``cli()`` parses CLI args, so
 ``evaluator --help`` short-circuits in ``cli()``. The actual implementation
-lives in ``prime_rl.orchestrator.evaluator``.
+lives in ``prime_rl.evaluator.evaluator``.
 """
 
 import asyncio
@@ -15,7 +15,7 @@ from prime_rl.utils.process import set_proc_title
 def main():
     set_proc_title("Evaluator")
     config = cli(EvaluatorConfig)
-    from prime_rl.orchestrator.evaluator import run_evaluator
+    from prime_rl.evaluator.evaluator import run_evaluator
 
     asyncio.run(run_evaluator(config))
 
