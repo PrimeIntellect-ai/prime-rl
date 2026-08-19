@@ -1263,12 +1263,29 @@ def _validate_flash_attn_4_installed() -> None:
         )
 
 
+def _impl_resolves_to_hf(config: ModelConfig) -> bool:
+    """Whether ``get_model`` will use the HF implementation for this config."""
+    if config.impl == "custom":
+        return False
+    if config.impl == "hf":
+        return True
+    model_config = cast(
+        PretrainedConfig,
+        AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code),
+    )
+    if is_vlm_architecture(model_config):
+        return get_custom_vlm_cls(model_config) is None
+    return not supports_custom_impl(model_config)
+
+
 def resolve_auto_attn(config: ModelConfig) -> None:
-    """Resolve ``attn='auto'`` to a concrete flash attention implementation based on GPU architecture.
+    """Resolve ``attn='auto'`` to a concrete flash attention implementation.
 
     FA4 on datacenter Blackwell (SM100), FA3 on Hopper (SM90), FA2 otherwise.
     Workstation Blackwell GPUs (e.g. RTX PRO 6000, SM120) lack FA4 kernels and
-    can't run the Hopper-only FA3 kernels, so they fall back to FA2.
+    can't run the Hopper-only FA3 kernels, so they fall back to FA2. FA3/FA4
+    also require the custom model implementation, so architectures that
+    resolve to the HF impl cap at FA2 regardless of GPU.
     """
     if config.attn != "auto":
         return
@@ -1280,6 +1297,12 @@ def resolve_auto_attn(config: ModelConfig) -> None:
     else:
         resolved = "flash_attention_2"
     logger = get_logger()
+    if resolved != "flash_attention_2" and _impl_resolves_to_hf(config):
+        logger.info(
+            f"Capping attn='auto' at 'flash_attention_2': {resolved} requires the custom model "
+            f"implementation, but model.impl resolves to 'hf' for {config.name}"
+        )
+        resolved = "flash_attention_2"
     logger.info(f"Auto-resolved attn='auto' to '{resolved}' (SM{major}{minor})")
     config.attn = resolved
 
