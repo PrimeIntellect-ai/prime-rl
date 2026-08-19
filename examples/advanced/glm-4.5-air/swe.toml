@@ -149,6 +149,9 @@ rollout = 3600
 # vLLM + FlashInfer caches on node-local /tmp (see [env_vars]).
 [inference.env_vars]
 VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
+# The cutlass FP8 MoE DP-chunking path under-sizes its permute scratch for
+# large (prefill/profile) batches: moe_permute asserts n_token <= max_num_tokens.
+VLLM_ENABLE_MOE_DP_CHUNK = "0"
 FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 
 [inference.vllm]
