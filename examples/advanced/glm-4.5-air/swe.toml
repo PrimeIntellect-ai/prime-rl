@@ -7,9 +7,8 @@
 # term is pass_rate-scaled and normalized by the group's own max before the GRPO baseline
 # subtraction.
 #
-# 1 train + 3 infer nodes. Inference serves the native FP8 checkpoint (EP experts + DP attention);
-# weight updates are quantized to kernel-format FP8 on the trainer side
-# (quantize_in_weight_transfer). The trainer fits on one
+# 1 train + 3 infer nodes. Inference serves FP8 via online per-tensor quantization of the bf16
+# checkpoint; weight broadcasts re-quantize through the same path on every update. The trainer fits on one
 # node via cp=4 (ulysses), full CPU optimizer offload with the stateless sign-SGD optimizer, plus
 # the memory improvements from the GLM-5.1 prod run (research-prod rlm5/prod.toml): LM-head token
 # chunking, activation checkpointing (freq=1) + activation offloading (max_inflight=1), and
@@ -44,7 +43,6 @@ name = "glm45air-scaleswe"
 [weight_broadcast]
 type = "nccl"
 timeout = 3600
-quantize_in_weight_transfer = true
 
 [ckpt]
 interval = 50
@@ -58,8 +56,10 @@ keep_last = 1
 dist_timeout_seconds = 3600
 enable_router_replay = true
 
-[trainer.model]
+[model]
 name = "zai-org/GLM-4.5-Air"
+
+[trainer.model]
 impl = "custom"
 attn = "flash_attention_3"
 cp = 4
@@ -97,9 +97,6 @@ type = "linear"
 num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1
 num_turns_weight = 0.1
-
-[orchestrator.model]
-name = "zai-org/GLM-4.5-Air-FP8"
 
 [orchestrator.renderer]
 name = "glm-4.5"
@@ -149,14 +146,10 @@ rollout = 3600
 # vLLM + FlashInfer caches on node-local /tmp (see [env_vars]).
 [inference.env_vars]
 VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
-# The cutlass FP8 MoE DP-chunking path under-sizes its permute scratch for
-# large (prefill/profile) batches: moe_permute asserts n_token <= max_num_tokens.
-VLLM_ENABLE_MOE_DP_CHUNK = "0"
 FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 
 [inference.vllm]
-model = "zai-org/GLM-4.5-Air-FP8"
-enable_expert_parallel = true
 max_model_len = 131072
-data_parallel_size = 8
+tensor_parallel_size = 8
+quantization = "fp8"
 enable_return_routed_experts = true
