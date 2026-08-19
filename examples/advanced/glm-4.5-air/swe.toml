@@ -149,5 +149,5 @@ FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 [inference.vllm]
 max_model_len = 131072
 tensor_parallel_size = 8
-quantization = "fp8"
+quantization = "fp8_per_block"
 enable_return_routed_experts = true
