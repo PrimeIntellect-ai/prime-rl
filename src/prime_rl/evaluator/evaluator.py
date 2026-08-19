@@ -198,6 +198,10 @@ class Evaluator:
         else:
             await self.watch()
 
+        # The periodic logger and the collector log to the W&B run, so they
+        # must stop before finalize marks the run finished.
+        await self.periodic_logger.stop()
+        await self.inference_metrics.stop()
         get_logger().success("Evaluator finished!")
 
     async def watch(self) -> None:
