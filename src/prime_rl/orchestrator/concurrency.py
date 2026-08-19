@@ -7,9 +7,10 @@ pressure off the engines and reacts at the pipeline's own pace (AIMD):
 - **Grow** the cap multiplicatively per pipeline turnover (each completion
   advances the turnover by ``1/inflight``) while the engines are clear, KV
   usage is below ``KV_USAGE_GROW``, and the cap binds admission.
-- **Trim** above ``KV_USAGE_TRIGGER``: resize cap and pool to what the
-  engines hold at ``KV_USAGE_TARGET`` and cancel the excess, youngest first.
-  Cap moves alone cannot relieve pressure from units maturing in place.
+- **Trim** above ``KV_USAGE_TRIGGER``: lower the cap to what the engines
+  hold at ``KV_USAGE_TARGET`` and let completions drain the pool (soft). If
+  usage still climbs past ``KV_USAGE_CANCEL`` — units maturing in place
+  outpace completions — also cancel the excess, youngest first (hard).
 - **Cut** on overload: preemptions (single-shot loads) or a persistent
   capacity queue (agentic loads never preempt — admission control parks
   excess load in the waiting queue). Cut, cancel the excess, then freeze
@@ -47,7 +48,13 @@ KV_USAGE_GROW = 0.6
 """Grow only while every decode engine's KV usage is below this."""
 
 KV_USAGE_TRIGGER = 0.8
-"""Above this usage, trim the cap and the in-flight pool."""
+"""Above this usage, soft-trim: lower the cap and let completions drain the
+pool naturally — no work is cancelled."""
+
+KV_USAGE_CANCEL = 0.9
+"""Above this usage, hard-trim: in-place context growth is outpacing
+completions despite the closed gate, so also cancel the pool excess before
+thrash onset (a cliff, not a slope)."""
 
 KV_USAGE_TARGET = 0.7
 """A trim resizes to inflight * target / usage — below the trigger, so pool growth has headroom before the next trim."""
@@ -272,18 +279,26 @@ class ConcurrencyController:
             return
 
         if max_usage > KV_USAGE_TRIGGER and inflight > 0 and self.trim_cooldown == 0:
+            hard = max_usage > KV_USAGE_CANCEL
             target = int(self.clamp(inflight * KV_USAGE_TARGET / max_usage))
-            self.resize_down(target, inflight, reason=f"kv headroom (usage {max_usage:.2f})")
+            self.resize_down(
+                target,
+                inflight,
+                reason=f"kv headroom (usage {max_usage:.2f}, {'hard' if hard else 'soft'} trim)",
+                cancel=hard,
+            )
             self.trim_cooldown = KV_TRIM_COOLDOWN_POLLS
 
     # ── internals ────────────────────────────────────────────────────────────
 
-    def resize_down(self, target: int, inflight: int, *, reason: str) -> None:
-        """Lower the cap (never raise) and cancel the in-flight excess."""
+    def resize_down(self, target: int, inflight: int, *, reason: str, cancel: bool = True) -> None:
+        """Lower the cap (never raise) and, with ``cancel``, shed the
+        in-flight excess; without it, admission stays blocked until the pool
+        drains below the new cap on its own."""
         target = min(target, self.max_inflight)
         self.cap = float(target)
         self.apply_limit(target, reason=reason)
-        if self.on_overload is not None and inflight > target:
+        if cancel and self.on_overload is not None and inflight > target:
             self.on_overload(inflight - target)
 
     def apply_limit(self, n_max: int, *, reason: str | None) -> None:
