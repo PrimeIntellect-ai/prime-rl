@@ -172,13 +172,12 @@ class Dispatcher:
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
         )
-        # Refill smoothing: the in-flight pool may grow by at most
-        # ``burst_cap`` per window, so a raised cap (or a post-drain refill)
-        # never lands its full prefill burst at once. Completions refund the
-        # budget — steady-state replacement is never throttled, otherwise
-        # fast-turning (single-shot) episodes complete faster than the burst
-        # cap admits and inflight equilibrates far below the cap
-        # (admission_rate x episode_duration), locking out growth.
+        # Admission smoothing: the pool may only GROW by ``burst_cap`` per
+        # window. Replacing a completed episode is always free (each natural
+        # completion refunds one admission); only net expansion is metered.
+        # This keeps a raised cap or post-drain refill from landing a wall of
+        # prefills at once, without rate-limiting fast-turning workloads at
+        # steady state.
         self.admission_window_s = 5.0
         self.admission_window_start = time.monotonic()
         self.admissions_in_window = 0

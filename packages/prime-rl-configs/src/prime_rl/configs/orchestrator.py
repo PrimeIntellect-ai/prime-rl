@@ -428,18 +428,17 @@ class ConcurrencyConfig(BaseConfig):
     initial_inflight: int | None = Field(None, ge=1)
     """In-flight cap to start from. Set it when a good value is known to skip the initial ramp; None derives a pessimistic bound at runtime — engine KV capacity divided by the engine's max context length (``max_model_len``, whether set explicitly or taken from the model config)."""
 
-    min_inflight: int | None = Field(None, ge=1)
-    """Hard floor on the cap (None auto-sets to 1). Escape hatch: ``min_inflight = max_inflight`` pins the cap for a fixed concurrency; not recommended in practice."""
+    min_inflight: int = Field(1, ge=1)
+    """Hard floor on the cap. Escape hatch: ``min_inflight = max_inflight`` pins the cap for a fixed concurrency; not recommended in practice."""
 
-    max_inflight: int | None = Field(None, ge=1)
-    """Hard ceiling on in-flight episodes — one episode is one agent run at a time, whatever the env's agents are. None leaves the cap purely capacity-driven."""
+    max_inflight: int | None = Field(1024, ge=1)
+    """Hard ceiling on in-flight episodes — one episode is one agent run at a time, whatever the env's agents are. None removes the ceiling and leaves the cap purely capacity-driven."""
 
     @model_validator(mode="after")
     def validate_bounds(self):
-        if self.max_inflight is not None and self.initial_inflight is not None:
-            if self.initial_inflight > self.max_inflight:
+        if self.max_inflight is not None:
+            if self.initial_inflight is not None and self.initial_inflight > self.max_inflight:
                 raise ValueError("concurrency.initial_inflight must not exceed concurrency.max_inflight")
-        if self.max_inflight is not None and self.min_inflight is not None:
             if self.min_inflight > self.max_inflight:
                 raise ValueError("concurrency.min_inflight must not exceed concurrency.max_inflight")
         return self

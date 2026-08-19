@@ -31,7 +31,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum, auto
+from typing import Literal
 
 from prime_rl.configs.orchestrator import ConcurrencyConfig
 from prime_rl.utils.logger import get_logger
@@ -83,10 +83,10 @@ metrics path stalls (an API server too loaded to answer is exactly the state
 runaway growth creates), growth freezes instead of compounding blind."""
 
 
-class Signal(Enum):
-    CLEAR = auto()
-    SOFT = auto()
-    HARD = auto()
+Signal = Literal["clear", "soft", "hard"]
+"""Engine pressure, in increasing severity."""
+
+SEVERITY: dict[Signal, int] = {"clear": 0, "soft": 1, "hard": 2}
 
 
 @dataclass(frozen=True)
@@ -110,7 +110,7 @@ class EngineLoadSample:
 class ConcurrencyController:
     def __init__(self, config: ConcurrencyConfig, *, fallback_cost: int) -> None:
         self.config = config
-        self.floor = config.min_inflight or 1
+        self.floor = config.min_inflight
         self.fallback_cost = fallback_cost
         """Pessimistic per-unit cost for the starting cap when the engine reports no max context."""
 
@@ -121,7 +121,7 @@ class ConcurrencyController:
         self.capacity_by_engine: dict[str, int] = {}
 
         self.turnover = 0.0
-        self.signal = Signal.CLEAR
+        self.signal: Signal = "clear"
         # Growth gate from the last poll, consumed by per-completion growth
         self.can_grow = False
         self.can_grow_until = 0.0
@@ -195,7 +195,7 @@ class ConcurrencyController:
         if not samples:
             return
 
-        worst = Signal.CLEAR
+        worst: Signal = "clear"
         max_usage = 0.0
         total_running = 0
         total_queued = 0
@@ -203,9 +203,9 @@ class ConcurrencyController:
         for sample in samples:
             if sample.preemptions_delta > 0:
                 preempted = True
-                worst = Signal.HARD
+                worst = "hard"
             if sample.waiting > 0 and self.prev_waiting.get(sample.engine_id, 0) > 0:
-                worst = max(worst, Signal.SOFT, key=lambda s: s.value)
+                worst = max(worst, "soft", key=SEVERITY.__getitem__)
             max_usage = max(max_usage, sample.kv_usage)
             total_running += sample.running
             total_queued += sample.waiting_capacity if sample.waiting_capacity is not None else sample.waiting
@@ -217,7 +217,7 @@ class ConcurrencyController:
             self.queue_overload_polls = 0
         queue_overload = self.queue_overload_polls >= QUEUE_PERSISTENCE_POLLS
         if queue_overload or max_usage > KV_USAGE_GROW:
-            worst = max(worst, Signal.HARD if queue_overload else Signal.SOFT, key=lambda s: s.value)
+            worst = max(worst, "hard" if queue_overload else "soft", key=SEVERITY.__getitem__)
         self.signal = worst
 
         inflight = self.get_inflight() if self.get_inflight is not None else 0
@@ -239,7 +239,7 @@ class ConcurrencyController:
             if self.escalation_grace <= 0:
                 self.escalated = False
         self.trim_cooldown = max(0, self.trim_cooldown - 1)
-        self.can_grow = worst == Signal.CLEAR and total_queued == 0 and not self.draining
+        self.can_grow = worst == "clear" and total_queued == 0 and not self.draining
         self.can_grow_until = time.monotonic() + GROWTH_GATE_TTL_S
 
         # First capacity observation without a user-set start: derive the
@@ -293,7 +293,7 @@ class ConcurrencyController:
             verb = "Increased" if n_max > self.max_inflight else "Decreased"
             get_logger().info(
                 f"{verb} concurrency {self.max_inflight} -> {n_max} ({reason}) - "
-                f"turnover={self.turnover:.1f} signal={self.signal.name.lower()}"
+                f"turnover={self.turnover:.1f} signal={self.signal}"
             )
         self.max_inflight = n_max
         if self.set_limit is not None:
@@ -315,7 +315,5 @@ class ConcurrencyController:
             "concurrency/max_inflight": float(self.max_inflight),
             "concurrency/turnover": self.turnover,
             "concurrency/capacity": float(self.capacity or 0),
-            "concurrency/signal": float(
-                {Signal.CLEAR: 0, Signal.SOFT: 1, Signal.HARD: 2}[self.signal],
-            ),
+            "concurrency/signal": float(SEVERITY[self.signal]),
         }
