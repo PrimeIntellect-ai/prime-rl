@@ -22,10 +22,6 @@ group_size = 16
 initial_inflight = 512
 max_inflight = 1024
 
-[[orchestrator.pre_batch_filters]]
-type = "zero_advantage"
-enforce = true
-
 [[orchestrator.train.source]]
 name = "wiki-search"
 

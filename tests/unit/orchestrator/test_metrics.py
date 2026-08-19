@@ -32,8 +32,7 @@ def mk(
     group_id: str = "g0",
     trainable: bool = True,
     is_trainable: bool = True,
-    is_filtered: bool = False,
-    filter_results: dict | None = None,
+    is_admitted: bool = True,
     setup: float = 0.0,
     agent: float = 0.0,
     agent_model: float = 0.0,
@@ -64,8 +63,7 @@ def mk(
         group_id=group_id,
         agent=SimpleNamespace(trainable=trainable, name=agent_name),
         is_trainable=is_trainable,
-        is_filtered=is_filtered,
-        filter_results=filter_results or {},
+        is_admitted=is_admitted,
         timing=SimpleNamespace(
             setup=SimpleNamespace(duration=setup),
             agent=SimpleNamespace(
@@ -93,12 +91,17 @@ def test_stat():
 
 def test_container_effective_by_env_and_listlike():
     rc = TrainRollouts(
-        [mk(env_name="a"), mk(env_name="a", has_error=True), mk(env_name="b", is_filtered=True), mk(env_name="b")]
+        [
+            mk(env_name="a"),
+            mk(env_name="a", has_error=True),
+            mk(env_name="b", is_admitted=False),
+            mk(env_name="b"),
+        ]
     )
     assert len(rc) == 4 and [r.env_name for r in rc] == ["a", "a", "b", "b"]  # sized + iterable
     eff = rc.effective
-    assert isinstance(eff, TrainRollouts) and len(eff) == 2  # same type, errored + filtered dropped
-    assert all(not r.has_error and not r.is_filtered and r in rc.rollouts for r in eff)  # view of references
+    assert isinstance(eff, TrainRollouts) and len(eff) == 2
+    assert all(r.is_admitted and not r.has_error and r in rc.rollouts for r in eff)
     by_env = rc.by_env()
     assert set(by_env) == {"a", "b"} and len(by_env["a"]) == 2 and isinstance(by_env["a"], TrainRollouts)
     rc.append(mk())
@@ -162,7 +165,7 @@ def test_agent_metrics_are_flat_over_traces():
 
 
 def test_boolean_rates_and_error_breakdown_all_only():
-    rc = TrainRollouts([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_filtered=True)])
+    rc = TrainRollouts([mk(is_truncated=True), mk(has_error=True, error_type="ProviderError"), mk(is_admitted=False)])
     out = rc.metrics.to_wandb(prefix="train/agg", subset="all")
     assert out["train/agg/all/agent/is_truncated/mean"] == 1 / 3
     assert out["train/agg/all/agent/is_completed/mean"] == 1.0
@@ -234,16 +237,15 @@ def test_nested_timing():
 
 def test_train_only_metrics_absent_from_eval():
     rollouts = [
-        mk(is_trainable=True, is_filtered=True, filter_results={"gibberish": True}),
-        mk(is_trainable=False, filter_results={"gibberish": False}),
+        mk(is_trainable=True, is_admitted=False),
+        mk(is_trainable=False),
     ]
     out = train_wandb(rollouts)
     assert out["train/agg/all/agent/is_trainable/mean"] == 0.5
-    assert out["train/agg/all/agent/is_filtered/mean"] == 0.5
-    assert out["train/agg/all/agent/filters/gibberish/mean"] == 0.5
+    assert out["train/agg/all/agent/is_admitted/mean"] == 0.5
     assert "train/agg/all/is_trainable/mean" not in out  # pipeline verdicts are per-trace
     eval_out = EvalRollouts(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
-    assert not any("is_trainable" in k or "is_filtered" in k or "/filters/" in k for k in eval_out)
+    assert not any("is_trainable" in key or "is_admitted" in key for key in eval_out)
 
 
 def test_eval_avg_at_k_and_pass_k():

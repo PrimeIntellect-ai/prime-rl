@@ -201,15 +201,27 @@ def test_full_optimizer_offload_accepts_debug_backend(config_cls):
 
 
 @pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
-@pytest.mark.parametrize("optimizer_type", ["sgd", "muon", "sign_sgd"])
-def test_full_optimizer_offload_requires_adamw(config_cls, optimizer_type):
-    with pytest.raises(ValidationError, match="Full optimizer offload only supports AdamW"):
+@pytest.mark.parametrize("optimizer_type", ["sgd", "muon"])
+def test_full_optimizer_offload_requires_supported_optimizer(config_cls, optimizer_type):
+    with pytest.raises(ValidationError, match="Full optimizer offload only supports AdamW and SignSGD"):
         config_cls.model_validate(
             {
                 "model": {"optim_cpu_offload": False, "full_offload": True},
                 "optim": {"type": optimizer_type, "max_norm": None},
             }
         )
+
+
+@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
+def test_full_optimizer_offload_accepts_sign_sgd(config_cls):
+    config = config_cls.model_validate(
+        {
+            "model": {"optim_cpu_offload": False, "full_offload": True},
+            "optim": {"type": "sign_sgd", "max_norm": None},
+        }
+    )
+    assert config.model.full_offload is not None
+    assert config.optim.type == "sign_sgd"
 
 
 def test_resolved_json_roundtrips_explicit_none(tmp_path):

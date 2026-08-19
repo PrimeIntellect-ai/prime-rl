@@ -10,7 +10,7 @@ once, and each dispatched episode ships its task's data on the request
 (``task_data``); the server pydantic-validates it into the taskset's declared
 ``TaskData`` type and runs it. That keeps the server (and every worker in its
 pool) stateless about data — no per-worker dataset loads, no idx-addressed task
-cache — and gives the orchestrator real tasks to cycle, shuffle, and filter.
+cache — and gives the orchestrator real tasks to sample.
 
 The server answers one ``Episode`` per run request, whose traces we validate into
 ``Trace[WireTaskData]`` — real ``vf.Trace``\\ s (never loose dicts) whose task

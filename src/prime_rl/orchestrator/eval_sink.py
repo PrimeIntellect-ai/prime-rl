@@ -1,6 +1,6 @@
 """EvalSink: three-level rollout sink for eval epochs.
 
-Same shape as ``TrainSink``, but no tokenization / advantages / filters:
+Same shape as ``TrainSink``, but no tokenization, advantages, or admission:
 
 1. ``process_rollout`` — no-op.
 2. ``process_group`` — at ``group_size`` episodes, move the rollouts

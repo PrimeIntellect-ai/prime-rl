@@ -66,6 +66,7 @@ After a restart, verify all processes are back up and progress resumed before th
 {run_dir}/logs/latest/
 ├── trainer.log                # rank 0 stdout
 ├── orchestrator.log           # orchestrator stdout
+├── evaluator.log              # SFT online-eval evaluator stdout (single-node; the decoupled multi-node eval job logs at {run_dir}/logs/evaluator.log)
 ├── inference.log              # vLLM stdout
 ├── trainer/
 │   ├── node_*.log             # per-node (multi-node only)
@@ -81,7 +82,7 @@ Usually tailing `trainer.log`, `orchestrator.log`, and `inference.log` is enough
 Scan for problems:
 
 ```bash
-grep -E "WARNING|ERROR" {run_dir}/logs/latest/{trainer,orchestrator,inference}.log
+grep -E "WARNING|ERROR" {run_dir}/logs/latest/{trainer,orchestrator,evaluator,inference}.log
 grep -E "WARNING|ERROR" {run_dir}/logs/latest/envs/{train,eval}/*.log
 ```
 
@@ -92,9 +93,9 @@ All metrics print to the console log (and W&B when configured).
 **Progress** — orchestrator log. Rollout metrics mirror the episode/trace hierarchy, at two levels:
 
 - `{scope}/{subset}/<metric>/<stat>` — episode-level facts only: the token/turn/branch counts, summed over an episode's traces.
-- `{scope}/{subset}/<agent>/<metric>/<stat>` — every trace-level metric (reward, truncation, errors, timing, env metrics, filter verdicts, eval scores), keyed by agent name so seats never mix. Flat over that agent's traces: one sample is one trace, so an in-episode fan-out like n solvers contributes n samples.
+- `{scope}/{subset}/<agent>/<metric>/<stat>` — every trace-level metric (reward, truncation, errors, timing, env metrics, curriculum admission, eval scores), keyed by agent name so seats never mix. Flat over that agent's traces: one sample is one trace, so an in-episode fan-out like n solvers contributes n samples.
 
-`scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (post-filter). Single-agent envs have one agent — usually `agent` — and one trace per episode, so both levels agree; multi-agent envs name each seat (`proposer`, `solver`, `judge`, …).
+`scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (admitted, clean, and trainable). Single-agent envs have one agent — usually `agent` — and one trace per episode, so both levels agree; multi-agent envs name each seat (`proposer`, `solver`, `judge`, …).
 
 | Metric | Description |
 |--------|-------------|
@@ -104,7 +105,8 @@ All metrics print to the console log (and W&B when configured).
 | `train/<env>/effective/<agent>/num_turns/mean` | avg turns for that agent alone (also token counts, `num_branches`) |
 | `train/agg/effective/<agent>/is_truncated/mean` | fraction of that agent's rollouts truncated |
 | `train/agg/all/<agent>/has_error/mean` | fraction of that agent's rollouts errored (per-type under `train/agg/all/<agent>/error/<type>`; also `dispatcher/errored/{train,eval}`) |
-| `train/agg/all/<agent>/is_trainable/mean` | fraction carrying a training signal — 0.0 for a frozen seat like a judge (also `is_filtered`, `filters/<name>`) |
+| `train/agg/all/<agent>/is_trainable/mean` | fraction carrying a training signal — 0.0 for a frozen seat like a judge |
+| `train/agg/all/<agent>/is_admitted/mean` | fraction accepted by the source curriculum; per-source counters and custom policy metrics live under `curriculum/<env>/` |
 | `train/<env>/effective/<agent>/metrics/<name>/mean` | env-specific metrics for that agent (e.g. pass rate) |
 | `train/<env>/effective/<agent>/timing/agent/model/mean` | model vs harness share of that agent's phase |
 | `eval/<env>/effective/<agent>/{avg@k,pass@k}` | eval scores for that agent, when configured |
@@ -147,7 +149,7 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 
 JSONL files of `vf.Trace` records (training tensors excluded), one line per trace — a
 multi-agent env's episode contributes several lines sharing one `info.episode_id`. `all`
-gets every completed rollout the moment it arrives — errored, filtered, and never-batched
+gets every completed rollout the moment it arrives — errored, curriculum-rejected, and never-batched
 ones included — so it's crash-durable; `effective` gets the clean trainable subset that went
 into the step's train batch (eval: the non-errored trainable epoch cohort; multiple eval envs
 share the step file) — untrainable traces (a frozen judge's) appear only in `all`. Each record carries `run` (`{type, id, step}`; for eval, `step` is the trigger step),

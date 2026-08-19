@@ -1,5 +1,6 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
+import math
 import time
 import asyncio
 from contextlib import nullcontext
@@ -75,7 +76,12 @@ def train(config: SFTConfig):
     logger.info(f"Initializing monitors ({config.monitors})")
     asyncio.run(
         monitors.setup(
-            wandb=config.monitors.wandb, file=config.monitors.file, output_dir=config.run_dir, run_config=config
+            wandb=config.monitors.wandb,
+            file=config.monitors.file,
+            output_dir=config.run_dir,
+            run_config=config,
+            eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval else [],
+            overview_flavor="sft",
         )
     )
 
@@ -378,9 +384,21 @@ def train(config: SFTConfig):
             logger.warning(f"Validation at step {step} had no valid tokens")
         else:
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        asyncio.run(monitors.log({"val/loss": mean_loss, "step": step}, step=step))
+        asyncio.run(
+            monitors.log(
+                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
+            )
+        )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
+
+    # Online evals reload the trainer's HF weight checkpoints from disk, so a weight
+    # checkpoint must land at every step an eval env is due (deterministic from the
+    # config — all ranks agree on the collective save).
+    online_eval_intervals = sorted({source.interval for source in config.eval.source}) if config.eval else []
+
+    def is_online_eval_step(step: int) -> bool:
+        return any(step % interval == 0 for interval in online_eval_intervals)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
@@ -395,7 +413,7 @@ def train(config: SFTConfig):
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
-        is_last_step = config.max_steps is not None and progress.step == config.max_steps
+        is_last_step = config.max_steps is not None and progress.step >= config.max_steps
 
         memory_profiler = (
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
@@ -512,10 +530,11 @@ def train(config: SFTConfig):
         scheduler.step()
 
         # Checkpoint the step we just finished. The last step's checkpoint is written once after
-        # the loop, so skip it here to avoid a double-save.
-        if (config.ckpt and config.ckpt.interval) and not is_last_step and progress.step % config.ckpt.interval == 0:
-            save_ckpt_time = 0
-
+        # the loop, so skip it here to avoid a double-save. Weight checkpoints additionally land
+        # at online-eval steps — they are how the inference server picks up the new policy.
+        save_ckpt_time = 0
+        is_ckpt_step = bool(config.ckpt and config.ckpt.interval) and progress.step % config.ckpt.interval == 0
+        if ckpt_manager is not None and is_ckpt_step and not is_last_step:
             if not config.ckpt.weights_only:
                 # Save full checkpoint
                 logger.info(f"Saving checkpoint at step {progress.step}")
@@ -525,15 +544,16 @@ def train(config: SFTConfig):
 
             ckpt_manager.maybe_clean()
 
-            # Save weight checkpoint
-            if weight_ckpt_manager is not None:
-                logger.info(f"Saving weight checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
-                weight_ckpt_manager.maybe_clean()
-        else:
-            save_ckpt_time = 0
+        if (
+            weight_ckpt_manager is not None
+            and not is_last_step
+            and (is_ckpt_step or is_online_eval_step(progress.step))
+        ):
+            logger.info(f"Saving weight checkpoint at step {progress.step}")
+            save_ckpt_start_time = time.perf_counter()
+            weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
+            save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+            weight_ckpt_manager.maybe_clean()
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
@@ -613,6 +633,7 @@ def train(config: SFTConfig):
 
         loss_log_metrics = {
             "loss/mean": batch_loss,
+            "loss/perplexity": math.exp(min(batch_loss, 20)),
             "loss/nan_count": nan_loss_count,
             "step": progress.step,
         }

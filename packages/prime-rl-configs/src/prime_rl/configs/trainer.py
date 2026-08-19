@@ -55,19 +55,20 @@ class ActivationOffloadingConfig(BaseConfig):
 
 
 class OptimizerInBackwardOffloadConfig(BaseConfig):
-    """Full CPU optimizer offload: FP32 masters, moments, and accumulated gradients live in
-    CPU RAM, each optimizer chunk runs on CPU as soon as its last gradient arrives, and the
-    refreshed BF16 weights stream back while backward is still executing.
+    """Full CPU optimizer offload: FP32 masters, optimizer state (AdamW moments; SignSGD is
+    stateless), and accumulated gradients live in CPU RAM, each optimizer chunk runs on CPU as
+    soon as its last gradient arrives, and the refreshed BF16 weights stream back while backward
+    is still executing.
 
     Gradient numerics: gradients are reduced across ranks in FP32 (``reduce_dtype``) but FSDP2
     materializes them in the sharded parameter's dtype, which is BF16 for the offload compute
     model — so each gradient is rounded to BF16 once before the FP32 CPU update. Masters,
-    moments, accumulation, and Adam arithmetic remain FP32. For gradient numerics bit-faithful
-    to that path, disable offloading.
+    moments, accumulation, and optimizer arithmetic remain FP32. For gradient numerics
+    bit-faithful to that path, disable offloading.
     """
 
     cpu_optimizer_backend: Literal["native", "torch"] = "native"
-    """CPU AdamW implementation used by full offload. ``native`` is the production kernel; ``torch`` is a slower debugging and parity fallback."""
+    """CPU optimizer implementation used by full offload (AdamW or SignSGD). ``native`` is the production kernel; ``torch`` is a slower debugging and parity fallback."""
 
     numa_bind: bool = True
     """Pin each rank's CPUs to its GPU's NUMA node. Disable when the launcher already manages CPU affinity or GPU sysfs topology is unavailable."""
@@ -673,9 +674,9 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def full_optimizer_offload_requires_adamw(self):
-        if self.model.full_offload and self.optim.type != "adamw":
-            raise ValueError("Full optimizer offload only supports AdamW")
+    def full_optimizer_offload_requires_supported_optimizer(self):
+        if self.model.full_offload and self.optim.type not in ("adamw", "sign_sgd"):
+            raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
         return self
 
     @model_validator(mode="after")

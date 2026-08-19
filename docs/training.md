@@ -176,6 +176,55 @@ uv run sft @ examples/basic/reverse-text/sft.toml --monitors.wandb
 
 Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and Torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
 
+### Online Evals
+
+`uv run sft` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[eval]` block — the same shape as `[orchestrator.eval]`: multiple `[[eval.source]]` envs with per-source `interval` / `num_examples` / `group_size` / sampling overrides — plus an `[inference]` block for the vLLM server:
+
+```toml
+[eval]
+interval = 25
+num_examples = 32
+
+[[eval.source]]
+name = "reverse-text"
+
+[eval.source.env.taskset]
+id = "reverse-text"
+
+[eval.source.env.agent.harness]
+id = "null"
+
+[eval.source.env.agent.runtime]
+type = "subprocess"
+
+[inference]
+
+[deployment]
+num_train_gpus = 1  # trainer
+num_infer_gpus = 1  # inference
+```
+
+The launcher starts the inference server, one env server per eval source, and an `evaluator` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evaluator watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env.
+
+#### Multi-Node (Decoupled Trainer and Inference Pool)
+
+On a `multi_node` deployment (SLURM), the trainer and the eval deployment are **two independent SLURM jobs**. `deployment.num_nodes` sizes the trainer job; `deployment.num_infer_nodes` sizes the eval job, which runs the inference pool (one vLLM engine per DP rank behind a single router, `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node), one env server per eval source, and the evaluator:
+
+```toml
+[deployment]
+type = "multi_node"
+num_train_nodes = 2  # trainer job
+num_infer_nodes = 1  # eval job (inference pool + evaluator)
+
+[inference.vllm]
+tensor_parallel_size = 8
+
+[slurm]
+job_name = "my-run"
+```
+
+The only coupling is weight checkpoints on the shared filesystem, so the jobs' lifetimes are independent: when training finishes, the trainer job exits and releases its nodes even while evals are still running; the eval job keeps draining pending checkpoints and exits after evaluating the final one (`max_steps` — without it the eval job never sees a final checkpoint and holds its allocation until walltime). Trainer and evaluator log to a single shared W&B run across both jobs — the trainer creates it, the evaluator finalizes it. Any train × inference layout works: `num_nodes` and `num_infer_nodes` are fully independent.
+
 ### SFT-Specific Knobs
 
 | Knob | What it controls |
@@ -185,6 +234,7 @@ Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manag
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
+| `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 
 ### Important Metrics
 
@@ -192,8 +242,9 @@ Pulled from the console log and mirrored to W&B.
 
 **Progress and loss:**
 
-- `loss/mean` — main signal. Should decrease through the run.
-- `val/loss` — validation loss when `[val]` is set, logged every `val.interval` steps.
+- `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
+- `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
+- `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
 
@@ -317,7 +368,7 @@ uv run rl @ rl.toml --no-monitors.file                    # disable the local me
 
 The trainer and orchestrator log into a **single shared W&B run**, so all metrics from both processes land in one place. Shared mode requires the W&B SDK ≥ 0.19.9 and is incompatible with `monitors.wandb.offline = true`.
 
-prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, W&B mode **auto-creates an `overview` saved view** on the first run into a project — curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first.
+prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, every training run (RL and SFT) gets an **auto-created `overview` saved view** curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first.
 
 ### Platform Monitoring
 

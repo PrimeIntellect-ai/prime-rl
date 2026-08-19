@@ -4,11 +4,12 @@
    dispatcher producing more rollouts), then the env algorithm's
    ``finalize_rollout`` (rollout-local scoring + any reference I/O). Errored
    and untrainable rollouts skip this.
-2. ``process_group`` — filters errored rollouts, hands the trainable
+2. ``process_group`` — removes errored rollouts, hands the trainable
    survivors to the env algorithm's ``finalize_group`` (advantages +
-   per-sample wire stamping), runs the pre-batch filter pass.
-3. ``process_batch`` — applies post-batch filter annotations and assembles
-   the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
+   per-sample wire stamping), then asks the source curriculum whether the
+   result should train.
+3. ``process_batch`` — assembles the trainer-bound ``TrainingSample`` list
+   and optionally removes zero-advantage RL payload.
 
 ``add()`` takes one episode (``list[Rollout]``) and returns
 ``TrainBatch | None``; group accounting counts episodes, never loose traces.
@@ -21,15 +22,17 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.envs import TrainEnvs
-from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.metrics import TrainRollouts
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Rollout, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
+
+MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS = 10
 
 
 def payload_tokens(rollout: Rollout) -> int:
@@ -45,6 +48,38 @@ def payload_tokens(rollout: Rollout) -> int:
     return sum(len(sample.token_ids) for sample in rollout.samples) or rollout.num_total_tokens
 
 
+def _prune_zero_advantages(sample: TrainingSample) -> bool:
+    """Remove zero-advantage tokens from the RL component.
+
+    Return whether the sample still carries any RL, CE, or reference-KL
+    component and therefore needs to be shipped.
+    """
+    if sample.advantages is None:
+        return True
+
+    if sample.rl_weights is None:
+        rl_weights = [1.0 if trainable else 0.0 for trainable in sample.mask]
+    else:
+        rl_weights = list(sample.rl_weights)
+
+    changed = False
+    for index, (trainable, advantage, weight) in enumerate(
+        zip(sample.mask, sample.advantages, rl_weights, strict=True)
+    ):
+        if trainable and advantage == 0.0 and weight != 0.0:
+            rl_weights[index] = 0.0
+            changed = True
+
+    if not changed:
+        return True
+
+    sample.rl_weights = rl_weights
+    has_rl = any(trainable and weight != 0.0 for trainable, weight in zip(sample.mask, rl_weights, strict=True))
+    has_ce = sample.ce_weights is not None and any(weight != 0.0 for weight in sample.ce_weights)
+    has_ref_kl = sample.ref_kl_weights is not None and any(weight != 0.0 for weight in sample.ref_kl_weights)
+    return has_rl or has_ce or has_ref_kl
+
+
 class TrainSink:
     """Three-level train sink. Constructed once, fed via ``add(rollout)``."""
 
@@ -57,8 +92,7 @@ class TrainSink:
         mm_token_type_ids_mapping: dict[int, int] | None,
         batch_size: int | None,
         token_batch_size: int | None,
-        pre_filters: list[RolloutFilter],
-        post_filters: list[RolloutFilter],
+        on_result: Callable[[list[Rollout]], bool] | None = None,
     ) -> None:
         assert (batch_size is None) != (token_batch_size is None), (
             "Exactly one of batch_size / token_batch_size must be set"
@@ -69,11 +103,10 @@ class TrainSink:
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
-        self.pre_filters = pre_filters
-        self.post_filters = post_filters
+        self.on_result = on_result
 
         # Observation window for the next shipped batch: rollouts of groups
-        # finalized since the last ship (errored + filtered + survivors).
+        # finalized since the last ship (errored + rejected + admitted).
         # In-progress groups stay out until they finalize.
         self.pending_rollouts: TrainRollouts = TrainRollouts()
         # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
@@ -88,11 +121,10 @@ class TrainSink:
         # runs), kept in sync on append/pop so the readiness check never
         # re-sums per arrival.
         self.pending_tokens: int = 0
-
-        # Reset by the orchestrator after each ship via ``reset_pre_filter_stats``
-        self.pre_filter_seen = 0
-        self.pre_filter_dropped = 0
-        self.pre_filter_dropped_by_name: dict[str, int] = {}
+        # Finalized work since the most recent positive contribution, measured
+        # in the active batch unit.
+        self.zero_output_units: int = 0
+        self.reported_zero_output_windows: int = 0
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -166,8 +198,7 @@ class TrainSink:
         await self.train_envs.get(rollout.env_name).algorithm.finalize_rollout(rollout)
 
     async def process_group(self, group_id: uuid.UUID) -> None:
-        """Finalize one GRPO group: drop errored rollouts, assign advantages,
-        run pre-batch filters, append survivors to ``pending_batch``."""
+        """Finalize one group, ask its curriculum for admission, and queue it."""
         group = self.pending_groups.pop(group_id, [])
         self.pending_group_episodes.pop(group_id, None)
         if not group:
@@ -187,6 +218,8 @@ class TrainSink:
         # Untrainable traces carry no samples and must not skew the group baseline.
         survivors = [r for r in survivors if r.agent.trainable]
         if not survivors:
+            self._admit(group)
+            self._record_zero_output(group)
             get_logger().debug(
                 f"Finished group | env={env_name} task_idx={task_idx} | "
                 f"rollouts={len(group)} (errored={num_errored}) | dropped: no trainable survivors"
@@ -205,44 +238,65 @@ class TrainSink:
             for sample in r.samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
 
-        if self.pre_filters:
-            apply_filters(self.pre_filters, survivors)
-        filtered_by_name: dict[str, int] = {}
-        num_filtered = 0
+        if not self._admit(group):
+            self._record_zero_output(group)
+            get_logger().debug(
+                f"Finished group | env={env_name} task_idx={task_idx} | "
+                f"rollouts={len(group)} (errored={num_errored}) | rejected by curriculum"
+            )
+            return
+
         for r in survivors:
-            self.pre_filter_seen += 1
-            if r.is_filtered:
-                self.pre_filter_dropped += 1
-                num_filtered += 1
-                for name, hit in r.filter_results.items():
-                    if hit:
-                        self.pre_filter_dropped_by_name[name] = self.pre_filter_dropped_by_name.get(name, 0) + 1
-                        filtered_by_name[name] = filtered_by_name.get(name, 0) + 1
-                continue
-            # Reset annotations so the post-batch filter pass starts clean
-            r.filter_results = {}
-            r.is_filtered = False
             self.pending_batch.append(r)
             if self.token_batch_size is not None:
                 self.pending_tokens += payload_tokens(r)
+        self.zero_output_units = 0
+        self.reported_zero_output_windows = 0
 
-        # Per-group summary. One line per finalized group; per-filter
-        # detection breakdown lives at debug level in ``apply_filters``
         rewards = [r.reward for r in survivors]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
-        filter_str = ", ".join(f"{n}={c}" for n, c in filtered_by_name.items()) if filtered_by_name else "—"
         get_logger().debug(
             f"Finished group | env={env_name} task_idx={task_idx} | "
-            f"rollouts={len(group)} (errored={num_errored}, filtered={num_filtered}) | "
-            f"reward={avg_reward:.4f} | filters: {filter_str}"
+            f"rollouts={len(group)} (errored={num_errored}) | reward={avg_reward:.4f}"
         )
+
+    def _admit(self, group: list[Rollout]) -> bool:
+        admitted = self.on_result(group) if self.on_result is not None else True
+        for rollout in group:
+            rollout.is_admitted = admitted
+        return admitted
+
+    def _record_zero_output(self, group: list[Rollout]) -> None:
+        if self.batch_size is not None:
+            self.zero_output_units += len(group)
+        else:
+            payload = sum(payload_tokens(rollout) for rollout in group)
+            self.zero_output_units += payload or self.config.seq_len * len(group)
+        self._check_zero_output_budget()
+
+    def _check_zero_output_budget(self) -> None:
+        target = self.batch_size if self.batch_size is not None else self.token_batch_size
+        assert target is not None
+        windows = self.zero_output_units // target
+        if windows <= self.reported_zero_output_windows:
+            return
+        self.reported_zero_output_windows = windows
+        get_logger().warning(
+            f"No admitted train payload after {self.zero_output_units} finalized units "
+            f"(consecutive zero-output batch equivalents: "
+            f"{windows}/{MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS})"
+        )
+        if windows >= MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS:
+            raise RuntimeError(
+                f"{windows} consecutive zero-output batch equivalents — "
+                "check the curriculum admission policy and task difficulty."
+            )
 
     def process_batch(self) -> TrainBatch:
         """Pop a cohort off ``pending_batch`` (by rollout count when
         ``batch_size`` is set, by token count when ``token_batch_size`` is
-        set), apply post-batch filter annotations, and assemble the
-        trainer-bound ``TrainingSample`` list. Overflow stays for the next
-        batch."""
+        set), and assemble the trainer-bound ``TrainingSample`` list. Overflow
+        stays for the next batch."""
         if self.batch_size is not None:
             cohort = self.pending_batch[: self.batch_size]
             self.pending_batch = self.pending_batch[self.batch_size :]
@@ -259,15 +313,13 @@ class TrainSink:
             self.pending_batch = self.pending_batch[cut:]
             self.pending_tokens -= running
 
-        if self.post_filters:
-            apply_filters(self.post_filters, cohort)
-
-        # Samples are pre-built by ``process_rollout``; ``process_group`` already stamped the
-        # advantage stream and loss routing on each sample. Filtered rollouts don't ship.
-        samples: list[TrainingSample] = [sample for r in cohort if not r.is_filtered for sample in r.samples]
+        if self.config.train.filter_zero_advantages:
+            for rollout in cohort:
+                rollout.samples = [sample for sample in rollout.samples if _prune_zero_advantages(sample)]
+        samples: list[TrainingSample] = [sample for rollout in cohort for sample in rollout.samples]
 
         # ``rollouts`` is the observation window — every rollout of every group finalized since the
-        # last ship (errored + filtered + survivors) — while ``samples`` is the shipped cohort's
+        # last ship (errored + rejected + admitted) — while ``samples`` is the shipped cohort's
         # trainable payload. ``rollouts.effective`` / ``rollouts.metrics`` derive the clean subset +
         # metric views on demand. Reset the window only when the batch actually ships (non-empty
         # samples) — an empty batch is dropped unlogged by the orchestrator, so keep accumulating its
@@ -276,8 +328,3 @@ class TrainSink:
         if samples:
             self.pending_rollouts = TrainRollouts()
         return TrainBatch(rollouts=rollouts, samples=samples)
-
-    def reset_pre_filter_stats(self) -> None:
-        self.pre_filter_seen = 0
-        self.pre_filter_dropped = 0
-        self.pre_filter_dropped_by_name.clear()
