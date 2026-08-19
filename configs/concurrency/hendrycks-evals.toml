@@ -13,6 +13,7 @@ name = "hendrycks-evals"
 [slurm]
 job_name = "hendrycks-evals"
 partition = "all"
+pre_run_command = 'timeout 120 prime sandbox delete --label "hendrycks-evals" -y || true' 
 
 [deployment]
 num_train_gpus = 4
@@ -46,7 +47,8 @@ dataset_subset = "default"
 id = "null"
 
 [orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+type = "prime"
+labels = ["hendrycks-evals"]
 
 [orchestrator.eval]
 interval = 10
@@ -62,7 +64,8 @@ id = "aime24"
 id = "null"
 
 [orchestrator.eval.source.env.agent.runtime]
-type = "subprocess"
+type = "prime"
+labels = ["hendrycks-evals"]
 
 [orchestrator.renderer]
 name = "default"
@@ -81,4 +84,4 @@ gpu_memory_utilization = 0.3
 # utilization, putting the usage band above the max_inflight ceiling. 8192
 # blocks/engine x 64-token blocks x 4 engines ~= 2.1M tokens -> derived start
 # ~256, band ~350-400.
-num_gpu_blocks_override = 8192
+num_gpu_blocks_override = 32768

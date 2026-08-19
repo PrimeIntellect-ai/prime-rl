@@ -160,9 +160,13 @@ class Dispatcher:
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
         )
-        # Refill smoothing: at most ``burst_cap`` new admissions per window,
-        # so a raised cap (or a post-drain refill) never lands its full
-        # prefill burst at once
+        # Refill smoothing: the in-flight pool may grow by at most
+        # ``burst_cap`` per window, so a raised cap (or a post-drain refill)
+        # never lands its full prefill burst at once. Completions refund the
+        # budget — steady-state replacement is never throttled, otherwise
+        # fast-turning (single-shot) episodes complete faster than the burst
+        # cap admits and inflight equilibrates far below the cap
+        # (admission_rate x episode_duration), locking out growth.
         self.admission_window_s = 5.0
         self.admission_window_start = time.monotonic()
         self.admissions_in_window = 0
@@ -512,6 +516,7 @@ class Dispatcher:
 
     def release(self) -> None:
         self.current_inflight -= 1
+        self.admissions_in_window = max(0, self.admissions_in_window - 1)
 
     async def handle_completed_rollout(self, task: asyncio.Task) -> None:
         """Emit every dispatched episode exactly once to ``out_q``. Task

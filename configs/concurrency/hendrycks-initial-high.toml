@@ -67,4 +67,4 @@ gpu_memory_utilization = 0.3
 # utilization, putting the usage band above the max_inflight ceiling. 8192
 # blocks/engine x 64-token blocks x 4 engines ~= 2.1M tokens -> derived start
 # ~256, band ~350-400.
-num_gpu_blocks_override = 8192
+num_gpu_blocks_override = 32768
