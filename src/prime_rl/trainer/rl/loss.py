@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import torch
 from beartype import beartype as typechecker
@@ -12,7 +12,7 @@ from prime_rl.utils.utils import import_object
 
 @dataclass
 class LossInputs:
-    """Inputs for computing loss on a single sample.
+    """Inputs for one loss-component call.
 
     ``loss_mask`` already selects the tokens that belong to the receiving
     component — the component loss functions never re-derive eligibility.
@@ -30,14 +30,18 @@ class LossInputs:
 
 @dataclass
 class LossOutputs:
-    """Outputs from computing loss on a single sample."""
+    """Outputs from one loss-component call."""
 
     loss: Float[Tensor, ""]
     metrics: dict[str, Tensor]
 
 
 LossFn = Callable[..., LossOutputs]
-"""Type for a per-sample loss function.
+"""Type for a per-component loss function.
+
+``compute_loss`` calls it once per micro batch, over the packed sequences
+concatenated along the token dimension. All built-in loss fns are per-token
+sums, for which the concatenation is equivalent to per-sequence calls.
 
 Expected signature:
     def my_loss(inputs: LossInputs, **kwargs) -> LossOutputs:
@@ -106,146 +110,159 @@ def compute_importance_ratio_and_mismatch_kl(
     return log_importance_ratio, importance_ratio, mismatch_kl
 
 
-def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
-    """
-    DPPO+KL loss for RL training, combining:
-    - DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879)
-    - Kimi-K2.5 KL Loss (https://arxiv.org/pdf/2602.02276)
+@dataclass(frozen=True)
+class PGParams:
+    """One instance of the policy-gradient skeleton (see ``pg_loss_fn``).
 
-    The mask is conditioned on the advantage sign: for positive advantages,
-    we mask tokens whose probability increased too much (trust region violation
-    in the upweight direction); for negative advantages, we mask tokens whose
-    probability decreased too much (trust region violation in the downweight
-    direction).
+    The default (DPPO), IPO, and ref_kl loss types are the same per-token loss
+
+        -(keep_mask · adv_tau·A · importance_ratio) + kl_tau · loss_mask · log_ratio²
+
+    differing only in where the advantage A comes from, which trust region
+    gates ``keep_mask``, and the drift coefficient ``kl_tau``.
+    """
+
+    advantage: Literal["shipped", "ref_kl"]
+    trust_region: Literal["dppo", "ipo", "one_sided"]
+    adv_tau: float
+    kl_tau: float
+    dppo_mask_low: float = 0.0
+    dppo_mask_high: float = 0.0
+    ipo_threshold: float = 0.0
+    one_sided_threshold: float = 0.2
+    metric_prefix: str = ""
+
+
+def pg_loss_fn(inputs: LossInputs, params: PGParams) -> LossOutputs:
+    """The shared policy-gradient skeleton behind the rl and ref_kl loss types.
+
+    Advantage providers:
+    - "shipped": the orchestrator-stamped advantage stream (data, fixed at
+      rollout time).
+    - "ref_kl": ``(ref_logprobs - trainer_logprobs).detach()`` — the reverse KL
+      to the reference model is the per-token policy-gradient signal
+      (∇KL(π_θ‖π_ref) = -E[(log π_ref - log π_θ)·∇log π_θ]), recomputed every
+      forward so the pull anneals as the policy approaches the reference.
+
+    Trust regions (on ``probs_diff = p_trainer - p_inference``):
+    - "dppo": conditioned on the advantage sign — for positive advantages, mask
+      tokens whose probability increased too much; for negative advantages,
+      tokens whose probability decreased too much. DPPO-Binary TV Loss
+      (https://arxiv.org/pdf/2602.04879) + Kimi-K2.5 KL Loss
+      (https://arxiv.org/pdf/2602.02276).
+    - "ipo": symmetric — mask tokens whose probability moved more than
+      ``ipo_threshold`` in absolute terms.
+    - "one_sided": mask tokens whose trainer probability already fell more than
+      ``one_sided_threshold`` below the inference probability.
+
+    In all instances the importance ratio corrects trainer/inference mismatch
+    and staleness, and the squared-log-ratio term regularizes drift.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
-    advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
     log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
     )
 
-    probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
-    dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
-    dppo_invalid_mask_low = probs_diff < -loss_config.dppo_mask_low
-    positive_advantages = advantages > 0
-    negative_advantages = advantages < 0
-    dppo_invalid_mask = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
+    if params.advantage == "shipped":
+        advantages = inputs.advantages
+    else:
+        if inputs.ref_logprobs is None:
+            raise ValueError("ref_kl loss type requires ref_logprobs — use the 'opd' or 'opsd' algorithm.")
+        advantages = (inputs.ref_logprobs - trainer_logprobs).detach()
 
-    is_masked = dppo_invalid_mask
-    is_masked_high = positive_advantages & dppo_invalid_mask_high
-    is_masked_low = negative_advantages & dppo_invalid_mask_low
+    probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
+    if params.trust_region == "dppo":
+        positive_advantages = advantages > 0
+        negative_advantages = advantages < 0
+        dppo_invalid_mask_high = probs_diff > params.dppo_mask_high
+        dppo_invalid_mask_low = probs_diff < -params.dppo_mask_low
+        is_masked = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
+    elif params.trust_region == "ipo":
+        is_masked = torch.abs(probs_diff) > params.ipo_threshold
+    else:  # one_sided
+        is_masked = probs_diff < -params.one_sided_threshold
+
     drop_mask = loss_mask & is_masked
     keep_mask = loss_mask & ~is_masked
 
-    advantages = loss_config.adv_tau * advantages
-    pg_loss = keep_mask * advantages * importance_ratio
+    pg_loss = keep_mask * (params.adv_tau * advantages) * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
-    per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
+    per_token_loss = -pg_loss + params.kl_tau * kl_loss
     if inputs.loss_weights is not None:
         per_token_loss = per_token_loss * inputs.loss_weights
     loss = per_token_loss.sum()
 
+    # Prefixed per instance: rl and ref_kl emit same-named trust-region metrics
+    # with different definitions, and mixed batches run both in one step.
+    prefix = params.metric_prefix
     metrics = {
-        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
-        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
-        "is_masked": _safe_mean(is_masked, loss_mask),
-        "is_masked_low": _safe_mean(is_masked_low, loss_mask),
-        "is_masked_high": _safe_mean(is_masked_high, loss_mask),
-        "masked_advantage_positive": _safe_mean(positive_advantages, drop_mask),
-        "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
+        f"{prefix}masked_mismatch_kl": _safe_mean(mismatch_kl, drop_mask),
+        f"{prefix}unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
+        f"{prefix}is_masked": _safe_mean(is_masked, loss_mask),
     }
+    if params.trust_region == "dppo":
+        metrics[f"{prefix}is_masked_high"] = _safe_mean(positive_advantages & dppo_invalid_mask_high, loss_mask)
+        metrics[f"{prefix}is_masked_low"] = _safe_mean(negative_advantages & dppo_invalid_mask_low, loss_mask)
+        metrics[f"{prefix}masked_advantage_positive"] = _safe_mean(positive_advantages, drop_mask)
+        metrics[f"{prefix}masked_advantage_negative"] = _safe_mean(negative_advantages, drop_mask)
+    if params.advantage == "ref_kl":
+        metrics[f"{prefix.rstrip('/')}"] = _safe_mean(advantages, loss_mask)
 
     return LossOutputs(loss=loss, metrics=metrics)
+
+
+def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
+    """DPPO+KL loss for RL training: the pg skeleton with shipped advantages
+    and the sign-conditioned trust region."""
+    params = PGParams(
+        advantage="shipped",
+        trust_region="dppo",
+        adv_tau=loss_config.adv_tau,
+        kl_tau=loss_config.kl_tau,
+        dppo_mask_low=loss_config.dppo_mask_low,
+        dppo_mask_high=loss_config.dppo_mask_high,
+    )
+    return pg_loss_fn(inputs, params)
 
 
 def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
-    """IPO loss type: a symmetric trust region (mask tokens whose probability
-    moved more than ``ipo_threshold`` in absolute terms), policy gradient via
-    the importance ratio, and a squared-log-ratio KL regularizer."""
-    trainer_logprobs = inputs.trainer_logprobs
-    inference_logprobs = inputs.inference_logprobs
-    advantages = inputs.advantages
-    loss_mask = inputs.loss_mask
-
-    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-        trainer_logprobs, inference_logprobs
+    """IPO loss type: the pg skeleton with shipped advantages and a symmetric
+    trust region."""
+    params = PGParams(
+        advantage="shipped",
+        trust_region="ipo",
+        adv_tau=loss_config.adv_tau,
+        kl_tau=loss_config.kl_tau,
+        ipo_threshold=loss_config.ipo_threshold,
     )
+    return pg_loss_fn(inputs, params)
 
-    abs_probs_diff = torch.abs(torch.exp(trainer_logprobs) - torch.exp(inference_logprobs))
 
-    is_masked = abs_probs_diff > loss_config.ipo_threshold
-    keep_mask = loss_mask & ~is_masked
-
-    advantages = loss_config.adv_tau * advantages
-    pg_loss = keep_mask * advantages * importance_ratio
-    kl_loss = loss_mask * log_importance_ratio**2
-    per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
-    if inputs.loss_weights is not None:
-        per_token_loss = per_token_loss * inputs.loss_weights
-    loss = per_token_loss.sum()
-
-    metrics = {
-        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
-        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
-        "is_masked": _safe_mean(is_masked, loss_mask),
-    }
-
-    return LossOutputs(loss=loss, metrics=metrics)
+_REF_KL_PARAMS = PGParams(
+    advantage="ref_kl",
+    trust_region="one_sided",
+    adv_tau=1.0,
+    kl_tau=1e-3,
+    one_sided_threshold=0.2,
+    metric_prefix="ref_kl/",
+)
 
 
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
-    """
-    Ref-KL loss type (on-policy distillation): the reverse KL to the reference
-    model is the per-token policy-gradient signal, with the importance ratio
-    correcting trainer/inference mismatch and staleness. A one-sided trust
-    region drops tokens whose trainer probability fell more than 0.2 below the
-    inference probability; a squared-log-ratio term regularizes drift. Scalar
-    advantages are not read — ref_kl algorithms ship none.
-    """
-    trainer_logprobs = inputs.trainer_logprobs
-    inference_logprobs = inputs.inference_logprobs
-    ref_logprobs = inputs.ref_logprobs
-    loss_mask = inputs.loss_mask
-
-    if ref_logprobs is None:
-        raise ValueError("ref_kl loss type requires ref_logprobs — use the 'opd' or 'opsd' algorithm.")
-
-    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-        trainer_logprobs, inference_logprobs
-    )
-
-    probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
-    is_masked = probs_diff < -0.2
-    drop_mask = loss_mask & is_masked
-    keep_mask = loss_mask & ~is_masked
-
-    ref_kl = ref_logprobs - trainer_logprobs
-
-    pg_loss = keep_mask * ref_kl.detach() * importance_ratio
-    kl_loss = loss_mask * log_importance_ratio**2
-    per_token_loss = -pg_loss + 1e-3 * kl_loss
-    if inputs.loss_weights is not None:
-        per_token_loss = per_token_loss * inputs.loss_weights
-    loss = per_token_loss.sum()
-
-    # Namespaced: the rl loss fn emits same-named trust-region metrics with a
-    # different definition, and mixed batches run both fns in one step.
-    metrics = {
-        "ref_kl/masked_mismatch_kl": _safe_mean(mismatch_kl, drop_mask),
-        "ref_kl/unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
-        "ref_kl/is_masked": _safe_mean(is_masked, loss_mask),
-        "ref_kl": _safe_mean(ref_kl, loss_mask),
-    }
-
-    return LossOutputs(loss=loss, metrics=metrics)
+    """Ref-KL loss type (on-policy distillation): the pg skeleton with the
+    reverse KL to the reference model as the advantage and a one-sided trust
+    region. Scalar advantages are not read — ref_kl algorithms ship none."""
+    return pg_loss_fn(inputs, _REF_KL_PARAMS)
 
 
 def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
     """Cross-entropy loss type: masked negative log-likelihood (SFT / ECHO
-    observation prediction)."""
+    observation prediction). The one component outside the pg skeleton: ce
+    tokens (SFT data, observations, hint blocks) were never sampled from the
+    policy, so an importance ratio on them is meaningless."""
     trainer_logprobs = inputs.trainer_logprobs
     loss_mask = inputs.loss_mask
 
@@ -300,11 +317,18 @@ def compute_loss(
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
     The loss is a sum of three components, each running over its own per-token
-    weight stream and normalized by its own global token count:
+    weight stream and normalized by its own global token count. Every component
+    runs ONCE over the packed sequences concatenated along the token dimension —
+    there is no per-sequence loop and no device-side presence check; a component
+    whose mask is empty contributes an exact zero (and zero-valued metrics).
 
     - rl → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``) on
       ``loss_mask & (rl_weights != 0)``; an absent stream means weight 1.0 on
-      the full loss mask (the hot path — no extra device syncs).
+      the full loss mask (the hot path). The rl component always runs, so the
+      returned loss is always backward-able and every rank runs backward even
+      when all components are empty (e.g. a fully truncated distillation
+      sample, whose stamped streams survive as all-zero prefixes) — FSDP
+      collectives stay in sync.
     - ce → ``ce_loss_fn`` (masked NLL) on ``ce_weights != 0``.
     - ref_kl → ``ref_kl_loss_fn`` on ``ref_kl_weights != 0``.
 
@@ -330,74 +354,40 @@ def compute_loss(
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
     """
-    all_metrics: dict[str, list[Tensor]] = {}
+    trainer_cat = torch.cat(trainer_logprobs)
+    inference_cat = torch.cat(inference_logprobs)
+    ref_cat = torch.cat(ref_logprobs) if ref_logprobs is not None else None
+    advantages_cat = torch.cat(advantages)
+    mask_cat = torch.cat(loss_mask)
+    rl_w = torch.cat(rl_weights) if rl_weights is not None else None
+    ce_w = torch.cat(ce_weights) if ce_weights is not None else None
+    ref_kl_w = torch.cat(ref_kl_weights) if ref_kl_weights is not None else None
 
-    n = len(trainer_logprobs)
-    if ref_logprobs is None:
-        ref_logprobs = [None] * n
-    if rl_weights is None:
-        rl_weights = [None] * n
-    if ce_weights is None:
-        ce_weights = [None] * n
-    if ref_kl_weights is None:
-        ref_kl_weights = [None] * n
+    metrics: dict[str, Any] = {}
 
-    def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
-        result = loss_fn(inputs)
-        for k, v in result.metrics.items():
-            all_metrics.setdefault(k, []).append(v)
-        return result.loss
-
-    # Graph anchor: a micro batch whose components are all empty (e.g. a fully
-    # truncated distillation sample, whose stamped streams survive as all-zero
-    # prefixes) must still return a backward-able loss so every rank runs
-    # backward and FSDP collectives stay in sync.
-    rl_loss = trainer_logprobs[0].sum() * 0.0
-    ce_loss = 0.0
-    ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
-        trainer_logprobs,
-        inference_logprobs,
-        ref_logprobs,
-        advantages,
-        loss_mask,
-        rl_weights,
-        ce_weights,
-        ref_kl_weights,
-    ):
-
-        def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
-            return LossInputs(
-                trainer_logprobs=t_logp,
-                inference_logprobs=i_logp,
-                ref_logprobs=ref_logp,
-                advantages=adv,
+    def run_loss_fn(
+        loss_fn: LossFn, component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None
+    ) -> Tensor:
+        result = loss_fn(
+            LossInputs(
+                trainer_logprobs=trainer_cat,
+                inference_logprobs=inference_cat,
+                ref_logprobs=ref_cat,
+                advantages=advantages_cat,
                 loss_mask=component_mask,
                 loss_weights=weights,
             )
+        )
+        for k, v in result.metrics.items():
+            metrics[k] = v.unsqueeze(0) if v.dim() == 0 else v
+        return result.loss
 
-        if rl_w is None:
-            rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(mask, None))
-        else:
-            rl_mask = mask & (rl_w != 0)
-            if bool(rl_mask.any()):
-                rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(rl_mask, rl_w))
-        if ce_w is not None:
-            ce_mask = ce_w != 0
-            if bool(ce_mask.any()):
-                ce_loss = ce_loss + run_loss_fn(ce_loss_fn, make_inputs(ce_mask, ce_w))
-        if ref_kl_w is not None:
-            ref_kl_mask = ref_kl_w != 0
-            if bool(ref_kl_mask.any()):
-                ref_kl_loss = ref_kl_loss + run_loss_fn(ref_kl_loss_fn, make_inputs(ref_kl_mask, ref_kl_w))
+    if rl_w is None:
+        rl_loss = run_loss_fn(rl_loss_fn, mask_cat, None)
+    else:
+        rl_loss = run_loss_fn(rl_loss_fn, mask_cat & (rl_w != 0), rl_w)
+    ce_loss = run_loss_fn(ce_loss_fn, ce_w != 0, ce_w) if ce_w is not None else 0.0
+    ref_kl_loss = run_loss_fn(ref_kl_loss_fn, ref_kl_w != 0, ref_kl_w) if ref_kl_w is not None else 0.0
 
     scaled_loss = rl_loss / rl_scale + ce_loss / ce_scale + ref_kl_loss / ref_kl_scale
-
-    aggregated: dict[str, Any] = {}
-    for k, v in all_metrics.items():
-        if v[0].dim() == 0:
-            aggregated[k] = torch.stack(v)
-        else:
-            aggregated[k] = torch.cat(v)
-
-    return scaled_loss, aggregated
+    return scaled_loss, metrics
