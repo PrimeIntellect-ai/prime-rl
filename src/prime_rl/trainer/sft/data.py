@@ -680,7 +680,6 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> St
         collate_fn=cat_collate,
         num_workers=config.num_workers,
         pin_memory=config.num_workers > 0,
-        prefetch_factor=2 if config.num_workers > 0 else None,
     )
 
 
