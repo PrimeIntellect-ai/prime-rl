@@ -17,6 +17,7 @@ def apply_shared_vllm_patches():
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
+    monkey_patch_detokenizer_none_raw_token()
 
 
 def monkey_patch_online_fp8_parameter_cast():
@@ -787,3 +788,29 @@ def monkey_patch_dp_coordinator_startup_timeout():
             zmq_addr_pipe.close()
 
     DPCoordinator._wait_for_zmq_addrs = _patched_wait_for_zmq_addrs
+
+
+def monkey_patch_detokenizer_none_raw_token():
+    """Tolerate ``None`` raw tokens in logprobs detokenization.
+
+    ``tokenizer.convert_ids_to_tokens`` returns ``None`` for ids outside the
+    tokenizer vocabulary. Models whose embedding matrix is padded past the
+    tokenizer (e.g. R1-Distill-Qwen) can sample such ids, and
+    ``convert_ids_list_to_tokens`` guards the decoded string (``or ""``) but
+    not the raw piece — ``_restore_leading_spaces`` then iterates ``None`` and
+    the ``TypeError`` kills the AsyncLLM output loop, taking the whole API
+    server down with it.
+    """
+    from vllm.tokenizers import detokenizer_utils
+
+    original = detokenizer_utils._restore_leading_spaces
+    if getattr(original, "_prime_rl_none_guard", False):
+        return
+
+    def _restore_leading_spaces(raw_token, token_str, marker):
+        if raw_token is None:
+            return token_str
+        return original(raw_token, token_str, marker)
+
+    _restore_leading_spaces._prime_rl_none_guard = True
+    detokenizer_utils._restore_leading_spaces = _restore_leading_spaces
