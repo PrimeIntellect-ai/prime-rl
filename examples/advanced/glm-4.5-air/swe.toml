@@ -140,10 +140,12 @@ rollout = 3600
 # --- Inference ---
 
 [inference]
+use_deep_gemm = true
 
 # vLLM + FlashInfer caches on node-local /tmp (see [env_vars]).
 [inference.env_vars]
 VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
+VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER = "0"
 FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 
 [inference.vllm]
