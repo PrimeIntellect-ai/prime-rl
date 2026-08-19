@@ -88,17 +88,29 @@ class FakeDataset(StatefulIterableDataset):
         self.input_ids = input_ids
         self.seed = seed
 
-    def _draws_per_sample(self) -> int:
-        return (self.length == "variable") + (self.input_ids == "random")
+    def _draw_sample(self, generator: torch.Generator) -> tuple[int, list[int] | None]:
+        # Consume this samples "randomness" - fast forwarding must replay it to restore the generator state
+        seq_len = (
+            int(torch.randint(1, self.seq_len, (1,), generator=generator).item())
+            if self.length == "variable"
+            else self.seq_len
+        )
+        random_input_ids = (
+            torch.randint(0, self.vocab_size, (self.seq_len + 1,), generator=generator).long().tolist()
+            if self.input_ids == "random"
+            else None
+        )
+        return seq_len, random_input_ids
 
     def __iter__(self):
         # use a rank seeded PRNG instead of torch global default PRNG because with num workers > 0
         # the data loader reseeds the global PRNG per worker process
         generator = torch.Generator().manual_seed(self.seed + self.data_rank)
         if self.fast_forward:
-            already_emitted = self.step // self.data_world_size
-            for _ in range(already_emitted * self._draws_per_sample()):
-                torch.rand((), generator=generator)
+            # step counts globally emmited samples but this rank is only emitted every data_world_size-TH
+            already_emitted = len(range(self.data_rank, self.step, self.data_world_size))
+            for _ in range(already_emitted):
+                self._draw_sample(generator)
             self.fast_forward = False
 
         while True:
@@ -108,16 +120,8 @@ class FakeDataset(StatefulIterableDataset):
             if (self.step - 1) % self.data_world_size != self.data_rank:
                 continue
 
-            seq_len = (
-                int(torch.randint(1, self.seq_len, (1,), generator=generator).item())
-                if self.length == "variable"
-                else self.seq_len
-            )
-            input_ids = (
-                [self.step - 1] * (seq_len + 1)
-                if self.input_ids == "increasing"
-                else torch.randint(0, self.vocab_size, (self.seq_len + 1,), generator=generator).long().tolist()
-            )
+            seq_len, random_input_ids = self._draw_sample(generator)
+            input_ids = [self.step - 1] * (seq_len + 1) if random_input_ids is None else random_input_ids
             position_ids = list(range(seq_len))
             loss_mask = [True] * seq_len
             fake_sample = {
