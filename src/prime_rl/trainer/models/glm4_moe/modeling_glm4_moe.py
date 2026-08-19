@@ -28,6 +28,7 @@ from transformers.utils.deprecation import deprecate_kwarg
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm4_moe.configuration_glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import conversion_chain
+from prime_rl.trainer.models.glm4_moe.kernel_glm4_moe import convert_tt_layer_to_vllm_kernel
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
@@ -234,6 +235,12 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
     _tp_plan = {"lm_head": "colwise_rep"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
+
+    @classmethod
+    def convert_layer_to_vllm_kernel(
+        cls, state_dict: dict[str, torch.Tensor], layer_idx: int, quantize_fp8: bool = False
+    ) -> dict[str, torch.Tensor]:
+        return convert_tt_layer_to_vllm_kernel(state_dict, layer_idx, quantize_fp8=quantize_fp8)
 
     def __init__(self, config):
         super().__init__(config)
