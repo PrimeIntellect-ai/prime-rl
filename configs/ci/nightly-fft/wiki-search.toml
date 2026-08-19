@@ -19,6 +19,7 @@ batch_size = 512
 group_size = 16
 
 [orchestrator.concurrency]
+max_inflight = 512
 initial_inflight = 512
 max_inflight = 1024
 

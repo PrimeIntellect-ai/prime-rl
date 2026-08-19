@@ -19,6 +19,9 @@ lr = 3e-6
 batch_size = 128
 group_size = 16
 
+[orchestrator.concurrency]
+max_inflight = 512
+
 [orchestrator.train.sampling]
 max_completion_tokens = 128
 
