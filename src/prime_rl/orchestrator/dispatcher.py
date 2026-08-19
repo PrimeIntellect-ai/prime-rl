@@ -243,11 +243,15 @@ class Dispatcher:
         asyncio.create_task(self._cancel_inflight(n))
 
     async def _cancel_inflight(self, n: int) -> None:
+        # A group's age is its OLDEST member's start: max() would make a
+        # long-running group look young the moment it schedules another
+        # member, cancelling the most sunk cost instead of the least
         group_age: dict[uuid.UUID, float] = {}
         for meta in self.inflight.values():
             if meta.kind != "train":
                 continue
-            group_age[meta.group_id] = max(group_age.get(meta.group_id, 0.0), meta.started_at)
+            age = group_age.get(meta.group_id)
+            group_age[meta.group_id] = meta.started_at if age is None else min(age, meta.started_at)
         shed = 0
         for group_id in sorted(group_age, key=lambda gid: group_age[gid], reverse=True):
             if shed >= n:
@@ -530,9 +534,13 @@ class Dispatcher:
             await self.rate_limiter.acquire()
         self.current_inflight += 1
 
-    def release(self) -> None:
+    def release(self, *, refund_admission: bool = False) -> None:
+        """Free one permit. ``refund_admission`` only on natural completions:
+        refunding cancelled episodes would hand a mass shed's worth of burst
+        budget to the refill while the overload is still draining."""
         self.current_inflight -= 1
-        self.admissions_in_window = max(0, self.admissions_in_window - 1)
+        if refund_admission:
+            self.admissions_in_window = max(0, self.admissions_in_window - 1)
 
     async def handle_completed_rollout(self, task: asyncio.Task) -> None:
         """Emit every dispatched episode exactly once to ``out_q``. Task
@@ -544,7 +552,7 @@ class Dispatcher:
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_episodes
-        self.release()
+        self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
 
         is_synth_exception = False

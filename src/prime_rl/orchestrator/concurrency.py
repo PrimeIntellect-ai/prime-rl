@@ -189,6 +189,11 @@ class ConcurrencyController:
                 self.capacity_by_engine[sample.engine_id] = sample.kv_capacity_tokens
             if sample.max_model_len:
                 self.engine_max_len = max(self.engine_max_len or 0, sample.max_model_len)
+        # Overload signals read decode engines only: in P/D deployments a
+        # prefill queue or prefill preemption is normal flow, not KV pressure
+        samples = [sample for sample in samples if sample.role != "prefill"]
+        if not samples:
+            return
 
         worst = Signal.CLEAR
         max_usage = 0.0
@@ -201,8 +206,7 @@ class ConcurrencyController:
                 worst = Signal.HARD
             if sample.waiting > 0 and self.prev_waiting.get(sample.engine_id, 0) > 0:
                 worst = max(worst, Signal.SOFT, key=lambda s: s.value)
-            if sample.role != "prefill":
-                max_usage = max(max_usage, sample.kv_usage)
+            max_usage = max(max_usage, sample.kv_usage)
             total_running += sample.running
             total_queued += sample.waiting_capacity if sample.waiting_capacity is not None else sample.waiting
         self.prev_waiting = {sample.engine_id: sample.waiting for sample in samples}

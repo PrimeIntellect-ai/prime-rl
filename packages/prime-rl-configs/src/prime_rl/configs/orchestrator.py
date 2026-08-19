@@ -627,10 +627,8 @@ class OrchestratorConfig(BaseConfig):
         if not has_rollout_batch and not has_token_batch:
             self.batch_size = 128
 
-        if has_rollout_batch:
-            assert self.batch_size is not None
-            if self.batch_size % self.group_size != 0:
-                raise ValueError("Batch size must be divisible by the number of samples per problem")
+        if self.batch_size is not None and self.batch_size % self.group_size != 0:
+            raise ValueError("Batch size must be divisible by the number of samples per problem")
 
         for field in ("max_inflight", "initial_inflight"):
             value = getattr(self.concurrency, field)
