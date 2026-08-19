@@ -628,6 +628,29 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_sampling_mask_capture(self):
+        """Truncated train sampling needs the inference server to return the kept-set
+        sampling masks the trainer replays (OrchestratorConfig guarantees truncating
+        configs are bounded by the fixed capture width)."""
+        policy_samplings = [
+            env.sampling
+            for env in self.orchestrator.train.source
+            if env.algo is not None and env.algo.sampling.source == "policy"
+        ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
+        if not any(sampling.truncates_distribution() for sampling in policy_samplings):
+            return self
+        if self.inference is None:
+            warnings.warn(
+                "Truncated train sampling with no managed inference server: set "
+                "`enable_return_sampling_mask = true` on the standalone server's config so it "
+                "returns the sampling masks the trainer replays.",
+                stacklevel=2,
+            )
+            return self
+        self.inference.enable_return_sampling_mask = True
+        return self
+
+    @model_validator(mode="after")
     def validate_router_replay_without_kv_offload(self):
         if (
             self.trainer.enable_router_replay

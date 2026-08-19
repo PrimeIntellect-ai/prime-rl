@@ -463,6 +463,9 @@ class InferenceConfig(BaseConfig):
     use_pd_kv_transfer: bool = False
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
 
+    enable_return_sampling_mask: bool = False
+    """Auto-set for sampling replay: return per-token kept-set sampling masks on ``/inference/v1/generate`` responses, at a fixed capture width of 512 (the orchestrator bounds train-sampling ``top_k`` to match). Named after vLLM's in-flight native flag (vllm-project/vllm#49577); until that releases it activates prime-rl's capture patches via ``additional_config``. Auto-enabled by the ``rl`` entrypoint under truncated train sampling and persisted into the per-node config; set by hand only for standalone-launched servers."""
+
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
 
@@ -623,6 +626,8 @@ class InferenceConfig(BaseConfig):
             additional_config["fp32_lm_head"] = True
         if self.enable_fp32_router_logits:
             additional_config["fp32_router_logits"] = True
+        if self.enable_return_sampling_mask:
+            additional_config["enable_return_sampling_mask"] = True
         if additional_config:
             namespace.additional_config = additional_config
 
