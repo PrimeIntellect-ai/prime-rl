@@ -20,7 +20,7 @@ group_size = 16
 
 [orchestrator.concurrency]
 initial_inflight = 512
-max_inflight = 1024
+max_inflight = 512
 
 [[orchestrator.train.source]]
 name = "wiki-search"
