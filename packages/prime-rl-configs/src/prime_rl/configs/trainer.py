@@ -569,12 +569,6 @@ class BaseWeightBroadcastConfig(BaseConfig):
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
-    save_sharded: bool = True
-    """Save the weight checkpoint in sharded format."""
-
-    save_format: Literal["safetensors", "torch"] = "safetensors"
-    """Weight checkpoint serialization format."""
-
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"
