@@ -13,13 +13,13 @@ from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import PreparedGroup, PreparedTrace
+from prime_rl.transports.rollouts import TrainingSample
 
 
 class PreparedCase(NamedTuple):
     episode: vf.Episode
     trace: vf.Trace
-    samples: PreparedTrace
+    samples: list[TrainingSample]
 
 
 def _build_rollout(
@@ -112,15 +112,16 @@ def _build_rollout(
         calls=calls,
         rewards={"reward": vf.Reward(score=reward)},
         metrics=metrics or {},
+        ok=True,
     )
     episode = vf.Episode(
         env=vf.EnvInfo(id=env_name, name=env_name),
         task=trace.task,
         group_id="group",
-        policy_version=0,
         traces=[trace],
     )
-    return PreparedCase(episode, trace, trace_to_samples(trace, env_name=env_name))
+    episode_trace = episode.traces[0]
+    return PreparedCase(episode, episode_trace, trace_to_samples(episode_trace, env_name=env_name))
 
 
 def _make_rollout(
@@ -154,29 +155,23 @@ def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[Prepar
 def _scalar(rollout: PreparedCase) -> float:
     """The per-rollout advantage scalar an algorithm assigned — broadcast over
     the rollout's trainable (mask-True) tokens, so any trainable position holds it."""
-    for sample in rollout.samples:
-        assert sample.advantages is not None
-        for trainable, advantage in zip(sample.mask, sample.advantages, strict=True):
-            if trainable:
-                return advantage
+    for node in rollout.trace.nodes:
+        if node.advantages:
+            return node.advantages[0]
     raise AssertionError("prepared trace has no trainable token")
-
-
-def _prepared(group: list[PreparedCase]) -> PreparedGroup:
-    return {rollout.trace.id: rollout.samples for rollout in group}
 
 
 def _grpo(group: list[PreparedCase], length_penalty=None) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
     algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), policy_pool=None)
-    asyncio.run(algo.score_group([rollout.episode for rollout in group], _prepared(group)))
+    asyncio.run(algo.score_group([rollout.episode for rollout in group]))
     return [_scalar(rollout) for rollout in group]
 
 
 def _max_rl(group: list[PreparedCase]) -> list[float]:
     """Drive ``MaxRLAlgorithm.score_group`` and read back each per-rollout scalar."""
     algo = MaxRLAlgorithm(MaxRLAlgoConfig(), policy_pool=None)
-    asyncio.run(algo.score_group([rollout.episode for rollout in group], _prepared(group)))
+    asyncio.run(algo.score_group([rollout.episode for rollout in group]))
     return [_scalar(rollout) for rollout in group]
 
 
@@ -240,7 +235,7 @@ def test_linear_context_term_penalizes_more_context():
     ]
     asyncio.run(
         GRPOAlgorithm(GRPOAlgoConfig(length_penalty=cfg), policy_pool=None).score_group(
-            [rollout.episode for rollout in group], _prepared(group)
+            [rollout.episode for rollout in group]
         )
     )
     advs = [_scalar(rollout) for rollout in group]
@@ -268,20 +263,20 @@ def test_assign_advantages_broadcasts_scalar():
     """A scalar broadcasts uniformly over the rollout's trainable (mask-True) tokens."""
     rollout = _build_rollout(0.0, sampled_lengths=[2])
     # one user prompt token (masked) + 2 sampled tokens (trainable)
-    assign_advantages(rollout.samples, 0.7, env_name="test")
-    assert rollout.samples[0].advantages == [0.0, 0.7, 0.7]
+    assign_advantages(rollout.trace, 0.7)
+    assert trace_to_samples(rollout.trace)[0].advantages == [0.0, 0.7, 0.7]
 
 
 def test_assign_advantages_zeros_non_trainable():
     """Non-trainable (mask=False) positions stay 0.0 under scalar broadcast."""
     # prompt(1, masked) + sampled(1) + obs(1, masked): mask is [F, T, F]
     rollout = _build_rollout(0.0, sampled_lengths=[1], obs_lengths=[1])
-    assign_advantages(rollout.samples, 0.7, env_name="test")
-    assert rollout.samples[0].advantages == [0.0, 0.7, 0.0]
+    assign_advantages(rollout.trace, 0.7)
+    assert trace_to_samples(rollout.trace)[0].advantages == [0.0, 0.7, 0.0]
 
 
 def test_assign_advantages_rejects_misaligned():
     rollout = _build_rollout(0.0, sampled_lengths=[2])
     # full length is 3 (prompt + 2 sampled); a 1-element list must be rejected
     with pytest.raises(ValueError, match="align"):
-        assign_advantages(rollout.samples, [0.5], env_name="test")
+        assign_advantages(rollout.trace, [0.5])

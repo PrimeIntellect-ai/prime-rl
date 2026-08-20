@@ -4,7 +4,7 @@
 and drives the pipeline. Components are single-purpose:
 
 - ``Dispatcher`` schedules environment runs and emits completed episodes.
-- ``TrainSink`` ingests train rollouts (tokenize → advantages → admission)
+- ``TrainSink`` ingests train rollouts (score → admission → sample compilation)
   and returns a ``TrainBatch`` when the threshold is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
   returned cohort) on epoch completion.
@@ -380,6 +380,7 @@ class Orchestrator:
             eval_source=self.eval_source,
             policy_pool=self.policy_inference,
             policy=self.policy,
+            progress=self.progress,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
             tasks_per_minute=config.tasks_per_minute,
@@ -451,12 +452,12 @@ class Orchestrator:
 
     def off_policy_steps(self, episode: vf.Episode, training_step: int) -> int:
         """Policy updates between generation and the batch that trains on it."""
-        env_name = episode.env.name or episode.env.id
-        if not self.train_envs.get(env_name).sampler.samples_from_live_policy:
+        run = episode.run
+        if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.TrainWorkInfo):
             return 0
-        if episode.policy_version is None:
+        if run.work.policy is None:
             return 0
-        return max(0, (training_step - 1) - episode.policy_version)
+        return max(0, (training_step - 1) - run.work.policy.start)
 
     async def start(self) -> None:
         """Run the orchestrator until shutdown. Drives setup, spawns the
@@ -543,15 +544,10 @@ class Orchestrator:
             # eval rollouts to the step whose eval triggered them.
             if episode.run is None:
                 raise ValueError("Dispatched episode is missing run identity")
-            kind = episode.run.type
-            step = episode.run.step if kind == "eval" else self.progress.step
-            assert step is not None
-            run: vf.RunInfo = (
-                vf.EvalRunInfo(id=self.run_id, name=self.run_name, step=step)
-                if kind == "eval"
-                else vf.TrainRunInfo(id=self.run_id, name=self.run_name, step=step)
-            )
-            episode.record_run(run)
+            if not isinstance(episode.run, vf.TrainRunInfo):
+                raise ValueError("Orchestrated episode is missing training-run provenance")
+            kind = episode.run.work.type
+            step = episode.run.work.step if kind == "eval" else self.progress.step
             await monitors.log([episode], step, kind, "all")
 
             if kind == "eval":
@@ -607,7 +603,7 @@ class Orchestrator:
             return
         self.consecutive_empty_batches = 0
         effective = batch.cohort.effective
-        n_trainable = sum(record.prepared is not None and is_trainable(record.prepared) for record in effective.records)
+        n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         if effective.num_traces and n_trainable / effective.num_traces <= 0.1:
             get_logger().warning(
                 f"Only {n_trainable}/{effective.num_traces} effective traces are trainable "
@@ -790,7 +786,7 @@ class Orchestrator:
         eff = effective.metrics
         n_generated = episodes.num_traces
         n_effective = effective.num_traces
-        n_trainable = sum(record.prepared is not None and is_trainable(record.prepared) for record in effective.records)
+        n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
         max_off_policy = max((self.off_policy_steps(episode, step) for episode in effective), default=0)
 
@@ -833,9 +829,14 @@ class Orchestrator:
         # step's trace file — each epoch appends its cohort once, and every record carries
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
         await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
-        if any(episode.policy_version is None for episode in batch.episodes):
+        policy_spans = [
+            episode.run.work.policy
+            for episode in batch.episodes
+            if isinstance(episode.run, vf.TrainRunInfo) and isinstance(episode.run.work, vf.EvalWorkInfo)
+        ]
+        if len(policy_spans) != len(batch.episodes) or any(span is None for span in policy_spans):
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")
-        policy_versions = {episode.policy_version for episode in batch.episodes if episode.policy_version is not None}
+        policy_versions = {span.start for span in policy_spans if span is not None}
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:
             get_logger().warning(

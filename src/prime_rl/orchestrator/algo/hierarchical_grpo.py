@@ -6,9 +6,8 @@ from typing import TYPE_CHECKING
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import HierarchicalGRPOAlgoConfig
-from prime_rl.orchestrator.algo.base import Algorithm, iter_prepared
+from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_advantages
-from prime_rl.orchestrator.types import PreparedGroup, PreparedTrace
 
 if TYPE_CHECKING:
     from prime_rl.utils.client import InferencePool
@@ -31,14 +30,13 @@ class HierarchicalGRPOAlgorithm(Algorithm):
         super().__init__(config, policy_pool)
         self.episode_agents = set(config.episode_agents)
 
-    async def score_group(self, episodes: list[vf.Episode], prepared: PreparedGroup) -> None:
-        peers: dict[tuple[str, str | None], list[tuple[vf.Trace, PreparedTrace]]] = defaultdict(list)
-        for episode, trace, samples in iter_prepared(episodes, prepared):
+    async def score_group(self, episodes: list[vf.Episode]) -> None:
+        peers: dict[tuple[str, str | None], list[vf.Trace]] = defaultdict(list)
+        for episode, trace in iter_trainable_traces(episodes):
             episode_scoped = trace.agent.name in self.episode_agents
             key = (trace.agent.name, episode.id if episode_scoped else None)
-            peers[key].append((trace, samples))
-        env_name = episodes[0].env.name or episodes[0].env.id
+            peers[key].append(trace)
         for members in peers.values():
-            baseline = sum(trace.reward for trace, _ in members) / len(members)
-            for trace, samples in members:
-                assign_advantages(samples, trace.reward - baseline, env_name=env_name)
+            baseline = sum(trace.reward for trace in members) / len(members)
+            for trace in members:
+                assign_advantages(trace, trace.reward - baseline)

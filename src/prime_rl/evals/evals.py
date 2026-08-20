@@ -122,6 +122,7 @@ class Evals:
             eval_source=self.eval_source,
             policy_pool=self.pool,
             policy=self.policy,
+            progress=None,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.eval.concurrency.max_inflight,
             tasks_per_minute=None,
@@ -339,7 +340,11 @@ class Evals:
         pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) > 0}
         while pending:
             episode = await self.dispatcher.out_q.get()
-            step = episode.run.step if isinstance(episode.run, vf.EvalRunInfo) else None
+            step = (
+                episode.run.work.step
+                if isinstance(episode.run, vf.TrainRunInfo) and isinstance(episode.run.work, vf.EvalWorkInfo)
+                else None
+            )
             assert step is not None
             await monitors.log([episode], step, "eval", "all")
             eval_batch = self.eval_sink.add(episode)

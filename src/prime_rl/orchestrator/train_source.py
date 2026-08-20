@@ -10,7 +10,6 @@ import verifiers.v1 as vf
 
 from prime_rl.orchestrator.curriculum import Curriculum
 from prime_rl.orchestrator.envs import TrainEnvs
-from prime_rl.orchestrator.types import PreparedGroup
 
 
 class TrainSource:
@@ -41,12 +40,12 @@ class TrainSource:
             "task": next(self.curricula[env_name].sampler),
         }
 
-    def on_result(self, group: list[vf.Episode], prepared: PreparedGroup) -> bool:
+    def on_result(self, group: list[vf.Episode]) -> bool:
         """Report a finalized group and return whether it should train."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")
         env_name = group[0].env.name or group[0].env.id
-        admitted = self.curricula[env_name].on_result(group, prepared)
+        admitted = self.curricula[env_name].on_result(group)
         if not isinstance(admitted, bool):
             raise TypeError(f"Curriculum.on_result() must return bool, got {type(admitted).__name__}")
         if admitted:

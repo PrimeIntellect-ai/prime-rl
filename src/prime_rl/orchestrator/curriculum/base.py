@@ -13,8 +13,6 @@ from prime_rl.orchestrator.curriculum.samplers import TaskSampler
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import CurriculumConfig
 
-from prime_rl.orchestrator.types import PreparedGroup
-
 
 class Curriculum:
     """One task sampler composed with zero or more admission gates."""
@@ -49,11 +47,11 @@ class Curriculum:
                 raise TypeError(f"Unsupported admission gate config: {type(gate_config).__name__}")
             self.gates[name] = gate
 
-    def on_result(self, group: list[vf.Episode], prepared: PreparedGroup) -> bool:
+    def on_result(self, group: list[vf.Episode]) -> bool:
         """Observe every result, evaluate every gate, and combine with AND."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")
-        task_keys = {episode.task_key for episode in group}
+        task_keys = {episode.task.key if episode.task is not None else None for episode in group}
         if None in task_keys:
             raise ValueError("A finalized group is missing Task.key")
         if len(task_keys) != 1:
@@ -61,7 +59,7 @@ class Curriculum:
         self.sampler.observe(group)
         decisions: list[bool] = []
         for name, gate in self.gates.items():
-            decision = gate.admit(group, prepared)
+            decision = gate.admit(group)
             if not isinstance(decision, bool):
                 raise TypeError(f"AdmissionGate {name!r}.admit() must return bool, got {type(decision).__name__}")
             decisions.append(decision)

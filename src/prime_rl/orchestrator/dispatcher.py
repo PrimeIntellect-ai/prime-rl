@@ -46,7 +46,8 @@ from prime_rl.orchestrator.types import (
     GroupState,
     InflightEpisode,
     Policy,
-    RunKind,
+    Progress,
+    WorkKind,
 )
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool
@@ -133,6 +134,7 @@ class Dispatcher:
         eval_source: EvalSource | None,
         policy_pool: InferencePool,
         policy: Policy,
+        progress: Progress | None,
         initial_max_inflight: int,
         max_inflight_ceiling: int | None,
         tasks_per_minute: float | None,
@@ -142,6 +144,7 @@ class Dispatcher:
         on_episode_complete: Callable[[str, str, int, float], None] | None = None,
     ) -> None:
         self.policy = policy
+        self.progress = progress
         self.train_envs = train_envs
         self.eval_envs = eval_envs
         # Train rollouts go to the env sampler's pool; eval always
@@ -182,7 +185,7 @@ class Dispatcher:
         # in-flight work). One entry per episode — the sinks count episodes,
         # never loose traces.
         maxsize = max(8, max_inflight_ceiling) if max_inflight_ceiling is not None else 0
-        self.out_q: asyncio.Queue[vf.Episode] = asyncio.Queue(maxsize=maxsize)
+        self.out_q: asyncio.Queue[vf.WireEpisode] = asyncio.Queue(maxsize=maxsize)
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -265,8 +268,8 @@ class Dispatcher:
         return burst_cap - self.admissions_in_window
 
     @property
-    def inflight_by_env(self) -> dict[tuple[RunKind, str], int]:
-        counts: dict[tuple[RunKind, str], int] = defaultdict(int)
+    def inflight_by_env(self) -> dict[tuple[WorkKind, str], int]:
+        counts: dict[tuple[WorkKind, str], int] = defaultdict(int)
         for meta in self.inflight.values():
             counts[(meta.kind, meta.env_name)] += 1
         return dict(counts)
@@ -414,7 +417,7 @@ class Dispatcher:
         get_logger().info(f"Switching dispatcher mode to prefer {prefer} episodes because {reason}")
         self.mode = new_mode
 
-    async def try_schedule(self, kind: RunKind) -> bool:
+    async def try_schedule(self, kind: WorkKind) -> bool:
         """Schedule one rollout of ``kind``: prefer continuing an existing
         group (keeps prefix-cache hits); otherwise open a fresh group from
         the corresponding source. Returns False if nothing could be
@@ -437,7 +440,7 @@ class Dispatcher:
         self.groups[gid] = fresh
         return await self.schedule_group_episode(gid, fresh)
 
-    def next_fresh_group(self, kind: RunKind, envs) -> GroupState | None:
+    def next_fresh_group(self, kind: WorkKind, envs) -> GroupState | None:
         """Pop the next example from the corresponding source and wrap it in
         a ``GroupState``. Returns ``None`` if the source is empty."""
         if kind == "train":
@@ -515,11 +518,20 @@ class Dispatcher:
             group_id=group_id,
             task=group.task,
             policy_version=group.policy_version_at_start,
+            step=self._work_step(group.kind, group.eval_step),
             client_config=client,
             eval_step=group.eval_step,
             started_at=time.monotonic(),
         )
         return True
+
+    def _work_step(self, kind: WorkKind, eval_step: int | None) -> int:
+        if kind == "eval":
+            assert eval_step is not None
+            return eval_step
+        if self.progress is None:
+            raise RuntimeError("Train dispatch requires progress state")
+        return self.progress.step
 
     async def acquire(self) -> None:
         """Reserve one permit + rate-limit it. Caller must precheck
@@ -605,15 +617,24 @@ class Dispatcher:
         if meta.kind == "eval":
             assert eval_step is not None, "eval episode missing eval_step"
         episode.env.name = meta.env_name
-        episode.task_key = meta.task.key
-        episode.task_hash = meta.task.hash
-        episode.group_id = str(meta.group_id)
-        episode.policy_version = policy_version
-        run: vf.RunInfo = (
-            vf.EvalRunInfo(id=self.run_id, name=self.run_name, step=eval_step)
-            if meta.kind == "eval"
-            else vf.TrainRunInfo(id=self.run_id, name=self.run_name)
+        episode.task = vf.TraceTask(
+            type=type(meta.task).__name__,
+            data=meta.task.data,
+            key=meta.task.key,
+            hash=meta.task.hash,
         )
+        episode.group_id = str(meta.group_id)
+        live_policy = meta.kind == "eval"
+        if meta.kind == "train":
+            assert self.train_envs is not None
+            live_policy = self.train_envs.get(meta.env_name).sampler.samples_from_live_policy
+        policy = vf.PolicySpan(start=policy_version, end=self.policy.version) if live_policy else None
+        work: vf.WorkInfo = (
+            vf.EvalWorkInfo(step=meta.step, policy=policy)
+            if meta.kind == "eval"
+            else vf.TrainWorkInfo(step=meta.step, policy=policy)
+        )
+        run = vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work)
         episode.record_run(run)
         await self.out_q.put(episode)
 
@@ -661,6 +682,7 @@ class Dispatcher:
                 group_id=group_id,
                 task=group.task,
                 policy_version=group.policy_version_at_start,
+                step=self._work_step(group.kind, group.eval_step),
                 eval_step=group.eval_step,
             )
             unscheduled_cancelled = group.episodes_to_schedule
@@ -681,6 +703,7 @@ class Dispatcher:
                     group_id=group_id,
                     task=group.task,
                     policy_version=group.policy_version_at_start if group else 0,
+                    step=self._work_step(group.kind, group.eval_step),
                     eval_step=group.eval_step,
                 )
                 if group is not None

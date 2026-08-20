@@ -6,13 +6,11 @@ from typing import Any
 
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.types import PreparedGroup
-
 
 class AdmissionGate:
     """Base class for user-authored training-sample admission policies."""
 
-    def admit(self, group: list[vf.Episode], prepared: PreparedGroup) -> bool:
+    def admit(self, group: list[vf.Episode]) -> bool:
         """Return whether a finalized group should enter the training batch."""
         return True
 

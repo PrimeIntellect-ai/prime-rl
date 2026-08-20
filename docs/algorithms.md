@@ -158,20 +158,20 @@ At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_r
 | `algo.type` | Class | hook(s) — stage |
 |---|---|---|
 | `grpo` | `GRPOAlgorithm` | `score_group`: group-norm credit (optional length penalty) |
-| `echo` | `EchoAlgorithm` | `score_trace`: weighted ce on observation tokens; `score_group`: group-norm credit (inherited) |
+| `echo` | `EchoAlgorithm` | `score_episode`: weighted ce on observation tokens; `score_group`: group-norm credit (inherited) |
 | `max_rl` | `MaxRLAlgorithm` | `score_group`: mean-normalized group credit |
 | `rae` | `RAEAlgorithm` | `score_group`: per-agent EMA-baseline credit |
 | `hierarchical_grpo` | `HierarchicalGRPOAlgorithm` | `score_group`: GRPO baseline per episode for solvers, per group for the proposer |
-| `opd` | `OPDAlgorithm` | `score_trace`: own-context prefill under the teacher |
-| `opsd` | `OPSDAlgorithm` | `score_trace`: demo-conditioned prefill under the live policy |
+| `opd` | `OPDAlgorithm` | `score_episode`: own-context prefill under the teacher |
+| `opsd` | `OPSDAlgorithm` | `score_episode`: demo-conditioned prefill under the live policy |
 | `sft` | `SFTDistillAlgorithm` | no credit assignment; CE on sampled tokens |
 
-Each class owns its hooks outright. Verifier episodes carry rollout provenance; trainer preparation stays separate as `PreparedTrace = list[TrainingSample]`, keyed by trace id in a `PreparedGroup`.
+Algorithms operate on native verifier artifacts and annotate their message graphs directly:
 
-- `async score_trace(episode, trace, prepared)` — one trace on arrival, before its group is complete.
-- `async score_group(episodes, prepared)` — the completed episode cohort plus its trace-id-to-samples mapping.
+- `async score_episode(episode)` — rollout-local scoring as one episode arrives.
+- `async score_group(episodes)` — group-relative scoring after the cohort completes.
 
-The pipeline drives the hooks through `finalize_trace` and `finalize_group`. Assign credit with `assign_advantages(prepared_trace, value, env_name=...)`; sample construction remains pipeline-owned.
+The pipeline drives these through `finalize_episode` and `finalize_group`. Advantages, reference logprobs, and named loss weights stay on verifier nodes through admission. Only admitted traces are flattened into `TrainingSample`s.
 
 Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy pool (`self.policy_pool`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint (tokenizer is always the live policy's — self-distillation has no separate model). The pipeline only ever calls the two `finalize_*` methods — writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)). Shared math (efficiency shaping, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
 
@@ -431,22 +431,21 @@ from prime_rl.orchestrator.algo.routing import assign_advantages
 
 
 class MyAlgorithm(Algorithm):
-    async def score_group(self, episodes, prepared):
-        traces = [trace for episode in episodes for trace in episode.traces if trace.id in prepared]
+    async def score_group(self, episodes):
+        traces = [trace for episode in episodes for trace in episode.traces]
         rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
         advantages = ...  # one value per trace
         for trace, advantage in zip(traces, advantages.tolist(), strict=True):
-            env_name = episodes[0].env.name or episodes[0].env.id
-            assign_advantages(prepared[trace.id], advantage, env_name=env_name)
+            assign_advantages(trace, advantage)
 ```
 
-Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick the hook by *when* your signal is ready: `score_trace` for per-arrival credit or credit that needs a model call (it's `async`), `score_group` for group-relative credit (GRPO/MaxRL). `assign_advantages` takes a scalar (broadcast over the trace's trainable tokens — the common case) or a full-length per-token list aligned to the concatenated sample token_ids (process rewards, step-level credit; `0.0` off-mask).
+Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick `score_episode` for rollout-local work or model calls, and `score_group` for group-relative credit. `assign_advantages` takes a scalar or a list aligned to the trace graph's sampled tokens.
 
-Each per-token list must match the prepared samples' token count exactly. Curriculum admission and metrics can inspect these streams after group scoring. Signals that depend on the live policy's weights (like OPD's reverse KL) cannot be precomputed here; those are reference-scoring algorithms, evaluated in the trainer.
+Curriculum admission and metrics can inspect the resulting graph-native streams after group scoring.
 
 ### Reference Scoring
 
-`OPDAlgorithm` / `OPSDAlgorithm` do their model I/O in `score_trace`: as each training trace arrives they query a reference (the sample's own context for `opd`, the demo-conditioned context for `opsd`) and attach per-token reference logprobs to each sample. Arrivals are consumed serially by the orchestrator's main loop and each carries only a handful of samples, so the in-flight request count is naturally bounded — no explicit concurrency cap:
+`OPDAlgorithm` / `OPSDAlgorithm` do their model I/O in `score_episode`: as each episode arrives they query a reference and attach sampled-token reference logprobs to its graph nodes:
 
 - `opd` — score each sample's own context under the `teacher` (a frozen [model reference](#model-references)) via prefill; fills `ref_logprobs` for the `ref_kl` loss component (on-policy distillation). The `teacher` is typed `FrozenModelConfig`, so `"policy"` isn't representable (the KL would be identically zero).
 - `opsd` — SDFT: prepend an expert demonstration as a leading system message (`template`, with a `{demonstration}` placeholder) and score the sample under that demo-conditioned context. The sample is scored verbatim (`hint_block + token_ids`, slicing the hint's logprobs back off), so the join is BPE-clean and it's robust to tool/multimodal prompts and any number of turns. The scoring reference *is* the live policy — self-distillation names no teacher. opsd builds its own renderer to tokenize the hint block: the tokenizer is always the live policy's (not configurable — there is no separate model), and only the `renderer` family is settable (defaults to `"auto"`, resolved from the policy tokenizer; set it to match a non-auto policy renderer). The demonstration is read from the example's `info[demo_key]`, falling back to a top-level rollout field of the same name (e.g. `answer`).
@@ -457,13 +456,13 @@ type = "opsd"
 demo_key = "demonstration"
 ```
 
-Scoring runs at arrival, before curriculum admission, so a rollout that is later rejected still costs its reference compute.
+Scoring runs before curriculum admission, so a rollout that is later rejected still costs its reference compute.
 
 By default, zero-advantage RL tokens are removed after a complete batch cohort has been collected and before its payload is packed for the trainer. This does not backfill the batch. Samples that still carry CE or reference-KL components are retained, while pure zero-advantage RL samples are not shipped. Removing an RL token also removes its trainer/inference mismatch-KL contribution. Set `orchestrator.train.filter_zero_advantages = false` to retain them.
 
 ## Curricula
 
-Each training source has a `Curriculum` composed from one `TaskSampler` and any number of named `AdmissionGate`s. The sampler chooses tasks and observes every finalized `list[vf.Episode]`. Gates additionally receive the `PreparedGroup`; the group trains only if every gate admits it. Rejected groups remain observable while the orchestrator samples again to fill the batch.
+Each training source has a `Curriculum` composed from one `TaskSampler` and any number of named `AdmissionGate`s. The sampler chooses tasks and observes every finalized `list[vf.Episode]`; each gate inspects the same native episodes. The group trains only if every gate admits it. Rejected groups remain observable while the orchestrator samples again to fill the batch.
 
 Samplers and gates can be stateful. Their `state_dict`, `load_state_dict`, and `metrics` methods are included in orchestrator checkpoints and logged under `curriculum/<env>/`.
 

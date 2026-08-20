@@ -12,6 +12,13 @@ from prime_rl.orchestrator.types import EvalBatch
 from prime_rl.utils.logger import get_logger
 
 
+def _eval_step(episode: vf.Episode) -> int | None:
+    run = episode.run
+    if isinstance(run, vf.TrainRunInfo) and isinstance(run.work, vf.EvalWorkInfo):
+        return run.work.step
+    return None
+
+
 class EvalSink:
     """Collect completed evaluation episodes into per-environment epochs."""
 
@@ -25,7 +32,7 @@ class EvalSink:
         group_id = episode.group_id
         if group_id is None:
             raise ValueError("Eval episode is missing group_id")
-        eval_step = episode.run.step if isinstance(episode.run, vf.EvalRunInfo) else None
+        eval_step = _eval_step(episode)
         if eval_step is None:
             raise ValueError("Eval episode is missing its run step")
         bkey = (env_name, eval_step)
@@ -51,7 +58,7 @@ class EvalSink:
             if not group:
                 continue
             episode = group[0]
-            eval_step = episode.run.step if isinstance(episode.run, vf.EvalRunInfo) else None
+            eval_step = _eval_step(episode)
             assert eval_step is not None
             key = (episode.env.name or episode.env.id, eval_step)
             buffered[key] = buffered.get(key, 0) + len(group)
@@ -72,7 +79,7 @@ class EvalSink:
             return
         episode = group[0]
         env_name = episode.env.name or episode.env.id
-        eval_step = episode.run.step if isinstance(episode.run, vf.EvalRunInfo) else None
+        eval_step = _eval_step(episode)
         assert eval_step is not None
         self.pending_batches[(env_name, eval_step)].extend(group)
 

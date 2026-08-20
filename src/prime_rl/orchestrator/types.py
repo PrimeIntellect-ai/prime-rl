@@ -33,18 +33,19 @@ class Progress:
     total_problems: int = 0
 
 
-RunKind = Literal["train", "eval"]
+WorkKind = Literal["train", "eval"]
 
 
 @dataclass
 class InflightEpisode:
     """Scheduling state for one in-flight environment run."""
 
-    kind: RunKind
+    kind: WorkKind
     env_name: str
     group_id: uuid.UUID
     task: vf.Task
     policy_version: int
+    step: int
     client_config: vf.ClientConfig | None = None
     off_policy_steps: int = 0
     eval_step: int | None = None
@@ -57,7 +58,7 @@ class GroupState:
     """Per-group dispatcher state: what's left to schedule + the pinned
     client (for prefix-cache hits)."""
 
-    kind: RunKind
+    kind: WorkKind
     env_name: str
     task: vf.Task
     """The group's task — its data is shipped on every dispatch."""
@@ -67,13 +68,6 @@ class GroupState:
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None
     policy_version_at_start: int = 0
-
-
-type PreparedTrace = list[TrainingSample]
-"""Trainer-bound samples produced from one verifier trace."""
-
-type PreparedGroup = dict[str, PreparedTrace]
-"""Prepared traces keyed by their verifier trace id."""
 
 
 @dataclass

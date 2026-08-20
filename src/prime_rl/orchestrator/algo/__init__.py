@@ -8,21 +8,14 @@ turns the signal half into runtime objects (the sampling half is the env's
 - one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``rae``,
   ``hierarchical_grpo``, ``opd``, ``opsd``, ``sft``) — each named class owns
   its scoring hooks
-  (``score_trace`` / ``score_group``) and declares what it needs (loss
+  (``score_episode`` / ``score_group``) and declares what it needs (loss
   component, a "teacher", ...). One instance per env, built by
   :func:`build_algorithm`. A new credit-assignment scheme is a new named class:
   subclass :class:`Algorithm`, assign advantages in the hook whose timing fits,
   and register it below.
-- ``base`` — the :class:`Algorithm` base class, whose non-virtual
-  ``finalize_trace`` / ``finalize_group`` methods the pipeline drives.
-  Advantages are per-token everywhere they are stored or shipped — there is no
-  scalar advantage in the pipeline. An algorithm assigns credit in its scoring
-  hook via ``assign_advantages``: a scalar that is *broadcast* over the
-  trace's completion tokens (uniform credit, the common case), or an explicit
-  full-length-N per-token list aligned to the concatenated sample token_ids
-  (0.0 off-mask).
-- ``routing`` — wire-field stamping: per-token component weight streams
-  (rl / ce / ref_kl) and the per-token advantage stream.
+- ``base`` — the :class:`Algorithm` base class. Algorithms annotate native
+  verifier graphs; transport samples are compiled only after admission.
+- ``routing`` — graph annotation and final transport loss routing.
 """
 
 from __future__ import annotations
@@ -39,7 +32,6 @@ from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.rae import RAEAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
-from prime_rl.orchestrator.types import PreparedGroup, PreparedTrace
 
 if TYPE_CHECKING:
     from prime_rl.configs.algorithm import AlgoConfig
@@ -79,8 +71,6 @@ __all__ = [
     "OPDAlgorithm",
     "OPSDAlgorithm",
     "RAEAlgorithm",
-    "PreparedGroup",
-    "PreparedTrace",
     "SFTDistillAlgorithm",
     "build_algorithm",
     "connect_frozen_pool",

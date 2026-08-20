@@ -7,7 +7,6 @@ import verifiers.v1 as vf
 
 from prime_rl.orchestrator.metrics import EvalEpisodes, Stat, TrainEpisodes
 from prime_rl.orchestrator.utils import compute_pass_metrics
-from prime_rl.transports.rollouts import TrainingSample
 
 _ids = count()
 
@@ -58,6 +57,7 @@ def mk(
         stop_condition=stop_condition,
         metrics=metrics or {},
         agent=SimpleNamespace(trainable=trainable, name=agent_name),
+        nodes=[SimpleNamespace(advantages=[1.0] if is_trainable else [0.0])],
         timing=SimpleNamespace(
             setup=SimpleNamespace(duration=setup),
             agent=SimpleNamespace(
@@ -76,18 +76,7 @@ def mk(
         env=SimpleNamespace(id=env_name, name=env_name),
         group_id=group_id,
     )
-    episode._prepared = {
-        trace.id: [
-            TrainingSample(
-                token_ids=[1],
-                mask=[True],
-                logprobs=[0.0],
-                temperatures=[1.0],
-                advantages=[1.0] if is_trainable else [0.0],
-                env_name=env_name,
-            )
-        ]
-    }
+    episode._sampled_trace_ids = {trace.id}
     episode._admitted = is_admitted
     return episode
 
@@ -96,15 +85,15 @@ def combine(*episodes):
     """Combine trace fixtures into one multi-trace episode."""
     first = episodes[0]
     first.traces = [trace for episode in episodes for trace in episode.traces]
-    first._prepared = {trace_id: samples for episode in episodes for trace_id, samples in episode._prepared.items()}
+    first._sampled_trace_ids = {trace_id for episode in episodes for trace_id in episode._sampled_trace_ids}
     first._admitted = all(episode._admitted for episode in episodes)
     return first
 
 
 def train_episodes(episodes) -> TrainEpisodes:
-    prepared = {trace_id: samples for episode in episodes for trace_id, samples in episode._prepared.items()}
+    sampled_trace_ids = {trace_id for episode in episodes for trace_id in episode._sampled_trace_ids}
     admitted = {episode.id for episode in episodes if episode._admitted}
-    return TrainEpisodes(episodes, prepared, admitted)
+    return TrainEpisodes(episodes, sampled_trace_ids, admitted)
 
 
 def train_wandb(episodes, subset: str = "all") -> dict:
@@ -135,7 +124,7 @@ def test_container_effective_by_env_and_listlike():
     by_env = rc.by_env()
     assert set(by_env) == {"a", "b"} and len(by_env["a"]) == 2 and isinstance(by_env["a"], TrainEpisodes)
     added = mk()
-    rc.append(added, added._prepared, admitted=added._admitted)
+    rc.append(added, sampled_trace_ids=added._sampled_trace_ids, admitted=added._admitted)
     assert len(rc) == 5
 
 

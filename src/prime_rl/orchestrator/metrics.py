@@ -9,7 +9,6 @@ from typing import Any, Literal
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
-from prime_rl.orchestrator.types import PreparedGroup, PreparedTrace
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 Subset = Literal["all", "effective"]
@@ -17,24 +16,24 @@ Subset = Literal["all", "effective"]
 
 @dataclass(frozen=True)
 class TraceRecord:
-    """A trace joined with its episode and optional prepared samples for reporting."""
+    """A trace joined with its episode and training selection state."""
 
     episode: vf.Episode
     trace: vf.Trace
-    prepared: PreparedTrace | None
+    sampled: bool
     admitted: bool
 
 
 def _records(
     episodes: list[vf.Episode],
-    prepared: PreparedGroup,
+    sampled_trace_ids: set[str],
     admitted: set[str],
 ) -> list[TraceRecord]:
     return [
         TraceRecord(
             episode=episode,
             trace=trace,
-            prepared=prepared.get(trace.id),
+            sampled=trace.id in sampled_trace_ids,
             admitted=episode.id in admitted,
         )
         for episode in episodes
@@ -321,7 +320,7 @@ class TrainMetrics(EpisodeMetrics):
         for agent, traces in self.by_agent().items():
             metric_prefix = f"{prefix}/{subset}/{agent}"
             out[f"{metric_prefix}/is_trainable/mean"] = sum(
-                float(record.prepared is not None and is_trainable(record.prepared)) for record in traces.records
+                float(is_trainable(record.trace)) for record in traces.records
             ) / len(traces.records)
             out[f"{metric_prefix}/is_admitted/mean"] = sum(float(record.admitted) for record in traces.records) / len(
                 traces.records
@@ -367,18 +366,18 @@ class EpisodeCollection:
     def __init__(
         self,
         episodes: list[vf.Episode] | None = None,
-        prepared: PreparedGroup | None = None,
+        sampled_trace_ids: set[str] | None = None,
         admitted: set[str] | None = None,
         predicate: Callable[[TraceRecord], bool] | None = None,
     ) -> None:
         self.episodes = episodes if episodes is not None else []
-        self.prepared = prepared if prepared is not None else {}
+        self.sampled_trace_ids = sampled_trace_ids if sampled_trace_ids is not None else set()
         self.admitted = admitted if admitted is not None else {episode.id for episode in self.episodes}
         self._predicate = predicate
 
     @property
     def records(self) -> list[TraceRecord]:
-        records = _records(self.episodes, self.prepared, self.admitted)
+        records = _records(self.episodes, self.sampled_trace_ids, self.admitted)
         if self._predicate is None:
             return records
         return [record for record in records if self._predicate(record)]
@@ -405,10 +404,9 @@ class EpisodeCollection:
         by_episode: dict[int, list[vf.Trace]] = {}
         for record in self.records:
             trace = record.trace
-            if record.prepared is not None:
-                advantage = scalar_advantage(record.prepared)
-                if advantage is not None:
-                    trace = trace.model_copy(update={"info": {**trace.info, "advantage": advantage}})
+            advantage = scalar_advantage(trace)
+            if advantage is not None:
+                trace = trace.model_copy(update={"info": {**trace.info, "advantage": advantage}})
             by_episode.setdefault(id(record.episode), []).append(trace)
         return [
             episode.model_copy(update={"traces": by_episode[id(episode)]})
@@ -419,24 +417,24 @@ class EpisodeCollection:
     def append(
         self,
         episode: vf.Episode,
-        prepared: PreparedGroup | None = None,
         *,
+        sampled_trace_ids: set[str] | None = None,
         admitted: bool = True,
     ) -> None:
         self.episodes.append(episode)
-        self.prepared.update(prepared or {})
+        self.sampled_trace_ids.update(sampled_trace_ids or set())
         if admitted:
             self.admitted.add(episode.id)
 
     def extend(
         self,
         episodes: list[vf.Episode],
-        prepared: PreparedGroup | None = None,
         *,
+        sampled_trace_ids: set[str] | None = None,
         admitted: bool = True,
     ) -> None:
         self.episodes.extend(episodes)
-        self.prepared.update(prepared or {})
+        self.sampled_trace_ids.update(sampled_trace_ids or set())
         if admitted:
             self.admitted.update(episode.id for episode in episodes)
 
@@ -452,13 +450,10 @@ class TrainEpisodes(EpisodeCollection):
     def effective(self) -> TrainEpisodes:
         return TrainEpisodes(
             self.episodes,
-            self.prepared,
+            self.sampled_trace_ids,
             self.admitted,
             predicate=lambda record: (
-                record.admitted
-                and bool(record.prepared)
-                and not record.trace.has_error
-                and record.trace.agent.trainable
+                record.admitted and record.sampled and not record.trace.has_error and record.trace.agent.trainable
             ),
         )
 
@@ -467,7 +462,7 @@ class TrainEpisodes(EpisodeCollection):
         for episode in self.selected_episodes:
             grouped.setdefault(episode.env.name or episode.env.id, []).append(episode)
         return {
-            env_name: TrainEpisodes(episodes, self.prepared, self.admitted, self._predicate)
+            env_name: TrainEpisodes(episodes, self.sampled_trace_ids, self.admitted, self._predicate)
             for env_name, episodes in grouped.items()
         }
 
