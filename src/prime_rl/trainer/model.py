@@ -488,7 +488,11 @@ def get_model(
 
     is_vlm_training = config.vlm is not None
 
-    if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
+    if (
+        "Qwen3.5" in config.name
+        or "Qwen3.8" in config.name
+        or "qwen3_5" in config.name.lower()
+    ):
         _patch_qwen3_5_text_position_ids()
         _patch_qwen3_5_moe_conversion_mapping()
         _patch_qwen3_5_linear_attn_varlen()
@@ -523,8 +527,10 @@ def get_model(
 
         _hub_kernels._kernels_enabled = True
 
-    # Fallback Qwen3.5 patch detection from loaded config model_type
-    if getattr(model_config, "model_type", "").startswith("qwen3_5_moe"):
+    # Fallback Qwen3.5 patch detection from loaded config model_type. Covers
+    # renamed Qwen3.5 / Qwen3.8 checkpoints (``qwen3_5``, ``qwen3_5_text``,
+    # ``qwen3_5_moe``) whose name_or_path misses the name-based gate above.
+    if getattr(model_config, "model_type", "").startswith("qwen3_5"):
         _patch_qwen3_5_text_position_ids()
         _patch_qwen3_5_moe_conversion_mapping()
         _patch_qwen3_5_linear_attn_varlen()

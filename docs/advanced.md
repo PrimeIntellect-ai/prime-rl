@@ -72,7 +72,7 @@ The built-in VLM registry covers:
 
 | Family | `model_type` | Vision attr | LM attr |
 |---|---|---|---|
-| Qwen3.5 | `qwen3_5` | `model.visual` | `model.language_model` |
+| Qwen3.5 / Qwen3.8 (dense) | `qwen3_5` | `model.visual` | `model.language_model` |
 | Qwen3.5-MoE | `qwen3_5_moe` | `model.visual` | `model.language_model` |
 
 ### Enabling VLM Mode
