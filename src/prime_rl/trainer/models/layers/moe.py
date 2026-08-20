@@ -4,12 +4,15 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import importlib.util
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Literal
 
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.distributed.tensor import DTensor
 from torchtitan.distributed.expert_parallel import expert_parallel
 
 from prime_rl.configs.trainer import EPCommBackend
@@ -181,6 +184,250 @@ def _run_experts_grouped_mm_impl(
     return out
 
 
+_fused_moe = None
+_GROUPED_MM_ALIGN_M = 16  # torch._grouped_mm, used by the hand-written backward, needs 16-aligned group extents
+
+
+def _load_fused_moe_kernel() -> ModuleType:
+    # Load prime_kernels.flash_moe if supported on the current running machine.
+    global _fused_moe
+    if _fused_moe is None:
+        if importlib.util.find_spec("prime_kernels") is None:
+            raise ModuleNotFoundError(
+                "The Prime-Flash-MoE kernel lives in the prime-kernels wheel, which is not available. Install it with `uv sync --extra kernels`."
+            )
+        import prime_kernels
+
+        _fused_moe = prime_kernels.load("flash_moe")
+    return _fused_moe
+
+
+def _run_experts_fused_kernel(
+    x: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+) -> torch.Tensor:
+    kernel = _load_fused_moe_kernel()  # Try to load the kernel from prime-kernels
+    gate_up_weight = torch.cat((w1.to(torch.bfloat16), w3.to(torch.bfloat16)), dim=1)
+    sorted_token_ids, expert_ids, num_tokens_post_padded = (
+        kernel.moe_align(  # Invoke align kernel first to prepare ids and other inputs
+            selected_experts_indices.to(torch.int32).contiguous(), num_experts, kernel.BLOCK_M
+        )
+    )
+    out = torch.empty_like(x, dtype=torch.bfloat16)  # Empty, as split=True zeros out the result anyway
+    kernel.fused_moe_bf16(  # Invoke kernel
+        x.to(torch.bfloat16),
+        gate_up_weight,
+        w2.to(torch.bfloat16).contiguous(),
+        sorted_token_ids,
+        expert_ids,
+        num_tokens_post_padded,
+        top_scores.to(torch.float32),
+        out,
+        selected_experts_indices.shape[1],
+        block_m=kernel.BLOCK_M,
+        split=True,
+    )
+    return out.type_as(x)
+
+
+def _quantize_mxfp8(t: torch.Tensor, block_size: int) -> tuple[torch.Tensor, torch.Tensor]:
+    from torchao.prototype.moe_training.tensor import TrainingWeightWrapperBaseTensor, unwrap_weight
+    from torchao.prototype.mx_formats import ScaleCalculationMode
+    from torchao.prototype.mx_formats.mx_tensor import to_mx
+
+    if isinstance(t, TrainingWeightWrapperBaseTensor):
+        t = unwrap_weight(t)
+    scales, data = to_mx(t.to(torch.bfloat16), torch.float8_e4m3fn, block_size, scaling_mode=ScaleCalculationMode.RCEIL)
+    return data, scales
+
+
+def _run_experts_fused_mxfp8_kernel(
+    x: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+) -> torch.Tensor:
+    kernel = _load_fused_moe_kernel()  # Try to load the kernel from prime-kernels
+    block_size = kernel.MXFP8_SCALE_BLOCK
+    gate_up_weight, gate_up_scales = _quantize_mxfp8(torch.cat((w1, w3), dim=1), block_size)
+    down_weight, down_scales = _quantize_mxfp8(w2, block_size)
+    x_data, x_scales = _quantize_mxfp8(x, block_size)  # Activation scales stay row major, only the weights are packed
+    sorted_token_ids, expert_ids, num_tokens_post_padded = (
+        kernel.moe_align(  # Invoke align kernel first to prepare ids and other inputs
+            selected_experts_indices.to(torch.int32).contiguous(), num_experts, kernel.BLOCK_M
+        )
+    )
+    out = torch.empty_like(x, dtype=torch.bfloat16)  # Empty, as split=True zeros out the result anyway
+    kernel.fused_moe_mxfp8(  # Invoke kernel
+        x_data,
+        x_scales,
+        gate_up_weight,
+        kernel.pack_scales_blocked(gate_up_scales),
+        down_weight,
+        kernel.pack_scales_blocked(down_scales),
+        sorted_token_ids,
+        expert_ids,
+        num_tokens_post_padded,
+        top_scores.to(torch.float32),
+        out,
+        selected_experts_indices.shape[1],
+        block_m=kernel.BLOCK_M,
+        split=True,
+    )
+    return out.type_as(x)
+
+
+def _aligned_group_layout(
+    counts: torch.Tensor, num_routed: int, num_experts: int, align_m: int
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    aligned_counts = torch.clamp((counts + align_m - 1) // align_m, min=1) * align_m
+    shift = (torch.cumsum(aligned_counts, 0) - aligned_counts) - (torch.cumsum(counts, 0) - counts)
+    dst = torch.arange(num_routed, device=counts.device) + shift.repeat_interleave(counts)
+    buf_rows = -(-(num_routed + align_m * num_experts) // align_m) * align_m
+    aligned_counts[-1] += buf_rows - aligned_counts.sum()
+    return aligned_counts, dst, buf_rows
+
+
+def _run_experts_fused_reference(
+    x: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+    align_m: int | None = None,
+) -> torch.Tensor:
+    """Differentiable equivalent of the fused kernel - this implements the backward pass as the fused kernel itself is forward only."""
+    top_k = selected_experts_indices.shape[1]
+    flat_experts = selected_experts_indices.reshape(-1)
+    num_tokens_per_expert = torch.histc(flat_experts.float(), bins=num_experts, min=0, max=num_experts)
+    order = torch.argsort(flat_experts, stable=True)
+    top_scores_sorted = top_scores.reshape(-1)[order]
+    token_idx = order // top_k
+    if align_m is None:
+        routed_output = _run_experts_grouped_mm_impl(w1, w2, w3, x[token_idx], num_tokens_per_expert)
+    else:
+        counts = num_tokens_per_expert.to(torch.int64)
+        aligned_counts, dst, buf_rows = _aligned_group_layout(counts, order.numel(), num_experts, align_m)
+        x_pad = x.new_zeros(buf_rows, x.shape[1])
+        x_pad[dst] = x[token_idx]
+        routed_output = _run_experts_grouped_mm_impl(w1, w2, w3, x_pad, aligned_counts)[dst]
+    routed_output = (routed_output.float() * top_scores_sorted.reshape(-1, 1)).to(x.dtype)
+    return torch.zeros_like(x).index_add(0, token_idx, routed_output)
+
+
+def _run_experts_fused_backward_bf16(
+    grad_out: torch.Tensor,
+    x: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    selected_experts_indices: torch.Tensor,
+    top_scores: torch.Tensor,
+    num_experts: int,
+    needs_input_grad: tuple[bool, ...],
+) -> tuple[torch.Tensor | None, ...]:
+    """Closed-form gradients for the bf16 fused MoE forward."""
+    needs_x, needs_w1, needs_w2, needs_w3, needs_scores = (needs_input_grad[p] for p in (0, 1, 2, 3, 5))
+    top_k = selected_experts_indices.shape[1]
+    flat_experts = selected_experts_indices.reshape(-1)
+    num_tokens_per_expert = torch.histc(flat_experts.float(), bins=num_experts, min=0, max=num_experts)
+    order = torch.argsort(flat_experts, stable=True)
+    token_idx = order // top_k
+    counts = num_tokens_per_expert.to(torch.int64)
+    aligned_counts, dst, buf_rows = _aligned_group_layout(counts, order.numel(), num_experts, _GROUPED_MM_ALIGN_M)
+    offs = torch.cumsum(aligned_counts, dim=0, dtype=torch.int32)
+
+    w1b, w2b, w3b = w1.bfloat16(), w2.bfloat16(), w3.bfloat16()
+    x_sorted = x.new_zeros(buf_rows, x.shape[1], dtype=torch.bfloat16)
+    x_sorted[dst] = x[token_idx].bfloat16()
+    g_sorted = grad_out.new_zeros(buf_rows, grad_out.shape[1], dtype=torch.bfloat16)
+    g_sorted[dst] = grad_out[token_idx].bfloat16()
+    scores_sorted = top_scores.new_zeros(buf_rows, 1)
+    scores_sorted[dst] = top_scores.reshape(-1)[order].reshape(-1, 1)
+
+    a = torch._grouped_mm(x_sorted, w1b.transpose(-2, -1), offs=offs)
+    b = torch._grouped_mm(x_sorted, w3b.transpose(-2, -1), offs=offs)
+    silu_a = F.silu(a)
+    h = silu_a * b
+
+    g2 = torch._grouped_mm(g_sorted, w2b, offs=offs)
+    grad_scores = None
+    if needs_scores:
+        grad_s = (h.float() * g2.float()).sum(dim=-1)[dst]
+        grad_scores = (
+            torch.zeros_like(top_scores.reshape(-1))
+            .index_copy(0, order, grad_s.to(top_scores.dtype))
+            .reshape_as(top_scores)
+        )
+    grad_h = (g2.float() * scores_sorted).to(torch.bfloat16)
+    grad_a = torch.ops.aten.silu_backward(grad_h * b, a)
+    grad_b = grad_h * silu_a
+
+    grad_x = None
+    if needs_x:
+        grad_rows = torch._grouped_mm(grad_a, w1b, offs=offs) + torch._grouped_mm(grad_b, w3b, offs=offs)
+        grad_x = torch.zeros_like(x).index_add(0, token_idx, grad_rows[dst].type_as(x))
+    grad_w1 = torch._grouped_mm(grad_a.t(), x_sorted, offs=offs).type_as(w1) if needs_w1 else None
+    grad_w3 = torch._grouped_mm(grad_b.t(), x_sorted, offs=offs).type_as(w3) if needs_w3 else None
+    grad_w2 = None
+    if needs_w2:
+        grad_y = (g_sorted.float() * scores_sorted).to(torch.bfloat16)
+        grad_w2 = torch._grouped_mm(grad_y.t(), h, offs=offs).type_as(w2)
+    return grad_x, grad_w1, grad_w2, grad_w3, grad_scores
+
+
+class _FusedMoE(torch.autograd.Function):
+    """Forward runs the fused MoE kernel and as the fused kernel is forward only, backward is done by hand."""
+
+    @staticmethod
+    def forward(ctx, x, w1, w2, w3, selected_experts_indices, top_scores, num_experts, mxfp8):
+        ctx.save_for_backward(x, w1, w2, w3, selected_experts_indices, top_scores)
+        ctx.num_experts = num_experts
+        ctx.mxfp8 = mxfp8
+        run_kernel = _run_experts_fused_mxfp8_kernel if mxfp8 else _run_experts_fused_kernel
+        return run_kernel(x, w1, w2, w3, selected_experts_indices, top_scores, num_experts)
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_out):
+        x, w1, w2, w3, selected_experts_indices, top_scores = ctx.saved_tensors
+        if not ctx.mxfp8:
+            grad_x, grad_w1, grad_w2, grad_w3, grad_scores = _run_experts_fused_backward_bf16(
+                grad_out, x, w1, w2, w3, selected_experts_indices, top_scores, ctx.num_experts, ctx.needs_input_grad
+            )
+            return grad_x, grad_w1, grad_w2, grad_w3, None, grad_scores, None, None
+        grad_poses = (0, 1, 2, 3, 5)
+        with torch.enable_grad():
+            leaves = [
+                t.detach().requires_grad_(ctx.needs_input_grad[p])
+                for t, p in zip((x, w1, w2, w3, top_scores), grad_poses)
+            ]
+            out = _run_experts_fused_reference(
+                leaves[0],
+                leaves[1],
+                leaves[2],
+                leaves[3],
+                selected_experts_indices,
+                leaves[4],
+                ctx.num_experts,
+                align_m=_load_fused_moe_kernel().MXFP8_SCALE_BLOCK,
+            )
+        wanted = [leaf for leaf in leaves if leaf.requires_grad]
+        computed = iter(torch.autograd.grad(out, wanted, grad_out) if wanted else ())
+        grads = {p: (next(computed) if leaf.requires_grad else None) for leaf, p in zip(leaves, grad_poses)}
+        return grads[0], grads[1], grads[2], grads[3], None, grads[5], None, None
+
+
 class GroupedExperts(nn.Module):
     def __init__(
         self,
@@ -247,8 +494,6 @@ def _gpt_oss_apply_gate(gate_up: torch.Tensor) -> torch.Tensor:
 
 
 def _broadcast_expert_bias(bias: torch.Tensor, num_tokens_per_expert: torch.Tensor, target_rows: int) -> torch.Tensor:
-    """Repeat per-expert bias to per-token, padding to target_rows if EP added padding rows."""
-    # repeat_interleave on CUDA requires int counts; histc/router output is float.
     bias_per_token = torch.repeat_interleave(bias, num_tokens_per_expert.to(torch.int64), dim=0)
     if bias_per_token.shape[0] < target_rows:
         pad_rows = target_rows - bias_per_token.shape[0]
@@ -595,6 +840,9 @@ class MoE(nn.Module):
         )
         self.score_before_experts = moe_args.score_before_experts
         self.deepep_token_chunk_size: int | None = None
+        # Set by model.moe_fused_kernel=true: which fused kernel the routed experts run through.
+        # None keeps the ordinary reorderer + grouped-mm path.
+        self.fused_kernel: Literal["bf16", "mxfp8"] | None = None
 
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert is accumulated in the model forward pass.
@@ -652,6 +900,24 @@ class MoE(nn.Module):
             routed_output = (routed_output.to(torch.float32) * top_scores_experts_sorted.reshape(-1, 1)).to(x.dtype)
 
         return routed_output
+
+    def _run_fused_routed_experts(
+        self,
+        x: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+        top_scores: torch.Tensor,
+    ) -> torch.Tensor:
+        to_local = lambda tensor: tensor.to_local() if isinstance(tensor, DTensor) else tensor
+        return _FusedMoE.apply(
+            x,
+            to_local(self.experts.w1),
+            to_local(self.experts.w2),
+            to_local(self.experts.w3),
+            selected_experts_indices,
+            top_scores,
+            self.experts.num_experts,
+            self.fused_kernel == "mxfp8",
+        )
 
     def _run_deepep_routed_experts(
         self,
@@ -749,6 +1015,12 @@ class MoE(nn.Module):
 
         if self.ep_comm_backend == "deepep":
             routed_output = self._run_deepep_routed_experts(x, selected_experts_indices, top_scores)
+            return routed_output.reshape(bs, slen, dim)
+
+        if self.fused_kernel:
+            routed_output = self._run_fused_routed_experts(x, selected_experts_indices, top_scores)
+            if self.shared_expert is not None:
+                routed_output = routed_output + self.shared_expert(x)
             return routed_output.reshape(bs, slen, dim)
 
         # top_scores and token_indices_experts_sorted shape (bs*slen*top_k,)

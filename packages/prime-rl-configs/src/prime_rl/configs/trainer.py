@@ -242,6 +242,9 @@ class ModelConfig(BaseModelConfig):
     moe_use_grouped_mm: bool = True
     """Use grouped mm for MoE layers. Requires compute capability ≥ 9.0."""
 
+    moe_fused_kernel: bool = False
+    """Run MoE routed experts through the vendored fused MoE CUDA kernel (``prime_kernels.flash_moe``) in forward; backward recomputes the reference grouped-mm path. Picks the mxfp8 kernel when ``quantization`` is MXFP8 with ``enable_grouped_gemm`` (which additionally needs ``hidden_size`` divisible by 256), otherwise the bf16 one. Requires the ``prime-kernels`` wheel, Blackwell (SM100) GPUs, ``ep=1``, ``model.impl='custom'``, MoE layers with output-weighted scores (``score_before_experts=False``), and ``moe_intermediate_size`` divisible by 128."""
+
     quantization: QuantizationConfig | None = None
 
     index_cache: IndexCacheConfig | None = None
