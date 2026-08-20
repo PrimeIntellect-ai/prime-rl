@@ -11,10 +11,10 @@ pressure off the engines and reacts at the pipeline's own pace (AIMD):
   hold at ``KV_USAGE_TARGET`` and let completions drain the pool (soft). If
   usage still climbs past ``KV_USAGE_HARD_CAP`` — units maturing in place
   outpace completions — also cancel the excess, youngest first (hard).
-- **Cut** on overload: preemptions (single-shot loads) or a persistent
-  capacity queue (agentic loads never preempt — admission control parks
-  excess load in the waiting queue). Cut, cancel the excess, then freeze
-  cuts until the pool drains below the new cap.
+- **Cut** on overload: preemptions hard-cut and cancel excess work. A
+  persistent capacity queue only lowers the admission cap and lets the pool
+  drain naturally; queue pressure can be caused by replica imbalance and is
+  not sufficient evidence that active work must be discarded.
 
 The cap starts at ``initial_inflight`` (else the pessimistic bound
 ``KV capacity / max_model_len``) and is clamped to
@@ -63,15 +63,16 @@ KV_TRIM_COOLDOWN_POLLS = 6
 """Polls between kv-headroom trims, letting each trim propagate before the next is sized."""
 
 QUEUE_RATIO = 0.5
-"""HARD once capacity-queued requests exceed this fraction of running requests for the persistence window."""
+"""Overloaded once capacity-queued requests exceed this fraction of running requests for the persistence window."""
 
 QUEUE_PERSISTENCE_POLLS = 6
-"""Consecutive polls of queue overload before the HARD cut; filters natural turn-completion bursts."""
+"""Consecutive polls of queue overload before a soft cut; filters natural turn-completion bursts."""
 
 QUEUE_CUT_FRACTION = 0.9
-"""A queue cut targets this fraction of the in-flight pool. Pool units, not
-engine requests: agentic episodes idle between turns, so engine ``running``
-undercounts the pool by the duty cycle and cutting to it over-cuts."""
+"""A soft queue cut targets this fraction of the in-flight pool. Pool units,
+not engine requests: agentic episodes idle between turns, so engine
+``running`` undercounts the pool by the duty cycle and cutting to it
+over-cuts."""
 
 PREEMPTION_CUT_FRACTION = 0.8
 """A preemption cut targets this fraction of the in-flight pool."""
@@ -154,9 +155,9 @@ class ConcurrencyController:
     ) -> None:
         """Attach the outbound hooks. The dispatcher is constructed with this
         controller's initial cap, so no ``set_limit`` fires here.
-        ``on_overload`` receives the unit excess on a downward resize so the
+        For hard cuts, ``on_overload`` receives the unit excess so the
         dispatcher can cancel in-flight work instead of just blocking
-        admission."""
+        admission. Soft cuts do not invoke it."""
         self.set_limit = set_limit
         self.get_inflight = get_inflight
         self.on_overload = on_overload
@@ -224,7 +225,7 @@ class ConcurrencyController:
             self.queue_overload_polls = 0
         queue_overload = self.queue_overload_polls >= QUEUE_PERSISTENCE_POLLS
         if queue_overload or max_usage > KV_USAGE_GROW:
-            worst = max(worst, "hard" if queue_overload else "soft", key=SEVERITY.__getitem__)
+            worst = max(worst, "soft", key=SEVERITY.__getitem__)
         self.signal = worst
 
         inflight = self.get_inflight() if self.get_inflight is not None else 0
@@ -264,18 +265,19 @@ class ConcurrencyController:
         if self.draining:
             return
 
-        if preempted or queue_overload:
+        if preempted:
             fraction = ESCALATED_CUT_FRACTION if self.escalated else None
-            if queue_overload:
-                self.queue_overload_polls = 0
-                target = int(self.clamp(inflight * (fraction or QUEUE_CUT_FRACTION)))
-                reason = "queue overload"
-            else:
-                target = int(self.clamp(inflight * (fraction or PREEMPTION_CUT_FRACTION)))
-                reason = "preemptions"
-            self.resize_down(target, inflight, reason=reason)
+            target = int(self.clamp(inflight * (fraction or PREEMPTION_CUT_FRACTION)))
+            self.resize_down(target, inflight, reason="preemptions")
             self.draining = True
             self.escalated = True
+            return
+
+        if queue_overload:
+            self.queue_overload_polls = 0
+            target = int(self.clamp(inflight * QUEUE_CUT_FRACTION))
+            self.resize_down(target, inflight, reason="queue overload", cancel=False)
+            self.draining = True
             return
 
         if max_usage > KV_USAGE_SOFT_CAP and inflight > 0 and self.trim_cooldown == 0:
