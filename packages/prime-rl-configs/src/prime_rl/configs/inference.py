@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
+from prime_rl.configs.legacy import migrate_legacy_inference_config
 from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
 from prime_rl.utils.config import find_package_resource
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
@@ -481,6 +482,12 @@ class InferenceConfig(BaseConfig):
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_keys(cls, data: Any) -> Any:
+        """Translate the flat pre-vllm-block shape still emitted by hosted's deployment charts."""
+        return migrate_legacy_inference_config(data)
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):

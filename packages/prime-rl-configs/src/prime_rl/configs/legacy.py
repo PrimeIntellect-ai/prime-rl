@@ -1,14 +1,16 @@
 """Translation of legacy config keys into the current shape.
 
-Hosted training's control plane emits two generations of legacy keys. The
-pre-``algo`` run shape: a top-level ``training_mode`` with a sibling
-``[teacher]`` block, per-env ``advantage``, and the policy client at
-``[client]``. And the pre-0.3.0 flat env shape: ``[[train.env]]`` /
-``[[eval.env]]`` entries whose verifiers knobs (``taskset``, ``harness``,
-``pool``, ``timeout``, token caps, the v0 ``id``/``args``) sat flat on the
-entry instead of composing the ``env``/``serve``/``legacy`` blocks. This module
-maps both onto the current shape at validation time so a control plane that
-hasn't been updated yet keeps working against a current image.
+Hosted training's control plane and deployment charts emit older generations of
+config keys. The pre-``algo`` run shape: a top-level ``training_mode`` with a
+sibling ``[teacher]`` block, per-env ``advantage``, and the policy client at
+``[client]``. The pre-0.3.0 flat env shape: ``[[train.env]]`` / ``[[eval.env]]``
+entries whose verifiers knobs (``taskset``, ``harness``, ``pool``, ``timeout``,
+token caps, the v0 ``id``/``args``) sat flat on the entry instead of composing
+the ``env``/``serve``/``legacy`` blocks. And the pre-vllm-block inference shape:
+``[model]``/``[parallel]`` blocks, flat engine args, and a ``vllm_extra`` dict
+instead of the ``vllm`` pass-through block. This module maps all of it onto the
+current shape at validation time so callers that haven't been updated yet keep
+working against a current image.
 
 Split by scope, because an env block is validated through two different roots:
 the orchestrator's ``[[train.source]]`` / ``[[eval.source]]`` entries *and* the
@@ -20,6 +22,7 @@ Temporary. Delete this module and its validators once every caller emits the
 current shape directly.
 """
 
+import json
 import warnings
 from typing import Any
 
@@ -31,6 +34,27 @@ _ADVANTAGE_TYPE_TO_ALGO_TYPE = {"default": "grpo"}
 
 # Flat per-run caps that moved onto the env's agent seat.
 _FLAT_AGENT_KEYS = ("max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens")
+
+# Inference engine args that sat flat on the old InferenceConfig root and moved
+# under the ``vllm`` block (same name there).
+_FLAT_INFERENCE_VLLM_KEYS = (
+    "enable_lora",
+    "max_loras",
+    "max_cpu_loras",
+    "max_lora_rank",
+    "lora_target_modules",
+    "enable_prefix_caching",
+    "gpu_memory_utilization",
+    "quantization",
+    "api_server_count",
+    "data_parallel_size_local",
+    "data_parallel_rpc_port",
+    "seed",
+    "enable_expert_parallel",
+    "enable_eplb",
+    "enable_dbo",
+    "enable_return_routed_experts",
+)
 
 # Keys that only ever existed on the flat pre-0.3.0 env shape — any of them marks an
 # old-shaped block. ``id``/``taskset``/``timeout``/``retries`` are ambiguous (the
@@ -368,6 +392,60 @@ def migrate_legacy_env_server_config(data: Any) -> Any:
     if isinstance(inner, dict):
         for key, value in inner.items():
             env.setdefault(key, value)
+    return data
+
+
+def migrate_legacy_inference_config(data: Any) -> Any:
+    """Translate the flat pre-vllm-block inference shape, in place.
+
+    Hosted's deployment charts still start the inference server with the old
+    spellings: a ``[model]`` block (``--model.name``, ``--model.max-model-len``, …),
+    ``[parallel]`` (``tp``/``dp``), flat engine args (``--enable-lora``,
+    ``--gpu-memory-utilization``, …), and a ``--vllm-extra`` JSON dict. All of it
+    lands on the ``vllm`` block, which forwards unknown keys to vLLM verbatim.
+    An explicitly set ``vllm.*`` key wins over a translated one; ``vllm_extra``
+    overrides, matching its old apply-after-config semantics.
+    """
+    if not isinstance(data, dict):
+        return data
+    translated: dict[str, Any] = {}
+    model = data.pop("model", None)
+    if model is not None:
+        _deprecated("model", "vllm")
+        if isinstance(model, dict):
+            for key, value in model.items():
+                translated["model" if key == "name" else key] = value
+        else:
+            translated["model"] = model
+    parallel = data.pop("parallel", None)
+    if parallel is not None:
+        _deprecated("parallel", "vllm.tensor_parallel_size / vllm.data_parallel_size")
+        if not isinstance(parallel, dict):
+            raise ValueError(f"'parallel' must be a table, got {type(parallel).__name__}")
+        parallel = dict(parallel)
+        if "tp" in parallel:
+            translated["tensor_parallel_size"] = parallel.pop("tp")
+        if "dp" in parallel:
+            translated["data_parallel_size"] = parallel.pop("dp")
+        if parallel:
+            raise ValueError(f"'parallel' only carried 'tp' and 'dp', got {sorted(parallel)}")
+    for key in _FLAT_INFERENCE_VLLM_KEYS:
+        if key in data:
+            _deprecated(key, f"vllm.{key}")
+            translated[key] = data.pop(key)
+    extra = data.pop("vllm_extra", None)
+    if isinstance(extra, str):
+        extra = json.loads(extra)
+    if extra is not None:
+        _deprecated("vllm_extra", "vllm.<arg>")
+        if not isinstance(extra, dict):
+            raise ValueError(f"'vllm_extra' must be a table, got {type(extra).__name__}")
+    if translated or extra:
+        vllm = _sub_table(data, "vllm")
+        for key, value in translated.items():
+            vllm.setdefault(key, value)
+        if extra:
+            vllm.update(extra)
     return data
 
 

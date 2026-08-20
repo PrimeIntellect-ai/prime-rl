@@ -834,6 +834,47 @@ def test_legacy_env_server_flat_env_block_is_rehomed():
     assert composed.serve.pool.num_workers == 2
 
 
+def test_legacy_flat_inference_keys_land_on_the_vllm_block():
+    """The flat pre-vllm-block inference shape hosted's deployment charts emit —
+    ``[model]``/``[parallel]`` blocks, flat engine args, a ``vllm_extra`` JSON dict —
+    lands on the ``vllm`` block, with ``vllm_extra`` overriding (its old
+    apply-after-config semantics) and an explicit ``vllm.*`` key winning over a
+    translated one."""
+    config = cli(
+        InferenceConfig,
+        args=[
+            "--model.name",
+            "Qwen/Qwen3.5-4B",
+            "--model.max-model-len",
+            "65536",
+            "--model.tool-call-parser",
+            "hermes",
+            "--parallel.tp",
+            "2",
+            "--enable-lora",
+            "--max-lora-rank",
+            "16",
+            "--max-loras",
+            "12",
+            "--vllm-extra",
+            '{"enable_prefix_caching": true, "mm_processor_cache_type": "shm"}',
+        ],
+    )
+
+    assert config.vllm.model == "Qwen/Qwen3.5-4B"
+    assert config.vllm.max_model_len == 65536
+    assert config.vllm.tool_call_parser == "hermes"
+    assert config.vllm.tensor_parallel_size == 2
+    assert config.vllm.enable_lora is True
+    assert config.vllm.max_lora_rank == 16
+    assert config.vllm.max_loras == 12
+    assert config.vllm.enable_prefix_caching is True
+    assert config.vllm.mm_processor_cache_type == "shm"
+
+    explicit = cli(InferenceConfig, args=["--model.name", "old", "--vllm.model", "new"])
+    assert explicit.vllm.model == "new"
+
+
 def test_legacy_run_scoped_renames():
     """``max_inflight_rollouts``, ``rollouts_per_example``, top-level ``[[env]]``/
     ``[sampling]``, and sampling ``max_tokens`` all land on their current names."""
