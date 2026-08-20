@@ -238,11 +238,28 @@ class Evals:
             await self.maybe_run_evals(step=0)
         elif config.eval.retrigger_on_resume:
             # Re-fire evals at the resume step (e.g. after a crash that lost in-flight
-            # evals). Requires the resume step's broadcast on disk (the trainer
-            # rebroadcasts the resumed policy on startup). The final broadcast
-            # force-fires every env, exactly like the watch loop below.
-            is_final = online.max_steps is not None and online.resume_step >= online.max_steps
-            await self.maybe_run_evals(step=online.resume_step, reload_weights=True, force=is_final)
+            # evals). The trainer rebroadcasts the resumed policy on startup, but only
+            # after loading the model — wait for that broadcast instead of checking
+            # once. A newer stable broadcast means the resume step's was already
+            # cleaned away (only the newest is kept) and can never reappear. The
+            # final broadcast force-fires every env, exactly like the watch loop below.
+            assert online.broadcasts_dir is not None and online.resume_step is not None
+            while True:
+                if (get_step_path(online.broadcasts_dir, online.resume_step) / "STABLE").exists():
+                    is_final = online.max_steps is not None and online.resume_step >= online.max_steps
+                    await self.maybe_run_evals(step=online.resume_step, reload_weights=True, force=is_final)
+                    break
+                newer_stable = any(
+                    step > online.resume_step and (get_step_path(online.broadcasts_dir, step) / "STABLE").exists()
+                    for step in get_all_ckpt_steps(online.broadcasts_dir)
+                )
+                if newer_stable:
+                    get_logger().warning(
+                        f"Broadcast for resume step {online.resume_step} was cleaned before it could be "
+                        "re-evaluated (broadcast cleaning outpaced the evals process) - skipping the retrigger"
+                    )
+                    break
+                await asyncio.sleep(POLL_INTERVAL_S)
 
         get_logger().info(f"Watching {online.broadcasts_dir} for new weight broadcasts (max_steps={online.max_steps})")
         while True:
