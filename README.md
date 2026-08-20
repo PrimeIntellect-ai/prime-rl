@@ -151,8 +151,14 @@ uv run sft @ configs/debug/fake/sft.toml
 4. Check that you can run the RL trainer (*this requires 1 GPU*)
 
 ```bash
-uv run trainer @ configs/debug/fake/rl.toml
+uv run torchrun \
+  --standalone \
+  --nproc-per-node=1 \
+  -m prime_rl.trainer.rl.train @ configs/debug/fake/rl.toml
 ```
+
+The standalone RL trainer is still a distributed process group; `torchrun`
+sets the rank and rendezvous environment variables expected by PyTorch.
 
 5. Check that you can run the inference server (*this requires 1 GPU*)
 
