@@ -333,7 +333,7 @@ class EpisodeMetrics:
 
 
 class TrainMetrics(EpisodeMetrics):
-    """Common metrics plus the per-agent filter-pipeline rates. ``reward`` (flat over all traces)
+    """Common metrics plus per-agent pipeline rates. ``reward`` (flat over all traces)
     serves the console log lines; the wandb reward stats are per-agent."""
 
     @property
@@ -342,18 +342,12 @@ class TrainMetrics(EpisodeMetrics):
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
-        # The pipeline verdicts are per-trace (an untrainable seat is 0.0 throughout, and filters
-        # only ever run on trainable survivors), so they read per agent like the rest.
+        # Pipeline verdicts are per-trace, so they read per agent like the rest.
         for agent, traces in self.by_agent().items():
             p = f"{prefix}/{subset}/{agent}"
             rollouts = traces.rollouts
             out[f"{p}/is_trainable/mean"] = sum(float(r.is_trainable) for r in rollouts) / len(rollouts)
-            out[f"{p}/is_filtered/mean"] = sum(float(r.is_filtered) for r in rollouts) / len(rollouts)
-            names = sorted({name for r in rollouts for name in r.filter_results})
-            out |= {
-                f"{p}/filters/{name}/mean": sum(1 for r in rollouts if r.filter_results.get(name)) / len(rollouts)
-                for name in names
-            }
+            out[f"{p}/is_admitted/mean"] = sum(float(r.is_admitted) for r in rollouts) / len(rollouts)
         return out
 
 
@@ -396,8 +390,8 @@ class EvalMetrics(EpisodeMetrics):
 
 
 class TrainRollouts:
-    """A list of train rollouts (everything that came back, errored + filtered + untrainable
-    included). ``effective`` is the clean trainable subset (a view of the same traces);
+    """A list of train rollouts (everything that came back, including rejected,
+    errored and untrainable traces). ``effective`` is the clean trainable subset;
     ``metrics`` builds ``TrainMetrics`` over them."""
 
     def __init__(self, rollouts: list[Rollout] | None = None) -> None:
@@ -414,7 +408,7 @@ class TrainRollouts:
 
     @property
     def effective(self) -> TrainRollouts:
-        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered and r.agent.trainable])
+        return TrainRollouts([r for r in self.rollouts if r.is_admitted and not r.has_error and r.agent.trainable])
 
     def by_env(self) -> dict[str, TrainRollouts]:
         grouped: dict[str, list[Rollout]] = {}

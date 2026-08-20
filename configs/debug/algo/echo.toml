@@ -8,7 +8,7 @@ seq_len = 4096
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
-[wandb]
+[monitors.wandb]
 project = "algorithms-debug"
 name = "debug-echo"
 
@@ -43,12 +43,6 @@ type = "subprocess"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 512
-
-# ECHO learns from observation tokens even when the GRPO advantage collapses
-# to zero — keep zero-advantage rollouts in the batch.
-[[orchestrator.post_batch_filters]]
-type = "zero_advantage"
-enforce = false
 
 # Fine-tune inherits the PrimeIntellect Qwen3 template byte-for-byte.
 [orchestrator.renderer]

@@ -11,7 +11,7 @@ num_infer_gpus = 1
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
-[wandb]
+[monitors.wandb]
 project = "reverse-text"
 name = "reverse-text"
 

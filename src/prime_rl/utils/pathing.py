@@ -43,6 +43,7 @@ def format_log_message(
     log_dir: Path,
     trainer: bool = False,
     orchestrator: bool = False,
+    evals: bool = False,
     inference: bool = False,
     job_log: bool = False,
     train_env_names: list[str] | None = None,
@@ -67,17 +68,20 @@ def format_log_message(
         log_lines.append(f"{i2}{'All ranks:':<{col - 1}}tail -F {log_dir}/trainer/torchrun/*/*/*/*.log")
     if orchestrator:
         log_lines.append(f"{i1}{'Orchestrator:':<{col}}tail -F {log_dir}/orchestrator.log")
+    if evals:
+        log_lines.append(f"{i1}{'Evals:':<{col}}tail -F {log_dir}/evals.log")
     if inference:
         log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference.log")
         if num_infer_nodes > 1:
             log_lines.append(f"{i2}{'All nodes:':<{col - 1}}tail -F {log_dir}/inference/node_*.log")
-    if train_env_names:
+    if train_env_names or eval_env_names:
         env_log_dir = log_dir / "envs"
         log_lines.append(f"{i1}{'Envs:':<{col}}tail -F {env_log_dir}/*/*.log")
-        log_lines.append(f"{i2}{'Train:':<{col - 1}}tail -F {env_log_dir}/train/*.log")
-        for name in train_env_names:
-            short = name if len(name) <= max_name else name[: max_name - 3] + "..."
-            log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/train/{name}.log")
+        if train_env_names:
+            log_lines.append(f"{i2}{'Train:':<{col - 1}}tail -F {env_log_dir}/train/*.log")
+            for name in train_env_names:
+                short = name if len(name) <= max_name else name[: max_name - 3] + "..."
+                log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/train/{name}.log")
         if eval_env_names:
             log_lines.append(f"{i2}{'Eval:':<{col - 1}}tail -F {env_log_dir}/eval/*.log")
             for name in eval_env_names:
@@ -100,13 +104,6 @@ def get_weights_dir(output_dir: Path) -> Path:
 
 def get_rollout_dir(output_dir: Path) -> Path:
     return output_dir / "rollouts"
-
-
-def get_trace_path(output_dir: Path, step: int, kind: str, subset: str) -> Path:
-    """Where one trace file lives: ``rollouts/step_{n}/{train,eval}/{all,effective}/traces.jsonl``.
-    ``all`` is appended per rollout the moment it completes; ``effective`` is written at once
-    per finalized train batch / eval epoch."""
-    return get_step_path(get_rollout_dir(output_dir), step) / kind / subset / "traces.jsonl"
 
 
 def get_eval_dir(output_dir: Path) -> Path:

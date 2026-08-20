@@ -10,7 +10,7 @@ import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
 from verifiers.v1.task import DataT
 
-from prime_rl.transport import TrainingSample
+from prime_rl.transports.rollouts import TrainingSample
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.metrics import EvalRollouts, TrainRollouts
@@ -39,7 +39,7 @@ RolloutKind = Literal["train", "eval"]
 
 
 @dataclass
-class InflightRollout:
+class InflightEpisode:
     """Per-task scheduling state in the dispatcher; one entry per in-flight
     ``run`` task."""
 
@@ -50,6 +50,8 @@ class InflightRollout:
     client_config: vf.ClientConfig | None = None
     off_policy_steps: int = 0
     eval_step: int | None = None
+    started_at: float = 0.0
+    """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
 
 
 @dataclass
@@ -96,11 +98,9 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
     # Per-token rl advantage stream, full-length-N (= len(token_ids)) per
     # sample, concatenated across the rollout's samples in order; 0.0 on
-    # non-trainable positions. None = no credit assigned (advantage-based
-    # filters skip it; the wire ships no advantage stream).
+    # non-trainable positions. None means no credit was assigned.
     advantages: list[float] | None = Field(default=None, exclude=True)
-    is_filtered: bool = Field(default=False, exclude=True)
-    filter_results: dict[str, bool] = Field(default_factory=dict, exclude=True)
+    is_admitted: bool = Field(default=True, exclude=True)
     eval_step: int | None = Field(default=None, exclude=True)
 
     def assign_advantages(self, values: float | list[float]) -> None:
@@ -140,9 +140,9 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
 @dataclass
 class TrainBatch:
     """``rollouts`` is the observation window since the last ship — every rollout of every group
-    finalized in that span (errored + filtered included; rollouts of still-incomplete groups wait
+    finalized in that span (errored + rejected included; rollouts of still-incomplete groups wait
     for a later window). Its ``.effective`` / ``.metrics`` views drive logging. ``samples`` is the
-    trainer-bound payload (the shipped cohort's post-filter survivors) — an empty list means nothing
+    trainer-bound payload from the admitted cohort — an empty list means nothing
     ships, which would stall the trainer. Trainable counts derive from ``rollouts.effective``
     (``r.is_trainable``) and token totals from ``samples``, so neither is carried as a field."""
 

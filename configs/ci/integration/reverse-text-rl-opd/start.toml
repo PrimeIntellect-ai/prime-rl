@@ -16,13 +16,16 @@ type = "filesystem"
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
-[wandb]
+[monitors.wandb]
 project = "reverse-text-ci"
 name = "ci-rl-opd"
 
 [orchestrator]
 batch_size = 128
 group_size = 16
+
+[orchestrator.concurrency]
+max_inflight = 128
 
 [orchestrator.algo]
 type = "opd"

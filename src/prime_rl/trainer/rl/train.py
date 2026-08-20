@@ -2,13 +2,14 @@ import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before im
 
 from contextlib import nullcontext
 import time
+import asyncio
 from datetime import timedelta
 
 # Import environment before any other imports
 # ruff: noqa: I001
 
 from prime_rl.trainer.models.layers.attn import substitute_ring_attn
-from prime_rl.trainer.rl.broadcast import setup_weight_broadcast
+from prime_rl.transports.weights import setup_weight_broadcast
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
@@ -37,6 +38,7 @@ from prime_rl.trainer.rl.loss import (
 from prime_rl.trainer.rl.token_export import setup_token_exporter
 from prime_rl.trainer.model import (
     forward,
+    get_full_offload_dtype_policy,
     setup_tokenizer,
     setup_model,
     is_tt_moe_model,
@@ -48,8 +50,14 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     Tensors,
+    begin_backward,
+    clip_grad_norm_,
     filter_rl_trainer_tensor_stats_for_wandb,
+    finish_backward,
     get_ckpt_disk_metrics,
+    prepare_gradient_offload,
+    scale_gradients_,
+    setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
@@ -57,12 +65,11 @@ from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer
-from prime_rl.utils.monitor import setup_monitor
+from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 from ring_flash_attn import substitute_hf_flash_attn
-from torchtitan.distributed.utils import clip_grad_norm_
 
 
 @clean_exit
@@ -75,10 +82,12 @@ def train(config: TrainerConfig):
     )
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
-    # Setup the monitor
-    logger.info(f"Initializing monitor ({config.wandb})")
-    monitor = setup_monitor(
-        config.wandb, file_config=config.file_monitor, output_dir=config.output_dir, run_config=config
+    # Setup the monitors
+    logger.info(f"Initializing monitors ({config.monitors})")
+    asyncio.run(
+        monitors.setup(
+            wandb=config.monitors.wandb, file=config.monitors.file, output_dir=config.output_dir, run_config=config
+        )
     )
 
     # Setup heartbeat (only on rank 0)
@@ -104,6 +113,8 @@ def train(config: TrainerConfig):
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
     )
+    if config.model.full_offload is not None:
+        setup_full_cpu_optimizer_offload(config.model.full_offload)
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -148,11 +159,16 @@ def train(config: TrainerConfig):
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
 
-    optimizer = setup_optimizer(
+    optimizer, gradient_manager = setup_optimizer(
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
         cpu_offload=config.model.optim_cpu_offload,
+        full_offload_config=config.model.full_offload,
+        model=model,
+        full_offload_dtype_policy=(
+            get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
+        ),
     )
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
 
@@ -311,6 +327,11 @@ def train(config: TrainerConfig):
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
         dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
         rl_scale, ce_scale, ref_kl_scale = (max(scale, 1) for scale in global_scales.tolist())
+        prepare_gradient_offload(
+            gradient_manager,
+            parallel_dims.fsdp_gradient_divide_factor,
+            overlap_optimizer=True,
+        )
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -460,7 +481,9 @@ def train(config: TrainerConfig):
 
             # Backward pass
             with maybe_record_function("backward"):
+                begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
                 loss.backward()
+                finish_backward(gradient_manager)
 
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
@@ -537,18 +560,13 @@ def train(config: TrainerConfig):
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
-        for param in model.parameters():
-            if param.grad is not None:
-                param.grad.mul_(parallel_dims.fsdp_gradient_divide_factor)
+        if gradient_manager is None:
+            scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor)
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
-            grad_norm = clip_grad_norm_(
-                model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
-            )
-            if grad_norm.device.type == "cpu":
-                grad_norm = grad_norm.to(torch.device("cuda"))
+            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, parallel_dims.ep_enabled)
 
         # Update the model parameters
         optimizer.step()
@@ -573,6 +591,10 @@ def train(config: TrainerConfig):
             )
             if not broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()
+                # The per-layer gather + fp8 conversion peaks ~50 GiB above the
+                # resident weights; release cached blocks (incl. offload-stream
+                # pools) so the broadcast gets the full headroom.
+                torch.cuda.empty_cache()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
                 # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
@@ -649,7 +671,7 @@ def train(config: TrainerConfig):
             "perf/peak_memory": peak_memory,
             "step": progress.step,
         }
-        monitor.log(perf_metrics, step=progress.step)
+        asyncio.run(monitors.log(perf_metrics, step=progress.step))
 
         # Log optimizer metrics
         optim_metrics = {
@@ -658,7 +680,7 @@ def train(config: TrainerConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
-        monitor.log(optim_metrics, step=progress.step)
+        asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         # Compute derived metrics
         entropy_mean = tensor_stats.get("entropy/all/mean", 0.0)
@@ -667,7 +689,7 @@ def train(config: TrainerConfig):
             tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
 
         tensor_stats["step"] = progress.step
-        monitor.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step)
+        asyncio.run(monitors.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step))
 
         # Log time metrics
         time_metrics = {
@@ -679,12 +701,12 @@ def train(config: TrainerConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        monitor.log(time_metrics, step=progress.step)
+        asyncio.run(monitors.log(time_metrics, step=progress.step))
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.output_dir)
         disk_metrics["step"] = progress.step
-        monitor.log(disk_metrics, step=progress.step)
+        asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
         # Update Prometheus metrics if configured
         if metrics_server is not None:
@@ -729,6 +751,9 @@ def train(config: TrainerConfig):
         logger.info("Writing final weight checkpoint")
         weight_ckpt_manager.save(progress.step, model, tokenizer)
         weight_ckpt_manager.maybe_clean()
+
+    if gradient_manager is not None:
+        gradient_manager.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished!")

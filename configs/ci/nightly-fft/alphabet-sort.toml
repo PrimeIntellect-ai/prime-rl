@@ -5,7 +5,7 @@ seq_len = 2048
 num_train_gpus = 4
 num_infer_gpus = 4
 
-[wandb]
+[monitors.wandb]
 project = "alphabet-sort"
 name = "alphabet-sort"
 
@@ -17,6 +17,9 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 [orchestrator]
 batch_size = 512
 group_size = 16
+
+[orchestrator.concurrency]
+max_inflight = 128
 
 [[orchestrator.train.source]]
 name = "alphabet-sort"

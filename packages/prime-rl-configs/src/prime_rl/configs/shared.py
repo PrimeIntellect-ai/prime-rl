@@ -11,7 +11,16 @@ from prime_rl.utils.config import BaseConfig
 # and the single shared W&B run. The launcher always sets these last, so allowing them in
 # `env_vars` would be a silent no-op (or, on multi-node, a footgun) — reject them instead.
 PROTECTED_ENV_VARS = frozenset(
-    {"CUDA_VISIBLE_DEVICES", "PRL_RUN_ID", "PRL_RUN_NAME", "WANDB_RUN_ID", "WANDB_SHARED_MODE", "WANDB_SHARED_LABEL"}
+    {
+        "CUDA_VISIBLE_DEVICES",
+        "PRL_RUN_ID",
+        "PRL_RUN_NAME",
+        "WANDB_RUN_ID",
+        "WANDB_SHARED_MODE",
+        "WANDB_SHARED_LABEL",
+        "WANDB_SHARED_PRIMARY",
+        "WANDB_SHARED_FINISHER",
+    }
 )
 
 
@@ -190,78 +199,6 @@ class LogConfig(BaseConfig):
 class TrainerLogConfig(LogConfig):
     ranks_filter: list[int] = [0]
     """Trainer ranks to show in console output. Passed to ``torchrun --local-ranks-filter``."""
-
-
-class LogExtrasConfig(BaseConfig):
-    samples: bool = True
-    """Log prompt/response samples."""
-
-    distributions: bool = True
-    """Log distributions (rewards, advantages, etc.)."""
-
-    interval: int = Field(10, ge=1)
-    """Step interval between extras logs."""
-
-    sample_ratio: float | None = Field(None, ge=0.0, le=1.0)
-    """Fraction of rollouts to log per step. The effective cap is ``len(rollouts) * sample_ratio``; 1.0 = all, 0.5 = half, 0.0 = none."""
-
-
-class WandbConfig(BaseConfig):
-    # Shared configs (May be overwritten by WandbConfig from `rl.py`)
-    project: str = "prime-rl"
-    """W&B project to log to."""
-
-    entity: str | None = None
-    """W&B entity to log to."""
-
-    name: str | None = None
-    """W&B run name."""
-
-    group: str | None = None
-    """W&B group."""
-
-    tags: list[str] | None = None
-    """W&B tags attached to the run."""
-
-    offline: bool = False
-    """Run W&B in offline mode."""
-
-
-class WandbWithExtrasConfig(WandbConfig):
-    log_extras: LogExtrasConfig | None = LogExtrasConfig()
-    """Extras logging configuration. If None, no extras are logged."""
-
-
-class FileMonitorConfig(BaseConfig):
-    """Enable the local JSONL metric sink (``<output_dir>/metrics.jsonl``).
-
-    Present (non-None) enables it, mirroring the ``prime_monitor`` pattern. Metrics
-    are the same scalars sent to W&B; useful for self-hosted dashboards or when W&B
-    is disabled.
-    """
-
-    filename: str = "metrics.jsonl"
-    """Name of the JSONL file written under the component's ``output_dir``."""
-
-
-class PrimeMonitorConfig(BaseConfig):
-    base_url: str = "https://api.primeintellect.ai/api/v1/rft"
-    """Base URL for the Prime Intellect monitoring API."""
-
-    api_key_var: str = "PRIME_API_KEY"
-    """Environment variable name containing the Prime Intellect API key, resolved via ``os.getenv``."""
-
-    log_extras: LogExtrasConfig | None = LogExtrasConfig()
-    """Extras logging configuration. If None, no extras are logged."""
-
-    run_name: str | None = None
-    """Run name shown on the platform. Defaults to the W&B run name when set, otherwise the platform auto-generates one."""
-
-    team_id: str | None = None
-    """Team ID to associate the run with."""
-
-    frontend_url: str | None = None
-    """Frontend base URL used for the dashboard link printed after registration. Defaults to the Prime CLI frontend URL when unset."""
 
 
 class HeartbeatConfig(BaseConfig):

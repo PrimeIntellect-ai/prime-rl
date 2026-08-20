@@ -20,7 +20,7 @@ job_name = "swe-qwen30b"
 [ckpt]
 interval = 100
 
-[wandb]
+[monitors.wandb]
 project = "qwen30b-swe"
 
 [trainer.model]
@@ -43,8 +43,10 @@ lr = 1e-6
 
 [orchestrator]
 batch_size = 512
-oversampling_factor = 2
 max_off_policy_steps = 16
+
+[orchestrator.concurrency]
+initial_inflight = 1024
 
 [[orchestrator.train.source]]
 name = "swe"

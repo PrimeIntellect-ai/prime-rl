@@ -8,7 +8,7 @@ num_infer_gpus = 6
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
-[wandb]
+[monitors.wandb]
 project = "wiki-search"
 name = "wiki-search"
 
@@ -32,7 +32,9 @@ target_modules = [
 [orchestrator]
 batch_size = 512
 group_size = 16
-oversampling_factor = 2.0
+
+[orchestrator.concurrency]
+initial_inflight = 1024
 
 [orchestrator.model.lora]
 name = "qwen3-4b-wiki-search"
@@ -42,6 +44,7 @@ max_completion_tokens = 512
 
 [[orchestrator.train.source]]
 name = "wiki-search"
+curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
 
 [orchestrator.train.source.env.taskset]
 id = "wiki-search"
@@ -51,10 +54,6 @@ id = "null"
 
 [orchestrator.train.source.env.agent.runtime]
 type = "subprocess"
-
-[[orchestrator.pre_batch_filters]]
-type = "zero_advantage"
-enforce = true
 
 [ckpt] # Checkpoint at the end of training
 

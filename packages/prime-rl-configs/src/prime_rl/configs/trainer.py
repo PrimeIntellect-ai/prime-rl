@@ -2,18 +2,17 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import BeforeValidator, Field, model_validator
 
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     EnvVars,
-    FileMonitorConfig,
     HeartbeatConfig,
     MetricsServerConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
-    WandbConfig,
     ZMQTransportConfig,
 )
 from prime_rl.utils.config import BaseConfig
@@ -53,6 +52,39 @@ class ActivationOffloadingConfig(BaseConfig):
 
     max_inflight_activations: int = Field(5, ge=1)
     """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
+
+
+class OptimizerInBackwardOffloadConfig(BaseConfig):
+    """Full CPU optimizer offload: FP32 masters, optimizer state (AdamW moments; SignSGD is
+    stateless), and accumulated gradients live in CPU RAM, each optimizer chunk runs on CPU as
+    soon as its last gradient arrives, and the refreshed BF16 weights stream back while backward
+    is still executing.
+
+    Gradient numerics: gradients are reduced across ranks in FP32 (``reduce_dtype``) but FSDP2
+    materializes them in the sharded parameter's dtype, which is BF16 for the offload compute
+    model — so each gradient is rounded to BF16 once before the FP32 CPU update. Masters,
+    moments, accumulation, and optimizer arithmetic remain FP32. For gradient numerics
+    bit-faithful to that path, disable offloading.
+    """
+
+    cpu_optimizer_backend: Literal["native", "torch"] = "native"
+    """CPU optimizer implementation used by full offload (AdamW or SignSGD). ``native`` is the production kernel; ``torch`` is a slower debugging and parity fallback."""
+
+    numa_bind: bool = True
+    """Pin each rank's CPUs to its GPU's NUMA node. Disable when the launcher already manages CPU affinity or GPU sysfs topology is unavailable."""
+
+
+def _normalize_optimizer_in_backward_offload(value: Any) -> Any:
+    if value is True:
+        return {}
+    if value is False:
+        return None
+    return value
+
+
+OptimizerInBackwardOffload = Annotated[
+    OptimizerInBackwardOffloadConfig | None, BeforeValidator(_normalize_optimizer_in_backward_offload)
+]
 
 
 class CompileConfig(BaseConfig):
@@ -168,6 +200,9 @@ class ModelConfig(BaseModelConfig):
     optim_cpu_offload: bool = True
     """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
 
+    full_offload: OptimizerInBackwardOffload = None
+    """Full CPU optimizer offload: FP32 masters, moments, and gradients live in CPU RAM and the optimizer runs on CPU, overlapped with backward. Enable with ``true`` or a ``[model.full_offload]`` section; disabled by default."""
+
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
 
@@ -221,7 +256,7 @@ class ModelConfig(BaseModelConfig):
     debug: DebugModelConfig = DebugModelConfig()
     """Debugging knobs for the model and distributed training."""
 
-    fused_lm_head_token_chunk_size: int | Literal["disabled"] = 1024
+    fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. SFT training silently disables this (not supported yet)."""
 
     @model_validator(mode="after")
@@ -270,8 +305,13 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def cpu_offload_mutual_exclusion(self):
-        if self.fsdp_cpu_offload and self.optim_cpu_offload:
-            raise ValueError("Cannot enable both fsdp_cpu_offload and optim_cpu_offload. Use one or the other.")
+        if self.fsdp_cpu_offload and (self.optim_cpu_offload or self.full_offload):
+            raise ValueError("Cannot combine fsdp_cpu_offload with optimizer CPU offloading.")
+        if self.optim_cpu_offload and self.full_offload:
+            raise ValueError(
+                "Cannot enable both optim_cpu_offload and full_offload. "
+                "Set optim_cpu_offload=false when enabling full optimizer offload."
+            )
         return self
 
     @model_validator(mode="after")
@@ -580,10 +620,8 @@ class TrainerConfig(BaseConfig):
 
     log: TrainerLogConfig = TrainerLogConfig()
 
-    wandb: WandbConfig | None = None
-
-    file_monitor: FileMonitorConfig | None = None
-    """Local JSONL metric sink. If set, trainer metrics are appended to ``<output_dir>/metrics.jsonl``."""
+    monitors: MonitorsConfig = MonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
@@ -626,6 +664,23 @@ class TrainerConfig(BaseConfig):
         if self.model.ep_comm_backend == "deepep" and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping is not compatible with DeepEP. "
+                "Automatically setting optim.max_norm to None (disabled).",
+                stacklevel=1,
+            )
+            self.optim.max_norm = None
+        return self
+
+    @model_validator(mode="after")
+    def full_optimizer_offload_requires_supported_optimizer(self):
+        if self.model.full_offload and self.optim.type not in ("adamw", "sign_sgd"):
+            raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
+        return self
+
+    @model_validator(mode="after")
+    def full_optimizer_offload_disables_grad_clipping(self):
+        if self.model.full_offload and self.optim.max_norm is not None:
+            warnings.warn(
+                "Gradient clipping prevents optimizer-in-backward overlap with CPU optimizer offload. "
                 "Automatically setting optim.max_norm to None (disabled).",
                 stacklevel=1,
             )

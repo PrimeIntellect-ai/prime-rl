@@ -9,17 +9,15 @@ from prime_rl.configs.algorithm import (
     AlgoConfig,
     GRPOAlgoConfig,
 )
+from prime_rl.configs.monitors import OrchestratorMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
     EnvVars,
-    FileMonitorConfig,
     HeartbeatConfig,
     LogConfig,
-    PrimeMonitorConfig,
     ResumeConfig,
     TransportConfig,
-    WandbWithExtrasConfig,
     ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
@@ -159,6 +157,77 @@ class EnvConfig(BaseConfig):
         return self
 
 
+class StandardSamplerConfig(BaseConfig):
+    type: Literal["standard"] = "standard"
+
+
+class DifficultyPoolConfig(BaseConfig):
+    threshold: float
+    """Inclusive maximum reward assigned to this pool."""
+
+    weight: float = Field(ge=0)
+    """Relative per-task sampling weight."""
+
+
+def default_difficulty_pools() -> dict[str, DifficultyPoolConfig]:
+    return {
+        "hard": DifficultyPoolConfig(threshold=0.25, weight=0.2),
+        "normal": DifficultyPoolConfig(threshold=0.75, weight=1.0),
+        "easy": DifficultyPoolConfig(threshold=1.0, weight=0.2),
+    }
+
+
+class DifficultyPoolSamplerConfig(BaseConfig):
+    type: Literal["difficulty_pool"] = "difficulty_pool"
+
+    pools: dict[str, DifficultyPoolConfig] = Field(default_factory=default_difficulty_pools)
+    """Named pools ordered by their reward thresholds."""
+
+    seed: int = 42
+
+    @model_validator(mode="after")
+    def validate_pools(self):
+        if not self.pools:
+            raise ValueError("DifficultyPoolSampler requires at least one pool")
+        thresholds = [pool.threshold for pool in self.pools.values()]
+        if len(set(thresholds)) != len(thresholds):
+            raise ValueError("Difficulty pool thresholds must be unique")
+        if not any(pool.weight > 0 for pool in self.pools.values()):
+            raise ValueError("At least one difficulty pool must have a positive weight")
+        return self
+
+
+TaskSamplerConfig: TypeAlias = Annotated[
+    StandardSamplerConfig | DifficultyPoolSamplerConfig,
+    Field(discriminator="type"),
+]
+
+
+class AdvRangeGateConfig(BaseConfig):
+    type: Literal["advantage_range"] = "advantage_range"
+
+    reject_min: float = 0.0
+    reject_max: float = 0.0
+
+    @model_validator(mode="after")
+    def validate_range(self):
+        if self.reject_min > self.reject_max:
+            raise ValueError("reject_min must be less than or equal to reject_max")
+        return self
+
+
+AdmissionGateConfig: TypeAlias = AdvRangeGateConfig
+
+
+class CurriculumConfig(BaseConfig):
+    sampler: TaskSamplerConfig = Field(default_factory=StandardSamplerConfig)
+    """Task selection policy. The default cycles through the task iterator in source order."""
+
+    gates: dict[str, AdmissionGateConfig] = Field(default_factory=dict)
+    """Named admission policies. Every gate observes every finalized group,
+    and a group trains only when every gate admits it."""
+
+
 class TrainSourceConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
@@ -171,6 +240,10 @@ class TrainSourceConfig(EnvConfig):
     """Training algorithm for this env. Inherits from the top-level
     ``orchestrator.algo`` when unset; set ``type`` (and its params) to give
     this env its own algorithm."""
+
+    curriculum: CurriculumConfig | None = None
+    """User-authored task sampler and admission gates. The default cycles
+    through the taskset and admits every finalized group."""
 
 
 class EvalSourceConfig(EnvConfig):
@@ -193,6 +266,9 @@ class TrainConfig(BaseConfig):
 
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
+
+    filter_zero_advantages: bool = True
+    """Remove zero-advantage RL tokens after collecting a batch, before shipping it."""
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
@@ -300,50 +376,6 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the progress from checkpoint."""
 
 
-# Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
-class GibberishFilterConfig(BaseConfig):
-    type: Literal["gibberish"] = "gibberish"
-
-    enforce: bool = False
-    """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
-
-    token_id_threshold: int = 100_000
-    """Token IDs above this are candidates for gibberish. BPE tokens are sorted by merge order."""
-
-    logprob_offset: float = 2.0
-    """Offset from uniform-distribution logprob. Threshold = ``-log(vocab_size) - logprob_offset``."""
-
-
-# Flags rollouts stuck in a repetition loop: emits high-confidence tokens for an extended stretch.
-# Flagged when `window` consecutive tokens are each sampled with probability above `prob_threshold`.
-# (Section 3.2, https://arxiv.org/abs/2506.13585)
-class RepetitionFilterConfig(BaseConfig):
-    type: Literal["repetition"] = "repetition"
-
-    enforce: bool = False
-    """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
-
-    window: int = Field(3_000, ge=1)
-    """Consecutive high-probability steps required to flag the rollout."""
-
-    prob_threshold: float = Field(0.99, gt=0, le=1)
-    """Tokens sampled with probability above this are considered repetitive. Consecutive such tokens count toward the window."""
-
-
-# Flags rollouts with zero advantage.
-class ZeroAdvantageFilterConfig(BaseConfig):
-    type: Literal["zero_advantage"] = "zero_advantage"
-
-    enforce: bool = True
-    """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
-
-
-FilterConfig: TypeAlias = Annotated[
-    GibberishFilterConfig | RepetitionFilterConfig | ZeroAdvantageFilterConfig,
-    Field(discriminator="type"),
-]
-
-
 class FileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
@@ -385,6 +417,30 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
+class ConcurrencyConfig(BaseConfig):
+    """Adaptive in-flight concurrency control. The orchestrator sizes the
+    in-flight episode cap from engine KV capacity and learned per-env episode
+    costs; these fields only bound and seed it."""
+
+    initial_inflight: int | None = Field(None, ge=1)
+    """Optional initial in-flight episodes to start from. Set it when a good value is known to skip the initial ramp; otherwise auto-derive a pessimistic bound at runtime."""
+
+    min_inflight: int = Field(1, ge=1)
+    """Minimum number of in-flight episodes. Set ``min_inflight = max_inflight`` to recover fixed concurrency."""
+
+    max_inflight: int | None = Field(1024, ge=1)
+    """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
+
+    @model_validator(mode="after")
+    def validate_bounds(self):
+        if self.max_inflight is not None:
+            if self.initial_inflight is not None and self.initial_inflight > self.max_inflight:
+                raise ValueError("concurrency.initial_inflight must not exceed concurrency.max_inflight")
+            if self.min_inflight > self.max_inflight:
+                raise ValueError("concurrency.min_inflight must not exceed concurrency.max_inflight")
+        return self
+
+
 class OrchestratorConfig(BaseConfig):
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm: sampling plus the per-token training signal (credit
@@ -411,38 +467,16 @@ class OrchestratorConfig(BaseConfig):
     eval: EvalConfig | None = None
     """Evaluation configuration."""
 
-    pre_batch_filters: list[FilterConfig] = [
-        GibberishFilterConfig(enforce=False),
-        RepetitionFilterConfig(enforce=False),
-        ZeroAdvantageFilterConfig(enforce=False),
-    ]
-    """Filters applied *before* a rollout enters the training batch buffer.
-    All three filter types are registered in monitor mode by default; flip ``enforce=true`` per type
-    to drop matching rollouts before they consume a slot in the batch (e.g. a zero-advantage group
-    never makes it into a training batch)."""
-
-    post_batch_filters: list[FilterConfig] = [
-        GibberishFilterConfig(),
-        RepetitionFilterConfig(),
-        ZeroAdvantageFilterConfig(),
-    ]
-    """Filters applied *after* a batch has been assembled. Each filter annotates each rollout;
-    rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer."""
-
     log: LogConfig = LogConfig()
 
     env_vars: EnvVars = {}
     """Extra environment variables for the orchestrator process(es). Merged on top of the launcher defaults."""
 
-    wandb: WandbWithExtrasConfig | None = None
-
-    prime_monitor: PrimeMonitorConfig | None = None
-
-    file_monitor: FileMonitorConfig | None = None
-    """Local JSONL metric sink. If set, orchestrator metrics are appended to ``<output_dir>/metrics.jsonl``."""
+    monitors: OrchestratorMonitorsConfig = OrchestratorMonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     collect_inference_metrics: bool = True
-    """Collect inference-server metrics (requires wandb)."""
+    """Mirror inference-server metrics to W&B (requires wandb). The ``/metrics`` poll itself always runs — it feeds the concurrency controller."""
 
     inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
     """Role for each policy admin client when collecting P/D inference metrics."""
@@ -474,11 +508,8 @@ class OrchestratorConfig(BaseConfig):
     token_batch_size: int | None = Field(None, ge=1)
     """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
 
-    oversampling_factor: float | None = Field(None, gt=0)
-    """Rollout-mode batching only. Multiplier used to derive ``max_inflight_episodes`` from ``batch_size`` when ``max_inflight_episodes`` is unset. Values below 1.0 intentionally cap in-flight episode capacity below ``batch_size``."""
-
-    max_inflight_episodes: int | None = Field(None, ge=1)
-    """Maximum number of episodes kept in-flight — one episode is one agent run at a time, whatever the env's agents are. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
+    concurrency: ConcurrencyConfig = ConcurrencyConfig()
+    """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
 
     group_size: int = Field(1, ge=1)
     """Output sequences returned per example during training."""
@@ -516,23 +547,13 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_prime_monitor_run_name(self):
-        """Default ``prime_monitor.run_name`` to the W&B run name when monitoring
-        is enabled and the user hasn't named the prime-monitor run explicitly."""
-        if self.prime_monitor is None or self.prime_monitor.run_name is not None:
+    def auto_setup_prime_monitor_name(self):
+        """Default ``monitors.prime.name`` to the W&B run name when monitoring
+        is enabled and the user hasn't named the platform run explicitly."""
+        if self.monitors.prime is None or self.monitors.prime.name is not None:
             return self
-        if self.wandb is not None and self.wandb.name:
-            self.prime_monitor.run_name = self.wandb.name
-        return self
-
-    @model_validator(mode="after")
-    def validate_unique_filter_types(self):
-        for slot_name in ("pre_batch_filters", "post_batch_filters"):
-            types = [f.type for f in getattr(self, slot_name)]
-            if len(types) != len(set(types)):
-                raise ValueError(
-                    f"Duplicate filter types in {slot_name}: {types}. Each filter type may only appear once per slot."
-                )
+        if self.monitors.wandb is not None and self.monitors.wandb.name:
+            self.monitors.prime.name = self.monitors.wandb.name
         return self
 
     @model_validator(mode="after")
@@ -602,29 +623,13 @@ class OrchestratorConfig(BaseConfig):
         if not has_rollout_batch and not has_token_batch:
             self.batch_size = 128
 
-        if has_token_batch:
-            if self.oversampling_factor is not None:
-                raise ValueError("oversampling_factor can only be set when batch_size is set")
-            if self.max_inflight_episodes is None:
-                raise ValueError("max_inflight_episodes must be set when token_batch_size is set")
-        else:
-            assert self.batch_size is not None
-            if self.batch_size % self.group_size != 0:
-                raise ValueError("Batch size must be divisible by the number of samples per problem")
-            oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
-            resolved_max_inflight_episodes = max(
-                self.group_size,
-                int(self.batch_size * oversampling_factor),
-            )
-            if self.max_inflight_episodes is not None and self.oversampling_factor is not None:
-                expected_max_inflight_episodes = resolved_max_inflight_episodes
-                if self.max_inflight_episodes != expected_max_inflight_episodes:
-                    raise ValueError("max_inflight_episodes conflicts with oversampling_factor * batch_size")
-            if self.max_inflight_episodes is None:
-                self.max_inflight_episodes = resolved_max_inflight_episodes
+        if self.batch_size is not None and self.batch_size % self.group_size != 0:
+            raise ValueError("Batch size must be divisible by the number of samples per problem")
 
-        if self.max_inflight_episodes is not None and self.max_inflight_episodes < self.group_size:
-            raise ValueError("max_inflight_episodes must be at least the number of rollouts per example")
+        for field in ("max_inflight", "initial_inflight"):
+            value = getattr(self.concurrency, field)
+            if value is not None and value < self.group_size:
+                raise ValueError(f"concurrency.{field} must be at least the number of rollouts per example")
 
         # Propagate the top-level ``group_size`` into each train env that didn't set its own.
         for env_cfg in self.train.source:

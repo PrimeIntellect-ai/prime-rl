@@ -41,6 +41,19 @@ mkdir -p $LOG_DIR/trainer
 ln -sfn attempt_$ATTEMPT $OUTPUT_DIR/logs/latest
 ln -sfn trainer/node_0.log $LOG_DIR/trainer.log
 
+{% if prl_run_id %}
+# Trainer and evals (separate SLURM job) log to a single shared W&B run whose id
+# ($WANDB_RUN_ID) equals $PRL_RUN_ID: the trainer creates it, the evals process (which
+# outlives the trainer) finalizes it.
+export PRL_RUN_ID={{ prl_run_id }}
+export PRL_RUN_NAME={{ run_name }}
+export WANDB_RUN_ID=$PRL_RUN_ID
+export WANDB_SHARED_MODE=1
+export WANDB_SHARED_PRIMARY=trainer
+export WANDB_SHARED_FINISHER=evals
+export WANDB_SHARED_LABEL=trainer
+export WANDB_PROGRAM="uv run sft"
+{% endif %}
 # Networking
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 echo "HOSTNAMES=${HOSTNAMES[@]}"

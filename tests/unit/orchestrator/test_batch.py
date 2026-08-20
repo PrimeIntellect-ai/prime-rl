@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from prime_rl.trainer.batch import _is_multimodal_sample, build_bin_cost, pad_micro_batch, prepare_batch, prepare_sample
-from prime_rl.transport.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transports.rollouts.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
 
 
 def _routed_experts(data, dtype=np.uint8):

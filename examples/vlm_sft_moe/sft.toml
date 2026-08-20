@@ -8,7 +8,7 @@ optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
 impl = "custom"
 attn = "flash_attention_2"
-ep = 8                      # keep in sync with deployment.num_gpus
+ep = 8                      # keep in sync with deployment.num_train_gpus
 
 [renderer]
 name = "auto"
@@ -52,4 +52,4 @@ save_adapter_separately = true
 
 [deployment]
 type = "single_node"
-num_gpus = 8
+num_train_gpus = 8

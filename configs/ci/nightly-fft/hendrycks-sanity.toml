@@ -4,7 +4,7 @@ max_steps = 5000
 num_train_gpus = 4
 num_infer_gpus = 4
 
-[wandb]
+[monitors.wandb]
 project = "hendrycks-sanity"
 name = "hendrycks-sanity"
 
@@ -17,6 +17,9 @@ name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 batch_size = 512
 group_size = 8
 seq_len = 8192
+
+[orchestrator.concurrency]
+max_inflight = 128
 
 [[orchestrator.train.source]]
 name = "hendrycks-math"
