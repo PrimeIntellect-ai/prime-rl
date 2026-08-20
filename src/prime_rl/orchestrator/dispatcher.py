@@ -128,8 +128,8 @@ def _trace_task(task: vf.Task) -> vf.TraceTask:
 
 
 def _validate_episode_task(episode: vf.Episode[Any, Any, Any], task: vf.Task) -> None:
-    expected = (type(task).__name__, task.key, task.hash)
-    actual = (episode.task.type, episode.task.key, episode.task.hash)
+    expected = (task.key, task.hash)
+    actual = (episode.task.key, episode.task.hash)
     if actual != expected:
         raise ValueError(f"Episode task provenance {actual} does not match dispatched task {expected}")
 

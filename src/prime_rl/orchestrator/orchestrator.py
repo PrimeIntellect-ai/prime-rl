@@ -527,6 +527,7 @@ class Orchestrator:
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
+            self._raise_if_component_stopped()
             if self.draining and self.dispatcher.is_idle:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
@@ -535,6 +536,7 @@ class Orchestrator:
             try:
                 episode = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
+                self._raise_if_component_stopped()
                 continue
 
             # Every completed rollout — errored, rejected, or never batched — lands in the
@@ -561,6 +563,18 @@ class Orchestrator:
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
+
+    def _raise_if_component_stopped(self) -> None:
+        """Propagate unexpected background-component termination to the run."""
+        for task in self.component_tasks:
+            if not task.done():
+                continue
+            if task.cancelled():
+                raise RuntimeError(f"{task.get_name()} stopped unexpectedly")
+            error = task.exception()
+            if error is not None:
+                raise error
+            raise RuntimeError(f"{task.get_name()} exited unexpectedly")
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
