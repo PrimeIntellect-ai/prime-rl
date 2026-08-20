@@ -38,9 +38,10 @@ pytestmark = [
 NUM_EXPERTS, TOP_K, DIM, HIDDEN_DIM, NUM_TOKENS = 4, 2, 256, 128, 512
 
 # Measured on a B200 at the shapes below: bf16 forward and gradients all land at 4e-3..5.5e-3
-# (two bf16 paths with different reduction orders), mxfp8 forward at 6.8e-2. These are
-# backstops at ~3x and ~1.5x the measured values; the sharper checks are the fp32 ratios in
-# the forward test, which need no constant at all. `pytest -s` prints every margin.
+# (two bf16 paths with different reduction orders), mxfp8 forward at 6.8e-2 — which is 1.14x
+# the 5.9e-2 that quantizing the inputs costs by itself, so almost all of it is e4m3, not the
+# kernel. These are backstops at ~3x and ~1.5x the measured values; the sharper checks are the
+# fp32 ratios in the forward test, which need no constant at all. `pytest -s` prints margins.
 BF16_TOL = 1.5e-2
 MXFP8_TOL = 1e-1
 # The mxfp8 backward re-runs the very reference this compares against, on unquantized
@@ -67,7 +68,7 @@ def _assert_close(actual: torch.Tensor, expected: torch.Tensor, tol: float, labe
     # instead mean "both sides computed nothing", which must not read as a pass.
     assert norm > 0, f"{label}: reference is all zeros, the comparison would be vacuous"
     err = _rel_err(actual, expected)
-    print(f"{label}: rel_err={err:.3e} tol={tol:.1e} margin={tol / max(err, 1e-12):.0f}x |ref|={norm:.3e}")
+    print(f"{label}: rel_err={err:.3e} tol={tol:.1e} margin={tol / max(err, 1e-12):.1f}x |ref|={norm:.3e}")
     assert err < tol, f"{label}: relative error {err:.3e} exceeds {tol:.1e}"
 
 
