@@ -1,3 +1,4 @@
+import shutil
 import time
 from pathlib import Path
 
@@ -8,15 +9,15 @@ from torch.distributed.tensor import DTensor
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, LoRAConfig
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.trainer.utils import maybe_clean
-from prime_rl.trainer.weights import (
+from prime_rl.trainer.world import get_world
+from prime_rl.transports.weights.base import WeightBroadcast
+from prime_rl.utils.utils import get_all_ckpt_steps, get_broadcast_dir, get_step_path
+from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
     save_state_dict,
     save_state_dict_parallel,
 )
-from prime_rl.trainer.world import get_world
-from prime_rl.transports.weights.base import WeightBroadcast
-from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
 
 class FileSystemWeightBroadcast(WeightBroadcast):
@@ -75,3 +76,12 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
     def maybe_clean(self, step: int, interval_to_keep: int | None):
         maybe_clean(get_broadcast_dir(self.output_dir), step, interval_to_keep)
+
+    def clean_older(self, step: int) -> None:
+        """Remove all broadcast dirs older than ``step``, keeping only the newest."""
+        if not self.world.is_master:
+            return
+        broadcast_dir = get_broadcast_dir(self.output_dir)
+        for old_step in get_all_ckpt_steps(broadcast_dir):
+            if old_step < step:
+                shutil.rmtree(get_step_path(broadcast_dir, old_step), ignore_errors=True)

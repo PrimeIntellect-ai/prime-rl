@@ -103,10 +103,12 @@ The unified config file automatically configures:
 - **Orchestrator**: Rollout generation with tool calling enabled
 - **Inference**: vLLM server for Qwen3-4B-Instruct-2507 with tool parsing enabled
 
-This will write weight checkpoints in `outputs/rl/weights/step_*`. Upload the final checkpoint to HuggingFace:
+This will write DCP checkpoints in `outputs/rl/checkpoints/step_*`. Convert the final checkpoint to HF format and upload it to HuggingFace:
 
 ```bash
-uv run hf upload <user>/Qwen3-4B-Instruct-WikiSearch-RL outputs/rl/weights/step_500
+uv run torchrun --nproc-per-node 1 scripts/dcp_to_hf.py \
+  --model.name Qwen/Qwen3-4B-Instruct-2507 --ckpt-dir outputs/rl/checkpoints/step_500/trainer --output-dir outputs/rl/weights_hf/step_500
+uv run hf upload <user>/Qwen3-4B-Instruct-WikiSearch-RL outputs/rl/weights_hf/step_500
 ```
 
 ## Evaluation

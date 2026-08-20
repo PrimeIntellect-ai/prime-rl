@@ -465,32 +465,12 @@ OptimizerConfig: TypeAlias = Annotated[
 ]
 
 
-class WeightCheckpointConfig(BaseConfig):
-    save_sharded: bool = True
-    """Save the weight checkpoint in sharded format."""
-
-    save_format: Literal["safetensors", "torch"] = "safetensors"
-    """Weight checkpoint serialization format."""
-
-    save_adapter_separately: bool = False
-    """Save LoRA adapters separately before merging into full model weights."""
-
-
 class CheckpointConfig(BaseConfig):
     output_dir: Path | None = None
-    """Override directory for checkpoints and weights. If set, checkpoints and weight snapshots are written here instead of under the trainer ``output_dir`` — useful for writing large checkpoints to a separate storage volume."""
+    """Override directory for checkpoints. If set, checkpoints are written here instead of under the trainer ``output_dir`` — useful for writing large checkpoints to a separate storage volume."""
 
     interval: int | None = Field(None, ge=1)
     """Interval at which to save the training checkpoint. If None, only checkpoints at the end of training."""
-
-    weights: WeightCheckpointConfig | None = WeightCheckpointConfig()
-    """Weight-checkpoint sub-configuration. If None, no HF-compatible weight checkpoints are written."""
-
-    skip_gather_master_weights: bool = False
-    """Skip gathering and saving HF-compatible weight checkpoints. Useful for large models where the gather is expensive and only DCP checkpoints are needed."""
-
-    weights_only: bool = False
-    """Save only weight checkpoints (no optimizer/scheduler state). Much faster and smaller than full checkpoints, but cannot resume training."""
 
     keep_last: int | None = Field(None, ge=1)
     """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
@@ -742,17 +722,6 @@ class TrainerConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_scheduler_steps(self):
         validate_scheduler(self.scheduler, self.max_steps)
-        return self
-
-    @model_validator(mode="after")
-    def validate_lora_adapter_saving(self):
-        if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
-            lora_enabled = self.model and self.model.lora
-            if not lora_enabled:
-                raise ValueError(
-                    "save_adapter_separately=True requires LoRA to be enabled. "
-                    "Set model.lora or disable save_adapter_separately."
-                )
         return self
 
     @model_validator(mode="after")

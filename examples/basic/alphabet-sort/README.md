@@ -98,10 +98,12 @@ uv run rl @ examples/basic/alphabet-sort/rl.toml \
   --monitors.wandb.name ...
 ```
 
-This will write a weight checkpoint in `outputs/rl/weights/step_100`. Upload it to HF to be able to use it as the final model for evaluation.
+This will write a DCP checkpoint in `outputs/rl/checkpoints/step_100`. Convert it to HF format and upload it to HF to be able to use it as the final model for evaluation.
 
 ```bash
-uv run hf upload <user>/Qwen3-4B-Instruct-AlphabetSort-RL outputs/rl/weights/step_100
+uv run torchrun --nproc-per-node 1 scripts/dcp_to_hf.py \
+  --model.name Qwen/Qwen3-4B-Instruct-2507 --ckpt-dir outputs/rl/checkpoints/step_100/trainer --output-dir outputs/rl/weights_hf/step_100
+uv run hf upload <user>/Qwen3-4B-Instruct-AlphabetSort-RL outputs/rl/weights_hf/step_100
 ```
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL`](https://huggingface.co/PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL).

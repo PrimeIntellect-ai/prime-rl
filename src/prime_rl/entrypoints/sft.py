@@ -1,6 +1,5 @@
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -19,12 +18,10 @@ from prime_rl.utils.pathing import (
     clean_future_steps,
     create_attempt_log_dir,
     format_log_message,
-    get_all_ckpt_steps,
+    get_broadcast_dir,
     get_ckpt_dir,
     get_config_dir,
     get_log_dir,
-    get_step_path,
-    get_weights_dir,
     latest_log_dir,
     resolve_latest_ckpt_step,
     validate_run_dir,
@@ -66,7 +63,7 @@ def eval_env_servers(config: SFTConfig) -> list[tuple[EvalSourceConfig, str]]:
 
 
 def get_ckpt_base(config: SFTConfig) -> Path:
-    """Where checkpoints and weights live: ``ckpt.output_dir`` when set, else the run dir."""
+    """Where checkpoints live: ``ckpt.output_dir`` when set, else the run dir."""
     return (config.ckpt.output_dir if config.ckpt else None) or config.run_dir
 
 
@@ -93,7 +90,7 @@ def build_evals_config(config: SFTConfig) -> EvalsConfig:
         model=config.model.name,
         eval=eval_config,
         online=OnlineConfig(
-            weights_dir=get_weights_dir(get_ckpt_base(config)),
+            broadcasts_dir=get_broadcast_dir(config.run_dir),
             max_steps=config.max_steps,
             resume_step=resolve_resume_step(config),
         ),
@@ -235,9 +232,9 @@ def write_eval_slurm_script(config: SFTConfig, config_dir: Path, script_path: Pa
 def sft_slurm(config: SFTConfig):
     """Run SFT training via SLURM. With online evals on a multi-node deployment, the
     trainer and the eval deployment (inference pool + evals) are two independent
-    SLURM jobs: the handoff is weight checkpoints on the shared filesystem, so the
+    SLURM jobs: the handoff is weight broadcasts on the shared filesystem, so the
     trainer job releases its allocation when training finishes while the eval job
-    keeps draining evals and exits after the final checkpoint."""
+    keeps draining evals and exits after the final broadcast."""
     assert config.slurm is not None
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
@@ -535,25 +532,16 @@ def sft_local(config: SFTConfig):
 
 
 def clean_stale_eval_artifacts(config: SFTConfig) -> None:
-    """Remove eval artifacts a previous run left behind: weight checkpoints and rollout
+    """Remove eval artifacts a previous run left behind: weight broadcasts and rollout
     trace dirs — everything on a fresh start, steps past the resume step on resume.
-    Without this the evals process would replay stale checkpoints (and then skip the
+    Without this the evals process would replay stale broadcasts (and then skip the
     re-trained ones at the same steps), and the append-only trace files would mix two
     policies' rollouts under one step."""
     logger = setup_logger(config.log.level or "info")
     if os.environ.get("NEVER_CLEAN"):
-        logger.warning("NEVER_CLEAN is set - keeping stale weight checkpoints; the evals process may replay them")
+        logger.warning("NEVER_CLEAN is set - keeping stale weight broadcasts; the evals process may replay them")
         return
     resume_step = resolve_resume_step(config)
-    weights_dir = get_weights_dir(get_ckpt_base(config))
-    stale_steps = [step for step in get_all_ckpt_steps(weights_dir) if resume_step is None or step > resume_step]
-    if stale_steps:
-        logger.info(
-            f"Deleting {len(stale_steps)} stale weight checkpoint(s) in {weights_dir} "
-            f"({','.join(map(str, stale_steps))})"
-        )
-        for step in stale_steps:
-            shutil.rmtree(get_step_path(weights_dir, step), ignore_errors=True)
     clean_future_steps(config.run_dir, resume_step if resume_step is not None else -1)
 
 

@@ -75,9 +75,6 @@ lr = 1e-4
 [trainer.model.lora]
 rank = 8
 
-[trainer.ckpt.weights]
-save_adapter_separately = true
-
 [ckpt]
 
 [inference]

@@ -57,16 +57,16 @@ from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRo
 from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.weights import (
-    load_state_dict,
-    load_state_dict_keys,
-    save_state_dict,
-)
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
+from prime_rl.utils.weights import (
+    load_state_dict,
+    load_state_dict_keys,
+    save_state_dict,
+)
 
 
 def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
