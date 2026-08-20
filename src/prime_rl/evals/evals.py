@@ -59,6 +59,11 @@ monkey_patch_chat_completion_logprobs()
 # How often to re-scan the weights directory for new checkpoints.
 POLL_INTERVAL_S = 2.0
 
+# Served model name for adapter checkpoints of LoRA runs. Reloading the same
+# name with fresh weights each step is supported (the server forces an in-place
+# reload, see /load_lora_adapter).
+LORA_NAME = "eval-adapter"
+
 
 class Evals:
     def __init__(self, config: EvalsConfig) -> None:
@@ -313,8 +318,11 @@ class Evals:
 
         if reload_weights:
             get_logger().info(f"Updating inference weights to checkpoint step {step} ({weight_dir})")
+            # LoRA runs checkpoint the raw adapter; load it under a fixed adapter
+            # name and serve the evals against that name (mirrors WeightWatcher).
+            lora_name = LORA_NAME if (weight_dir / "adapter_config.json").exists() else None
             try:
-                await self.pool.update_weights(weight_dir, step=step)
+                await self.pool.update_weights(weight_dir, lora_name=lora_name, step=step)
             except Exception as exc:
                 # Skip this step instead of killing the run; drain the queued examples
                 # so they don't leak into a later epoch with the wrong eval_step.
@@ -322,6 +330,9 @@ class Evals:
                     pass
                 get_logger().error(f"Failed to update inference weights to step {step} - skipping evals: {exc!r}")
                 return
+            if lora_name is not None:
+                self.pool.update_model_name(lora_name)
+                self.policy.model_name = lora_name
 
         # The dispatcher only schedules eval in PREFER_EVAL, so nothing dispatches
         # between the trigger above and the weight reload completing.
