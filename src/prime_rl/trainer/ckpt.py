@@ -26,7 +26,6 @@ from prime_rl.trainer.lora import get_lora_state, has_lora_layers, save_lora_con
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.weights import (
     convert_state_dict_to_hf,
-    gather_weights_on_master,
     gather_weights_parallel,
     save_state_dict,
     save_state_dict_parallel,
@@ -430,8 +429,7 @@ class WeightCheckpointManager:
                     )
                 self._save_model_assets(step_path, model, tokenizer, processor)
         else:
-            gather = gather_weights_parallel if self.config.save_sharded else gather_weights_on_master
-            state_dict = gather(model, dtype=torch.bfloat16)
+            state_dict = gather_weights_parallel(model, dtype=torch.bfloat16)
 
             # Remove tied weight keys to match original model format
             if getattr(model.config, "tie_word_embeddings", False):
@@ -439,10 +437,7 @@ class WeightCheckpointManager:
                     state_dict.pop(key, None)
 
             state_dict = convert_state_dict_to_hf(model, state_dict)
-            if self.config.save_sharded:
-                save_state_dict_parallel(state_dict, step_path)
-            elif self.world.is_master:
-                save_state_dict(state_dict, step_path, save_sharded=False)
+            save_state_dict_parallel(state_dict, step_path)
             if self.world.is_master:
                 self._save_model_assets(step_path, model, tokenizer, processor)
         if self.world.is_master:
