@@ -160,9 +160,13 @@ def test_full_offload_model_only_resume_preserves_weights(
     def model_state(step: int) -> dict[str, torch.Tensor]:
         torch_save_path = tmp_path / f"step_{step}.pt"
         dcp_to_torch_save(run_dir / "checkpoints" / f"step_{step}" / "trainer", torch_save_path)
-        return torch.load(torch_save_path, map_location="cpu", weights_only=False)["model"]
+        return torch.load(torch_save_path, map_location="cpu", weights_only=False)["app"]["model"]
 
     before, after = model_state(5), model_state(6)
     assert before.keys() == after.keys()
+    # The runs train in different compute dtypes (fp32 vs bf16 under full offload),
+    # so compare in the dtype the resumed model actually loaded.
     for key in before:
-        assert torch.equal(before[key], after[key]), f"Weight mismatch after model-only resume: {key}"
+        assert torch.equal(before[key].to(torch.bfloat16), after[key].to(torch.bfloat16)), (
+            f"Weight mismatch after model-only resume: {key}"
+        )

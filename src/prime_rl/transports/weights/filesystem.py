@@ -77,6 +77,10 @@ class FileSystemWeightBroadcast(WeightBroadcast):
     def maybe_clean(self, step: int, interval_to_keep: int | None):
         maybe_clean(get_broadcast_dir(self.output_dir), step, interval_to_keep)
 
+    def is_stable(self, step: int) -> bool:
+        """Whether a complete broadcast for ``step`` is already on disk."""
+        return (get_step_path(get_broadcast_dir(self.output_dir), step) / "STABLE").exists()
+
     def clean_older(self, step: int) -> None:
         """Remove all broadcast dirs older than ``step``, keeping only the newest."""
         if not self.world.is_master:

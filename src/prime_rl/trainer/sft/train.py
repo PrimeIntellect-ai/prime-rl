@@ -408,9 +408,11 @@ def train(config: SFTConfig):
         weight_broadcast = FileSystemWeightBroadcast(
             config.run_dir, FileSystemWeightBroadcastConfig(), config.model.lora
         )
-        if checkpoint_step is not None:
+        if checkpoint_step is not None and not weight_broadcast.is_stable(checkpoint_step):
             # Rebroadcast the resumed policy so the evals process can re-trigger at
-            # the resume step (older broadcasts may have been cleaned).
+            # the resume step (older broadcasts may have been cleaned). Skipped when
+            # the previous run's broadcast survived: rewriting the same dir in place
+            # would race an evals process already reloading it.
             weight_broadcast.broadcast_weights(model, step=checkpoint_step)
             weight_broadcast.clean_older(checkpoint_step)
 
