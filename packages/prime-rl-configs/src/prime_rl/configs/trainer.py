@@ -442,7 +442,13 @@ OptimizerConfig: TypeAlias = Annotated[
 
 class WeightCheckpointConfig(BaseConfig):
     """Enables HF-compatible weight checkpoints. The layout is inferred from the
-    run: full runs save sharded safetensors, LoRA runs save the adapter only."""
+    run: full runs save safetensors (sharded by default), LoRA runs save the
+    adapter only."""
+
+    save_sharded: bool = True
+    """Save full-model weights as rank-parallel sharded safetensors. Set to False to
+    gather on the master and write a single safetensors file — slower, but matches
+    the single-file layout some tooling expects for small models."""
 
 
 class CheckpointConfig(BaseConfig):

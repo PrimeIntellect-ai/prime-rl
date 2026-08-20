@@ -183,6 +183,29 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     return partial
 
 
+def gather_weights_on_master(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
+    """Gather distributed weights on CPU on the master rank only.
+
+    Every rank participates in the collective ``full_tensor`` calls; only the
+    master keeps the result. Used for single-file (unsharded) checkpoints.
+    """
+    world = get_world()
+    cpu_state: dict[str, Tensor] = {}
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
+        warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
+
+        for key, value in model.state_dict().items():
+            if isinstance(value, DTensor):
+                # only gather after the downcast to dtype as it will be faster
+                value = cast(DTensor, value.to(dtype)).full_tensor()
+            if world.is_master:
+                cpu_state[resolve_fqn(model, key)] = value.to("cpu", non_blocking=False)
+        dist.barrier()
+
+    return cpu_state
+
+
 def save_state_dict_parallel(state_dict: dict[str, Tensor], save_dir: Path) -> None:
     """Cooperatively save a rank-partitioned state dict as sharded safetensors.
 
