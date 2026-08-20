@@ -117,13 +117,25 @@ def convert_state_dict_to_hf(model: nn.Module, state_dict: dict[str, Tensor]) ->
     """
     full_keys = dict.fromkeys(resolve_fqn(model, key) for key in model.state_dict().keys())
     if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(full_keys):
+        # PrimeRL custom model holding weights in prime format: apply the model's
+        # declarative prime->HF conversion chain (renames, expert stack/unstack).
         return model.convert_to_hf(state_dict)
-    from transformers.core_model_loading import revert_weight_conversion
+    else:
+        # Plain transformers model: undo the key renames transformers applied when
+        # it loaded the HF checkpoint.
+        from transformers.core_model_loading import revert_weight_conversion
 
-    return revert_weight_conversion(model, state_dict)
+        return revert_weight_conversion(model, state_dict)
 
 
 def resolve_fqn(model: nn.Module, key: str) -> str:
+    """Resolve a state-dict key to the parameter's canonical fully-qualified name.
+
+    Strips wrapper prefixes that training composes onto module paths, e.g. with
+    ``torch.compile`` the key ``model._orig_mod.layers.0.self_attn.q_proj.weight``
+    resolves to ``model.layers.0.self_attn.q_proj.weight`` — the name the tensor
+    has in the HF checkpoint.
+    """
     fqns = get_fqns(model, key)
     assert len(fqns) == 1
     return next(iter(fqns))
