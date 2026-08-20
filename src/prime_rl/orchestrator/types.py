@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Generic, Literal, Protocol
 
 import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
@@ -135,6 +135,20 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
         """Whether the rollout carries a training signal — a nonzero advantage on some token. A
         uniform-reward GRPO group (all-zero advantages) or an unscored rollout has no gradient."""
         return bool(self.advantages) and any(a != 0.0 for a in self.advantages)
+
+    def to_record(self) -> dict[str, Any]:
+        """The trace record, plus the scalar advantage the rollout was assigned.
+
+        ``advantages`` is ``exclude=True`` like the rest of the orchestration
+        metadata, so the stream itself never reaches the record; the scalar view
+        is mirrored on here the way ``record_run`` mirrors the others into
+        ``info``. ``null`` means no credit was ever assigned (an ``all`` record,
+        written on arrival before the sink scores it; an eval rollout; sft/opd/
+        opsd, which assign none) — distinct from ``0.0``, which means the
+        rollout was scored and its group cancelled out."""
+        record = super().to_record()
+        record["advantage"] = self.scalar_advantage()
+        return record
 
 
 @dataclass
