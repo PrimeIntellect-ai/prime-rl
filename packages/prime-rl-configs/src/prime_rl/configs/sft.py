@@ -358,6 +358,18 @@ class SFTConfig(BaseConfig):
                 raise ValueError("[inference] is only used for online evals — add an [eval] block or remove it.")
             return self
 
+        # LoRA runs broadcast the raw adapter, which evals reload via /load_lora_adapter
+        if self.model.lora is not None:
+            if self.inference is not None:
+                self.inference.vllm.enable_lora = True
+                self.inference.vllm.max_lora_rank = self.model.lora.rank
+            else:
+                warnings.warn(
+                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
+                    "make sure to set --enable_lora and --max-lora-rank.",
+                    stacklevel=2,
+                )
+
         if self.deployment.type == "multi_node":
             # Decoupled deployment: the launcher submits a dedicated SLURM job running the
             # inference pool (one engine per DP rank behind a router) plus the evals process.
