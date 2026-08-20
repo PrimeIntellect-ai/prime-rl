@@ -18,9 +18,6 @@ from transformers.utils import (
     SAFE_WEIGHTS_NAME,
 )
 
-from prime_rl.trainer.lora import (
-    clean_lora_state_dict,
-)
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -231,32 +228,3 @@ def save_state_dict_parallel(state_dict: dict[str, Tensor], save_dir: Path) -> N
         index_json = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
         with open(save_dir / SAFE_WEIGHTS_INDEX_NAME, "w", encoding="utf-8") as f:
             f.write(json.dumps(index_json, indent=2, sort_keys=True) + "\n")
-
-
-def gather_weights_on_master(
-    model: nn.Module, is_master: bool, dtype: torch.dtype = torch.bfloat16
-) -> dict[str, Tensor]:
-    """Gather distributed weights on CPU on master rank."""
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
-        warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
-
-        cpu_state = {}
-        for key, value in model.state_dict().items():
-            if isinstance(value, DTensor):
-                # only gather after the downcast to dtype as it will be faster
-                value = cast(DTensor, value.to(dtype)).full_tensor()
-
-            if is_master:
-                key = get_fqns(model, key)
-                assert len(key) == 1
-                key = next(iter(key))
-                # TODO(Sami) Blocking to avoid race condition, should make non-blocking long-term tho
-                cpu_state[key] = value.to("cpu", non_blocking=False)
-        torch.distributed.barrier()
-
-    # Always clean up the state dict for HF compatibility
-    if any(".base_layer." in key or "lora_A" in key or "lora_B" in key for key in cpu_state.keys()):
-        cpu_state = clean_lora_state_dict(cpu_state)
-
-    return cpu_state

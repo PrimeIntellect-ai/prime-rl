@@ -312,7 +312,7 @@ HF-compatible weight snapshots are written under `<run_dir>/weights/step_N/` whe
 uv run hf upload <user>/<model>-RL outputs/<run_name>/weights/step_100
 ```
 
-For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write the raw adapter alongside the merged weights — useful when serving the adapter through a separate `/load_lora_adapter` call.
+For LoRA runs, the weight snapshot is the raw adapter (`adapter_model.safetensors` + `adapter_config.json`) instead of merged weights — serve it through a `/load_lora_adapter` call or merge it with the base model via `peft`.
 
 ## Observability
 

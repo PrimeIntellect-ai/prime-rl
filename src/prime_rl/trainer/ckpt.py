@@ -2,7 +2,6 @@ import bisect
 import gc
 import shutil
 import time
-import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -27,7 +26,6 @@ from prime_rl.trainer.lora import get_lora_state, has_lora_layers, save_lora_con
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.weights import (
     convert_state_dict_to_hf,
-    gather_weights_on_master,
     gather_weights_parallel,
     save_state_dict,
     save_state_dict_parallel,
@@ -400,44 +398,6 @@ class WeightCheckpointManager:
             processor.save_pretrained(path)
         tokenizer.save_pretrained(path)
 
-    def save_to_path(
-        self,
-        path: Path,
-        state_dict: dict[str, Tensor],
-        lora_state_dict: dict[str, Tensor] | None,
-        model,
-        tokenizer: PreTrainedTokenizer,
-        processor: ProcessorMixin | None = None,
-    ):
-        """Save HF-compatible weight checkpoint to a given path."""
-        if self.world.is_master:
-            path.mkdir(parents=True, exist_ok=True)
-            start_time = time.perf_counter()
-
-            self.logger.debug(f"Saving weight checkpoint to {path}")
-            # Suppress torch.distributed warnings during checkpoint saving
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
-                warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
-
-                # Save weights
-                save_state_dict(state_dict, path)
-                self._save_model_assets(path, model, tokenizer, processor)
-
-            if lora_state_dict is not None:
-                adapter_path = path / "lora_adapters"
-                adapter_path.mkdir(parents=True, exist_ok=True)
-                save_state_dict(lora_state_dict, adapter_path, save_sharded=False, adapter=True)
-                if self.lora_config:
-                    save_lora_config(
-                        model,
-                        adapter_path,
-                        rank=self.lora_config.rank,
-                        alpha=self.lora_config.alpha,
-                        dropout=self.lora_config.dropout,
-                    )
-            self.logger.debug(f"Saved weight checkpoint to {path} in {time.perf_counter() - start_time:.2f} seconds")
-
     def save(
         self,
         step: int,
@@ -453,44 +413,35 @@ class WeightCheckpointManager:
             step_path.mkdir(parents=True, exist_ok=True)
         torch.distributed.barrier()
 
-        save_parallel = not has_lora_layers(model)
-
-        self.logger.debug("Gathering weights for weight checkpoint")
         start_time = time.perf_counter()
-        if save_parallel:
-            state_dict = gather_weights_parallel(model, dtype=torch.bfloat16)
-        else:
-            state_dict = gather_weights_on_master(model, self.world.is_master, dtype=torch.bfloat16)
-        self.logger.debug(f"Gathered weights in {time.perf_counter() - start_time:.2f} seconds")
-
-        # Remove tied weight keys to match original model format
-        if getattr(model.config, "tie_word_embeddings", False):
-            for key in getattr(model, "_tied_weights_keys", []):
-                state_dict.pop(key, None)
-
-        if has_lora_layers(model) and self.config.save_adapter_separately:
-            self.logger.debug("Getting run adapter state dict for weight checkpoint")
-            start_time = time.perf_counter()
+        if has_lora_layers(model):
+            # All ranks participate in the adapter DTensor gathers, only master saves
             lora_state_dict = self.get_run_adapter_state_dict()
-            self.logger.debug(f"Got run adapter state dict in {time.perf_counter() - start_time:.2f} seconds")
+            if self.world.is_master:
+                save_state_dict(lora_state_dict, step_path, save_sharded=False, adapter=True)
+                if self.lora_config:
+                    save_lora_config(
+                        model,
+                        step_path,
+                        rank=self.lora_config.rank,
+                        alpha=self.lora_config.alpha,
+                        dropout=self.lora_config.dropout,
+                    )
+                self._save_model_assets(step_path, model, tokenizer, processor)
         else:
-            lora_state_dict = None
+            state_dict = gather_weights_parallel(model, dtype=torch.bfloat16)
 
-        self.logger.debug("Converting to HF hub format for weight checkpoint")
-        start_time = time.perf_counter()
-        state_dict = convert_state_dict_to_hf(model, state_dict)
-        self.logger.debug(f"Converted to HF hub format in {time.perf_counter() - start_time:.2f} seconds")
+            # Remove tied weight keys to match original model format
+            if getattr(model.config, "tie_word_embeddings", False):
+                for key in getattr(model, "_tied_weights_keys", []):
+                    state_dict.pop(key, None)
 
-        if save_parallel:
-            start_time = time.perf_counter()
+            state_dict = convert_state_dict_to_hf(model, state_dict)
             save_state_dict_parallel(state_dict, step_path)
             if self.world.is_master:
                 self._save_model_assets(step_path, model, tokenizer, processor)
-                self.logger.debug(
-                    f"Saved weight checkpoint to {step_path} in {time.perf_counter() - start_time:.2f} seconds"
-                )
-        else:
-            self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer, processor)
+        if self.world.is_master:
+            self.logger.debug(f"Saved weight checkpoint to {step_path} in {time.perf_counter() - start_time:.2f}s")
         self.mark_stable(step)
         bisect.insort(self.ckpt_steps, step)
 

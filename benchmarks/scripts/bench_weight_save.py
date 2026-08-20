@@ -25,12 +25,17 @@ import json
 import os
 import shutil
 import time
+import warnings
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 import torch
 import torch.distributed as dist
+import torch.nn as nn
 from pydantic import Field
+from torch import Tensor
+from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
+from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import setup_model
@@ -38,7 +43,6 @@ from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.utils import setup_torch_distributed
 from prime_rl.trainer.weights import (
     convert_state_dict_to_hf,
-    gather_weights_on_master,
     gather_weights_parallel,
     load_state_dict,
     save_state_dict,
@@ -49,6 +53,29 @@ from prime_rl.utils.config import BaseConfig, cli
 from prime_rl.utils.logger import setup_logger
 
 IMPLS = ("master", "parallel")
+
+
+def gather_weights_on_master(
+    model: nn.Module, is_master: bool, dtype: torch.dtype = torch.bfloat16
+) -> dict[str, Tensor]:
+    """Baseline: gather all weights on CPU on the master rank with blocking copies."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
+        warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
+
+        cpu_state = {}
+        for key, value in model.state_dict().items():
+            if isinstance(value, DTensor):
+                value = cast(DTensor, value.to(dtype)).full_tensor()
+
+            if is_master:
+                key = get_fqns(model, key)
+                assert len(key) == 1
+                key = next(iter(key))
+                cpu_state[key] = value.to("cpu", non_blocking=False)
+        torch.distributed.barrier()
+
+    return cpu_state
 
 
 class BenchWeightSaveConfig(BaseConfig):

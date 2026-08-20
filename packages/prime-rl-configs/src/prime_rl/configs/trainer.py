@@ -441,8 +441,8 @@ OptimizerConfig: TypeAlias = Annotated[
 
 
 class WeightCheckpointConfig(BaseConfig):
-    save_adapter_separately: bool = False
-    """Save LoRA adapters separately before merging into full model weights."""
+    """Enables HF-compatible weight checkpoints. The layout is inferred from the
+    run: full runs save sharded safetensors, LoRA runs save the adapter only."""
 
 
 class CheckpointConfig(BaseConfig):
@@ -705,17 +705,6 @@ class TrainerConfig(BaseConfig):
             if self.max_steps >= 10:
                 raise ValueError(
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
-                )
-        return self
-
-    @model_validator(mode="after")
-    def validate_lora_adapter_saving(self):
-        if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
-            lora_enabled = self.model and self.model.lora
-            if not lora_enabled:
-                raise ValueError(
-                    "save_adapter_separately=True requires LoRA to be enabled. "
-                    "Set model.lora or disable save_adapter_separately."
                 )
         return self
 

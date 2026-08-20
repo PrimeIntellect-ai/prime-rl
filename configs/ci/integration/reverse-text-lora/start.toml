@@ -12,9 +12,6 @@ lr = 5e-5
 [trainer.model.lora]
 rank = 8
 
-[trainer.ckpt.weights]
-save_adapter_separately = true
-
 [orchestrator]
 batch_size = 128
 group_size = 16
