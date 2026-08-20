@@ -3,11 +3,14 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+import verifiers.v1 as vf
+
 from prime_rl.configs.algorithm import HierarchicalGRPOAlgoConfig
-from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.base import Algorithm, iter_prepared
+from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.types import PreparedGroup, PreparedTrace
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainingTrace
     from prime_rl.utils.client import InferencePool
 
 
@@ -28,13 +31,14 @@ class HierarchicalGRPOAlgorithm(Algorithm):
         super().__init__(config, policy_pool)
         self.episode_agents = set(config.episode_agents)
 
-    async def score_group(self, group: list[TrainingTrace]) -> None:
-        peers: dict[tuple[str, str | None], list[TrainingTrace]] = defaultdict(list)
-        for rollout in group:
-            episode_scoped = rollout.trace.agent.name in self.episode_agents
-            key = (rollout.trace.agent.name, str(rollout.episode.id) if episode_scoped else None)
-            peers[key].append(rollout)
+    async def score_group(self, episodes: list[vf.Episode], prepared: PreparedGroup) -> None:
+        peers: dict[tuple[str, str | None], list[tuple[vf.Trace, PreparedTrace]]] = defaultdict(list)
+        for episode, trace, samples in iter_prepared(episodes, prepared):
+            episode_scoped = trace.agent.name in self.episode_agents
+            key = (trace.agent.name, episode.id if episode_scoped else None)
+            peers[key].append((trace, samples))
+        env_name = episodes[0].env.name or episodes[0].env.id
         for members in peers.values():
-            baseline = sum(rollout.trace.reward for rollout in members) / len(members)
-            for rollout in members:
-                rollout.assign_advantages(rollout.trace.reward - baseline)
+            baseline = sum(trace.reward for trace, _ in members) / len(members)
+            for trace, samples in members:
+                assign_advantages(samples, trace.reward - baseline, env_name=env_name)

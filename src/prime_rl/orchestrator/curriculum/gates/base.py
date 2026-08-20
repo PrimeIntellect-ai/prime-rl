@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import EpisodeRun
+import verifiers.v1 as vf
+
+from prime_rl.orchestrator.types import PreparedGroup
 
 
 class AdmissionGate:
     """Base class for user-authored training-sample admission policies."""
 
-    def admit(self, group: list[EpisodeRun]) -> bool:
+    def admit(self, group: list[vf.Episode], prepared: PreparedGroup) -> bool:
         """Return whether a finalized group should enter the training batch."""
         return True
 

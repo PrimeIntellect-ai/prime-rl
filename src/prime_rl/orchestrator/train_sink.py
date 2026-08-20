@@ -3,24 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections import defaultdict
 from collections.abc import Callable
+
+import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import EpisodeRun, TrainBatch, TrainingTrace
+from prime_rl.orchestrator.types import PreparedGroup, PreparedTrace, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
 MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS = 10
 
 
-def payload_tokens(trace: TrainingTrace) -> int:
+def payload_tokens(prepared: PreparedTrace, trace: vf.Trace | None = None) -> int:
     """Token cost of one trainer-bound trace."""
-    return sum(len(sample.token_ids) for sample in trace.samples) or trace.trace.num_total_tokens
+    return sum(len(sample.token_ids) for sample in prepared) or (trace.num_total_tokens if trace is not None else 0)
 
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
@@ -63,7 +64,7 @@ class TrainSink:
         mm_token_type_ids_mapping: dict[int, int] | None,
         batch_size: int | None,
         token_batch_size: int | None,
-        on_result: Callable[[list[EpisodeRun]], bool] | None = None,
+        on_result: Callable[[list[vf.Episode], PreparedGroup], bool] | None = None,
     ) -> None:
         assert (batch_size is None) != (token_batch_size is None), (
             "Exactly one of batch_size / token_batch_size must be set"
@@ -77,8 +78,10 @@ class TrainSink:
         self.on_result = on_result
 
         self.pending_episodes = TrainEpisodes()
-        self.pending_groups: dict[uuid.UUID, list[EpisodeRun]] = defaultdict(list)
-        self.pending_batch: list[TrainingTrace] = []
+        self.pending_groups: dict[str, list[vf.Episode]] = defaultdict(list)
+        self.prepared_by_episode: dict[str, PreparedGroup] = {}
+        self.pending_batch: dict[str, PreparedTrace] = {}
+        self.episode_by_trace: dict[str, vf.Episode] = {}
         self.pending_tokens = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
@@ -97,17 +100,20 @@ class TrainSink:
 
     def pending_batch_by_env(self) -> dict[str, int]:
         counts: dict[str, int] = defaultdict(int)
-        for trace in self.pending_batch:
-            counts[trace.context.env_name] += 1
+        for trace_id in self.pending_batch:
+            episode = self.episode_by_trace[trace_id]
+            counts[episode.env.name or episode.env.id] += 1
         return dict(counts)
 
-    async def add(self, run: EpisodeRun) -> TrainBatch | None:
+    async def add(self, episode: vf.Episode) -> TrainBatch | None:
         """Process one completed episode and return a batch when ready."""
-        await self.process_episode(run)
-        group_id = run.context.group_id
-        env_name = run.context.env_name
+        await self.process_episode(episode)
+        group_id = episode.group_id
+        if group_id is None:
+            raise ValueError("Train episode is missing group_id")
+        env_name = episode.env.name or episode.env.id
         group = self.pending_groups[group_id]
-        group.append(run)
+        group.append(episode)
         if len(group) < self.group_size_for(env_name):
             return None
 
@@ -119,44 +125,45 @@ class TrainSink:
         )
         return self.process_batch() if ready else None
 
-    async def process_episode(self, run: EpisodeRun) -> None:
+    async def process_episode(self, episode: vf.Episode) -> None:
         """Tokenize the clean trainable traces in one episode."""
-        env = self.train_envs.get(run.context.env_name)
-        for trace in run.traces:
+        env_name = episode.env.name or episode.env.id
+        env = self.train_envs.get(env_name)
+        prepared: PreparedGroup = {}
+        for trace in episode.traces:
             if trace.has_error or not trace.agent.trainable:
                 continue
             samples = await asyncio.to_thread(
                 trace_to_samples,
                 trace,
-                env_name=run.context.env_name,
+                env_name=env_name,
                 mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             )
-            training = TrainingTrace(
-                context=run.context,
-                episode=run.episode,
-                trace=trace,
-                samples=samples or [],
-            )
-            run.training.append(training)
-            await env.algorithm.finalize_trace(training)
+            prepared[trace.id] = samples or []
+            await env.algorithm.finalize_trace(episode, trace, prepared[trace.id])
+        self.prepared_by_episode[episode.id] = prepared
 
-    async def process_group(self, group_id: uuid.UUID) -> None:
+    async def process_group(self, group_id: str) -> None:
         group = self.pending_groups.pop(group_id, [])
         if not group:
             return
 
-        self.pending_episodes.extend(group)
-        env_name = group[0].context.env_name
-        task_idx = group[0].context.task.data.idx
-        traces = [trace for run in group for trace in run.traces]
-        survivors = [training for run in group for training in run.training]
+        env_name = group[0].env.name or group[0].env.id
+        traces = [trace for episode in group for trace in episode.traces]
+        task_idx = next((trace.task.data.idx for trace in traces), None)
+        prepared = {
+            trace_id: samples
+            for episode in group
+            for trace_id, samples in self.prepared_by_episode.pop(episode.id, {}).items()
+        }
         num_errored = sum(trace.has_error for trace in traces) + sum(
-            not run.episode.ok for run in group if not run.traces
+            not episode.ok for episode in group if not episode.traces
         )
 
-        if not survivors:
-            self._admit(group)
-            self._record_zero_output(group)
+        if not prepared:
+            admitted = self._admit(group, prepared)
+            self.pending_episodes.extend(group, prepared, admitted=admitted)
+            self._record_zero_output(group, prepared)
             get_logger().debug(
                 f"Finished group | env={env_name} task_idx={task_idx} | "
                 f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | "
@@ -165,47 +172,56 @@ class TrainSink:
             return
 
         env = self.train_envs.get(env_name)
-        await env.algorithm.finalize_group(survivors)
+        await env.algorithm.finalize_group(group, prepared)
         temperature = env.sampling_args["temperature"]
-        for training in survivors:
-            for sample in training.samples:
+        for samples in prepared.values():
+            for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
 
-        if not self._admit(group):
-            self._record_zero_output(group)
+        admitted = self._admit(group, prepared)
+        self.pending_episodes.extend(group, prepared, admitted=admitted)
+        if not admitted:
+            self._record_zero_output(group, prepared)
             get_logger().debug(
                 f"Finished group | env={env_name} task_idx={task_idx} | "
                 f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | rejected by curriculum"
             )
             return
 
-        self.pending_batch.extend(survivors)
+        self.pending_batch.update(prepared)
+        for episode in group:
+            for trace in episode.traces:
+                if trace.id in prepared:
+                    self.episode_by_trace[trace.id] = episode
         if self.token_batch_size is not None:
-            self.pending_tokens += sum(payload_tokens(training) for training in survivors)
+            self.pending_tokens += sum(
+                payload_tokens(samples, self._trace(trace_id)) for trace_id, samples in prepared.items()
+            )
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
 
-        rewards = [training.trace.reward for training in survivors]
+        rewards = [trace.reward for trace in traces if trace.id in prepared]
         avg_reward = sum(rewards) / len(rewards)
         get_logger().debug(
             f"Finished group | env={env_name} task_idx={task_idx} | "
             f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reward={avg_reward:.4f}"
         )
 
-    def _admit(self, group: list[EpisodeRun]) -> bool:
-        admitted = self.on_result(group) if self.on_result is not None else True
-        for run in group:
-            run.is_admitted = admitted
-        return admitted
+    def _trace(self, trace_id: str) -> vf.Trace:
+        episode = self.episode_by_trace[trace_id]
+        return next(trace for trace in episode.traces if trace.id == trace_id)
 
-    def _record_zero_output(self, group: list[EpisodeRun]) -> None:
+    def _admit(self, group: list[vf.Episode], prepared: PreparedGroup) -> bool:
+        return self.on_result(group, prepared) if self.on_result is not None else True
+
+    def _record_zero_output(self, group: list[vf.Episode], prepared: PreparedGroup) -> None:
         if self.batch_size is not None:
-            training_traces = sum(len(run.training) for run in group)
-            returned_traces = sum(len(run.traces) for run in group)
-            self.zero_output_units += training_traces or returned_traces or len(group)
+            returned_traces = sum(len(episode.traces) for episode in group)
+            self.zero_output_units += len(prepared) or returned_traces or len(group)
         else:
-            payload = sum(payload_tokens(trace) for run in group for trace in run.training)
-            episode_tokens = sum(run.episode.num_total_tokens for run in group)
+            traces = {trace.id: trace for episode in group for trace in episode.traces}
+            payload = sum(payload_tokens(samples, traces[trace_id]) for trace_id, samples in prepared.items())
+            episode_tokens = sum(episode.num_total_tokens for episode in group)
             self.zero_output_units += payload or episode_tokens or self.config.seq_len * len(group)
         self._check_zero_output_budget()
 
@@ -228,28 +244,44 @@ class TrainSink:
             )
 
     def process_batch(self) -> TrainBatch:
+        items = list(self.pending_batch.items())
         if self.batch_size is not None:
-            cohort = self.pending_batch[: self.batch_size]
-            self.pending_batch = self.pending_batch[self.batch_size :]
+            selected = items[: self.batch_size]
         else:
             assert self.token_batch_size is not None
             cut = 0
             running = 0
-            for index, trace in enumerate(self.pending_batch):
-                running += payload_tokens(trace)
+            for index, (trace_id, prepared) in enumerate(items):
+                running += payload_tokens(prepared, self._trace(trace_id))
                 cut = index + 1
                 if running >= self.token_batch_size:
                     break
-            cohort = self.pending_batch[:cut]
-            self.pending_batch = self.pending_batch[cut:]
+            selected = items[:cut]
             self.pending_tokens -= running
 
+        selected_prepared = dict(selected)
+        selected_ids = set(selected_prepared)
+        for trace_id in selected_ids:
+            del self.pending_batch[trace_id]
+
         if self.config.train.filter_zero_advantages:
-            for trace in cohort:
-                trace.samples = [sample for sample in trace.samples if _prune_zero_advantages(sample)]
-        samples = [sample for trace in cohort for sample in trace.samples]
+            for trace_id, prepared in selected:
+                selected_prepared[trace_id] = [sample for sample in prepared if _prune_zero_advantages(sample)]
+        samples = [sample for prepared in selected_prepared.values() for sample in prepared]
+
+        traces_by_episode: dict[int, list[vf.Trace]] = defaultdict(list)
+        selected_episodes: dict[int, vf.Episode] = {}
+        for trace_id in selected_ids:
+            episode = self.episode_by_trace.pop(trace_id)
+            selected_episodes[id(episode)] = episode
+            traces_by_episode[id(episode)].extend(trace for trace in episode.traces if trace.id == trace_id)
+        cohort_episodes = [
+            episode.model_copy(update={"traces": traces_by_episode[id(episode)]})
+            for episode in selected_episodes.values()
+        ]
+        cohort = TrainEpisodes(cohort_episodes, selected_prepared)
 
         episodes = self.pending_episodes
         if samples:
             self.pending_episodes = TrainEpisodes()
-        return TrainBatch(episodes=episodes, samples=samples)
+        return TrainBatch(episodes=episodes, cohort=cohort, samples=samples)

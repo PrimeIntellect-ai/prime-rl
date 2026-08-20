@@ -3,12 +3,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import torch
+import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig
-from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.base import Algorithm, iter_prepared
+from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.types import PreparedGroup
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainingTrace
     from prime_rl.utils.client import InferencePool
 
 
@@ -21,15 +23,16 @@ class GRPOAlgorithm(Algorithm):
         super().__init__(config, policy_pool)
         self.length_penalty = config.length_penalty
 
-    async def score_group(self, group: list[TrainingTrace]) -> None:
-        rewards = torch.tensor([rollout.trace.reward for rollout in group], dtype=torch.float32)
+    async def score_group(self, episodes: list[vf.Episode], prepared: PreparedGroup) -> None:
+        traces = [(trace, samples) for _, trace, samples in iter_prepared(episodes, prepared)]
+        rewards = torch.tensor([trace.reward for trace, _ in traces], dtype=torch.float32)
         length_penalty = self.length_penalty
         if length_penalty is None:
             advantages = rewards - rewards.mean()
         else:
-            output = torch.tensor([rollout.trace.num_output_tokens for rollout in group], dtype=rewards.dtype)
-            total = torch.tensor([rollout.trace.num_total_tokens for rollout in group], dtype=rewards.dtype)
-            turns = torch.tensor([rollout.trace.num_turns for rollout in group], dtype=rewards.dtype)
+            output = torch.tensor([trace.num_output_tokens for trace, _ in traces], dtype=rewards.dtype)
+            total = torch.tensor([trace.num_total_tokens for trace, _ in traces], dtype=rewards.dtype)
+            turns = torch.tensor([trace.num_turns for trace, _ in traces], dtype=rewards.dtype)
             input = total - output
             penalty_frac = (
                 length_penalty.num_output_tokens_weight * (output / output.max().clamp(min=1))
@@ -39,5 +42,5 @@ class GRPOAlgorithm(Algorithm):
             penalty = rewards.mean() * penalty_frac
             shaped_rewards = rewards - penalty
             advantages = shaped_rewards - shaped_rewards.mean()
-        for rollout, advantage in zip(group, advantages.tolist(), strict=True):
-            rollout.assign_advantages(advantage)
+        for (trace, samples), advantage in zip(traces, advantages.tolist(), strict=True):
+            assign_advantages(samples, advantage, env_name=episodes[0].env.name or episodes[0].env.id)

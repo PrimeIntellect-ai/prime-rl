@@ -150,9 +150,10 @@ JSONL files of native `vf.Episode` records (training tensors excluded), one line
 `all` gets every completed episode as it arrives — including trace-less failures,
 curriculum-rejected work, and work that never enters a batch — so it is crash-durable.
 `effective` contains the admitted clean trainable traces grouped into their original episodes
-(eval: the non-errored trainable epoch cohort). Episode-level `env`, `ok`, and `errors` remain
-available; each trace retains its `run`, `verifiers`, `agent`, `runtime`, and orchestrator fields
-such as `env_name`, `group_id`, `episode_id`, and `policy_version` under `info`.
+(eval: the non-errored trainable epoch cohort). Each record carries its provenance at the
+episode level: `env` (`id` plus the orchestrator's `name`), `task_key`, `task_hash`,
+`group_id`, `policy_version`, and `run`; each trace retains its own `task`, `run`,
+`verifiers`, `agent`, and `runtime` fields.
 
 ```bash
 wc -l {run_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl

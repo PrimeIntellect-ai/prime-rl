@@ -17,7 +17,7 @@ turns the signal half into runtime objects (the sampling half is the env's
   ``finalize_trace`` / ``finalize_group`` methods the pipeline drives.
   Advantages are per-token everywhere they are stored or shipped — there is no
   scalar advantage in the pipeline. An algorithm assigns credit in its scoring
-  hook via ``TrainingTrace.assign_advantages``: a scalar that is *broadcast* over the
+  hook via ``assign_advantages``: a scalar that is *broadcast* over the
   trace's completion tokens (uniform credit, the common case), or an explicit
   full-length-N per-token list aligned to the concatenated sample token_ids
   (0.0 off-mask).
@@ -37,9 +37,9 @@ from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.opd import OPDAlgorithm
 from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.rae import RAEAlgorithm
-from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo.routing import assign_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
-from prime_rl.orchestrator.types import TrainingTrace
+from prime_rl.orchestrator.types import PreparedGroup, PreparedTrace
 
 if TYPE_CHECKING:
     from prime_rl.configs.algorithm import AlgoConfig
@@ -79,10 +79,11 @@ __all__ = [
     "OPDAlgorithm",
     "OPSDAlgorithm",
     "RAEAlgorithm",
-    "TrainingTrace",
+    "PreparedGroup",
+    "PreparedTrace",
     "SFTDistillAlgorithm",
     "build_algorithm",
     "connect_frozen_pool",
-    "stamp_advantages",
+    "assign_advantages",
     "stamp_loss_routing",
 ]

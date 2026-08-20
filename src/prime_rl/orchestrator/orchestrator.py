@@ -40,12 +40,14 @@ if TYPE_CHECKING:
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, EpisodeDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
+from prime_rl.orchestrator.metrics import TrainEpisodes
 from prime_rl.orchestrator.packing import BatchPacker
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
@@ -388,6 +390,8 @@ class Orchestrator:
             max_inflight_episodes=config.max_inflight_episodes,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
+            run_id=self.run_id,
+            run_name=self.run_name,
         )
         self.train_sink = TrainSink(
             config,
@@ -398,6 +402,7 @@ class Orchestrator:
             token_batch_size=config.token_batch_size,
             on_result=self.train_source.on_result,
         )
+
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
             config,
@@ -432,6 +437,15 @@ class Orchestrator:
             interval=log_interval,
             wandb_enabled=wandb_enabled,
         )
+
+    def off_policy_steps(self, episode: vf.Episode, training_step: int) -> int:
+        """Policy updates between generation and the batch that trains on it."""
+        env_name = episode.env.name or episode.env.id
+        if not self.train_envs.get(env_name).sampler.samples_from_live_policy:
+            return 0
+        if episode.policy_version is None:
+            return 0
+        return max(0, (training_step - 1) - episode.policy_version)
 
     async def start(self) -> None:
         """Run the orchestrator until shutdown. Drives setup, spawns the
@@ -512,23 +526,18 @@ class Orchestrator:
             # ``all`` trace file the moment it arrives, so it survives crashes and drains.
             # Train rollouts belong to the batch window currently collecting (``progress.step``),
             # eval rollouts to the step whose eval triggered them.
-            kind = episode.context.kind
-            step = episode.context.eval_step if kind == "eval" else self.progress.step
+            if episode.run is None:
+                raise ValueError("Dispatched episode is missing run identity")
+            kind = episode.run.type
+            step = episode.run.step if kind == "eval" else self.progress.step
             assert step is not None
             run: vf.RunInfo = (
                 vf.EvalRunInfo(id=self.run_id, name=self.run_name, step=step)
                 if kind == "eval"
                 else vf.TrainRunInfo(id=self.run_id, name=self.run_name, step=step)
             )
-            for trace in episode.traces:
-                trace.record_run(
-                    run,
-                    env_name=episode.context.env_name,
-                    group_id=str(episode.context.group_id),
-                    episode_id=str(episode.episode.id),
-                    policy_version=episode.context.policy_version,
-                )
-            await monitors.log([episode.episode], step, kind, "all")
+            episode.record_run(run)
+            await monitors.log([episode], step, kind, "all")
 
             if kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
@@ -582,8 +591,8 @@ class Orchestrator:
                 )
             return
         self.consecutive_empty_batches = 0
-        effective = batch.episodes.effective
-        n_trainable = sum(record.training is not None and record.training.is_trainable for record in effective.records)
+        effective = batch.cohort.effective
+        n_trainable = sum(record.prepared is not None and is_trainable(record.prepared) for record in effective.records)
         if effective.num_traces and n_trainable / effective.num_traces <= 0.1:
             get_logger().warning(
                 f"Only {n_trainable}/{effective.num_traces} effective traces are trainable "
@@ -610,16 +619,6 @@ class Orchestrator:
                 await self.version_advanced.wait()
             self.wait_for_policy_time += time.perf_counter() - hold_start
 
-        # Stamp each rollout's true staleness: batch ``step`` trains on policy
-        # v{step-1}, so a rollout generated from v{k} is (step-1)-k versions
-        # off-policy — queue time included, unlike the dispatcher's in-flight
-        # counter, which only sees weight updates during generation. Frozen-
-        # sourced rollouts stay 0 (their sampler doesn't follow the policy).
-        for episode in batch.episodes:
-            context = episode.context
-            if self.train_envs.get(context.env_name).sampler.samples_from_live_policy:
-                context.off_policy_steps = (step - 1) - context.policy_version
-
         # The effective (clean, trained-on) subset is logged at ship time; the full arrival
         # window already streamed into the ``all`` cohort on arrival.
         await monitors.log(effective.vf_episodes, step, "train", "effective")
@@ -634,8 +633,8 @@ class Orchestrator:
         save_ckpt_time = await self.maybe_save_ckpt(step)
         trim_process_memory()
 
-        # Episode metrics over the {agg,<env>} × {all,effective} matrix. ``batch.episodes`` is the
-        # full arrival window (errored + rejected included); ``.effective`` is the clean subset.
+        # Episode metrics over the {agg,<env>} × {all,effective} matrix. ``all`` is the
+        # full arrival window; ``effective`` is the exact shipped cohort.
         metrics: dict[str, float] = {}
         for subset, pool in (("all", batch.episodes), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
@@ -650,7 +649,7 @@ class Orchestrator:
         num_input = sum(record.trace.num_input_tokens for record in effective.records)
         num_output = sum(record.trace.num_output_tokens for record in effective.records)
         num_rollouts = batch.episodes.num_traces
-        num_unique_examples = len({episode.context.group_id for episode in batch.episodes})
+        num_unique_examples = len({episode.group_id for episode in batch.episodes})
         metrics |= {
             "progress/tokens": num_tokens,
             "progress/input_tokens": num_input,
@@ -772,13 +771,13 @@ class Orchestrator:
         ``Error`` is the sink-level rate (errored arrivals / total arrivals, over the full window);
         the quality metrics are over the effective (clean, trained-on) subset, as is ``Trainable``."""
         episodes = batch.episodes
-        effective = episodes.effective
+        effective = batch.cohort.effective
         eff = effective.metrics
         n_generated = episodes.num_traces
         n_effective = effective.num_traces
-        n_trainable = sum(record.training is not None and record.training.is_trainable for record in effective.records)
+        n_trainable = sum(record.prepared is not None and is_trainable(record.prepared) for record in effective.records)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_off_policy = max((run.context.off_policy_steps for run in effective), default=0)
+        max_off_policy = max((self.off_policy_steps(episode, step) for episode in effective), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
@@ -791,18 +790,20 @@ class Orchestrator:
             get_logger().success(head)
             return
 
-        by_env = episodes.by_env()
-        name_width = max((len(n) for n in by_env), default=0)
+        window_by_env = episodes.by_env()
+        shipped_by_env = effective.by_env()
+        env_names = sorted(set(window_by_env) | set(shipped_by_env))
+        name_width = max((len(name) for name in env_names), default=0)
         lines = [head]
-        for env_name in sorted(by_env):
-            pool = by_env[env_name]
-            env_eff_pool = pool.effective
+        for env_name in env_names:
+            pool = window_by_env.get(env_name, TrainEpisodes())
+            env_eff_pool = shipped_by_env.get(env_name, TrainEpisodes())
             env_eff = env_eff_pool.metrics
             ratio = (pool.num_traces / n_generated) if n_generated else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Off-Policy {max((run.context.off_policy_steps for run in env_eff_pool), default=0)} | "
+                f"Max Off-Policy {max((self.off_policy_steps(episode, step) for episode in env_eff_pool), default=0)} | "
                 f"Error {pool.metrics.has_error.mean():.1%} | Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
@@ -817,7 +818,9 @@ class Orchestrator:
         # step's trace file — each epoch appends its cohort once, and every record carries
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
         await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
-        policy_versions = {run.context.policy_version for run in batch.episodes}
+        if any(episode.policy_version is None for episode in batch.episodes):
+            raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")
+        policy_versions = {episode.policy_version for episode in batch.episodes if episode.policy_version is not None}
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:
             get_logger().warning(

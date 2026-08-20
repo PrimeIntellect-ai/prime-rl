@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import verifiers.v1 as vf
+
 from prime_rl.configs.algorithm import OPSDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.types import PreparedTrace
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.orchestrator.types import TrainingTrace
     from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
 
@@ -50,22 +52,28 @@ class OPSDAlgorithm(Algorithm):
 
         self.renderer = create_renderer(load_tokenizer(self.policy_pool.model_name), self.renderer_config)
 
-    def _demonstration(self, rollout: TrainingTrace) -> str:
-        demonstration = rollout.trace.info.get(self.demo_key)
+    def _demonstration(self, episode: vf.Episode, trace: vf.Trace) -> str:
+        demonstration = trace.info.get(self.demo_key)
         if demonstration is None:
-            demonstration = getattr(rollout.context.task.data, self.demo_key, None)
+            demonstration = getattr(trace.task.data, self.demo_key, None)
         if demonstration is None:
+            env_name = episode.env.name or episode.env.id
             raise ValueError(
                 f"opsd requires '{self.demo_key}' in the trace info dict or on the task "
-                f"(env '{rollout.context.env_name}', task {rollout.context.task.data.idx})."
+                f"(env '{env_name}', task {trace.task.data.idx})."
             )
         return demonstration
 
-    async def score_trace(self, rollout: TrainingTrace) -> None:
+    async def score_trace(
+        self,
+        episode: vf.Episode,
+        trace: vf.Trace,
+        prepared: PreparedTrace,
+    ) -> None:
         pool = self.teacher_pool
         renderer = self.renderer
         assert renderer is not None, "renderer not built — Algorithm.setup() must run first"
-        hint = self.template.format(demonstration=self._demonstration(rollout))
+        hint = self.template.format(demonstration=self._demonstration(episode, trace))
         hint_block = renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)
 
         async def score_sample(sample: TrainingSample) -> None:
@@ -74,4 +82,4 @@ class OPSDAlgorithm(Algorithm):
             # sample.token_ids (demo-conditioned, the trainer's ref_kl target).
             sample.ref_logprobs = full_logprobs[len(hint_block) :]
 
-        await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))
+        await asyncio.gather(*(score_sample(sample) for sample in prepared))

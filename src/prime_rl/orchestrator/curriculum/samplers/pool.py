@@ -13,7 +13,6 @@ from prime_rl.orchestrator.curriculum.samplers.base import TaskSampler
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import DifficultyPoolSamplerConfig
-    from prime_rl.orchestrator.types import EpisodeRun
 
 
 class DifficultyPoolSampler(TaskSampler):
@@ -64,13 +63,16 @@ class DifficultyPoolSampler(TaskSampler):
             raise RuntimeError("DifficultyPoolSampler has no tasks in a pool with positive weight")
         return self.rng.choices(self.tasks, weights=weights, k=1)[0]
 
-    def observe(self, group: list[EpisodeRun]) -> None:
+    def observe(self, group: list[vf.Episode]) -> None:
         rewards = [
-            trace.reward for run in group for trace in run.traces if not trace.has_error and trace.agent.trainable
+            trace.reward
+            for episode in group
+            for trace in episode.traces
+            if not trace.has_error and trace.agent.trainable
         ]
         if not rewards:
             return
-        task_key = group[0].context.task.key
+        task_key = group[0].task_key
         if task_key is None:
             raise ValueError("A finalized group is missing Task.key")
         self.task_rewards[task_key] = sum(rewards) / len(rewards)

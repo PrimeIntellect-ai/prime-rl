@@ -4,12 +4,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import verifiers.v1 as vf
-
-if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import EpisodeRun
 
 
 class TaskSampler(Iterator[vf.Task], ABC):
@@ -20,7 +17,7 @@ class TaskSampler(Iterator[vf.Task], ABC):
         """Choose the next task."""
         raise NotImplementedError
 
-    def observe(self, group: list[EpisodeRun]) -> None:
+    def observe(self, group: list[vf.Episode]) -> None:
         """Update sampling state from a finalized group."""
 
     def state_dict(self) -> dict[str, Any]:

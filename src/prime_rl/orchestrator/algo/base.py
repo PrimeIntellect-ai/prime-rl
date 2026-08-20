@@ -42,14 +42,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+import verifiers.v1 as vf
+
 from prime_rl.configs.algorithm import ActionLossType, AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo.routing import stamp_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo.routing import stamp_loss_routing
+from prime_rl.orchestrator.types import PreparedGroup, PreparedTrace
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from renderers import RendererConfig
 
-    from prime_rl.orchestrator.types import TrainingTrace
     from prime_rl.utils.client import InferencePool
 
 
@@ -78,6 +80,14 @@ async def connect_frozen_pool(
     return pool
 
 
+def iter_prepared(episodes: list[vf.Episode], prepared: PreparedGroup):
+    """Yield each prepared trace with its parent episode."""
+    for episode in episodes:
+        for trace in episode.traces:
+            if trace.id in prepared:
+                yield episode, trace, prepared[trace.id]
+
+
 class Algorithm:
     """Base class for one env's training algorithm — the runtime of the
     algorithm config's per-token training signal (its sibling :class:`Sampler`
@@ -91,9 +101,8 @@ class Algorithm:
       (``action_loss_type``);
     - lifecycle — :meth:`setup` connects client pools to the frozen models
       the algorithm declares, resolving each reference via :meth:`connect`;
-    - the two scoring hooks, each ``async`` and given a ``TrainingTrace``
-      directly — read its plain verifiers trace and write credit via
-      ``TrainingTrace.assign_advantages``. They are
+    - the two scoring hooks, each ``async`` and given native verifier artifacts
+      alongside prepared samples. They are
       async so either stage may do I/O — e.g. a process-reward model or a
       teacher at arrival, or a judge at group time; a hook that only does
       advantage math simply never awaits.
@@ -134,28 +143,33 @@ class Algorithm:
         self.connected_pools.append(pool)
         return pool
 
-    async def score_trace(self, rollout: TrainingTrace) -> None:
-        """Arrival phase, one training trace before its group is complete: write
-        trace-local credit (``rollout.assign_advantages``), observation ce
-        weights (echo), or per-token results from a model — an inference pool
-        connected in :meth:`setup`, or the live policy (opsd). No siblings, no
-        group stats."""
+    async def score_trace(
+        self,
+        episode: vf.Episode,
+        trace: vf.Trace,
+        prepared: PreparedTrace,
+    ) -> None:
+        """Arrival phase over one trace and its prepared samples."""
 
-    async def score_group(self, group: list[TrainingTrace]) -> None:
+    async def score_group(self, episodes: list[vf.Episode], prepared: PreparedGroup) -> None:
         """Group phase over the finalized cohort: write group-relative credit."""
 
-    async def finalize_trace(self, rollout: TrainingTrace) -> None:
+    async def finalize_trace(
+        self,
+        episode: vf.Episode,
+        trace: vf.Trace,
+        prepared: PreparedTrace,
+    ) -> None:
         """Arrival phase (non-virtual): trace-local scoring as each trace is
         tokenized."""
-        if rollout.samples:
-            await self.score_trace(rollout)
+        if prepared:
+            await self.score_trace(episode, trace, prepared)
 
-    async def finalize_group(self, rollouts: list[TrainingTrace]) -> None:
+    async def finalize_group(self, episodes: list[vf.Episode], prepared: PreparedGroup) -> None:
         """Group phase (non-virtual): group-relative scoring, then stamp each
         sample's wire fields (the advantage stream + loss routing). After this
         the records are frozen — groups die at stamping."""
-        await self.score_group(rollouts)
-        for rollout in rollouts:
-            stamp_advantages(rollout)
-            for sample in rollout.samples:
+        await self.score_group(episodes, prepared)
+        for samples in prepared.values():
+            for sample in samples:
                 stamp_loss_routing(sample, self.action_loss_type)

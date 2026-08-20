@@ -21,7 +21,6 @@ import traceback
 import uuid
 
 import verifiers.v1 as vf
-from verifiers.v1.episode import EnvInfo
 
 from prime_rl import monitors
 from prime_rl.configs.evaluator import EvaluatorConfig
@@ -32,7 +31,7 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
 )
-from prime_rl.orchestrator.types import EpisodeRun, EvalBatch, RunContext
+from prime_rl.orchestrator.types import EvalBatch
 from prime_rl.orchestrator.utils import intercept_vf_logging, set_default_executor
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
@@ -199,7 +198,7 @@ class Evaluator:
         """Drain the eval queue for one step under bounded concurrency, routing
         finished episodes through the sink and finalizing each env's epoch."""
         semaphore = asyncio.Semaphore(self.config.eval.max_inflight_episodes)
-        tasks: list[asyncio.Task[EpisodeRun]] = []
+        tasks: list[asyncio.Task[vf.Episode]] = []
         while (example := self.eval_source.next_example()) is not None:
             env = self.eval_envs.get(example["env_name"])
             group_id = uuid.uuid4()
@@ -208,16 +207,7 @@ class Evaluator:
 
         for future in asyncio.as_completed(tasks):
             episode = await future
-            run = vf.EvalRunInfo(id=self.run_id, name=self.run_name, step=step)
-            for trace in episode.traces:
-                trace.record_run(
-                    run,
-                    env_name=episode.context.env_name,
-                    group_id=str(episode.context.group_id),
-                    episode_id=str(episode.episode.id),
-                    policy_version=episode.context.policy_version,
-                )
-            await monitors.log([episode.episode], step, "eval", "all")
+            await monitors.log([episode], step, "eval", "all")
             eval_batch = self.eval_sink.add(episode)
             if eval_batch is not None:
                 await self.finalize_eval_batch(eval_batch)
@@ -229,7 +219,7 @@ class Evaluator:
         group_id: uuid.UUID,
         step: int,
         semaphore: asyncio.Semaphore,
-    ) -> EpisodeRun:
+    ) -> vf.Episode:
         """Run one episode; failures become an error episode for sink accounting."""
         async with semaphore:
             try:
@@ -242,7 +232,7 @@ class Evaluator:
             except Exception as exc:
                 get_logger().warning(f"Episode task failed in group {group_id} ({env.name}): {exc!r}")
                 episode = vf.WireEpisode(
-                    env=EnvInfo(id=env.name),
+                    env=vf.EnvInfo(id=env.name),
                     ok=False,
                     errors=[
                         vf.Error(
@@ -262,15 +252,14 @@ class Evaluator:
                 trace.ok = False
                 episode.ok = False
                 get_logger().warning(f"Empty trajectory in group {group_id} ({env.name})")
-        context = RunContext(
-            kind="eval",
-            env_name=env.name,
-            group_id=group_id,
-            task=example["task"],
-            policy_version=step,
-            eval_step=step,
-        )
-        return EpisodeRun(context=context, episode=episode)
+        task = example["task"]
+        episode.env.name = env.name
+        episode.task_key = task.key
+        episode.task_hash = task.hash
+        episode.group_id = str(group_id)
+        episode.policy_version = step
+        episode.record_run(vf.EvalRunInfo(id=self.run_id, name=self.run_name, step=step))
+        return episode
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the

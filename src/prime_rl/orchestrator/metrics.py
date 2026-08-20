@@ -8,7 +8,8 @@ from typing import Any, Literal
 
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.types import EpisodeRun, TrainingTrace
+from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
+from prime_rl.orchestrator.types import PreparedGroup, PreparedTrace
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 Subset = Literal["all", "effective"]
@@ -16,19 +17,29 @@ Subset = Literal["all", "effective"]
 
 @dataclass(frozen=True)
 class TraceRecord:
-    """A trace viewed with the run and optional training state composed around it."""
+    """A trace joined with its episode and optional prepared samples for reporting."""
 
-    run: EpisodeRun
+    episode: vf.Episode
     trace: vf.Trace
-    training: TrainingTrace | None
+    prepared: PreparedTrace | None
+    admitted: bool
 
 
-def _records(runs: list[EpisodeRun]) -> list[TraceRecord]:
-    records: list[TraceRecord] = []
-    for run in runs:
-        training_by_trace = {id(item.trace): item for item in run.training}
-        records.extend(TraceRecord(run, trace, training_by_trace.get(id(trace))) for trace in run.traces)
-    return records
+def _records(
+    episodes: list[vf.Episode],
+    prepared: PreparedGroup,
+    admitted: set[str],
+) -> list[TraceRecord]:
+    return [
+        TraceRecord(
+            episode=episode,
+            trace=trace,
+            prepared=prepared.get(trace.id),
+            admitted=episode.id in admitted,
+        )
+        for episode in episodes
+        for trace in episode.traces
+    ]
 
 
 class Stat:
@@ -211,7 +222,7 @@ class TraceMetrics(StatGroup):
     def solve_rates(self) -> dict[str, float]:
         groups: dict = {}
         for record in self.records:
-            groups.setdefault(record.run.context.group_id, []).append(record.trace)
+            groups.setdefault(record.episode.group_id, []).append(record.trace)
         num_groups = len(groups)
         solved_none = sum(sum(trace.reward for trace in group) == 0 for group in groups.values())
         solved_all = sum(all(trace.reward == 1.0 for trace in group) for group in groups.values())
@@ -234,14 +245,14 @@ class TraceMetrics(StatGroup):
         if subset == "all":
             out[f"{prefix}/has_error/mean"] = self.has_error.mean()
             out |= {f"{prefix}/error/{key}": float(value) for key, value in self.error_types().items()}
+            out |= {f"{prefix}/{key}": value for key, value in self.solve_rates().items()}
         out |= {f"{prefix}/stop_condition/{key}": value for key, value in self.stop_conditions().items()}
-        out |= {f"{prefix}/{key}": value for key, value in self.solve_rates().items()}
         return out
 
 
 class EpisodeMetrics:
-    def __init__(self, runs: list[EpisodeRun], records: list[TraceRecord]) -> None:
-        self.runs = runs
+    def __init__(self, episodes: list[vf.Episode], records: list[TraceRecord]) -> None:
+        self.episodes = episodes
         self.records = records
 
     def by_agent(self) -> dict[str, TraceMetrics]:
@@ -251,10 +262,10 @@ class EpisodeMetrics:
         return {name: TraceMetrics(records) for name, records in sorted(per_agent.items())}
 
     def _episode_stat(self, attr: str) -> Stat:
-        by_run = {id(run): 0.0 for run in self.runs}
+        by_episode = {id(episode): 0.0 for episode in self.episodes}
         for record in self.records:
-            by_run[id(record.run)] += float(getattr(record.trace, attr))
-        return Stat(list(by_run.values()))
+            by_episode[id(record.episode)] += float(getattr(record.trace, attr))
+        return Stat(list(by_episode.values()))
 
     @property
     def num_total_tokens(self) -> Stat:
@@ -282,10 +293,12 @@ class EpisodeMetrics:
 
     @property
     def has_error(self) -> Stat:
-        return Stat([float(not run.episode.ok or any(trace.has_error for trace in run.traces)) for run in self.runs])
+        return Stat(
+            [float(not episode.ok or any(trace.has_error for trace in episode.traces)) for episode in self.episodes]
+        )
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
-        if not self.runs:
+        if not self.episodes:
             return {}
         metric_prefix = f"{prefix}/{subset}"
         out: dict[str, float] = {}
@@ -308,11 +321,11 @@ class TrainMetrics(EpisodeMetrics):
         for agent, traces in self.by_agent().items():
             metric_prefix = f"{prefix}/{subset}/{agent}"
             out[f"{metric_prefix}/is_trainable/mean"] = sum(
-                float(record.training is not None and record.training.is_trainable) for record in traces.records
+                float(record.prepared is not None and is_trainable(record.prepared)) for record in traces.records
             ) / len(traces.records)
-            out[f"{metric_prefix}/is_admitted/mean"] = sum(
-                float(record.run.is_admitted) for record in traces.records
-            ) / len(traces.records)
+            out[f"{metric_prefix}/is_admitted/mean"] = sum(float(record.admitted) for record in traces.records) / len(
+                traces.records
+            )
         return out
 
 
@@ -322,7 +335,7 @@ def pass_at_k(records: list[TraceRecord]) -> dict[str, float]:
         return {}
     by_example: dict = {}
     for record in records:
-        by_example.setdefault(record.run.context.group_id, []).append(record.trace.reward)
+        by_example.setdefault(record.episode.group_id, []).append(record.trace.reward)
     per_example = [compute_pass_metrics(group) for group in by_example.values()]
     keys = sorted({key for result in per_example for key in result})
     return {
@@ -332,8 +345,8 @@ def pass_at_k(records: list[TraceRecord]) -> dict[str, float]:
 
 
 class EvalMetrics(EpisodeMetrics):
-    def __init__(self, runs: list[EpisodeRun], records: list[TraceRecord], group_size: int) -> None:
-        super().__init__(runs, records)
+    def __init__(self, episodes: list[vf.Episode], records: list[TraceRecord], group_size: int) -> None:
+        super().__init__(episodes, records)
         self.group_size = group_size
 
     @property
@@ -353,25 +366,29 @@ class EvalMetrics(EpisodeMetrics):
 class EpisodeCollection:
     def __init__(
         self,
-        episodes: list[EpisodeRun] | None = None,
+        episodes: list[vf.Episode] | None = None,
+        prepared: PreparedGroup | None = None,
+        admitted: set[str] | None = None,
         predicate: Callable[[TraceRecord], bool] | None = None,
     ) -> None:
         self.episodes = episodes if episodes is not None else []
+        self.prepared = prepared if prepared is not None else {}
+        self.admitted = admitted if admitted is not None else {episode.id for episode in self.episodes}
         self._predicate = predicate
 
     @property
     def records(self) -> list[TraceRecord]:
-        records = _records(self.episodes)
+        records = _records(self.episodes, self.prepared, self.admitted)
         if self._predicate is None:
             return records
         return [record for record in records if self._predicate(record)]
 
     @property
-    def selected_episodes(self) -> list[EpisodeRun]:
+    def selected_episodes(self) -> list[vf.Episode]:
         if self._predicate is None:
             return self.episodes
-        selected = {id(record.run) for record in self.records}
-        return [run for run in self.episodes if id(run) in selected]
+        selected = {id(record.episode) for record in self.records}
+        return [episode for episode in self.episodes if id(episode) in selected]
 
     @property
     def num_traces(self) -> int:
@@ -384,31 +401,49 @@ class EpisodeCollection:
     @property
     def vf_episodes(self) -> list[vf.Episode]:
         if self._predicate is None:
-            return [run.episode for run in self.selected_episodes]
-        by_run: dict[int, list[vf.Trace]] = {}
+            return self.selected_episodes
+        by_episode: dict[int, list[vf.Trace]] = {}
         for record in self.records:
             trace = record.trace
-            if record.training is not None:
-                advantage = record.training.scalar_advantage()
+            if record.prepared is not None:
+                advantage = scalar_advantage(record.prepared)
                 if advantage is not None:
                     trace = trace.model_copy(update={"info": {**trace.info, "advantage": advantage}})
-            by_run.setdefault(id(record.run), []).append(trace)
+            by_episode.setdefault(id(record.episode), []).append(trace)
         return [
-            run.episode.model_copy(update={"traces": by_run[id(run)]})
-            for run in self.selected_episodes
-            if id(run) in by_run
+            episode.model_copy(update={"traces": by_episode[id(episode)]})
+            for episode in self.selected_episodes
+            if id(episode) in by_episode
         ]
 
-    def append(self, run: EpisodeRun) -> None:
-        self.episodes.append(run)
+    def append(
+        self,
+        episode: vf.Episode,
+        prepared: PreparedGroup | None = None,
+        *,
+        admitted: bool = True,
+    ) -> None:
+        self.episodes.append(episode)
+        self.prepared.update(prepared or {})
+        if admitted:
+            self.admitted.add(episode.id)
 
-    def extend(self, runs: list[EpisodeRun]) -> None:
-        self.episodes.extend(runs)
+    def extend(
+        self,
+        episodes: list[vf.Episode],
+        prepared: PreparedGroup | None = None,
+        *,
+        admitted: bool = True,
+    ) -> None:
+        self.episodes.extend(episodes)
+        self.prepared.update(prepared or {})
+        if admitted:
+            self.admitted.update(episode.id for episode in episodes)
 
     def __len__(self) -> int:
         return len(self.selected_episodes)
 
-    def __iter__(self) -> Iterator[EpisodeRun]:
+    def __iter__(self) -> Iterator[vf.Episode]:
         return iter(self.selected_episodes)
 
 
@@ -417,16 +452,24 @@ class TrainEpisodes(EpisodeCollection):
     def effective(self) -> TrainEpisodes:
         return TrainEpisodes(
             self.episodes,
+            self.prepared,
+            self.admitted,
             predicate=lambda record: (
-                record.run.is_admitted and not record.trace.has_error and record.trace.agent.trainable
+                record.admitted
+                and bool(record.prepared)
+                and not record.trace.has_error
+                and record.trace.agent.trainable
             ),
         )
 
     def by_env(self) -> dict[str, TrainEpisodes]:
-        grouped: dict[str, list[EpisodeRun]] = {}
-        for run in self.selected_episodes:
-            grouped.setdefault(run.context.env_name, []).append(run)
-        return {env_name: TrainEpisodes(runs, self._predicate) for env_name, runs in grouped.items()}
+        grouped: dict[str, list[vf.Episode]] = {}
+        for episode in self.selected_episodes:
+            grouped.setdefault(episode.env.name or episode.env.id, []).append(episode)
+        return {
+            env_name: TrainEpisodes(episodes, self.prepared, self.admitted, self._predicate)
+            for env_name, episodes in grouped.items()
+        }
 
     @property
     def metrics(self) -> TrainMetrics:
@@ -436,11 +479,11 @@ class TrainEpisodes(EpisodeCollection):
 class EvalEpisodes(EpisodeCollection):
     def __init__(
         self,
-        episodes: list[EpisodeRun] | None = None,
+        episodes: list[vf.Episode] | None = None,
         predicate: Callable[[TraceRecord], bool] | None = None,
         group_size: int | None = None,
     ) -> None:
-        super().__init__(episodes, predicate)
+        super().__init__(episodes, predicate=predicate)
         self._group_size = group_size
 
     @property
@@ -450,7 +493,7 @@ class EvalEpisodes(EpisodeCollection):
         counts: dict = {}
         for record in self.records:
             if record.trace.agent.trainable:
-                group_id = record.run.context.group_id
+                group_id = record.episode.group_id
                 counts[group_id] = counts.get(group_id, 0) + 1
         return max(counts.values(), default=0)
 

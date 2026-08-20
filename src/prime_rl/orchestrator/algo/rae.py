@@ -3,11 +3,14 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+import verifiers.v1 as vf
+
 from prime_rl.configs.algorithm import RAEAlgoConfig
-from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.base import Algorithm, iter_prepared
+from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.types import PreparedGroup
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainingTrace
     from prime_rl.utils.client import InferencePool
 
 
@@ -34,9 +37,9 @@ class RAEAlgorithm(Algorithm):
         self.decay = config.decay
         self.baselines: dict[str, float] = defaultdict(float)
 
-    async def score_group(self, group: list[TrainingTrace]) -> None:
-        for rollout in group:
-            trace = rollout.trace
+    async def score_group(self, episodes: list[vf.Episode], prepared: PreparedGroup) -> None:
+        env_name = episodes[0].env.name or episodes[0].env.id
+        for _, trace, samples in iter_prepared(episodes, prepared):
             baseline = self.baselines[trace.agent.name]
-            rollout.assign_advantages(trace.reward - baseline)
+            assign_advantages(samples, trace.reward - baseline, env_name=env_name)
             self.baselines[trace.agent.name] = self.decay * baseline + (1.0 - self.decay) * trace.reward

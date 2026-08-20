@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import verifiers.v1 as vf
+
 from prime_rl.configs.algorithm import OPDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.types import PreparedTrace
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainingTrace
     from prime_rl.transport import TrainingSample
     from prime_rl.utils.client import InferencePool
 
@@ -32,11 +34,16 @@ class OPDAlgorithm(Algorithm):
     async def setup(self) -> None:
         self.teacher_pool = await self.connect(self.teacher)
 
-    async def score_trace(self, rollout: TrainingTrace) -> None:
+    async def score_trace(
+        self,
+        episode: vf.Episode,
+        trace: vf.Trace,
+        prepared: PreparedTrace,
+    ) -> None:
         pool = self.teacher_pool
         assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
 
         async def score_sample(sample: TrainingSample) -> None:
             sample.ref_logprobs = await pool.score(list(sample.token_ids))
 
-        await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))
+        await asyncio.gather(*(score_sample(sample) for sample in prepared))

@@ -11,13 +11,45 @@ the component weight streams and the advantage stream onto the
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from prime_rl.configs.algorithm import ActionLossType
+from prime_rl.orchestrator.types import PreparedTrace
 from prime_rl.transport import TrainingSample
 
-if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainingTrace
+
+def assign_advantages(samples: PreparedTrace, values: float | list[float], *, env_name: str) -> None:
+    """Assign a scalar or full-length token advantage stream."""
+    total = sum(len(sample.token_ids) for sample in samples)
+    if isinstance(values, (int, float)):
+        if any(len(sample.mask) != len(sample.token_ids) for sample in samples):
+            raise ValueError(f"sample masks must align with token ids (env '{env_name}').")
+        advantages = [float(values) if trainable else 0.0 for sample in samples for trainable in sample.mask]
+    else:
+        if len(values) != total:
+            raise ValueError(
+                f"per-token advantages must align with the trace's tokens: "
+                f"got {len(values)}, expected {total} (env '{env_name}')."
+            )
+        advantages = [float(value) for value in values]
+
+    offset = 0
+    for sample in samples:
+        end = offset + len(sample.token_ids)
+        sample.advantages = advantages[offset:end]
+        offset = end
+
+
+def scalar_advantage(samples: PreparedTrace) -> float | None:
+    """Mean nonzero token advantage, or zero for an assigned-zero trace."""
+    advantages = [value for sample in samples for value in sample.advantages or []]
+    if not advantages:
+        return None
+    nonzero = [value for value in advantages if value != 0.0]
+    return sum(nonzero) / len(nonzero) if nonzero else 0.0
+
+
+def is_trainable(samples: PreparedTrace) -> bool:
+    """Whether any token carries nonzero RL credit."""
+    return any(value != 0.0 for sample in samples for value in sample.advantages or [])
 
 
 def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType) -> None:
@@ -49,26 +81,3 @@ def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType)
     else:
         assert action_loss_type == "ref_kl"
         sample.ref_kl_weights = action_weights
-
-
-def stamp_advantages(rollout: TrainingTrace) -> None:
-    """Stamp the rollout's per-token advantage stream onto its samples' wire
-    fields. The stream is full-length-N — aligned to the samples' ``token_ids``
-    concatenated in order, 0.0 on non-trainable positions — and sliced across
-    them. Rollouts with no credit assigned (``advantages=None``, e.g. opd/opsd)
-    ship no advantage stream.
-    """
-    advantages = rollout.advantages
-    if advantages is None:
-        return
-    total = sum(len(sample.token_ids) for sample in rollout.samples)
-    if len(advantages) != total:
-        raise ValueError(
-            f"advantage stream must align with the rollout's tokens: "
-            f"got {len(advantages)}, expected {total} (env '{rollout.context.env_name}')."
-        )
-    offset = 0
-    for sample in rollout.samples:
-        num_tokens = len(sample.token_ids)
-        sample.advantages = list(advantages[offset : offset + num_tokens])
-        offset += num_tokens

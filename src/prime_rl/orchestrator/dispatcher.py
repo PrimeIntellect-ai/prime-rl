@@ -4,7 +4,7 @@
   one episode: one ``run`` request against an env server.
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched episode eventually reaches
-  ``out_q`` exactly once as an ``EpisodeRun``. Failures remain episode errors;
+  ``out_q`` exactly once. Failures remain episode errors;
   sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
@@ -33,17 +33,14 @@ from typing import Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
-from verifiers.v1.episode import EnvInfo
 
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
-    EpisodeRun,
     GroupState,
     InflightEpisode,
     Policy,
-    RunContext,
     RunKind,
 )
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
@@ -118,7 +115,7 @@ class DispatcherMetrics:
 class EpisodeDispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules episodes
-    under shared capacity, and emits ``EpisodeRun`` objects to ``out_q``.
+    under shared capacity, and emits native verifier episodes to ``out_q``.
     The watcher drives ``on_version_pending`` for off-policy
     cancellation; the orchestrator triggers eval epochs."""
 
@@ -134,6 +131,8 @@ class EpisodeDispatcher:
         max_inflight_episodes: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
+        run_id: str,
+        run_name: str | None,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -144,6 +143,8 @@ class EpisodeDispatcher:
         self.train_source = train_source
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
+        self.run_id = run_id
+        self.run_name = run_name
 
         self.max_inflight = max_inflight_episodes
         self.inflight_permits = 0
@@ -156,7 +157,7 @@ class EpisodeDispatcher:
 
         # Bounded so the dispatcher backpressures on a slow sink. One entry per
         # episode — the sinks count episodes, never loose traces.
-        self.out_q: asyncio.Queue[EpisodeRun] = asyncio.Queue(maxsize=max(8, self.max_inflight))
+        self.out_q: asyncio.Queue[vf.Episode] = asyncio.Queue(maxsize=max(8, self.max_inflight))
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -472,7 +473,7 @@ class EpisodeDispatcher:
         except Exception as exc:
             get_logger().warning(f"Episode task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             episode = vf.WireEpisode(
-                env=EnvInfo(id=meta.env_name),
+                env=vf.EnvInfo(id=meta.env_name),
                 ok=False,
                 errors=[
                     vf.Error(
@@ -508,7 +509,7 @@ class EpisodeDispatcher:
         await self.emit_episode(meta, group, episode)
 
     async def emit_episode(self, meta: InflightEpisode, group: GroupState | None, episode: vf.WireEpisode) -> None:
-        """Wrap one completed episode in its run context and emit it."""
+        """Stamp one completed episode with its dispatch provenance and emit it."""
         eval_step = meta.eval_step
         policy_version = meta.policy_version
         if group is not None:
@@ -520,16 +521,18 @@ class EpisodeDispatcher:
 
         if meta.kind == "eval":
             assert eval_step is not None, "eval episode missing eval_step"
-        context = RunContext(
-            kind=meta.kind,
-            env_name=meta.env_name,
-            group_id=meta.group_id,
-            task=meta.task,
-            policy_version=policy_version,
-            off_policy_steps=meta.off_policy_steps,
-            eval_step=eval_step,
+        episode.env.name = meta.env_name
+        episode.task_key = meta.task.key
+        episode.task_hash = meta.task.hash
+        episode.group_id = str(meta.group_id)
+        episode.policy_version = policy_version
+        run: vf.RunInfo = (
+            vf.EvalRunInfo(id=self.run_id, name=self.run_name, step=eval_step)
+            if meta.kind == "eval"
+            else vf.TrainRunInfo(id=self.run_id, name=self.run_name)
         )
-        await self.out_q.put(EpisodeRun(context=context, episode=episode, training=[]))
+        episode.record_run(run)
+        await self.out_q.put(episode)
 
     async def drop_group(self, group_id: uuid.UUID) -> int:
         """Cancel remaining in-flight tasks for this group and emit a
@@ -555,7 +558,7 @@ class EpisodeDispatcher:
         last_meta: InflightEpisode | None = claimed[-1][1] if claimed else None
         for _, meta in claimed:
             episode = vf.WireEpisode(
-                env=EnvInfo(id=meta.env_name),
+                env=vf.EnvInfo(id=meta.env_name),
                 ok=False,
                 errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
             )
@@ -580,7 +583,7 @@ class EpisodeDispatcher:
             unscheduled_cancelled = group.episodes_to_schedule
             for _ in range(unscheduled_cancelled):
                 episode = vf.WireEpisode(
-                    env=EnvInfo(id=group.env_name),
+                    env=vf.EnvInfo(id=group.env_name),
                     ok=False,
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
                 )

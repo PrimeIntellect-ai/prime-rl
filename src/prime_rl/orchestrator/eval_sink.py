@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import uuid
 from collections import defaultdict
+
+import verifiers.v1 as vf
 
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalEpisodes
-from prime_rl.orchestrator.types import EpisodeRun, EvalBatch
+from prime_rl.orchestrator.types import EvalBatch
 from prime_rl.utils.logger import get_logger
 
 
@@ -16,17 +17,20 @@ class EvalSink:
 
     def __init__(self, *, eval_envs: EvalEnvs) -> None:
         self.eval_envs = eval_envs
-        self.pending_groups: dict[uuid.UUID, list[EpisodeRun]] = defaultdict(list)
-        self.pending_batches: dict[tuple[str, int], list[EpisodeRun]] = defaultdict(list)
+        self.pending_groups: dict[str, list[vf.Episode]] = defaultdict(list)
+        self.pending_batches: dict[tuple[str, int], list[vf.Episode]] = defaultdict(list)
 
-    def add(self, run: EpisodeRun) -> EvalBatch | None:
-        env_name = run.context.env_name
-        group_id = run.context.group_id
-        eval_step = run.context.eval_step
-        assert eval_step is not None
+    def add(self, episode: vf.Episode) -> EvalBatch | None:
+        env_name = episode.env.name or episode.env.id
+        group_id = episode.group_id
+        if group_id is None:
+            raise ValueError("Eval episode is missing group_id")
+        eval_step = episode.run.step if isinstance(episode.run, vf.EvalRunInfo) else None
+        if eval_step is None:
+            raise ValueError("Eval episode is missing its run step")
         bkey = (env_name, eval_step)
         group = self.pending_groups[group_id]
-        group.append(run)
+        group.append(episode)
         if len(group) >= self.group_size_for(env_name):
             self.process_group(group_id)
         if len(self.pending_batches[bkey]) >= self.batch_size_for(env_name):
@@ -46,9 +50,10 @@ class EvalSink:
         for group in self.pending_groups.values():
             if not group:
                 continue
-            context = group[0].context
-            assert context.eval_step is not None
-            key = (context.env_name, context.eval_step)
+            episode = group[0]
+            eval_step = episode.run.step if isinstance(episode.run, vf.EvalRunInfo) else None
+            assert eval_step is not None
+            key = (episode.env.name or episode.env.id, eval_step)
             buffered[key] = buffered.get(key, 0) + len(group)
         return [
             (
@@ -61,22 +66,25 @@ class EvalSink:
             for env_name, eval_step in set(batch_counts) | set(buffered)
         ]
 
-    def process_group(self, group_id: uuid.UUID) -> None:
+    def process_group(self, group_id: str) -> None:
         group = self.pending_groups.pop(group_id, [])
         if not group:
             return
-        context = group[0].context
-        assert context.eval_step is not None
-        self.pending_batches[(context.env_name, context.eval_step)].extend(group)
+        episode = group[0]
+        env_name = episode.env.name or episode.env.id
+        eval_step = episode.run.step if isinstance(episode.run, vf.EvalRunInfo) else None
+        assert eval_step is not None
+        self.pending_batches[(env_name, eval_step)].extend(group)
 
-        traces = [trace for run in group for trace in run.traces]
+        traces = [trace for episode in group for trace in episode.traces]
         survivors = [trace for trace in traces if not trace.has_error]
-        num_errored = len(traces) - len(survivors) + sum(not run.episode.ok for run in group if not run.traces)
+        num_errored = len(traces) - len(survivors) + sum(not episode.ok for episode in group if not episode.traces)
         rewards = [trace.reward for trace in survivors]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
+        task_idx = next((trace.task.data.idx for trace in traces), None)
         get_logger().debug(
-            f"Finished group | env={context.env_name} task_idx={context.task.data.idx} "
-            f"eval_step={context.eval_step} | episodes={len(group)} traces={len(traces)} "
+            f"Finished group | env={env_name} task_idx={task_idx} "
+            f"eval_step={eval_step} | episodes={len(group)} traces={len(traces)} "
             f"(errored={num_errored}) | reward={avg_reward:.4f}"
         )
 
