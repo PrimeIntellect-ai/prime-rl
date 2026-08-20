@@ -2,7 +2,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BeforeValidator, Field, model_validator
+from pydantic import BeforeValidator, Field, PrivateAttr, model_validator
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -447,8 +447,11 @@ class CheckpointConfig(BaseConfig):
     interval: int | None = Field(None, ge=1)
     """Interval at which to save the training checkpoint. If None, only checkpoints at the end of training."""
 
-    skip_gather_master_weights: bool = False
-    """Skip gathering and saving HF-compatible weight checkpoints. Useful for large models where the gather is expensive and only DCP checkpoints are needed."""
+    _eval_intervals: list[int] = PrivateAttr(default_factory=list)
+    """Eval-step intervals at which HF weight checkpoints are written — the only
+    trigger for weight saves. Derived from the run's eval config by the SFT/RL
+    entrypoint validators, never set by users. Empty means no weight checkpoints
+    are written (convert DCP checkpoints offline with ``scripts/dcp_to_hf.py``)."""
 
     weights_only: bool = False
     """Save only weight checkpoints (no optimizer/scheduler state). Much faster and smaller than full checkpoints, but cannot resume training."""

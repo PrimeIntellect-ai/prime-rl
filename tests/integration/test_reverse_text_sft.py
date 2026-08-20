@@ -154,8 +154,29 @@ def test_full_offload_model_only_resume_preserves_weights(
     assert sft_full_offload_model_only_resume_process.returncode == 0, (
         f"Process has non-zero return code ({sft_full_offload_model_only_resume_process})"
     )
-    before_dir = run_dir / "weights" / "step_5"
-    after_dir = run_dir / "weights" / "step_6"
+    # Without evals no HF weights are written online — convert the DCP checkpoints
+    # offline (also exercises scripts/dcp_to_hf.py).
+    for step in (5, 6):
+        convert = run_process(
+            [
+                "uv",
+                "run",
+                "torchrun",
+                "--nproc-per-node",
+                "2",
+                "scripts/dcp_to_hf.py",
+                "--model.name",
+                "PrimeIntellect/Qwen3-0.6B",
+                "--ckpt-dir",
+                (run_dir / "checkpoints" / f"step_{step}" / "trainer").as_posix(),
+                "--output-dir",
+                (run_dir / "weights_hf" / f"step_{step}").as_posix(),
+            ],
+            timeout=TIMEOUT,
+        )
+        assert convert.returncode == 0, f"dcp_to_hf failed for step {step} ({convert})"
+    before_dir = run_dir / "weights_hf" / "step_5"
+    after_dir = run_dir / "weights_hf" / "step_6"
     before_files = sorted(before_dir.glob("*.safetensors"))
     after_files = sorted(after_dir.glob("*.safetensors"))
     assert before_files

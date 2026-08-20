@@ -392,13 +392,14 @@ def train(config: SFTConfig):
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
-    # Online evals reload the trainer's HF weight checkpoints from disk, so a weight
+    # Evals reload the trainer's HF weight checkpoints from disk, so a weight
     # checkpoint must land at every step an eval env is due (deterministic from the
-    # config — all ranks agree on the collective save).
-    online_eval_intervals = sorted({source.interval for source in config.eval.source}) if config.eval else []
+    # config — all ranks agree on the collective save). Eval steps are the only
+    # trigger for weight saves.
+    eval_intervals = config.ckpt._eval_intervals if config.ckpt else []
 
-    def is_online_eval_step(step: int) -> bool:
-        return any(step % interval == 0 for interval in online_eval_intervals)
+    def is_eval_step(step: int) -> bool:
+        return any(step % interval == 0 for interval in eval_intervals)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
@@ -530,8 +531,8 @@ def train(config: SFTConfig):
         scheduler.step()
 
         # Checkpoint the step we just finished. The last step's checkpoint is written once after
-        # the loop, so skip it here to avoid a double-save. Weight checkpoints additionally land
-        # at online-eval steps — they are how the inference server picks up the new policy.
+        # the loop, so skip it here to avoid a double-save. Weight checkpoints land only at eval
+        # steps — they are how the inference server picks up the new policy.
         save_ckpt_time = 0
         is_ckpt_step = bool(config.ckpt and config.ckpt.interval) and progress.step % config.ckpt.interval == 0
         if ckpt_manager is not None and is_ckpt_step and not is_last_step:
@@ -544,11 +545,7 @@ def train(config: SFTConfig):
 
             ckpt_manager.maybe_clean()
 
-        if (
-            weight_ckpt_manager is not None
-            and not is_last_step
-            and (is_ckpt_step or is_online_eval_step(progress.step))
-        ):
+        if weight_ckpt_manager is not None and not is_last_step and is_eval_step(progress.step):
             logger.info(f"Saving weight checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             weight_ckpt_manager.save(progress.step, model, tokenizer, processor)

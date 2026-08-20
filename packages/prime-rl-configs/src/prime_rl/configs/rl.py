@@ -825,6 +825,14 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def propagate_eval_intervals(self):
+        """HF weight checkpoints are written only at eval steps: hand the trainer the
+        orchestrator's eval intervals via the private field."""
+        if self.trainer.ckpt is not None and self.orchestrator.eval is not None and self.orchestrator.eval.source:
+            self.trainer.ckpt._eval_intervals = sorted({source.interval for source in self.orchestrator.eval.source})
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         """Auto-setup the default single-node/multi-node SLURM template if no custom template is provided."""
         if self.slurm is not None and self.slurm.template_path is None:

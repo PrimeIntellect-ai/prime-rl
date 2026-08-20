@@ -256,6 +256,13 @@ def train(config: TrainerConfig):
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
+    # HF weight checkpoints land only at eval steps; the orchestrator's per-env eval
+    # intervals arrive via the private field set by the rl entrypoint validators.
+    eval_intervals = config.ckpt._eval_intervals if config.ckpt else []
+
+    def is_eval_step(step: int) -> bool:
+        return any(step % interval == 0 for interval in eval_intervals)
+
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     maybe_record_function = nullcontext
     if config.trace_path:
@@ -605,14 +612,13 @@ def train(config: TrainerConfig):
                 broadcast_weights_time = 0
 
         # Checkpoint the step we just finished (model = policy v{progress.step}).
+        save_ckpt_time = 0
         if (
             (config.ckpt and config.ckpt.interval)
             # the last step is written once after the loop (final ckpt), so skip it here
             and not is_last_step
             and progress.step % config.ckpt.interval == 0
         ):
-            save_ckpt_time = 0
-
             if not config.ckpt.weights_only:
                 logger.info(f"Saving checkpoint at step {progress.step}")
                 save_ckpt_start_time = time.perf_counter()
@@ -621,15 +627,14 @@ def train(config: TrainerConfig):
 
             ckpt_manager.maybe_clean()
 
-            # Save weight checkpoint
-            if weight_ckpt_manager is not None:
-                logger.info(f"Saving weight checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                weight_ckpt_manager.save(progress.step, model, tokenizer)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
-                weight_ckpt_manager.maybe_clean()
-        else:
-            save_ckpt_time = 0
+        # Weight checkpoints land only at eval steps — they are the HF snapshots
+        # matching the orchestrator's eval scores.
+        if weight_ckpt_manager is not None and not is_last_step and is_eval_step(progress.step):
+            logger.info(f"Saving weight checkpoint at step {progress.step}")
+            save_ckpt_start_time = time.perf_counter()
+            weight_ckpt_manager.save(progress.step, model, tokenizer)
+            save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+            weight_ckpt_manager.maybe_clean()
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:

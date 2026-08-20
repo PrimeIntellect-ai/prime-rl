@@ -204,7 +204,7 @@ num_train_gpus = 1  # trainer
 num_infer_gpus = 1  # inference
 ```
 
-The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evals process watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
+The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (the only trigger for weight saves), and the evals process watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
 
 #### Multi-Node (Decoupled Trainer and Inference Pool)
 
@@ -306,7 +306,7 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
 
 ### Serving Checkpoints
 
-HF-compatible weight snapshots are written under `<run_dir>/weights/step_N/` whenever a full checkpoint runs (or you can write weights-only via `--ckpt.weights-only` for cheaper snapshots). Upload directly:
+HF-compatible weight snapshots are written under `<run_dir>/weights/step_N/` only at eval steps — they exist for eval consumption. For any other step, convert a DCP checkpoint offline: `uv run torchrun --nproc-per-node <n> scripts/dcp_to_hf.py --model.name <model> --ckpt-dir <run_dir>/checkpoints/step_N/trainer --output-dir <out>`. Upload directly:
 
 ```bash
 uv run hf upload <user>/<model>-RL outputs/<run_name>/weights/step_100

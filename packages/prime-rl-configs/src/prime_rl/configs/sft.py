@@ -350,13 +350,11 @@ class SFTConfig(BaseConfig):
                 raise ValueError("[inference] is only used for online evals — add an [eval] block or remove it.")
             return self
 
-        # The trainer's HF weight checkpoints are how inference picks up new policies.
+        # The trainer's HF weight checkpoints are how inference picks up new policies:
+        # a weight checkpoint lands at every step an eval env is due.
         if self.ckpt is None:
             self.ckpt = CheckpointConfig()
-        if self.ckpt.skip_gather_master_weights:
-            raise ValueError(
-                "Online evals require HF weight checkpoints — disable ckpt.skip_gather_master_weights."
-            )
+        self.ckpt._eval_intervals = sorted({source.interval for source in self.eval.source})
 
         if self.ckpt.keep_last is not None or self.ckpt.keep_interval is not None:
             warnings.warn(
