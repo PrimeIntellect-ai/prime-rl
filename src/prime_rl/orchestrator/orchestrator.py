@@ -491,6 +491,7 @@ class Orchestrator:
         clean_exit = False
         try:
             await self.main_loop()
+            await self.wait_for_final_broadcast()
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
@@ -518,6 +519,34 @@ class Orchestrator:
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced).")
             trim_process_memory()
+
+    async def wait_for_final_broadcast(self) -> None:
+        """Stay alive for the trainer's last in-memory broadcast (v{max_steps-1};
+        nothing samples from v{max_steps}, so it is never sent). An in-memory
+        broadcast is a blocking collective — tearing down the watcher before
+        the rendezvous would strand the trainer inside it."""
+        config = self.config
+        if config.weight_broadcast.type not in ("nccl", "nixl") or config.max_steps is None:
+            return
+        final_version = config.max_steps - 1
+        if self.policy.version >= final_version:
+            return
+        get_logger().info(f"Waiting for the trainer's final broadcast (v{final_version}) before shutdown")
+
+        async def wait() -> None:
+            while True:
+                self.version_advanced.clear()
+                if self.policy.version >= final_version:
+                    return
+                await self.version_advanced.wait()
+
+        try:
+            await asyncio.wait_for(wait(), timeout=config.weight_broadcast.timeout)
+        except asyncio.TimeoutError:
+            get_logger().warning(
+                f"Trainer did not broadcast v{final_version} within {config.weight_broadcast.timeout}s — "
+                "shutting down anyway"
+            )
 
     async def main_loop(self) -> None:
         """Consume completed episodes and group ``Cancellation``\\ s from the
@@ -596,16 +625,6 @@ class Orchestrator:
         step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
         self.last_batch_at = now
 
-        if config.max_steps is not None and step > config.max_steps:
-            self.draining = True
-            self.dispatcher.disable_train_scheduling()
-            n_cancelled = await self.dispatcher.cancel_inflight_train_episodes()
-            get_logger().info(
-                f"Draining pipeline (cancelled {n_cancelled} in-flight train rollout(s); "
-                f"any in-flight evals will complete)"
-            )
-            return
-
         if not batch.samples:
             self.consecutive_empty_batches += 1
             get_logger().warning(
@@ -629,11 +648,11 @@ class Orchestrator:
             )
 
         # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}.
-        # Without this, fast envs fill batches from buffered rollouts, the
-        # orchestrator finishes early, and its teardown strands the trainer inside
-        # an in-memory broadcast handshake that needs the live weight watcher.
-        # Always satisfiable: the trainer skips only the final TARGET_LAG+1
-        # in-memory broadcasts.
+        # Without this, fast envs fill batches from buffered rollouts and the
+        # orchestrator races arbitrarily far ahead of the trainer. Always
+        # satisfiable: the trainer broadcasts every version except v{max_steps},
+        # and ``wait_for_final_broadcast`` keeps the watcher alive through the
+        # last rendezvous after the pipeline drains.
         required_version = step - 1 - TARGET_LAG
         if self.policy.version < required_version:
             get_logger().info(
@@ -726,6 +745,18 @@ class Orchestrator:
         self.log_train_batch(batch, step=step, step_time=step_time)
 
         self.maybe_trigger_eval(self.progress.step)
+        # Drain right after shipping the final batch. Waiting for a further
+        # batch to fill would burn inference on data that can never train —
+        # and with a tight ``max_staleness`` it never fills at all (the
+        # versions it would need are never broadcast).
+        if config.max_steps is not None and step >= config.max_steps:
+            self.draining = True
+            self.dispatcher.disable_train_scheduling()
+            n_cancelled = await self.dispatcher.cancel_inflight_train_episodes()
+            get_logger().info(
+                f"Shipped the final batch — draining pipeline (cancelled {n_cancelled} in-flight "
+                f"train episode(s); any in-flight evals will complete)"
+            )
         trim_process_memory()
 
     def maybe_trigger_eval(self, step: int) -> None:
@@ -924,16 +955,9 @@ class Orchestrator:
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
         count is ``progress.step - 1``."""
         lead = (self.progress.step - 1) - self.policy.version
-        # The trainer skips the final in-memory weight broadcasts, so policy.version never
-        # reaches the last step. Let the final batch through instead of waiting for it.
-        building_final_batch_without_update = (
-            self.config.weight_broadcast.type in ("nccl", "nixl")
-            and self.config.max_steps is not None
-            and self.progress.step >= self.config.max_steps - 1
-        )
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG and not building_final_batch_without_update:
+        if lead > TARGET_LAG:
             if was_set:
                 get_logger().info(
                     "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."

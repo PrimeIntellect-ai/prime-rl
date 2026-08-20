@@ -77,7 +77,8 @@ class WeightWatcher:
     def compute_next_ckpt_step(self) -> int:
         """Return the next policy version exposed by the configured transport."""
         if self.model_express is not None:
-            if self.config.max_steps is not None and self.ckpt_step >= self.config.max_steps - 2:
+            # The trainer broadcasts every version except v{max_steps}.
+            if self.config.max_steps is not None and self.ckpt_step >= self.config.max_steps - 1:
                 return self.ckpt_step
             # ModelExpress status changes are unversioned, so its rendezvous advances
             # exactly one policy version per READY/INITIALIZING cycle.

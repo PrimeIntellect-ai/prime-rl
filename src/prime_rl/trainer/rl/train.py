@@ -579,15 +579,16 @@ def train(config: TrainerConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
-        # sample its next step from it. In-memory transports retain their two-step shutdown
-        # window; filesystem broadcast still writes every version for resume.
+        # sample its next step from it. Only the final version is unused (nothing samples from
+        # v{max_steps}) — the orchestrator stays alive for every other in-memory rendezvous;
+        # filesystem broadcast still writes every version for resume.
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
             broadcast_unused = (
                 config.weight_broadcast.type in ("nccl", "nixl")
                 and config.max_steps is not None
-                and progress.step >= config.max_steps - 1
+                and progress.step >= config.max_steps
             )
             if not broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()
