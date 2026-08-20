@@ -142,8 +142,8 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 ### Episodes
 
 ```
-{run_dir}/rollouts/step_N/{train,eval}/all/episodes.jsonl        # appended per episode as it completes
-{run_dir}/rollouts/step_N/{train,eval}/effective/episodes.jsonl  # written per finalized batch / eval epoch
+{run_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per episode as it completes
+{run_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
 
 JSONL files of native `vf.Episode` records (training tensors excluded), one line per episode.
@@ -155,9 +155,9 @@ available; each trace retains its `run`, `verifiers`, `agent`, `runtime`, and or
 such as `env_name`, `group_id`, `episode_id`, and `policy_version` under `info`.
 
 ```bash
-wc -l {run_dir}/rollouts/step_42/train/{all,effective}/episodes.jsonl
-jq '.traces[].rewards' {run_dir}/rollouts/step_42/train/effective/episodes.jsonl
-jq 'select(.ok | not) | {id, env: .env.id, errors}' {run_dir}/rollouts/step_*/train/all/episodes.jsonl
+wc -l {run_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
+jq '.traces[].rewards' {run_dir}/rollouts/step_42/train/effective/traces.jsonl
+jq 'select(.ok | not) | {id, env: .env.id, errors}' {run_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
 The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_N/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the episode subtrees.

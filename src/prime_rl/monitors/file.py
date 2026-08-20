@@ -47,7 +47,7 @@ class FileMonitor(Monitor):
         preserved even when no trace was produced."""
 
         def write() -> None:
-            path = self.output_dir / "rollouts" / f"step_{step}" / kind / subset / "episodes.jsonl"
+            path = self.output_dir / "rollouts" / f"step_{step}" / kind / subset / "traces.jsonl"
             path.parent.mkdir(parents=True, exist_ok=True)
             opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
             with open(path, "ab") as f:
