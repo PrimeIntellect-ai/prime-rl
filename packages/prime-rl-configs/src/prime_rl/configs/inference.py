@@ -371,12 +371,28 @@ class SingleNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     type: Literal["single_node"] = "single_node"
 
 
-# Multi-node inference: each node runs an independent vLLM replica.
+# Multi-node inference: each node runs an independent vLLM replica, unless
+# nodes_per_replica groups nodes into larger replicas.
 class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     type: Literal["multi_node"] = "multi_node"
 
     num_nodes: int = Field(2, ge=1)
     """Inference nodes."""
+
+    nodes_per_replica: int = Field(1, ge=1)
+    """Nodes each replica spans. 1 (default) runs an independent replica per node; >1 groups
+    consecutive nodes into one replica whose ranks form a single external-LB DP group with EP
+    spanning the group — for models too large for one node (e.g. BF16 550B on 8xH200 nodes).
+    Requires ``enable_expert_parallel`` and the ``vllm-router`` backend."""
+
+    @model_validator(mode="after")
+    def validate_nodes_per_replica(self):
+        if self.num_nodes % self.nodes_per_replica != 0:
+            raise ValueError(
+                f"deployment.num_nodes ({self.num_nodes}) must be a multiple of "
+                f"deployment.nodes_per_replica ({self.nodes_per_replica})."
+            )
+        return self
 
 
 # Disaggregated prefill/decode inference. Each replica is split into separate
@@ -486,6 +502,22 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_nodes_per_replica_requires_ep(self):
+        if self.deployment.type != "multi_node" or self.deployment.nodes_per_replica == 1:
+            return self
+        if not self.enable_expert_parallel:
+            raise ValueError(
+                "deployment.nodes_per_replica > 1 requires enable_expert_parallel "
+                "(weights shard across the replica's node-spanning EP group)."
+            )
+        if self.router is not None and self.router.type == "llm-d":
+            raise ValueError(
+                "deployment.nodes_per_replica > 1 is only supported with the vllm-router backend "
+                "(llm-d endpoint discovery assumes one replica per node)."
+            )
         return self
 
     @model_validator(mode="after")
