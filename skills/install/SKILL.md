@@ -44,12 +44,12 @@ uv sync --extra kernels
 ```
 
 No plain sync compiles CUDA — building from source stays an explicit, manual step (needs
-`nvcc` whose CUDA major matches torch's and the `kernels` submodule initialized), and
-overrides the wheel until the next sync:
+`nvcc` whose CUDA major matches torch's and the `deps/prime-kernels` submodule initialized),
+and overrides the wheel until the next sync:
 
 ```bash
-git submodule update --init kernels
-uv pip install --no-build-isolation -e kernels
+git submodule update --init deps/prime-kernels
+uv pip install --no-build-isolation -e deps/prime-kernels
 ```
 
 See the `kernels` skill.

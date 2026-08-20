@@ -11,5 +11,5 @@
 	path = deps/pydantic-config
 	url = https://github.com/PrimeIntellect-ai/pydantic-config
 [submodule "prime-kernels"]
-	path = kernels
+	path = deps/prime-kernels
 	url = https://github.com/PrimeIntellect-ai/prime-kernels

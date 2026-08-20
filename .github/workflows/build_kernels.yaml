@@ -1,6 +1,6 @@
 name: Build Kernels
 
-# Builds the `prime-kernels` wheel for x86_64 and aarch64 from the kernels/ submodule.
+# Builds the `prime-kernels` wheel for x86_64 and aarch64 from the deps/prime-kernels submodule.
 # Runs on every bump of that submodule to catch build breakage, and with `release_tag` to
 # attach the wheels to a GitHub release — which is how they are consumed (see the `kernels`
 # skill).
@@ -14,13 +14,13 @@ name: Build Kernels
 on:
   pull_request:
     paths:
-      - "kernels"
+      - "deps/prime-kernels"
       - ".gitmodules"
       - ".github/workflows/build_kernels.yaml"
   push:
     branches: [main]
     paths:
-      - "kernels"
+      - "deps/prime-kernels"
       - ".gitmodules"
       - ".github/workflows/build_kernels.yaml"
   workflow_dispatch:
@@ -78,11 +78,11 @@ jobs:
           submodules: false
           ref: ${{ inputs.ref }}
 
-      # kernels/ is the prime-kernels submodule and carries every kernel's sources.
+      # deps/prime-kernels is the prime-kernels submodule and carries every kernel's sources.
       - name: Init the kernels submodule
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git submodule update --init -- kernels
+          git submodule update --init -- deps/prime-kernels
 
       - name: Install uv
         run: |
@@ -110,8 +110,8 @@ jobs:
         run: |
           TORCH_VERSION=$(/tmp/build-env/bin/python -c 'import torch; print(torch.__version__.split("+")[0])')
           LOCAL="${CUDA_TAG}torch${TORCH_VERSION}"
-          sed -i -E "s/^version = \"([^\"]+)\"$/version = \"\1+${LOCAL}\"/" kernels/pyproject.toml
-          grep '^version' kernels/pyproject.toml
+          sed -i -E "s/^version = \"([^\"]+)\"$/version = \"\1+${LOCAL}\"/" deps/prime-kernels/pyproject.toml
+          grep '^version' deps/prime-kernels/pyproject.toml
 
       - name: Build wheel
         env:
@@ -119,7 +119,7 @@ jobs:
           CUDA_HOME: /usr/local/cuda
           PRIME_KERNELS_REQUIRE: "1"
           MAX_JOBS: "8"
-        run: uv build --wheel --no-build-isolation --out-dir dist kernels
+        run: uv build --wheel --no-build-isolation --out-dir dist deps/prime-kernels
 
       - name: Inspect wheel
         run: |

@@ -454,6 +454,7 @@ def apply_fused_moe_kernel(model: nn.Module, quantization: QuantizationConfig | 
 
     # MXFP8 with grouped GEMM is the one setting that quantizes the experts themselves, so this also picks the MXFP8 kernel."""
     dtype = "mxfp8" if isinstance(quantization, MXFP8Config) and quantization.enable_grouped_gemm else "bf16"
+    kernel = _load_fused_moe_kernel()
 
     for layer in language_model.layers:
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
@@ -462,13 +463,16 @@ def apply_fused_moe_kernel(model: nn.Module, quantization: QuantizationConfig | 
                 raise ValueError(
                     "model.moe_fused_kernel=true requires MoE layers with score_before_experts=false, because the fused kernel applies the routing scores to the expert outputs."
                 )
+            _, hidden_dim, dim = mlp.experts.w1.shape
+            reason = kernel.unsupported_shape_reason(dim, hidden_dim, mxfp8=dtype == "mxfp8")
+            if reason is not None:
+                raise ValueError(f"model.moe_fused_kernel=true does not support this model: {reason}")
             mlp.fused_kernel = dtype
             num_moe_layers += 1
 
     if num_moe_layers == 0:
         raise ValueError("model.moe_fused_kernel=true but no MoE layers found. Is this a custom-impl MoE model?")
 
-    _load_fused_moe_kernel()
     logger.info(f"Using the fused {dtype} MoE kernel for {num_moe_layers} MoE layers")
 
 

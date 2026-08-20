@@ -185,9 +185,7 @@ def _run_experts_grouped_mm_impl(
 
 
 _fused_moe = None
-_FUSED_MOE_BLOCK_M = 128  # The fused kernel indexes the expert blocks in blocks of 128 rows which is a requirement
-_FUSED_MOE_MXFP8_BLOCK_SIZE = 32  # mxfp8 carries one e8m0 scale per 32 elements of the reduction dim
-_FUSED_MOE_BWD_ALIGN_M = 16  # bf16 wgrad grouped GEMM needs 16-byte-aligned group extents along the token dim
+_GROUPED_MM_ALIGN_M = 16  # torch._grouped_mm, used by the hand-written backward, needs 16-aligned group extents
 
 
 def _load_fused_moe_kernel() -> ModuleType:
@@ -213,15 +211,11 @@ def _run_experts_fused_kernel(
     top_scores: torch.Tensor,
     num_experts: int,
 ) -> torch.Tensor:
-    hidden_dim = w1.shape[1]
-    assert hidden_dim % _FUSED_MOE_BLOCK_M == 0, (
-        f"moe_intermediate_size {hidden_dim} must be a multiple of {_FUSED_MOE_BLOCK_M} for the fused MoE kernel"
-    )
-    gate_up_weight = torch.cat((w1.to(torch.bfloat16), w3.to(torch.bfloat16)), dim=1)
     kernel = _load_fused_moe_kernel()  # Try to load the kernel from prime-kernels
+    gate_up_weight = torch.cat((w1.to(torch.bfloat16), w3.to(torch.bfloat16)), dim=1)
     sorted_token_ids, expert_ids, num_tokens_post_padded = (
         kernel.moe_align(  # Invoke align kernel first to prepare ids and other inputs
-            selected_experts_indices.to(torch.int32).contiguous(), num_experts, _FUSED_MOE_BLOCK_M
+            selected_experts_indices.to(torch.int32).contiguous(), num_experts, kernel.BLOCK_M
         )
     )
     out = torch.empty_like(x, dtype=torch.bfloat16)  # Empty, as split=True zeros out the result anyway
@@ -235,22 +229,20 @@ def _run_experts_fused_kernel(
         top_scores.to(torch.float32),
         out,
         selected_experts_indices.shape[1],
-        block_m=_FUSED_MOE_BLOCK_M,
+        block_m=kernel.BLOCK_M,
         split=True,
     )
     return out.type_as(x)
 
 
-def _quantize_mxfp8(t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def _quantize_mxfp8(t: torch.Tensor, block_size: int) -> tuple[torch.Tensor, torch.Tensor]:
     from torchao.prototype.moe_training.tensor import TrainingWeightWrapperBaseTensor, unwrap_weight
     from torchao.prototype.mx_formats import ScaleCalculationMode
     from torchao.prototype.mx_formats.mx_tensor import to_mx
 
     if isinstance(t, TrainingWeightWrapperBaseTensor):
         t = unwrap_weight(t)
-    scales, data = to_mx(
-        t.to(torch.bfloat16), torch.float8_e4m3fn, _FUSED_MOE_MXFP8_BLOCK_SIZE, scaling_mode=ScaleCalculationMode.RCEIL
-    )
+    scales, data = to_mx(t.to(torch.bfloat16), torch.float8_e4m3fn, block_size, scaling_mode=ScaleCalculationMode.RCEIL)
     return data, scales
 
 
@@ -263,19 +255,14 @@ def _run_experts_fused_mxfp8_kernel(
     top_scores: torch.Tensor,
     num_experts: int,
 ) -> torch.Tensor:
-    hidden_dim, dim = w1.shape[1], w1.shape[2]
-    assert hidden_dim % _FUSED_MOE_BLOCK_M == 0, (
-        f"moe_intermediate_size {hidden_dim} must be a multiple of {_FUSED_MOE_BLOCK_M} for the fused MoE kernel"
-    )
-    # The mxfp8 path tiles 256 columns per MMA on both GEMMs, so it is stricter than bf16 (128).
-    assert dim % 256 == 0, f"model dim {dim} must be a multiple of 256 for the mxfp8 fused MoE kernel"
     kernel = _load_fused_moe_kernel()  # Try to load the kernel from prime-kernels
-    gate_up_weight, gate_up_scales = _quantize_mxfp8(torch.cat((w1, w3), dim=1))
-    down_weight, down_scales = _quantize_mxfp8(w2)
-    x_data, x_scales = _quantize_mxfp8(x)  # Activation scales stay row major, only the weights are packed
+    block_size = kernel.MXFP8_SCALE_BLOCK
+    gate_up_weight, gate_up_scales = _quantize_mxfp8(torch.cat((w1, w3), dim=1), block_size)
+    down_weight, down_scales = _quantize_mxfp8(w2, block_size)
+    x_data, x_scales = _quantize_mxfp8(x, block_size)  # Activation scales stay row major, only the weights are packed
     sorted_token_ids, expert_ids, num_tokens_post_padded = (
         kernel.moe_align(  # Invoke align kernel first to prepare ids and other inputs
-            selected_experts_indices.to(torch.int32).contiguous(), num_experts, _FUSED_MOE_BLOCK_M
+            selected_experts_indices.to(torch.int32).contiguous(), num_experts, kernel.BLOCK_M
         )
     )
     out = torch.empty_like(x, dtype=torch.bfloat16)  # Empty, as split=True zeros out the result anyway
@@ -292,7 +279,7 @@ def _run_experts_fused_mxfp8_kernel(
         top_scores.to(torch.float32),
         out,
         selected_experts_indices.shape[1],
-        block_m=_FUSED_MOE_BLOCK_M,
+        block_m=kernel.BLOCK_M,
         split=True,
     )
     return out.type_as(x)
@@ -357,7 +344,7 @@ def _run_experts_fused_backward_bf16(
     order = torch.argsort(flat_experts, stable=True)
     token_idx = order // top_k
     counts = num_tokens_per_expert.to(torch.int64)
-    aligned_counts, dst, buf_rows = _aligned_group_layout(counts, order.numel(), num_experts, _FUSED_MOE_BWD_ALIGN_M)
+    aligned_counts, dst, buf_rows = _aligned_group_layout(counts, order.numel(), num_experts, _GROUPED_MM_ALIGN_M)
     offs = torch.cumsum(aligned_counts, dim=0, dtype=torch.int32)
 
     w1b, w2b, w3b = w1.bfloat16(), w2.bfloat16(), w3.bfloat16()
@@ -433,7 +420,7 @@ class _FusedMoE(torch.autograd.Function):
                 selected_experts_indices,
                 leaves[4],
                 ctx.num_experts,
-                align_m=_FUSED_MOE_MXFP8_BLOCK_SIZE,
+                align_m=_load_fused_moe_kernel().MXFP8_SCALE_BLOCK,
             )
         wanted = [leaf for leaf in leaves if leaf.requires_grad]
         computed = iter(torch.autograd.grad(out, wanted, grad_out) if wanted else ())

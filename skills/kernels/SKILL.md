@@ -1,24 +1,25 @@
 ---
 name: kernels
-description: How prime-rl vendors, builds, and ships CUDA kernels (the `kernels/` submodule and the `prime-kernels` wheel). Use when adding a kernel, building it locally, calling one from training code, or publishing prebuilt wheels.
+description: How prime-rl vendors, builds, and ships CUDA kernels (the `deps/prime-kernels` submodule and the `prime-kernels` wheel). Use when adding a kernel, building it locally, calling one from training code, or publishing prebuilt wheels.
 ---
 
 # CUDA kernels
 
 CUDA kernels live in their own monorepo,
 [prime-kernels](https://github.com/PrimeIntellect-ai/prime-kernels), checked out here as the
-git submodule `kernels/`. That repo is the wheel root (`setup.py`, `pyproject.toml`) and
-`prime_kernels/` inside it is the importable package: one folder per kernel, holding the
+git submodule `deps/prime-kernels`, alongside prime-rl's other submodules. That repo is the
+wheel root (`setup.py`, `pyproject.toml`) and `prime_kernels/` inside it is the importable
+package: one folder per kernel, holding the
 kernel's Python surface *and* its C++/CUDA sources under `csrc/`, all declared in the single
-manifest `prime_kernels/kernels.toml`. See `kernels/README.md` once the submodule is
-initialized.
+manifest `prime_kernels/kernels.toml`. See `deps/prime-kernels/README.md` once the submodule
+is initialized.
 
 Nothing about a kernel lives in prime-rl. prime-rl pins a prime-kernels commit, builds the
 wheel from it, and installs the result — and stays a pure-Python wheel itself; never add
 compiled extensions to it.
 
-Everything under `kernels/` is excluded from ruff (`tool.ruff.extend-exclude` in
-`pyproject.toml`), like `deps/`.
+Living under `deps/` means `tool.ruff.extend-exclude = ["deps"]` in `pyproject.toml`
+already covers it — prime-rl lints none of it.
 
 ## Calling a kernel from prime-rl
 
@@ -38,6 +39,13 @@ it once at startup rather than failing a run halfway through.
 `flash_moe` is the one kernel today: fused MoE forward (bf16 + mxfp8) on Blackwell
 tcgen05, reached through `model.moe_fused_kernel=true`.
 
+What a kernel requires of its inputs — block sizes, alignments, shape constraints — belongs
+to prime-kernels, which exports it: `flash_moe.BLOCK_M`, `flash_moe.MXFP8_SCALE_BLOCK`, and
+`flash_moe.unsupported_shape_reason(dim, hidden_dim, mxfp8=...)`, which
+`apply_fused_moe_kernel` calls once at setup so an unsupported model fails before training
+rather than mid-step. Never hardcode a `128` on this side: then every requirement change is
+a change in both repos.
+
 ## Building locally
 
 `uv sync --extra kernels` installs the prebuilt wheel (see "Pinning installs at the prebuilt
@@ -45,8 +53,8 @@ wheels"); building from source is for changing kernels. It is manual by design �
 may compile CUDA, so the extra resolves to release wheels, never to this source tree:
 
 ```bash
-git submodule update --init kernels
-uv pip install --no-build-isolation -e kernels
+git submodule update --init deps/prime-kernels
+uv pip install --no-build-isolation -e deps/prime-kernels
 ```
 
 Requirements: `nvcc` on `CUDA_HOME` with the **same CUDA major as torch** (torch refuses to
@@ -58,13 +66,18 @@ runtime — the build still succeeds. `PRIME_KERNELS=a,b` builds a subset;
 
 ## Changing or adding a kernel
 
-The work happens in the prime-kernels repo, not here. Inside `kernels/`:
+The work happens in the prime-kernels repo, not here. Inside `deps/prime-kernels/`:
 
 1. Commit the sources under `prime_kernels/<name>/csrc/`.
 2. Add a `[<name>]` table to `prime_kernels/kernels.toml` — `sources`, `include-dirs`,
    `arch`, `cxx-std`; paths are relative to the kernel folder.
-3. Write `prime_kernels/<name>/__init__.py` — `from . import _C`, one wrapper and one
-   `torch.library.register_fake` per op.
+3. Write `prime_kernels/<name>/__init__.py` — `from . import _C`, then per op a wrapper
+   calling `torch.ops.<ns>.<op>` and a `torch.library.register_fake`. No
+   `torch.library.custom_op` decorator: that defines a *Python* op, and `TORCH_LIBRARY`
+   has already defined these C++ side — only the fake (meta) kernel is missing. A kernel
+   used in training also needs `torch.library.register_autograd`, since a schema carries
+   no backward. (`flash_moe` is forward only; prime-rl wraps it in an `autograd.Function`
+   of its own.)
 4. Nothing else: `setup.py` and the runtime registry both read the manifest.
 
 Rules the build assumes:
@@ -86,10 +99,10 @@ Kernel sources are pinned by the submodule commit, so picking up any kernel chan
 or someone else's — is a bump:
 
 ```bash
-git -C kernels fetch origin
-git -C kernels log --oneline HEAD..origin/main
-git -C kernels checkout origin/main
-git add kernels
+git -C deps/prime-kernels fetch origin
+git -C deps/prime-kernels log --oneline HEAD..origin/main
+git -C deps/prime-kernels checkout origin/main
+git add deps/prime-kernels
 ```
 
 Then, in order:
@@ -105,12 +118,12 @@ Then, in order:
 
 [`build_kernels.yaml`](../../.github/workflows/build_kernels.yaml) builds the wheel for
 x86_64 and aarch64 in the CUDA devel image (no GPU needed — nvcc cross compiles). It inits
-the `kernels` submodule itself, runs on every bump of it, and attaches the wheels to a
-release when given a `release_tag`, alongside the deep-ep/deep-gemm/torchao wheels.
+the `deps/prime-kernels` submodule itself, runs on every bump of it, and attaches the wheels
+to a release when given a `release_tag`, alongside the deep-ep/deep-gemm/torchao wheels.
 
-Its `paths` trigger is `kernels` (the gitlink), **not** `kernels/**` — no file under
-`kernels/` is tracked by prime-rl anymore, so a `**` pattern would match nothing and
-submodule bumps would build no wheels.
+Its `paths` trigger is `deps/prime-kernels` (the gitlink), **not** `deps/prime-kernels/**` —
+no file under it is tracked by prime-rl, so a `**` pattern would match nothing and submodule
+bumps would build no wheels.
 
 Every release gets them: [`tag-and-release.yaml`](../../.github/workflows/tag-and-release.yaml)
 calls this workflow after the tag is cut and **before** it promotes the draft, so a published
@@ -123,7 +136,7 @@ gh workflow run build_kernels.yaml -f release_tag=vX.Y.Z -f ref=vX.Y.Z
 The wheel version carries the ABI it was built against, e.g.
 `prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl` — it imports only under
 that exact torch, so the build installs the torch pinned in `uv.lock`, not the newest one.
-The base version comes from `kernels/pyproject.toml` in the prime-kernels repo.
+The base version comes from `deps/prime-kernels/pyproject.toml` in the prime-kernels repo.
 
 ### Pinning installs at the prebuilt wheels
 
