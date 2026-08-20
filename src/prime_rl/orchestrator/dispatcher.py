@@ -34,7 +34,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Literal
+from typing import Any, Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
@@ -118,6 +118,22 @@ class DispatcherMetrics:
         return keys
 
 
+def _trace_task(task: vf.Task) -> vf.TraceTask:
+    return vf.TraceTask(
+        type=type(task).__name__,
+        data=task.data,
+        key=task.key,
+        hash=task.hash,
+    )
+
+
+def _validate_episode_task(episode: vf.Episode[Any, Any, Any], task: vf.Task) -> None:
+    expected = (type(task).__name__, task.key, task.hash)
+    actual = (episode.task.type, episode.task.key, episode.task.hash)
+    if actual != expected:
+        raise ValueError(f"Episode task provenance {actual} does not match dispatched task {expected}")
+
+
 class Dispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules episodes
@@ -185,7 +201,7 @@ class Dispatcher:
         # in-flight work). One entry per episode — the sinks count episodes,
         # never loose traces.
         maxsize = max(8, max_inflight_ceiling) if max_inflight_ceiling is not None else 0
-        self.out_q: asyncio.Queue[vf.WireEpisode] = asyncio.Queue(maxsize=maxsize)
+        self.out_q: asyncio.Queue[vf.Episode[Any, Any, Any]] = asyncio.Queue(maxsize=maxsize)
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -558,13 +574,14 @@ class Dispatcher:
 
         is_synth_exception = False
         try:
-            episode: vf.WireEpisode = task.result()
+            episode: vf.Episode[Any, Any, Any] = task.result()
         except asyncio.CancelledError:
             return
         except Exception as exc:
             get_logger().warning(f"Episode task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             episode = vf.WireEpisode(
                 env=vf.EnvInfo(id=meta.env_name),
+                task=_trace_task(meta.task),
                 ok=False,
                 errors=[
                     vf.Error(
@@ -603,8 +620,14 @@ class Dispatcher:
             )
         await self.emit_episode(meta, group, episode)
 
-    async def emit_episode(self, meta: InflightEpisode, group: GroupState | None, episode: vf.WireEpisode) -> None:
+    async def emit_episode(
+        self,
+        meta: InflightEpisode,
+        group: GroupState | None,
+        episode: vf.Episode[Any, Any, Any],
+    ) -> None:
         """Stamp one completed episode with its dispatch provenance and emit it."""
+        _validate_episode_task(episode, meta.task)
         eval_step = meta.eval_step
         policy_version = meta.policy_version
         if group is not None:
@@ -617,12 +640,6 @@ class Dispatcher:
         if meta.kind == "eval":
             assert eval_step is not None, "eval episode missing eval_step"
         episode.env.name = meta.env_name
-        episode.task = vf.TraceTask(
-            type=type(meta.task).__name__,
-            data=meta.task.data,
-            key=meta.task.key,
-            hash=meta.task.hash,
-        )
         episode.group_id = str(meta.group_id)
         live_policy = meta.kind == "eval"
         if meta.kind == "train":
@@ -663,6 +680,7 @@ class Dispatcher:
         for _, meta in claimed:
             episode = vf.WireEpisode(
                 env=vf.EnvInfo(id=meta.env_name),
+                task=_trace_task(meta.task),
                 ok=False,
                 errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
             )
@@ -689,6 +707,7 @@ class Dispatcher:
             for _ in range(unscheduled_cancelled):
                 episode = vf.WireEpisode(
                     env=vf.EnvInfo(id=group.env_name),
+                    task=_trace_task(group.task),
                     ok=False,
                     errors=[vf.Error(type="Cancelled", message="Off-policy cancel")],
                 )

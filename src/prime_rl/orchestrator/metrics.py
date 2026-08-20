@@ -9,6 +9,7 @@ from typing import Any, Literal
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
+from prime_rl.orchestrator.provenance import episode_env_name
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 Subset = Literal["all", "effective"]
@@ -460,7 +461,7 @@ class TrainEpisodes(EpisodeCollection):
     def by_env(self) -> dict[str, TrainEpisodes]:
         grouped: dict[str, list[vf.Episode]] = {}
         for episode in self.selected_episodes:
-            grouped.setdefault(episode.env.name or episode.env.id, []).append(episode)
+            grouped.setdefault(episode_env_name(episode), []).append(episode)
         return {
             env_name: TrainEpisodes(episodes, self.sampled_trace_ids, self.admitted, self._predicate)
             for env_name, episodes in grouped.items()

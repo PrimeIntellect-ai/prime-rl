@@ -51,7 +51,7 @@ class Curriculum:
         """Observe every result, evaluate every gate, and combine with AND."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")
-        task_keys = {episode.task.key if episode.task is not None else None for episode in group}
+        task_keys = {episode.task.key for episode in group}
         if None in task_keys:
             raise ValueError("A finalized group is missing Task.key")
         if len(task_keys) != 1:
@@ -72,14 +72,17 @@ class Curriculum:
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        if "sampler" not in state_dict:
-            self.sampler.load_state_dict(state_dict)
-            return
+        expected_fields = {"sampler", "gates"}
+        if set(state_dict) != expected_fields:
+            raise ValueError(f"Curriculum checkpoint fields must be {sorted(expected_fields)}")
+        gate_states = state_dict["gates"]
+        if set(gate_states) != set(self.gates):
+            raise ValueError(
+                f"Curriculum checkpoint gates {sorted(gate_states)} do not match configured gates {sorted(self.gates)}"
+            )
         self.sampler.load_state_dict(state_dict["sampler"])
-        for name, gate_state in state_dict["gates"].items():
-            gate = self.gates.get(name)
-            if gate is not None:
-                gate.load_state_dict(gate_state)
+        for name, gate in self.gates.items():
+            gate.load_state_dict(gate_states[name])
 
     def metrics(self) -> dict[str, float]:
         metrics = {f"sampler/{name}": float(value) for name, value in self.sampler.metrics().items()}

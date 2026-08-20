@@ -55,6 +55,7 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
+from prime_rl.orchestrator.provenance import eval_work, train_work
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
@@ -452,12 +453,10 @@ class Orchestrator:
 
     def off_policy_steps(self, episode: vf.Episode, training_step: int) -> int:
         """Policy updates between generation and the batch that trains on it."""
-        run = episode.run
-        if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.TrainWorkInfo):
+        work = train_work(episode)
+        if work.policy is None:
             return 0
-        if run.work.policy is None:
-            return 0
-        return max(0, (training_step - 1) - run.work.policy.start)
+        return max(0, (training_step - 1) - work.policy.start)
 
     async def start(self) -> None:
         """Run the orchestrator until shutdown. Drives setup, spawns the
@@ -829,12 +828,8 @@ class Orchestrator:
         # step's trace file — each epoch appends its cohort once, and every record carries
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
         await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
-        policy_spans = [
-            episode.run.work.policy
-            for episode in batch.episodes
-            if isinstance(episode.run, vf.TrainRunInfo) and isinstance(episode.run.work, vf.EvalWorkInfo)
-        ]
-        if len(policy_spans) != len(batch.episodes) or any(span is None for span in policy_spans):
+        policy_spans = [eval_work(episode).policy for episode in batch.episodes]
+        if any(span is None for span in policy_spans):
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")
         policy_versions = {span.start for span in policy_spans if span is not None}
         policy_version = min(policy_versions)

@@ -29,8 +29,6 @@ import time
 import uuid
 from subprocess import Popen
 
-import verifiers.v1 as vf
-
 from prime_rl import monitors
 from prime_rl.configs.evals import EvalsConfig
 from prime_rl.orchestrator.concurrency import ConcurrencyController
@@ -44,6 +42,7 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
+from prime_rl.orchestrator.provenance import eval_work
 from prime_rl.orchestrator.types import EvalBatch, Policy
 from prime_rl.orchestrator.utils import intercept_vf_logging, set_default_executor
 from prime_rl.utils.client import InferencePool
@@ -340,12 +339,7 @@ class Evals:
         pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) > 0}
         while pending:
             episode = await self.dispatcher.out_q.get()
-            step = (
-                episode.run.work.step
-                if isinstance(episode.run, vf.TrainRunInfo) and isinstance(episode.run.work, vf.EvalWorkInfo)
-                else None
-            )
-            assert step is not None
+            step = eval_work(episode).step
             await monitors.log([episode], step, "eval", "all")
             eval_batch = self.eval_sink.add(episode)
             if eval_batch is not None:

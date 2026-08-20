@@ -8,15 +8,9 @@ import verifiers.v1 as vf
 
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalEpisodes
+from prime_rl.orchestrator.provenance import episode_env_name, eval_work
 from prime_rl.orchestrator.types import EvalBatch
 from prime_rl.utils.logger import get_logger
-
-
-def _eval_step(episode: vf.Episode) -> int | None:
-    run = episode.run
-    if isinstance(run, vf.TrainRunInfo) and isinstance(run.work, vf.EvalWorkInfo):
-        return run.work.step
-    return None
 
 
 class EvalSink:
@@ -28,13 +22,11 @@ class EvalSink:
         self.pending_batches: dict[tuple[str, int], list[vf.Episode]] = defaultdict(list)
 
     def add(self, episode: vf.Episode) -> EvalBatch | None:
-        env_name = episode.env.name or episode.env.id
+        env_name = episode_env_name(episode)
         group_id = episode.group_id
         if group_id is None:
             raise ValueError("Eval episode is missing group_id")
-        eval_step = _eval_step(episode)
-        if eval_step is None:
-            raise ValueError("Eval episode is missing its run step")
+        eval_step = eval_work(episode).step
         bkey = (env_name, eval_step)
         group = self.pending_groups[group_id]
         group.append(episode)
@@ -58,9 +50,8 @@ class EvalSink:
             if not group:
                 continue
             episode = group[0]
-            eval_step = _eval_step(episode)
-            assert eval_step is not None
-            key = (episode.env.name or episode.env.id, eval_step)
+            eval_step = eval_work(episode).step
+            key = (episode_env_name(episode), eval_step)
             buffered[key] = buffered.get(key, 0) + len(group)
         return [
             (
@@ -78,9 +69,8 @@ class EvalSink:
         if not group:
             return
         episode = group[0]
-        env_name = episode.env.name or episode.env.id
-        eval_step = _eval_step(episode)
-        assert eval_step is not None
+        env_name = episode_env_name(episode)
+        eval_step = eval_work(episode).step
         self.pending_batches[(env_name, eval_step)].extend(group)
 
         traces = [trace for episode in group for trace in episode.traces]

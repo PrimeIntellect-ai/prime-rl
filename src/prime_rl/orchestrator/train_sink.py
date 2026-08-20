@@ -13,6 +13,7 @@ from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
+from prime_rl.orchestrator.provenance import episode_env_name
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import TrainBatch
 from prime_rl.transports.rollouts import TrainingSample
@@ -103,7 +104,7 @@ class TrainSink:
         counts: dict[str, int] = defaultdict(int)
         for trace_id in self.pending_batch:
             episode = self.episode_by_trace[trace_id]
-            counts[episode.env.name or episode.env.id] += 1
+            counts[episode_env_name(episode)] += 1
         return dict(counts)
 
     async def add(self, episode: vf.Episode) -> TrainBatch | None:
@@ -112,7 +113,7 @@ class TrainSink:
         group_id = episode.group_id
         if group_id is None:
             raise ValueError("Train episode is missing group_id")
-        env_name = episode.env.name or episode.env.id
+        env_name = episode_env_name(episode)
         group = self.pending_groups[group_id]
         group.append(episode)
         if len(group) < self.group_size_for(env_name):
@@ -128,7 +129,7 @@ class TrainSink:
 
     async def process_episode(self, episode: vf.Episode) -> None:
         """Run rollout-local algorithm work on one native episode."""
-        env_name = episode.env.name or episode.env.id
+        env_name = episode_env_name(episode)
         await self.train_envs.get(env_name).algorithm.finalize_episode(episode)
 
     async def process_group(self, group_id: str) -> None:
@@ -136,7 +137,7 @@ class TrainSink:
         if not group:
             return
 
-        env_name = group[0].env.name or group[0].env.id
+        env_name = episode_env_name(group[0])
         env = self.train_envs.get(env_name)
         traces = [trace for episode in group for trace in episode.traces]
         survivors = [trace for _, trace in iter_trainable_traces(group)]

@@ -73,7 +73,7 @@ class DifficultyPoolSampler(TaskSampler):
         if not rewards:
             return
         task = group[0].task
-        if task is None:
+        if task.key is None:
             raise ValueError("A finalized group is missing Task.key")
         self.task_rewards[task.key] = sum(rewards) / len(rewards)
 
