@@ -572,8 +572,8 @@ class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
 
 class DynamoWeightBroadcastConfig(DynamoConfig):
     model_name: str
-    headers: dict[str, str] = {}
-    headers_from_env: dict[str, str] = {}
+    headers: dict[str, str] = Field(default_factory=dict)
+    headers_from_env: dict[str, str] = Field(default_factory=dict)
     api_key_var: str = "VLLM_API_KEY"
 
 
