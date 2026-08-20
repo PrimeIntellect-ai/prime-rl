@@ -36,13 +36,15 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_right,
 )
 from prime_rl.trainer.rl.token_export import setup_token_exporter
+from prime_rl.multimodal import get_multimodal_adapter
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
-    setup_tokenizer,
-    setup_model,
-    is_tt_moe_model,
     get_load_balance_stats,
+    is_tt_moe_model,
+    setup_model,
+    setup_processor,
+    setup_tokenizer,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -148,6 +150,13 @@ def train(config: TrainerConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
+    processor = None
+    mm_adapter = None
+    if config.model.vlm is not None:
+        processor = setup_processor(config.model)
+        if processor is None:
+            raise ValueError("Multimodal training requires a model image processor")
+        mm_adapter = get_multimodal_adapter(model.config.model_type)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")
@@ -250,6 +259,8 @@ def train(config: TrainerConfig):
             progress.step,
             parallel_dims.get_mesh("dp").size(),
             config.rollout_transport,
+            processor=processor,
+            mm_adapter=mm_adapter,
         )
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
@@ -365,12 +376,10 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
-            # Multimodal kwargs are an opaque per-model dict (e.g.
-            # {"pixel_values": ..., "image_grid_thw": ...} for Qwen3-VL,
-            # just {"pixel_values": ...} for Gemma3-VL) — we move every
-            # tensor to CUDA and let the model's forward sort them.
+            # Multimodal kwargs and forward behavior come from the model-family adapter.
             mm_kwargs_raw = micro_batch.get("mm_kwargs")
             mm_kwargs = {k: v.to("cuda") for k, v in mm_kwargs_raw.items()} if mm_kwargs_raw else None
+            mm_forward_policy = micro_batch.get("mm_forward_policy")
             if mm_kwargs is not None and config.model.vlm is None:
                 raise ValueError(
                     "Received multimodal samples but [model.vlm] is not set. "
@@ -389,8 +398,9 @@ def train(config: TrainerConfig):
             seq_lens_are_pre_shard = False
 
             if cp_enabled:
-                # MRoPE batches must merge image embeddings before sharding.
-                defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
+                defer_vlm_cp_to_model = bool(
+                    mm_forward_policy is not None and mm_forward_policy.defer_context_parallelism
+                )
                 if not defer_vlm_cp_to_model:
                     input_ids, position_ids = setup_cp_params(
                         input_ids,
@@ -433,6 +443,7 @@ def train(config: TrainerConfig):
                     labels=labels,
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
+                    mm_forward_policy=mm_forward_policy,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,

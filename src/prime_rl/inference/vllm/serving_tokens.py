@@ -20,6 +20,9 @@ defaulting. We subclass it for the bits still missing from the upstream handler:
    ``get_max_tokens``); we keep an equivalent guard so callers that omit
    ``max_tokens`` don't truncate at vLLM's 16-token ``SamplingParams`` default.
 
+4. Raw multimodal input — port vLLM's ``content_parts`` handling onto the
+   pinned release and return the effective, expanded ``prompt_token_ids``.
+
 Everything else (request/response schema, sampling params, error handling)
 delegates to upstream so we track future vLLM changes for free.
 """
@@ -31,6 +34,7 @@ from functools import cached_property
 from typing import Any
 
 from fastapi import Request
+from vllm.entrypoints.chat_utils import AsyncMultiModalItemTracker
 from vllm.entrypoints.openai.engine.protocol import (
     ErrorResponse,
     PromptTokenUsageInfo,
@@ -44,6 +48,7 @@ from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
 )
 from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
 from vllm.entrypoints.serve.utils.api_utils import get_max_tokens
+from vllm.inputs import TokensPrompt
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
@@ -56,6 +61,7 @@ class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
 
 class PrimeRlGenerateResponse(GenerateResponse):
     choices: list[PrimeRlGenerateResponseChoice]
+    prompt_token_ids: list[int] | None = None
     # Upstream ``GenerateResponse`` doesn't declare a ``usage`` field, so the
     # parent ``ServingTokens.serve_tokens_full_generator`` constructs it and
     # Pydantic silently drops it on serialization. Declare it here so the
@@ -78,6 +84,7 @@ class _GenerateRoutedExpertsCapture(RoutedExpertsCapture):
             choices=choices,
             prompt_logprobs=response.prompt_logprobs,
             kv_transfer_params=response.kv_transfer_params,
+            prompt_token_ids=getattr(response, "prompt_token_ids", None),
         )
 
 
@@ -147,6 +154,14 @@ async def _client_set_max_tokens(raw_request: Request | None) -> bool:
     return isinstance(sp, dict) and "max_tokens" in sp
 
 
+async def _raw_content_parts(raw_request: Request | None) -> list[dict[str, Any]]:
+    if raw_request is None:
+        return []
+    body = await raw_request.json()
+    parts = body.get("content_parts") if isinstance(body, dict) else None
+    return parts if isinstance(parts, list) else []
+
+
 class PrimeRlServingTokens(ServingTokens):
     """ServingTokens + DP-rank routing + compact routed experts + max_tokens defaulting."""
 
@@ -180,8 +195,8 @@ class PrimeRlServingTokens(ServingTokens):
         # (a) inject ``data_parallel_rank`` from the inbound header into
         # ``engine_client.generate``; (b) default ``sampling_params.max_tokens``
         # to ``max_model_len - prompt_len`` when the caller didn't set it; and
-        # (c) dispatch to our overridden response builder so ``routed_experts``
-        # makes it into the JSON.
+        # (c) accept raw content parts; (d) dispatch to our overridden response
+        # builder so routed experts and effective prompt IDs make it into JSON.
         error_check_ret = await self._check_model(request)
         if error_check_ret is not None:
             return error_check_ret
@@ -199,7 +214,30 @@ class PrimeRlServingTokens(ServingTokens):
 
         # Build the engine input — features-aware (MM) or text-only fallback.
         # Identical to upstream so we keep tracking it.
-        if features := request.features:
+        content_parts = await _raw_content_parts(raw_request)
+        if content_parts and request.features:
+            return self.create_error_response("content_parts and features are mutually exclusive")
+        if content_parts:
+            tracker = AsyncMultiModalItemTracker(self.model_config)
+            mm_parser = tracker.create_parser()
+            for part in content_parts:
+                part_type = part.get("type", "")
+                url = part.get("url")
+                uuid = part.get("uuid")
+                if part_type == "image_url":
+                    mm_parser.parse_image(url, uuid)
+                elif part_type == "audio_url":
+                    mm_parser.parse_audio(url, uuid)
+                elif part_type == "video_url":
+                    mm_parser.parse_video(url, uuid)
+            mm_data, mm_uuids = await tracker.resolve_items()
+            prompt = TokensPrompt(prompt_token_ids=request.token_ids)
+            if mm_data:
+                prompt["multi_modal_data"] = mm_data
+            if mm_uuids:
+                prompt["multi_modal_uuids"] = mm_uuids
+            (engine_input,) = await self.online_renderer.renderer.render_cmpl_async([prompt])
+        elif features := request.features:
             from vllm.entrypoints.scale_out.token_in_token_out.mm_serde import decode_mm_kwargs_item
             from vllm.inputs import mm_input
             from vllm.multimodal.inputs import (
@@ -259,7 +297,7 @@ class PrimeRlServingTokens(ServingTokens):
             sampling_params.max_tokens = get_max_tokens(
                 max_model_len=self.model_config.max_model_len,
                 max_tokens=None,
-                input_length=len(request.token_ids),
+                input_length=self._extract_prompt_len(engine_input),
                 default_sampling_params=diff_sp,
                 override_max_tokens=override,
             )
@@ -301,7 +339,11 @@ class PrimeRlServingTokens(ServingTokens):
             )
 
         return await self.serve_tokens_full_generator(
-            request, result_generator, request_id, model_name, request_metadata
+            request,
+            result_generator,
+            request_id,
+            model_name,
+            request_metadata,
         )
 
     async def serve_tokens_full_generator(  # type: ignore[override]
@@ -352,5 +394,6 @@ class PrimeRlServingTokens(ServingTokens):
 
         if final_capture.final_res is not None:
             response.usage = _build_usage(final_capture.final_res)
+            response.prompt_token_ids = final_capture.final_res.prompt_token_ids
 
         return response

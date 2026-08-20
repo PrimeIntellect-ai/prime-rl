@@ -139,6 +139,7 @@ def test_prime_rl_generate_response_serializes_usage_block():
         request_id="req-1",
         choices=[PrimeRlGenerateResponseChoice(index=0, token_ids=[1, 2, 3])],
         usage=UsageInfo(prompt_tokens=4, completion_tokens=3, total_tokens=7),
+        prompt_token_ids=[10, 11, 12, 13],
     )
     payload = response.model_dump(mode="json")
     assert payload["usage"] == {
@@ -147,6 +148,7 @@ def test_prime_rl_generate_response_serializes_usage_block():
         "total_tokens": 7,
         "prompt_tokens_details": None,
     }
+    assert payload["prompt_token_ids"] == [10, 11, 12, 13]
 
 
 def test_build_usage_sums_prompt_and_completion_tokens():

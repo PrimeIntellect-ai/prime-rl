@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from prime_rl.transports.rollouts.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transports.rollouts.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -278,56 +278,17 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts.shape[0] += padding_size
 
 
-def _slice_encoded(tensor: EncodedTensor, n_rows: int) -> EncodedTensor:
-    """First `n_rows` rows of a dim-0-stacked encoded tensor (e.g. pixel_values, image_grid_thw)."""
-    row = int(np.prod(tensor.shape[1:])) if len(tensor.shape) > 1 else 1
-    itemsize = np.dtype(tensor.dtype).itemsize
-    return EncodedTensor(
-        dtype=tensor.dtype,
-        shape=[n_rows, *tensor.shape[1:]],
-        data=tensor.data[: n_rows * row * itemsize],
-    )
-
-
-def _truncate_mm(
-    mm_token_type_ids: list[int], mm_kwargs: dict[str, EncodedTensor], seq_len: int
-) -> tuple[int, dict[str, EncodedTensor] | None]:
-    """Truncating a sample must not split an image's placeholder block, else the surviving image
-    token count no longer matches the image embeddings in `mm_kwargs`. Returns the cut point
-    (<= seq_len, never inside an image block) and `mm_kwargs` sliced to the images whose
-    placeholders fully survive (None if no image survives)."""
-    grid = np.frombuffer(bytearray(mm_kwargs["image_grid_thw"].data), dtype=mm_kwargs["image_grid_thw"].dtype).reshape(
-        mm_kwargs["image_grid_thw"].shape
-    )
-    patches_per_image = [int(g.prod()) for g in grid]
-    total_patches = mm_kwargs["pixel_values"].shape[0]
-    total_tokens = sum(1 for t in mm_token_type_ids if t)
-    ppt = total_patches // total_tokens if total_tokens else 1  # patches per token (merge^2)
-    tokens_per_image = [p // ppt for p in patches_per_image]
-
-    surviving = sum(1 for t in mm_token_type_ids[:seq_len] if t)
-    kept = acc = 0
-    for n in tokens_per_image:
-        if acc + n > surviving:
+def _truncate_mm_refs(refs: MMRefs, seq_len: int) -> tuple[int, MMRefs | None]:
+    cut = seq_len
+    kept: list[MMImageRef] = []
+    for image in refs.images:
+        end = image.offset + image.length
+        if image.offset < seq_len < end:
+            cut = image.offset
             break
-        acc += n
-        kept += 1
-    if acc == surviving:
-        cut = seq_len  # surviving image tokens are exactly `kept` whole images
-    else:
-        # `surviving` lands inside image `kept`; cut to its first placeholder, dropping it.
-        seen, cut = 0, seq_len
-        for i, t in enumerate(mm_token_type_ids):
-            if t:
-                seen += 1
-                if seen == acc + 1:
-                    cut = i
-                    break
-    if not kept:
-        return cut, None
-    kept_patches = sum(patches_per_image[:kept])
-    sliced = {k: _slice_encoded(v, kept if k == "image_grid_thw" else kept_patches) for k, v in mm_kwargs.items()}
-    return cut, sliced
+        if end <= seq_len:
+            kept.append(image)
+    return cut, MMRefs(images=kept) if kept else None
 
 
 def multimodal_sample_error(sample: TrainingSample) -> str | None:
@@ -337,8 +298,14 @@ def multimodal_sample_error(sample: TrainingSample) -> str | None:
             "mm_token_type_ids length must match token_ids length "
             f"({len(mm_token_type_ids)} != {len(sample.token_ids)})"
         )
-    if sample.mm_kwargs is not None and "image_grid_thw" in sample.mm_kwargs and mm_token_type_ids is None:
-        return "image_grid_thw multimodal samples require mm_token_type_ids"
+    if sample.mm_refs is not None and mm_token_type_ids is None:
+        return "multimodal samples require mm_token_type_ids"
+    if sample.mm_refs is not None:
+        previous_end = 0
+        for image in sample.mm_refs.images:
+            if image.offset < previous_end or image.offset + image.length > len(sample.token_ids):
+                return "multimodal image refs must be ordered, non-overlapping, and within token_ids"
+            previous_end = image.offset + image.length
     return None
 
 
@@ -370,7 +337,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     ref_kl_weights = list(training_example.ref_kl_weights) if training_example.ref_kl_weights is not None else None
     position_ids = list(range(len(input_ids)))
     mm_token_type_ids = training_example.mm_token_type_ids
-    mm_kwargs = training_example.mm_kwargs
+    mm_refs = training_example.mm_refs
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
 
@@ -385,11 +352,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     )
 
     if len(input_ids) > seq_len:
-        # Multimodal: never split an image's placeholder block — cut to a whole-image boundary
-        # and slice mm_kwargs to match, so image-token count == image-embedding count.
         cut = seq_len
-        if mm_token_type_ids is not None and mm_kwargs is not None:
-            cut, mm_kwargs = _truncate_mm(mm_token_type_ids, mm_kwargs, seq_len)
+        if mm_refs is not None:
+            cut, mm_refs = _truncate_mm_refs(mm_refs, seq_len)
         input_ids = input_ids[:cut]
         loss_mask = loss_mask[:cut]
         inference_logprobs = inference_logprobs[:cut]
@@ -450,7 +415,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
-        mm_kwargs=mm_kwargs,
+        mm_refs=mm_refs,
         rl_weights=rl_weights,
         ce_weights=ce_weights,
         ref_kl_weights=ref_kl_weights,
@@ -460,7 +425,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
     """Check if a sample contains multimodal data (images)."""
-    return sample.mm_kwargs is not None
+    return sample.mm_refs is not None
 
 
 @dataclass
@@ -485,27 +450,13 @@ class _MicroBatchBin:
 
     def can_add(self, sample: MicroBatch, max_seq_len: int) -> bool:
         # Loss routing is per token (component weight streams), so samples of
-        # different loss types pack together freely. Multimodal packing is still
-        # constrained by modality sidecars, length, and routed experts.
+        # different loss types and raw-image refs pack together freely.
         first_sample = self.first_sample
         if self.length + len(sample.input_ids) > max_seq_len:
             return False
         if (first_sample.routed_experts is None) != (sample.routed_experts is None):
             return False
 
-        sample_is_mm = _is_multimodal_sample(sample)
-        existing_mm_sample = self.first_multimodal_sample
-        if existing_mm_sample is not None and sample_is_mm:
-            dst = existing_mm_sample.mm_kwargs
-            src = sample.mm_kwargs
-            assert dst is not None and src is not None, "multimodal samples must carry mm_kwargs"
-            return set(dst) == set(src) and all(
-                dst[key].dtype == src[key].dtype
-                and len(dst[key].shape) > 0
-                and len(dst[key].shape) == len(src[key].shape)
-                and dst[key].shape[1:] == src[key].shape[1:]
-                for key in dst
-            )
         return True
 
     def add(self, sample: MicroBatch) -> None:
@@ -551,7 +502,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     env_names: list[str] = []
     ref_logprobs: list[float] | None = [] if has_ref_logprobs else None
     mm_token_type_ids: list[int] | None = [] if has_mm_token_type_ids else None
-    mm_kwargs: dict[str, EncodedTensor] | None = None
+    mm_refs: MMRefs | None = None
     streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
@@ -584,13 +535,17 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
                 assert routed_experts.shape[1:] == sample.routed_experts.shape[1:]
                 routed_experts.data += sample.routed_experts.data
                 routed_experts.shape[0] += sample.routed_experts.shape[0]
-        if sample.mm_kwargs is not None:
-            if mm_kwargs is None:
-                mm_kwargs = copy.deepcopy(sample.mm_kwargs)
-            else:
-                for key in mm_kwargs:
-                    mm_kwargs[key].data += sample.mm_kwargs[key].data
-                    mm_kwargs[key].shape[0] += sample.mm_kwargs[key].shape[0]
+        if sample.mm_refs is not None:
+            if mm_refs is None:
+                mm_refs = MMRefs(images=[])
+            mm_refs.images.extend(
+                MMImageRef(
+                    url=image.url,
+                    offset=len(input_ids) - sample_len + image.offset,
+                    length=image.length,
+                )
+                for image in sample.mm_refs.images
+            )
         seq_lens.extend(sample.seq_lens)
 
     sequence_lengths = [len(sample.input_ids) for sample in bin_content.samples]
@@ -609,7 +564,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
-        mm_kwargs=mm_kwargs,
+        mm_refs=mm_refs,
         rl_weights=streams["rl_weights"],
         ce_weights=streams["ce_weights"],
         ref_kl_weights=streams["ref_kl_weights"],
@@ -646,8 +601,7 @@ def packed_samples_into_micro_bs(
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
     Multimodal samples pack with text spans and with compatible eager
-    ``mm_kwargs`` samples. Packed batches preserve sample boundaries in
-    ``seq_lens``.
+    raw-image samples. Packed batches preserve sample boundaries in ``seq_lens``.
     """
     # Sort by decreasing length for packing efficiency
     samples.sort(key=lambda sample: -len(sample.input_ids))

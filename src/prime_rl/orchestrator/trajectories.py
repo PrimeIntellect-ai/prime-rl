@@ -8,9 +8,8 @@ training sample directly. Token-length readers (`completion_len`, `total_tokens`
 live on `vf.Trace` itself.
 
 Training is renderer-only across every mode (RL/OPD student, SFT teacher), so every node
-always carries its tokens — no backfill needed. For multimodal rollouts the branch also carries
-the images it introduced (`branch.multi_modal_data`), rebuilt here into the flat `mm_kwargs` /
-`mm_token_type_ids` the trainer forwards.
+always carries its tokens — no backfill needed. Multimodal RL keeps the inline image URLs on
+the messages and pairs them with vLLM's expanded image-token runs here.
 """
 
 from __future__ import annotations
@@ -20,33 +19,48 @@ from collections.abc import Iterator
 import numpy as np
 import verifiers.v1 as vf
 
-from prime_rl.transports.rollouts import TrainingSample
-from prime_rl.transports.rollouts.types import EncodedTensor, RoutedExperts
+from prime_rl.transports.rollouts import MMImageRef, MMRefs, TrainingSample
+from prime_rl.transports.rollouts.types import RoutedExperts
 from prime_rl.utils.logger import get_logger
 
 
-def _to_numpy(val) -> np.ndarray:
-    """A renderer mm item value (torch tensor or numpy array) -> a contiguous numpy array."""
-    if hasattr(val, "detach"):  # torch tensor
-        val = val.detach().cpu().numpy()
-    return np.ascontiguousarray(val)
+def _image_urls(branch: vf.Branch) -> list[str]:
+    urls: list[str] = []
+    for node in branch.nodes:
+        content = node.message.content
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if getattr(part, "type", None) == "image_url":
+                urls.append(part.image_url.url)
+    return urls
 
 
-def _encode_mm_kwargs(mm_items: dict[str, list[dict]]) -> dict[str, EncodedTensor] | None:
-    """Concatenate the branch's per-image renderer items into the flat `mm_kwargs` the trainer
-    forwards — one `EncodedTensor` per kwarg key (e.g. `pixel_values`, `image_grid_thw`), images
-    cat'd along dim 0 in branch token order. Model-agnostic: the keys are whatever the processor
-    emits. Returns None when there are no items."""
-    bins: dict[str, list[np.ndarray]] = {}
-    for items in mm_items.values():  # per modality
-        for item in items:  # per image
-            for key, val in item.items():
-                bins.setdefault(key, []).append(_to_numpy(val))
-    encoded: dict[str, EncodedTensor] = {}
-    for key, arrs in bins.items():
-        arr = np.concatenate(arrs, axis=0)
-        encoded[key] = EncodedTensor(dtype=str(arr.dtype), shape=list(arr.shape), data=arr.tobytes())
-    return encoded or None
+def _image_runs(token_types: list[int]) -> list[tuple[int, int]]:
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, token_type in enumerate([*token_types, 0]):
+        if token_type == 1 and start is None:
+            start = index
+        elif token_type != 1 and start is not None:
+            runs.append((start, index - start))
+            start = None
+    return runs
+
+
+def _build_mm_refs(urls: list[str], token_types: list[int]) -> MMRefs | None:
+    runs = _image_runs(token_types)
+    if len(urls) != len(runs):
+        raise ValueError(
+            f"Inline image count does not match expanded placeholder runs: images={len(urls)}, runs={len(runs)}"
+        )
+    if not urls:
+        return None
+    return MMRefs(
+        images=[
+            MMImageRef(url=url, offset=offset, length=length) for url, (offset, length) in zip(urls, runs, strict=True)
+        ]
+    )
 
 
 def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExperts | None:
@@ -120,22 +134,20 @@ def trace_to_samples(
     `branch.sampled_mask` / `branch.logprobs`), so a sample carries it directly: `mask` marks
     the trainable (model-sampled) tokens, the context tokens between completions stay masked
     out. Errored traces are dropped upstream (`TrainSink.process_episode`), so no error
-    handling happens here. A branch carrying images also gets `mm_kwargs` (the concatenated
-    pixel tensors) and `mm_token_type_ids` (the renderer's `mm_token_type_id_map` applied to
-    the branch tokens). Branches with no sampled tokens (e.g. an openai client carrying none)
-    yield nothing.
+    handling happens here. A branch carrying images gets raw image refs paired with expanded
+    placeholder ranges and `mm_token_type_ids`. Branches with no sampled tokens yield nothing.
     """
     samples: list[TrainingSample] = []
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
-        mm_kwargs: dict[str, EncodedTensor] | None = None
         mm_token_type_ids: list[int] | None = None
-        mmd = branch.multi_modal_data
-        if mmd is not None:
-            mm_kwargs = _encode_mm_kwargs(mmd.mm_items)
+        mm_refs: MMRefs | None = None
+        image_urls = _image_urls(branch)
+        if image_urls:
             mapping = mm_token_type_ids_mapping or {}
             mm_token_type_ids = [mapping.get(t, 0) for t in token_ids]
+            mm_refs = _build_mm_refs(image_urls, mm_token_type_ids)
         samples.append(
             TrainingSample(
                 token_ids=token_ids,
@@ -144,7 +156,7 @@ def trace_to_samples(
                 temperatures=[],  # filled by TrainSink.process_group
                 env_name=env_name,
                 ref_logprobs=branch.reference_logprobs,
-                mm_kwargs=mm_kwargs,
+                mm_refs=mm_refs,
                 mm_token_type_ids=mm_token_type_ids,
                 routed_experts=_encode_routed_experts(branch.routed_experts, len(token_ids)),
                 rl_weights=_loss_weights(branch, "rl", trained_loss_nodes["rl"]),

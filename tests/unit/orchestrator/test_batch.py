@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from prime_rl.trainer.batch import _is_multimodal_sample, build_bin_cost, pad_micro_batch, prepare_batch, prepare_sample
-from prime_rl.transports.rollouts.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transports.rollouts.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
 
 
 def _routed_experts(data, dtype=np.uint8):
@@ -14,11 +14,6 @@ def _routed_experts(data, dtype=np.uint8):
         shape=list(routed_experts.shape),
         dtype=str(routed_experts.dtype),
     )
-
-
-def _encoded(arr) -> EncodedTensor:
-    a = np.asarray(arr)
-    return EncodedTensor(data=a.tobytes(), shape=list(a.shape), dtype=str(a.dtype))
 
 
 @pytest.fixture
@@ -397,12 +392,8 @@ def test_prepare_sample_truncates_routed_experts():
 
 
 def test_prepare_sample_truncates_mm_at_image_boundary():
-    """Truncation never splits an image's placeholder block: it cuts to a whole-image boundary
-    and slices mm_kwargs to match, so image-token count stays == image-embedding count."""
-    # Two 2-token images (patches-per-token = 1): image-pad at indices 1,2 (img0) and 4,5 (img1).
+    """Truncation never splits an image's expanded placeholder block."""
     mm_token_type_ids = [0, 1, 1, 0, 1, 1, 0]
-    pixel_values = np.array([[1.0], [1.0], [2.0], [2.0]], dtype=np.float32)  # img0=1.0, img1=2.0
-    grid = np.array([[1, 2, 1], [1, 2, 1]], dtype=np.int64)
     sample = TrainingSample(
         token_ids=[10, 11, 12, 13, 14, 15, 16],
         mask=[False, False, False, False, False, True, True],
@@ -411,7 +402,12 @@ def test_prepare_sample_truncates_mm_at_image_boundary():
         advantages=[0.0] * 6 + [1.0],
         env_name="test-env",
         mm_token_type_ids=mm_token_type_ids,
-        mm_kwargs={"pixel_values": _encoded(pixel_values), "image_grid_thw": _encoded(grid)},
+        mm_refs=MMRefs(
+            images=[
+                MMImageRef(url="data:image/png;base64,first", offset=1, length=2),
+                MMImageRef(url="data:image/png;base64,second", offset=4, length=2),
+            ]
+        ),
     )
 
     # seq_len=5 falls inside img1 (one of its two placeholders survives) -> drop img1 entirely.
@@ -420,12 +416,8 @@ def test_prepare_sample_truncates_mm_at_image_boundary():
     assert len(mb.mm_token_type_ids) == len(mb.input_ids)
     n_placeholders = sum(1 for t in mb.mm_token_type_ids if t)
     assert n_placeholders == 2  # only img0's two placeholders remain
-    # No mismatch: placeholders == image embeddings, and only img0's pixels are kept.
-    assert mb.mm_kwargs["pixel_values"].shape == [2, 1]
-    assert mb.mm_kwargs["image_grid_thw"].shape == [1, 3]
-    kept = np.frombuffer(bytearray(mb.mm_kwargs["pixel_values"].data), dtype=np.float32)
-    assert kept.tolist() == [1.0, 1.0]
-    assert n_placeholders == mb.mm_kwargs["pixel_values"].shape[0]  # ppt == 1 here
+    assert mb.mm_refs is not None
+    assert [(ref.url, ref.offset, ref.length) for ref in mb.mm_refs.images] == [("data:image/png;base64,first", 1, 2)]
 
 
 def test_prepare_batch_packs_multimodal_with_text():
@@ -437,10 +429,7 @@ def test_prepare_batch_packs_multimodal_with_text():
         advantages=[0.0, 1.0, 1.0],
         env_name="mm-env",
         mm_token_type_ids=[0, 1, 0],
-        mm_kwargs={
-            "pixel_values": _encoded(np.array([[1.0, 2.0]], dtype=np.float32)),
-            "image_grid_thw": _encoded(np.array([[1, 2, 2]], dtype=np.int64)),
-        },
+        mm_refs=MMRefs(images=[MMImageRef(url="data:image/png;base64,image", offset=1, length=1)]),
     )
     text_sample = TrainingSample(
         token_ids=[20, 21],
@@ -469,9 +458,8 @@ def test_prepare_batch_packs_multimodal_with_text():
     assert batch.sequence_lengths == [3, 2]
     assert batch.position_ids == [0, 1, 2, 0, 1]
     assert batch.mm_token_type_ids == [0, 1, 0, 0, 0]
-    assert batch.mm_kwargs is not None
-    assert batch.mm_kwargs["pixel_values"].shape == [1, 2]
-    assert batch.mm_kwargs["image_grid_thw"].shape == [1, 3]
+    assert batch.mm_refs is not None
+    assert [(ref.offset, ref.length) for ref in batch.mm_refs.images] == [(1, 1)]
     assert batch.env_names == ["mm-env"] * 3 + ["text-env"] * 2
 
 

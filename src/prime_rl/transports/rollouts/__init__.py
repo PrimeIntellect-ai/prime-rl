@@ -8,6 +8,8 @@ from prime_rl.transports.rollouts.filesystem import (
 )
 from prime_rl.transports.rollouts.types import (
     MicroBatch,
+    MMImageRef,
+    MMRefs,
     RoutedExperts,
     TrainingSample,
 )
@@ -46,6 +48,8 @@ __all__ = [
     "ZMQMicroBatchReceiver",
     "MicroBatchReceiver",
     "MicroBatchSender",
+    "MMImageRef",
+    "MMRefs",
     "TrainingSample",
     "MicroBatch",
     "RoutedExperts",
