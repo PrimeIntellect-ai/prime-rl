@@ -34,7 +34,9 @@ if prime_kernels.is_available("flash_moe"):
 ```
 
 `prime_kernels.status()` maps every kernel to `"available"` or the reason it is not — log
-it once at startup rather than failing a run halfway through.
+it once at startup rather than failing a run halfway through. `unavailable_reason(name)` is
+the same answer for one kernel (`None` when it is usable), which is what a test's skip guard
+wants; `is_available` is just that call compared to `None`.
 
 `flash_moe` is the one kernel today: fused MoE forward (bf16 + mxfp8) on Blackwell
 tcgen05, reached through `model.moe_fused_kernel=true`.

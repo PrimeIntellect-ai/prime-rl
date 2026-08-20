@@ -10,7 +10,7 @@ import importlib.util
 import pytest
 import torch
 
-from prime_rl.trainer.models.layers.moe import _FusedMoE, _run_experts_fused_reference
+from prime_rl.trainer.models.layers.moe import _FusedMoE, _load_fused_moe_kernel, _run_experts_fused_reference
 
 
 def _unavailable_reason() -> str | None:
@@ -37,12 +37,24 @@ NUM_EXPERTS, TOP_K, DIM, HIDDEN_DIM, NUM_TOKENS = 4, 2, 256, 128, 512
 # with one e8m0 scale per 32 elements, which costs roughly another order of magnitude.
 BF16_TOL = 3e-2
 MXFP8_TOL = 1.5e-1
+# The mxfp8 backward re-runs the very reference this compares against, on unquantized
+# weights, so anything above float32 round-off means the glue around it is wrong.
+GLUE_TOL = 1e-5
+
+GRAD_NAMES = ("x", "w1", "w2", "w3", "top_scores")
 
 
 def _rel_err(actual: torch.Tensor, expected: torch.Tensor) -> float:
     """Relative Frobenius error, the scale-free way to compare two low-precision GEMM paths."""
     expected = expected.float()
     return ((actual.float() - expected).norm() / expected.norm().clamp_min(1e-12)).item()
+
+
+def _assert_close(actual: torch.Tensor, expected: torch.Tensor, tol: float, label: str) -> None:
+    """Compare, and report the measured error either way — `pytest -s` prints the margins."""
+    err = _rel_err(actual, expected)
+    print(f"{label}: rel_err={err:.3e} tol={tol:.1e} margin={tol / max(err, 1e-12):.0f}x")
+    assert err < tol, f"{label}: relative error {err:.3e} exceeds {tol:.1e}"
 
 
 @pytest.fixture
@@ -71,7 +83,7 @@ def test_fused_forward_matches_grouped_mm(moe_inputs, mxfp8: bool):
     expected = _run_experts_fused_reference(x, w1, w2, w3, selected_experts_indices, top_scores, NUM_EXPERTS)
 
     assert out.shape == expected.shape and out.dtype == x.dtype
-    assert _rel_err(out, expected) < (MXFP8_TOL if mxfp8 else BF16_TOL)
+    _assert_close(out, expected, MXFP8_TOL if mxfp8 else BF16_TOL, f"forward[{'mxfp8' if mxfp8 else 'bf16'}]")
 
 
 def test_fused_bf16_backward_matches_grouped_mm(moe_inputs):
@@ -87,19 +99,61 @@ def test_fused_bf16_backward_matches_grouped_mm(moe_inputs):
     out.backward(grad_out)
     expected.backward(grad_out)
 
-    for name, actual, reference in zip(("x", "w1", "w2", "w3", "top_scores"), fused, grouped_mm):
-        assert _rel_err(actual.grad, reference.grad) < BF16_TOL, f"grad_{name} disagrees with the grouped-mm path"
+    for name, actual, reference in zip(GRAD_NAMES, fused, grouped_mm):
+        _assert_close(actual.grad, reference.grad, BF16_TOL, f"grad_{name}[bf16]")
 
 
-def test_fused_mxfp8_backward_populates_every_grad(moe_inputs):
-    """The mxfp8 backward differentiates the reference, so only its wiring is worth asserting."""
+def test_fused_mxfp8_backward_matches_its_reference(moe_inputs):
+    """The mxfp8 backward differentiates the reference, so this checks the glue around it.
+
+    Same math on both sides, so the gradients must agree to round-off. What it catches is
+    everything between: the padded group layout, the `needs_input_grad` bookkeeping, and the
+    order gradients are returned in — `w1` and `w3` share a shape, so a swapped slot is
+    invisible to a shape check and obvious here.
+    """
     x, w1, w2, w3, selected_experts_indices, top_scores = moe_inputs
-    leaves = _leaves(x, w1, w2, w3, top_scores)
+    fused = _leaves(x, w1, w2, w3, top_scores)
+    reference = _leaves(x, w1, w2, w3, top_scores)
 
-    out = _FusedMoE.apply(*leaves[:4], selected_experts_indices, leaves[4], NUM_EXPERTS, True)
-    out.backward(torch.randn_like(out))
+    out = _FusedMoE.apply(*fused[:4], selected_experts_indices, fused[4], NUM_EXPERTS, True)
+    expected = _run_experts_fused_reference(
+        *reference[:4],
+        selected_experts_indices,
+        reference[4],
+        NUM_EXPERTS,
+        align_m=_load_fused_moe_kernel().MXFP8_SCALE_BLOCK,
+    )
 
-    for name, leaf in zip(("x", "w1", "w2", "w3", "top_scores"), leaves):
-        assert leaf.grad is not None, f"grad_{name} is None"
-        assert leaf.grad.shape == leaf.shape
-        assert torch.isfinite(leaf.grad).all(), f"grad_{name} is not finite"
+    grad_out = torch.randn_like(out)
+    out.backward(grad_out)
+    expected.backward(grad_out)
+
+    for name, actual, ref in zip(GRAD_NAMES, fused, reference):
+        assert actual.grad is not None and torch.isfinite(actual.grad).all(), f"grad_{name} is missing or non-finite"
+        _assert_close(actual.grad, ref.grad, GLUE_TOL, f"grad_{name}[mxfp8]")
+
+
+@pytest.mark.parametrize("mxfp8", [False, True])
+def test_fused_backward_honours_needs_input_grad(moe_inputs, mxfp8: bool):
+    """Freezing some leaves must leave their slots None without shifting the others."""
+    x, w1, w2, w3, selected_experts_indices, top_scores = moe_inputs
+    wanted = (True, False, True, False, True)  # x, w2 and top_scores only: w1/w3 frozen
+    make = lambda: [t.detach().clone().requires_grad_(r) for t, r in zip((x, w1, w2, w3, top_scores), wanted)]
+    fused, reference = make(), make()
+
+    out = _FusedMoE.apply(*fused[:4], selected_experts_indices, fused[4], NUM_EXPERTS, mxfp8)
+    align_m = _load_fused_moe_kernel().MXFP8_SCALE_BLOCK if mxfp8 else None
+    expected = _run_experts_fused_reference(
+        *reference[:4], selected_experts_indices, reference[4], NUM_EXPERTS, align_m=align_m
+    )
+
+    grad_out = torch.randn_like(out)
+    out.backward(grad_out)
+    expected.backward(grad_out)
+
+    tol = GLUE_TOL if mxfp8 else BF16_TOL
+    for name, actual, ref, is_wanted in zip(GRAD_NAMES, fused, reference, wanted):
+        if not is_wanted:
+            assert actual.grad is None, f"grad_{name} was computed for a frozen leaf"
+            continue
+        _assert_close(actual.grad, ref.grad, tol, f"grad_{name}[{'mxfp8' if mxfp8 else 'bf16'}, partial]")
