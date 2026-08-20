@@ -1,7 +1,7 @@
 """Algorithm abstraction: sampling and the per-token training signal.
 
 An algorithm is a named, self-contained config — a discriminated union keyed
-on ``type`` (``grpo``, ``max_rl``, ``opd``, ``opsd``, ``sft``, ``echo``).
+on ``type`` (``grpo``, ``turn_credit``, ``max_rl``, ``opd``, ``opsd``, ``sft``, ``echo``).
 The bundle *is* the algorithm: each variant carries
 its sampling component and its credit-assignment / loss-routing parameters,
 and its class defaults are the vetted setting — ``type = "opd"`` with a
@@ -208,6 +208,33 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
 
 
+class TurnCreditAlgoConfig(GRPOAlgoConfig):
+    type: Literal["turn_credit"] = "turn_credit"  # type: ignore[assignment]
+    """Turn-credit shaping: GRPO whose within-rollout credit follows per-turn
+    state-of-the-world scores. The env scores the state after each turn
+    (``trace.info["turn_rewards"]``, one ``float | None`` per sampled turn);
+    scores become per-turn progress (deltas), progress is smeared backward over
+    the turns that led to it (``gamma``), and each turn's tokens are shifted by
+    ``beta`` times the turn's centered credit on top of the group-relative
+    level. The shift is zero-sum within the rollout, so the total advantage
+    stays at the GRPO level; ``beta = 0`` (or an env without ``turn_rewards``)
+    is exactly ``grpo``. The level baselines the shaped return (final reward +
+    net progress), so envs without a final reward — and groups of one — still
+    train."""
+
+    gamma: float = Field(0.9, ge=0.0, le=1.0)
+    """Backward-smear decay per turn of distance. Each turn's progress is
+    distributed over that turn and the turns before it with weights
+    ``gamma^d``, normalized to sum to 1 (effective reach ~1/(1 - gamma) turns).
+    0 credits only the turn whose state changed; 1 spreads evenly over all
+    turns so far."""
+
+    beta: float = Field(1.0, ge=0.0)
+    """Shaping strength: how strongly within-rollout credit follows the turn
+    credits, relative to the group-relative level. 0 disables shaping
+    (plain GRPO)."""
+
+
 class EchoAlgoConfig(GRPOAlgoConfig):
     type: Literal["echo"] = "echo"  # type: ignore[assignment]
     """ECHO: group-relative advantage on action tokens (GRPO), plus weighted
@@ -366,6 +393,7 @@ class SFTAlgoConfig(BaseAlgoConfig):
 
 AlgoConfig: TypeAlias = Annotated[
     GRPOAlgoConfig
+    | TurnCreditAlgoConfig
     | EchoAlgoConfig
     | MaxRLAlgoConfig
     | RAEAlgoConfig
@@ -380,6 +408,7 @@ assignment and loss routing, fused). The ``type`` selects the algorithm, and
 its class defaults are the vetted setting.
 
 - ``grpo`` — policy group sampling, group-relative advantage, RL loss (the default).
+- ``turn_credit`` — GRPO plus within-rollout credit from per-turn state scores (``info["turn_rewards"]``), smeared backward with decay.
 - ``max_rl`` — GRPO with mean-normalized advantages (maximum-likelihood RL).
 - ``rae`` — reward minus a per-agent EMA baseline (SPIRAL), for multi-agent self-play envs.
 - ``hierarchical_grpo`` — GRPO for proposer-solver envs: solvers are compared within one proposed problem and proposers across proposals. Needs ``episode_agents``.
