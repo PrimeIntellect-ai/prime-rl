@@ -212,6 +212,12 @@ def save_state_dict_parallel(state_dict: dict[str, Tensor], save_dir: Path) -> N
     logger = get_logger()
     world = get_world()
 
+    # Master-only mkdir + barrier: concurrent mkdir from every rank can re-raise
+    # FileExistsError on a parallel FS (EEXIST + stale is_dir()).
+    if world.is_master:
+        save_dir.mkdir(parents=True, exist_ok=True)
+    dist.barrier()
+
     tmp_pattern = f"tmp-rank{world.rank}{{suffix}}.safetensors"
     split = split_torch_state_dict_into_shards(state_dict, filename_pattern=tmp_pattern)
     local_shards: list[tuple[str, dict[str, int]]] = []
