@@ -440,6 +440,21 @@ OptimizerConfig: TypeAlias = Annotated[
 ]
 
 
+class WeightCheckpointConfig(BaseConfig):
+    """HF weight checkpoints. The layout is inferred from the run: full runs save
+    rank-parallel sharded safetensors, LoRA runs save the adapter only. Saves land
+    at every eval step, plus every ``interval`` steps when set."""
+
+    interval: int | None = Field(None, ge=1)
+    """Additional interval at which to save weight checkpoints, on top of eval steps. If None, weight checkpoints land only at eval steps."""
+
+    _eval_intervals: list[int] = PrivateAttr(default_factory=list)
+    """Eval-step intervals at which HF weight checkpoints are written. Derived
+    from the run's eval config by the SFT/RL entrypoint validators, never set by
+    users. With no eval intervals and no ``interval`` no weight checkpoints are
+    written."""
+
+
 class CheckpointConfig(BaseConfig):
     output_dir: Path | None = None
     """Override directory for checkpoints and weights. If set, checkpoints and weight snapshots are written here instead of under the trainer ``output_dir`` — useful for writing large checkpoints to a separate storage volume."""
@@ -447,11 +462,8 @@ class CheckpointConfig(BaseConfig):
     interval: int | None = Field(None, ge=1)
     """Interval at which to save the training checkpoint. If None, only checkpoints at the end of training."""
 
-    _eval_intervals: list[int] = PrivateAttr(default_factory=list)
-    """Eval-step intervals at which HF weight checkpoints are written — the only
-    trigger for weight saves. Derived from the run's eval config by the SFT/RL
-    entrypoint validators, never set by users. Empty means no weight checkpoints
-    are written (convert DCP checkpoints offline with ``scripts/dcp_to_hf.py``)."""
+    weights: WeightCheckpointConfig | None = WeightCheckpointConfig()
+    """Weight-checkpoint sub-configuration. Set to None to disable HF weight checkpoints entirely (RL only — SFT online evals consume them)."""
 
     weights_only: bool = False
     """Save only weight checkpoints (no optimizer/scheduler state). Much faster and smaller than full checkpoints, but cannot resume training."""

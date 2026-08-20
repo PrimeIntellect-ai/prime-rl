@@ -394,12 +394,16 @@ def train(config: SFTConfig):
 
     # Evals reload the trainer's HF weight checkpoints from disk, so a weight
     # checkpoint must land at every step an eval env is due (deterministic from the
-    # config — all ranks agree on the collective save). Eval steps are the only
-    # trigger for weight saves.
-    eval_intervals = config.ckpt._eval_intervals if config.ckpt else []
+    # config — all ranks agree on the collective save), plus every
+    # ckpt.weights.interval steps.
+    weights_config = config.ckpt.weights if config.ckpt else None
 
-    def is_eval_step(step: int) -> bool:
-        return any(step % interval == 0 for interval in eval_intervals)
+    def is_weight_ckpt_step(step: int) -> bool:
+        if weights_config is None:
+            return False
+        if weights_config.interval is not None and step % weights_config.interval == 0:
+            return True
+        return any(step % interval == 0 for interval in weights_config._eval_intervals)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
@@ -545,7 +549,7 @@ def train(config: SFTConfig):
 
             ckpt_manager.maybe_clean()
 
-        if weight_ckpt_manager is not None and not is_last_step and is_eval_step(progress.step):
+        if weight_ckpt_manager is not None and not is_last_step and is_weight_ckpt_step(progress.step):
             logger.info(f"Saving weight checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             weight_ckpt_manager.save(progress.step, model, tokenizer, processor)

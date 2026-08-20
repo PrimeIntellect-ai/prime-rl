@@ -354,7 +354,9 @@ class SFTConfig(BaseConfig):
         # a weight checkpoint lands at every step an eval env is due.
         if self.ckpt is None:
             self.ckpt = CheckpointConfig()
-        self.ckpt._eval_intervals = sorted({source.interval for source in self.eval.source})
+        if self.ckpt.weights is None:
+            raise ValueError('SFT online evals consume HF weight checkpoints — remove `ckpt.weights = "None"`.')
+        self.ckpt.weights._eval_intervals = sorted({source.interval for source in self.eval.source})
 
         if self.ckpt.keep_last is not None or self.ckpt.keep_interval is not None:
             warnings.warn(

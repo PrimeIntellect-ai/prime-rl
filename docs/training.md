@@ -306,7 +306,7 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
 
 ### Serving Checkpoints
 
-HF-compatible weight snapshots are written under `<run_dir>/weights/step_N/` only at eval steps — they exist for eval consumption. For any other step, convert a DCP checkpoint offline: `uv run torchrun --nproc-per-node <n> scripts/dcp_to_hf.py --model.name <model> --ckpt-dir <run_dir>/checkpoints/step_N/trainer --output-dir <out>`. Upload directly:
+HF-compatible weight snapshots are written under `<run_dir>/weights/step_N/` at eval steps, plus every `ckpt.weights.interval` steps when set. Set `ckpt.weights = "None"` to disable them entirely (RL only — SFT online evals consume them). Upload directly:
 
 ```bash
 uv run hf upload <user>/<model>-RL outputs/<run_name>/weights/step_100

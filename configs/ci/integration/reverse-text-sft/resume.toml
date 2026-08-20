@@ -2,6 +2,9 @@ max_steps = 10
 
 [ckpt]
 
+[ckpt.weights]
+interval = 1
+
 [resume]
 step = 5
 

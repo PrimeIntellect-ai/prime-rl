@@ -4,6 +4,9 @@ max_steps = 6
 skip_optimizer = true
 skip_scheduler = true
 
+[ckpt.weights]
+interval = 1
+
 [resume]
 step = 5
 

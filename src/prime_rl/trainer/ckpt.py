@@ -494,14 +494,19 @@ def setup_ckpt_managers(
     ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
     ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
     ckpt_manager = CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume)
-    if ckpt_config and ckpt_config.weights_only and not ckpt_config._eval_intervals:
+    weights_config = ckpt_config.weights if ckpt_config else None
+    has_weight_trigger = weights_config is not None and (
+        weights_config._eval_intervals or weights_config.interval is not None
+    )
+    if ckpt_config and ckpt_config.weights_only and not has_weight_trigger:
         raise ValueError(
-            "ckpt.weights_only skips DCP checkpoints, and without evals no HF weight "
-            "checkpoints are written either — this run would save nothing."
+            "ckpt.weights_only skips DCP checkpoints, and without eval steps or "
+            "ckpt.weights.interval no HF weight checkpoints are written either — "
+            "this run would save nothing."
         )
-    # Weight checkpoints exist only for eval consumption; without eval intervals no
-    # HF weights are written (convert DCP checkpoints offline via scripts/dcp_to_hf.py).
-    if ckpt_config and ckpt_config._eval_intervals:
+    # Weight checkpoints are written at eval steps and ckpt.weights.interval steps;
+    # without either trigger no HF weights are written.
+    if has_weight_trigger:
         weight_ckpt_manager = WeightCheckpointManager(
             ckpt_output_dir,
             lora_config=lora_config,

@@ -256,12 +256,17 @@ def train(config: TrainerConfig):
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
-    # HF weight checkpoints land only at eval steps; the orchestrator's per-env eval
-    # intervals arrive via the private field set by the rl entrypoint validators.
-    eval_intervals = config.ckpt._eval_intervals if config.ckpt else []
+    # HF weight checkpoints land at eval steps (the orchestrator's per-env eval
+    # intervals arrive via the private field set by the rl entrypoint validators)
+    # plus every ckpt.weights.interval steps.
+    weights_config = config.ckpt.weights if config.ckpt else None
 
-    def is_eval_step(step: int) -> bool:
-        return any(step % interval == 0 for interval in eval_intervals)
+    def is_weight_ckpt_step(step: int) -> bool:
+        if weights_config is None:
+            return False
+        if weights_config.interval is not None and step % weights_config.interval == 0:
+            return True
+        return any(step % interval == 0 for interval in weights_config._eval_intervals)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     maybe_record_function = nullcontext
@@ -627,9 +632,7 @@ def train(config: TrainerConfig):
 
             ckpt_manager.maybe_clean()
 
-        # Weight checkpoints land only at eval steps — they are the HF snapshots
-        # matching the orchestrator's eval scores.
-        if weight_ckpt_manager is not None and not is_last_step and is_eval_step(progress.step):
+        if weight_ckpt_manager is not None and not is_last_step and is_weight_ckpt_step(progress.step):
             logger.info(f"Saving weight checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             weight_ckpt_manager.save(progress.step, model, tokenizer)
