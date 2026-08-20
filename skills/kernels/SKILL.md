@@ -110,7 +110,11 @@ Then, in order:
 - Read the diff for **host-side contract changes**, not just kernel internals. A change to
   what the caller must pass (weight layout, scale packing, argument order) is silently wrong
   numbers, not a build error, and prime-rl's call sites have to absorb it.
-- Rebuild and re-run whatever exercises the kernel — the ABI is not checked for you.
+- Rebuild and re-run whatever exercises the kernel — the ABI is not checked for you. For
+  `flash_moe` that is `tests/unit/train/models/test_fused_moe.py`, which compares its
+  forward and its hand-written backward against the grouped-mm expert path; it is
+  `gpu`-marked and skips itself unless the kernel is available, so it only means anything
+  on a machine the kernel was built for.
 - The bump alone ships nothing: installs resolve `prime-kernels` from a release wheel, so the
   new code only reaches users once a release rebuilds the wheels and the pin below moves.
 
