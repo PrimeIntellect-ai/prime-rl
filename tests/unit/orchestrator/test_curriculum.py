@@ -18,7 +18,7 @@ from prime_rl.orchestrator.curriculum import (
 )
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import PreparedGroup
-from prime_rl.transport import TrainingSample
+from prime_rl.transports.rollouts import TrainingSample
 
 
 def make_task(idx: int) -> vf.Task:

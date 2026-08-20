@@ -136,16 +136,20 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 
                 m, s, t = _online_logsumexp_and_weighted_update(m, s, t, scaled_logits)
 
-                mask = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
-                if torch.any(mask):
-                    idx = (labels_chunk[mask] - vocab_start).to(torch.long)
-                    target_logits[mask] = scaled_logits[mask, idx]
+                # Branchless target extraction - we don't want to stall the GPU here (because: if torch.any()) calls bool(Tensor) calls Tensor.items() <- sync here we don't want
+                in_range = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
+                local_idx = (labels_chunk - vocab_start).clamp(0, vocab_end - vocab_start - 1).to(torch.int64)
+                chunk_target = scaled_logits.gather(1, local_idx.unsqueeze(1)).squeeze(1)
+                target_logits = torch.where(in_range, chunk_target, target_logits)
 
             logz_chunk = m + torch.log(s)
             logz[start:end] = logz_chunk
             logprobs[start:end] = target_logits - logz_chunk
             entropy[start:end] = logz_chunk - (t / s)
 
+        ctx.set_materialize_grads(
+            False
+        )  # Without materialized grads unused outputs get grad None instead of zeros and backward can reject them without a sync
         ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz)
         ctx.chunk_size = chunk_size
 
@@ -153,9 +157,9 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_logprobs: torch.Tensor, grad_entropy: torch.Tensor | None):
-        assert grad_entropy is None or torch.all(grad_entropy == 0.0), (
-            "Backward through entropy is not implemented in FusedOutputLinear"
-        )
+        # Grads are not materialized (see forward above) so an unused entropy output arrives becomes None, and as we don't compare values we don't have any sync
+        assert grad_entropy is None, "Backward through entropy is not implemented in FusedOutputLinear"
+        assert grad_logprobs is not None, "FusedOutputLinear backward requires logprobs gradients"
 
         hidden, weight, labels, inv_temperature, logz = ctx.saved_tensors
         chunk_size: int = ctx.chunk_size
@@ -184,10 +188,10 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 probs = torch.exp(scaled_logits - logz_chunk.unsqueeze(-1))
 
                 grad_logits = (-grad_chunk).unsqueeze(-1) * probs
-                mask = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
-                if torch.any(mask):
-                    idx = (labels_chunk[mask] - vocab_start).to(torch.long)
-                    grad_logits[mask, idx] += grad_chunk[mask]
+                # Branchless grad scatter like we did in the sync-free forward
+                in_range = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
+                local_idx = (labels_chunk - vocab_start).clamp(0, vocab_end - vocab_start - 1).to(torch.int64)
+                grad_logits.scatter_add_(1, local_idx.unsqueeze(1), (grad_chunk * in_range).unsqueeze(1))
                 grad_logits = grad_logits * inv_t_chunk
 
                 if needs_hidden:

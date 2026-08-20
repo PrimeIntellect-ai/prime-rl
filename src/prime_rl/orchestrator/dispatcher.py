@@ -1,17 +1,20 @@
-"""EpisodeDispatcher: schedules environment episodes under a shared permit counter.
+"""Dispatcher: schedules rollouts under a shared permit counter.
 
-- Capacity (``max_inflight_episodes``) is shared across train + eval. One permit is
-  one episode: one ``run`` request against an env server.
+- Capacity (``max_inflight``) is shared across train + eval. One permit is
+  one episode: one ``run`` request against an env server. The cap is dynamic —
+  the concurrency controller moves it via ``set_limit``; refills are
+  burst-capped so a raised (or drained) cap never lands all its prefills at
+  once.
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched episode eventually reaches
   ``out_q`` exactly once. Failures remain episode errors;
   sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
-  source's emptiness), so in-flight rollouts of the opposite kind drain
+  source's emptiness), so in-flight episodes of the opposite kind drain
   naturally on either side of an eval boundary.
 - ``on_version_pending`` (called by the watcher before the engines pause for
-  the weight update) bumps ``off_policy_steps`` on in-flight train rollouts and
+  the weight update) bumps ``off_policy_steps`` on in-flight train episodes and
   drops groups past ``max_off_policy_steps``.
   Eval rollouts are measurements for the policy version they started with,
   so they are allowed to finish even if training advances. Train rollouts
@@ -24,9 +27,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import traceback
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Literal
@@ -59,7 +64,7 @@ class DispatcherMode(Enum):
 class DispatcherMetrics:
     """Per-tick drain counters for the orchestrator's periodic log.
     ``drained()`` returns the current values and clears them; point-in-time
-    gauges live on ``EpisodeDispatcher.gauges`` instead."""
+    gauges live on ``Dispatcher.gauges`` instead."""
 
     cancelled_by_kind_env: dict[tuple[Literal["train", "eval"], str], int] = field(
         default_factory=lambda: defaultdict(int)
@@ -112,7 +117,7 @@ class DispatcherMetrics:
         return keys
 
 
-class EpisodeDispatcher:
+class Dispatcher:
     """``await dispatcher.start()`` runs the dispatch loop until ``stop()``.
     Pulls examples from ``TrainSource`` / ``EvalSource``, schedules episodes
     under shared capacity, and emits native verifier episodes to ``out_q``.
@@ -122,17 +127,19 @@ class EpisodeDispatcher:
     def __init__(
         self,
         *,
-        train_envs: TrainEnvs,
+        train_envs: TrainEnvs | None,
         eval_envs: EvalEnvs | None,
-        train_source: TrainSource,
+        train_source: TrainSource | None,
         eval_source: EvalSource | None,
         policy_pool: InferencePool,
         policy: Policy,
-        max_inflight_episodes: int,
+        initial_max_inflight: int,
+        max_inflight_ceiling: int | None,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
         run_id: str,
         run_name: str | None,
+        on_episode_complete: Callable[[str, str, int, float], None] | None = None,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -145,19 +152,37 @@ class EpisodeDispatcher:
         self.max_off_policy_steps = max_off_policy_steps
         self.run_id = run_id
         self.run_name = run_name
+        # ``(env_name, kind, total_tokens, duration_s)`` per completed episode
+        self.on_episode_complete = on_episode_complete
 
-        self.max_inflight = max_inflight_episodes
-        self.inflight_permits = 0
+        # Starting value of the dynamic cap (the concurrency controller moves
+        # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
+        # bound ``out_q``
+        self.max_inflight = initial_max_inflight
+        self.current_inflight = 0
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
         )
+        # Admission smoothing: the pool may only GROW by ``burst_cap`` per
+        # window. Replacing a completed episode is always free (each natural
+        # completion refunds one admission); only net expansion is metered.
+        # This keeps a raised cap or post-drain refill from landing a wall of
+        # prefills at once, without rate-limiting fast-turning workloads at
+        # steady state.
+        self.admission_window_s = 5.0
+        self.admission_window_start = time.monotonic()
+        self.admissions_in_window = 0
+        self.min_burst = max((env.config.group_size for env in train_envs or ()), default=8)
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
 
-        # Bounded so the dispatcher backpressures on a slow sink. One entry per
-        # episode — the sinks count episodes, never loose traces.
-        self.out_q: asyncio.Queue[vf.Episode] = asyncio.Queue(maxsize=max(8, self.max_inflight))
+        # Bounded so the dispatcher backpressures on a slow sink (unbounded
+        # when no hard ceiling is configured — the dynamic cap still bounds
+        # in-flight work). One entry per episode — the sinks count episodes,
+        # never loose traces.
+        maxsize = max(8, max_inflight_ceiling) if max_inflight_ceiling is not None else 0
+        self.out_q: asyncio.Queue[vf.Episode] = asyncio.Queue(maxsize=maxsize)
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -177,6 +202,7 @@ class EpisodeDispatcher:
     def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
         """``(pool, model_name, is_live)`` for *train* rollouts of this env —
         the env sampler's pool. (Eval always uses the policy.)"""
+        assert self.train_envs is not None  # train groups only exist when train is configured
         sampler = self.train_envs.get(env_name).sampler
         if sampler.samples_from_live_policy:
             return sampler.pool, self.policy.model_name, True
@@ -192,7 +218,51 @@ class EpisodeDispatcher:
 
     @property
     def available_permits(self) -> int:
-        return self.max_inflight - self.inflight_permits
+        return self.max_inflight - self.current_inflight
+
+    def set_limit(self, max_inflight: int) -> None:
+        """Move the in-flight cap (concurrency controller hook). A cap below
+        the current in-flight count sheds nothing — admissions just stay
+        blocked until enough episodes finish."""
+        self.max_inflight = max_inflight
+
+    def cancel_inflight(self, n: int) -> None:
+        """Cancel roughly ``n`` in-flight train episodes, youngest groups
+        first (least inference spend so far). Called on an overload cut so
+        the working set shrinks immediately instead of waiting for the
+        over-admitted episodes to finish at thrashed throughput."""
+        asyncio.create_task(self._cancel_inflight(n))
+
+    async def _cancel_inflight(self, n: int) -> None:
+        # A group's age is its OLDEST member's start: max() would make a
+        # long-running group look young the moment it schedules another
+        # member, cancelling the most sunk cost instead of the least
+        group_age: dict[uuid.UUID, float] = {}
+        for meta in self.inflight.values():
+            if meta.kind != "train":
+                continue
+            age = group_age.get(meta.group_id)
+            group_age[meta.group_id] = meta.started_at if age is None else min(age, meta.started_at)
+        shed = 0
+        for group_id in sorted(group_age, key=lambda gid: group_age[gid], reverse=True):
+            if shed >= n:
+                break
+            # Count only live cancellations toward the excess: drop_group's
+            # return includes never-dispatched markers, which free no permits
+            live = sum(1 for meta in self.inflight.values() if meta.group_id == group_id)
+            await self.drop_group(group_id)
+            shed += live
+        if shed:
+            get_logger().warning(f"Cancelled {shed} youngest in-flight episodes after overload cut")
+
+    def admission_budget(self) -> int:
+        """Admissions still allowed in the current burst window."""
+        now = time.monotonic()
+        if now - self.admission_window_start >= self.admission_window_s:
+            self.admission_window_start = now
+            self.admissions_in_window = 0
+        burst_cap = max(self.min_burst, self.max_inflight // 10)
+        return burst_cap - self.admissions_in_window
 
     @property
     def inflight_by_env(self) -> dict[tuple[RunKind, str], int]:
@@ -287,6 +357,7 @@ class EpisodeDispatcher:
                 continue
             # Frozen-sourced rollouts never go stale — their sampler doesn't
             # change with policy updates.
+            assert self.train_envs is not None
             if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
                 continue
             meta.off_policy_steps += 1
@@ -299,7 +370,7 @@ class EpisodeDispatcher:
 
         if cancelled:
             get_logger().warning(
-                f"Cancelled {cancelled} train rollouts past max_off_policy_steps={self.max_off_policy_steps}. "
+                f"Cancelled {cancelled} train episodes past max_off_policy_steps={self.max_off_policy_steps}. "
                 "Consider increasing it to avoid this."
             )
 
@@ -313,7 +384,7 @@ class EpisodeDispatcher:
         respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
         ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
         while True:
-            if self.available_permits <= 0:
+            if self.available_permits <= 0 or self.admission_budget() <= 0:
                 return
 
             if self.mode == DispatcherMode.PREFER_EVAL:
@@ -340,7 +411,7 @@ class EpisodeDispatcher:
         if new_mode == self.mode:
             return
         prefer = "eval" if new_mode == DispatcherMode.PREFER_EVAL else "train"
-        get_logger().info(f"Switching dispatcher mode to prefer {prefer} rollouts because {reason}")
+        get_logger().info(f"Switching dispatcher mode to prefer {prefer} episodes because {reason}")
         self.mode = new_mode
 
     async def try_schedule(self, kind: RunKind) -> bool:
@@ -370,6 +441,7 @@ class EpisodeDispatcher:
         """Pop the next example from the corresponding source and wrap it in
         a ``GroupState``. Returns ``None`` if the source is empty."""
         if kind == "train":
+            assert self.train_source is not None
             source = self.train_source
         else:
             assert self.eval_source is not None
@@ -427,6 +499,7 @@ class EpisodeDispatcher:
 
         group.episodes_to_schedule -= 1
         await self.acquire()
+        self.admissions_in_window += 1
         task = asyncio.create_task(
             env.run(
                 client=client,
@@ -444,6 +517,7 @@ class EpisodeDispatcher:
             policy_version=group.policy_version_at_start,
             client_config=client,
             eval_step=group.eval_step,
+            started_at=time.monotonic(),
         )
         return True
 
@@ -452,17 +526,22 @@ class EpisodeDispatcher:
         ``available_permits >= 1``; this is not a blocking acquire."""
         if self.rate_limiter is not None:
             await self.rate_limiter.acquire()
-        self.inflight_permits += 1
+        self.current_inflight += 1
 
-    def release(self) -> None:
-        self.inflight_permits -= 1
+    def release(self, *, refund_admission: bool = False) -> None:
+        """Free one permit. ``refund_admission`` only on natural completions:
+        refunding cancelled episodes would hand a mass shed's worth of burst
+        budget to the refill while the overload is still draining."""
+        self.current_inflight -= 1
+        if refund_admission:
+            self.admissions_in_window = max(0, self.admissions_in_window - 1)
 
     async def handle_completed_episode(self, task: asyncio.Task) -> None:
         """Emit every dispatched episode exactly once to ``out_q``."""
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_episodes
-        self.release()
+        self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
 
         is_synth_exception = False
@@ -506,6 +585,10 @@ class EpisodeDispatcher:
                     )
         if not episode.ok and not episode.traces:
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+        if not is_synth_exception and self.on_episode_complete is not None and meta.started_at > 0:
+            self.on_episode_complete(
+                meta.env_name, meta.kind, episode.num_total_tokens, time.monotonic() - meta.started_at
+            )
         await self.emit_episode(meta, group, episode)
 
     async def emit_episode(self, meta: InflightEpisode, group: GroupState | None, episode: vf.WireEpisode) -> None:
@@ -653,11 +736,10 @@ class EpisodeDispatcher:
     def gauges(self) -> dict[str, float]:
         """Instantaneous, read-only gauges sampled by the periodic logger."""
         return {
-            "dispatcher/inflight_train": float(self.inflight_train_count),
-            "dispatcher/inflight_eval": float(self.inflight_eval_count),
+            "dispatcher/inflight/train": float(self.inflight_train_count),
+            "dispatcher/inflight/eval": float(self.inflight_eval_count),
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
-            "dispatcher/groups_in_flight": float(len(self.groups)),
-            "dispatcher/off_policy_level_max": float(self.max_off_policy_level),
-            "dispatcher/off_policy_level_mean": self.mean_off_policy_level,
+            "dispatcher/off_policy_level/max": float(self.max_off_policy_level),
+            "dispatcher/off_policy_level/mean": self.mean_off_policy_level,
         }

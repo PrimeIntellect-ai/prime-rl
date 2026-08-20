@@ -7,10 +7,14 @@
 # term is pass_rate-scaled and normalized by the group's own max before the GRPO baseline
 # subtraction.
 #
-# 2 train + 4 infer nodes. Trainer uses cp=4 (ulysses) plus
+# 1 train + 3 infer nodes. Inference serves FP8 via online per-tensor quantization of the bf16
+# checkpoint; weight broadcasts re-quantize through the same path on every update. The trainer fits on one
+# node via cp=4 (ulysses), full CPU optimizer offload with the stateless sign-SGD optimizer, plus
 # the memory improvements from the GLM-5.1 prod run (research-prod rlm5/prod.toml): LM-head token
-# chunking, activation checkpointing (freq=1) + activation offloading (max_inflight=1), optimizer
-# CPU offload, and skip-gather / skip-optimizer checkpointing.
+# chunking, activation checkpointing (freq=1) + activation offloading (max_inflight=1), and
+# skip-gather / skip-optimizer checkpointing.
+# Concurrency is fully default: the controller derives its start from the measured KV budget and
+# adapts from there.
 
 max_steps = 1000
 seq_len = 131072
@@ -28,9 +32,9 @@ pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-swe" -y ||
 
 [deployment]
 type = "multi_node"
-num_train_nodes = 2
+num_train_nodes = 1
 num_infer_nodes = 1
-num_infer_replicas = 4
+num_infer_replicas = 3
 
 [monitors.wandb]
 project = "swe-ablations"
@@ -46,20 +50,22 @@ keep_last = 1
 
 [resume]
 
-[model]
-name = "zai-org/GLM-4.5-Air"
-
 # --- Trainer ---
 
 [trainer]
 dist_timeout_seconds = 3600
 enable_router_replay = true
 
+[model]
+name = "zai-org/GLM-4.5-Air"
+
 [trainer.model]
 impl = "custom"
 attn = "flash_attention_3"
 cp = 4
 cp_style = "ulysses"
+optim_cpu_offload = false
+full_offload = true
 fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
@@ -74,7 +80,7 @@ skip_gather_master_weights = true
 skip_optimizer = true
 
 [trainer.optim]
-type = "muon"
+type = "sign_sgd"
 
 # --- Orchestrator ---
 
@@ -82,7 +88,6 @@ type = "muon"
 batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
-max_inflight_episodes = 512
 
 [orchestrator.algo]
 type = "grpo"
@@ -137,6 +142,7 @@ rollout = 3600
 
 [inference]
 
+
 # vLLM + FlashInfer caches on node-local /tmp (see [env_vars]).
 [inference.env_vars]
 VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
@@ -145,4 +151,5 @@ FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 [inference.vllm]
 max_model_len = 131072
 tensor_parallel_size = 8
+quantization = "fp8"
 enable_return_routed_experts = true

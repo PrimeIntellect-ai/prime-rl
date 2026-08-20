@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from prime_rl.configs.algorithm import ActionLossType
 from prime_rl.orchestrator.types import PreparedTrace
-from prime_rl.transport import TrainingSample
+from prime_rl.transports.rollouts import TrainingSample
 
 
 def assign_advantages(samples: PreparedTrace, values: float | list[float], *, env_name: str) -> None:

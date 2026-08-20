@@ -8,7 +8,7 @@ from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
-from prime_rl.configs.evaluator import OnlineEvalConfig
+from prime_rl.configs.evals import EvalsEvalConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -42,6 +42,9 @@ class BaseDataConfig(BaseConfig):
     micro_batch_size: int = Field(1, ge=1)
     """Per-step micro batch size. ``batch_size`` must be divisible by this."""
 
+    num_workers: int = Field(1, ge=0)
+    """Number of dataloader worker processes. With ``>= 1``, batches are prepared and pinned in the background so tokenization/packing overlaps with training. ``0`` loads inline on the main process."""
+
     @model_validator(mode="after")
     def validate_batch_size(self):
         if self.batch_size % self.micro_batch_size != 0:
@@ -59,6 +62,9 @@ class FakeDataConfig(BaseDataConfig):
 
     input_ids: Literal["increasing", "random"] = "increasing"
     """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
+
+    seed: int = 0
+    """Seed for the per-rank packing/token generator, combined with the data rank."""
 
 
 class LossMaskConfig(BaseConfig):
@@ -195,7 +201,7 @@ class SFTConfig(BaseConfig):
     val: SFTValConfig | None = None
     """Validation configuration. If None, no validation runs."""
 
-    eval: OnlineEvalConfig | None = None
+    eval: EvalsEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
     server that reloads the trainer's HF weight checkpoints from disk. If None, no
     online evals run."""
@@ -362,18 +368,18 @@ class SFTConfig(BaseConfig):
         if self.ckpt.keep_last is not None or self.ckpt.keep_interval is not None:
             warnings.warn(
                 "ckpt.keep_last / ckpt.keep_interval can delete a weight checkpoint before the "
-                "evaluator consumes it when evals run slower than training - such steps are "
+                "evals consumes it when evals run slower than training - such steps are "
                 "skipped with a warning instead of evaluated.",
                 stacklevel=2,
             )
 
         if self.deployment.type == "multi_node":
             # Decoupled deployment: the launcher submits a dedicated SLURM job running the
-            # inference pool (one engine per DP rank behind a router) plus the evaluator.
+            # inference pool (one engine per DP rank behind a router) plus the evals process.
             if self.inference is None:
                 raise ValueError(
                     "Multi-node online evals require an [inference] block - the launcher submits "
-                    "a dedicated SLURM job running the inference pool and the evaluator."
+                    "a dedicated SLURM job running the inference pool and the evals process."
                 )
             if self.deployment.num_infer_nodes < 1:
                 raise ValueError("Online evals on a multi-node deployment require deployment.num_infer_nodes >= 1.")
@@ -398,7 +404,7 @@ class SFTConfig(BaseConfig):
                 )
             if self.max_steps is None:
                 warnings.warn(
-                    "Online evals without max_steps: the evaluator never sees a final checkpoint, "
+                    "Online evals without max_steps: the evals process never sees a final checkpoint, "
                     "so the eval SLURM job holds its allocation until its walltime.",
                     stacklevel=2,
                 )
@@ -411,7 +417,7 @@ class SFTConfig(BaseConfig):
                 "Online evals are configured without an [inference] block - the launcher will not "
                 f"start an inference server. Make sure one is running at eval.client.base_url "
                 f"({self.eval.client.base_url}) with weight_broadcast.type = 'filesystem', "
-                "otherwise the evaluator will hang waiting for it. If a router fronts the "
+                "otherwise the evals process will hang waiting for it. If a router fronts the "
                 "deployment, set eval.client.admin_base_url to the engine URLs - admin ops "
                 "(pause/update_weights/resume) must bypass the router.",
                 stacklevel=2,

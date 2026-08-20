@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 
 from prime_rl.configs.env_server import EnvServerConfig
+from prime_rl.configs.evals import EvalsConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
@@ -23,6 +24,7 @@ CONFIG_CLASSES = [
     OrchestratorConfig,
     InferenceConfig,
     EnvServerConfig,
+    EvalsConfig,
 ]
 
 

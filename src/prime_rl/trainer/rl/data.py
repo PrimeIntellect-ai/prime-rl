@@ -7,7 +7,7 @@ from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.trainer.world import get_world
-from prime_rl.transport import (
+from prime_rl.transports.rollouts import (
     MicroBatch,
     MicroBatchReceiver,
     TransportConfig,

@@ -17,7 +17,10 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 [orchestrator]
 batch_size = 512
 group_size = 16
-oversampling_factor = 2.0
+
+[orchestrator.concurrency]
+initial_inflight = 128
+max_inflight = 128
 
 [[orchestrator.train.source]]
 name = "wiki-search"

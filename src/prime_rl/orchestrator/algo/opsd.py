@@ -12,7 +12,7 @@ from prime_rl.orchestrator.types import PreparedTrace
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.transport import TrainingSample
+    from prime_rl.transports.rollouts import TrainingSample
     from prime_rl.utils.client import InferencePool
 
 

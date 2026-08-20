@@ -7,7 +7,7 @@ import verifiers.v1 as vf
 
 from prime_rl.orchestrator.metrics import EvalEpisodes, Stat, TrainEpisodes
 from prime_rl.orchestrator.utils import compute_pass_metrics
-from prime_rl.transport import TrainingSample
+from prime_rl.transports.rollouts import TrainingSample
 
 _ids = count()
 

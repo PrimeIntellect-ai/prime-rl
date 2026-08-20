@@ -45,8 +45,11 @@ weight_decay = 0.01
 
 [orchestrator]
 batch_size = 2048
-oversampling_factor = 2
 max_off_policy_steps = 16
+
+[orchestrator.concurrency]
+initial_inflight = 4096
+max_inflight = 4096
 
 [[orchestrator.train.source]]
 name = "swe"

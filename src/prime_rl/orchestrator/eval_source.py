@@ -46,7 +46,7 @@ class EvalSource:
     def trigger(self, step: int, *, force: bool = False) -> list[str]:
         """Fire eligible envs for ``step`` and return their names. On resume
         ``first_trigger`` is False, so the startup/base eval doesn't re-run.
-        ``force`` fires every env regardless of interval (e.g. the evaluator's
+        ``force`` fires every env regardless of interval (e.g. the evals process's
         final-checkpoint eval)."""
         is_first, self.first_trigger = self.first_trigger, False
         if is_first and self.eval_config.skip_first_step:

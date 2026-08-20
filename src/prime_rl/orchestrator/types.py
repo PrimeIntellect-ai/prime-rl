@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 
 import verifiers.v1 as vf
 
-from prime_rl.transport import TrainingSample
+from prime_rl.transports.rollouts import TrainingSample
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
@@ -48,6 +48,8 @@ class InflightEpisode:
     client_config: vf.ClientConfig | None = None
     off_policy_steps: int = 0
     eval_step: int | None = None
+    started_at: float = 0.0
+    """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
 
 
 @dataclass
