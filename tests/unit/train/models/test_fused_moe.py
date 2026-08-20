@@ -10,7 +10,12 @@ import importlib.util
 import pytest
 import torch
 
-from prime_rl.trainer.models.layers.moe import _FusedMoE, _load_fused_moe_kernel, _run_experts_fused_reference
+from prime_rl.trainer.models.layers.moe import (
+    _FusedMoE,
+    _load_fused_moe_kernel,
+    _quantize_mxfp8,
+    _run_experts_fused_reference,
+)
 
 
 def _unavailable_reason() -> str | None:
@@ -32,16 +37,19 @@ pytestmark = [
 
 NUM_EXPERTS, TOP_K, DIM, HIDDEN_DIM, NUM_TOKENS = 4, 2, 256, 128, 512
 
-# Both paths are bf16 GEMMs with fp32 accumulation but different reduction orders, so they
-# agree to bf16 precision, not bitwise. mxfp8 additionally quantizes both operands to e4m3
-# with one e8m0 scale per 32 elements, which costs roughly another order of magnitude.
-# These are backstops: the sharper check is the fp32 ratio in the forward test. Every
-# comparison prints its measured margin, so `pytest -s` says how much room is left.
-BF16_TOL = 3e-2
-MXFP8_TOL = 1.5e-1
+# Measured on a B200 at the shapes below: bf16 forward and gradients all land at 4e-3..5.5e-3
+# (two bf16 paths with different reduction orders), mxfp8 forward at 6.8e-2. These are
+# backstops at ~3x and ~1.5x the measured values; the sharper checks are the fp32 ratios in
+# the forward test, which need no constant at all. `pytest -s` prints every margin.
+BF16_TOL = 1.5e-2
+MXFP8_TOL = 1e-1
 # The mxfp8 backward re-runs the very reference this compares against, on unquantized
-# weights, so anything above float32 round-off means the glue around it is wrong.
+# weights, so anything above float32 round-off means the glue around it is wrong. In
+# practice it is bitwise equal — the same kernels on the same inputs in the same order.
 GLUE_TOL = 1e-5
+# Quantizing to e4m3 costs accuracy no kernel can avoid, so the mxfp8 forward is judged
+# against that floor rather than a number picked by hand.
+MXFP8_FLOOR_RATIO = 1.5
 
 GRAD_NAMES = ("x", "w1", "w2", "w3", "top_scores")
 
@@ -54,8 +62,12 @@ def _rel_err(actual: torch.Tensor, expected: torch.Tensor) -> float:
 
 def _assert_close(actual: torch.Tensor, expected: torch.Tensor, tol: float, label: str) -> None:
     """Compare, and report the measured error either way — `pytest -s` prints the margins."""
+    norm = expected.float().norm().item()
+    # A relative error of zero means "identical"; against an all-zero reference it would
+    # instead mean "both sides computed nothing", which must not read as a pass.
+    assert norm > 0, f"{label}: reference is all zeros, the comparison would be vacuous"
     err = _rel_err(actual, expected)
-    print(f"{label}: rel_err={err:.3e} tol={tol:.1e} margin={tol / max(err, 1e-12):.0f}x")
+    print(f"{label}: rel_err={err:.3e} tol={tol:.1e} margin={tol / max(err, 1e-12):.0f}x |ref|={norm:.3e}")
     assert err < tol, f"{label}: relative error {err:.3e} exceeds {tol:.1e}"
 
 
@@ -92,6 +104,13 @@ def _fp32_ground_truth(moe_inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:
     return out
 
 
+def _mxfp8_round_trip(tensor: torch.Tensor) -> torch.Tensor:
+    """Quantize to e4m3 and back, to price what mxfp8 costs before any kernel runs."""
+    block = _load_fused_moe_kernel().MXFP8_SCALE_BLOCK
+    data, scales = _quantize_mxfp8(tensor, block)
+    return data.float().unflatten(-1, (-1, block)).mul(scales.float().unsqueeze(-1)).flatten(-2)
+
+
 @pytest.mark.parametrize("mxfp8", [False, True])
 def test_fused_forward_matches_grouped_mm(moe_inputs, mxfp8: bool):
     """Pairwise against grouped-mm, and — the tolerance-free part — against fp32.
@@ -112,10 +131,21 @@ def test_fused_forward_matches_grouped_mm(moe_inputs, mxfp8: bool):
 
     assert out.shape == expected.shape and out.dtype == x.dtype
     _assert_close(out, expected, MXFP8_TOL if mxfp8 else BF16_TOL, f"forward[{label}]")
+
     if not mxfp8:
         assert fused_err <= 1.5 * grouped_mm_err, (
             f"fused bf16 is less accurate than grouped-mm: {fused_err:.3e} vs {grouped_mm_err:.3e} against fp32"
         )
+        return
+
+    # What e4m3 with one e8m0 scale per 32 elements costs on these inputs, kernel aside.
+    floor_inputs = (_mxfp8_round_trip(x), *(_mxfp8_round_trip(w) for w in (w1, w2, w3)), *moe_inputs[4:])
+    floor_err = _rel_err(_fp32_ground_truth(floor_inputs), truth)
+    print(f"forward[mxfp8] vs fp32: quantization floor={floor_err:.3e} fused={fused_err:.3e}")
+    assert fused_err <= MXFP8_FLOOR_RATIO * floor_err, (
+        f"fused mxfp8 error {fused_err:.3e} exceeds {MXFP8_FLOOR_RATIO}x the {floor_err:.3e} "
+        "that quantizing the inputs costs on its own — the kernel is losing accuracy beyond mxfp8"
+    )
 
 
 def test_fused_bf16_backward_matches_grouped_mm(moe_inputs):
