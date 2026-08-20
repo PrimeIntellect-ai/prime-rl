@@ -20,6 +20,17 @@ TIMEOUT = 600  # 10 minutes (was 300s — too tight when 3 concurrent orchestrat
 ORCHESTRATOR_NAMES = ["alpha", "beta", "gamma"]
 
 
+def remove_run_dir(run_dir: Path) -> None:
+    """Delete a run dir, tolerating the shared trainer still flushing its tail
+    (token exports recreate directories mid-rmtree -> 'Directory not empty')."""
+    for _ in range(10):
+        shutil.rmtree(run_dir, ignore_errors=True)
+        if not run_dir.exists():
+            return
+        time.sleep(1)
+    shutil.rmtree(run_dir)
+
+
 def wait_for_file(
     file_path: Path,
     timeout: int = 600,
@@ -94,6 +105,32 @@ def wandb_name(branch_name: str) -> str:
 
 INFERENCE_PORTS = [8000, 8001]
 INFERENCE_BASE_URLS = [f"http://localhost:{port}/v1" for port in INFERENCE_PORTS]
+
+# One env server per run (1:1 with its orchestrator), at that run's base port. A resumed
+# run keeps its port, so it reconnects to the same server.
+ENV_SERVER_PORTS = {name: 5000 + i for i, name in enumerate(ORCHESTRATOR_NAMES)}
+ENV_SERVER_PORTS["alpha_resume"] = ENV_SERVER_PORTS["alpha"]
+ENV_SERVER_PORTS["beta_resume"] = ENV_SERVER_PORTS["beta"]
+
+
+def start_env_server(log_dir: Path, name: str) -> subprocess.Popen:
+    """Start one env server for orchestrator `name`, which derives the same address and
+    connects, polling until the server is up — no readiness wait needed here."""
+    env_server_log = log_dir / f"env_server_{name}.log"
+    with open(env_server_log, "w") as f:
+        return subprocess.Popen(
+            [
+                "uv",
+                "run",
+                "env-server",
+                "@",
+                "configs/ci/integration/reverse-text-multi-run/env.toml",
+                "--serve.address",
+                f"tcp://127.0.0.1:{ENV_SERVER_PORTS[name]}",
+            ],
+            stdout=f,
+            stderr=f,
+        )
 
 
 def start_inference_and_trainer(
@@ -208,6 +245,8 @@ def start_orchestrator(
         str(max_steps),
         "--model.lora.name",
         name,
+        "--env-server-base-port",
+        str(ENV_SERVER_PORTS[name]),
         "--wandb.project",
         wandb_project,
         "--wandb.name",
@@ -237,6 +276,9 @@ def multi_run_result(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     processes: list[subprocess.Popen] = []
+
+    for name in ORCHESTRATOR_NAMES:
+        processes.append(start_env_server(log_dir, name))
 
     trainer_proc, inference_procs = start_inference_and_trainer(log_dir, output_dir, wandb_project, wandb_name)
     processes.append(trainer_proc)
@@ -274,7 +316,7 @@ def multi_run_result(
     print(f"Copied alpha checkpoint to {tmp_path / 'alpha_ckpt_step_10'}")
 
     # Remove alpha run directory
-    shutil.rmtree(output_dir / "run_alpha")
+    remove_run_dir(output_dir / "run_alpha")
 
     # ===========================
     # Queue alpha's resume proc
@@ -305,7 +347,7 @@ def multi_run_result(
     shutil.copy(run_dir / "logs" / "orchestrator.log", log_dir / "beta_orchestrator.log")
     shutil.copytree(beta_ckpt_dir, tmp_path / "beta_ckpt_step_20")
     print(f"Copied {beta_ckpt_dir} to {tmp_path / 'beta_ckpt_step_20'}")
-    shutil.rmtree(run_dir)
+    remove_run_dir(run_dir)
 
     # =====================
     # Queue beta's resume
@@ -329,7 +371,7 @@ def multi_run_result(
         timeout=TIMEOUT,
     )
     shutil.copy(output_dir / "run_gamma" / "logs" / "orchestrator.log", log_dir / "gamma_orchestrator.log")
-    shutil.rmtree(output_dir / "run_gamma")
+    remove_run_dir(output_dir / "run_gamma")
 
     # ================================================
     # Wait for alpha_resume and beta_resume to finish

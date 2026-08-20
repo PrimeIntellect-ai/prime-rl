@@ -3,11 +3,12 @@ from typing import Optional
 
 import torch
 from torch import nn
+from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 
 
 def _compute_default_rope_parameters(
-    config: Optional["PreTrainedConfig"] = None,
+    config: Optional["PretrainedConfig"] = None,
     device: Optional["torch.device"] = None,
     seq_len: int | None = None,
     layer_type: str | None = None,

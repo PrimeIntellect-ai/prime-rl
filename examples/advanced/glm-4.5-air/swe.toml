@@ -7,7 +7,7 @@
 # term is pass_rate-scaled and normalized by the group's own max before the GRPO baseline
 # subtraction.
 #
-# 2 train + 4 infer nodes. Trainer uses cp=8 (ulysses) plus
+# 2 train + 4 infer nodes. Trainer uses cp=4 (ulysses) plus
 # the memory improvements from the GLM-5.1 prod run (research-prod rlm5/prod.toml): LM-head token
 # chunking, activation checkpointing (freq=1) + activation offloading (max_inflight=1), optimizer
 # CPU offload, and skip-gather / skip-optimizer checkpointing.
@@ -57,7 +57,7 @@ enable_router_replay = true
 [trainer.model]
 impl = "custom"
 attn = "flash_attention_3"
-cp = 8
+cp = 4
 cp_style = "ulysses"
 fused_lm_head_token_chunk_size = 1024
 optim_cpu_offload = true
@@ -82,7 +82,7 @@ type = "muon"
 batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
-max_inflight_rollouts = 512
+max_inflight_episodes = 512
 
 [orchestrator.algo]
 type = "grpo"
@@ -97,10 +97,21 @@ num_turns_weight = 0.1
 name = "glm-4.5"
 thinking_retention = "all"
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "scaleswe"
-taskset = { id = "scaleswe-v1" }
-harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] } }
+
+[orchestrator.train.source.env.taskset]
+id = "scaleswe-v1"
+
+[orchestrator.train.source.env.agent.harness]
+id = "rlm"
+summarize_at_tokens = [65536, 131072]
+
+[orchestrator.train.source.env.agent.runtime]
+type = "prime"
+vm = true
+idle_timeout = "None"
+labels = ["glm45air-swe"]
 
 [orchestrator.prime_monitor]
 
@@ -109,24 +120,35 @@ harness = { id = "rlm", summarize_at_tokens = [65536, 131072], runtime = { type 
 [orchestrator.eval]
 interval = 20
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "swebench-verified"
-taskset = { id = "swebench-verified-v1" }
-harness = { id = "rlm", summarize_at_tokens = 98304, runtime = { type = "prime", vm = true, idle_timeout = "None", labels = ["glm45air-swe"] } }
-timeout = { rollout = 3600 }
+
+[orchestrator.eval.source.env.taskset]
+id = "swebench-verified-v1"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "rlm"
+summarize_at_tokens = 98304
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "prime"
+vm = true
+idle_timeout = "None"
+labels = ["glm45air-swe"]
+
+[orchestrator.eval.source.env.agent.timeout]
+rollout = 3600
 
 # --- Inference ---
 
 [inference]
-enable_return_routed_experts = true
 
 # vLLM + FlashInfer caches on node-local /tmp (see [env_vars]).
 [inference.env_vars]
 VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
 FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 
-[inference.model]
+[inference.vllm]
 max_model_len = 131072
-
-[inference.parallel]
-tp = 8
+tensor_parallel_size = 8
+enable_return_routed_experts = true

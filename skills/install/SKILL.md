@@ -29,7 +29,7 @@ uv sync --all-extras --all-packages        # + all env packages (needed to train
 uv sync --package prime-rl --package gsm8k-v1  # core + just one env
 ```
 
-Environment packages under `deps/research-environments/environments/*/*` and `deps/verifiers/environments/*` are uv **workspace members**, auto-discovered — adding a new env needs no `pyproject.toml` change. They are opt-in: a plain `uv sync` / `--all-extras` does not install them (and would remove them if already present — re-run with `--all-packages`, or `--inexact` to keep them). Install all with `--all-packages`, or a subset with repeated `--package <env>` (include `--package prime-rl` to keep the core). If two envs pin conflicting transitive versions (all members share one lock), add the loser to `[tool.uv.workspace].exclude`.
+Environment packages are uv **workspace members**. Those under `deps/research-environments/environments/*/*` are auto-discovered — adding a new env there needs no `pyproject.toml` change. verifiers' example envs are enumerated explicitly in `[tool.uv.workspace].members` (only the ones prime-rl trains or tests on) — to use another, add its path to the list. Members are opt-in: a plain `uv sync` / `--all-extras` does not install them (and would remove them if already present — re-run with `--all-packages`, or `--inexact` to keep them). Install all with `--all-packages`, or a subset with repeated `--package <env>` (include `--package prime-rl` to keep the core). If two envs pin conflicting transitive versions (all members share one lock), add the loser to `[tool.uv.workspace].exclude`.
 
 When bumping a package past the workspace-wide `exclude-newer = "7 days"` window, add it (and any newly-required transitives) to `[tool.uv.exclude-newer-package]` before refreshing `uv.lock`.
 
@@ -57,7 +57,7 @@ Verify: `uv run python -c 'import deep_ep; print(deep_ep.__file__)'`.
 
 ### llm-d router backend
 
-Multi-node / disaggregated deployments can route through the upstream llm-d Endpoint Picker instead of `vllm-router` (set `[...deployment.router] type = "llm-d"`). It needs three native binaries — install once:
+Multi-node / disaggregated deployments can route through the upstream llm-d Endpoint Picker instead of `vllm-router` (set `[inference.router] type = "llm-d"`). It needs three native binaries — install once:
 
 ```bash
 bash scripts/install_llmd.sh   # builds epp + pd-sidecar from a pinned llm-d-router commit (vendored Go), fetches envoy

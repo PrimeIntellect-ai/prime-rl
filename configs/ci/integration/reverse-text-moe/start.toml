@@ -25,17 +25,22 @@ group_size = 16
 [orchestrator.train.sampling]
 max_completion_tokens = 128
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "reverse-text"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.train.source.env.taskset]
+id = "reverse-text-v1"
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
 
 [inference]
-gpu_memory_utilization = 0.7
 
-[inference.model]
+[inference.vllm]
 max_model_len = 2048
-
-# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+gpu_memory_utilization = 0.7
 [orchestrator.renderer]
 name = "default"

@@ -15,6 +15,13 @@ def ceil_div(x: int, y: int) -> int:
     return (x + y - 1) // y
 
 
+def ue8m0_for_device(device: torch.device | None = None) -> bool:
+    """DeepGEMM requires UE8M0 (power-of-2) scales on SM100; SM90 supports exact float
+    scales, and UE8M0 there is a pure precision loss (it measurably raises the
+    trainer/inference mismatch KL)."""
+    return torch.cuda.get_device_capability(device)[0] >= 10
+
+
 # ---------------------------------------------------------------------------
 # Layout building
 # ---------------------------------------------------------------------------

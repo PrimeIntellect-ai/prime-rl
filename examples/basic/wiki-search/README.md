@@ -70,7 +70,7 @@ Start the inference server:
 
 ```bash
 # In the `Inference` pane
-uv run inference --enable-lora --model.name Qwen/Qwen3-4B-Instruct-2507 --model.tool_call_parser hermes
+uv run inference --vllm.enable-lora --vllm.model Qwen/Qwen3-4B-Instruct-2507 --vllm.tool-call-parser hermes
 ```
 
 Evaluate the base model:
@@ -114,7 +114,7 @@ Evaluate your trained model:
 
 ```bash
 # In the `Inference` pane
-uv run inference --enable-lora --model.name <user>/Qwen3-4B-Instruct-WikiSearch-RL --model.tool_call_parser hermes
+uv run inference --vllm.enable-lora --vllm.model <user>/Qwen3-4B-Instruct-WikiSearch-RL --vllm.tool-call-parser hermes
 ```
 
 ```bash
@@ -133,10 +133,11 @@ uv run eval wiki-search-v1 --harness.id null \
 The V1 taskset fixes the question bank and searchable corpus. You can replace its reference judge in `rl.toml`:
 
 ```toml
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "wiki-search"
 taskset = { id = "wiki-search-v1", task = { judges = [{ id = "reference", model = "openai/gpt-5.4-nano" }] } }
-harness = { id = "null", runtime = { type = "subprocess" } }
+harness = { id = "null" }
+runtime = { type = "subprocess" }
 ```
 
 ## Notes

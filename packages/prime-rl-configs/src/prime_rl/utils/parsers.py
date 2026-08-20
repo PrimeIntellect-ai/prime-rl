@@ -2,12 +2,17 @@ import re
 
 # (regex, parser_name) — first match wins.
 TOOL_CALL_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # Trinity-Large-Thinking uses the Qwen3-Coder tool format; the rest of the family is Hermes.
+    (re.compile(r"^arcee-ai/Trinity-Large-Thinking"), "qwen3_coder"),
+    (re.compile(r"^arcee-ai/Trinity-"), "hermes"),
     (re.compile(r"^deepseek-ai/DeepSeek-V3\.2"), "deepseek_v32"),
     (re.compile(r"^deepseek-ai/DeepSeek-V3\.1"), "deepseek_v31"),
     (re.compile(r"^zai-org/GLM-4\.5"), "glm45"),
     (re.compile(r"^zai-org/GLM-4\.7"), "glm47"),
     (re.compile(r"^zai-org/GLM-5"), "glm47"),
     (re.compile(r"^MiniMaxAI/MiniMax-M2"), "minimax_m2"),
+    (re.compile(r"^openai/gpt-oss"), "openai"),
+    (re.compile(r"^poolside/Laguna"), "poolside_v1"),
     (re.compile(r"^PrimeIntellect/INTELLECT-3"), "qwen3_coder"),
     # Covers Nemotron 3 and 3.5 — both use the same <tool_call> XML format.
     (re.compile(r"^nvidia/NVIDIA-Nemotron-3"), "qwen3_coder"),
@@ -19,9 +24,13 @@ TOOL_CALL_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # Trinity-Large-Preview doesn't reason; the Thinking/Mini/Nano variants do.
+    (re.compile(r"^arcee-ai/Trinity-(Large-Thinking|Mini|Nano)"), "deepseek_r1"),
     (re.compile(r"^deepseek-ai/DeepSeek-V3\.[12]"), "deepseek_r1"),
     (re.compile(r"^zai-org/GLM-"), "glm45"),
     (re.compile(r"^MiniMaxAI/MiniMax-M2"), "minimax_m2_append_think"),
+    # openai/gpt-oss has no entry here — vLLM's harmony serving path splits reasoning natively.
+    (re.compile(r"^poolside/Laguna"), "poolside_v1"),
     (re.compile(r"^PrimeIntellect/INTELLECT-3"), "deepseek_r1"),
     (re.compile(r"^nvidia/NVIDIA-Nemotron-3-Super"), "nemotron_v3"),
     # Nemotron 3 Nano and 3.5 Lightning prefill <think>\n in the generation

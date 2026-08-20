@@ -1,0 +1,197 @@
+name: Nightly FFT
+
+on:
+    # Allow to manually trigger the workflow
+    workflow_dispatch:
+        inputs:
+            config_file:
+                description: "Full-FT config to dispatch (e.g. configs/ci/nightly-fft/wordle.toml). Leave empty to run all."
+                required: false
+                default: ""
+            image_tag:
+                description: "prime-rl image tag to pin (e.g. v0.7.1.dev58). Leave empty to auto-resolve the newest v*.dev* with a published manifest."
+                required: false
+                default: ""
+
+    # Scheduled run at 3AM PST (11AM UTC)
+    schedule:
+        - cron: "0 11 * * *"
+
+permissions:
+    contents: read
+    packages: read
+
+jobs:
+    discover-configs:
+        name: Discover configs
+        runs-on: ubuntu-latest
+
+        outputs:
+            matrix: ${{ steps.build-matrix.outputs.matrix }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                  submodules: false
+
+            - name: Build matrix from nightly FFT configs
+              id: build-matrix
+              run: |
+                  # Find all nightly full-finetune configs
+                  files=$(ls configs/ci/nightly-fft/*.toml)
+
+                  # Filter to specific config if provided in workflow_dispatch
+                  if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.config_file }}" ]; then
+                      filtered=$(echo "$files" | grep -F "${{ github.event.inputs.config_file }}" || true)
+                      if [ -z "$filtered" ]; then
+                          echo "Error: Config file '${{ github.event.inputs.config_file }}' not found"
+                          exit 1
+                      fi
+                      files="$filtered"
+                  fi
+
+                  echo "Discovered nightly FFT configs:"
+                  echo "$files"
+
+                  # Build JSON of the form: { "config_file": ["configs/ci/nightly-fft/foo.toml", ...] }
+                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc '{config_file: .}')
+
+                  echo "matrix=$json" >> "$GITHUB_OUTPUT"
+
+    dispatch-run:
+        name: Dispatch hosted FFT run
+        needs: discover-configs
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        strategy:
+            fail-fast: false
+            matrix: ${{ fromJSON(needs.discover-configs.outputs.matrix) }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                  submodules: false
+
+            - name: Resolve prime-rl image tag
+              id: image
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  # Pass the dispatch input through env so a malicious value
+                  # cannot break out of shell context via $(...) or embedded
+                  # quotes — the GitHub expression is substituted before Bash
+                  # parses the script.
+                  REQUESTED_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+              run: |
+                  # If workflow_dispatch passed an explicit image_tag, validate
+                  # it as a Docker/OCI tag, verify its manifest is pullable,
+                  # and use it as-is (skip resolution).
+                  requested="$REQUESTED_IMAGE_TAG"
+                  if [ -n "$requested" ]; then
+                      # OCI/Docker tag charset: [A-Za-z0-9._-], max 128, no
+                      # leading '.' or '-'. Reject anything else before it
+                      # reaches curl or GITHUB_OUTPUT.
+                      if ! printf '%s' "$requested" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$'; then
+                          echo "Invalid image_tag: only [A-Za-z0-9._-] allowed, max 128 chars, no leading '.' or '-'." >&2
+                          exit 1
+                      fi
+                      registry_token=$(curl -fsSL \
+                          "https://ghcr.io/token?scope=repository:primeintellect-ai/prime-rl:pull" \
+                          | jq -r .token)
+                      code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                          -H "Authorization: Bearer $registry_token" \
+                          -H 'Accept: application/vnd.oci.image.index.v1+json' \
+                          -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+                          "https://ghcr.io/v2/primeintellect-ai/prime-rl/manifests/$requested")
+                      if [ "$code" != "200" ]; then
+                          echo "Requested image_tag '$requested' has no published manifest (HTTP $code)." >&2
+                          exit 1
+                      fi
+                      echo "Using pinned prime-rl image tag: $requested"
+                      echo "tag=$requested" >> "$GITHUB_OUTPUT"
+                      exit 0
+                  fi
+
+                  # No dispatch input: auto-resolve the newest v*.dev* tag on
+                  # GHCR (the point of a nightly is to catch regressions on
+                  # tip-of-main). The GHCR versions API can list a tag before
+                  # its manifest is actually pullable (build in-flight, or
+                  # manifest step didn't finish), so pull the top N candidates
+                  # and verify each with a manifest HEAD via the anonymous
+                  # registry token flow; take the newest one that resolves.
+                  # Disable pipefail locally: `grep` may exit 1 on no matches
+                  # (empty tag list) and `head` may SIGPIPE `sort` after
+                  # reading its 10 lines. Both would abort the step before the
+                  # explicit no-candidates guard below runs.
+                  set +o pipefail
+                  candidates=$(gh api --paginate \
+                      "/orgs/primeintellect-ai/packages/container/prime-rl/versions" \
+                      --jq '.[].metadata.container.tags[]' \
+                      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' \
+                      | sort -Vru | head -n 10)
+                  set -o pipefail
+                  if [ -z "$candidates" ]; then
+                      echo "No v*.dev* tag listed on GHCR." >&2
+                      exit 1
+                  fi
+                  registry_token=$(curl -fsSL \
+                      "https://ghcr.io/token?scope=repository:primeintellect-ai/prime-rl:pull" \
+                      | jq -r .token)
+                  tag=""
+                  for cand in $candidates; do
+                      code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                          -H "Authorization: Bearer $registry_token" \
+                          -H 'Accept: application/vnd.oci.image.index.v1+json' \
+                          -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+                          "https://ghcr.io/v2/primeintellect-ai/prime-rl/manifests/$cand")
+                      if [ "$code" = "200" ]; then
+                          tag="$cand"
+                          break
+                      fi
+                      echo "Skip $cand — manifest HEAD returned $code"
+                  done
+                  if [ -z "$tag" ]; then
+                      echo "None of the top v*.dev* tags have a published manifest." >&2
+                      exit 1
+                  fi
+                  echo "Latest published prime-rl image tag on GHCR: $tag"
+                  echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+
+            - name: Install prime CLI (latest)
+              run: uv tool install prime
+
+            - name: Dispatch run
+              env:
+                  PRIME_API_KEY: ${{ secrets.PRIME_FFT_API_KEY }}
+                  PRIME_TEAM_ID: ${{ secrets.PRIME_FFT_TEAM_ID }}
+                  PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
+                  WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+              run: |
+                  echo "Dispatching config: ${{ matrix.config_file }}"
+                  echo "Image tag:          ${{ steps.image.outputs.tag }}"
+                  # Tag the RFTRun so it's identifiable on the platform as
+                  # coming from this workflow. Injected here rather than in
+                  # the checked-in toml because a top-level `name` field
+                  # breaks tests/unit/test_configs.py::test_load_configs
+                  # (RLConfig has no top-level name).
+                  config_base=$(basename "${{ matrix.config_file }}" .toml)
+                  run_name="nightly-${config_base}-$(date -u +%Y-%m-%d)-${{ github.run_id }}"
+                  dispatch_cfg=$(mktemp --suffix=.toml)
+                  printf 'name = "%s"\n\n' "$run_name" > "$dispatch_cfg"
+                  cat "${{ matrix.config_file }}" >> "$dispatch_cfg"
+                  echo "Dispatched run name: $run_name"
+                  # Forward WANDB_API_KEY / HF_TOKEN into the hosted payload:
+                  # the full-FT dispatch path (`prime train`) only picks up
+                  # secrets that were explicitly collected via `-e` / `--env-file`,
+                  # not ambient env, so the workflow env: block alone is not
+                  # enough to reach the hosted trainer/orchestrator pods.
+                  prime train "$dispatch_cfg" \
+                      --image-tag "${{ steps.image.outputs.tag }}" \
+                      -e WANDB_API_KEY \
+                      -e HF_TOKEN \
+                      --yes --output json

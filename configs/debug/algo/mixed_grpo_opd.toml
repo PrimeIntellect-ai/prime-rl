@@ -3,8 +3,8 @@
 # ref_logprobs, GRPO samples don't, and both pack into the same micro batches.
 # Start the frozen reference server first (on a separate GPU):
 #   CUDA_VISIBLE_DEVICES=1 uv run inference \
-#     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
-#     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
+#     --vllm.model PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
+#     --server.port 8001 --vllm.gpu-memory-utilization 0.5 --vllm.enforce-eager
 # Then:
 #   uv run rl @ configs/debug/algo/mixed_grpo_opd.toml
 
@@ -31,20 +31,34 @@ name = "prime-qwen3"
 [orchestrator.train.sampling]
 max_completion_tokens = 128
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "reverse-text-grpo"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
 
-[[orchestrator.train.env]]
+[orchestrator.train.source.env.taskset]
+id = "reverse-text-v1"
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
+
+[[orchestrator.train.source]]
 name = "reverse-text-opd"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
 
-[orchestrator.train.env.algo]
+[orchestrator.train.source.env.taskset]
+id = "reverse-text-v1"
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
+
+[orchestrator.train.source.algo]
 type = "opd"
 
-[orchestrator.train.env.algo.teacher]
+[orchestrator.train.source.algo.teacher]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = ["http://localhost:8001/v1"]
 
@@ -55,13 +69,22 @@ num_examples = 128
 [orchestrator.eval.sampling]
 max_completion_tokens = 128
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "reverse-text"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.eval.source.env.taskset]
+id = "reverse-text-v1"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "null"
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "subprocess"
 
 [trainer.optim]
 lr = 3e-6
 
 [inference]
+
+[inference.vllm]
 gpu_memory_utilization = 0.5

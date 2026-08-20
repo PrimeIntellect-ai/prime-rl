@@ -5,6 +5,11 @@ from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_p
 
 # (model_name, expected_tool_call_parser, expected_reasoning_parser)
 EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
+    # Arcee Trinity
+    ("arcee-ai/Trinity-Large-Thinking", "qwen3_coder", "deepseek_r1"),
+    ("arcee-ai/Trinity-Large-Preview", "hermes", None),
+    ("arcee-ai/Trinity-Mini", "hermes", "deepseek_r1"),
+    ("arcee-ai/Trinity-Nano-Preview", "hermes", "deepseek_r1"),
     # DeepSeek
     ("deepseek-ai/DeepSeek-V3.2", "deepseek_v32", "deepseek_r1"),
     ("deepseek-ai/DeepSeek-V3.2-Exp", "deepseek_v32", "deepseek_r1"),
@@ -33,6 +38,14 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("MiniMaxAI/MiniMax-M2", "minimax_m2", "minimax_m2_append_think"),
     ("MiniMaxAI/MiniMax-M2.1", "minimax_m2", "minimax_m2_append_think"),
     ("MiniMaxAI/MiniMax-M2.5", "minimax_m2", "minimax_m2_append_think"),
+    # gpt-oss (reasoning handled natively by vLLM's harmony path)
+    ("openai/gpt-oss-20b", "openai", None),
+    ("openai/gpt-oss-120b", "openai", None),
+    # Poolside Laguna
+    ("poolside/Laguna-S-2.1", "poolside_v1", "poolside_v1"),
+    ("poolside/Laguna-S-2.1-FP8", "poolside_v1", "poolside_v1"),
+    ("poolside/Laguna-XS-2.1", "poolside_v1", "poolside_v1"),
+    ("poolside/Laguna-M.1", "poolside_v1", "poolside_v1"),
     # INTELLECT-3
     ("PrimeIntellect/INTELLECT-3", "qwen3_coder", "deepseek_r1"),
     ("PrimeIntellect/INTELLECT-3-FP8", "qwen3_coder", "deepseek_r1"),
@@ -92,46 +105,57 @@ def test_resolve_reasoning_parser(model_name: str, expected_tool_call: str | Non
 
 
 def test_inference_config_resolves_parsers_from_model_name():
-    """InferenceConfig.ModelConfig.auto_resolve_parsers fires when parsers default to 'auto'."""
-    config = InferenceConfig(model={"name": "deepseek-ai/DeepSeek-V3.2"})
-    assert config.model.tool_call_parser == "deepseek_v32"
-    assert config.model.reasoning_parser == "deepseek_r1"
+    """VllmConfig.auto_resolve_parsers fires when parsers default to 'auto'."""
+    config = InferenceConfig(vllm={"model": "deepseek-ai/DeepSeek-V3.2"})
+    assert config.vllm.tool_call_parser == "deepseek_v32"
+    assert config.vllm.reasoning_parser == "deepseek_r1"
 
 
 def test_inference_config_explicit_parser_not_overridden():
-    config = InferenceConfig(model={"name": "Qwen/Qwen3-4B", "tool_call_parser": "my_parser"})
-    assert config.model.tool_call_parser == "my_parser"
+    config = InferenceConfig(vllm={"model": "Qwen/Qwen3-4B", "tool_call_parser": "my_parser"})
+    assert config.vllm.tool_call_parser == "my_parser"
 
 
 def test_inference_config_none_disables_parser():
     config = InferenceConfig(
-        model={"name": "Qwen/Qwen3-4B", "tool_call_parser": None, "reasoning_parser": None},
+        vllm={"model": "Qwen/Qwen3-4B", "tool_call_parser": None, "reasoning_parser": None},
     )
-    assert config.model.tool_call_parser is None
-    assert config.model.reasoning_parser is None
+    assert config.vllm.tool_call_parser is None
+    assert config.vllm.reasoning_parser is None
 
 
-def test_to_vllm_resolves_parsers():
-    config = InferenceConfig(model={"name": "deepseek-ai/DeepSeek-V3.2"})
-    ns = config.to_vllm()
+def test_to_namespace_resolves_parsers():
+    config = InferenceConfig(vllm={"model": "deepseek-ai/DeepSeek-V3.2"})
+    ns = config.to_namespace()
     assert ns.tool_call_parser == "deepseek_v32"
     assert ns.reasoning_parser == "deepseek_r1"
     assert ns.enable_auto_tool_choice is True
 
 
-def test_to_vllm_none_strips_parser_attrs_from_namespace():
+def test_to_namespace_none_strips_parser_attrs_from_namespace():
     """vLLM doesn't accept None for these — they must be removed, not passed through."""
     config = InferenceConfig(
-        model={"name": "Qwen/Qwen3-4B", "tool_call_parser": None, "reasoning_parser": None},
+        vllm={"model": "Qwen/Qwen3-4B", "tool_call_parser": None, "reasoning_parser": None},
     )
-    ns = config.to_vllm()
+    ns = config.to_namespace()
     assert not hasattr(ns, "tool_call_parser")
     assert not hasattr(ns, "reasoning_parser")
     assert ns.enable_auto_tool_choice is False
 
 
-def test_to_vllm_unknown_model_disables_auto_tool_choice():
-    config = InferenceConfig(model={"name": "some/unknown-model"})
-    ns = config.to_vllm()
+def test_to_namespace_unknown_model_disables_auto_tool_choice():
+    config = InferenceConfig(vllm={"model": "some/unknown-model"})
+    ns = config.to_namespace()
     assert not hasattr(ns, "tool_call_parser")
     assert ns.enable_auto_tool_choice is False
+
+
+def test_to_namespace_passes_through_unknown_args():
+    """Untyped [inference.vllm] keys land on the namespace verbatim, with CLI-style
+    string values JSON-coerced."""
+    config = InferenceConfig(
+        vllm={"model": "Qwen/Qwen3-4B", "max_num_seqs": "256", "kv-cache-dtype": "fp8"},
+    )
+    ns = config.to_namespace()
+    assert ns.max_num_seqs == 256
+    assert ns.kv_cache_dtype == "fp8"

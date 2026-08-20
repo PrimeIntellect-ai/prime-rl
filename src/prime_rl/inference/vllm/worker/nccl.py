@@ -100,6 +100,7 @@ class NCCLWeightUpdateWorker(Worker):
         inference_world_size: int,
         timeout: int,
         quantize_in_weight_transfer: bool = False,
+        session_id: str = "default",
     ) -> None:
         """Initialize the NCCL broadcast receiver.
 
@@ -107,6 +108,7 @@ class NCCLWeightUpdateWorker(Worker):
             rank_offset: Starting GPU offset for this server in the global inference group.
             inference_world_size: Total number of inference GPUs across all servers.
         """
+        del session_id
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
         # Use the worker's device index directly as the local rank.
         # The previous dp_group-based computation broke in vLLM v1 multiprocess

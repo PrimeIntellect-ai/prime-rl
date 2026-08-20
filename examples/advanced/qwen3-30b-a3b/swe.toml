@@ -46,18 +46,34 @@ batch_size = 512
 oversampling_factor = 2
 max_off_policy_steps = 16
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "swe"
-taskset = { id = "r2e-gym-v1" }
-harness = { id = "bash", runtime = { type = "prime", labels = ["qwen30b-swe", "swe"] } }
+
+[orchestrator.train.source.env.taskset]
+id = "r2e-gym-v1"
+
+[orchestrator.train.source.env.agent.harness]
+id = "bash"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "prime"
+labels = ["qwen30b-swe", "swe"]
 
 [orchestrator.eval]
 interval = 25
 
-[[orchestrator.eval.env]]
+[[orchestrator.eval.source]]
 name = "swe-bench-verified"
-taskset = { id = "swebench-verified-v1" }
-harness = { id = "bash", runtime = { type = "prime", labels = ["qwen30b-swe", "swe-bench-verified"] } }
 
-[inference.parallel]
-tp = 8
+[orchestrator.eval.source.env.taskset]
+id = "swebench-verified-v1"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "bash"
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "prime"
+labels = ["qwen30b-swe", "swe-bench-verified"]
+
+[inference.vllm]
+tensor_parallel_size = 8

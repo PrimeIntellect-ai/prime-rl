@@ -5,7 +5,6 @@ import shutil
 import tempfile
 from argparse import Namespace
 from pathlib import Path
-from typing import Any
 
 import uvloop
 from fastapi import APIRouter, Request
@@ -30,7 +29,6 @@ from prime_rl.inference.patches import (
     monkey_patch_nano_v3_reasoning_parser,
     monkey_patch_strip_routed_experts_from_chat,
     monkey_patch_tokenize_params_validation,
-    monkey_patch_vllm_padded_input_scrub,
 )
 
 # NOTE: Fix harmony stop token propagation for GPT-OSS models
@@ -42,9 +40,6 @@ monkey_patch_tokenize_params_validation()
 # NOTE: Register Nano V3 reasoning parser so configs can use
 # `reasoning_parser = "nano_v3"` without a vLLM plugin file.
 monkey_patch_nano_v3_reasoning_parser()
-# NOTE: Optional mitigation for vLLM padded decode inputs until the native fix
-# is available in our pinned runtime.
-monkey_patch_vllm_padded_input_scrub()
 # NOTE: routed_experts are consumed only via the serialized /generate path (router
 # replay). The chat-completions path encodes them as a base64 np.save string the PD
 # router cannot merge, which fails eval rollouts (they use chat completions). Strip
@@ -73,6 +68,7 @@ def models(request: Request) -> OpenAIServingModels:
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
+    "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
 }
 
 
@@ -212,9 +208,10 @@ async def init_broadcaster(request: Request):
     rank_offset = data.get("rank_offset")
     inference_world_size = data.get("inference_world_size")
     quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
+    session_id = data.get("session_id", "default")
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer),
+        args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer, session_id),
     )
     return {"status": "ok"}
 
@@ -282,18 +279,16 @@ vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
 # Adapted from vllm/entrypoints/cli/serve.py
 # Only difference we do some config translation (i.e. pass populated namespace
 # to `parse_args`) and additional arg validation
-def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
+def server(config: InferenceConfig):
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
     from vllm.entrypoints.openai.api_server import run_server
 
     # Signal worker processes to disable LoRA on MoE layers when LoRA targets don't include experts
-    if config.lora_target_modules and not any("expert" in m for m in config.lora_target_modules):
+    lora_target_modules = config.vllm.lora_target_modules
+    if lora_target_modules and not any("expert" in m for m in lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
 
-    namespace = config.to_vllm()
-    if vllm_extra:
-        for key, value in vllm_extra.items():
-            setattr(namespace, key, value)
+    namespace = config.to_namespace()
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)

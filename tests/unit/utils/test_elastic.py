@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-from verifiers.v1.clients.config import TrainClientConfig
+from verifiers.v1.configs.client import TrainClientConfig
 
 from prime_rl.utils.elastic import (
     AdapterState,
@@ -415,8 +415,6 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
         client_config.headers = {}
         client_config.headers_from_env = {}
         client_config.extra_headers_from_state = {}
-        client_config.dp_rank_count = 1
-
         from renderers import Qwen3VLRendererConfig
 
         renderer_settings = Qwen3VLRendererConfig()

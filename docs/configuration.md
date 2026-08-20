@@ -17,7 +17,7 @@ Every `prime-rl` entrypoint uses [`pydantic-config`](https://github.com/PrimeInt
   - [Optional Sub-Configs](#optional-sub-configs)
   - [None](#none)
   - [Discriminated Unions](#discriminated-unions)
-  - [Environments](#environments-orchestratortrainenv)
+  - [Environments](#environments)
   - [Environment Variables](#environment-variables)
 - [Examples](#examples)
 
@@ -50,12 +50,12 @@ CLI flags mirror the TOML tree using dots:
 --max-steps 50                              # top-level
 --model.name Qwen/Qwen3-4B                  # nested
 --trainer.optim.lr 1e-5                     # double-nested
---inference.parallel.tp 4
+--inference.vllm.tensor-parallel-size 4
 ```
 
 > Field names are snake_case in TOML (`max_model_len`) and kebab-case on the CLI (`--max-model-len`).
 
-> Renamed fields keep their old name as a validation alias — e.g. `rollouts_per_example` is still accepted in TOML and CLI after being renamed to `group_size`. Mixing the two names across sources is safe.
+> A renamed field keeps no alias for its old name: the old spelling fails as an unknown key rather than being silently translated.
 
 ## Inspecting and Validating
 
@@ -93,20 +93,23 @@ uv run rl @ rl.toml --trainer.model.lora.target-modules '["q_proj", "k_proj", "v
 target_modules = ["q_proj", "k_proj", "v_proj"]
 ```
 
-Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. For arrays of tables (e.g. environments), see [Environments](#environments-orchestratortrainenv).
+Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. For arrays of tables, see [Environments](#environments).
 
 ### Dicts
 
-CLI takes a JSON literal. TOML uses a table or inline-table. CLI dicts deep-merge with TOML dicts — CLI keys win on conflict but don't wipe the file's keys:
+CLI takes a JSON literal. TOML uses a table. CLI dicts deep-merge with TOML dicts — CLI keys win on conflict but don't wipe the file's keys:
 
 ```bash
-uv run rl @ rl.toml --orchestrator.train.env.0.args \
+uv run rl @ rl.toml --orchestrator.train.source.0.args \
   '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}'
 ```
 
 ```toml
-[[orchestrator.train.env]]
-args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
+[[orchestrator.train.source]]
+
+[orchestrator.train.source.args]
+dataset_name = "openai/gsm8k"
+dataset_subset = "main"
 ```
 
 ### Optional Sub-Configs
@@ -123,11 +126,11 @@ To **disable** a sub-config that's on by default, use `--no-<name>` on the CLI o
 TOML has no `null`. Use the string `"None"`, which the loader coerces:
 
 ```toml
-[inference.model]
+[inference.vllm]
 max_model_len = "None"
 ```
 
-On the CLI: `--inference.model.max-model-len None`.
+On the CLI: `--inference.vllm.max-model-len None`.
 
 ### Discriminated Unions
 
@@ -142,32 +145,55 @@ mu = 0.95
 
 Omit `type` to keep the default variant.
 
-### Environments (`[[orchestrator.train.env]]`)
+### Environments
 
-Training environments are an array of tables — set one per env, optionally with sampling weights:
+Training and evaluation sources are arrays of tables. Set one source per environment; training sources can optionally carry sampling weights:
 
 ```toml
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "gsm8k"
-taskset = { id = "gsm8k-v1", split = "train" }
-harness = { id = "null", runtime = { type = "subprocess" } }
 ratio = 3  # 75% of batches
 
-[[orchestrator.train.env]]
+[orchestrator.train.source.env.taskset]
+id = "gsm8k-v1"
+split = "train"
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
+
+[[orchestrator.train.source]]
 name = "reverse-text"
-taskset = { id = "reverse-text-v1" }
-harness = { id = "null", runtime = { type = "subprocess" } }
 ratio = 1  # default — 25% of batches
 
-[[orchestrator.eval.env]]
+[orchestrator.train.source.env.taskset]
+id = "reverse-text-v1"
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
+
+[[orchestrator.eval.source]]
 name = "gsm8k-eval"
-taskset = { id = "gsm8k-v1", split = "test" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.eval.source.env.taskset]
+id = "gsm8k-v1"
+split = "test"
+
+[orchestrator.eval.source.env.agent.harness]
+id = "null"
+
+[orchestrator.eval.source.env.agent.runtime]
+type = "subprocess"
 ```
 
 `ratio` defaults to `1` (equal weight per env); values are relative weights normalized to probabilities across envs.
 
-Fields in `taskset` configure the V1 taskset. `harness` selects how its tasks are run.
+Everything environment lives under the `env` block (verifiers' `[env]` shape): `env.taskset` configures the v1 taskset, and each agent is a field on the env — `env.agent.harness` selects how the single-agent env's tasks are run, and per-run caps are per-agent (`env.agent.max_turns`, `env.agent.timeout`, `env.agent.max_output_tokens`). A multi-agent env declares its own seats (`env.<role>.*`).
 
 The same taskset can appear multiple times across train and eval (or with different settings) — useful for evaluating on a held-out split or comparing two configurations side by side. When it is reused, set a distinct `name` on each entry; `name` defaults to the taskset id and must be unique across all envs in the same group.
 

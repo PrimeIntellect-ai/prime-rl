@@ -141,9 +141,6 @@ class ClientConfig(BaseConfig):
     skip_model_check: bool = False
     """Skip checking that the model is available in the inference pool. Useful for external APIs or keys that do not expose ``/models``."""
 
-    dp_rank_count: int = Field(1, ge=1)
-    """Number of data-parallel ranks behind each base URL. When > 1, each URL is expanded into ``dp_rank_count`` logical clients pinned via the ``X-data-parallel-rank`` header, so every request within a rollout hits the same DP engine and reuses KV cache. Auto-set from the inference config when using the RL entrypoint."""
-
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in disaggregated P/D deployments where the router must not handle admin traffic."""
 
@@ -219,6 +216,18 @@ class WandbConfig(BaseConfig):
 class WandbWithExtrasConfig(WandbConfig):
     log_extras: LogExtrasConfig | None = LogExtrasConfig()
     """Extras logging configuration. If None, no extras are logged."""
+
+
+class FileMonitorConfig(BaseConfig):
+    """Enable the local JSONL metric sink (``<output_dir>/metrics.jsonl``).
+
+    Present (non-None) enables it, mirroring the ``prime_monitor`` pattern. Metrics
+    are the same scalars sent to W&B; useful for self-hosted dashboards or when W&B
+    is disabled.
+    """
+
+    filename: str = "metrics.jsonl"
+    """Name of the JSONL file written under the component's ``output_dir``."""
 
 
 class PrimeMonitorConfig(BaseConfig):

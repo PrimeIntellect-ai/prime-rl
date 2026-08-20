@@ -41,7 +41,7 @@ RolloutKind = Literal["train", "eval"]
 @dataclass
 class InflightRollout:
     """Per-task scheduling state in the dispatcher; one entry per in-flight
-    ``run_rollout`` / ``run_group`` task."""
+    ``run`` / ``run_group`` task."""
 
     kind: RolloutKind
     env_name: str
@@ -63,6 +63,9 @@ class GroupState:
     task_idx: int
     rollouts_to_schedule: int
     target_rollouts: int
+    task: vf.Task | None = None
+    """The group's task (v1 envs — its data is shipped on every dispatch). ``None`` for
+    legacy envs, which are addressed by ``task_idx`` alone."""
     emitted: int = 0
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None
@@ -74,7 +77,7 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     orchestration metadata lives on it directly (set by the dispatcher once the rollout
     returns), so there's no wrapper. Train vs eval is the ``kind`` discriminator. All metadata
     fields are ``exclude=True``, so dumping a Rollout yields a plain trace on the wire; the
-    orchestrator mirrors them onto the trace's own fields via ``vf.Trace.stamp`` (``kind`` as
+    orchestrator mirrors them onto the trace's own fields via ``vf.Trace.record_run`` (``kind`` as
     ``run.type``, the run id, the step, and ``env_name``/``group_id``/``policy_version`` into
     ``info``) when a rollout arrives, so the on-disk records stay fully placeable.
 
@@ -88,6 +91,9 @@ class Rollout(vf.Trace[DataT], Generic[DataT]):
     kind: RolloutKind = Field(default="train", exclude=True)
     env_name: str = Field(default="", exclude=True)
     group_id: uuid.UUID = Field(default_factory=uuid.uuid4, exclude=True)
+    # Links the traces of one episode; stamped into ``info`` on arrival so
+    # saved records keep their grouping.
+    episode_id: str = Field(default="", exclude=True)
     policy_version: int = Field(default=0, exclude=True)
     off_policy_steps: int = Field(default=0, exclude=True)
     samples: list[TrainingSample] = Field(default_factory=list, exclude=True)
@@ -140,7 +146,7 @@ class TrainBatch:
     finalized in that span (errored + filtered included; rollouts of still-incomplete groups wait
     for a later window). Its ``.effective`` / ``.metrics`` views drive logging. ``samples`` is the
     trainer-bound payload (the shipped cohort's post-filter survivors) — an empty list means nothing
-    ships, which would stall the trainer. Trainable counts derive from ``rollouts``
+    ships, which would stall the trainer. Trainable counts derive from ``rollouts.effective``
     (``r.is_trainable``) and token totals from ``samples``, so neither is carried as a field."""
 
     rollouts: TrainRollouts

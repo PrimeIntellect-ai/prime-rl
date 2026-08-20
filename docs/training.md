@@ -36,7 +36,8 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | `uv run sft` | Supervised fine-tuning on a HF dataset. | Launches torchrun internally; never call torchrun directly. |
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run trainer` | Standalone trainer process group. | Use only when launching the trainer separately from the orchestrator (e.g. multi-node RL without the `rl` wrapper). |
-| `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched trainer + inference. |
+| `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched trainer, inference, and one `env-server` per source. |
+| `uv run env-server` | Standalone env server for one environment. | The `rl` launcher starts these automatically (one per train/eval source, at a derived loopback address); only needed when running the orchestrator standalone, or for sources with an explicit `serve.address` — those are externally managed (e.g. their own k8s pod) and the launcher expects the server to already run there. |
 
 ## RL Trainer
 
@@ -59,9 +60,9 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
-| `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
-| `[[orchestrator.train.env]]` | Training environments. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Environments](configuration.md#environments-orchestratortrainenv). |
-| `[[orchestrator.eval.env]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
+| `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
+| `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
+| `[[orchestrator.eval.source]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
 **Monitoring:**
 
@@ -89,6 +90,8 @@ The RL entrypoint supports several training algorithms, switched via `[orchestra
 |---|---|---|
 | `grpo` (default) | None | Standard group-relative RL |
 | `max_rl` | None | [MaxRL](https://arxiv.org/abs/2602.02710): GRPO with mean-normalized advantages (maximum-likelihood RL) |
+| `rae` | None | [SPIRAL](https://arxiv.org/abs/2506.24119)'s role-conditioned advantage estimation: reward minus a per-agent EMA baseline, for multi-agent self-play envs (e.g. `kuhn-poker-v1`) |
+| `hierarchical_grpo` | None | GRPO for proposer-solver envs: compare solvers only with attempts on the same proposed problem, and compare proposers with the other proposals in the group |
 | `opd` | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): the policy generates rollouts, the trainer minimizes per-token reverse KL to a reference model |
 | `sft` | Required, any OpenAI-compatible endpoint | Hard-distill: a frozen model generates rollouts, the policy trains on its tokens |
 | `opsd` | None — the live policy is its own reference (no deployment) | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own reference conditioned on expert demonstrations |
@@ -100,7 +103,7 @@ Frozen models are declared inline on the algorithm, named where the model is use
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \
-  --model.name <frozen-model> --server.port 8001
+  --vllm.model <frozen-model> --server.port 8001
 ```
 
 The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no orchestrator. Use the `sft` algorithm only when you want a frozen model to generate the supervision on the fly.
@@ -215,7 +218,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Process | What's saved | Where |
 |---|---|---|
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<output_dir>/checkpoints/step_N/trainer/` |
-| Orchestrator | Step counter, total tokens / samples / problems | `<output_dir>/checkpoints/step_N/orchestrator/` |
+| Orchestrator | Progress, per-env data state | `<output_dir>/checkpoints/step_N/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 | Trainer (HF weights) | HF-compatible weight snapshot for serving | `<output_dir>/weights/step_N/` |
 
@@ -256,7 +259,7 @@ For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write t
 
 ### Log Files
 
-The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The full layout (single-node runs skip the `node_*.log` and `router_*.log` files):
+The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The full layout (single-node runs skip the `node_*.log` and `router.log` files — there the router logs into `inference.log`):
 
 ```
 <output_dir>/logs/
@@ -268,20 +271,18 @@ The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The f
 │   └── torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log   # per-rank
 ├── inference/
 │   ├── node_*.log               # per-node inference stdout (multi-node only)
-│   └── router_*.log             # vllm-router per replica (multi-node only)
-└── envs/{train,eval}/<env_name>/
-    ├── env_server.log
-    └── env_worker_<id>.log
+│   └── router.log               # the single global router (multi-node only)
+└── envs/{train,eval}/<env_name>.log # one env server process per source (broker + its workers)
 ```
 
-Env worker logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`. For multi-rank trainer debugging, drop into `logs/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
+Env logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`. For multi-rank trainer debugging, drop into `logs/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
 
 Live tailing from a single point (works on the head node for multi-node runs over a shared filesystem):
 
 ```bash
 tail -F <output_dir>/logs/{trainer,orchestrator,inference}.log
 tail -F <output_dir>/logs/trainer/node_*.log     # multi-node only
-tail -F <output_dir>/logs/inference/router_*.log # multi-node only
+tail -F <output_dir>/logs/inference/router.log   # multi-node only
 ```
 
 ### Console Output

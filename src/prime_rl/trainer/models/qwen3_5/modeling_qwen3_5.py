@@ -139,6 +139,10 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
         "hidden_states": Qwen3_5DecoderLayer,
     }
 
+    @classmethod
+    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        return name.endswith(("linear_attn.A_log", "linear_attn.norm.weight"))
+
     def _check_and_adjust_attn_implementation(
         self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
     ) -> str:
@@ -156,7 +160,10 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return True
+        # Dense models use identical key names in HF and PrimeRL format, so we
+        # never claim to be in a separate PrimeRL format. This disables the
+        # auto-conversion path in load_dcp_from_hf and lets DCP load directly.
+        return False
 
     @classmethod
     def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -367,6 +374,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
         self._is_vlm = hasattr(config, "vision_config")
+        self.supports_packed_multimodal_training = self._is_vlm
 
         if self._is_vlm:
             self.model = Qwen3_5VLMModel(config)

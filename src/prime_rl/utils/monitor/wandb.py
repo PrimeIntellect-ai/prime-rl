@@ -298,14 +298,21 @@ class WandbMonitor(Monitor):
 
 OVERVIEW_NAME = "overview"
 
-# Per-rollout metrics (under "<scope>/all/") shown for BOTH train and eval. Only the reward metric
-# differs — train uses "reward/mean", eval uses "avg@k" — and each section builder prepends its own.
+# Rollout metrics (under "<scope>/") shown for BOTH train and eval. Quality metrics read the
+# effective subset — the all subset includes errored rollouts, whose zero values skew the
+# distributions. has_error only exists on all (effective drops errors by construction). The count
+# metrics are episode-level exact keys; the trace-level metrics (reward, truncation, errors) live
+# under the per-agent subtree, whose names are data-dependent — matched by regex, one panel per
+# agent. Only the score metric differs — train scores with "reward/mean", eval with "avg@k" (its k
+# dynamic, so also a regex) — and each section builder prepends its own.
 COMMON_METRICS = [
-    "has_error/mean",
-    "is_truncated/mean",
-    "num_total_tokens/mean",
-    "num_turns/mean",
-    "num_branches/mean",
+    "effective/num_total_tokens/mean",
+    "effective/num_turns/mean",
+    "effective/num_branches/mean",
+]
+COMMON_REGEXES = [
+    "all/[^/]+/has_error/mean",
+    "effective/[^/]+/is_truncated/mean",
 ]
 
 STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"]
@@ -328,10 +335,11 @@ ROWS = 6
 
 
 def line_panels(metrics: Sequence[str], regexes: Sequence[str]) -> list[wr.LinePlot]:
-    # inference/* is logged against wall time (step_metric="_timestamp") → "WallTime" (== W&B's
-    # "_timestamp"); everything else on "step" (prime-rl's logged training step, not internal "Step").
+    # inference/* is logged against time (step_metric="_timestamp"), plotted on "RelativeTime(Wall)"
+    # (== W&B's "_absolute_runtime", seconds since run start) so runs started at different times
+    # overlay; everything else on "step" (prime-rl's logged training step, not internal "Step").
     # x is set per-panel because LinePlot defaults it to "Step", which overrides the workspace x_axis.
-    return [wr.LinePlot(x="WallTime" if m.startswith("inference/") else "step", y=[m]) for m in metrics] + [
+    return [wr.LinePlot(x="RelativeTime(Wall)" if m.startswith("inference/") else "step", y=[m]) for m in metrics] + [
         wr.LinePlot(x="step", metric_regex=r) for r in regexes
     ]
 
@@ -346,15 +354,25 @@ def section(name: str, metrics: Sequence[str] = (), regexes: Sequence[str] = ())
 
 
 def train_section(name: str, scope: str) -> ws.Section:
-    return section(name, metrics=[f"{scope}/all/reward/mean"] + [f"{scope}/all/{m}" for m in COMMON_METRICS])
+    # Env names may carry regex metacharacters (e.g. "+"), so the scope is escaped in the
+    # regex-matched per-agent panels.
+    pattern = re.escape(scope)
+    return section(
+        name,
+        metrics=[f"{scope}/{m}" for m in COMMON_METRICS],
+        regexes=[f"{pattern}/all/[^/]+/reward/mean", f"{pattern}/effective/[^/]+/reward/mean"]
+        + [f"{pattern}/{r}" for r in COMMON_REGEXES],
+    )
 
 
 def eval_section(name: str, env_pattern: str) -> ws.Section:
-    # Same metrics as train, but eval's reward is "avg@k" (dynamic k → regex). Everything is a regex so
-    # one section can also serve any env (env_pattern=".*"). Only the "all" subset, like train.
+    # Same metrics as train, but eval's reward is the per-agent "avg@k" (dynamic k → regex).
+    # Everything is a regex so one section can also serve any env (env_pattern=".*").
     return section(
         name,
-        regexes=[f"eval/{env_pattern}/all/avg@.*"] + [f"eval/{env_pattern}/all/{m}" for m in COMMON_METRICS],
+        regexes=[f"eval/{env_pattern}/all/[^/]+/avg@.*", f"eval/{env_pattern}/effective/[^/]+/avg@.*"]
+        + [f"eval/{env_pattern}/{m}" for m in COMMON_METRICS]
+        + [f"eval/{env_pattern}/{r}" for r in COMMON_REGEXES],
     )
 
 
@@ -395,15 +413,16 @@ def list_views(entity: str, project: str) -> list[tuple[str, str]]:
     return [(e["node"]["displayName"], e["node"]["name"]) for e in edges if e.get("node")]
 
 
-def env_signature(train_envs: Sequence[str], eval_envs: Sequence[str]) -> tuple:
-    return (tuple(sorted(train_envs)), tuple(sorted(eval_envs)))
-
-
-def view_env_signature(sections: Sequence[ws.Section]) -> tuple:
-    """Reconstruct the ``(train, eval)`` env set a view was built for from its section names."""
+def view_signature(sections: Sequence[ws.Section]) -> tuple:
     train = sorted(s.name[len("train/") :] for s in sections if s.name.startswith("train/") and s.name != "train/agg")
     evals = sorted(s.name[len("eval/") :] for s in sections if s.name.startswith("eval/"))
-    return (tuple(train), tuple(evals))
+    panels = {
+        (getattr(p.x, "name", p.x), tuple(getattr(m, "name", m) for m in p.y or ()), p.metric_regex)
+        for s in sections
+        for p in s.panels
+        if isinstance(p, wr.LinePlot)
+    }
+    return (tuple(train), tuple(evals), tuple(sorted(panels, key=str)))
 
 
 def next_overview_name(base: str, existing: Sequence[str]) -> str:
@@ -424,13 +443,14 @@ def ensure_overview_view(
     """Ensure an overview saved view exists for this run's env set. Reuses an existing overview built
     for the same envs; when the env set is new, creates a fresh versioned view (``overview`` →
     ``overview-v2`` → …). Returns the URL of a newly created view, else None."""
-    target = env_signature(train_envs, eval_envs)
+    sections = build_sections(train_envs, eval_envs)
+    target = view_signature(sections)
     overviews = [(dn, iname) for dn, iname in list_views(entity, project) if dn == name or dn.startswith(f"{name}-v")]
     for _, internal_name in overviews:
         slug = internal_name.removeprefix("nw-").removesuffix("-v")
         try:
             existing = ws.Workspace.from_url(f"https://wandb.ai/{entity}/{project}?nw={slug}")
-            matches = view_env_signature(existing.sections) == target
+            matches = view_signature(existing.sections) == target
         except Exception as e:
             # A single unreadable view must not abort reuse detection / versioning for the rest.
             get_logger().warning(f"Could not inspect overview view {internal_name} - {e}")
@@ -441,7 +461,7 @@ def ensure_overview_view(
         entity=entity,
         project=project,
         name=next_overview_name(name, [dn for dn, _ in overviews]),
-        sections=build_sections(train_envs, eval_envs),
+        sections=sections,
         auto_generate_panels=False,
         settings=ws.WorkspaceSettings(x_axis="step"),
     )

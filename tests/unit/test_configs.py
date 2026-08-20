@@ -23,15 +23,19 @@ CONFIG_CLASSES = [
     SFTConfig,
     OrchestratorConfig,
     InferenceConfig,
+    EnvServerConfig,
 ]
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`."""
+    """Any TOML file inside `configs/`, `examples/` or `k8s/`."""
     config_files = list(Path("configs").rglob("*.toml"))
     example_files = list(Path("examples").rglob("*.toml"))
+    # The k8s example configs are mounted into the chart's containers verbatim, so a
+    # stale key there breaks a deploy with nothing else to catch it.
+    k8s_files = list(Path("k8s").rglob("*.toml"))
 
-    return config_files + example_files
+    return config_files + example_files + k8s_files
 
 
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
@@ -179,10 +183,10 @@ def test_env_algo_overrides_top_level():
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
             "algo": {"type": "echo"},
-            "train": {"env": [{"id": "a", "algo": {"type": "grpo"}}, {"id": "b"}]},
+            "train": {"source": [{"legacy": {"id": "a"}, "algo": {"type": "grpo"}}, {"legacy": {"id": "b"}}]},
         }
     )
-    env_a, env_b = config.train.env
+    env_a, env_b = config.train.source
     # Env a sets its own algorithm; only env b inherits the top-level echo algorithm.
     assert env_a.algo is not None and env_a.algo.type == "grpo"
     assert env_b.algo is not None and env_b.algo.type == "echo"
@@ -190,7 +194,23 @@ def test_env_algo_overrides_top_level():
     # Resolved configs round-trip.
     dumped = config.model_dump(exclude_none=True)
     reloaded = OrchestratorConfig.model_validate(dumped)
-    assert reloaded.train.env[0].algo is not None and reloaded.train.env[0].algo.type == "grpo"
+    assert reloaded.train.source[0].algo is not None and reloaded.train.source[0].algo.type == "grpo"
+
+    with pytest.raises(ValidationError, match="env"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "train": {"env": [{"legacy": {"id": "removed"}}]},
+            }
+        )
+
+    with pytest.raises(ValidationError, match="env"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "eval": {"env": [{"legacy": {"id": "removed"}}]},
+            }
+        )
 
 
 def test_trainer_enable_token_export_cli_flag():
@@ -198,12 +218,12 @@ def test_trainer_enable_token_export_cli_flag():
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
 
 
-def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
+def test_single_node_auto_inference_ports_follow_server_port():
     config = RLConfig.model_validate(
         {
             "trainer": {},
             "orchestrator": {},
-            "inference": {"parallel": {"tp": 1}},
+            "inference": {"server": {"port": 8001}, "vllm": {"tensor_parallel_size": 1}},
             "deployment": {
                 "type": "single_node",
                 "gpus_per_node": 4,
@@ -214,16 +234,17 @@ def test_single_node_auto_inference_client_dp_rank_count_matches_local_dp():
     )
 
     assert config.inference is not None
-    assert config.inference.parallel.dp == 2
-    assert config.orchestrator.model.client.dp_rank_count == 2
+    assert config.inference.vllm.data_parallel_size == 2
+    assert config.inference.backend_port == 8101
+    assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
 
-def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
+def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
         {
             "trainer": {},
             "orchestrator": {},
-            "inference": {"parallel": {"tp": 4}},
+            "inference": {"vllm": {"tensor_parallel_size": 4}},
             "deployment": {
                 "type": "multi_node",
                 "gpus_per_node": 8,
@@ -235,9 +256,8 @@ def test_multi_node_auto_inference_client_dp_rank_count_uses_router_url():
     )
 
     assert config.inference is not None
-    assert config.inference.data_parallel_size_local == 2
-    assert config.inference.parallel.dp == 2
-    assert config.orchestrator.model.client.dp_rank_count == 1
+    assert config.inference.vllm.data_parallel_size_local == 2
+    assert config.inference.vllm.data_parallel_size == 2
 
 
 def test_orchestrator_vlm_requires_renderer():
@@ -270,6 +290,24 @@ def test_orchestrator_vlm_requires_renderer():
     assert config.renderer is not None
 
 
+def test_trainer_rejects_vlm_cp_with_ring():
+    config = {
+        "model": {
+            "cp": 2,
+            "impl": "custom",
+            "optimization_dtype": "bfloat16",
+            "reduce_dtype": "bfloat16",
+            "vlm": {
+                "vision_encoder_attr": "model.visual",
+                "language_model_attr": "model.language_model",
+            },
+        },
+    }
+
+    with pytest.raises(ValidationError, match="cp_style='ulysses'"):
+        TrainerConfig.model_validate(config)
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
@@ -287,7 +325,7 @@ def test_shared_model_name_propagates_to_subconfigs():
     )
     assert config.trainer.model.name == model_name
     assert config.orchestrator.model.name == model_name
-    assert config.inference is not None and config.inference.model.name == model_name
+    assert config.inference is not None and config.inference.vllm.model == model_name
     assert config.trainer.tokenizer.name == model_name
     assert config.orchestrator.tokenizer.name == model_name
 
@@ -431,7 +469,7 @@ def test_shared_and_sub_max_steps_conflict_raises():
 def test_trainer_chat_template_cascades_to_inference():
     """``[trainer.tokenizer] chat_template`` set directly (no shared
     ``[tokenizer] chat_template``) must still reach
-    ``inference.model.chat_template`` so vLLM's ``--chat-template`` is wired
+    ``inference.vllm.chat_template`` so vLLM's ``--chat-template`` is wired
     up. Regression: the original ``auto_setup_tokenizer`` cascaded this; the
     refactored propagator must keep doing it."""
     config = RLConfig.model_validate(
@@ -445,7 +483,7 @@ def test_trainer_chat_template_cascades_to_inference():
     assert config.trainer.tokenizer.chat_template == "TPL"
     assert config.orchestrator.tokenizer.chat_template == "TPL"
     assert config.inference is not None
-    assert config.inference.model.chat_template == "TPL"
+    assert config.inference.vllm.chat_template == "TPL"
 
 
 def test_shared_wandb_fields_propagate_to_subconfigs():
@@ -595,7 +633,7 @@ def test_orchestrator_explicit_default_renderer_with_unmapped_model():
 
 
 def test_shared_model_name_resolves_inference_parsers():
-    """Shared [model] name must reach inference.model BEFORE ModelConfig's after-validator
+    """Shared [model] name must reach inference.vllm BEFORE VllmConfig's after-validator
     runs auto_resolve_parsers — i.e. the parsers resolve from the propagated name, not
     from an empty default.
     """
@@ -608,23 +646,23 @@ def test_shared_model_name_resolves_inference_parsers():
         }
     )
     assert config.inference is not None
-    assert config.inference.model.name == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
-    assert config.inference.model.tool_call_parser == "qwen3_coder"
+    assert config.inference.vllm.model == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+    assert config.inference.vllm.tool_call_parser == "qwen3_coder"
 
 
 def test_explicit_inference_parser_wins_over_auto():
-    """Explicit inference.model.tool_call_parser is preserved even when the shared model
+    """Explicit inference.vllm.tool_call_parser is preserved even when the shared model
     name would otherwise auto-resolve to something else."""
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
             "trainer": {},
             "orchestrator": {"renderer": {"name": "default"}},
-            "inference": {"model": {"tool_call_parser": "hermes"}},
+            "inference": {"vllm": {"tool_call_parser": "hermes"}},
         }
     )
     assert config.inference is not None
-    assert config.inference.model.tool_call_parser == "hermes"
+    assert config.inference.vllm.tool_call_parser == "hermes"
 
 
 @pytest.mark.parametrize(

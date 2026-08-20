@@ -86,8 +86,14 @@ class PerfCounter:
                 return 756e12
             else:  # For H100 SXM and other variants
                 return 989e12
-        if "B200" in device_name:
+        if "GB200" in device_name or "GB300" in device_name:
+            # Grace Blackwell Superchips, dense BF16 per GPU: 2,500 TFLOPS
+            # https://www.nvidia.com/en-us/data-center/dgx-gb200/
+            # https://www.nvidia.com/en-us/data-center/dgx-gb300/
+            return 2.5e15
+        if "B200" in device_name or "B300" in device_name:
             # https://nvdam.widen.net/s/wwnsxrhm2w/blackwell-datasheet-3384703
+            # Checked after GB200/GB300 to avoid false match on "GB300"
             return 2.25e15  # This is half of the FLOPS reported in torchtitan
         # AMD Instinct GPUs
         if "MI300X" in device_name:

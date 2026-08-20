@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import math
 import os
 import time
 from datetime import datetime, timezone
@@ -16,12 +15,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from prime_cli.core.config import Config as PrimeConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
-from verifiers.v1.push import trace_to_sample
+from verifiers.v1.utils.platform import trace_to_sample
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import PrimeMonitorConfig
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
+from prime_rl.utils.monitor.base import Monitor, drop_non_finite_json_values, sample_items_for_logging
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
@@ -52,46 +51,13 @@ _SAMPLE_SCHEMA = pa.schema(
 )
 
 
-_DROPPED_JSON_VALUE = object()
-
-
-def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str = "") -> Any:
-    if isinstance(value, float) and not math.isfinite(value):
-        dropped_paths.append(path)
-        return _DROPPED_JSON_VALUE
-
-    if isinstance(value, dict):
-        return {
-            key: sanitized_item
-            for key, item in value.items()
-            if (
-                sanitized_item := _drop_non_finite_json_values(
-                    item,
-                    dropped_paths,
-                    f"{path}.{key}" if path else str(key),
-                )
-            )
-            is not _DROPPED_JSON_VALUE
-        }
-
-    if isinstance(value, list):
-        return [
-            sanitized_item
-            for idx, item in enumerate(value)
-            if (sanitized_item := _drop_non_finite_json_values(item, dropped_paths, f"{path}[{idx}]"))
-            is not _DROPPED_JSON_VALUE
-        ]
-
-    return value
-
-
 class PrimeMonitor(Monitor):
     """Logs to Prime Intellect API."""
 
     def _sanitize_json_payload(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Drop non-finite floats before sending JSON payloads to the public API."""
         dropped_paths: list[str] = []
-        sanitized_payload = _drop_non_finite_json_values(payload, dropped_paths)
+        sanitized_payload = drop_non_finite_json_values(payload, dropped_paths)
         if not dropped_paths:
             return payload
 
@@ -202,7 +168,7 @@ class PrimeMonitor(Monitor):
                 payload["batch_size"] = run_config.batch_size
             payload["rollouts_per_example"] = run_config.group_size
             payload["seq_len"] = run_config.seq_len
-            payload["environments"] = [{"id": env.id} for env in run_config.train.env]
+            payload["environments"] = [{"id": env.env_id} for env in run_config.train.source]
             payload["run_config"] = run_config.model_dump(exclude_none=True, mode="json")
             if run_config.wandb:
                 payload["wandb_project"] = run_config.wandb.project
@@ -329,14 +295,14 @@ class PrimeMonitor(Monitor):
         """Convert rollouts to Parquet bytes for upload. One row per rollout. The conversation
         is the unit (no prompt/completion split — meaningless mid-branch): `completion` is the
         last branch's messages and `trajectory` is one message list per branch. Shares
-        `verifiers.v1.push.trace_to_sample` with verifiers' eval `--push`, so a training-run
+        `verifiers.v1.utils.platform.trace_to_sample` with verifiers' eval `--push`, so a training-run
         sample and an eval sample land on the platform identically; the RFT-only columns
         (run/step/advantage/problem_id/env_name) are layered on here."""
         now = datetime.now(timezone.utc)
         rows = []
 
         for sample_id, rollout in enumerate(rollouts):
-            sample = trace_to_sample(rollout, rollout_number=sample_id + 1)
+            sample = trace_to_sample(rollout, rollout_number=sample_id + 1, episode_id=rollout.episode_id or None)
             trajectory = sample["trajectory"]
             if not trajectory:  # no branches (e.g. a rollout that errored before any message)
                 continue

@@ -72,7 +72,7 @@ After a restart, verify all processes are back up and progress resumed before th
 │   └── torchrun/              # per-rank stdout/stderr
 ├── inference/
 │   ├── node_*.log             # per-node (multi-node only)
-│   └── router_0.log           # vllm-router per replica (multi-node only)
+│   └── router.log             # the single global router (multi-node only; single-node logs it in inference.log)
 └── envs/{train,eval}/{env_name}.log    # one log file per env
 ```
 
@@ -89,17 +89,25 @@ grep -E "WARNING|ERROR" {output_dir}/logs/envs/{train,eval}/*.log
 
 All metrics print to the console log (and W&B when configured).
 
-**Progress** — orchestrator log. Rollout metrics are keyed `{scope}/{subset}/<metric>/<stat>`: `scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (post-filter).
+**Progress** — orchestrator log. Rollout metrics mirror the episode/trace hierarchy, at two levels:
+
+- `{scope}/{subset}/<metric>/<stat>` — episode-level facts only: the token/turn/branch counts, summed over an episode's traces.
+- `{scope}/{subset}/<agent>/<metric>/<stat>` — every trace-level metric (reward, truncation, errors, timing, env metrics, filter verdicts, eval scores), keyed by agent name so seats never mix. Flat over that agent's traces: one sample is one trace, so an in-episode fan-out like n solvers contributes n samples.
+
+`scope` is `train/agg` (all train envs) or `train/<env>` (`eval/<env>` for eval); `subset` is `all` (every rollout) or `effective` (post-filter). Single-agent envs have one agent — usually `agent` — and one trace per episode, so both levels agree; multi-agent envs name each seat (`proposer`, `solver`, `judge`, …).
 
 | Metric | Description |
 |--------|-------------|
-| `train/agg/all/reward/mean` | mean training reward (per env: `train/<env>/all/reward/mean`) |
-| `train/agg/all/num_total_tokens/mean` | avg tokens per rollout (also `num_input_tokens`, `num_output_tokens`) |
-| `train/agg/all/num_turns/mean` | avg turns per rollout (multi-turn only) |
-| `train/agg/all/is_truncated/mean` | fraction truncated |
-| `train/agg/all/has_error/mean` | fraction errored (per-type under `train/agg/all/error/<type>`; also `dispatcher/errored/{train,eval}`) |
-| `train/<env>/all/metrics/<name>/mean` | env-specific metrics (e.g. pass rate) |
-| `eval/<env>/all/{avg@k,pass@k}` | eval scores when configured |
+| `train/agg/effective/<agent>/reward/mean` | mean training reward for that agent (per env: `train/<env>/effective/<agent>/reward/mean`) |
+| `train/agg/effective/num_total_tokens/mean` | avg tokens per episode, summed over its agents (also `num_input_tokens`, `num_output_tokens`) |
+| `train/agg/effective/num_turns/mean` | avg turns per episode, summed over its agents |
+| `train/<env>/effective/<agent>/num_turns/mean` | avg turns for that agent alone (also token counts, `num_branches`) |
+| `train/agg/effective/<agent>/is_truncated/mean` | fraction of that agent's rollouts truncated |
+| `train/agg/all/<agent>/has_error/mean` | fraction of that agent's rollouts errored (per-type under `train/agg/all/<agent>/error/<type>`; also `dispatcher/errored/{train,eval}`) |
+| `train/agg/all/<agent>/is_trainable/mean` | fraction carrying a training signal — 0.0 for a frozen seat like a judge (also `is_filtered`, `filters/<name>`) |
+| `train/<env>/effective/<agent>/metrics/<name>/mean` | env-specific metrics for that agent (e.g. pass rate) |
+| `train/<env>/effective/<agent>/timing/agent/model/mean` | model vs harness share of that agent's phase |
+| `eval/<env>/effective/<agent>/{avg@k,pass@k}` | eval scores for that agent, when configured |
 
 **Stability** — trainer log:
 
@@ -126,7 +134,7 @@ All metrics print to the console log (and W&B when configured).
 For live vLLM stats, query Prometheus directly:
 
 ```bash
-curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
+curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  # engine port (8000 is the router)
 # vllm:num_requests_running, vllm:num_requests_waiting, vllm:gpu_cache_usage_perc (→1.0 = KV cache saturated)
 ```
 
@@ -137,21 +145,24 @@ curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
 {output_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
 
-JSONL files of `vf.Trace` records (training tensors excluded). `all` gets every completed
-rollout the moment it arrives — errored, filtered, and never-batched ones included — so it's
-crash-durable; `effective` gets the clean subset that went into the step's train batch (eval:
-the non-errored epoch cohort; multiple eval envs share the step file). Each record carries
-`run` (`{type, id, step}`; for eval, `step` is the trigger step), `verifiers` (producing build),
-`agent` (model, sampling, harness), and `runtime` (config + provisioned resource id, e.g. the
-sandbox id), plus `env_name`, `group_id`, and `policy_version` under `info`.
+JSONL files of `vf.Trace` records (training tensors excluded), one line per trace — a
+multi-agent env's episode contributes several lines sharing one `info.episode_id`. `all`
+gets every completed rollout the moment it arrives — errored, filtered, and never-batched
+ones included — so it's crash-durable; `effective` gets the clean trainable subset that went
+into the step's train batch (eval: the non-errored trainable epoch cohort; multiple eval envs
+share the step file) — untrainable traces (a frozen judge's) appear only in `all`. Each record carries `run` (`{type, id, step}`; for eval, `step` is the trigger step),
+`verifiers` (producing build), `agent` (model, sampling, harness, `name`, `trainable`), `ok`
+(the success sentinel — `errors` alone keeps retry history even after a recovery), and
+`runtime` (config + provisioned resource id, e.g. the sandbox id), plus `env_name`,
+`group_id`, `episode_id`, and `policy_version` under `info`.
 
 ```bash
 wc -l {output_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
 jq '.rewards' {output_dir}/rollouts/step_42/train/effective/traces.jsonl
-jq 'select(.errors != []) | {id, env: .info.env_name, runtime}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
+jq 'select(.ok | not) | {id, env: .info.env_name, runtime}' {output_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
-The binary batches consumed by the trainer still live at `{output_dir}/rollouts/step_N/train_rollouts.bin`, next to the trace subtrees.
+The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{output_dir}/rollouts/step_N/train_rollouts.bin`, next to the trace subtrees.
 
 ### Common failure modes
 
@@ -169,9 +180,9 @@ All processes use `setproctitle` so they're visible in `ps`/`htop`/`pstree`:
 ```
 PRIME-RL::Launcher
 ├── PRIME-RL::Inference          (vLLM server, GPU 0)
-├── PRIME-RL::Orchestrator       (CPU-only)
-│   └── Verifiers::EnvServer     (ZMQ env server per environment)
-│       └── Verifiers::EnvWorker0..N
+├── PRIME-RL::EnvServer          (verifiers' ZMQ env server, run in-process; one per train/eval source)
+│   └── Verifiers::EnvWorker0..N
+├── PRIME-RL::Orchestrator       (CPU-only; connects to each env server)
 ├── torchrun
 │   └── PRIME-RL::Trainer        (GPU 1+)
 └── tail trainer.log

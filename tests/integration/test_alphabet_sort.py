@@ -38,6 +38,7 @@ def rl_process(
         "rl",
         "@",
         "configs/ci/integration/alphabet_sort.toml",
+        "--clean-output-dir",
         "--wandb.project",
         wandb_project,
         "--wandb.name",

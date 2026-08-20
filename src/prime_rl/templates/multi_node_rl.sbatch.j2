@@ -32,7 +32,7 @@ export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
 {% if num_infer_nodes > 0 -%}
-export ROUTER_PORT={{ router.port }}
+export ROUTER_PORT={{ router_port }}
 export INFERENCE_TP={{ inference_tp }}
 export INFERENCE_DP_LOCAL=$((GPUS_PER_NODE / INFERENCE_TP))
 export INFERENCE_DATA_PARALLEL_RPC_PORT={{ inference_data_parallel_rpc_port }}
@@ -75,58 +75,43 @@ export HOSTNAMES_STR="${HOSTNAMES[*]}"
 {% if num_infer_nodes > 0 -%}
 INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
 
-# Build per-replica router URLs, admin URLs, and backend args for the router
-INFER_URLS=""
+# Single global router on inference node 0 fronts every per-rank endpoint;
+# admin URLs bypass it and hit each rank directly.
+INFER_URLS="http://${INFER_HOSTS[0]}:${ROUTER_PORT}/v1"
 ADMIN_URLS=""
-ALL_ROUTER_ARGS=""
+ROUTER_ARGS=""
 {% if is_disaggregated -%}
+# External-LB: one prefill/decode endpoint per DP rank (PORT + k) on each node.
 for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
     replica_base=$((r * NODES_PER_INFER_REPLICA))
-    router_host="${INFER_HOSTS[$replica_base]}"
-    INFER_URLS="${INFER_URLS:+$INFER_URLS }http://${router_host}:${ROUTER_PORT}/v1"
-
-    REPLICA_ROUTER_ARGS=""
-    # External-LB: one prefill/decode endpoint per DP rank (PORT + k) on each node.
     for ((p=0; p<NUM_PREFILL_NODES; p++)); do
-        node_idx=$((replica_base + p))
-        host="${INFER_HOSTS[$node_idx]}"
+        host="${INFER_HOSTS[$((replica_base + p))]}"
         for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
             ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((PREFILL_PORT + k))/v1"
-            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --prefill http://${host}:$((PREFILL_PORT + k))"
+            ROUTER_ARGS="$ROUTER_ARGS --prefill http://${host}:$((PREFILL_PORT + k))"
         done
     done
     for ((d=0; d<NUM_DECODE_NODES; d++)); do
-        node_idx=$((replica_base + NUM_PREFILL_NODES + d))
-        host="${INFER_HOSTS[$node_idx]}"
+        host="${INFER_HOSTS[$((replica_base + NUM_PREFILL_NODES + d))]}"
         for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
             ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((DECODE_PORT + k))/v1"
-            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --decode http://${host}:$((DECODE_PORT + k))"
+            ROUTER_ARGS="$ROUTER_ARGS --decode http://${host}:$((DECODE_PORT + k))"
         done
     done
-    ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS|}$REPLICA_ROUTER_ARGS"
 done
 {%- else -%}
-for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
-    head_idx=$((r * NODES_PER_INFER_REPLICA))
-    router_host="${INFER_HOSTS[$head_idx]}"
-    INFER_URLS="${INFER_URLS:+$INFER_URLS }http://${router_host}:${ROUTER_PORT}/v1"
-
-    REPLICA_ROUTER_ARGS=""
-    for ((n=0; n<NODES_PER_INFER_REPLICA; n++)); do
-        node_idx=$((head_idx + n))
-        host="${INFER_HOSTS[$node_idx]}"
-        # External-LB: one endpoint per DP rank (BACKEND_PORT + dp_local) on each node.
-        for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
-            ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + k))/v1"
-            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS http://${host}:$((BACKEND_PORT + k))"
-        done
+# External-LB: one endpoint per DP rank (BACKEND_PORT + dp_local) on each node.
+for ((n=0; n<NUM_INFER_NODES; n++)); do
+    host="${INFER_HOSTS[$n]}"
+    for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
+        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + k))/v1"
+        ROUTER_ARGS="$ROUTER_ARGS http://${host}:$((BACKEND_PORT + k))"
     done
-    ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS|}$REPLICA_ROUTER_ARGS"
 done
 {%- endif %}
 export INFER_URLS
 export ADMIN_URLS
-export ALL_ROUTER_ARGS
+export ROUTER_ARGS
 echo "INFER_HOSTS=${INFER_HOSTS[*]}"
 echo "INFER_URLS=${INFER_URLS}"
 echo "ADMIN_URLS=${ADMIN_URLS}"
@@ -150,7 +135,9 @@ source .venv/bin/activate
 # all finish. `set -e` above aborts the job if any node's sync fails. Re-source .env
 # inside the task because unexported vars in .env don't cross srun even with normal
 # SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
-srun --ntasks-per-node=1 bash -c 'cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages'
+srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
+cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages
+SYNC_SH
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
 uv sync --all-extras --all-packages
@@ -198,7 +185,13 @@ CLEANUP_SH
 # --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other
 # tasks so a crashed component terminates the SLURM job instead of leaving the
 # surviving ranks holding nodes.
-srun --kill-on-bad-exit=1 bash -c '
+#
+# The body goes to bash on stdin through a quoted heredoc instead of a
+# single-quoted `bash -c` argument: srun broadcasts stdin to every task, and the
+# quoted delimiter passes the script through verbatim, so apostrophes and quotes
+# (including in the shared _launch_*.sh.j2 includes) need no escaping. Nothing in
+# the body reads stdin, which would otherwise eat the rest of the script.
+srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     # pipefail ensures `cmd | tee log` propagates `cmd` failures, and the
     # wait/cleanup block at the end of this script surfaces background
     # process crashes (router, orchestrator) as task failures.
@@ -273,9 +266,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
     # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
-    # InferenceConfig.to_vllm() from the per-node config, so it is no longer assembled here.
+    # InferenceConfig.to_namespace() from the per-node config, so it is no longer assembled here.
 
-    DECODE_COMPILE_CFG='"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"'
+    DECODE_COMPILE_CFG='{"cudagraph_mode":"FULL_DECODE_ONLY"}'
 
     REPLICA_BASE=$((REPLICA_IDX * NODES_PER_INFER_REPLICA))
 
@@ -310,10 +303,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     echo "ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT" \
         | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
-    # Start the router on the first node of each replica (PD mode, external LB across per-rank endpoints)
-    if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-        REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-        launch_router pd "$REPLICA_ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log" "$REPLICA_IDX" "$REPLICA_BASE"
+    # Start the single global router on inference node 0 (PD mode, external LB across all per-rank endpoints)
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        launch_router pd "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log"
     fi
 {%- if router.type == "llm-d" %}
     # pd-sidecar on each decode node: EPP routes decode -> sidecar (DECODE_SIDECAR_PORT
@@ -339,7 +331,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     # External-LB: one vLLM API server per local DP rank (PORT + k), each pinned to its TP
     # slice of GPUs with a unique NIXL side-channel port. Each role is its own external-LB DP
     # group rooted on the role-replica head (HEAD_HOST); the router balances across the per-rank
-    # endpoints. The kv_transfer_config is built in InferenceConfig.to_vllm() from the config.
+    # endpoints. The kv_transfer_config is built in InferenceConfig.to_namespace() from the config.
     if [ "$ROLE_RANK" -eq 0 ]; then DP_ADDR=$LOCAL_IP; else DP_ADDR=$HEAD_HOST; fi
     for k in $(seq 0 $((INFERENCE_DP_LOCAL - 1))); do
         GLOBAL_RANK=$((START_RANK + k))
@@ -348,10 +340,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
     done
 {%- else -%}
-    # Start the router on the first node of each replica
-    if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-        REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-        launch_router regular "$REPLICA_ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log" "$REPLICA_IDX" "$((REPLICA_IDX * NODES_PER_INFER_REPLICA))" "$NODES_PER_INFER_REPLICA"
+    # Start the single global router on inference node 0 (external LB across all per-rank endpoints)
+    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$OUTPUT_DIR/logs/inference/router.log"
     fi
 
     # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + d),
@@ -407,7 +398,8 @@ else
         --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.rl.train \
         @ $CONFIG_DIR/trainer.toml \
-        2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log &
+        {% if use_zmq_transport %}--rollout_transport.host $MASTER_ADDR \
+        {% endif %}2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log &
 {% if num_infer_nodes > 0 %}    fi{% endif %}
 {% if num_infer_nodes > 0 %}
 # Launch the orchestrator on one node. Default is trainer rank 0 (SLURM_PROCID ==
@@ -425,7 +417,28 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     export {{ key }}="{{ value }}"
 {%- endfor %}
 {%- endif %}
+{%- if train_env_names or eval_env_names %}
+
+    # Launch one env server per source next to the orchestrator, which connects to each
+    # source at its deterministic loopback address (so this node), polling until they are
+    # up — the servers and the orchestrator start in parallel.
+    # NOTE: keep this block free of single quotes. The whole srun body is one
+    # single-quoted bash -c string, so a stray quote closes it early and the rest of
+    # the script fails to parse.
+{%- for name in train_env_names %}
+    mkdir -p $OUTPUT_DIR/logs/envs/train
+    uv run env-server @ $CONFIG_DIR/envs/train/{{ name }}.toml \
+        > $OUTPUT_DIR/logs/envs/train/{{ name }}.log 2>&1 &
+{%- endfor %}
+{%- for name in eval_env_names %}
+    mkdir -p $OUTPUT_DIR/logs/envs/eval
+    uv run env-server @ $CONFIG_DIR/envs/eval/{{ name }}.toml \
+        > $OUTPUT_DIR/logs/envs/eval/{{ name }}.log 2>&1 &
+{%- endfor %}
+{%- endif %}
+
     {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
+    {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $MASTER_ADDR"
     {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
         2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
 fi
@@ -456,4 +469,4 @@ for pid in $REMAINING_PIDS; do
     kill -TERM $pid 2>/dev/null || true
 done
 exit $EXIT_CODE
-'
+LAUNCH_SH

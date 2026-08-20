@@ -86,7 +86,9 @@ def train(config: TrainerConfig):
 
     # Setup the monitor
     logger.info(f"Initializing monitor ({config.wandb})")
-    monitor = setup_monitor(config.wandb, output_dir=config.output_dir, run_config=config)
+    monitor = setup_monitor(
+        config.wandb, file_config=config.file_monitor, output_dir=config.output_dir, run_config=config
+    )
 
     # Setup heartbeat (only on rank 0)
     heart = None
@@ -152,6 +154,9 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
+    if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
+        raise ValueError("Packed multimodal training requires model support")
+
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Setting up loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
@@ -186,7 +191,12 @@ def train(config: TrainerConfig):
         logger.info("Skipping weight broadcast setup (fake data mode)")
     else:
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        weight_broadcast = setup_weight_broadcast(config.output_dir, config.weight_broadcast, config.model.lora)
+        weight_broadcast = setup_weight_broadcast(
+            config.output_dir,
+            config.weight_broadcast,
+            parallel_dims,
+            config.model.lora,
+        )
 
     if parallel_dims.cp_enabled:
         cp_group = parallel_dims.world_mesh["cp"].get_group()
@@ -264,13 +274,13 @@ def train(config: TrainerConfig):
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
 
-        # With NCCL, broadcast the incoming policy (v{progress.step-1}) before waiting for its
-        # rollouts: #2896 broadcasts at the END of a step, so the first step would otherwise block
-        # on rollouts the paused inference engines cannot produce until they receive
-        # v{progress.step-1}. Filesystem broadcast needs no startup rendezvous (fresh: base model
-        # = v0; resume: the orchestrator reads its checkpoint dir), and a one-shot startup
-        # broadcast would miss multi-run runs registered after the first step.
-        if progress.step == start_step and weight_broadcast is not None and config.weight_broadcast.type == "nccl":
+        # In-memory transfers broadcast the incoming policy (v{progress.step-1}) before waiting
+        # for its rollouts so the trainer and inference pool join the same update lifecycle.
+        if (
+            progress.step == start_step
+            and weight_broadcast is not None
+            and config.weight_broadcast.type in ("nccl", "nixl")
+        ):
             logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
             multi_run_manager.wait_for_run(0)
             for idx in multi_run_manager.used_idxs:
@@ -361,6 +371,11 @@ def train(config: TrainerConfig):
             # tensor to CUDA and let the model's forward sort them.
             mm_kwargs_raw = micro_batch.get("mm_kwargs")
             mm_kwargs = {k: v.to("cuda") for k, v in mm_kwargs_raw.items()} if mm_kwargs_raw else None
+            if mm_kwargs is not None and config.model.vlm is None:
+                raise ValueError(
+                    "Received multimodal samples but [model.vlm] is not set. "
+                    "Set [model.vlm] to train on multimodal samples."
+                )
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -371,30 +386,30 @@ def train(config: TrainerConfig):
 
             labels = shift_tensor_left(input_ids)
 
-            # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
-            if cp_enabled and mm_kwargs is not None:
-                raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
+            seq_lens_are_pre_shard = False
 
             if cp_enabled:
-                input_ids, forward_position_ids = setup_cp_params(
-                    input_ids,
-                    position_ids,
-                    cp_rank,
-                    cp_size,
-                    cp_group,
-                    seq_lens=seq_lens,
-                    cp_style=config.model.cp_style,
-                )
+                # MRoPE batches must merge image embeddings before sharding.
+                defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
+                if not defer_vlm_cp_to_model:
+                    input_ids, position_ids = setup_cp_params(
+                        input_ids,
+                        position_ids,
+                        cp_rank,
+                        cp_size,
+                        cp_group,
+                        seq_lens=seq_lens,
+                        cp_style=config.model.cp_style,
+                    )
+                seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
-                if routed_experts is not None:
+                if routed_experts is not None and not defer_vlm_cp_to_model:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
-            else:
-                forward_position_ids = position_ids
 
             if config.model.lora:
                 lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
                 if cp_enabled:
-                    chunk_size = input_ids.shape[1]
+                    chunk_size = labels.shape[1]
                     # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
                     cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
                     adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
@@ -414,13 +429,13 @@ def train(config: TrainerConfig):
                 out = forward(
                     model,
                     input_ids,
-                    forward_position_ids,
+                    position_ids,
                     labels=labels,
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
-                    seq_lens_are_pre_shard=cp_enabled,
+                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                     routed_experts=routed_experts,
                 )
 
@@ -577,19 +592,17 @@ def train(config: TrainerConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
-        # sample its next step from it. Skip the final NCCL broadcasts: with a 1-step async barrier
-        # the orchestrator's last step uses the trainer's penultimate ckpt, so they have no receiver
-        # (the inference NCCL group is torn down). Filesystem broadcast still writes them so we can
-        # resume from the broadcast directory.
+        # sample its next step from it. In-memory transports retain their two-step shutdown
+        # window; filesystem broadcast still writes every version for resume.
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
-            nccl_broadcast_unused = (
-                config.weight_broadcast.type == "nccl"
+            broadcast_unused = (
+                config.weight_broadcast.type in ("nccl", "nixl")
                 and config.max_steps is not None
                 and progress.step >= config.max_steps - 1
             )
-            if not nccl_broadcast_unused:
+            if not broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time

@@ -10,6 +10,7 @@ from torch import Tensor
 
 from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
+from prime_rl.utils.logger import get_logger
 
 SCHEMA_VERSION = 1
 
@@ -93,7 +94,12 @@ class TokenExporter:
         ready_run_ids = ready_run_ids or set()
         for run_id in [rid for rid in self._pending_stable_dirs if rid is None or rid in ready_run_ids]:
             for stable_dir in self._pending_stable_dirs.pop(run_id):
-                (stable_dir / "STABLE").touch()
+                try:
+                    (stable_dir / "STABLE").touch()
+                except FileNotFoundError:
+                    # A multi-run run dir can be deleted while its tail steps are
+                    # still flushing (mirrors the broadcast paths' guard)
+                    get_logger().warning(f"Run dir for {run_id} is deleted, skipping token-export STABLE marker")
 
     def _export_dir(self, export_step: int, run_id: str | None) -> Path:
         if run_id is not None:

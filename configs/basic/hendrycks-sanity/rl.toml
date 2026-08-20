@@ -19,18 +19,25 @@ batch_size = 128
 group_size = 8
 seq_len = 8192
 
-[[orchestrator.train.env]]
+[[orchestrator.train.source]]
 name = "hendrycks-math"
-taskset = { id = "math-env-v1", dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
-harness = { id = "null", runtime = { type = "subprocess" } }
+
+[orchestrator.train.source.env.taskset]
+id = "math-env-v1"
+dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B"
+dataset_subset = "default"
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
 
 [trainer.model]
 seq_len = 16384
 
-[inference.model]
+[inference.vllm]
 max_model_len = 8192
-
-# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
 [orchestrator.renderer]
 name = "default"
 reasoning_parser = "think"

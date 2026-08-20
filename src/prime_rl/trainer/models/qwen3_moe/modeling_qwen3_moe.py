@@ -34,12 +34,7 @@ from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
-from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
-    convert_hf_layer_to_tt,
-    convert_hf_to_tt_moe,
-    convert_tt_layer_to_hf,
-    convert_tt_to_hf_moe,
-)
+from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import conversion_chain
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 logger = logging.get_logger(__name__)
@@ -147,28 +142,8 @@ class Qwen3MoePreTrainedModel(PreTrainedModelPrimeRL):
         return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
 
     @classmethod
-    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        """Convert MoE weights from PrimeRL training format to HuggingFace format in-place."""
-        convert_tt_to_hf_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        """Convert MoE weights from HuggingFace format to PrimeRL training format in-place."""
-        convert_hf_to_tt_moe(state_dict)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """Convert a single layer's MoE weights from PrimeRL format to HuggingFace format in-place."""
-        convert_tt_layer_to_hf(state_dict, layer_idx)
-        return state_dict
-
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """Convert a single layer's MoE weights from HuggingFace format to PrimeRL format in-place."""
-        convert_hf_layer_to_tt(state_dict, layer_idx)
-        return state_dict
+    def conversion_chain(cls, config):
+        return conversion_chain(config)
 
 
 @auto_docstring

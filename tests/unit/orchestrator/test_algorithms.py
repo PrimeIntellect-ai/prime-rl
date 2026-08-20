@@ -162,7 +162,11 @@ def _make_rollout(
     advantages: list[float] | None = None,
 ) -> Rollout:
     rollout = Rollout(
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)), nodes=[], rewards={}, env_name="test-env"
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        nodes=[],
+        rewards={},
+        env_name="test-env",
     )
     rollout.samples = samples
     rollout.advantages = advantages
@@ -257,8 +261,9 @@ def _two_turn_rollout(observation_role: str = "tool") -> Rollout:
     ]
     rollout = Rollout(
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=nodes,
-        rewards={"r": 1.0},
+        rewards={"r": vf.Reward(score=1.0)},
         env_name="test-env",
     )
     rollout.samples = trace_to_samples(rollout, env_name="test-env")
@@ -308,8 +313,9 @@ def test_echo_weights_only_content_tokens_when_is_content_present():
     ]
     rollout = Rollout(
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=nodes,
-        rewards={"r": 1.0},
+        rewards={"r": vf.Reward(score=1.0)},
         env_name="test-env",
     )
     rollout.samples = trace_to_samples(rollout, env_name="test-env")
