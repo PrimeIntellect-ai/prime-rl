@@ -41,9 +41,10 @@ def setup_linear_scheduler(
     if decay_steps > 0:
         assert max_steps is not None, "max_steps must be specified when specifying decay_steps"
         decay_start_step = max_steps - decay_steps
-        assert decay_start_step >= warmup_steps
+        assert decay_start_step >= warmup_steps, (
+            f"warmup_steps ({warmup_steps}) + decay_steps ({decay_steps}) must not exceed max_steps ({max_steps})"
+        )
         constant_steps = decay_start_step - warmup_steps
-        assert constant_steps >= 0
         constant_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=constant_steps)
         decay_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=min_lr_factor, total_iters=decay_steps - 1)
         schedulers.append(constant_scheduler)

@@ -28,6 +28,7 @@ from prime_rl.configs.trainer import (
     OptimizerConfig,
     SchedulerConfig,
     TokenizerConfig,
+    validate_scheduler,
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
 
@@ -542,6 +543,11 @@ class SFTConfig(BaseConfig):
                 raise ValueError(
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_scheduler_steps(self):
+        validate_scheduler(self.scheduler, self.max_steps)
         return self
 
     @model_validator(mode="after")

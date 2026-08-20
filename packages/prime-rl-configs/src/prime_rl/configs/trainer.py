@@ -387,6 +387,28 @@ SchedulerConfig: TypeAlias = Annotated[
 ]
 
 
+def validate_scheduler(scheduler: SchedulerConfig, max_steps: int | None) -> None:
+    """Check scheduler phases against max_steps so misconfigurations fail at config time."""
+    if isinstance(scheduler, LinearSchedulerConfig):
+        if scheduler.warmup_steps == 0 and scheduler.decay_steps == 0:
+            raise ValueError(
+                "Linear scheduler requires warmup_steps > 0 or decay_steps > 0 (use the constant scheduler instead)"
+            )
+        if scheduler.decay_steps > 0:
+            if max_steps is None:
+                raise ValueError("Must specify max_steps when using a linear scheduler with decay_steps > 0")
+            if scheduler.warmup_steps + scheduler.decay_steps > max_steps:
+                raise ValueError(
+                    f"warmup_steps ({scheduler.warmup_steps}) + decay_steps ({scheduler.decay_steps}) "
+                    f"must not exceed max_steps ({max_steps})"
+                )
+    if isinstance(scheduler, CosineSchedulerConfig):
+        if max_steps is None:
+            raise ValueError("Must specify max_steps when using a cosine scheduler")
+        if scheduler.warmup_steps >= max_steps:
+            raise ValueError(f"warmup_steps ({scheduler.warmup_steps}) must be less than max_steps ({max_steps})")
+
+
 class BaseOptimizerConfig(BaseConfig):
     lr: float = Field(1e-6, ge=0)
     """Peak learning rate."""
@@ -718,6 +740,11 @@ class TrainerConfig(BaseConfig):
                 raise ValueError(
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_scheduler_steps(self):
+        validate_scheduler(self.scheduler, self.max_steps)
         return self
 
     @model_validator(mode="after")
