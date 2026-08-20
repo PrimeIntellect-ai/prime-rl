@@ -204,17 +204,17 @@ num_train_gpus = 1  # trainer
 num_infer_gpus = 1  # inference
 ```
 
-The launcher starts the inference server, one env server per eval source, and an `evaluator` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evaluator watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env.
+The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evals process watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
 
 #### Multi-Node (Decoupled Trainer and Inference Pool)
 
-On a `multi_node` deployment (SLURM), the trainer and the eval deployment are **two independent SLURM jobs**. `deployment.num_nodes` sizes the trainer job; `deployment.num_infer_nodes` sizes the eval job, which runs the inference pool (one vLLM engine per DP rank behind a single router, `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node), one env server per eval source, and the evaluator:
+On a `multi_node` deployment (SLURM), the trainer and the eval deployment are **two independent SLURM jobs**. `deployment.num_nodes` sizes the trainer job; `deployment.num_infer_nodes` sizes the eval job, which runs the inference pool (one vLLM engine per DP rank behind a single router, `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node), one env server per eval source, and the evals process:
 
 ```toml
 [deployment]
 type = "multi_node"
 num_train_nodes = 2  # trainer job
-num_infer_nodes = 1  # eval job (inference pool + evaluator)
+num_infer_nodes = 1  # eval job (inference pool + evals)
 
 [inference.vllm]
 tensor_parallel_size = 8
@@ -223,7 +223,7 @@ tensor_parallel_size = 8
 job_name = "my-run"
 ```
 
-The only coupling is weight checkpoints on the shared filesystem, so the jobs' lifetimes are independent: when training finishes, the trainer job exits and releases its nodes even while evals are still running; the eval job keeps draining pending checkpoints and exits after evaluating the final one (`max_steps` — without it the eval job never sees a final checkpoint and holds its allocation until walltime). Trainer and evaluator log to a single shared W&B run across both jobs — the trainer creates it, the evaluator finalizes it. Any train × inference layout works: `num_nodes` and `num_infer_nodes` are fully independent.
+The only coupling is weight checkpoints on the shared filesystem, so the jobs' lifetimes are independent: when training finishes, the trainer job exits and releases its nodes even while evals are still running; the eval job keeps draining pending checkpoints and exits after evaluating the final one (`max_steps` — without it the eval job never sees a final checkpoint and holds its allocation until walltime). Trainer and evals log to a single shared W&B run across both jobs — the trainer creates it, the evals process finalizes it. Any train × inference layout works: `num_nodes` and `num_infer_nodes` are fully independent.
 
 ### SFT-Specific Knobs
 

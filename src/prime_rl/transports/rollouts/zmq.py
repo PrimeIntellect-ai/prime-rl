@@ -4,8 +4,8 @@ import zmq
 import zmq.asyncio
 
 from prime_rl.configs.shared import ZMQTransportConfig
-from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender
-from prime_rl.transport.types import MicroBatch
+from prime_rl.transports.rollouts.base import MicroBatchReceiver, MicroBatchSender
+from prime_rl.transports.rollouts.types import MicroBatch
 
 
 class ZMQMicroBatchSender(MicroBatchSender):

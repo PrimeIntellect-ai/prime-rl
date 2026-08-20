@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import torch
 
-from prime_rl.trainer.rl.broadcast.nixl.trainer_tensor_table import TrainerTensorTable
+from prime_rl.transports.weights.nixl.trainer_tensor_table import TrainerTensorTable
 
 
 @dataclass(frozen=True)

@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import ActionLossType
-from prime_rl.transport import TrainingSample
+from prime_rl.transports.rollouts import TrainingSample
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout

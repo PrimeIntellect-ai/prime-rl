@@ -71,7 +71,10 @@ type = "muon"
 batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
-max_inflight_episodes = 512
+
+[orchestrator.concurrency]
+initial_inflight = 256
+max_inflight = 512
 
 [orchestrator.renderer]
 name = "glm-4.5"

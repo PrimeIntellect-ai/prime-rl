@@ -8,7 +8,7 @@ from prime_rl.orchestrator.algo.base import Algorithm
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import Rollout
-    from prime_rl.transport import TrainingSample
+    from prime_rl.transports.rollouts import TrainingSample
     from prime_rl.utils.client import InferencePool
 
 

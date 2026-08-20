@@ -43,7 +43,7 @@ def format_log_message(
     log_dir: Path,
     trainer: bool = False,
     orchestrator: bool = False,
-    evaluator: bool = False,
+    evals: bool = False,
     inference: bool = False,
     job_log: bool = False,
     train_env_names: list[str] | None = None,
@@ -68,8 +68,8 @@ def format_log_message(
         log_lines.append(f"{i2}{'All ranks:':<{col - 1}}tail -F {log_dir}/trainer/torchrun/*/*/*/*.log")
     if orchestrator:
         log_lines.append(f"{i1}{'Orchestrator:':<{col}}tail -F {log_dir}/orchestrator.log")
-    if evaluator:
-        log_lines.append(f"{i1}{'Evaluator:':<{col}}tail -F {log_dir}/evaluator.log")
+    if evals:
+        log_lines.append(f"{i1}{'Evals:':<{col}}tail -F {log_dir}/evals.log")
     if inference:
         log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference.log")
         if num_infer_nodes > 1:

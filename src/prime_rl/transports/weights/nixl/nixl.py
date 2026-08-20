@@ -22,21 +22,21 @@ from torch.distributed.tensor._utils import compute_local_shape_and_global_offse
 from prime_rl.configs.trainer import NIXLWeightBroadcastConfig
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
-from prime_rl.trainer.rl.broadcast.nixl.agent import NixlAgent, make_agent_name, set_ucx_env_defaults
-from prime_rl.trainer.rl.broadcast.nixl.cuda_malloc_memory import (
+from prime_rl.trainer.utils import get_world
+from prime_rl.transports.weights.base import WeightBroadcast
+from prime_rl.transports.weights.nixl.agent import NixlAgent, make_agent_name, set_ucx_env_defaults
+from prime_rl.transports.weights.nixl.cuda_malloc_memory import (
     size_cuda_buffers,
     use_cuda_malloc_pool,
 )
-from prime_rl.trainer.rl.broadcast.nixl.model_express import ModelExpressSession
-from prime_rl.trainer.rl.broadcast.nixl.trainer_tensor_table import (
+from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
+from prime_rl.transports.weights.nixl.trainer_tensor_table import (
     TrainerAgent,
     TrainerGroup,
     TrainerShard,
     TrainerTensor,
     TrainerTensorTable,
 )
-from prime_rl.trainer.utils import get_world
 
 LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
 BUFFER_POLL_INTERVAL = 0.01

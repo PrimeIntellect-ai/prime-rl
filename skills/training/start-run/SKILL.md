@@ -1,6 +1,6 @@
 ---
 name: start-run
-description: How to launch prime-rl training runs — the `rl`, `sft`, and `inference` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint.
+description: How to launch prime-rl training runs — the `rl`, `sft`, `inference`, and `evals` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint.
 ---
 
 # Start a run
@@ -88,6 +88,46 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
+## `evals` — multi-env evals
+
+Runs the configured eval sources against a live inference server. Standalone (no `[online]` block): one epoch of every source against the served weights, then exit. With `[online]` (`weights_dir`, `max_steps`, `resume_step`): watch the weights dir for stable `step_{n}` HF checkpoints and evaluate each — the `sft` launcher writes this config for online evals.
+
+```bash
+uv run inference --vllm.model Qwen/Qwen3-4B   # start inference separately
+uv run evals @ eval.toml
+```
+
+Minimal standalone `eval.toml`:
+
+```toml
+model = "Qwen/Qwen3-4B"
+
+[eval.client]
+base_url = "http://localhost:8000/v1"
+
+[eval.concurrency]  # adaptive; same controller as [orchestrator.concurrency]
+min_inflight = 8
+max_inflight = 128
+
+[[eval.source]]
+num_examples = 32   # always cap eval size for smokes
+group_size = 4
+
+[eval.source.env.taskset]
+id = "aime25"
+
+[eval.source.env.agent.harness]
+id = "null"
+
+[eval.source.env.agent.runtime]
+type = "subprocess"
+```
+
+- Env servers: spawned by the evals process, one per source without an explicit `serve.address`, at `tcp://127.0.0.1:<eval.env_server_base_port + index>`; logs at `{output_dir}/logs/envs/eval/{name}.log`.
+- External inference APIs (no vLLM `/metrics`, e.g. Prime Inference) have no load signal for adaptive concurrency: the startup `/metrics` probe fails fast unless the band is pinned (`min_inflight = max_inflight`). Full example: `examples/evals/swe.toml` (SWE-bench Verified + Terminal-Bench 2 on Prime Inference, `agent.timeout.rollout = 3600`).
+- Config: `EvalsConfig` (`packages/prime-rl-configs/src/prime_rl/configs/evals.py`)
+- Entrypoint: `src/prime_rl/entrypoints/evals.py` (implementation: `src/prime_rl/evals/evals.py`)
+
 ## Summary
 
 | Command | Purpose | Typical use |
@@ -95,6 +135,7 @@ curl http://localhost:8000/v1/chat/completions \
 | `rl` | Full RL pipeline | Production RL training |
 | `sft` | Supervised fine-tuning | SFT and hard-distill |
 | `inference` | vLLM server | Standalone serving / debugging |
+| `evals` | Multi-env evals | Standalone evals / SFT online evals |
 
 ## Key paths
 

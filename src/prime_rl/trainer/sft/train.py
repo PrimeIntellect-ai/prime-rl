@@ -39,7 +39,7 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
+from prime_rl.trainer.sft.data import get_dataset_state, load_sft_dataset, setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -246,7 +246,7 @@ def train(config: SFTConfig):
         if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
     logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={dataloader.state_dict()['dataset_state']})"
+        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
     )
 
     cp_enabled = parallel_dims.cp_enabled
@@ -257,13 +257,17 @@ def train(config: SFTConfig):
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
-        input_ids = micro_batch["input_ids"].to("cuda")
-        position_ids = micro_batch["position_ids"].to("cuda")
-        target_ids = micro_batch["target_ids"].to("cuda")
-        loss_mask = micro_batch["loss_mask"].to("cuda")
-        seq_lens = micro_batch["seq_lens"].to("cuda")
+        input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
+        position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
+        target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
+        loss_mask = micro_batch["loss_mask"].to("cuda", non_blocking=True)
+        seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
         mm_kwargs = micro_batch.get("mm_kwargs")
+        if mm_kwargs is not None:
+            mm_kwargs = {key: value.to("cuda", non_blocking=True) for key, value in mm_kwargs.items()}
         mm_type_ids = micro_batch.get("mm_token_type_ids")
+        if mm_type_ids is not None:
+            mm_type_ids = mm_type_ids.to("cuda", non_blocking=True)
 
         seq_lens_are_pre_shard = False
 

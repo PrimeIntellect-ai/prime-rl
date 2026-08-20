@@ -22,6 +22,9 @@ save_adapter_separately = true
 batch_size = 128
 group_size = 16
 
+[orchestrator.concurrency]
+max_inflight = 128
+
 [orchestrator.model.lora]
 name = "r8-1e-4"
 

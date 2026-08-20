@@ -10,7 +10,7 @@ import verifiers.v1 as vf
 from pydantic import ConfigDict, Field
 from verifiers.v1.task import DataT
 
-from prime_rl.transport import TrainingSample
+from prime_rl.transports.rollouts import TrainingSample
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.metrics import EvalRollouts, TrainRollouts
@@ -39,7 +39,7 @@ RolloutKind = Literal["train", "eval"]
 
 
 @dataclass
-class InflightRollout:
+class InflightEpisode:
     """Per-task scheduling state in the dispatcher; one entry per in-flight
     ``run`` task."""
 
@@ -50,6 +50,8 @@ class InflightRollout:
     client_config: vf.ClientConfig | None = None
     off_policy_steps: int = 0
     eval_step: int | None = None
+    started_at: float = 0.0
+    """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
 
 
 @dataclass

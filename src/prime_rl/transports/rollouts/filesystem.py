@@ -1,8 +1,8 @@
 import asyncio
 from pathlib import Path
 
-from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender
-from prime_rl.transport.types import MicroBatch
+from prime_rl.transports.rollouts.base import MicroBatchReceiver, MicroBatchSender
+from prime_rl.transports.rollouts.types import MicroBatch
 from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for_path
 
 

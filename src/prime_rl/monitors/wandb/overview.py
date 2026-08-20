@@ -71,6 +71,7 @@ INFERENCE_PANELS = [
     ["inference/agg/prefix_cache_hit_rate/pooled", "inference/agg/prefix_cache_hit_rate/min"],
     ["inference/agg/generation_tokens_total:rate/sum", "inference/agg/generation_tokens_total:rate/min"],
     ["inference/agg/prompt_tokens_total:rate/sum", "inference/agg/prompt_tokens_total:rate/max"],
+    ["dispatcher/inflight/train", "dispatcher/inflight/eval"],
 ]
 
 # SFT flavor: no rollout-based train sections — the training signal is the loss curve.

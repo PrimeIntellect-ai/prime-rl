@@ -66,7 +66,7 @@ After a restart, verify all processes are back up and progress resumed before th
 {run_dir}/logs/latest/
 ├── trainer.log                # rank 0 stdout
 ├── orchestrator.log           # orchestrator stdout
-├── evaluator.log              # SFT online-eval evaluator stdout (single-node; the decoupled multi-node eval job logs at {run_dir}/logs/evaluator.log)
+├── evals.log                  # SFT online-eval evals stdout (single-node; the decoupled multi-node eval job logs at {run_dir}/logs/evals.log)
 ├── inference.log              # vLLM stdout
 ├── trainer/
 │   ├── node_*.log             # per-node (multi-node only)
@@ -82,7 +82,7 @@ Usually tailing `trainer.log`, `orchestrator.log`, and `inference.log` is enough
 Scan for problems:
 
 ```bash
-grep -E "WARNING|ERROR" {run_dir}/logs/latest/{trainer,orchestrator,evaluator,inference}.log
+grep -E "WARNING|ERROR" {run_dir}/logs/latest/{trainer,orchestrator,evals,inference}.log
 grep -E "WARNING|ERROR" {run_dir}/logs/latest/envs/{train,eval}/*.log
 ```
 
@@ -130,7 +130,7 @@ All metrics print to the console log (and W&B when configured).
 | trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU % |
 | orchestrator | `time/step`, `time/save_ckpt` | phase timings |
 | orchestrator | `time/wait_for_policy` | **high → trainer is bottleneck** |
-| orchestrator | `dispatcher/off_policy_level_{mean,max}`, `dispatcher/inflight_{train,eval}`, `dispatcher/groups_in_flight`, `dispatcher/queued/eval` | dispatcher / async state |
+| orchestrator | `dispatcher/off_policy_level/{mean,max}`, `dispatcher/inflight/{train,eval}`, `dispatcher/queued/eval` | dispatcher / async state |
 | env server | event loop lag (min/mean/p90/p99/max), active task distribution | periodic |
 
 For live vLLM stats, query Prometheus directly:
