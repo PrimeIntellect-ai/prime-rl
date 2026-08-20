@@ -35,6 +35,8 @@ NUM_EXPERTS, TOP_K, DIM, HIDDEN_DIM, NUM_TOKENS = 4, 2, 256, 128, 512
 # Both paths are bf16 GEMMs with fp32 accumulation but different reduction orders, so they
 # agree to bf16 precision, not bitwise. mxfp8 additionally quantizes both operands to e4m3
 # with one e8m0 scale per 32 elements, which costs roughly another order of magnitude.
+# These are backstops: the sharper check is the fp32 ratio in the forward test. Every
+# comparison prints its measured margin, so `pytest -s` says how much room is left.
 BF16_TOL = 3e-2
 MXFP8_TOL = 1.5e-1
 # The mxfp8 backward re-runs the very reference this compares against, on unquantized
@@ -75,15 +77,45 @@ def _leaves(*tensors: torch.Tensor) -> list[torch.Tensor]:
     return [t.detach().clone().requires_grad_(True) for t in tensors]
 
 
+def _fp32_ground_truth(moe_inputs: tuple[torch.Tensor, ...]) -> torch.Tensor:
+    """Expert-by-expert MoE in fp32 — an independent yardstick both paths can be measured against."""
+    x, w1, w2, w3, selected_experts_indices, top_scores = moe_inputs
+    xf, w1f, w2f, w3f = x.float(), w1.float(), w2.float(), w3.float()
+    out = torch.zeros_like(xf)
+    for expert in range(NUM_EXPERTS):
+        rows, slot = (selected_experts_indices == expert).nonzero(as_tuple=True)
+        if rows.numel() == 0:
+            continue
+        tokens = xf[rows]
+        hidden = torch.nn.functional.silu(tokens @ w1f[expert].T) * (tokens @ w3f[expert].T)
+        out.index_add_(0, rows, (hidden @ w2f[expert].T) * top_scores[rows, slot].unsqueeze(-1).float())
+    return out
+
+
 @pytest.mark.parametrize("mxfp8", [False, True])
 def test_fused_forward_matches_grouped_mm(moe_inputs, mxfp8: bool):
+    """Pairwise against grouped-mm, and — the tolerance-free part — against fp32.
+
+    A fixed tolerance only says "close enough"; the ratio against the grouped-mm path's own
+    fp32 error says the kernel is no *less* accurate than what it replaces, which is the
+    claim that actually matters and needs no magic number.
+    """
     x, w1, w2, w3, selected_experts_indices, top_scores = moe_inputs
+    label = "mxfp8" if mxfp8 else "bf16"
 
     out = _FusedMoE.apply(x, w1, w2, w3, selected_experts_indices, top_scores, NUM_EXPERTS, mxfp8)
     expected = _run_experts_fused_reference(x, w1, w2, w3, selected_experts_indices, top_scores, NUM_EXPERTS)
 
+    truth = _fp32_ground_truth(moe_inputs)
+    grouped_mm_err, fused_err = _rel_err(expected, truth), _rel_err(out, truth)
+    print(f"forward[{label}] vs fp32: grouped_mm={grouped_mm_err:.3e} fused={fused_err:.3e}")
+
     assert out.shape == expected.shape and out.dtype == x.dtype
-    _assert_close(out, expected, MXFP8_TOL if mxfp8 else BF16_TOL, f"forward[{'mxfp8' if mxfp8 else 'bf16'}]")
+    _assert_close(out, expected, MXFP8_TOL if mxfp8 else BF16_TOL, f"forward[{label}]")
+    if not mxfp8:
+        assert fused_err <= 1.5 * grouped_mm_err, (
+            f"fused bf16 is less accurate than grouped-mm: {fused_err:.3e} vs {grouped_mm_err:.3e} against fp32"
+        )
 
 
 def test_fused_bf16_backward_matches_grouped_mm(moe_inputs):
