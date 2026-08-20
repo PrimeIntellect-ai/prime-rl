@@ -74,7 +74,7 @@ def mk(
         traces=[trace],
         ok=not has_error,
         env=SimpleNamespace(id=env_name, name=env_name),
-        group_id=group_id,
+        group=SimpleNamespace(id=group_id),
     )
     episode._sampled_trace_ids = {trace.id}
     episode._admitted = is_admitted

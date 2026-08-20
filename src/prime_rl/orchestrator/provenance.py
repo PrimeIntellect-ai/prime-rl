@@ -12,6 +12,13 @@ def episode_env_name(episode: vf.Episode[Any, Any, Any]) -> str:
     return name
 
 
+def episode_group_id(episode: vf.Episode[Any, Any, Any]) -> str:
+    group = episode.group
+    if group is None:
+        raise ValueError("Orchestrated episode is missing its rollout group")
+    return group.id
+
+
 def train_work(episode: vf.Episode[Any, Any, Any]) -> vf.TrainWorkInfo:
     run = episode.run
     if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.TrainWorkInfo):

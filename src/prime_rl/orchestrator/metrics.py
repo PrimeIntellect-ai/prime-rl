@@ -9,7 +9,7 @@ from typing import Any, Literal
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
-from prime_rl.orchestrator.provenance import episode_env_name
+from prime_rl.orchestrator.provenance import episode_env_name, episode_group_id
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 Subset = Literal["all", "effective"]
@@ -222,7 +222,7 @@ class TraceMetrics(StatGroup):
     def solve_rates(self) -> dict[str, float]:
         groups: dict = {}
         for record in self.records:
-            groups.setdefault(record.episode.group_id, []).append(record.trace)
+            groups.setdefault(episode_group_id(record.episode), []).append(record.trace)
         num_groups = len(groups)
         solved_none = sum(sum(trace.reward for trace in group) == 0 for group in groups.values())
         solved_all = sum(all(trace.reward == 1.0 for trace in group) for group in groups.values())
@@ -335,7 +335,7 @@ def pass_at_k(records: list[TraceRecord]) -> dict[str, float]:
         return {}
     by_example: dict = {}
     for record in records:
-        by_example.setdefault(record.episode.group_id, []).append(record.trace.reward)
+        by_example.setdefault(episode_group_id(record.episode), []).append(record.trace.reward)
     per_example = [compute_pass_metrics(group) for group in by_example.values()]
     keys = sorted({key for result in per_example for key in result})
     return {
@@ -489,7 +489,7 @@ class EvalEpisodes(EpisodeCollection):
         counts: dict = {}
         for record in self.records:
             if record.trace.agent.trainable:
-                group_id = record.episode.group_id
+                group_id = episode_group_id(record.episode)
                 counts[group_id] = counts.get(group_id, 0) + 1
         return max(counts.values(), default=0)
 

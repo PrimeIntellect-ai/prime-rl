@@ -640,7 +640,7 @@ class Dispatcher:
         if meta.kind == "eval":
             assert eval_step is not None, "eval episode missing eval_step"
         episode.env.name = meta.env_name
-        episode.group_id = str(meta.group_id)
+        episode.group = vf.GroupInfo(id=str(meta.group_id))
         live_policy = meta.kind == "eval"
         if meta.kind == "train":
             assert self.train_envs is not None

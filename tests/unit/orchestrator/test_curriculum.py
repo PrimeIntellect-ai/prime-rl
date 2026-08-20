@@ -59,7 +59,7 @@ def make_rollout(
     episode = vf.Episode(
         env=vf.EnvInfo(id=env_name, name=env_name),
         task=trace.task,
-        group_id=str(uuid.uuid4()),
+        group=vf.GroupInfo(id=str(uuid.uuid4())),
         traces=[trace],
     )
     return [episode]

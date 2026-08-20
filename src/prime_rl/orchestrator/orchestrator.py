@@ -55,7 +55,7 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
-from prime_rl.orchestrator.provenance import eval_work, train_work
+from prime_rl.orchestrator.provenance import episode_group_id, eval_work, train_work
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
@@ -673,7 +673,7 @@ class Orchestrator:
         num_input = sum(record.trace.num_input_tokens for record in effective.records)
         num_output = sum(record.trace.num_output_tokens for record in effective.records)
         num_rollouts = batch.episodes.num_traces
-        num_unique_examples = len({episode.group_id for episode in batch.episodes})
+        num_unique_examples = len({episode_group_id(episode) for episode in batch.episodes})
         metrics |= {
             "progress/tokens": num_tokens,
             "progress/input_tokens": num_input,

@@ -117,7 +117,7 @@ def _build_rollout(
     episode = vf.Episode(
         env=vf.EnvInfo(id=env_name, name=env_name),
         task=trace.task,
-        group_id="group",
+        group=vf.GroupInfo(id="group"),
         traces=[trace],
     )
     episode_trace = episode.traces[0]

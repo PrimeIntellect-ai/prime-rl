@@ -8,7 +8,7 @@ import verifiers.v1 as vf
 
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalEpisodes
-from prime_rl.orchestrator.provenance import episode_env_name, eval_work
+from prime_rl.orchestrator.provenance import episode_env_name, episode_group_id, eval_work
 from prime_rl.orchestrator.types import EvalBatch
 from prime_rl.utils.logger import get_logger
 
@@ -23,9 +23,7 @@ class EvalSink:
 
     def add(self, episode: vf.Episode) -> EvalBatch | None:
         env_name = episode_env_name(episode)
-        group_id = episode.group_id
-        if group_id is None:
-            raise ValueError("Eval episode is missing group_id")
+        group_id = episode_group_id(episode)
         eval_step = eval_work(episode).step
         bkey = (env_name, eval_step)
         group = self.pending_groups[group_id]

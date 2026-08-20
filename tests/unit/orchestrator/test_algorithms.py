@@ -206,7 +206,7 @@ def _make_rollout() -> PreparedCase:
     episode = vf.Episode(
         env=vf.EnvInfo(id="test-env", name="test-env"),
         task=trace.task,
-        group_id="group",
+        group=vf.GroupInfo(id="group"),
         traces=[trace],
     )
     episode_trace = episode.traces[0]
@@ -307,7 +307,7 @@ def _two_turn_rollout(observation_role: str = "tool") -> PreparedCase:
     episode = vf.Episode(
         env=vf.EnvInfo(id="test-env", name="test-env"),
         task=trace.task,
-        group_id="group",
+        group=vf.GroupInfo(id="group"),
         traces=[trace],
     )
     episode_trace = episode.traces[0]
@@ -365,7 +365,7 @@ def test_echo_weights_only_content_tokens_when_is_content_present():
     episode = vf.Episode(
         env=vf.EnvInfo(id="test-env", name="test-env"),
         task=trace.task,
-        group_id="group",
+        group=vf.GroupInfo(id="group"),
         traces=[trace],
     )
     episode_trace = episode.traces[0]
