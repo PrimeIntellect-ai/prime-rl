@@ -2,16 +2,19 @@ import time
 from pathlib import Path
 from typing import Literal
 
+import torch.distributed as dist
 import torch.nn as nn
 from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, LoRAConfig
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
-from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import maybe_clean
 from prime_rl.trainer.weights import (
+    convert_state_dict_to_hf,
     gather_weights_on_master,
+    gather_weights_parallel,
     save_state_dict,
+    save_state_dict_parallel,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.weights.base import WeightBroadcast
@@ -37,6 +40,22 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.perf_counter()
         adapter_only = self.lora_config is not None
+        save_parallel = not adapter_only and self.save_sharded and self.save_format == "safetensors"
+
+        save_dir = get_step_path(get_broadcast_dir(self.output_dir), step)
+        if self.world.is_master:
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+        if save_parallel:
+            dist.barrier()
+            state_dict = gather_weights_parallel(model)
+            state_dict = convert_state_dict_to_hf(model, state_dict)
+            self.logger.debug(f"Saving weights to {save_dir}")
+            save_state_dict_parallel(state_dict, save_dir)
+            if self.world.is_master:
+                self._notify_orchestrator(save_dir)
+                self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
+            return
 
         if adapter_only:
             # All ranks must participate in DTensor gathering, but only master saves
@@ -48,17 +67,9 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     state_dict[key] = value.to("cpu", non_blocking=False)
         else:
             state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
-            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
-                model.convert_to_hf(state_dict)
-            else:
-                from transformers.core_model_loading import revert_weight_conversion
-
-                state_dict = revert_weight_conversion(model, state_dict)
+            state_dict = convert_state_dict_to_hf(model, state_dict)
 
         if self.world.is_master:
-            save_dir = get_step_path(get_broadcast_dir(self.output_dir), step)
-            save_dir.mkdir(parents=True, exist_ok=True)
-
             self.logger.debug(f"Saving weights to {save_dir}")
             save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
             if adapter_only:

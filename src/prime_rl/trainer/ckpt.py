@@ -24,11 +24,13 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
 from prime_rl.trainer.lora import get_lora_state, has_lora_layers, save_lora_config
-from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.weights import (
+    convert_state_dict_to_hf,
     gather_weights_on_master,
+    gather_weights_parallel,
     save_state_dict,
+    save_state_dict_parallel,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -374,6 +376,30 @@ class WeightCheckpointManager:
 
         return lora_state_dict
 
+    def _save_model_assets(
+        self,
+        path: Path,
+        model,
+        tokenizer: PreTrainedTokenizer,
+        processor: ProcessorMixin | None = None,
+    ):
+        """Save model config, generation config and tokenizer next to the weights."""
+        model.config.save_pretrained(path)
+        if model.generation_config:
+            # training sets use_cache=False which can conflict with
+            # cache_implementation — save with use_cache=True without
+            # mutating the model's config
+            from copy import deepcopy
+
+            gen_config = deepcopy(model.generation_config)
+            gen_config.use_cache = True
+            gen_config.save_pretrained(path)
+        # Processor first: it saves its own (unmodified) tokenizer, which the
+        # configured tokenizer (pad token, custom chat template) must override.
+        if processor is not None:
+            processor.save_pretrained(path)
+        tokenizer.save_pretrained(path)
+
     def save_to_path(
         self,
         path: Path,
@@ -396,23 +422,7 @@ class WeightCheckpointManager:
 
                 # Save weights
                 save_state_dict(state_dict, path, self.config.save_format, self.config.save_sharded)
-
-                # Save model config, generation arguments and tokenizer
-                model.config.save_pretrained(path)
-                if model.generation_config:
-                    # training sets use_cache=False which can conflict with
-                    # cache_implementation — save with use_cache=True without
-                    # mutating the model's config
-                    from copy import deepcopy
-
-                    gen_config = deepcopy(model.generation_config)
-                    gen_config.use_cache = True
-                    gen_config.save_pretrained(path)
-                # Processor first: it saves its own (unmodified) tokenizer, which the
-                # configured tokenizer (pad token, custom chat template) must override.
-                if processor is not None:
-                    processor.save_pretrained(path)
-                tokenizer.save_pretrained(path)
+                self._save_model_assets(path, model, tokenizer, processor)
 
             if lora_state_dict is not None:
                 adapter_path = path / "lora_adapters"
@@ -445,11 +455,17 @@ class WeightCheckpointManager:
             step_path.mkdir(parents=True, exist_ok=True)
         torch.distributed.barrier()
 
-        # Gather all weights on master rank
-        self.logger.debug("Gathering weights on master rank for weight checkpoint")
+        save_parallel = (
+            self.config.save_sharded and self.config.save_format == "safetensors" and not has_lora_layers(model)
+        )
+
+        self.logger.debug("Gathering weights for weight checkpoint")
         start_time = time.perf_counter()
-        state_dict = gather_weights_on_master(model, self.world.is_master, dtype=torch.bfloat16)
-        self.logger.debug(f"Gathered weights on master rank in {time.perf_counter() - start_time:.2f} seconds")
+        if save_parallel:
+            state_dict = gather_weights_parallel(model, dtype=torch.bfloat16)
+        else:
+            state_dict = gather_weights_on_master(model, self.world.is_master, dtype=torch.bfloat16)
+        self.logger.debug(f"Gathered weights in {time.perf_counter() - start_time:.2f} seconds")
 
         # Remove tied weight keys to match original model format
         if getattr(model.config, "tie_word_embeddings", False):
@@ -464,24 +480,21 @@ class WeightCheckpointManager:
         else:
             lora_state_dict = None
 
-        # Convert to HF hub format if needed
-        if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
-            self.logger.debug("Converting PrimeRL format to HF format for weight checkpoint")
+        self.logger.debug("Converting to HF hub format for weight checkpoint")
+        start_time = time.perf_counter()
+        state_dict = convert_state_dict_to_hf(model, state_dict)
+        self.logger.debug(f"Converted to HF hub format in {time.perf_counter() - start_time:.2f} seconds")
+
+        if save_parallel:
             start_time = time.perf_counter()
-            model.convert_to_hf(state_dict)
-            self.logger.debug(
-                f"Converted PrimeRL format to HF format in {time.perf_counter() - start_time:.2f} seconds"
-            )
+            save_state_dict_parallel(state_dict, step_path)
+            if self.world.is_master:
+                self._save_model_assets(step_path, model, tokenizer, processor)
+                self.logger.debug(
+                    f"Saved weight checkpoint to {step_path} in {time.perf_counter() - start_time:.2f} seconds"
+                )
         else:
-            from transformers.core_model_loading import revert_weight_conversion
-
-            self.logger.debug("Reverting transformers internal format to HF hub format for weight checkpoint")
-            start_time = time.perf_counter()
-            state_dict = revert_weight_conversion(model, state_dict)
-            self.logger.debug(f"Reverted to HF hub format in {time.perf_counter() - start_time:.2f} seconds")
-
-        # Save weight checkpoint on master rank
-        self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer, processor)
+            self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer, processor)
         self.mark_stable(step)
         bisect.insort(self.ckpt_steps, step)
 
