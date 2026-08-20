@@ -3,7 +3,6 @@ from typing import Callable
 
 import pytest
 
-from prime_rl.utils.weights import load_state_dict
 from tests.conftest import ProcessResult
 from tests.utils import check_loss_goes_down, strip_escape_codes
 
@@ -18,41 +17,6 @@ def run_dir(output_dir: Path) -> Path:
 
 
 TIMEOUT = 300  # 5 minutes
-
-
-def convert_adapter(run_process: Callable[..., ProcessResult], run_dir: Path, step: int) -> Path:
-    """Convert a LoRA DCP checkpoint into a PEFT adapter via scripts/dcp_to_hf.py."""
-    adapter_dir = run_dir / "weights_hf" / f"step_{step}"
-    convert = run_process(
-        [
-            "uv",
-            "run",
-            "torchrun",
-            "--nproc-per-node",
-            "2",
-            "scripts/dcp_to_hf.py",
-            "--model.name",
-            "PrimeIntellect/Qwen3-0.6B",
-            "--model.lora.rank",
-            "8",
-            "--ckpt-dir",
-            (run_dir / "checkpoints" / f"step_{step}" / "trainer").as_posix(),
-            "--output-dir",
-            adapter_dir.as_posix(),
-        ],
-        timeout=TIMEOUT,
-    )
-    assert convert.returncode == 0, f"dcp_to_hf failed for step {step} ({convert})"
-    return adapter_dir
-
-
-def assert_adapter_checkpoint(adapter_dir: Path) -> None:
-    assert (adapter_dir / "adapter_config.json").exists()
-    state_dict = load_state_dict(adapter_dir)
-    assert state_dict
-    assert all(".0.weight" not in key for key in state_dict)
-    assert any(key.endswith("lora_A.weight") for key in state_dict)
-    assert all(key.startswith("base_model.model.") for key in state_dict)
 
 
 @pytest.fixture(scope="module")
@@ -136,14 +100,6 @@ def test_loss_goes_down(sft_lora_process: ProcessResult, run_dir: Path):
     check_loss_goes_down(trainer_stdout)
 
 
-def test_adapter_checkpoint_written(
-    sft_lora_process: ProcessResult, run_process: Callable[..., ProcessResult], run_dir: Path
-):
-    """Tests that the DCP checkpoint converts to a valid PEFT-compatible adapter."""
-    adapter_dir = convert_adapter(run_process, run_dir, step=5)
-    assert_adapter_checkpoint(adapter_dir)
-
-
 def test_no_error_resume(sft_lora_resume_process: ProcessResult):
     """Tests that the SFT LoRA resume process does not fail."""
     assert sft_lora_resume_process.returncode == 0, f"Process has non-zero return code ({sft_lora_resume_process})"
@@ -156,11 +112,3 @@ def test_loss_goes_down_resume(sft_lora_resume_process: ProcessResult, run_dir: 
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_loss_goes_down(trainer_stdout)
-
-
-def test_adapter_checkpoint_written_resume(
-    sft_lora_resume_process: ProcessResult, run_process: Callable[..., ProcessResult], run_dir: Path
-):
-    """Tests that the resumed run's DCP checkpoint converts to a valid PEFT-compatible adapter."""
-    adapter_dir = convert_adapter(run_process, run_dir, step=10)
-    assert_adapter_checkpoint(adapter_dir)

@@ -60,13 +60,7 @@ uv run torchrun \
   --monitors.wandb.name ...
 ```
 
-This should write a DCP checkpoint in `outputs/sft/checkpoints/step_100`. Convert it to HF format and upload it to HF to be able to use it as the base model for RL.
-
-```bash
-uv run torchrun --nproc-per-node 1 scripts/dcp_to_hf.py \
-  --model.name Qwen/Qwen3-0.6B --ckpt-dir outputs/sft/checkpoints/step_100/trainer --output-dir outputs/sft/weights_hf/step_100
-uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-SFT outputs/sft/weights_hf/step_100
-```
+This should write a DCP checkpoint in `outputs/sft/checkpoints/step_100`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT).
 
@@ -85,13 +79,7 @@ uv run rl @ examples/basic/reverse-text/rl.toml \
   --monitors.wandb.name ...
 ```
 
-This will write a DCP checkpoint in `outputs/rl/checkpoints/step_20`. As before, let's convert and upload it to HF.
-
-```bash
-uv run torchrun --nproc-per-node 1 scripts/dcp_to_hf.py \
-  --model.name <user>/Qwen3-0.6B-Reverse-Text-SFT --ckpt-dir outputs/rl/checkpoints/step_20/trainer --output-dir outputs/rl/weights_hf/step_20
-uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-RL outputs/rl/weights_hf/step_20
-```
+This will write a DCP checkpoint in `outputs/rl/checkpoints/step_20`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL).
 
@@ -139,18 +127,6 @@ Exec into the trainer pod and run SFT:
 kubectl exec -it my-exp-trainer-0 -- bash
 uv run sft @ /app/examples/basic/reverse-text/sft.toml --output-dir /data/outputs --run.name sft
 # This will save DCP checkpoints to /data/outputs/sft/checkpoints/step_100
-```
-
-Upload the checkpoint to HuggingFace or use it directly from shared storage:
-
-```bash
-# Option 1: Upload to HuggingFace (from within the pod)
-uv run torchrun --nproc-per-node 1 scripts/dcp_to_hf.py \
-  --model.name Qwen/Qwen3-0.6B --ckpt-dir /data/outputs/sft/checkpoints/step_100/trainer --output-dir /data/outputs/sft/weights_hf/step_100
-uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-SFT /data/outputs/sft/weights_hf/step_100
-
-# Option 2: Use local checkpoint path in RL config
-# Update the model.name in the RL configs to point to /data/outputs/sft/weights_hf/step_100
 ```
 
 ### Step 3: Deploy RL Training

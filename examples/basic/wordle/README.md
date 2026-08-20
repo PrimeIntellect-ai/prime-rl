@@ -62,13 +62,7 @@ uv run torchrun \
   --monitors.wandb.name ... 
 ```
 
-After training completes, you will find the final DCP checkpoint in `outputs/sft/checkpoints/step_20`. Convert it to HF format and upload it to HF to be able to use it as the base model for RL we will do in the next section.
-
-```bash
-uv run torchrun --nproc-per-node 1 scripts/dcp_to_hf.py \
-  --model.name Qwen/Qwen3-1.7B --ckpt-dir outputs/sft/checkpoints/step_20/trainer --output-dir outputs/sft/weights_hf/step_20
-uv run hf upload <user>/Qwen3-1.7B-Wordle-SFT outputs/sft/weights_hf/step_20
-```
+After training completes, you will find the final DCP checkpoint in `outputs/sft/checkpoints/step_20`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-1.7B-Wordle-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-SFT).
 
@@ -88,13 +82,7 @@ uv run rl @ examples/basic/wordle/rl.toml \
   --monitors.wandb.name ... 
 ```
 
-This will write a DCP checkpoint in `outputs/rl/checkpoints/step_100`. As before, let's convert and upload it to HF.
-
-```bash
-uv run torchrun --nproc-per-node 1 scripts/dcp_to_hf.py \
-  --model.name <user>/Qwen3-1.7B-Wordle-SFT --ckpt-dir outputs/rl/checkpoints/step_100/trainer --output-dir outputs/rl/weights_hf/step_100
-uv run hf upload <user>/Qwen3-1.7B-Wordle-RL outputs/rl/weights_hf/step_100
-```
+This will write a DCP checkpoint in `outputs/rl/checkpoints/step_100`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-1.7B-Wordle-RL`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-RL).
 

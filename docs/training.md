@@ -303,20 +303,6 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
-### Serving Checkpoints
-
-The trainer saves only DCP checkpoints. Convert one into HF-format weights offline (more ranks = faster gathers and writes):
-
-```bash
-uv run torchrun --nproc-per-node 8 scripts/dcp_to_hf.py \
-    --model.name <hf-id-or-path> \
-    --ckpt-dir outputs/<run_name>/checkpoints/step_100/trainer \
-    --output-dir outputs/<run_name>/weights_hf/step_100
-uv run hf upload <user>/<model>-RL outputs/<run_name>/weights_hf/step_100
-```
-
-`--model.*` must match the run that wrote the checkpoint. For LoRA runs, pass the run's `--model.lora.*` config to export the raw PEFT adapter instead of merged weights — servable through a `/load_lora_adapter` call.
-
 ## Observability
 
 ### Log Files

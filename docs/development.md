@@ -112,13 +112,6 @@ uv run sft \
   --ckpt
 ```
 
-Convert the DCP checkpoint to HF format to reuse it as a base model:
-
-```bash
-uv run torchrun --nproc-per-node 1 scripts/dcp_to_hf.py \
-  --model.name ./mini-glm-moe --ckpt-dir outputs/<run_name>/checkpoints/step_200/trainer --output-dir ./mini-glm-moe-sft
-```
-
 Then run the full RL stack on reverse-text:
 
 ```bash
