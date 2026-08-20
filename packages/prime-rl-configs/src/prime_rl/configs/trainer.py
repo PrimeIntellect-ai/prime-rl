@@ -441,12 +441,6 @@ OptimizerConfig: TypeAlias = Annotated[
 
 
 class WeightCheckpointConfig(BaseConfig):
-    save_sharded: bool = True
-    """Save the weight checkpoint in sharded format."""
-
-    save_format: Literal["safetensors", "torch"] = "safetensors"
-    """Weight checkpoint serialization format."""
-
     save_adapter_separately: bool = False
     """Save LoRA adapters separately before merging into full model weights."""
 
@@ -546,12 +540,6 @@ class BaseWeightBroadcastConfig(BaseConfig):
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
-
-    save_sharded: bool = True
-    """Save the weight checkpoint in sharded format."""
-
-    save_format: Literal["safetensors", "torch"] = "safetensors"
-    """Weight checkpoint serialization format."""
 
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):

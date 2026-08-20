@@ -105,7 +105,7 @@ def _save(impl: str, model, save_dir: Path, fsync: bool, is_master: bool) -> dic
     start = time.perf_counter()
     if impl == "master":
         if is_master:
-            save_state_dict(state_dict, save_dir, save_format="safetensors", save_sharded=True)
+            save_state_dict(state_dict, save_dir)
     else:
         save_state_dict_parallel(state_dict, save_dir)
     times["write"] = _barrier_timed(start)

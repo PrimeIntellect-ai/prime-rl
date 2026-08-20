@@ -421,15 +421,13 @@ class WeightCheckpointManager:
                 warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
                 # Save weights
-                save_state_dict(state_dict, path, self.config.save_format, self.config.save_sharded)
+                save_state_dict(state_dict, path)
                 self._save_model_assets(path, model, tokenizer, processor)
 
             if lora_state_dict is not None:
                 adapter_path = path / "lora_adapters"
                 adapter_path.mkdir(parents=True, exist_ok=True)
-                save_state_dict(
-                    lora_state_dict, adapter_path, self.config.save_format, save_sharded=False, adapter=True
-                )
+                save_state_dict(lora_state_dict, adapter_path, save_sharded=False, adapter=True)
                 if self.lora_config:
                     save_lora_config(
                         model,
@@ -455,9 +453,7 @@ class WeightCheckpointManager:
             step_path.mkdir(parents=True, exist_ok=True)
         torch.distributed.barrier()
 
-        save_parallel = (
-            self.config.save_sharded and self.config.save_format == "safetensors" and not has_lora_layers(model)
-        )
+        save_parallel = not has_lora_layers(model)
 
         self.logger.debug("Gathering weights for weight checkpoint")
         start_time = time.perf_counter()
