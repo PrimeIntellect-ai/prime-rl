@@ -23,7 +23,7 @@ def test_dynamo_nccl_broadcast_uses_main_vllm_api_and_commits_version_explicitly
     broadcaster.engine = NoVersionArgumentEngine()
     broadcaster.client = Mock()
     model = nn.Linear(2, 2)
-    monkeypatch.setattr("prime_rl.trainer.rl.broadcast.dynamo_nccl.sync_wait_for_path", Mock())
+    monkeypatch.setattr("prime_rl.transports.weights.dynamo_nccl.sync_wait_for_path", Mock())
 
     broadcaster.broadcast_weights(model, step=7)
 
@@ -63,9 +63,9 @@ def test_dynamo_nccl_broadcaster_constructs_against_pinned_vllm_main(tmp_path, m
     )
     trainer_engine = Mock()
     trainer_init = Mock(return_value=trainer_engine)
-    monkeypatch.setattr("prime_rl.trainer.rl.broadcast.dynamo_nccl._discover", lambda _: (worker,))
+    monkeypatch.setattr("prime_rl.transports.weights.dynamo_nccl._discover", lambda _: (worker,))
     monkeypatch.setattr(
-        "prime_rl.trainer.rl.broadcast.dynamo_nccl.get_world",
+        "prime_rl.transports.weights.dynamo_nccl.get_world",
         lambda: SimpleNamespace(rank=0, is_master=True, world_size=1),
     )
     monkeypatch.setattr("prime_rl.utils.nccl.disable_nccl_p2p_if_unavailable", Mock())
