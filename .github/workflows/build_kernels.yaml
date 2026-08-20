@@ -33,6 +33,11 @@ on:
         description: "Ref to build the kernels from. Empty = the ref the workflow was started on."
         required: false
         type: string
+      overwrite:
+        description: "Replace wheels that already exist on a published release. Breaks every uv.lock pinning their hash — re-lock in the same motion."
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       release_tag:
@@ -148,8 +153,19 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.release_tag }}
         run: |
-          gh release upload "$TAG" dist/*.whl --clobber
-          # The `[tool.uv.sources]` pin has to name the wheel exactly, ABI suffix and all.
           WHEEL=$(basename dist/*.whl)
+          # Replacing an asset on a published release breaks every uv.lock that pins
+          # its hash (kernel builds are not byte-reproducible), so overwriting is
+          # opt-in. Drafts are safe: nothing can pin their assets yet.
+          IS_DRAFT=$(gh release view "$TAG" --json isDraft -q .isDraft)
+          EXISTS=$(gh release view "$TAG" --json assets -q '.assets[].name' | grep -Fxc "$WHEEL" || true)
+          if [ "$IS_DRAFT" != "true" ] && [ "$EXISTS" != "0" ] && [ "${{ inputs.overwrite }}" != "true" ]; then
+            echo "::error::$WHEEL already exists on published release $TAG. Re-run with overwrite=true only if uv.lock is re-locked against the new wheel in the same motion." >&2
+            exit 1
+          fi
+          gh release upload "$TAG" dist/*.whl --clobber
+          # The `[tool.uv.sources]` pin has to name the wheel exactly, ABI suffix and all,
+          # and uv.lock pins the sha256 printed here.
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${WHEEL}"
           echo "\`{ url = \"$URL\", marker = \"platform_machine == '${{ matrix.arch }}'\" },\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`sha256:$(sha256sum dist/*.whl | cut -d' ' -f1)\`" >> "$GITHUB_STEP_SUMMARY"

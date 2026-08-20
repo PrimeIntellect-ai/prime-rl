@@ -139,6 +139,12 @@ release always carries its wheels. To backfill a release that predates this, dis
 gh workflow run build_kernels.yaml -f release_tag=vX.Y.Z -f ref=vX.Y.Z
 ```
 
+The upload refuses to replace a wheel that already exists on a **published** release:
+kernel builds are not byte-reproducible, so a re-upload changes the asset's sha256 and
+breaks every `uv.lock` that pins it. Pass `-f overwrite=true` only for a deliberate
+replacement, and re-lock `uv.lock` against the new wheel (the job summary prints its
+sha256) in the same motion. Draft releases are always safe to re-upload to.
+
 The wheel version carries the ABI it was built against, e.g.
 `prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl` — it imports only under
 that exact torch, so the build installs the torch pinned in `uv.lock`, not the newest one.
