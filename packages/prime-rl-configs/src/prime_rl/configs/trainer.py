@@ -440,20 +440,12 @@ OptimizerConfig: TypeAlias = Annotated[
 ]
 
 
-class WeightCheckpointConfig(BaseConfig):
-    """Enables HF-compatible weight checkpoints. The layout is inferred from the
-    run: full runs save sharded safetensors, LoRA runs save the adapter only."""
-
-
 class CheckpointConfig(BaseConfig):
     output_dir: Path | None = None
     """Override directory for checkpoints and weights. If set, checkpoints and weight snapshots are written here instead of under the trainer ``output_dir`` — useful for writing large checkpoints to a separate storage volume."""
 
     interval: int | None = Field(None, ge=1)
     """Interval at which to save the training checkpoint. If None, only checkpoints at the end of training."""
-
-    weights: WeightCheckpointConfig | None = WeightCheckpointConfig()
-    """Weight-checkpoint sub-configuration. If None, no HF-compatible weight checkpoints are written."""
 
     skip_gather_master_weights: bool = False
     """Skip gathering and saving HF-compatible weight checkpoints. Useful for large models where the gather is expensive and only DCP checkpoints are needed."""

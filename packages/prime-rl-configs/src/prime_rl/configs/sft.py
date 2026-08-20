@@ -353,10 +353,9 @@ class SFTConfig(BaseConfig):
         # The trainer's HF weight checkpoints are how inference picks up new policies.
         if self.ckpt is None:
             self.ckpt = CheckpointConfig()
-        if self.ckpt.weights is None or self.ckpt.skip_gather_master_weights:
+        if self.ckpt.skip_gather_master_weights:
             raise ValueError(
-                "Online evals require HF weight checkpoints. Enable ckpt.weights and "
-                "disable ckpt.skip_gather_master_weights."
+                "Online evals require HF weight checkpoints — disable ckpt.skip_gather_master_weights."
             )
 
         if self.ckpt.keep_last is not None or self.ckpt.keep_interval is not None:

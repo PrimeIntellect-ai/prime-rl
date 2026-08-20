@@ -21,7 +21,7 @@ from transformers.processing_utils import ProcessorMixin
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.shared import ResumeConfig
-from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
+from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig
 from prime_rl.trainer.lora import get_lora_state, has_lora_layers, save_lora_config
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.weights import (
@@ -328,7 +328,6 @@ class WeightCheckpointManager:
     def __init__(
         self,
         output_dir: Path,
-        config: WeightCheckpointConfig,
         lora_config: LoRAConfig | None = None,
         save_async: bool = False,
         keep_last: int | None = None,
@@ -336,7 +335,6 @@ class WeightCheckpointManager:
         resume: ResumeConfig | None = None,
     ):
         self.weights_dir = get_weights_dir(output_dir)
-        self.config = config
         self.lora_config = lora_config
         self.logger = get_logger()
         self.world = get_world()
@@ -496,10 +494,9 @@ def setup_ckpt_managers(
     ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
     ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
     ckpt_manager = CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume)
-    if ckpt_config and ckpt_config.weights and not ckpt_config.skip_gather_master_weights:
+    if ckpt_config and not ckpt_config.skip_gather_master_weights:
         weight_ckpt_manager = WeightCheckpointManager(
             ckpt_output_dir,
-            ckpt_config.weights,
             lora_config=lora_config,
             keep_last=ckpt_config.keep_last,
             keep_interval=ckpt_config.keep_interval,
