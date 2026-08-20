@@ -8,12 +8,12 @@ from prime_rl.configs.shared import (
     BaseModelConfig,
     EnvVars,
     FileMonitorConfig,
+    FileSystemTransportConfig,
     HeartbeatConfig,
     MetricsServerConfig,
     TrainerLogConfig,
     TransportConfig,
     WandbConfig,
-    ZMQTransportConfig,
 )
 from prime_rl.utils.config import BaseConfig
 
@@ -585,7 +585,9 @@ class TrainerConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to broadcast updated weights from trainer to inference."""
 
-    rollout_transport: TransportConfig = ZMQTransportConfig()
+    # Hosted (hrl) default: the trainer StatefulSet and the per-run orchestrator pods
+    # only share the /data PVC — ZMQ's localhost endpoints never cross pods.
+    rollout_transport: TransportConfig = FileSystemTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
     log: TrainerLogConfig = TrainerLogConfig()

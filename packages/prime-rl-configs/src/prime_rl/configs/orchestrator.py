@@ -19,12 +19,12 @@ from prime_rl.configs.shared import (
     ClientConfig,
     EnvVars,
     FileMonitorConfig,
+    FileSystemTransportConfig,
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
     TransportConfig,
     WandbWithExtrasConfig,
-    ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig
@@ -523,7 +523,9 @@ class OrchestratorConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to receive updated weights from the trainer."""
 
-    rollout_transport: TransportConfig = ZMQTransportConfig()
+    # Hosted (hrl) default: the trainer StatefulSet and the per-run orchestrator pods
+    # only share the /data PVC — ZMQ's localhost endpoints never cross pods.
+    rollout_transport: TransportConfig = FileSystemTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
     output_dir: Path = Path("outputs/run_default")
@@ -574,7 +576,6 @@ class OrchestratorConfig(BaseConfig):
     def _migrate_legacy_keys(cls, data: Any) -> Any:
         """Translate the legacy config shape still emitted by hosted training's control plane."""
         return migrate_legacy_orchestrator_config(data)
-
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
