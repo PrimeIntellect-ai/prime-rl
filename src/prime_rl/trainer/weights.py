@@ -187,6 +187,12 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
                 if buffer is None or buffer.shape != value.shape or buffer.dtype != value.dtype:
                     buffer = torch.empty_like(value, device="cpu", pin_memory=True)
                     _staging_buffers[fqn] = buffer
+                # Dropping the GPU temp before this copy completes is safe only
+                # because everything stays on the current stream: the caching
+                # allocator reuses freed blocks per-stream, so later gathers
+                # writing into recycled storage are ordered after this read. If
+                # these copies ever move to a side stream, hold the refs until
+                # the synchronize (or use Tensor.record_stream).
                 buffer.copy_(value, non_blocking=True)
                 partial[fqn] = buffer
             else:
