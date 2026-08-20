@@ -52,7 +52,7 @@ class FileMonitor(Monitor):
             opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
             with open(path, "ab") as f:
                 for episode in episodes:
-                    f.write(orjson.dumps(episode.model_dump(mode="json"), default=str, option=opts))
+                    f.write(orjson.dumps(episode.to_record(), default=str, option=opts))
 
         # Record serialization is heavy pure-Python work; keep it off the event loop.
         # Awaited (not fire-and-forget) so appends to one file never interleave.
