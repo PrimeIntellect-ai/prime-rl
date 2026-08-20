@@ -567,11 +567,6 @@ def get_model(
 
     is_vlm_training = config.vlm is not None
 
-    if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
-        _patch_qwen3_5_text_position_ids()
-        _patch_qwen3_5_moe_conversion_mapping()
-        _patch_qwen3_5_linear_attn_varlen()
-
     model_config = cast(
         PretrainedConfig,
         AutoConfig.from_pretrained(
@@ -602,8 +597,8 @@ def get_model(
 
         _hub_kernels._kernels_enabled = True
 
-    # Fallback Qwen3.5 patch detection from loaded config model_type
-    if getattr(model_config, "model_type", "").startswith("qwen3_5_moe"):
+    # Qwen3.6 and Qwen3.8 reuse the Qwen3.5 architecture, so match on model_type, not repo name.
+    if getattr(model_config, "model_type", "").startswith("qwen3_5"):
         _patch_qwen3_5_text_position_ids()
         _patch_qwen3_5_moe_conversion_mapping()
         _patch_qwen3_5_linear_attn_varlen()
