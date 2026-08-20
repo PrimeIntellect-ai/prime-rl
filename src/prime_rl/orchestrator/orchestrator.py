@@ -77,7 +77,6 @@ from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transports.rollouts import setup_micro_batch_sender
 from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
-from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.utils import (
@@ -278,16 +277,14 @@ class Orchestrator:
 
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
-            await init_nccl_broadcast(
-                self.policy_inference.admin_clients,
+            await self.policy_inference.init_nccl_broadcast(
                 config.weight_broadcast.host,
                 config.weight_broadcast.port,
                 config.weight_broadcast.timeout,
                 inference_world_size=config.weight_broadcast.inference_world_size,
             )
         elif config.weight_broadcast.type == "nixl":
-            await init_nixl_broadcast(
-                self.policy_inference.admin_clients,
+            await self.policy_inference.init_nixl_broadcast(
                 config.weight_broadcast.host,
                 config.weight_broadcast.port,
                 config.weight_broadcast.timeout,

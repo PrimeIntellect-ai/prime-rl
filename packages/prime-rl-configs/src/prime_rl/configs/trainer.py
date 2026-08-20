@@ -7,6 +7,7 @@ from pydantic import BeforeValidator, Field, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    DynamoConfig,
     EnvVars,
     HeartbeatConfig,
     MetricsServerConfig,
@@ -569,11 +570,20 @@ class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Number of inference workers."""
 
 
+class DynamoWeightBroadcastConfig(DynamoConfig):
+    model_name: str
+    headers: dict[str, str] = Field(default_factory=dict)
+    headers_from_env: dict[str, str] = Field(default_factory=dict)
+    api_key_var: str = "VLLM_API_KEY"
+
+
 class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     type: Literal["nccl"] = "nccl"
 
     port: int = 29501
     """Port for the NCCL broadcast rendezvous."""
+
+    dynamo: DynamoWeightBroadcastConfig | None = None
 
 
 class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):

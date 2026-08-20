@@ -431,11 +431,12 @@ class RLConfig(BaseConfig):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference.
 
         Defaults to NCCL broadcast when no ``weight_broadcast`` is configured. Falls back to
-        filesystem when LoRA is enabled (not yet supported by in-memory transfer) or when no
-        inference server is configured.
+        filesystem when LoRA is enabled or when neither managed nor external Dynamo inference
+        is configured.
         """
+        client = self.orchestrator.model.client
         if self.weight_broadcast is None:
-            if self.trainer.model.lora is not None or self.inference is None:
+            if self.trainer.model.lora is not None or (self.inference is None and not client.is_dynamo()):
                 self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
@@ -445,11 +446,22 @@ class RLConfig(BaseConfig):
                 "Set weight_broadcast.type = 'filesystem'."
             )
         if self.weight_broadcast.type in ("nccl", "nixl"):
-            inference_world_size = (
-                self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
-                if self.inference
-                else 1
-            )
+            if (
+                client.is_dynamo()
+                and self.inference is None
+                and self.deployment.type == "single_node"
+                and self.deployment.num_infer_gpus < 1
+            ):
+                raise ValueError(
+                    "External Dynamo weight broadcast requires deployment.num_infer_gpus >= 1 "
+                    "to declare the static inference capacity."
+                )
+            if self.inference is not None:
+                inference_world_size = self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
+            elif client.is_dynamo() and self.deployment.type == "single_node":
+                inference_world_size = self.deployment.num_infer_gpus
+            else:
+                inference_world_size = 1
             common_config = dict(
                 host=self.weight_broadcast.host,
                 port=self.weight_broadcast.port,
@@ -458,13 +470,26 @@ class RLConfig(BaseConfig):
             )
             if self.weight_broadcast.type == "nccl":
                 transport_config = {}
+                trainer_config = common_config
+                if client.dynamo is not None:
+                    trainer_config = {
+                        **common_config,
+                        "dynamo": {
+                            "discovery_url": client.dynamo.discovery_url,
+                            "model_name": self.trainer.model.name,
+                            "headers": client.headers,
+                            "headers_from_env": client.headers_from_env,
+                            "api_key_var": client.api_key_var,
+                        },
+                    }
                 trainer_config_type = TrainerNCCLWeightBroadcastConfig
                 orchestrator_config_type = OrchestratorNCCLWeightBroadcastConfig
             else:
                 transport_config = dict(session_id=self.weight_broadcast.session_id)
+                trainer_config = common_config
                 trainer_config_type = TrainerNIXLWeightBroadcastConfig
                 orchestrator_config_type = OrchestratorNIXLWeightBroadcastConfig
-            self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
+            self.trainer.weight_broadcast = trainer_config_type(**trainer_config, **transport_config)
             self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
         elif self.weight_broadcast.type == "filesystem":
             self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
