@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 import torch.nn as nn
 
-from prime_rl.trainer.rl.broadcast.dynamo_nccl import DynamoNCCLWeightBroadcast
+from prime_rl.transports.weights.dynamo_nccl import DynamoNCCLWeightBroadcast
 from prime_rl.utils.dynamo import DynamoWorker
 
 
