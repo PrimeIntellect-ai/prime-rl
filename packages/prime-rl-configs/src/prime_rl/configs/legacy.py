@@ -1,19 +1,20 @@
-"""Translation of pre-``algo`` config keys into the current shape.
+"""Translation of legacy config keys into the current shape.
 
-Hosted training's control plane emits the config that predates the algorithm
-abstraction: a top-level ``training_mode`` with a sibling ``[teacher]`` block,
-per-env ``advantage``, the policy client at ``[client]``, and the env-server
-knobs that moved (``multiplex``, ``max_retries``). This module maps that shape
-onto ``[algo]``, ``[model.client]`` and ``[interception]`` at validation time so
-a control plane that hasn't been updated yet keeps working against a current
-image.
+Hosted training's control plane emits two generations of legacy keys. The
+pre-``algo`` run shape: a top-level ``training_mode`` with a sibling
+``[teacher]`` block, per-env ``advantage``, and the policy client at
+``[client]``. And the pre-0.3.0 flat env shape: ``[[train.env]]`` /
+``[[eval.env]]`` entries whose verifiers knobs (``taskset``, ``harness``,
+``pool``, ``timeout``, token caps, the v0 ``id``/``args``) sat flat on the
+entry instead of composing the ``env``/``serve``/``legacy`` blocks. This module
+maps both onto the current shape at validation time so a control plane that
+hasn't been updated yet keeps working against a current image.
 
 Split by scope, because an env block is validated through two different roots:
-the orchestrator's ``[[train.env]]`` / ``[[eval.env]]`` entries *and* the
-standalone env server's ``[env]`` (``EnvServerConfig.env``). Env-scoped keys are
-migrated on ``EnvConfig`` itself so both roots get them; hanging them off
-``OrchestratorConfig`` would translate them for the orchestrator and leave the
-env server crashing on the same input.
+the orchestrator's ``[[train.source]]`` / ``[[eval.source]]`` entries *and* the
+standalone env server's config. Source-scoped keys are migrated on the source
+``EnvConfig`` itself; the env server re-homes its old nested ``[env]`` block
+through the same translation.
 
 Temporary. Delete this module and its validators once every caller emits the
 current shape directly.
@@ -27,6 +28,26 @@ _TRAINING_MODE_TO_ALGO_TYPE = {"rl": "grpo", "opd": "opd", "sft": "sft"}
 
 # The `default` advantage was GRPO's group-mean baseline; `custom` has no successor.
 _ADVANTAGE_TYPE_TO_ALGO_TYPE = {"default": "grpo"}
+
+# Flat per-run caps that moved onto the env's agent seat.
+_FLAT_AGENT_KEYS = ("max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens")
+
+# Keys that only ever existed on the flat pre-0.3.0 env shape — any of them marks an
+# old-shaped block. ``id``/``taskset``/``timeout``/``retries`` are ambiguous (the
+# composed verifiers env block has them too), so they don't qualify on their own.
+_FLAT_ENV_MARKERS = (
+    "name",
+    "harness",
+    "pool",
+    "num_workers",
+    "address",
+    "multiplex",
+    "max_retries",
+    "args",
+    "extra_env_kwargs",
+    "ratio",
+    *_FLAT_AGENT_KEYS,
+)
 
 
 def _deprecated(old: str, new: str) -> None:
@@ -122,27 +143,6 @@ def _migrate_advantage(env: dict[str, Any]) -> None:
     env["algo"] = {"type": _ADVANTAGE_TYPE_TO_ALGO_TYPE[advantage_type], **advantage}
 
 
-def _migrate_multiplex(env: dict[str, Any]) -> None:
-    """An env's ``multiplex`` -> ``interception.multiplex``, which owns rollouts-per-server now.
-
-    Not the identically named ``pool.multiplex``, which sizes env-server workers instead.
-    """
-    multiplex = env.pop("multiplex", None)
-    if multiplex is None:
-        return
-
-    _deprecated("multiplex", "interception.multiplex")
-    interception = env.setdefault("interception", {})
-    if not isinstance(interception, dict):
-        raise ValueError(f"'interception' must be a table, got {type(interception).__name__}")
-    if interception.setdefault("type", "elastic") != "elastic":
-        raise ValueError(
-            "'multiplex' only applies to the elastic interception pool, but "
-            f"'interception.type' is {interception['type']!r}"
-        )
-    interception.setdefault("multiplex", multiplex)
-
-
 def _drop_max_retries(scope: dict[str, Any], path: str) -> None:
     """``max_retries`` never had an effect and is gone; per-env retries live on the env itself."""
     if scope.pop("max_retries", None) is not None:
@@ -172,46 +172,211 @@ def _migrate_client(data: dict[str, Any]) -> None:
         canonical.setdefault(key, value)
 
 
+def _migrate_max_tokens(sampling: Any, path: str) -> None:
+    """A sampling table's ``max_tokens`` -> ``max_completion_tokens`` (which wins when both are set)."""
+    if isinstance(sampling, dict) and "max_tokens" in sampling:
+        _deprecated(f"{path}.max_tokens", f"{path}.max_completion_tokens")
+        sampling.setdefault("max_completion_tokens", sampling.pop("max_tokens"))
+
+
+def _migrate_rollouts_per_example(scope: dict[str, Any], path: str) -> None:
+    """``rollouts_per_example`` -> ``group_size`` (which wins when both are set)."""
+    if "rollouts_per_example" in scope:
+        _deprecated(f"{path}.rollouts_per_example", f"{path}.group_size")
+        scope.setdefault("group_size", scope.pop("rollouts_per_example"))
+
+
+def _sub_table(data: dict[str, Any], block: str) -> dict[str, Any]:
+    sub = data.setdefault(block, {})
+    if not isinstance(sub, dict):
+        raise ValueError(f"'{block}' must be a table, got {type(sub).__name__}")
+    return sub
+
+
+def _migrate_multiplex(data: dict[str, Any]) -> None:
+    """An env's flat ``multiplex`` -> ``env.interception.multiplex``, which owns rollouts-per-server.
+
+    Not the identically named ``serve.pool.multiplex``, which sizes env-server workers instead.
+    """
+    multiplex = data.pop("multiplex", None)
+    if multiplex is None:
+        return
+
+    _deprecated("multiplex", "env.interception.multiplex")
+    interception = _sub_table(_sub_table(data, "env"), "interception")
+    if interception.setdefault("type", "elastic") != "elastic":
+        raise ValueError(
+            "'multiplex' only applies to the elastic interception pool, but "
+            f"'interception.type' is {interception['type']!r}"
+        )
+    interception.setdefault("multiplex", multiplex)
+
+
+def _migrate_flat_env_keys(data: dict[str, Any]) -> None:
+    """Move the flat pre-0.3.0 env keys into the composed blocks, in place: what runs
+    onto ``env`` (per-run caps onto its ``agent`` seat), hosting onto ``serve``, the
+    classic v0 fields onto ``legacy``. An explicitly set composed key wins."""
+    if "taskset" in data:
+        _deprecated("taskset", "env.taskset")
+        _sub_table(data, "env").setdefault("taskset", data.pop("taskset"))
+    if "harness" in data:
+        _deprecated("harness", "env.agent.harness")
+        harness = data.pop("harness")
+        agent = _sub_table(_sub_table(data, "env"), "agent")
+        # The runtime moved off the harness onto the agent seat that provisions it.
+        if isinstance(harness, dict) and "runtime" in harness:
+            agent.setdefault("runtime", harness.pop("runtime"))
+        agent.setdefault("harness", harness)
+    for key in _FLAT_AGENT_KEYS:
+        if key in data:
+            _deprecated(key, f"env.agent.{key}")
+            _sub_table(_sub_table(data, "env"), "agent").setdefault(key, data.pop(key))
+    if "timeout" in data:
+        # The flat timeout's stages (setup/rollout/finalize/scoring) bound the agent's
+        # run; the composed env-level timeout has different fields (episode/finalize).
+        _deprecated("timeout", "env.agent.timeout")
+        _sub_table(_sub_table(data, "env"), "agent").setdefault("timeout", data.pop("timeout"))
+    if "retries" in data:
+        _deprecated("retries", "env.retries")
+        _sub_table(data, "env").setdefault("retries", data.pop("retries"))
+    _migrate_multiplex(data)
+    if "pool" in data:
+        _deprecated("pool", "serve.pool")
+        _sub_table(data, "serve").setdefault("pool", data.pop("pool"))
+    if "num_workers" in data:
+        # An int becomes a fixed static pool, "auto" falls through to the default
+        # elastic pool. An explicit pool always wins.
+        num_workers = data.pop("num_workers")
+        _deprecated("num_workers", "serve.pool")
+        serve = _sub_table(data, "serve")
+        if "pool" not in serve and num_workers != "auto":
+            serve["pool"] = {"type": "static", "num_workers": num_workers}
+    if "address" in data:
+        _deprecated("address", "serve.address")
+        _sub_table(data, "serve").setdefault("address", data.pop("address"))
+    if "args" in data:
+        _deprecated("args", "legacy.args")
+        _sub_table(data, "legacy").setdefault("args", data.pop("args"))
+    if "extra_env_kwargs" in data:
+        _deprecated("extra_env_kwargs", "legacy.extra_env_kwargs")
+        _sub_table(data, "legacy").setdefault("extra_env_kwargs", data.pop("extra_env_kwargs"))
+    if "id" in data:
+        # A flat `id` was the classic (v0) env id, decorative next to a v1 taskset
+        # (the taskset won); the composed shape spells a v1 env pairing `env.id`.
+        env_id = data.pop("id")
+        env = data.get("env")
+        taskset = env.get("taskset") if isinstance(env, dict) else None
+        taskset_id = taskset.get("id") if isinstance(taskset, dict) else getattr(taskset, "id", None)
+        if taskset_id:
+            warnings.warn(
+                f"'id' = {env_id!r} is ignored next to the v1 taskset {taskset_id!r} — the taskset wins, "
+                "as it always has. Drop the 'id' key.",
+                FutureWarning,
+                stacklevel=2,
+            )
+        else:
+            _deprecated("id", "legacy.id")
+            _sub_table(data, "legacy").setdefault("id", env_id)
+
+
 def migrate_legacy_orchestrator_config(data: Any) -> Any:
     """Translate the run-scoped legacy keys in an orchestrator config, in place.
 
     Runs as an ``OrchestratorConfig`` ``mode="before"`` validator, so it sees the
     merged TOML and CLI payload and covers ``model_validate`` callers (the hosted
-    config validator) too. Env-scoped keys are handled by the env configs' own
+    config validator) too. Source-scoped keys are handled by the source configs' own
     validators, which also reach the standalone env server.
     """
     if not isinstance(data, dict):
         return data
     _migrate_algo(data)
     _migrate_client(data)
+    if "env" in data:
+        _deprecated("env", "train.source")
+        train = data.setdefault("train", {})
+        if isinstance(train, dict):
+            train.setdefault("source", data.pop("env"))
+    if "sampling" in data:
+        _deprecated("sampling", "train.sampling")
+        train = data.setdefault("train", {})
+        if isinstance(train, dict):
+            train.setdefault("sampling", data.pop("sampling"))
+    if "max_inflight_rollouts" in data:
+        _deprecated("max_inflight_rollouts", "max_inflight_episodes")
+        data.setdefault("max_inflight_episodes", data.pop("max_inflight_rollouts"))
+    _migrate_rollouts_per_example(data, "orchestrator")
     for scope in ("train", "eval"):
         group = data.get(scope)
         if isinstance(group, dict):
             _drop_max_retries(group, scope)
+            if "env" in group:
+                _deprecated(f"{scope}.env", f"{scope}.source")
+                group.setdefault("source", group.pop("env"))
+            _migrate_max_tokens(group.get("sampling"), f"{scope}.sampling")
+            if scope == "eval":
+                _migrate_rollouts_per_example(group, "eval")
     return data
 
 
 def migrate_legacy_env_config(data: Any) -> Any:
-    """Translate the legacy keys on a single env block, in place.
+    """Translate the legacy keys on a single source entry, in place.
 
-    Runs as an ``EnvConfig`` ``mode="before"`` validator, so it covers every root
-    that owns an env block: the orchestrator's ``[[train.env]]`` / ``[[eval.env]]``
-    entries (including the deprecated top-level ``[[env]]``, which is re-nested
-    before the entries are built) and the standalone env server's ``[env]``.
+    Runs as the source ``EnvConfig`` ``mode="before"`` validator (before the ``env``
+    field is narrowed), so it covers the orchestrator's ``[[train.source]]`` /
+    ``[[eval.source]]`` entries; the standalone env server routes its old nested
+    ``[env]`` block through it via ``migrate_legacy_env_server_config``.
     """
     if not isinstance(data, dict):
         return data
     _drop_max_retries(data, "env")
-    _migrate_multiplex(data)
+    _migrate_rollouts_per_example(data, "env")
+    _migrate_max_tokens(data.get("sampling"), "env.sampling")
+    _migrate_flat_env_keys(data)
+    return data
+
+
+def migrate_legacy_env_server_config(data: Any) -> Any:
+    """Re-home the env server's old source-shaped ``[env]`` block, in place.
+
+    The old entrypoint nested everything under ``[env]``; now ``[env]`` is the
+    verifiers env block with ``[serve]`` and ``[legacy]`` as siblings. A block is
+    old-shaped when it carries a key only the flat shape had, or a bare v0 ``id``
+    with no v1 taskset — hosted's control plane never pairs a v1 env by id.
+    """
+    if not isinstance(data, dict):
+        return data
+    env = data.get("env")
+    if not isinstance(env, dict):
+        return data
+    taskset = env.get("taskset")
+    taskset_id = taskset.get("id") if isinstance(taskset, dict) else None
+    bare_v0_id = "id" in env and not taskset_id and "agent" not in env and "max_concurrent_agents" not in env
+    if not (any(key in env for key in _FLAT_ENV_MARKERS) or bare_v0_id):
+        return data
+    migrate_legacy_env_config(env)
+    # Orchestration-only labels the old env server parsed and ignored.
+    env.pop("name", None)
+    env.pop("ratio", None)
+    for block in ("serve", "legacy"):
+        sub = env.pop(block, None)
+        if isinstance(sub, dict):
+            root = data.setdefault(block, {})
+            if isinstance(root, dict):
+                for key, value in sub.items():
+                    root.setdefault(key, value)
+    inner = env.pop("env", None)
+    if isinstance(inner, dict):
+        for key, value in inner.items():
+            env.setdefault(key, value)
     return data
 
 
 def migrate_legacy_train_env_config(data: Any) -> Any:
-    """Translate a train env's ``advantage``, in place.
+    """Translate a train source's ``advantage``, in place.
 
     Separate from ``migrate_legacy_env_config`` because ``algo`` only exists on
-    train envs — translating an ``advantage`` on an eval env or on the env server
-    would just trade one rejected key for another.
+    train sources — translating an ``advantage`` on an eval source or on the env
+    server would just trade one rejected key for another.
     """
     if not isinstance(data, dict):
         return data

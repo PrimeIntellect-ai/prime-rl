@@ -3,6 +3,7 @@ from pathlib import Path
 import verifiers.v1 as vf
 from pydantic import SerializeAsAny, model_validator
 
+from prime_rl.configs.legacy import migrate_legacy_env_server_config
 from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import BaseConfig
 
@@ -28,8 +29,11 @@ class EnvServerConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def _resolve_env(cls, data):
-        """Narrow ``env`` to the selected env's config class."""
+    def _migrate_and_resolve_env(cls, data):
+        """Re-home the old source-shaped ``[env]`` block hosted training's control plane
+        still emits, then narrow ``env`` to the selected env's config class. One validator
+        so migration always precedes narrowing."""
+        data = migrate_legacy_env_server_config(data)
         return vf.resolve_env_field(data, vf.narrowed_env_annotation(cls))
 
     @property

@@ -196,21 +196,16 @@ def test_env_algo_overrides_top_level():
     reloaded = OrchestratorConfig.model_validate(dumped)
     assert reloaded.train.source[0].algo is not None and reloaded.train.source[0].algo.type == "grpo"
 
-    with pytest.raises(ValidationError, match="env"):
-        OrchestratorConfig.model_validate(
-            {
-                "renderer": {"name": "qwen3"},
-                "train": {"env": [{"legacy": {"id": "removed"}}]},
-            }
-        )
-
-    with pytest.raises(ValidationError, match="env"):
-        OrchestratorConfig.model_validate(
-            {
-                "renderer": {"name": "qwen3"},
-                "eval": {"env": [{"legacy": {"id": "removed"}}]},
-            }
-        )
+    # The removed ``train.env`` / ``eval.env`` spellings still parse on this branch:
+    # hosted training's control plane emits them, so the legacy shim translates
+    # instead of rejecting (see prime_rl.configs.legacy).
+    translated = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "qwen3"},
+            "train": {"env": [{"legacy": {"id": "kept"}}]},
+        }
+    )
+    assert translated.train.source[0].legacy.id == "kept"
 
 
 def test_trainer_enable_token_export_cli_flag():
@@ -716,27 +711,149 @@ def test_legacy_train_env_advantage_becomes_algo():
         }
     )
 
-    assert config.train.env[0].algo is not None
-    assert config.train.env[0].algo.type == "grpo"
+    assert config.train.source[0].algo is not None
+    assert config.train.source[0].algo.type == "grpo"
 
 
 @pytest.mark.parametrize("root", ["orchestrator", "env_server"])
 def test_legacy_env_keys_are_rehomed_on_every_root(root: str):
     """``multiplex`` moves to the interception pool and the dead ``max_retries`` is dropped —
-    on the orchestrator's env entries *and* on the standalone env server, which validates the
-    same ``EnvConfig`` through a different root. Migrating only the orchestrator would leave
+    on the orchestrator's source entries *and* on the standalone env server, which re-homes
+    the same flat shape through a different root. Migrating only the orchestrator would leave
     the env server crash-looping on a config the orchestrator accepted."""
     env = {"id": "reverse-text", "multiplex": 8, "max_retries": 3}
     if root == "orchestrator":
         config = OrchestratorConfig.model_validate(
             {"model": {"name": "Qwen/Qwen3-0.6B"}, "renderer": {"name": "default"}, "train": {"env": [env]}}
         )
-        resolved = config.train.env[0]
+        resolved = config.train.source[0]
     else:
-        resolved = EnvServerConfig.model_validate({"env": env}).env
+        resolved = EnvServerConfig.model_validate({"env": env})
 
-    assert resolved.interception.type == "elastic"
-    assert resolved.interception.multiplex == 8
+    assert resolved.is_legacy
+    assert resolved.legacy.id == "reverse-text"
+    assert resolved.env.interception.type == "elastic"
+    assert resolved.env.interception.multiplex == 8
+
+
+def test_legacy_flat_env_keys_compose_the_verifiers_blocks():
+    """The flat pre-0.3.0 env shape hosted's control plane emits — ``taskset``/``harness``
+    with a nested runtime, ``pool``/``address``, per-run caps, per-stage timeouts — lands on
+    the composed ``env``/``serve``/``legacy`` blocks (caps and timeouts on the agent seat)."""
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "renderer": {"name": "default"},
+            "train": {
+                "env": [
+                    {
+                        "name": "rt",
+                        "taskset": {"id": "reverse-text-v1"},
+                        "harness": {"id": "null", "runtime": {"type": "subprocess"}},
+                        "pool": {"type": "static", "num_workers": 2},
+                        "address": "tcp://env-server:5555",
+                        "timeout": {"rollout": 120},
+                        "max_output_tokens": 512,
+                    }
+                ]
+            },
+        }
+    )
+
+    source = config.train.source[0]
+    assert source.name == "rt"
+    assert not source.is_legacy
+    assert source.env.taskset.id == "reverse-text-v1"
+    assert source.env.agent.harness is not None and source.env.agent.harness.id == "null"
+    assert source.env.agent.runtime.type == "subprocess"
+    assert source.env.agent.timeout.rollout == 120
+    assert source.env.agent.max_output_tokens == 512
+    assert source.serve.pool.type == "static" and source.serve.pool.num_workers == 2
+    assert source.serve.address == "tcp://env-server:5555"
+
+
+def test_legacy_flat_v0_env_feeds_the_bridge_kwargs():
+    """A flat v0 env (``id``/``args`` with per-run caps) becomes a ``legacy`` block whose
+    ``extra_env_kwargs`` carry the bridge knobs, including the train run's ``max_seq_len``."""
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "renderer": {"name": "default"},
+            "seq_len": 4096,
+            "train": {
+                "env": [
+                    {
+                        "id": "primeintellect/reverse-text",
+                        "args": {"difficulty": "hard"},
+                        "timeout": {"rollout": 60},
+                        "max_output_tokens": 256,
+                    }
+                ]
+            },
+        }
+    )
+
+    source = config.train.source[0]
+    assert source.is_legacy
+    assert source.legacy.id == "primeintellect/reverse-text"
+    assert source.legacy.args == {"difficulty": "hard"}
+    assert source.legacy.extra_env_kwargs == {
+        "timeout_seconds": 60,
+        "max_total_completion_tokens": 256,
+        "max_seq_len": 4096,
+    }
+
+
+def test_legacy_env_server_flat_env_block_is_rehomed():
+    """The env server's old source-shaped ``[env]`` block splits into the top-level
+    ``env``/``serve``/``legacy`` blocks; orchestration-only labels (``name``) are dropped,
+    and a new composed config passes through untouched."""
+    config = EnvServerConfig.model_validate(
+        {
+            "env": {
+                "name": "rt",
+                "taskset": {"id": "reverse-text-v1"},
+                "harness": {"id": "null"},
+                "pool": {"type": "static", "num_workers": 4},
+                "address": "tcp://0.0.0.0:5555",
+            }
+        }
+    )
+    assert config.env.taskset.id == "reverse-text-v1"
+    assert config.env.agent.harness is not None and config.env.agent.harness.id == "null"
+    assert config.serve.pool.num_workers == 4
+    assert config.serve.address == "tcp://0.0.0.0:5555"
+
+    composed = EnvServerConfig.model_validate(
+        {
+            "env": {"taskset": {"id": "reverse-text-v1"}},
+            "serve": {"pool": {"type": "static", "num_workers": 2}},
+        }
+    )
+    assert composed.env.taskset.id == "reverse-text-v1"
+    assert composed.serve.pool.num_workers == 2
+
+
+def test_legacy_run_scoped_renames():
+    """``max_inflight_rollouts``, ``rollouts_per_example``, top-level ``[[env]]``/
+    ``[sampling]``, and sampling ``max_tokens`` all land on their current names."""
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "renderer": {"name": "default"},
+            "max_inflight_rollouts": 64,
+            "batch_size": 32,
+            "rollouts_per_example": 4,
+            "sampling": {"max_tokens": 900, "temperature": 0.7},
+            "env": [{"taskset": {"id": "reverse-text-v1"}}],
+        }
+    )
+
+    assert config.max_inflight_episodes == 64
+    assert config.group_size == 4
+    assert config.train.sampling.max_completion_tokens == 900
+    assert config.train.sampling.temperature == 0.7
+    assert config.train.source[0].env.taskset.id == "reverse-text-v1"
 
 
 @pytest.mark.parametrize(
