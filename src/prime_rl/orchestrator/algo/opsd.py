@@ -8,8 +8,8 @@ import verifiers.v1 as vf
 from prime_rl.configs.algorithm import OPSDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_reference_logprobs
-from prime_rl.orchestrator.provenance import episode_env_name
 from prime_rl.orchestrator.trajectories import iter_trainable_branches
+from prime_rl.orchestrator.utils import episode_env_name
 
 if TYPE_CHECKING:
     from renderers.base import Renderer

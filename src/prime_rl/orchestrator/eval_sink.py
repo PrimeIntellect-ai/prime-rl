@@ -8,8 +8,8 @@ import verifiers.v1 as vf
 
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalEpisodes
-from prime_rl.orchestrator.provenance import episode_env_name, episode_group_id, eval_work
 from prime_rl.orchestrator.types import EvalBatch
+from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, eval_work
 from prime_rl.utils.logger import get_logger
 
 

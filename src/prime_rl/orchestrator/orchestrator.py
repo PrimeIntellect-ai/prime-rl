@@ -55,7 +55,6 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
-from prime_rl.orchestrator.provenance import episode_group_id, eval_work, train_work
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
@@ -65,10 +64,13 @@ from prime_rl.orchestrator.types import (
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
+    episode_group_id,
+    eval_work,
     get_weight_dir,
     intercept_vf_logging,
     set_default_executor,
     setup_policy_inference_pool,
+    train_work,
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher

@@ -10,7 +10,7 @@ import verifiers.v1 as vf
 
 from prime_rl.orchestrator.curriculum import Curriculum
 from prime_rl.orchestrator.envs import TrainEnvs
-from prime_rl.orchestrator.provenance import episode_env_name
+from prime_rl.orchestrator.utils import episode_env_name
 
 
 class TrainSource:

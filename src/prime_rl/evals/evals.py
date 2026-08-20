@@ -42,9 +42,8 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
-from prime_rl.orchestrator.provenance import eval_work
 from prime_rl.orchestrator.types import EvalBatch, Policy
-from prime_rl.orchestrator.utils import intercept_vf_logging, set_default_executor
+from prime_rl.orchestrator.utils import eval_work, intercept_vf_logging, set_default_executor
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger, setup_logger

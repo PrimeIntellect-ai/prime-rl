@@ -13,9 +13,9 @@ from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
-from prime_rl.orchestrator.provenance import episode_env_name, episode_group_id
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import TrainBatch
+from prime_rl.orchestrator.utils import episode_env_name, episode_group_id
 from prime_rl.transports.rollouts import TrainingSample
 from prime_rl.utils.logger import get_logger
 

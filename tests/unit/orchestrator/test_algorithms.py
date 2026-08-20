@@ -1,5 +1,4 @@
 import asyncio
-from typing import NamedTuple
 from unittest.mock import MagicMock
 
 import pydantic
@@ -16,12 +15,6 @@ from prime_rl.transports.rollouts.types import TrainingSample
 FROZEN = {"name": "org/ref-model", "base_url": "http://ref:8001/v1"}
 
 _ALGO = pydantic.TypeAdapter(AlgoConfig)
-
-
-class PreparedCase(NamedTuple):
-    episode: vf.Episode
-    trace: vf.Trace
-    samples: list[TrainingSample]
 
 
 def _build(**kwargs) -> AlgoConfig:
@@ -163,7 +156,7 @@ def test_stamp_loss_routing_merges_action_weights_into_ce_stream():
     assert sample.ref_kl_weights is None
 
 
-def _make_rollout() -> PreparedCase:
+def _make_episode() -> vf.Episode:
     nodes = [
         MessageNode(
             parent=None,
@@ -209,46 +202,45 @@ def _make_rollout() -> PreparedCase:
         group=vf.GroupInfo(id="group"),
         traces=[trace],
     )
-    episode_trace = episode.traces[0]
-    return PreparedCase(episode, episode_trace, trace_to_samples(episode_trace, env_name="test-env"))
+    return episode
 
 
 def test_assign_advantages_full_length_stream():
     # The advantage stream is full-length-N: 0.0 on prompt + non-trainable
     # positions, the rl credit on trainable (mask True) tokens.
-    rollout = _make_rollout()
-    assign_advantages(rollout.trace, [0.5, -0.5, 1.0])
-    assert trace_to_samples(rollout.trace)[0].advantages == [0.0, 0.0, 0.5, -0.5, 0.0, 1.0]
+    trace = _make_episode().traces[0]
+    assign_advantages(trace, [0.5, -0.5, 1.0])
+    assert trace_to_samples(trace)[0].advantages == [0.0, 0.0, 0.5, -0.5, 0.0, 1.0]
 
 
 def test_assign_advantages_slices_across_nodes():
-    rollout = _make_rollout()
-    assign_advantages(rollout.trace, [1.0, 2.0, 3.0])
-    assert rollout.trace.nodes[1].advantages == [1.0, 2.0]
-    assert rollout.trace.nodes[3].advantages == [3.0]
+    trace = _make_episode().traces[0]
+    assign_advantages(trace, [1.0, 2.0, 3.0])
+    assert trace.nodes[1].advantages == [1.0, 2.0]
+    assert trace.nodes[3].advantages == [3.0]
 
 
 def test_unassigned_advantages_ship_none():
-    rollout = _make_rollout()
-    assert trace_to_samples(rollout.trace)[0].advantages is None
+    trace = _make_episode().traces[0]
+    assert trace_to_samples(trace)[0].advantages is None
 
 
 def test_assign_advantages_rejects_misaligned():
-    rollout = _make_rollout()
+    trace = _make_episode().traces[0]
     with pytest.raises(ValueError, match="align"):
-        assign_advantages(rollout.trace, [0.5])
+        assign_advantages(trace, [0.5])
 
 
 def test_assign_advantages_scalar_broadcasts_over_mask():
-    rollout = _make_rollout()
-    assign_advantages(rollout.trace, 1.0)
-    assert trace_to_samples(rollout.trace)[0].advantages == [0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+    trace = _make_episode().traces[0]
+    assign_advantages(trace, 1.0)
+    assert trace_to_samples(trace)[0].advantages == [0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
 
 
 def test_assign_advantages_list_rejects_misaligned():
-    rollout = _make_rollout()
+    trace = _make_episode().traces[0]
     with pytest.raises(ValueError, match="align"):
-        assign_advantages(rollout.trace, [0.5])
+        assign_advantages(trace, [0.5])
 
 
 # --------------------------------------------------------------------------
@@ -282,7 +274,7 @@ def _node(message, *, parent, sampled, token_ids, logprobs=None, is_content=None
     )
 
 
-def _two_turn_rollout(observation_role: str = "tool") -> PreparedCase:
+def _two_turn_episode(observation_role: str = "tool") -> vf.Episode:
     """A single linear branch: user prompt, an assistant response, an
     env-provided observation (tool output / user feedback), then a second
     assistant response. Tokens: prompt [1,2], action [3,4], observation
@@ -310,33 +302,35 @@ def _two_turn_rollout(observation_role: str = "tool") -> PreparedCase:
         group=vf.GroupInfo(id="group"),
         traces=[trace],
     )
-    episode_trace = episode.traces[0]
-    return PreparedCase(episode, episode_trace, trace_to_samples(episode_trace, env_name="test-env"))
+    return episode
 
 
 def test_echo_weights_observations_by_role():
     # The observation node [5,6] follows the first sampled node, so it is
     # weighted; the initial prompt [1,2] precedes it and is excluded.
-    rollout = _two_turn_rollout()
+    episode = _two_turn_episode()
+    trace = episode.traces[0]
     algo = _echo_algorithm()  # the default table: tool bodies at 0.1
-    asyncio.run(algo.score_episode(rollout.episode))
-    sample = trace_to_samples(rollout.trace)[0]
+    asyncio.run(algo.score_episode(episode))
+    sample = trace_to_samples(trace)[0]
     assert sample.token_ids == [1, 2, 3, 4, 5, 6, 7, 8]
     assert sample.mask == [False, False, True, True, False, False, True, True]
     # [3,4] step-1 action, [5,6] observation (weighted), [7,8] step-2 action
     assert sample.ce_weights == [0.0, 0.0, 0.0, 0.0, 0.1, 0.1, 0.0, 0.0]
 
     # A user-feedback observation under a role table that weights users.
-    rollout = _two_turn_rollout(observation_role="user")
+    episode = _two_turn_episode(observation_role="user")
+    trace = episode.traces[0]
     algo = _echo_algorithm(roles={"tool": {"alpha": 0.1}, "user": {"alpha": 0.05}})
-    asyncio.run(algo.score_episode(rollout.episode))
-    assert trace_to_samples(rollout.trace)[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.05, 0.05, 0.0, 0.0]
+    asyncio.run(algo.score_episode(episode))
+    assert trace_to_samples(trace)[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.05, 0.05, 0.0, 0.0]
 
     # A role not in the table leaves the observation unweighted: no ce stream.
-    rollout = _two_turn_rollout(observation_role="user")
+    episode = _two_turn_episode(observation_role="user")
+    trace = episode.traces[0]
     algo = _echo_algorithm()  # tool only
-    asyncio.run(algo.score_episode(rollout.episode))
-    assert trace_to_samples(rollout.trace)[0].ce_weights is None
+    asyncio.run(algo.score_episode(episode))
+    assert trace_to_samples(trace)[0].ce_weights is None
 
 
 def test_echo_weights_only_content_tokens_when_is_content_present():
@@ -368,12 +362,10 @@ def test_echo_weights_only_content_tokens_when_is_content_present():
         group=vf.GroupInfo(id="group"),
         traces=[trace],
     )
-    episode_trace = episode.traces[0]
-    rollout = PreparedCase(episode, episode_trace, trace_to_samples(episode_trace, env_name="test-env"))
     algo = _echo_algorithm()  # tool bodies at 0.1
-    asyncio.run(algo.score_episode(rollout.episode))
+    asyncio.run(algo.score_episode(episode))
     # Only position 5 (the body token) is weighted; the scaffold token at position 4 is not.
-    assert trace_to_samples(rollout.trace)[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
+    assert trace_to_samples(episode.traces[0])[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
 
 
 def test_echo_filter_narrows_selection():
@@ -383,15 +375,16 @@ def test_echo_filter_narrows_selection():
         # One keep-mask per trainable branch, spanning that branch's tokens.
         return [[True, True, True, True, True, False, True, True]]
 
-    rollout = _two_turn_rollout()
+    episode = _two_turn_episode()
+    trace = episode.traces[0]
     algo = _echo_algorithm(filter_fn=keep_drop_one)
-    asyncio.run(algo.score_episode(rollout.episode))
-    assert trace_to_samples(rollout.trace)[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+    asyncio.run(algo.score_episode(episode))
+    assert trace_to_samples(trace)[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
 
     # Shape violations fail loudly: wrong branch count, wrong per-branch length.
-    rollout = _two_turn_rollout()
+    episode = _two_turn_episode()
     with pytest.raises(ValueError, match="per trainable branch"):
-        asyncio.run(_echo_algorithm(filter_fn=lambda trace: []).score_episode(rollout.episode))
-    rollout = _two_turn_rollout()
+        asyncio.run(_echo_algorithm(filter_fn=lambda trace: []).score_episode(episode))
+    episode = _two_turn_episode()
     with pytest.raises(ValueError, match="span the branch's tokens"):
-        asyncio.run(_echo_algorithm(filter_fn=lambda trace: [[True] * 6]).score_episode(rollout.episode))
+        asyncio.run(_echo_algorithm(filter_fn=lambda trace: [[True] * 6]).score_episode(episode))

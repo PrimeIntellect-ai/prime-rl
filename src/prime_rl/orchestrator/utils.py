@@ -6,6 +6,9 @@ import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
+
+import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.utils.client import InferencePool
@@ -15,6 +18,34 @@ from prime_rl.utils.utils import (
     get_ckpt_dir,
     get_step_path,
 )
+
+
+def episode_env_name(episode: vf.Episode[Any, Any, Any]) -> str:
+    name = episode.env.name
+    if name is None:
+        raise ValueError("Orchestrated episode is missing its environment name")
+    return name
+
+
+def episode_group_id(episode: vf.Episode[Any, Any, Any]) -> str:
+    group = episode.group
+    if group is None:
+        raise ValueError("Orchestrated episode is missing its rollout group")
+    return group.id
+
+
+def train_work(episode: vf.Episode[Any, Any, Any]) -> vf.TrainWorkInfo:
+    run = episode.run
+    if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.TrainWorkInfo):
+        raise ValueError("Train episode is missing training-work provenance")
+    return run.work
+
+
+def eval_work(episode: vf.Episode[Any, Any, Any]) -> vf.EvalWorkInfo:
+    run = episode.run
+    if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.EvalWorkInfo):
+        raise ValueError("Eval episode is missing evaluation-work provenance")
+    return run.work
 
 
 async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
