@@ -71,7 +71,7 @@ type = "muon"
 [orchestrator]
 batch_size = 256
 group_size = 16
-max_off_policy_steps = 32
+max_staleness = 32
 
 [orchestrator.concurrency]
 initial_inflight = 256

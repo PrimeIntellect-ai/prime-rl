@@ -124,7 +124,7 @@ class Evals:
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.eval.concurrency.max_inflight,
             tasks_per_minute=None,
-            max_off_policy_steps=0,
+            max_staleness=0,
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,

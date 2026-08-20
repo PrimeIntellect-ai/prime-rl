@@ -35,6 +35,23 @@ class Progress:
 
 WorkKind = Literal["train", "eval"]
 
+CancelReason = Literal["stale", "overload"]
+
+
+@dataclass
+class Cancellation:
+    """Terminal marker for a dropped group: one message covering every episode
+    the group still owed the sink (in-flight and never-dispatched), so
+    count-to-``group_size`` finalization fires without synthesizing error
+    episodes. ``reason`` distinguishes pipeline decisions (staleness, overload
+    cut) from real episode errors."""
+
+    kind: WorkKind
+    env_name: str
+    group_id: str
+    count: int
+    reason: CancelReason
+
 
 @dataclass
 class InflightEpisode:
@@ -47,7 +64,6 @@ class InflightEpisode:
     policy_version: int
     step: int
     client_config: vf.ClientConfig | None = None
-    off_policy_steps: int = 0
     eval_step: int | None = None
     started_at: float = 0.0
     """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""

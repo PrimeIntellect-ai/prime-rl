@@ -48,6 +48,21 @@ def eval_work(episode: vf.Episode[Any, Any, Any]) -> vf.EvalWorkInfo:
     return run.work
 
 
+def episode_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) -> tuple[int, int, int]:
+    """``(total, in_flight, in_queue)`` staleness of one train episode when
+    consumed by batch ``training_step``: the version the batch trains on
+    (v{step-1}) minus the version that generated the episode. ``in_flight``
+    is the span's share (weight updates during generation); ``in_queue`` is
+    time spent buffered between completion and ship. Frozen-sourced episodes
+    (no policy span) are never stale."""
+    policy = train_work(episode).policy
+    if policy is None:
+        return 0, 0, 0
+    total = max(0, (training_step - 1) - policy.start)
+    in_flight = min(total, max(0, policy.end - policy.start))
+    return total, in_flight, total - in_flight
+
+
 async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     """Build the live policy inference pool + matching renderer. Returns
     ``(renderer, inference_pool)``.

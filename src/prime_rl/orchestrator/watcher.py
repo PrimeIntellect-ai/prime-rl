@@ -1,5 +1,5 @@
 """WeightWatcher: polls the broadcast dir, advances ``Policy``, notifies
-observers (dispatcher → off-policy cancel). Standalone async task; the
+observers (dispatcher → staleness cancel). Standalone async task; the
 orchestrator's barrier bounds the in-flight lead."""
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ class WeightWatcher:
             self.ckpt_step = next_step
             self.policy.version = next_step
 
-            # Drain off-policy rollouts BEFORE pausing the inference engines.
+            # Drain stale rollouts BEFORE pausing the inference engines.
             # Aborting a rollout triggers vLLM's KV-connector cleanup (NIXL's
             # ``_reqs_not_processed``), which is only propagated to the workers
             # while the engine is stepping. If we drain after resume instead,

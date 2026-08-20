@@ -58,6 +58,7 @@ from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
+    Cancellation,
     EvalBatch,
     Policy,
     Progress,
@@ -65,12 +66,12 @@ from prime_rl.orchestrator.types import (
 )
 from prime_rl.orchestrator.utils import (
     episode_group_id,
+    episode_staleness,
     eval_work,
     get_weight_dir,
     intercept_vf_logging,
     set_default_executor,
     setup_policy_inference_pool,
-    train_work,
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -387,7 +388,7 @@ class Orchestrator:
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
             tasks_per_minute=config.tasks_per_minute,
-            max_off_policy_steps=config.max_off_policy_steps,
+            max_staleness=config.max_staleness,
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
@@ -412,6 +413,7 @@ class Orchestrator:
             tokenizer=self.tokenizer,
             train_envs=self.train_envs,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
+            progress=self.progress,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
             on_result=self.train_source.on_result,
@@ -452,13 +454,6 @@ class Orchestrator:
             interval=log_interval,
             wandb_enabled=wandb_enabled,
         )
-
-    def off_policy_steps(self, episode: vf.Episode, training_step: int) -> int:
-        """Policy updates between generation and the batch that trains on it."""
-        work = train_work(episode)
-        if work.policy is None:
-            return 0
-        return max(0, (training_step - 1) - work.policy.start)
 
     async def start(self) -> None:
         """Run the orchestrator until shutdown. Drives setup, spawns the
@@ -525,9 +520,9 @@ class Orchestrator:
             trim_process_memory()
 
     async def main_loop(self) -> None:
-        """Consume completed episodes from the dispatcher and route them
-        to the train / eval sink. Both sinks return a finalized batch (or
-        ``None``) from ``add()``; we just dispatch on the result."""
+        """Consume completed episodes and group ``Cancellation``\\ s from the
+        dispatcher and route them to the train / eval sink. The sinks return a
+        finalized batch (or ``None``); we just dispatch on the result."""
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
             if self.draining and self.dispatcher.is_idle:
@@ -536,10 +531,18 @@ class Orchestrator:
                 break
 
             try:
-                episode = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 self._raise_if_component_stopped()
                 continue
+
+            if isinstance(item, Cancellation):
+                assert item.kind == "train"  # eval groups are never dropped
+                train_batch = await self.train_sink.cancel(item)
+                if train_batch is not None and not self.draining and not self.stopped.is_set():
+                    await self.finalize_train_batch(train_batch)
+                continue
+            episode = item
 
             # Every completed rollout — errored, rejected, or never batched — lands in the
             # ``all`` trace file the moment it arrives, so it survives crashes and drains.
@@ -691,6 +694,22 @@ class Orchestrator:
             "time/wait_for_policy": self.wait_for_policy_time,
             "step": step,
         }
+        # Staleness of the shipped cohort, decomposed into its in-flight and
+        # in-queue shares; ``dropped`` counts queued traces the sink voided
+        # since the last ship.
+        staleness = [episode_staleness(episode, step) for episode in effective]
+        if staleness:
+            totals, in_flight, in_queue = (list(values) for values in zip(*staleness))
+            metrics |= {
+                "staleness/mean": sum(totals) / len(totals),
+                "staleness/max": float(max(totals)),
+                "staleness/in_flight/mean": sum(in_flight) / len(in_flight),
+                "staleness/in_flight/max": float(max(in_flight)),
+                "staleness/in_queue/mean": sum(in_queue) / len(in_queue),
+                "staleness/in_queue/max": float(max(in_queue)),
+            }
+        metrics["staleness/dropped"] = float(self.train_sink.stale_drops)
+        self.train_sink.stale_drops = 0
         for env_name, env_pool in batch.episodes.by_env().items():
             metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
         metrics |= self.train_source.metrics()
@@ -794,8 +813,9 @@ class Orchestrator:
 
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
-        ``Error`` is the sink-level rate (errored arrivals / total arrivals, over the full window);
-        the quality metrics are over the effective (clean, trained-on) subset, as is ``Trainable``."""
+        ``Error`` and ``Cancelled`` are sink-level rates over the full window (disjoint: a
+        cancellation is a pipeline decision, not a rollout failure); the quality metrics are over
+        the effective (clean, trained-on) subset, as is ``Trainable``."""
         episodes = batch.episodes
         effective = batch.cohort.effective
         eff = effective.metrics
@@ -803,14 +823,15 @@ class Orchestrator:
         n_effective = effective.num_traces
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_off_policy = max((self.off_policy_steps(episode, step) for episode in effective), default=0)
+        max_staleness = max((episode_staleness(episode, step)[0] for episode in effective), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
             f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Max Off-Policy {max_off_policy} | "
-            f"Error {episodes.metrics.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
+            f"Max Staleness {max_staleness} | "
+            f"Error {episodes.metrics.has_error.mean():.1%} | Cancelled {episodes.metrics.cancelled.mean():.1%} | "
+            f"Truncation {eff.is_truncated.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
             get_logger().success(head)
@@ -829,8 +850,9 @@ class Orchestrator:
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Off-Policy {max((self.off_policy_steps(episode, step) for episode in env_eff_pool), default=0)} | "
-                f"Error {pool.metrics.has_error.mean():.1%} | Truncation {env_eff.is_truncated.mean():.1%}"
+                f"Max Staleness {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
+                f"Error {pool.metrics.has_error.mean():.1%} | Cancelled {pool.metrics.cancelled.mean():.1%} | "
+                f"Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
 
