@@ -103,3 +103,53 @@ Empirically in this dev environment:
    extract the detection into a small pure function checking both `model_type` and nested
    `text_config.model_type` for `qwen3_5`/`qwen3_5_moe` prefixes, and add a unit test for the dense
    generic-alias case.
+
+## DeepSeek V4 port
+
+The port lands as a stack of 7 commits. Step 1 (config + manifold-constrained
+hyper-connections) is in; steps 2-7 add rotary, attention plus the compressors and
+Lightning Indexer, MoE, the decoder layer and model classes, and the state-dict
+conversion chain.
+
+Deliberate scope reductions taken in step 1 that later steps must revisit:
+
+- **YaRN on the compress RoPE branch is not wired up.** `DeepseekV4Config._nest_rope_parameters`
+  forces `rope_type="default"` for both the `main` and `compress` parameter sets. Real
+  DeepSeek-V4 checkpoints use YaRN (`factor=16`, `attention_factor=1.0`) for `compress`,
+  with `rope_theta=160000.0`. Any `rope_scaling` keys passed in are preserved in the
+  `compress` dict but ignored while `rope_type` stays `"default"`. Wiring this up means
+  dropping the forced override, restoring HF's `attention_factor=1.0` default for the
+  YaRN case, and porting HF's `validate_rope` override (the base class validator keys
+  off `layer_types`, not the `main`/`compress` rope-type labels, so it warns about
+  unrecognized keys otherwise).
+- **No MTP.** `num_nextn_predict_layers` is not carried over. HF does not instantiate the
+  MTP layers either, and the conversion chain will need to drop `mtp.*` keys.
+- **`_init_weights` is not wired up.** `DeepseekV4HyperConnection` and `DeepseekV4HyperHead`
+  expose `init_weights(init_std)` matching HF's `_init_weights` (normal for `fn`/`hc_fn`,
+  zeros for `base`/`hc_base`, ones for `scale`/`hc_scale`), but nothing calls them until
+  the `PreTrainedModel` subclass lands in step 7.
+- **`tests/unit/train/models/test_deepseek_v4_temp.py` is scaffolding.** It isolates the
+  hyper-connections against HF's reference classes. Fold it into a proper
+  `test_deepseek_v4.py` full-model parity test once the model classes exist.
+
+## `convert_rope_params_to_dict` overrides are dead code
+
+`LagunaConfig.convert_rope_params_to_dict` (`laguna/configuration_laguna.py`) and
+`DeepseekV4Config.convert_rope_params_to_dict` (`deepseek_v4/configuration_deepseek_v4.py`)
+are both no-ops (`return kwargs`) in practice, not just in intent. Verified empirically for
+both: deleting the method and reconstructing a config produces byte-identical
+`rope_parameters` output. The reason is structural in both configs' `__init__`: `rope_theta`
+and `rope_scaling` are consumed as named parameters and never forwarded into
+`super().__init__()`'s `**kwargs`, and `self.rope_parameters` is unconditionally overwritten
+by each config's own normalization method (`_nest_rope_parameters` / `_normalize_rope_parameters`)
+immediately after `super().__init__()` returns, regardless of anything the base class's real
+`convert_rope_params_to_dict` (in `transformers.modeling_rope_utils.RotaryEmbeddingConfigMixin`)
+might have done to `self.rope_parameters` while `super().__init__()` was running.
+
+DeepSeek V4's override was copied from Laguna as the closest existing precedent for a model
+with per-layer-type nested rope parameters, inheriting the same dead code.
+
+Decision: keep both for now, don't touch either in isolation. Remove both overrides together
+in a single follow-up commit once there's time to also re-verify against `from_pretrained`/
+`from_dict` checkpoint-loading paths (which pass arbitrary `**kwargs` differently than direct
+`__init__` construction does, and weren't part of the empirical check above).
