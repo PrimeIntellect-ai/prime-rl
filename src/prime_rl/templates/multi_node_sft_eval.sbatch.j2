@@ -230,8 +230,9 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
             @ $CONFIG_DIR/evals.json \
             --eval.client.base-url $INFER_URLS \
             --eval.client.admin-base-url $ADMIN_URLS \
-            {% if use_nccl_broadcast %}--weight-broadcast.host $TRAIN_HOST \
-            {% endif %}
+{%- if use_nccl_broadcast %}
+            --weight-broadcast.host $TRAIN_HOST \
+{%- endif %}
             2>&1 | tee $OUTPUT_DIR/logs/evals.log &
         EVALS_PID=$!
     else

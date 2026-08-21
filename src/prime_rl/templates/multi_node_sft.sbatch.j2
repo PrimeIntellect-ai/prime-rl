@@ -160,7 +160,8 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.sft.train \
         @ $CONFIG_PATH \
-        {% if use_nccl_broadcast %}--weight-broadcast.host 0.0.0.0 \
-        {% endif %}
+{%- if use_nccl_broadcast %}
+        --weight-broadcast.host 0.0.0.0 \
+{%- endif %}
         2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
 LAUNCH_SH
