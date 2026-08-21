@@ -844,9 +844,12 @@ class Orchestrator:
 
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
-        ``Error`` and ``Cancelled`` are sink-level rates over the full window (disjoint: a
-        cancellation is a pipeline decision, not a rollout failure); the quality metrics are over
-        the effective (clean, trained-on) subset, as is ``Trainable``."""
+        Every quality metric (Reward, Trainable, Turns, Branches, Max Staleness, Truncation) is
+        computed over exactly the traces shipped to the trainer this step (``batch.cohort``).
+        ``Error``, ``Cancelled``, and ``Ratio`` are rates over the step's full arrival window —
+        over the shipped set they are 0/0/share-of-shipped by construction, so the window is the
+        only scope where they carry signal (and they stay disjoint: a cancellation is a pipeline
+        decision, not a rollout failure)."""
         episodes = batch.episodes
         effective = batch.cohort.effective
         eff = effective.metrics
