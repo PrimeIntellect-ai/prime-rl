@@ -527,6 +527,25 @@ class KPopLossConfig(BaseConfig):
     """Temperature for the KL term."""
 
 
+class KimiK15LossConfig(BaseConfig):
+    type: Literal["kimi_k15"] = "kimi_k15"
+
+    tau: float = Field(0.2, ge=0)
+    """Relative-entropy regularization strength (tau in the k1.5 paper). The
+    l2 penalty enters the gradient with coefficient ``tau / 2``, so the default
+    matches the 0.1 penalty coefficient used by other implementations."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    sequence_regularizer: bool = False
+    """Square the whole rollout's summed log-ratio instead of each token's. The
+    paper writes the penalty over sequence log-probabilities, but the summed
+    log-ratio random-walks with length, so squaring it swamps the policy
+    gradient on long agentic rollouts; the per-token form is the stable
+    default."""
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -538,7 +557,8 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    DefaultLossConfig | IPOLossConfig | KPopLossConfig | CustomLossConfig, Field(discriminator="type")
+    DefaultLossConfig | IPOLossConfig | KPopLossConfig | KimiK15LossConfig | CustomLossConfig,
+    Field(discriminator="type"),
 ]
 
 

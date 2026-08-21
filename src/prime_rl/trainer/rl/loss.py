@@ -6,7 +6,14 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, IPOLossConfig, KPopLossConfig, LossConfig
+from prime_rl.configs.trainer import (
+    CustomLossConfig,
+    DefaultLossConfig,
+    IPOLossConfig,
+    KimiK15LossConfig,
+    KPopLossConfig,
+    LossConfig,
+)
 from prime_rl.utils.utils import import_object
 
 
@@ -311,10 +318,63 @@ def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+@jaxtyped(typechecker=typechecker)
+def kimi_k15_loss_fn(inputs: LossInputs, loss_config: KimiK15LossConfig) -> LossOutputs:
+    """Kimi k1.5 loss type (https://arxiv.org/abs/2501.12599, eq. 3): the online
+    policy mirror descent surrogate — REINFORCE against the group-mean reward
+    baseline, plus an l2 penalty on the log-ratio to the sampling policy with
+    coefficient ``tau / 2``.
+
+    Two things distinguish it from the other loss types here. The policy
+    gradient is the plain score function, not an importance ratio: the paper
+    samples from the reference policy of the iteration and lets the l2 term,
+    not a ratio correction, carry the off-policy discrepancy. And the penalty
+    is unmasked and two-sided, so no trust region drops tokens — deviation is
+    priced rather than clipped.
+
+    The group-mean baseline the paper subtracts is the ``grpo`` advantage
+    (reward minus per-group mean, no standard-deviation scaling), so the
+    advantage arrives already centred.
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
+
+    advantages = loss_config.adv_tau * advantages
+    # Score function, not the importance ratio: d/dtheta log pi_theta * advantage.
+    pg_loss = loss_mask * advantages * trainer_logprobs
+    if loss_config.sequence_regularizer:
+        # One scalar per rollout, spread back over its tokens so the batch-level
+        # token normalization applies to it the same way as to the pg term.
+        num_tokens = loss_mask.sum().clamp(min=1)
+        sequence_log_ratio = (loss_mask * log_importance_ratio).sum()
+        l2_loss = loss_mask * (sequence_log_ratio**2) / num_tokens
+    else:
+        l2_loss = loss_mask * log_importance_ratio**2
+
+    per_token_loss = -pg_loss + (loss_config.tau / 2) * l2_loss
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+    loss = per_token_loss.sum()
+
+    metrics = {
+        "mismatch_kl": _safe_mean(mismatch_kl, loss_mask),
+        "abs_log_ratio": _safe_mean(log_importance_ratio.abs(), loss_mask),
+    }
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
     """Build the loss fn for the rl component from ``trainer.loss``:
     ``default_loss_fn`` (``DefaultLossConfig``), ``ipo_loss_fn``
-    (``IPOLossConfig``), ``kpop_loss_fn`` (``KPopLossConfig``), or the imported
+    (``IPOLossConfig``), ``kpop_loss_fn`` (``KPopLossConfig``),
+    ``kimi_k15_loss_fn`` (``KimiK15LossConfig``), or the imported
     function (``CustomLossConfig``).
     The ce / ref_kl loss types are fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
@@ -331,6 +391,10 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return kpop_loss_fn(inputs, loss_config)
+    elif isinstance(loss_config, KimiK15LossConfig):
+
+        def rl_fn(inputs: LossInputs) -> LossOutputs:
+            return kimi_k15_loss_fn(inputs, loss_config)
     else:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
