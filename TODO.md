@@ -106,12 +106,24 @@ Empirically in this dev environment:
 
 ## DeepSeek V4 port
 
-The port lands as a stack of 7 commits. Step 1 (config + manifold-constrained
-hyper-connections) is in; steps 2-7 add rotary, attention plus the compressors and
-Lightning Indexer, MoE, the decoder layer and model classes, and the state-dict
-conversion chain.
+Step-by-step plan, one commit each:
 
-Deliberate scope reductions taken in step 1 that later steps must revisit:
+- [x] 1. Config + manifold-constrained hyper-connections (mHC)
+- [x] 2. Rotary embedding + sliding-window attention (one of three attention layer types)
+- [ ] 3. Compressed Sparse Attention (CSA): compressor + Lightning Indexer (second attention layer type)
+- [ ] 4. Heavily Compressed Attention (HCA): compressor, no indexer (third and last attention layer type)
+- [ ] 5. Standard MoE (router, experts, shared expert)
+- [ ] 6. Hash-routed MoE (bootstrap layers)
+- [ ] 7. Decoder layer + model classes + state-dict conversion chain, wiring everything above together
+
+Steps 3 and 4 are why attention isn't finished after step 2: DeepSeek V4 has three
+per-layer attention variants (`sliding_attention`, `compressed_sparse_attention`,
+`heavily_compressed_attention`), all sharing the same core built in step 2, but CSA and
+HCA each add their own compressor module on top (CSA also adds the Lightning Indexer for
+sparse top-k selection over the compressed history). `DeepseekV4Attention` currently
+raises `NotImplementedError` for both until those land.
+
+Deliberate scope reductions taken in steps 1-2 that later steps must revisit:
 
 - **YaRN on the compress RoPE branch is not wired up.** `DeepseekV4Config._nest_rope_parameters`
   forces `rope_type="default"` for both the `main` and `compress` parameter sets. Real
@@ -129,8 +141,40 @@ Deliberate scope reductions taken in step 1 that later steps must revisit:
   zeros for `base`/`hc_base`, ones for `scale`/`hc_scale`), but nothing calls them until
   the `PreTrainedModel` subclass lands in step 7.
 - **`tests/unit/train/models/test_deepseek_v4_temp.py` is scaffolding.** It isolates the
-  hyper-connections against HF's reference classes. Fold it into a proper
-  `test_deepseek_v4.py` full-model parity test once the model classes exist.
+  hyper-connections, the rotary and the sliding-window attention against HF's reference
+  classes. Fold it into a proper `test_deepseek_v4.py` full-model parity test once the
+  model classes exist.
+- **`build_sliding_window_mask` is single-document only.** It builds a dense
+  `[1, 1, S, S]` additive mask from the causal + local-window predicate, with no
+  `cu_seqlens` awareness, so a packed multi-document row would let the window bleed
+  across document boundaries. Every other prime-rl model threads `seq_lens` down to a
+  varlen flash-attention call instead (see `layers/attn.py`), which is also what makes
+  the `O(S^2)` mask affordable to skip. Step 7 needs to decide between a
+  `cu_seqlens`-aware mask builder and a flash-attention path with `window_size`.
+- **Attention runs eagerly.** `eager_attention_with_sinks` is a direct port of GPT-OSS's
+  reference softmax, chosen because the per-head sink logit has no flash-attention
+  equivalent in the kernels prime-rl currently vendors. It is correct but materializes
+  the full `[B, H, S, S + 1]` logit tensor.
+- **`DeepseekV4Attention` rejects non-sliding layers.** The constructor raises
+  `NotImplementedError` for `compressed_sparse_attention` / `heavily_compressed_attention`
+  rather than silently building a compressor-less block that would compute the wrong
+  thing. Drop the guard when the compressors land.
+- **Rotary buffers are computed eagerly in `__init__`.** `DeepseekV4RotaryEmbedding`
+  writes `<type>_inv_freq` on whatever device it is constructed on. Meta-device loading
+  needs an `init_buffers_post_meta` on the step-7 `PreTrainedModel` subclass to
+  re-derive them, mirroring HF's `_init_weights` branch for the rotary.
+
+Considered and rejected: reusing GLM-MoE-DSA's `apply_rope_interleave_single`
+(`glm_moe_dsa/sparse_mla_attention.py:56-63`) or its reshape-then-shared-`rotate_half`
+trick for `rotate_half_interleaved`. Worked out the math by hand: the reshape trick
+returns its output in a permuted ("de-interleaved") channel order and never permutes
+back, which GLM-MoE-DSA gets away with because its only consumer is a Q.K dot product
+(invariant to a shared relabeling of both operands). DeepSeek V4 also rotates the value
+stream (K==V here) and feeds the attention output straight into `o_a_proj`/`o_b_proj`,
+which expect the true HF channel order, so reusing the trick without adding a
+compensating re-interleave step (plus switching cos/sin prep from `repeat_interleave` to
+`cat`-style duplication) would silently compute the wrong thing. Keeping the current
+self-contained `rotate_half_interleaved`.
 
 ## `convert_rope_params_to_dict` overrides are dead code
 
