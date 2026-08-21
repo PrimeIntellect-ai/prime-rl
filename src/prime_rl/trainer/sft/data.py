@@ -688,11 +688,16 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> St
 
 
 def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
+    """Dataset position(s) for the startup log, parsed from ``StatefulDataLoader.state_dict()``.
+
+    The loader is the only source that is correct in every case: after a resume's
+    ``load_state_dict`` the restored position exists solely in the loader's stashed
+    state (it reaches the dataset copies inside workers when the iterator forks them;
+    the main-process dataset object stays at position zero). The stashed layout uses
+    torchdata's private keys: inline for a fresh loader, per-worker snapshots for a
+    loaded or live ``num_workers > 0`` loader."""
     state = dataloader.state_dict()
     if "dataset_state" in state:
-        return state["dataset_state"]
-    worker_snapshots = (state.get("_snapshot") or {}).get("_worker_snapshots") or {}
-    states = {worker_id: snapshot["dataset_state"] for worker_id, snapshot in sorted(worker_snapshots.items())}
-    if len(states) == 1:
-        return next(iter(states.values()))
-    return states
+        return state["dataset_state"]["dataset"]
+    snapshots = (state.get("_snapshot") or {}).get("_worker_snapshots") or {}
+    return {wid: snap["dataset_state"]["dataset"] for wid, snap in sorted(snapshots.items())}
