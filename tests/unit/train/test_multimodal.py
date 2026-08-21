@@ -6,7 +6,7 @@ import torch
 from prime_rl.multimodal import get_multimodal_adapter
 from prime_rl.multimodal.kimi_k25 import KimiK25Adapter
 from prime_rl.multimodal.qwen_vl import QwenVLAdapter
-from prime_rl.trainer.multimodal import materialize_mm_refs, release_staged_mm, stage_mm_refs
+from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.transports.rollouts import MMImageRef, MMRefs
 
 _IMAGE_URL = (
@@ -54,22 +54,3 @@ def test_kimi_adapter_materializes_sparse_image_position():
 
     assert set(materialized.kwargs) == {"pixel_values", "grid_thws"}
     assert materialized.forward_policy == KimiK25Adapter.forward_policy
-
-
-def test_stage_and_release_bounds_materialized_payload_lifetime():
-    class ImageProcessor:
-        merge_size = 1
-
-        def __call__(self, *, images, return_tensors):
-            assert len(images) == 1 and return_tensors == "pt"
-            return {
-                "pixel_values": torch.ones(2, 3),
-                "image_grid_thw": torch.tensor([[1, 1, 2]]),
-            }
-
-    processor = SimpleNamespace(image_processor=ImageProcessor())
-    staged = stage_mm_refs(_refs(2), processor, get_multimodal_adapter("qwen3_vl"), "cpu")
-
-    assert set(staged.kwargs) == {"pixel_values", "image_grid_thw"}
-    release_staged_mm(staged)
-    assert staged.kwargs == {}

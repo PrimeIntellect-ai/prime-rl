@@ -37,10 +37,7 @@ class TensorMicroBatch(TypedDict):
     # MoE router replay
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
 
-    # Compact image references are materialized lazily, one microbatch at a
-    # time, immediately before its forward pass. Keeping processor output out
-    # of this batch list bounds trainer host memory independently of the
-    # number of packed microbatches.
+    # Materialized immediately before this microbatch's forward pass.
     mm_refs: MMRefs | None
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None

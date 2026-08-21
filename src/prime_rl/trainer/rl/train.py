@@ -37,7 +37,7 @@ from prime_rl.trainer.rl.loss import (
 )
 from prime_rl.trainer.rl.token_export import setup_token_exporter
 from prime_rl.multimodal import get_multimodal_adapter
-from prime_rl.trainer.multimodal import release_staged_mm, stage_mm_refs
+from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
@@ -375,24 +375,17 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
-            # Expand compact image references only for the microbatch about to
-            # execute. ``stage_mm_refs`` releases the CPU processor output; the
-            # raw references then no longer need to remain in the step batch.
-            staged_mm = None
+            mm_kwargs = None
+            mm_forward_policy = None
             mm_refs = micro_batch.get("mm_refs")
             if mm_refs is not None:
                 if processor is None or mm_adapter is None:
-                    raise ValueError("Multimodal samples require a model-family adapter and image processor")
-                staged_mm = stage_mm_refs(mm_refs, processor, mm_adapter, "cuda")
+                    raise ValueError("Received multimodal samples but [model.vlm] is not set")
+                materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
+                mm_kwargs = {key: value.to("cuda") for key, value in materialized.kwargs.items()}
+                mm_forward_policy = materialized.forward_policy
                 micro_batch["mm_refs"] = None
-                del mm_refs
-            mm_kwargs = staged_mm.kwargs if staged_mm is not None else None
-            mm_forward_policy = staged_mm.forward_policy if staged_mm is not None else None
-            if mm_kwargs is not None and config.model.vlm is None:
-                raise ValueError(
-                    "Received multimodal samples but [model.vlm] is not set. "
-                    "Set [model.vlm] to train on multimodal samples."
-                )
+                del materialized, mm_refs
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -504,12 +497,7 @@ def train(config: TrainerConfig):
                 loss.backward()
                 finish_backward(gradient_manager)
 
-            # Backward has consumed the saved vision activations. Do not retain
-            # one device payload per packed microbatch until the step ends.
-            if staged_mm is not None:
-                release_staged_mm(staged_mm)
-                staged_mm = None
-                mm_kwargs = None
+            mm_kwargs = None
 
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
