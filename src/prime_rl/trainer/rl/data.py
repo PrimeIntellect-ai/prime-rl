@@ -1,17 +1,16 @@
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TypedDict
 
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
-from prime_rl.multimodal import ForwardPolicy, MultimodalAdapter
-from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.rollouts import (
     MicroBatch,
     MicroBatchReceiver,
+    MMRefs,
     TransportConfig,
     setup_micro_batch_receiver,
 )
@@ -38,9 +37,11 @@ class TensorMicroBatch(TypedDict):
     # MoE router replay
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
 
-    # Model-family adapter output, forwarded opaquely to the model.
-    mm_kwargs: dict[str, Tensor] | None
-    mm_forward_policy: ForwardPolicy | None
+    # Compact image references are materialized lazily, one microbatch at a
+    # time, immediately before its forward pass. Keeping processor output out
+    # of this batch list bounds trainer host memory independently of the
+    # number of packed microbatches.
+    mm_refs: MMRefs | None
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -121,8 +122,7 @@ class FakeDataLoader:
             "lora_num_tokens": torch.tensor([input_ids.shape[0]], dtype=torch.int32),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
-            "mm_kwargs": None,
-            "mm_forward_policy": None,
+            "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
             "ce_weights": None,
@@ -151,8 +151,7 @@ class FakeDataLoader:
             "lora_num_tokens": torch.tensor([self.seq_len], dtype=torch.int32),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
-            "mm_kwargs": None,
-            "mm_forward_policy": None,
+            "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
             "ce_weights": None,
@@ -169,8 +168,6 @@ class DataLoader:
         start_step: int,
         dp_world_size: int,
         config: TransportConfig,
-        processor: Any = None,
-        mm_adapter: MultimodalAdapter | None = None,
     ):
         self.world = get_world()
 
@@ -178,8 +175,6 @@ class DataLoader:
         dp_rank = self.world.rank // non_dp_world_size
 
         self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, dp_rank, start_step, config)
-        self.processor = processor
-        self.mm_adapter = mm_adapter
 
     def wait_for_batch(self) -> None:
         self.receiver.wait()
@@ -190,14 +185,6 @@ class DataLoader:
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
-        mm_kwargs: dict[str, Tensor] | None = None
-        mm_forward_policy: ForwardPolicy | None = None
-        if micro_batch.mm_refs is not None:
-            if self.mm_adapter is None:
-                raise ValueError("Multimodal samples require a model-family adapter")
-            materialized = materialize_mm_refs(micro_batch.mm_refs, self.processor, self.mm_adapter)
-            mm_kwargs = materialized.kwargs
-            mm_forward_policy = materialized.forward_policy
         routed_experts = None
         packed_routed_experts = micro_batch.routed_experts
         if packed_routed_experts is not None:
@@ -225,8 +212,7 @@ class DataLoader:
             # Single adapter: every token in the batch belongs to it (padding included).
             lora_num_tokens=torch.tensor([len(micro_batch.input_ids)], dtype=torch.int32),
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
-            mm_kwargs=mm_kwargs,
-            mm_forward_policy=mm_forward_policy,
+            mm_refs=micro_batch.mm_refs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
             if micro_batch.mm_token_type_ids is not None
             else None,
