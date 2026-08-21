@@ -1,8 +1,6 @@
 max_steps = 20
 
 [ckpt]
-[ckpt.weights]
-save_adapter_separately = true
 
 [model]
 name = "Qwen/Qwen3.5-0.8B"

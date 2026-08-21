@@ -35,6 +35,25 @@ When bumping a package past the workspace-wide `exclude-newer = "7 days"` window
 
 ## Optional extras
 
+### CUDA kernels
+
+Prebuilt wheels, pinned at a release in `[tool.uv.sources]`:
+
+```bash
+uv sync --extra kernels
+```
+
+No plain sync compiles CUDA — building from source stays an explicit, manual step (needs
+`nvcc` whose CUDA major matches torch's and the `deps/prime-kernels` submodule initialized),
+and overrides the wheel until the next sync:
+
+```bash
+git submodule update --init deps/prime-kernels
+uv pip install --no-build-isolation -e deps/prime-kernels
+```
+
+See the `kernels` skill.
+
 ### NemotronH (Mamba SSD kernels)
 
 ```bash

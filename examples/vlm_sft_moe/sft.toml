@@ -47,8 +47,6 @@ lr = 1e-5
 
 [ckpt]
 interval = 200
-[ckpt.weights]
-save_adapter_separately = true
 
 [deployment]
 type = "single_node"

@@ -17,10 +17,11 @@ from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
-from prime_rl.configs.trainer import CheckpointConfig
+from prime_rl.configs.trainer import CheckpointConfig, FileSystemWeightBroadcastConfig
+from prime_rl.transports.weights.filesystem import FileSystemWeightBroadcast
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
@@ -137,10 +138,8 @@ def train(config: SFTConfig):
         from prime_rl.utils.cp import setup_model_cp, setup_sparse_mla_cp
 
     # Set up checkpoint manager
-    logger.info(f"Initializing checkpoint managers ({config.ckpt})")
-    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
-        config.run_dir, config.ckpt, config.model.lora, resume=config.resume
-    )
+    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
+    ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, resume=config.resume)
 
     checkpoint_step = None
     if config.resume is not None:
@@ -396,13 +395,26 @@ def train(config: SFTConfig):
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
-    # Online evals reload the trainer's HF weight checkpoints from disk, so a weight
-    # checkpoint must land at every step an eval env is due (deterministic from the
-    # config — all ranks agree on the collective save).
+    # Online evals reload the trainer's weight broadcasts from disk, so a broadcast
+    # must land at every step an eval env is due (deterministic from the config —
+    # all ranks agree on the collective save).
     online_eval_intervals = sorted({source.interval for source in config.eval.source}) if config.eval else []
 
     def is_online_eval_step(step: int) -> bool:
         return any(step % interval == 0 for interval in online_eval_intervals)
+
+    weight_broadcast = None
+    if online_eval_intervals:
+        weight_broadcast = FileSystemWeightBroadcast(
+            config.run_dir, FileSystemWeightBroadcastConfig(), config.model.lora
+        )
+        if checkpoint_step is not None and not weight_broadcast.is_stable(checkpoint_step):
+            # Rebroadcast the resumed policy so the evals process can re-trigger at
+            # the resume step (older broadcasts may have been cleaned). Skipped when
+            # the previous run's broadcast survived: rewriting the same dir in place
+            # would race an evals process already reloading it.
+            weight_broadcast.broadcast_weights(model, step=checkpoint_step)
+            weight_broadcast.clean_older(checkpoint_step)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
@@ -534,30 +546,25 @@ def train(config: SFTConfig):
         scheduler.step()
 
         # Checkpoint the step we just finished. The last step's checkpoint is written once after
-        # the loop, so skip it here to avoid a double-save. Weight checkpoints additionally land
-        # at online-eval steps — they are how the inference server picks up the new policy.
+        # the loop, so skip it here to avoid a double-save. Weight broadcasts land at
+        # online-eval steps — they are how the inference server picks up the new policy.
         save_ckpt_time = 0
         is_ckpt_step = bool(config.ckpt and config.ckpt.interval) and progress.step % config.ckpt.interval == 0
         if ckpt_manager is not None and is_ckpt_step and not is_last_step:
-            if not config.ckpt.weights_only:
-                # Save full checkpoint
-                logger.info(f"Saving checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+            logger.info(f"Saving checkpoint at step {progress.step}")
+            save_ckpt_start_time = time.perf_counter()
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+            save_ckpt_time += time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
 
-        if (
-            weight_ckpt_manager is not None
-            and not is_last_step
-            and (is_ckpt_step or is_online_eval_step(progress.step))
-        ):
-            logger.info(f"Saving weight checkpoint at step {progress.step}")
-            save_ckpt_start_time = time.perf_counter()
-            weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
-            save_ckpt_time += time.perf_counter() - save_ckpt_start_time
-            weight_ckpt_manager.maybe_clean()
+        broadcast_weights_time = 0
+        if weight_broadcast is not None and not is_last_step and is_online_eval_step(progress.step):
+            logger.info(f"Broadcasting weights at step {progress.step}")
+            broadcast_start_time = time.perf_counter()
+            weight_broadcast.broadcast_weights(model, step=progress.step)
+            weight_broadcast.clean_older(progress.step)
+            broadcast_weights_time = time.perf_counter() - broadcast_start_time
 
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
@@ -648,6 +655,7 @@ def train(config: SFTConfig):
         time_metrics = {
             "time/step": step_time,
             "time/save_ckpt": save_ckpt_time,
+            "time/broadcast_weights": broadcast_weights_time,
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
@@ -682,16 +690,15 @@ def train(config: SFTConfig):
 
     # Write final checkpoint
     if config.ckpt is not None:
-        if not config.ckpt.weights_only:
-            logger.info("Writing final checkpoint")
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+        logger.info("Writing final checkpoint")
+        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
 
-    # Write final weight checkpoint
-    if weight_ckpt_manager is not None:
-        logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(progress.step, model, tokenizer, processor)
-        weight_ckpt_manager.maybe_clean()
+    # Broadcast the final weights so the evals process can run its forced final epoch
+    if weight_broadcast is not None:
+        logger.info("Broadcasting final weights")
+        weight_broadcast.broadcast_weights(model, step=progress.step)
+        weight_broadcast.clean_older(progress.step)
 
     if gradient_manager is not None:
         gradient_manager.close()

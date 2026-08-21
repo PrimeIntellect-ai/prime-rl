@@ -173,9 +173,9 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 
     num_infer_nodes: int = Field(0, ge=0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
     """Inference nodes for online evals (alias: ``num_eval_nodes``). Submitted as a separate SLURM job, decoupled
-    from the trainer job: the handoff is weight checkpoints on the shared filesystem,
+    from the trainer job: the handoff is weight broadcasts on the shared filesystem,
     so the eval job can outlive the trainer job (evals drain after training ends) and
-    exits after evaluating the final checkpoint."""
+    exits after evaluating the final broadcast."""
 
     nodes_per_fsdp_group: int | None = None
     """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
@@ -204,7 +204,7 @@ class SFTConfig(BaseConfig):
 
     eval: EvalsEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
-    server that reloads the trainer's HF weight checkpoints from disk. If None, no
+    server that reloads the trainer's weight broadcasts from disk. If None, no
     online evals run."""
 
     inference: InferenceConfig | None = None
@@ -350,29 +350,25 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_online_eval(self):
-        """Wire online evals: require weight checkpoints (the disk handoff to
-        inference) and connect the eval client to the launcher-managed server."""
+        """Wire online evals: the trainer broadcasts weights at eval steps (the disk
+        handoff to inference) and the eval client connects to the launcher-managed
+        server."""
         if self.eval is None:
             if self.inference is not None:
                 raise ValueError("[inference] is only used for online evals — add an [eval] block or remove it.")
             return self
 
-        # The trainer's HF weight checkpoints are how inference picks up new policies.
-        if self.ckpt is None:
-            self.ckpt = CheckpointConfig()
-        if self.ckpt.weights is None or self.ckpt.skip_gather_master_weights:
-            raise ValueError(
-                "Online evals require HF weight checkpoints. Enable ckpt.weights and "
-                "disable ckpt.skip_gather_master_weights."
-            )
-
-        if self.ckpt.keep_last is not None or self.ckpt.keep_interval is not None:
-            warnings.warn(
-                "ckpt.keep_last / ckpt.keep_interval can delete a weight checkpoint before the "
-                "evals consumes it when evals run slower than training - such steps are "
-                "skipped with a warning instead of evaluated.",
-                stacklevel=2,
-            )
+        # LoRA runs broadcast the raw adapter, which evals reload via /load_lora_adapter
+        if self.model.lora is not None:
+            if self.inference is not None:
+                self.inference.vllm.enable_lora = True
+                self.inference.vllm.max_lora_rank = self.model.lora.rank
+            else:
+                warnings.warn(
+                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
+                    "make sure to set --enable_lora and --max-lora-rank.",
+                    stacklevel=2,
+                )
 
         if self.deployment.type == "multi_node":
             # Decoupled deployment: the launcher submits a dedicated SLURM job running the
@@ -548,17 +544,6 @@ class SFTConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_scheduler_steps(self):
         validate_scheduler(self.scheduler, self.max_steps)
-        return self
-
-    @model_validator(mode="after")
-    def validate_lora_adapter_saving(self):
-        if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
-            lora_enabled = self.model and self.model.lora
-            if not lora_enabled:
-                raise ValueError(
-                    "save_adapter_separately=True requires LoRA to be enabled. "
-                    "Set model.lora or disable save_adapter_separately."
-                )
         return self
 
     @model_validator(mode="after")

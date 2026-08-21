@@ -9,7 +9,7 @@ All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/t
 
 ## Run directories
 
-`output_dir` (default `outputs`) groups related runs; each run writes all its artifacts (logs, configs, checkpoints, weights, rollouts) to its own run directory `<output_dir>/<run_name>`. `run.name` auto-generates as `<envs>--<model>--<short-id>` (SFT: `<dataset>--<model>--<short-id>`), so every launch gets a fresh, readable run directory; `run.dir` overrides the directory leaf when it should differ from the name. Pass `--run.name <name>` to make the run directory predictable — required to resume the run later (`--resume`, or `--resume.step N`, reuses the named run directory; without `[ckpt]` it loads but saves no new checkpoints). Launching into a run directory that already contains artifacts fails unless resuming or `--clean` is set (which wipes only that run directory).
+`output_dir` (default `outputs`) groups related runs; each run writes all its artifacts (logs, configs, checkpoints, broadcasts, rollouts) to its own run directory `<output_dir>/<run_name>`. `run.name` auto-generates as `<envs>--<model>--<short-id>` (SFT: `<dataset>--<model>--<short-id>`), so every launch gets a fresh, readable run directory; `run.dir` overrides the directory leaf when it should differ from the name. Pass `--run.name <name>` to make the run directory predictable — required to resume the run later (`--resume`, or `--resume.step N`, reuses the named run directory; without `[ckpt]` it loads but saves no new checkpoints). Launching into a run directory that already contains artifacts fails unless resuming or `--clean` is set (which wipes only that run directory).
 
 ## Config system at a glance
 
@@ -92,7 +92,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## `evals` — multi-env evals
 
-Runs the configured eval sources against a live inference server. Standalone (no `[online]` block): one epoch of every source against the served weights, then exit. With `[online]` (`weights_dir`, `max_steps`, `resume_step`): watch the weights dir for stable `step_{n}` HF checkpoints and evaluate each — the `sft` launcher writes this config for online evals.
+Runs the configured eval sources against a live inference server. Standalone (no `[online]` block): one epoch of every source against the served weights, then exit. With `[online]` (`broadcasts_dir`, `max_steps`, `resume_step`): watch the broadcasts dir for stable `step_{n}` weight broadcasts and evaluate each — the `sft` launcher writes this config for online evals.
 
 ```bash
 uv run inference --vllm.model Qwen/Qwen3-4B   # start inference separately

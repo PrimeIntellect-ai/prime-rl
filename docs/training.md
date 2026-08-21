@@ -204,7 +204,7 @@ num_train_gpus = 1  # trainer
 num_infer_gpus = 1  # inference
 ```
 
-The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer writes an HF weight checkpoint at every step an eval env is due (in addition to `ckpt.interval`), and the evals process watches `weights/step_{n}`, points the inference server at each stable checkpoint (`/update_weights` reload from disk), and runs the due envs against it — sequentially per checkpoint, so every epoch measures exactly one policy version. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final checkpoint always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
+The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer broadcasts weights at every step an eval env is due, and the evals process watches `broadcasts/step_{n}`, points the inference server at each stable broadcast (`/update_weights` reload from disk), and runs the due envs against it — sequentially per broadcast, so every epoch measures exactly one policy version. Only the newest broadcast is kept on disk. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
 
 #### Multi-Node (Decoupled Trainer and Inference Pool)
 
@@ -223,7 +223,7 @@ tensor_parallel_size = 8
 job_name = "my-run"
 ```
 
-The only coupling is weight checkpoints on the shared filesystem, so the jobs' lifetimes are independent: when training finishes, the trainer job exits and releases its nodes even while evals are still running; the eval job keeps draining pending checkpoints and exits after evaluating the final one (`max_steps` — without it the eval job never sees a final checkpoint and holds its allocation until walltime). Trainer and evals log to a single shared W&B run across both jobs — the trainer creates it, the evals process finalizes it. Any train × inference layout works: `num_nodes` and `num_infer_nodes` are fully independent.
+The only coupling is weight broadcasts on the shared filesystem, so the jobs' lifetimes are independent: when training finishes, the trainer job exits and releases its nodes even while evals are still running; the eval job evaluates the final broadcast and exits (`max_steps` — without it the eval job never sees a final broadcast and holds its allocation until walltime). Trainer and evals log to a single shared W&B run across both jobs — the trainer creates it, the evals process finalizes it. Any train × inference layout works: `num_nodes` and `num_infer_nodes` are fully independent.
 
 ### SFT-Specific Knobs
 
@@ -272,7 +272,6 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_N/trainer/` |
 | Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_N/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
-| Trainer (HF weights) | HF-compatible weight snapshot for serving | `<run_dir>/weights/step_N/` |
 
 ### Enabling Checkpoints
 
@@ -303,16 +302,6 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
 uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
-
-### Serving Checkpoints
-
-HF-compatible weight snapshots are written under `<run_dir>/weights/step_N/` whenever a full checkpoint runs (or you can write weights-only via `--ckpt.weights-only` for cheaper snapshots). Upload directly:
-
-```bash
-uv run hf upload <user>/<model>-RL outputs/<run_name>/weights/step_100
-```
-
-For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write the raw adapter alongside the merged weights — useful when serving the adapter through a separate `/load_lora_adapter` call.
 
 ## Observability
 
