@@ -34,6 +34,28 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
     )
 
 
+def lm_head_keep_index(keep_mask: Tensor) -> Tensor | None:
+    """Flattened indices of the LM head tokens which must actually be used"""
+    index = keep_mask.reshape(-1).nonzero(as_tuple=True)[0]
+    if index.numel() == keep_mask.numel():
+        return None
+    if index.numel() == 0:
+        return torch.zeros(1, dtype=torch.long, device=keep_mask.device)
+    return index
+
+
+def _compact(tensor: Tensor, keep_index: Tensor | None) -> Tensor:
+    """Drop tokens that the head does not use."""
+    return tensor.contiguous() if keep_index is None else tensor.index_select(0, keep_index)
+
+
+def _expand(values: Tensor, keep_index: Tensor | None, num_tokens: int) -> Tensor:
+    """Scatter compacted tokens back into the full token grid - dropped poses are 0 and logprob(0) keeps ther importance ratio at exp(0-0)=1"""
+    if keep_index is None:
+        return values
+    return values.new_zeros(num_tokens).index_copy(0, keep_index, values)
+
+
 class FusedOutputLinear(torch.nn.Linear):
     def __init__(self, in_features: int, out_features: int, chunk_size: int):
         super().__init__(in_features, out_features, bias=False)
@@ -44,21 +66,29 @@ class FusedOutputLinear(torch.nn.Linear):
         hidden_states: torch.Tensor,
         labels: torch.Tensor | None = None,
         temperature: Tensor | None = None,
+        keep_mask: Tensor | None = None,
     ) -> PrimeLmOutput:
         assert labels is not None, "FusedOutputLinear requires labels for chunked logprob computation"
         assert temperature is not None, "FusedOutputLinear requires per-token temperatures"
 
         b, s, h = hidden_states.shape
-        hidden_states = hidden_states.reshape(b * s, h).contiguous()
-        labels = labels.reshape(b * s).contiguous()
-        inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
+        n = b * s
+        hidden_states = hidden_states.reshape(n, h)
+        labels = labels.reshape(n)
+        inv_t = 1.0 / temperature.reshape(n)  # [N]
+
+        keep_index = lm_head_keep_index(keep_mask) if keep_mask is not None else None
 
         logprobs, entropy = _SequenceChunkedLogProbEntropyFn.apply(
-            hidden_states, self.weight, labels, inv_t, self.chunk_size
+            _compact(hidden_states, keep_index),
+            self.weight,
+            _compact(labels, keep_index),
+            _compact(inv_t, keep_index),
+            self.chunk_size,
         )
 
-        logprobs = logprobs.reshape(b, s)
-        entropy = entropy.reshape(b, s)
+        logprobs = _expand(logprobs, keep_index, n).reshape(b, s)
+        entropy = _expand(entropy, keep_index, n).reshape(b, s)
         return PrimeLmOutput(logprobs=logprobs, entropy=entropy)
 
 
@@ -67,9 +97,15 @@ class VanillaOutputLinear(torch.nn.Linear):
         super().__init__(in_features, out_features, bias=False)
 
     def forward(
-        self, hidden_states: torch.Tensor, labels: torch.Tensor | None = None, temperature: Tensor | None = None
+        self,
+        hidden_states: torch.Tensor,
+        labels: torch.Tensor | None = None,
+        temperature: Tensor | None = None,
+        keep_mask: Tensor | None = None,
     ) -> PrimeLmOutput:
-        # VanillaOutputLinear just returns logits - temperature scaling is done externally in train.py
+        # VanillaOutputLinear just returns logits - temperature scaling is done externally in train.py.
+        # keep_mask is ignored: the caller needs full-length logits, which is the whole [N, V] tensor
+        # the fused head exists to avoid.
         return PrimeLmOutput(logits=super().forward(hidden_states))
 
 
@@ -262,6 +298,7 @@ def _patch_model_forward(model: nn.Module) -> None:
         labels: torch.Tensor | None = None,
         logits_to_keep: int = 0,
         temperature: torch.Tensor | None = None,
+        keep_mask: torch.Tensor | None = None,
         **kwargs: object,
     ) -> PrimeLmOutput:
         # For VLM with images, don't create position_ids - let model compute MRoPE internally
@@ -285,6 +322,7 @@ def _patch_model_forward(model: nn.Module) -> None:
             hidden_states[:, slice_indices, :],
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature[:, slice_indices] if temperature is not None else None,
+            keep_mask=keep_mask[:, slice_indices] if keep_mask is not None else None,
         )
 
     # Bind the new forward to the model
