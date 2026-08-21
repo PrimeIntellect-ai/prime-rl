@@ -53,7 +53,12 @@ _ATTN = dict(
     sliding_window=6,
     o_groups=2,
     o_lora_rank=16,
-    layer_types=["sliding_attention", "compressed_sparse_attention"] * 2,
+    layer_types=[
+        "sliding_attention",
+        "compressed_sparse_attention",
+        "heavily_compressed_attention",
+        "sliding_attention",
+    ],
     compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 8},
     index_n_heads=4,
     index_head_dim=24,
@@ -64,8 +69,9 @@ _ATTN = dict(
 )
 
 _BATCH, _SEQ = 2, 16
-_SLIDING_LAYER, _CSA_LAYER = 0, 1
+_SLIDING_LAYER, _CSA_LAYER, _HCA_LAYER = 0, 1, 2
 _COMPRESS_RATE = _ATTN["compress_rates"]["compressed_sparse_attention"]
+_HCA_COMPRESS_RATE = _ATTN["compress_rates"]["heavily_compressed_attention"]
 
 
 @pytest.fixture(autouse=True)
@@ -396,13 +402,6 @@ def test_sliding_attention_only_reads_the_local_window():
     torch.testing.assert_close(perturbed[:, window:], baseline[:, window:], rtol=0, atol=0)
 
 
-def test_attention_rejects_unported_layer_types():
-    config = DeepseekV4Config(**{**_ATTN, "layer_types": ["heavily_compressed_attention"] * 4})
-
-    with pytest.raises(NotImplementedError, match="heavily_compressed_attention"):
-        DeepseekV4Attention(config, layer_idx=0)
-
-
 def test_csa_attention_matches_hf(_torch_rms_norm):
     hf_module, prime_module = _attention_pair(_CSA_LAYER)
     hf_input, prime_input = _hidden_states()
@@ -543,3 +542,134 @@ def test_csa_indexer_selection_is_not_differentiable():
         # only emits integer indices, so nothing differentiates back into it. DeepSeek
         # trains it with a separate auxiliary loss that prime-rl does not have yet.
         assert got_grad == (not name.startswith("indexer.")), f"unexpected gradient state for {name}"
+
+
+def test_hca_attention_matches_hf(_torch_rms_norm):
+    hf_module, prime_module = _attention_pair(_HCA_LAYER)
+    hf_input, prime_input = _hidden_states()
+    position_embeddings = _position_embeddings()
+    position_ids = _position_ids()
+    # As in the CSA case, HF concatenates a per-batch block bias onto the mask.
+    mask = build_sliding_window_mask(_SEQ, _ATTN["sliding_window"], torch.bfloat16, torch.device("cuda"))
+    mask = mask.expand(_BATCH, 1, _SEQ, _SEQ)
+
+    hf_output, _ = hf_module(
+        hf_input,
+        position_embeddings=position_embeddings,
+        position_ids=position_ids,
+        attention_mask=mask,
+    )
+    prime_output, _ = prime_module(
+        prime_input,
+        position_embeddings=position_embeddings,
+        attention_mask=mask,
+        position_ids=position_ids,
+    )
+
+    assert prime_output.shape == (_BATCH, _SEQ, _ATTN["hidden_size"])
+    torch.testing.assert_close(prime_output, hf_output, rtol=0, atol=0)
+
+    with torch.device("cuda"):
+        weight = torch.randn_like(hf_output)
+    (hf_output * weight).sum().backward()
+    (prime_output * weight).sum().backward()
+
+    _compare_grads(hf_module, prime_module)
+    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=0, atol=0)
+
+
+def test_hca_attention_reads_every_readable_compressed_entry():
+    _, prime_module = _attention_pair(_HCA_LAYER)
+    _, hidden = _hidden_states()
+    position_embeddings = _position_embeddings()
+    window = _ATTN["sliding_window"]
+
+    baseline, _ = prime_module(hidden, position_embeddings=position_embeddings)
+    perturbed_input = hidden.clone()
+    perturbed_input[:, 0] += 1.0
+    perturbed, _ = prime_module(perturbed_input, position_embeddings=position_embeddings)
+
+    # Token 0 leaves the local window at query `window` and only re-enters through
+    # compressed entry 0, which covers tokens `0 .. compress_rate - 1` and so is unreadable
+    # until the query reaches the last of them. In between, nothing carries it.
+    first_readable = _HCA_COMPRESS_RATE - 1
+    assert first_readable > window, "config must leave a gap between the window and the first entry"
+    torch.testing.assert_close(perturbed[:, window:first_readable], baseline[:, window:first_readable], rtol=0, atol=0)
+    assert not torch.equal(perturbed[:, first_readable:], baseline[:, first_readable:])
+
+
+def test_hca_compressor_pools_non_overlapping_windows():
+    _, prime_module = _attention_pair(_HCA_LAYER)
+    compressor = prime_module.compressor
+    _, hidden = _hidden_states()
+
+    compressed = compressor.compress(hidden)
+    assert compressed.shape == (_BATCH, _SEQ // _HCA_COMPRESS_RATE, _ATTN["head_dim"])
+
+    token = _HCA_COMPRESS_RATE + 1
+    perturbed_input = hidden.clone()
+    perturbed_input[:, token] += 1.0
+    perturbed = compressor.compress(perturbed_input)
+
+    changed = {w for w in range(compressed.shape[1]) if not torch.equal(perturbed[:, w], compressed[:, w])}
+    # The windows do not overlap, so a token feeds its own entry and no other. This is the
+    # whole structural difference from CSA, whose `Ca` series spills into the next window.
+    assert changed == {token // _HCA_COMPRESS_RATE}
+
+
+def test_hca_compressor_drops_the_trailing_partial_window():
+    _, prime_module = _attention_pair(_HCA_LAYER)
+    compressor = prime_module.compressor
+    _, hidden = _hidden_states()
+
+    full = compressor.compress(hidden)
+    truncated = compressor.compress(hidden[:, : _SEQ - 1])
+
+    # One token short of a full window is one entry short, and the entries that survive are
+    # bit-identical: the dropped tokens never fed them.
+    assert truncated.shape[1] == full.shape[1] - 1
+    torch.testing.assert_close(truncated, full[:, : truncated.shape[1]], rtol=0, atol=0)
+
+
+def test_hca_compressor_masks_unreadable_entries():
+    _, prime_module = _attention_pair(_HCA_LAYER)
+    compressor = prime_module.compressor
+    _, hidden = _hidden_states()
+    position_ids = _position_ids()
+
+    q_residual = prime_module.q_a_norm(prime_module.q_a_proj(hidden))
+
+    compressed_kv, block_bias = compressor(hidden, q_residual, position_ids)
+
+    n_windows = _SEQ // _HCA_COMPRESS_RATE
+    assert compressed_kv.shape == (_BATCH, 1, n_windows, _ATTN["head_dim"])
+    assert block_bias.shape == (_BATCH, 1, _SEQ, n_windows)
+    # Every readable entry is unbiased: there is no indexer to gate them any further.
+    readable = (position_ids + 1) // _HCA_COMPRESS_RATE
+    entries = torch.arange(n_windows, device=block_bias.device).view(1, 1, 1, -1)
+    expected = torch.where(entries < readable.unsqueeze(1).unsqueeze(-1), 0.0, float("-inf"))
+    torch.testing.assert_close(block_bias, expected.to(block_bias.dtype), rtol=0, atol=0)
+
+
+def test_hca_compressor_is_fully_differentiable():
+    _, prime_module = _attention_pair(_HCA_LAYER)
+    _, hidden = _hidden_states()
+
+    output, _ = prime_module(hidden, position_embeddings=_position_embeddings())
+    output.sum().backward()
+
+    # Unlike CSA, every compressed entry is attended over directly, so there is no
+    # non-differentiable selection step and no parameter left without a gradient.
+    for name, param in prime_module.compressor.named_parameters():
+        assert param.grad is not None, f"{name} received no gradient"
+        assert torch.isfinite(param.grad).all(), f"{name} received a non-finite gradient"
+
+
+def test_hca_attention_init_weights_reaches_the_compressor():
+    _, prime_module = _attention_pair(_HCA_LAYER)
+    assert (prime_module.compressor.position_bias != 0).any(), "fixture must start from a spread"
+
+    prime_module.init_weights(0.02)
+
+    assert (prime_module.sinks == 0).all()
+    assert (prime_module.compressor.position_bias == 0).all()
