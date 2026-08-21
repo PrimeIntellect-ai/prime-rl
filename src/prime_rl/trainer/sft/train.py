@@ -20,7 +20,8 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
-from prime_rl.configs.trainer import CheckpointConfig, FileSystemWeightBroadcastConfig
+from prime_rl.configs.trainer import CheckpointConfig
+from prime_rl.transports.weights import setup_weight_broadcast
 from prime_rl.transports.weights.filesystem import FileSystemWeightBroadcast
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
@@ -395,9 +396,8 @@ def train(config: SFTConfig):
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
-    # Online evals reload the trainer's weight broadcasts from disk, so a broadcast
-    # must land at every step an eval env is due (deterministic from the config —
-    # all ranks agree on the collective save).
+    # A broadcast must land at every step an online eval env is due. The schedule is
+    # deterministic, so all ranks agree when to enter the transport collective.
     online_eval_intervals = sorted({source.interval for source in config.eval.source}) if config.eval else []
 
     def is_online_eval_step(step: int) -> bool:
@@ -405,10 +405,19 @@ def train(config: SFTConfig):
 
     weight_broadcast = None
     if online_eval_intervals:
-        weight_broadcast = FileSystemWeightBroadcast(
-            config.run_dir, FileSystemWeightBroadcastConfig(), config.model.lora
+        assert config.weight_broadcast is not None
+        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        weight_broadcast = setup_weight_broadcast(
+            config.run_dir,
+            config.weight_broadcast,
+            parallel_dims,
+            config.model.lora,
         )
-        if checkpoint_step is not None and not weight_broadcast.is_stable(checkpoint_step):
+        if (
+            checkpoint_step is not None
+            and isinstance(weight_broadcast, FileSystemWeightBroadcast)
+            and not weight_broadcast.is_stable(checkpoint_step)
+        ):
             # Rebroadcast the resumed policy so the evals process can re-trigger at
             # the resume step (older broadcasts may have been cleaned). Skipped when
             # the previous run's broadcast survived: rewriting the same dir in place
@@ -563,7 +572,8 @@ def train(config: SFTConfig):
             logger.info(f"Broadcasting weights at step {progress.step}")
             broadcast_start_time = time.perf_counter()
             weight_broadcast.broadcast_weights(model, step=progress.step)
-            weight_broadcast.clean_older(progress.step)
+            if isinstance(weight_broadcast, FileSystemWeightBroadcast):
+                weight_broadcast.clean_older(progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_start_time
 
         # Optionally, dump memory snapshot
@@ -698,7 +708,8 @@ def train(config: SFTConfig):
     if weight_broadcast is not None:
         logger.info("Broadcasting final weights")
         weight_broadcast.broadcast_weights(model, step=progress.step)
-        weight_broadcast.clean_older(progress.step)
+        if isinstance(weight_broadcast, FileSystemWeightBroadcast):
+            weight_broadcast.clean_older(progress.step)
 
     if gradient_manager is not None:
         gradient_manager.close()

@@ -89,6 +89,7 @@ def build_evals_config(config: SFTConfig) -> EvalsConfig:
     return EvalsConfig(
         model=config.model.name,
         eval=eval_config,
+        weight_broadcast=config.weight_broadcast,
         online=OnlineConfig(
             broadcasts_dir=get_broadcast_dir(config.run_dir),
             max_steps=config.max_steps,

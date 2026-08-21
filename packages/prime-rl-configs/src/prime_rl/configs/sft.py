@@ -23,11 +23,14 @@ from prime_rl.configs.trainer import (
     AdamWConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
+    FileSystemWeightBroadcastConfig,
     GCConfig,
     ModelConfig,
+    NCCLWeightBroadcastConfig,
     OptimizerConfig,
     SchedulerConfig,
     TokenizerConfig,
+    WeightBroadcastConfig,
     validate_scheduler,
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
@@ -204,12 +207,15 @@ class SFTConfig(BaseConfig):
 
     eval: EvalsEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
-    server that reloads the trainer's weight broadcasts from disk. If None, no
-    online evals run."""
+    server that receives the trainer's weight broadcasts. If None, no online evals run."""
 
     inference: InferenceConfig | None = None
     """Inference server for online evals. If None (with ``eval`` set), the launcher
     does not start a server and evals connect to ``eval.client.base_url``."""
+
+    weight_broadcast: WeightBroadcastConfig | None = None
+    """Trainer-to-inference weight transport for online evals. Defaults to NCCL.
+    LoRA, external inference, and multi-node evals use filesystem broadcast."""
 
     optim: OptimizerConfig = AdamWConfig()
 
@@ -350,9 +356,7 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_online_eval(self):
-        """Wire online evals: the trainer broadcasts weights at eval steps (the disk
-        handoff to inference) and the eval client connects to the launcher-managed
-        server."""
+        """Wire online evals and the trainer-to-inference weight transport."""
         if self.eval is None:
             if self.inference is not None:
                 raise ValueError("[inference] is only used for online evals — add an [eval] block or remove it.")
@@ -369,6 +373,29 @@ class SFTConfig(BaseConfig):
                     "make sure to set --enable_lora and --max-lora-rank.",
                     stacklevel=2,
                 )
+
+        if self.weight_broadcast is None:
+            if self.model.lora is not None or self.inference is None or self.deployment.type == "multi_node":
+                self.weight_broadcast = FileSystemWeightBroadcastConfig()
+            else:
+                self.weight_broadcast = NCCLWeightBroadcastConfig()
+        if self.weight_broadcast.type != "filesystem":
+            if self.weight_broadcast.type == "nixl":
+                raise ValueError("NIXL weight broadcast is not supported for SFT online evals.")
+            if self.model.lora is not None:
+                raise ValueError(
+                    "LoRA training is not yet supported with in-memory weight broadcast. "
+                    "Set weight_broadcast.type = 'filesystem'."
+                )
+            if self.inference is None:
+                raise ValueError(
+                    "NCCL weight broadcast requires launcher-managed inference. "
+                    "Add an [inference] block or set weight_broadcast.type = 'filesystem'."
+                )
+            if self.deployment.type == "multi_node":
+                raise ValueError("Multi-node online evals only support weight_broadcast.type = 'filesystem'.")
+            if self.eval.retrigger_on_resume:
+                raise ValueError("eval.retrigger_on_resume requires weight_broadcast.type = 'filesystem'.")
 
         if self.deployment.type == "multi_node":
             # Decoupled deployment: the launcher submits a dedicated SLURM job running the
@@ -395,10 +422,7 @@ class SFTConfig(BaseConfig):
                     f"deployment.gpus_per_node ({self.deployment.gpus_per_node}) must be divisible by "
                     f"inference.vllm.tensor_parallel_size ({self.inference.vllm.tensor_parallel_size})."
                 )
-            if self.inference.weight_broadcast.type != "filesystem":
-                raise ValueError(
-                    "Online evals reload weights from disk — inference.weight_broadcast.type must be 'filesystem'."
-                )
+            self.inference.weight_broadcast.type = "filesystem"
             if self.max_steps is None:
                 warnings.warn(
                     "Online evals without max_steps: the evals process never sees a final checkpoint, "
@@ -447,10 +471,9 @@ class SFTConfig(BaseConfig):
             vllm.data_parallel_size = num_infer_gpus // vllm.tensor_parallel_size
         if vllm.api_server_count < vllm.data_parallel_size and not vllm.enable_lora:
             vllm.api_server_count = vllm.data_parallel_size
-        if self.inference.weight_broadcast.type != "filesystem":
-            raise ValueError(
-                "Online evals reload weights from disk — inference.weight_broadcast.type must be 'filesystem'."
-            )
+        if self.weight_broadcast.type == "nccl":
+            self.weight_broadcast.inference_world_size = vllm.data_parallel_size * vllm.tensor_parallel_size
+        self.inference.weight_broadcast.type = self.weight_broadcast.type
 
         host = self.inference.server.host or "localhost"
         client = self.eval.client

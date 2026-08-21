@@ -5,6 +5,7 @@ from pydantic import Field, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalConfig
 from prime_rl.configs.shared import ClientConfig, LogConfig
+from prime_rl.configs.trainer import WeightBroadcastConfig
 from prime_rl.utils.config import BaseConfig
 
 
@@ -64,11 +65,10 @@ class EvalsConfig(BaseConfig):
     """``uv run evals``: run the configured evals against a live inference server.
     Standalone (no ``[online]``), one epoch of every eval source runs against the
     served weights and the evals process exits. With ``[online]``, the evals process watches a
-    broadcasts directory for new weight broadcasts, points the inference server at each
-    one (``/update_weights`` from disk), and runs the configured evals against the
-    updated weights — the ``sft`` launcher writes this config; it also works standalone
-    against any trainer that broadcasts ``broadcasts/step_{n}`` dirs with ``STABLE``
-    markers."""
+    broadcasts directory for new weight broadcasts, updates the inference server through
+    the configured transport, and runs the configured evals against the updated weights.
+    The ``sft`` launcher writes this config; filesystem mode also works standalone against
+    any trainer that writes ``broadcasts/step_{n}`` directories with ``STABLE`` markers."""
 
     model: str = "Qwen/Qwen3-0.6B"
     """Name the inference server serves the model under — the ``model`` field of every
@@ -81,6 +81,10 @@ class EvalsConfig(BaseConfig):
 
     online: OnlineConfig | None = None
     """Checkpoint watching (``[online]``). None runs the evals once and exits."""
+
+    weight_broadcast: WeightBroadcastConfig | None = None
+    """Weight transport for online evals. The ``sft`` launcher fills this from its
+    resolved trainer transport. None uses filesystem reloads."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — rollout traces and logs are written as
