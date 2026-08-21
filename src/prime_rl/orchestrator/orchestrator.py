@@ -81,6 +81,7 @@ from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_broadcast_dir
 from prime_rl.utils.utils import (
     clean_exit,
+    final_broadcast_version,
     resolve_latest_ckpt_step,
 )
 
@@ -283,6 +284,7 @@ class Orchestrator:
             config.weight_broadcast,
             admin_clients=self.policy_inference.admin_clients,
             model_name=self.lora_name or config.model.name,
+            max_version=self.final_version,
         )
         await self.receiver.initialize()
 
@@ -474,23 +476,23 @@ class Orchestrator:
                 get_logger().warning("Orchestrator cleanup complete (forced).")
             trim_process_memory()
 
-    async def wait_for_final_broadcast(self) -> None:
-        """Stay alive for the trainer's last in-memory broadcast (v{max_steps-1};
-        nothing samples from v{max_steps}, so it is never sent). An in-memory
-        broadcast is a blocking collective — tearing down the watcher before
-        the rendezvous would strand the trainer inside it."""
-        config = self.config
-        if self.receiver.can_skip_versions or config.max_steps is None:
+    @property
+    def final_version(self) -> int | None:
+        """Newest policy version the trainer will ever broadcast."""
+        if self.config.max_steps is None:
+            return None
+        return final_broadcast_version(self.config.max_steps, self.config.weight_broadcast.broadcast_final)
+
+    async def wait_for_version(self, version: int, reason: str) -> None:
+        """Bounded wait until the watcher has applied v{version}."""
+        if self.policy.version >= version:
             return
-        final_version = config.max_steps - 1
-        if self.policy.version >= final_version:
-            return
-        get_logger().info(f"Waiting for the trainer's final broadcast (v{final_version}) before shutdown")
+        get_logger().info(f"Waiting for the trainer to broadcast v{version} {reason}")
 
         async def wait() -> None:
-            while self.policy.version < final_version:
+            while self.policy.version < version:
                 self.version_advanced.clear()
-                if self.policy.version >= final_version:
+                if self.policy.version >= version:
                     return
                 # A dead watcher can never deliver the broadcast — fail out
                 # instead of idling until the timeout.
@@ -500,13 +502,19 @@ class Orchestrator:
                 except asyncio.TimeoutError:
                     pass
 
+        timeout = getattr(self.config.weight_broadcast, "timeout", None) or STARTUP_WEIGHT_WAIT_TIMEOUT_S
         try:
-            await asyncio.wait_for(wait(), timeout=config.weight_broadcast.timeout)
+            await asyncio.wait_for(wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            get_logger().warning(
-                f"Trainer did not broadcast v{final_version} within {config.weight_broadcast.timeout}s — "
-                "shutting down anyway"
-            )
+            get_logger().warning(f"Trainer did not broadcast v{version} within {timeout}s — proceeding anyway")
+
+    async def wait_for_final_broadcast(self) -> None:
+        """Stay alive for the trainer's last live broadcast. A live broadcast
+        is a blocking rendezvous — tearing down the watcher before it would
+        strand the trainer inside the transfer."""
+        if self.receiver.can_skip_versions or self.final_version is None:
+            return
+        await self.wait_for_version(self.final_version, reason="before shutdown")
 
     async def main_loop(self) -> None:
         """Consume completed episodes and group ``Cancellation``\\ s from the
@@ -710,6 +718,13 @@ class Orchestrator:
 
         self.log_train_batch(batch, step=step, step_time=step_time)
 
+        # The final eval must measure the final weights: hold until the
+        # trainer's last broadcast (v{max_steps} when evals consume it) has
+        # been applied before triggering it. Satisfiable — the trainer
+        # broadcasts right after consuming the batch this call just shipped.
+        if config.eval is not None and config.max_steps is not None and step >= config.max_steps:
+            assert self.final_version is not None
+            await self.wait_for_version(self.final_version, reason="for the final eval")
         self.maybe_trigger_eval(self.progress.step)
         # Drain right after shipping the final batch. Waiting for a further
         # batch to fill would burn inference on data that can never train —

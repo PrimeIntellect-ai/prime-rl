@@ -163,6 +163,13 @@ def get_free_port() -> int:
     return port
 
 
+def final_broadcast_version(max_steps: int, broadcast_final: bool) -> int:
+    """Newest policy version the trainer will ever broadcast: v{max_steps} when
+    something consumes it (a configured final eval), else v{max_steps - 1} -
+    training never samples from the final version."""
+    return max_steps if broadcast_final else max_steps - 1
+
+
 def get_latest_ckpt_step(weights_dir: Path) -> int | None:
     step_dirs = list(weights_dir.glob("step_*"))
     if len(step_dirs) == 0:

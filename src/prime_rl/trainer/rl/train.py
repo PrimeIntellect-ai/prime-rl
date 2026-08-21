@@ -67,7 +67,7 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
+from prime_rl.utils.utils import clean_exit, final_broadcast_version, resolve_latest_ckpt_step
 from ring_flash_attn import substitute_hf_flash_attn
 
 
@@ -264,7 +264,7 @@ def train(config: TrainerConfig):
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
-        is_last_step = config.max_steps is not None and progress.step == config.max_steps
+        is_last_step = config.max_steps is not None and progress.step >= config.max_steps
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
@@ -574,16 +574,16 @@ def train(config: TrainerConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
-        # sample its next step from it. Only the final version is unused (nothing samples from
-        # v{max_steps}) — the orchestrator stays alive for every other in-memory rendezvous;
-        # filesystem broadcast still writes every version for resume.
+        # sample its next step from it. A live transport skips versions past the last consumed
+        # one (``final_broadcast_version``: training never samples v{max_steps}, but a
+        # configured final eval measures it); filesystem writes every version for inspection.
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
             broadcast_unused = (
-                config.weight_broadcast.type in ("nccl", "nixl")
+                weight_broadcast.requires_live_consumer
                 and config.max_steps is not None
-                and progress.step >= config.max_steps
+                and progress.step > final_broadcast_version(config.max_steps, config.weight_broadcast.broadcast_final)
             )
             if not broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()

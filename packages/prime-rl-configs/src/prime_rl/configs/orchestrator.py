@@ -379,8 +379,18 @@ class CheckpointConfig(BaseConfig):
 class FileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    broadcast_final: bool = True
+    """Whether the trainer broadcasts the final version v{max_steps}. Stamped by the
+    launcher: True iff something consumes it (a configured final eval) - training itself
+    never samples from the final version."""
+
 
 class InMemoryWeightBroadcastConfig(BaseConfig):
+    broadcast_final: bool = True
+    """Whether the trainer broadcasts the final version v{max_steps}. Stamped by the
+    launcher: True iff something consumes it (a configured final eval) - training itself
+    never samples from the final version."""
+
     host: str = "localhost"
     """Weight transfer host."""
 

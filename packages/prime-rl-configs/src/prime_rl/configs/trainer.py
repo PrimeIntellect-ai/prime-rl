@@ -546,7 +546,10 @@ class DataLoaderConfig(BaseConfig):
 
 
 class BaseWeightBroadcastConfig(BaseConfig):
-    pass
+    broadcast_final: bool = True
+    """Whether the trainer broadcasts the final version v{max_steps}. Stamped by the
+    launcher: True iff something consumes it (a configured final eval) - training itself
+    never samples from the final version."""
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
