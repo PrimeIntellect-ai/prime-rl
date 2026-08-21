@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import random
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+import verifiers.v1 as vf
 
 from prime_rl.orchestrator.curriculum import Curriculum
 from prime_rl.orchestrator.envs import TrainEnvs
-
-if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.utils import episode_env_name
 
 
 class TrainSource:
@@ -41,11 +41,11 @@ class TrainSource:
             "task": next(self.curricula[env_name].sampler),
         }
 
-    def on_result(self, group: list[Rollout]) -> bool:
+    def on_result(self, group: list[vf.Episode]) -> bool:
         """Report a finalized group and return whether it should train."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")
-        env_name = group[0].env_name
+        env_name = episode_env_name(group[0])
         admitted = self.curricula[env_name].on_result(group)
         if not isinstance(admitted, bool):
             raise TypeError(f"Curriculum.on_result() must return bool, got {type(admitted).__name__}")
@@ -73,8 +73,15 @@ class TrainSource:
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        expected_fields = {"rng", "envs"}
+        if set(state_dict) != expected_fields:
+            raise ValueError(f"Train-source checkpoint fields must be {sorted(expected_fields)}")
+        env_states = state_dict["envs"]
+        if set(env_states) != set(self.curricula):
+            raise ValueError(
+                f"Train-source checkpoint envs {sorted(env_states)} do not match configured envs "
+                f"{sorted(self.curricula)}"
+            )
         self.rng.setstate(state_dict["rng"])
-        for name, curriculum_state in state_dict["envs"].items():
-            curriculum = self.curricula.get(name)
-            if curriculum is not None:
-                curriculum.load_state_dict(curriculum_state)
+        for name, curriculum in self.curricula.items():
+            curriculum.load_state_dict(env_states[name])

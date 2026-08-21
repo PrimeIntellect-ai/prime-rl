@@ -1,38 +1,71 @@
-"""Wire-field stamping for the per-token streams.
-
-The training loss is a sum of three components — ``rl`` (importance-weighted
-PG + KL), ``ce`` (masked NLL), and ``ref_kl`` (reverse KL to a reference model
-as the PG signal) — each normalized by its own global token count in the
-trainer. The algorithm decides which component the action tokens feed
-and the per-token advantages the rl component consumes; these helpers write
-the component weight streams and the advantage stream onto the
-``TrainingSample`` wire fields at group finalization.
-"""
+"""Training annotations and transport loss routing."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import ActionLossType
 from prime_rl.transports.rollouts import TrainingSample
 
-if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+
+def assign_advantages(trace: vf.Trace, values: float | list[float]) -> None:
+    """Assign credit in compact sampled-token order across the trace graph."""
+    nodes = [node for node in trace.nodes if any(node.mask)]
+    for node in nodes:
+        if len(node.mask) != len(node.token_ids):
+            raise ValueError(
+                f"node masks must align with token ids in trace {trace.id!r}: "
+                f"got {len(node.mask)}, expected {len(node.token_ids)}"
+            )
+    total = sum(sum(node.mask) for node in nodes)
+    if isinstance(values, (int, float)):
+        advantages = [float(values)] * total
+    else:
+        if len(values) != total:
+            raise ValueError(
+                f"advantages must align with trace {trace.id!r}'s sampled tokens: got {len(values)}, expected {total}"
+            )
+        advantages = [float(value) for value in values]
+
+    offset = 0
+    for node in nodes:
+        end = offset + sum(node.mask)
+        node.advantages = advantages[offset:end]
+        offset = end
+
+
+def assign_reference_logprobs(branch: vf.Branch, values: list[float]) -> None:
+    """Project branch-aligned reference logprobs onto sampled graph nodes."""
+    if len(values) != len(branch.token_ids):
+        raise ValueError(
+            f"reference logprobs must align with branch tokens: got {len(values)}, expected {len(branch.token_ids)}"
+        )
+    offset = 0
+    for node in branch.nodes:
+        end = offset + len(node.token_ids)
+        if any(node.mask) and node.reference_logprobs is None:
+            node.reference_logprobs = [
+                float(value) for value, sampled in zip(values[offset:end], node.mask, strict=True) if sampled
+            ]
+        offset = end
+
+
+def scalar_advantage(trace: vf.Trace) -> float | None:
+    """Mean nonzero token advantage, or zero for an assigned-zero trace."""
+    advantages = [value for node in trace.nodes for value in node.advantages or []]
+    if not advantages:
+        return None
+    nonzero = [value for value in advantages if value != 0.0]
+    return sum(nonzero) / len(nonzero) if nonzero else 0.0
+
+
+def is_trainable(trace: vf.Trace) -> bool:
+    """Whether any sampled token carries nonzero RL credit."""
+    return any(value != 0.0 for node in trace.nodes for value in node.advantages or [])
 
 
 def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType) -> None:
-    """Stamp the algorithm's loss routing onto one sample's component weight
-    streams: action tokens (the trainable completion tokens, per the loss
-    mask) feed the algorithm's declared component.
-
-    ``rl`` is the default and ships nothing (absent streams mean rl weight
-    1.0 on the loss mask — the hot path); ``ce``/``ref_kl`` weight the action
-    tokens into that component's stream and zero the rl stream. Streams an
-    algorithm wrote directly (echo's observation ce weights) are merged, not
-    clobbered — env-provided tokens stay out of the loss ``mask``, so the
-    component an algorithm weights them into is the only one that trains
-    them.
-    """
+    """Route action tokens into the algorithm's declared loss component."""
     if action_loss_type == "rl":
         return
 
@@ -49,26 +82,3 @@ def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType)
     else:
         assert action_loss_type == "ref_kl"
         sample.ref_kl_weights = action_weights
-
-
-def stamp_advantages(rollout: Rollout) -> None:
-    """Stamp the rollout's per-token advantage stream onto its samples' wire
-    fields. The stream is full-length-N — aligned to the samples' ``token_ids``
-    concatenated in order, 0.0 on non-trainable positions — and sliced across
-    them. Rollouts with no credit assigned (``advantages=None``, e.g. opd/opsd)
-    ship no advantage stream.
-    """
-    advantages = rollout.advantages
-    if advantages is None:
-        return
-    total = sum(len(sample.token_ids) for sample in rollout.samples)
-    if len(advantages) != total:
-        raise ValueError(
-            f"advantage stream must align with the rollout's tokens: "
-            f"got {len(advantages)}, expected {total} (env '{rollout.env_name}')."
-        )
-    offset = 0
-    for sample in rollout.samples:
-        num_tokens = len(sample.token_ids)
-        sample.advantages = list(advantages[offset : offset + num_tokens])
-        offset += num_tokens

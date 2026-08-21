@@ -23,11 +23,15 @@ from prime_rl.configs.trainer import (
     AdamWConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
+    FileSystemWeightBroadcastConfig,
     GCConfig,
     ModelConfig,
+    NCCLWeightBroadcastConfig,
     OptimizerConfig,
     SchedulerConfig,
     TokenizerConfig,
+    WeightBroadcastConfig,
+    validate_scheduler,
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
 
@@ -41,6 +45,9 @@ class BaseDataConfig(BaseConfig):
 
     micro_batch_size: int = Field(1, ge=1)
     """Per-step micro batch size. ``batch_size`` must be divisible by this."""
+
+    num_workers: int = Field(1, ge=0)
+    """Number of dataloader worker processes. With ``>= 1``, batches are prepared and pinned in the background so tokenization/packing overlaps with training. ``0`` loads inline on the main process."""
 
     @model_validator(mode="after")
     def validate_batch_size(self):
@@ -59,6 +66,9 @@ class FakeDataConfig(BaseDataConfig):
 
     input_ids: Literal["increasing", "random"] = "increasing"
     """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
+
+    seed: int = 0
+    """Seed for the per-rank packing/token generator, combined with the data rank."""
 
 
 class LossMaskConfig(BaseConfig):
@@ -166,9 +176,8 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 
     num_infer_nodes: int = Field(0, ge=0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
     """Inference nodes for online evals (alias: ``num_eval_nodes``). Submitted as a separate SLURM job, decoupled
-    from the trainer job: the handoff is weight checkpoints on the shared filesystem,
-    so the eval job can outlive the trainer job (evals drain after training ends) and
-    exits after evaluating the final checkpoint."""
+    from the trainer job. The eval job can outlive the trainer job while it evaluates
+    the final weight broadcast."""
 
     nodes_per_fsdp_group: int | None = None
     """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
@@ -197,12 +206,15 @@ class SFTConfig(BaseConfig):
 
     eval: EvalsEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
-    server that reloads the trainer's HF weight checkpoints from disk. If None, no
-    online evals run."""
+    server that receives the trainer's weight broadcasts. If None, no online evals run."""
 
     inference: InferenceConfig | None = None
     """Inference server for online evals. If None (with ``eval`` set), the launcher
     does not start a server and evals connect to ``eval.client.base_url``."""
+
+    weight_broadcast: WeightBroadcastConfig | None = None
+    """Trainer-to-inference weight transport for online evals. Defaults to NCCL.
+    LoRA and external inference use filesystem broadcast."""
 
     optim: OptimizerConfig = AdamWConfig()
 
@@ -343,29 +355,39 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_online_eval(self):
-        """Wire online evals: require weight checkpoints (the disk handoff to
-        inference) and connect the eval client to the launcher-managed server."""
+        """Wire online evals and the trainer-to-inference weight transport."""
         if self.eval is None:
             if self.inference is not None:
                 raise ValueError("[inference] is only used for online evals — add an [eval] block or remove it.")
             return self
 
-        # The trainer's HF weight checkpoints are how inference picks up new policies.
-        if self.ckpt is None:
-            self.ckpt = CheckpointConfig()
-        if self.ckpt.weights is None or self.ckpt.skip_gather_master_weights:
-            raise ValueError(
-                "Online evals require HF weight checkpoints. Enable ckpt.weights and "
-                "disable ckpt.skip_gather_master_weights."
-            )
+        # LoRA runs broadcast the raw adapter, which evals reload via /load_lora_adapter
+        if self.model.lora is not None:
+            if self.inference is not None:
+                self.inference.vllm.enable_lora = True
+                self.inference.vllm.max_lora_rank = self.model.lora.rank
+            else:
+                warnings.warn(
+                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
+                    "make sure to set --enable_lora and --max-lora-rank.",
+                    stacklevel=2,
+                )
 
-        if self.ckpt.keep_last is not None or self.ckpt.keep_interval is not None:
-            warnings.warn(
-                "ckpt.keep_last / ckpt.keep_interval can delete a weight checkpoint before the "
-                "evals consumes it when evals run slower than training - such steps are "
-                "skipped with a warning instead of evaluated.",
-                stacklevel=2,
-            )
+        if self.weight_broadcast is None:
+            if self.model.lora is not None or self.inference is None:
+                self.weight_broadcast = FileSystemWeightBroadcastConfig()
+            else:
+                self.weight_broadcast = NCCLWeightBroadcastConfig()
+        if self.weight_broadcast.type != "filesystem":
+            if self.weight_broadcast.type == "nixl":
+                raise ValueError("NIXL weight broadcast is not supported for SFT online evals.")
+            if self.model.lora is not None:
+                raise ValueError(
+                    "LoRA training is not yet supported with in-memory weight broadcast. "
+                    "Set weight_broadcast.type = 'filesystem'."
+                )
+            if self.eval.retrigger_on_resume:
+                raise ValueError("eval.retrigger_on_resume requires weight_broadcast.type = 'filesystem'.")
 
         if self.deployment.type == "multi_node":
             # Decoupled deployment: the launcher submits a dedicated SLURM job running the
@@ -392,10 +414,11 @@ class SFTConfig(BaseConfig):
                     f"deployment.gpus_per_node ({self.deployment.gpus_per_node}) must be divisible by "
                     f"inference.vllm.tensor_parallel_size ({self.inference.vllm.tensor_parallel_size})."
                 )
-            if self.inference.weight_broadcast.type != "filesystem":
-                raise ValueError(
-                    "Online evals reload weights from disk — inference.weight_broadcast.type must be 'filesystem'."
+            if self.weight_broadcast.type == "nccl":
+                self.weight_broadcast.inference_world_size = (
+                    self.deployment.num_infer_nodes * self.deployment.gpus_per_node
                 )
+            self.inference.weight_broadcast.type = self.weight_broadcast.type
             if self.max_steps is None:
                 warnings.warn(
                     "Online evals without max_steps: the evals process never sees a final checkpoint, "
@@ -444,10 +467,9 @@ class SFTConfig(BaseConfig):
             vllm.data_parallel_size = num_infer_gpus // vllm.tensor_parallel_size
         if vllm.api_server_count < vllm.data_parallel_size and not vllm.enable_lora:
             vllm.api_server_count = vllm.data_parallel_size
-        if self.inference.weight_broadcast.type != "filesystem":
-            raise ValueError(
-                "Online evals reload weights from disk — inference.weight_broadcast.type must be 'filesystem'."
-            )
+        if self.weight_broadcast.type == "nccl":
+            self.weight_broadcast.inference_world_size = vllm.data_parallel_size * vllm.tensor_parallel_size
+        self.inference.weight_broadcast.type = self.weight_broadcast.type
 
         host = self.inference.server.host or "localhost"
         client = self.eval.client
@@ -539,14 +561,8 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_lora_adapter_saving(self):
-        if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
-            lora_enabled = self.model and self.model.lora
-            if not lora_enabled:
-                raise ValueError(
-                    "save_adapter_separately=True requires LoRA to be enabled. "
-                    "Set model.lora or disable save_adapter_separately."
-                )
+    def validate_scheduler_steps(self):
+        validate_scheduler(self.scheduler, self.max_steps)
         return self
 
     @model_validator(mode="after")

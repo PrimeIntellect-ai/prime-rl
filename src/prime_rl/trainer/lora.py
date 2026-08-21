@@ -1,5 +1,5 @@
 import re
-from typing import Callable, Dict, List
+from typing import Callable, List
 
 import torch
 import torch.nn as nn
@@ -326,23 +326,6 @@ def has_lora_layers(model: nn.Module) -> bool:
         if isinstance(module, MultiLoRAModule):
             return True
     return False
-
-
-def clean_lora_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-    """Remove LoRA parameters and fix LoRA base layer key names for HF compatibility."""
-    clean_state_dict = {}
-
-    for key, value in state_dict.items():
-        if "lora_A" in key or "lora_B" in key:
-            continue
-
-        if ".base_layer." in key:
-            new_key = key.replace(".base_layer.", ".")
-            clean_state_dict[new_key] = value
-        else:
-            clean_state_dict[key] = value
-
-    return clean_state_dict
 
 
 def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropout: float) -> None:

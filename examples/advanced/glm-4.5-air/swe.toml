@@ -76,7 +76,6 @@ max_inflight_activations = 1
 [trainer.model.compile]
 
 [trainer.ckpt]
-skip_gather_master_weights = true
 skip_optimizer = true
 
 [trainer.optim]
@@ -141,7 +140,6 @@ rollout = 3600
 # --- Inference ---
 
 [inference]
-
 
 # vLLM + FlashInfer caches on node-local /tmp (see [env_vars]).
 [inference.env_vars]

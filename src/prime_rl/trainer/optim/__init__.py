@@ -53,7 +53,7 @@ def setup_optimizer(
         config,
         optimizer_named_params,
         parallel_dims,
-        fused_adamw=full_offload_config is not None and config.type == "adamw",
+        fused_adamw=config.type == "adamw" and not cpu_offload,
     )
 
     if full_offload_config is not None:

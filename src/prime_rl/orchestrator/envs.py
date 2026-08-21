@@ -30,13 +30,7 @@ from verifiers.v1.serve import EnvClient
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.sampler import Sampler
-from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
-
-# Every wire trace validates into this type. WireTaskData (extra="allow") keeps the env's task
-# fields without importing the env package — the orchestrator never reads them typed (only
-# task.idx + task.model_dump).
-ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
 # servers concurrently with the orchestrator, and a server imports its env package
@@ -102,30 +96,23 @@ class Env:
         model_name: str,
         cache_salt: str | None,
         task_data: dict,
-    ) -> list[Rollout]:
-        """Run one episode; return its typed Traces. A zero-trace episode raises (the
-        dispatcher synthesizes the error marker); a not-``ok`` episode marks its clean
-        traces failed so partial episodes never train."""
+    ) -> vf.WireEpisode:
+        """Run and return one typed episode. A failed multi-trace episode marks
+        its otherwise-clean traces failed so partial episodes never train."""
         episode = await self.env_client.run(
             task_data=task_data,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        if not episode.traces:
-            error = episode.last_error
-            detail = f"{error.type}: {error.message}" if error is not None else "no traces and no error recorded"
-            raise RuntimeError(f"episode failed before any trace was produced — {detail}")
-        rollouts = [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in episode.traces]
-        for rollout in rollouts:
-            rollout.episode_id = episode.id
-            if not episode.ok and rollout.ok:
+        for trace in episode.traces:
+            if not episode.ok and trace.ok:
                 error = episode.last_error or vf.Error(
                     type="EpisodeFailed", message="A sibling trace in this episode failed"
                 )
-                rollout.errors = [*rollout.errors, error]
-                rollout.ok = False
-        return rollouts
+                trace.errors = [*trace.errors, error]
+                trace.ok = False
+        return episode
 
 
 class TrainEnv(Env):

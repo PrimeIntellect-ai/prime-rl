@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import torch
+import verifiers.v1 as vf
 
-from prime_rl.orchestrator.algo.base import Algorithm
-
-if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
+from prime_rl.orchestrator.algo.routing import assign_advantages
 
 
 class MaxRLAlgorithm(Algorithm):
@@ -22,9 +19,10 @@ class MaxRLAlgorithm(Algorithm):
     Assumes non-negative (canonically binary) rewards; a group with mean reward
     <= 0 carries no signal and gets zero advantages."""
 
-    async def score_group(self, group: list[Rollout]) -> None:
-        rewards = torch.tensor([rollout.reward for rollout in group], dtype=torch.float32)
+    async def score_group(self, episodes: list[vf.Episode]) -> None:
+        traces = [trace for _, trace in iter_trainable_traces(episodes)]
+        rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
         mean = rewards.mean()
         advantages = torch.zeros_like(rewards) if mean <= 0 else (rewards - mean) / mean
-        for rollout, advantage in zip(group, advantages.tolist(), strict=True):
-            rollout.assign_advantages(advantage)
+        for trace, advantage in zip(traces, advantages.tolist(), strict=True):
+            assign_advantages(trace, advantage)

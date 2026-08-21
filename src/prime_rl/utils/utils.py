@@ -25,7 +25,6 @@ from prime_rl.utils.pathing import (
     get_log_dir,
     get_rollout_dir,
     get_step_path,
-    get_weights_dir,
     resolve_latest_ckpt_step,
     sync_wait_for_path,
     wait_for_path,

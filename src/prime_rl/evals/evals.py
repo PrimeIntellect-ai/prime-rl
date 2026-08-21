@@ -2,12 +2,11 @@
 
 Standalone (no ``[online]``), it runs one epoch of every configured eval
 source against the weights the inference server currently serves, then exits.
-With ``[online]``, it watches a weights directory for new HF checkpoints —
-the trainer writes ``weights/step_{n}`` with a ``STABLE`` marker on
-completion — tells the inference server to reload each eligible checkpoint
-from disk (``/update_weights``, no NCCL rendezvous), and runs the configured
-evals against the updated weights, sequentially per checkpoint so every epoch
-measures exactly one policy version.
+With ``[online]``, it watches a broadcasts directory for new weight
+broadcasts — the trainer writes ``broadcasts/step_{n}`` with a ``STABLE``
+marker on completion — tells the inference server to receive each eligible
+broadcast, and runs the configured evals against the updated weights,
+sequentially per broadcast so every epoch measures exactly one policy version.
 
 Scheduling reuses the orchestrator pipeline unchanged: an eval-only
 ``Dispatcher`` admits episodes under the adaptive ``ConcurrencyController``,
@@ -29,8 +28,6 @@ import time
 import uuid
 from subprocess import Popen
 
-import verifiers.v1 as vf
-
 from prime_rl import monitors
 from prime_rl.configs.evals import EvalsConfig
 from prime_rl.orchestrator.concurrency import ConcurrencyController
@@ -44,9 +41,9 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
-from prime_rl.orchestrator.types import EvalBatch, Policy, Rollout
-from prime_rl.orchestrator.utils import group_episodes, intercept_vf_logging, set_default_executor
-from prime_rl.utils.client import InferencePool
+from prime_rl.orchestrator.types import EvalBatch, Policy
+from prime_rl.orchestrator.utils import eval_work, intercept_vf_logging, set_default_executor
+from prime_rl.utils.client import InferencePool, init_nccl_broadcast
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_config_dir, get_log_dir, get_step_path
@@ -56,8 +53,13 @@ from prime_rl.utils.utils import clean_exit
 monkey_patch_oai_iterable_types()
 monkey_patch_chat_completion_logprobs()
 
-# How often to re-scan the weights directory for new checkpoints.
+# How often to re-scan the broadcasts directory for new weight broadcasts.
 POLL_INTERVAL_S = 2.0
+
+# Served model name for adapter broadcasts of LoRA runs. Reloading the same name
+# with fresh weights each step is supported (the server forces an in-place
+# reload, see /load_lora_adapter).
+LORA_NAME = "eval-adapter"
 
 
 class Evals:
@@ -65,7 +67,7 @@ class Evals:
         self.config = config
         setup_logger(config.log.level, json_logging=config.log.json_logging)
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
-        mode = f"online (weights_dir={config.online.weights_dir})" if config.online is not None else "standalone"
+        mode = f"online (broadcasts_dir={config.online.broadcasts_dir})" if config.online is not None else "standalone"
         get_logger().info(f"Starting evals ({mode})")
 
         # The last weight-checkpoint step already handled (evaluated or skipped).
@@ -106,6 +108,18 @@ class Evals:
         await self.pool.wait_for_ready(config.model)
         get_logger().success("Inference pool ready")
 
+        weight_broadcast = config.weight_broadcast
+        if weight_broadcast is not None and weight_broadcast.type == "nccl":
+            get_logger().info(f"Initializing weight broadcast ({weight_broadcast})")
+            await init_nccl_broadcast(
+                self.pool.admin_clients,
+                weight_broadcast.host,
+                weight_broadcast.port,
+                weight_broadcast.timeout,
+                inference_world_size=weight_broadcast.inference_world_size,
+                quantize_in_weight_transfer=weight_broadcast.quantize_in_weight_transfer,
+            )
+
         is_resumed = config.online is not None and config.online.resume_step is not None
         self.eval_source = EvalSource(self.eval_envs, config.eval, is_resumed=is_resumed)
         self.eval_sink = EvalSink(eval_envs=self.eval_envs)
@@ -122,10 +136,13 @@ class Evals:
             eval_source=self.eval_source,
             policy_pool=self.pool,
             policy=self.policy,
+            progress=None,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.eval.concurrency.max_inflight,
             tasks_per_minute=None,
             max_off_policy_steps=0,
+            run_id=self.run_id,
+            run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
         )
         # No ``on_overload``: eval episodes are measurements and are never
@@ -220,7 +237,7 @@ class Evals:
         get_logger().success("Evals finished!")
 
     async def watch(self) -> None:
-        """Online mode: evaluate each eligible weight checkpoint as it appears."""
+        """Online mode: evaluate each eligible weight broadcast as it appears."""
         config = self.config
         assert config.online is not None
         online = config.online
@@ -232,39 +249,58 @@ class Evals:
             await self.maybe_run_evals(step=0)
         elif config.eval.retrigger_on_resume:
             # Re-fire evals at the resume step (e.g. after a crash that lost in-flight
-            # evals). Requires the resume step's weights on disk. The final checkpoint
-            # force-fires every env, exactly like the watch loop below.
-            is_final = online.max_steps is not None and online.resume_step >= online.max_steps
-            await self.maybe_run_evals(step=online.resume_step, reload_weights=True, force=is_final)
+            # evals). The trainer rebroadcasts the resumed policy on startup, but only
+            # after loading the model — wait for that broadcast instead of checking
+            # once. A newer stable broadcast means the resume step's was already
+            # cleaned away (only the newest is kept) and can never reappear. The
+            # final broadcast force-fires every env, exactly like the watch loop below.
+            assert online.broadcasts_dir is not None and online.resume_step is not None
+            while True:
+                if (get_step_path(online.broadcasts_dir, online.resume_step) / "STABLE").exists():
+                    is_final = online.max_steps is not None and online.resume_step >= online.max_steps
+                    await self.maybe_run_evals(step=online.resume_step, reload_weights=True, force=is_final)
+                    break
+                newer_stable = any(
+                    step > online.resume_step and (get_step_path(online.broadcasts_dir, step) / "STABLE").exists()
+                    for step in get_all_ckpt_steps(online.broadcasts_dir)
+                )
+                if newer_stable:
+                    get_logger().warning(
+                        f"Broadcast for resume step {online.resume_step} was cleaned before it could be "
+                        "re-evaluated (broadcast cleaning outpaced the evals process) - skipping the retrigger"
+                    )
+                    break
+                await asyncio.sleep(POLL_INTERVAL_S)
 
-        get_logger().info(f"Watching {online.weights_dir} for new weight checkpoints (max_steps={online.max_steps})")
+        get_logger().info(f"Watching {online.broadcasts_dir} for new weight broadcasts (max_steps={online.max_steps})")
         while True:
-            assert online.weights_dir is not None  # resolved by the config validator
-            steps = get_all_ckpt_steps(online.weights_dir)
-            stable = {step: (get_step_path(online.weights_dir, step) / "STABLE").exists() for step in steps}
+            assert online.broadcasts_dir is not None  # resolved by the config validator
+            steps = get_all_ckpt_steps(online.broadcasts_dir)
+            stable = {step: (get_step_path(online.broadcasts_dir, step) / "STABLE").exists() for step in steps}
             newest_stable = max((step for step in steps if stable[step]), default=None)
-            # Also walk eval-due steps that are no longer on disk: checkpoint cleaning
-            # (ckpt.keep_last / keep_interval) can delete a step before this scan sees
-            # it, and a vanished step would otherwise be skipped without a trace.
+            # Also walk eval-due steps that are no longer on disk: broadcast cleaning
+            # (the trainer keeps only the newest broadcast) can delete a step before
+            # this scan sees it, and a vanished step would otherwise be skipped
+            # without a trace.
             for step in sorted(set(steps) | self.deleted_due_steps(steps, newest_stable)):
                 if step <= self.last_step:
                     continue
                 if step not in stable:
                     get_logger().warning(
-                        f"Weight checkpoint for eval step {step} was deleted before it could be "
-                        "evaluated (checkpoint cleaning outpaced the evals process) - skipping its evals"
+                        f"Weight broadcast for eval step {step} was deleted before it could be "
+                        "evaluated (broadcast cleaning outpaced the evals process) - skipping its evals"
                     )
                     self.last_step = max(self.last_step, step)
                     continue
                 if not stable[step]:
-                    # The trainer writes checkpoints in ascending order, so a marker-less
+                    # The trainer writes broadcasts in ascending order, so a marker-less
                     # step below a stable one is an abandoned partial write (e.g. a crash
                     # mid-save), not one in progress — skip it instead of wedging on it.
                     if newest_stable is None or newest_stable < step:
                         break  # still being written — later steps can't be ready either
                     get_logger().warning(
-                        f"Weight checkpoint step {step} has no STABLE marker but newer stable "
-                        "checkpoints exist - treating it as abandoned and skipping its evals"
+                        f"Weight broadcast step {step} has no STABLE marker but newer stable "
+                        "broadcasts exist - treating it as abandoned and skipping its evals"
                     )
                     self.last_step = max(self.last_step, step)
                     continue
@@ -275,9 +311,10 @@ class Evals:
             await asyncio.sleep(POLL_INTERVAL_S)
 
     def deleted_due_steps(self, steps: list[int], newest_stable: int | None) -> set[int]:
-        """Eval-due steps up to the newest stable checkpoint that are missing from the
-        weights dir — the trainer wrote them (it saves at every due step), so their
-        absence means checkpoint cleaning removed them before they were evaluated."""
+        """Eval-due steps up to the newest stable broadcast that are missing from the
+        broadcasts dir — the trainer wrote them (it broadcasts at every due step), so
+        their absence means broadcast cleaning removed them before they were
+        evaluated."""
         if newest_stable is None:
             return set()
         due = {
@@ -291,10 +328,10 @@ class Evals:
         """Fire eligible envs for one checkpoint step and run the full epoch(s),
         reloading the inference weights first. No-op when no env is due."""
         if reload_weights:
-            assert self.config.online is not None and self.config.online.weights_dir is not None
-            weight_dir = get_step_path(self.config.online.weights_dir, step)
-            if not (weight_dir / "STABLE").exists():
-                get_logger().warning(f"No stable weight checkpoint for step {step} ({weight_dir}) - skipping eval")
+            assert self.config.online is not None and self.config.online.broadcasts_dir is not None
+            broadcast_dir = get_step_path(self.config.online.broadcasts_dir, step)
+            if not (broadcast_dir / "STABLE").exists():
+                get_logger().warning(f"No stable weight broadcast for step {step} ({broadcast_dir}) - skipping eval")
                 self.last_step = max(self.last_step, step)
                 return
 
@@ -312,9 +349,12 @@ class Evals:
         )
 
         if reload_weights:
-            get_logger().info(f"Updating inference weights to checkpoint step {step} ({weight_dir})")
+            get_logger().info(f"Updating inference weights to broadcast step {step} ({broadcast_dir})")
+            # LoRA runs broadcast the raw adapter; load it under a fixed adapter name
+            # and serve the evals against that name (mirrors WeightWatcher).
+            lora_name = LORA_NAME if (broadcast_dir / "adapter_config.json").exists() else None
             try:
-                await self.pool.update_weights(weight_dir, step=step)
+                await self.pool.update_weights(broadcast_dir, lora_name=lora_name, step=step)
             except Exception as exc:
                 # Skip this step instead of killing the run; drain the queued examples
                 # so they don't leak into a later epoch with the wrong eval_step.
@@ -322,6 +362,9 @@ class Evals:
                     pass
                 get_logger().error(f"Failed to update inference weights to step {step} - skipping evals: {exc!r}")
                 return
+            if lora_name is not None:
+                self.pool.update_model_name(lora_name)
+                self.policy.model_name = lora_name
 
         # The dispatcher only schedules eval in PREFER_EVAL, so nothing dispatches
         # between the trigger above and the weight reload completing.
@@ -336,19 +379,9 @@ class Evals:
         # An env with no examples emits no episodes, so its epoch can never finalize.
         pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) > 0}
         while pending:
-            episode: list[Rollout] = await self.dispatcher.out_q.get()
-            step = episode[0].eval_step
-            assert step is not None
-            run = vf.EvalRunInfo(id=self.run_id, name=self.run_name, step=step)
-            for rollout in episode:
-                rollout.record_run(
-                    run,
-                    env_name=rollout.env_name,
-                    group_id=str(rollout.group_id),
-                    episode_id=rollout.episode_id,
-                    policy_version=rollout.policy_version,
-                )
-            await monitors.log(group_episodes(episode), step, "eval", "all")
+            episode = await self.dispatcher.out_q.get()
+            step = eval_work(episode).step
+            await monitors.log([episode], step, "eval", "all")
             eval_batch = self.eval_sink.add(episode)
             if eval_batch is not None:
                 await self.finalize_eval_batch(eval_batch)
@@ -357,22 +390,22 @@ class Evals:
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the
         orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict."""
-        if not batch.rollouts:
-            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no rollouts returned, skipping log")
+        if not batch.episodes:
+            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no episodes returned, skipping log")
             return
 
-        await monitors.log(group_episodes(batch.rollouts.effective.rollouts), batch.step, "eval", "effective")
+        await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
 
-        rollouts = batch.rollouts
-        effective = rollouts.effective
+        episodes = batch.episodes
+        effective = episodes.effective
         metrics: dict[str, float] = {}
-        for subset, pool in (("all", rollouts), ("effective", effective)):
+        for subset, pool in (("all", episodes), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
         metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
         metrics["step"] = float(batch.step)
         await monitors.log(metrics, step=batch.step)
 
-        eff, full = effective.metrics, rollouts.metrics
+        eff, full = effective.metrics, episodes.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
         get_logger().success(

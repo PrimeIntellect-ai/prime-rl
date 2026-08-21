@@ -6,10 +6,9 @@ import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
 import verifiers.v1 as vf
-from verifiers.v1.episode import EnvInfo
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.utils.client import InferencePool
@@ -20,8 +19,33 @@ from prime_rl.utils.utils import (
     get_step_path,
 )
 
-if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+
+def episode_env_name(episode: vf.Episode[Any, Any, Any]) -> str:
+    name = episode.env.name
+    if name is None:
+        raise ValueError("Orchestrated episode is missing its environment name")
+    return name
+
+
+def episode_group_id(episode: vf.Episode[Any, Any, Any]) -> str:
+    group = episode.group
+    if group is None:
+        raise ValueError("Orchestrated episode is missing its rollout group")
+    return group.id
+
+
+def train_work(episode: vf.Episode[Any, Any, Any]) -> vf.TrainWorkInfo:
+    run = episode.run
+    if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.TrainWorkInfo):
+        raise ValueError("Train episode is missing training-work provenance")
+    return run.work
+
+
+def eval_work(episode: vf.Episode[Any, Any, Any]) -> vf.EvalWorkInfo:
+    run = episode.run
+    if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.EvalWorkInfo):
+        raise ValueError("Eval episode is missing evaluation-work provenance")
+    return run.work
 
 
 async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
@@ -52,24 +76,6 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
         renderer_config=config.renderer,
     )
     return renderer, inference_pool
-
-
-def group_episodes(rollouts: "list[Rollout]") -> list[vf.Episode]:
-    """Regroup rollouts into their episodes. The dispatcher unwraps every
-    ``vf.Episode`` into its traces on arrival; ``episode_id`` links them back
-    together (a rollout without one forms a single-trace episode)."""
-    groups: dict[str, list] = {}
-    for rollout in rollouts:
-        groups.setdefault(rollout.episode_id or rollout.id, []).append(rollout)
-    return [
-        vf.Episode(
-            id=episode_id,
-            env=EnvInfo(id=group[0].env_name),
-            traces=group,
-            ok=all(trace.ok for trace in group),
-        )
-        for episode_id, group in groups.items()
-    ]
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
