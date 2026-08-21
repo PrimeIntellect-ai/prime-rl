@@ -261,9 +261,15 @@ class TraceMetrics(StatGroup):
 
 
 class EpisodeMetrics:
-    def __init__(self, episodes: list[vf.Episode], records: list[TraceRecord]) -> None:
+    def __init__(
+        self,
+        episodes: list[vf.Episode],
+        records: list[TraceRecord],
+        cancelled: set[str] | None = None,
+    ) -> None:
         self.episodes = episodes
         self.records = records
+        self.cancelled_ids = cancelled if cancelled is not None else set()
 
     def by_agent(self) -> dict[str, TraceMetrics]:
         per_agent: dict[str, list[TraceRecord]] = {}
@@ -310,12 +316,10 @@ class EpisodeMetrics:
     @property
     def cancelled(self) -> Stat:
         """Per-episode pipeline-cancellation rate — same denominator as
-        ``has_error``, and disjoint from it."""
-        by_episode = {id(episode): 0.0 for episode in self.episodes}
-        for record in self.records:
-            if record.cancelled:
-                by_episode[id(record.episode)] = 1.0
-        return Stat(list(by_episode.values()))
+        ``has_error``. Read from the id-set, not the trace records, so
+        trace-less episodes (synthetic error episodes inside a voided group)
+        still count."""
+        return Stat([float(episode.id in self.cancelled_ids) for episode in self.episodes])
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         if not self.episodes:
@@ -503,7 +507,7 @@ class TrainEpisodes(EpisodeCollection):
 
     @property
     def metrics(self) -> TrainMetrics:
-        return TrainMetrics(self.selected_episodes, self.records)
+        return TrainMetrics(self.selected_episodes, self.records, self.cancelled)
 
 
 class EvalEpisodes(EpisodeCollection):
