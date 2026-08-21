@@ -42,9 +42,8 @@ CancelReason = Literal["stale", "overload"]
 class Cancellation:
     """Terminal marker for a dropped group: one message covering every episode
     the group still owed the sink (in-flight and never-dispatched), so
-    count-to-``group_size`` finalization fires without synthesizing error
-    episodes. ``reason`` distinguishes pipeline decisions (staleness, overload
-    cut) from real episode errors."""
+    count-to-``group_size`` finalization still fires. ``reason`` distinguishes
+    pipeline decisions (staleness, overload cut) from episode errors."""
 
     kind: WorkKind
     env_name: str

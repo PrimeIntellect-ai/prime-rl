@@ -309,8 +309,13 @@ class EpisodeMetrics:
 
     @property
     def cancelled(self) -> Stat:
-        """Per-record pipeline-cancellation rate — disjoint from ``has_error``."""
-        return Stat([float(record.cancelled) for record in self.records])
+        """Per-episode pipeline-cancellation rate — same denominator as
+        ``has_error``, and disjoint from it."""
+        by_episode = {id(episode): 0.0 for episode in self.episodes}
+        for record in self.records:
+            if record.cancelled:
+                by_episode[id(record.episode)] = 1.0
+        return Stat(list(by_episode.values()))
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         if not self.episodes:

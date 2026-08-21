@@ -534,11 +534,17 @@ class Orchestrator:
         get_logger().info(f"Waiting for the trainer's final broadcast (v{final_version}) before shutdown")
 
         async def wait() -> None:
-            while True:
+            while self.policy.version < final_version:
                 self.version_advanced.clear()
                 if self.policy.version >= final_version:
                     return
-                await self.version_advanced.wait()
+                # A dead watcher can never deliver the broadcast — fail out
+                # instead of idling until the timeout.
+                self._raise_if_component_stopped()
+                try:
+                    await asyncio.wait_for(self.version_advanced.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
 
         try:
             await asyncio.wait_for(wait(), timeout=config.weight_broadcast.timeout)
@@ -624,6 +630,12 @@ class Orchestrator:
         now = time.perf_counter()
         step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
         self.last_batch_at = now
+
+        # A resume can start past the end (checkpoint written at the final
+        # step, or a lowered ``max_steps``): never ship beyond the budget.
+        if config.max_steps is not None and step > config.max_steps:
+            await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
+            return
 
         if not batch.samples:
             self.consecutive_empty_batches += 1
@@ -750,14 +762,19 @@ class Orchestrator:
         # and with a tight ``max_staleness`` it never fills at all (the
         # versions it would need are never broadcast).
         if config.max_steps is not None and step >= config.max_steps:
-            self.draining = True
-            self.dispatcher.disable_train_scheduling()
-            n_cancelled = await self.dispatcher.cancel_inflight_train_episodes()
-            get_logger().info(
-                f"Shipped the final batch — draining pipeline (cancelled {n_cancelled} in-flight "
-                f"train episode(s); any in-flight evals will complete)"
-            )
+            await self.start_draining("Shipped the final batch")
         trim_process_memory()
+
+    async def start_draining(self, reason: str) -> None:
+        """Stop scheduling train work and let the pipeline empty; triggered
+        eval epochs still run to completion."""
+        self.draining = True
+        self.dispatcher.disable_train_scheduling()
+        n_cancelled = await self.dispatcher.cancel_inflight_train_episodes()
+        get_logger().info(
+            f"{reason} — draining pipeline (cancelled {n_cancelled} in-flight "
+            f"train episode(s); any in-flight evals will complete)"
+        )
 
     def maybe_trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything

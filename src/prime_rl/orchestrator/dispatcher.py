@@ -50,6 +50,7 @@ from prime_rl.orchestrator.types import (
     Progress,
     WorkKind,
 )
+from prime_rl.orchestrator.utils import min_fresh_version
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import get_logger
@@ -378,7 +379,7 @@ class Dispatcher:
         (see ``WeightWatcher.apply_policy_update``)."""
         if self.train_envs is None or self.progress is None:
             return
-        min_version = (self.progress.step - 1) - self.max_staleness
+        min_version = min_fresh_version(self.progress.step, self.max_staleness)
         stale_groups = [
             gid
             for gid, group in self.groups.items()

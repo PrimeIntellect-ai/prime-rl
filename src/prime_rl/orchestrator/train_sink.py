@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 import verifiers.v1 as vf
 
@@ -21,7 +21,7 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import Cancellation, Progress, TrainBatch
-from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, train_work
+from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
 from prime_rl.transports.rollouts import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -99,6 +99,9 @@ class TrainSink:
         # Queued traces voided by the staleness sweep since the last ship;
         # read and reset by the orchestrator's per-step metrics.
         self.stale_drops = 0
+        # Step of the last full staleness sweep — queued traces only age when
+        # ``progress.step`` advances, so one full sweep per step suffices.
+        self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
 
@@ -160,19 +163,30 @@ class TrainSink:
         )
         return self.process_batch() if ready else None
 
-    def _drop_stale(self) -> None:
+    def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
         """Void queued traces past ``max_staleness``. The batch being
         collected is ``progress.step`` and trains policy v{step-1}, so a
         queued trace generated from v{k} would ship at staleness
-        ``(step-1) - k``. This sweep runs before every readiness check and is
-        the hard guarantee on trained staleness; the dispatcher's in-flight
-        cancel only saves compute. Frozen-sourced episodes (no policy span)
-        never go stale."""
-        min_version = (self.progress.step - 1) - self.config.max_staleness
+        ``(step-1) - k``. This sweep is the hard guarantee on trained
+        staleness; the dispatcher's in-flight cancel only saves compute.
+        Queued traces only age when ``progress.step`` advances, so the full
+        sweep runs once per step; ``trace_ids`` scopes the check to a freshly
+        inserted group, whose traces may already be stale on arrival.
+        Frozen-sourced episodes (no policy span) never go stale.
+
+        A swept trace whose window already shipped is visible only in
+        ``stale_drops`` — its episode was reported with that window, and
+        re-observing it would double-count its stats."""
+        if trace_ids is None:
+            if self._swept_step == self.progress.step:
+                return
+            self._swept_step = self.progress.step
+            trace_ids = list(self.pending_batch)
+        min_version = min_fresh_version(self.progress.step, self.config.max_staleness)
         if min_version <= 0:
             return
         dropped = 0
-        for trace_id in list(self.pending_batch):
+        for trace_id in trace_ids:
             episode = self.episode_by_trace[trace_id]
             policy = train_work(episode).policy
             if policy is None or policy.start >= min_version:
@@ -266,6 +280,7 @@ class TrainSink:
             self.pending_tokens += sum(
                 payload_tokens(samples, self._trace(trace_id)) for trace_id, samples in samples_by_trace.items()
             )
+        self._drop_stale(samples_by_trace)
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
 

@@ -48,6 +48,12 @@ def eval_work(episode: vf.Episode[Any, Any, Any]) -> vf.EvalWorkInfo:
     return run.work
 
 
+def min_fresh_version(step: int, max_staleness: int) -> int:
+    """Oldest dispatch version whose episodes may still train in batch
+    ``step`` — anything older would ship past ``max_staleness``."""
+    return (step - 1) - max_staleness
+
+
 def episode_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) -> tuple[int, int, int]:
     """``(total, in_flight, in_queue)`` staleness of one train episode when
     consumed by batch ``training_step``: the version the batch trains on
