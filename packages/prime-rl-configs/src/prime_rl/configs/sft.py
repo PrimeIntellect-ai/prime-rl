@@ -34,7 +34,6 @@ from prime_rl.configs.trainer import (
     validate_scheduler,
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
-from prime_rl.utils.validation import resolve_weight_broadcast_config
 
 
 class BaseDataConfig(BaseConfig):
@@ -374,16 +373,19 @@ class SFTConfig(BaseConfig):
                     stacklevel=2,
                 )
 
-        self.weight_broadcast = resolve_weight_broadcast_config(
-            self.weight_broadcast,
-            lora_enabled=self.model.lora is not None,
-            inference_enabled=self.inference is not None,
-            filesystem_factory=FileSystemWeightBroadcastConfig,
-            nccl_factory=NCCLWeightBroadcastConfig,
-        )
+        if self.weight_broadcast is None:
+            if self.model.lora is not None or self.inference is None:
+                self.weight_broadcast = FileSystemWeightBroadcastConfig()
+            else:
+                self.weight_broadcast = NCCLWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem":
             if self.weight_broadcast.type == "nixl":
                 raise ValueError("NIXL weight broadcast is not supported for SFT online evals.")
+            if self.model.lora is not None:
+                raise ValueError(
+                    "LoRA training is not yet supported with in-memory weight broadcast. "
+                    "Set weight_broadcast.type = 'filesystem'."
+                )
             if self.eval.retrigger_on_resume:
                 raise ValueError("eval.retrigger_on_resume requires weight_broadcast.type = 'filesystem'.")
 
