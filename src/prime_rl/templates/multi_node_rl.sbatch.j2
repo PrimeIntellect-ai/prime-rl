@@ -67,6 +67,14 @@ ln -sfn attempt_$ATTEMPT $OUTPUT_DIR/logs/latest
 ln -sfn trainer/node_0.log $LOG_DIR/trainer.log
 ln -sfn inference/node_0.log $LOG_DIR/inference.log
 
+# A clean run cannot trip srun --kill-on-bad-exit (which only propagates
+# failures), so the orchestrator's node publishes completion through this
+# job-scoped sentinel and the inference nodes watch for it to release their
+# engines. Stale sentinels from other job IDs are inert, so only this job's own
+# path needs clearing.
+export RUN_DONE=$OUTPUT_DIR/.run_done_$SLURM_JOB_ID
+rm -f "$RUN_DONE"
+
 export PRL_RUN_ID=${PRL_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
 export PRL_RUN_NAME={{ run_name }}
 export WANDB_RUN_ID=$PRL_RUN_ID
@@ -387,6 +395,11 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     done
 {%- endif %}
 
+    # Watch for the completion sentinel so this node's wait below returns when
+    # the run finishes cleanly on the orchestrator's node — the engines never
+    # exit on their own, so without this the allocation idles until wall time.
+    ( until [ -f "$RUN_DONE" ]; do sleep 10; done ) &
+
 else
     TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
 {%- else %}
@@ -415,6 +428,7 @@ else
         @ $CONFIG_DIR/trainer.json \
         {% if use_zmq_transport %}--rollout_transport.host $ORCH_ADDR \
         {% endif %}2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log &
+    TRAINER_PID=$!
 {% if num_infer_nodes > 0 %}    fi{% endif %}
 {% if num_infer_nodes > 0 %}
 # Launch the orchestrator on the node ORCH_ADDR points at (see the ORCH_PROCID
@@ -454,6 +468,7 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
     {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
         2>&1 | tee $LOG_DIR/orchestrator.log &
+    ORCHESTRATOR_PID=$!
 fi
 {% endif %}
 
@@ -461,8 +476,33 @@ fi
 # turns background process crashes (router, orchestrator) into task failures
 # that --kill-on-bad-exit=1 can broadcast to the other nodes so the whole job
 # tears down instead of leaving zombies holding the allocation.
-wait -n
+wait -n -p FINISHED_PID
 EXIT_CODE=$?
+
+# A component finishing cleanly does not mean the run is over: at max_steps the
+# trainer exits while the orchestrator still drains that step's eval, and the
+# orchestrator can likewise finish first while the trainer writes its last
+# checkpoint. Tearing down on the first exit kills the peer mid-flight, so wait
+# for whichever of the two is still working.
+if [ "$EXIT_CODE" -eq 0 ]; then
+    for pid in "${TRAINER_PID:-}" "${ORCHESTRATOR_PID:-}"; do
+        if [ -n "$pid" ] && [ "$pid" != "${FINISHED_PID:-}" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "[$(hostname)] component finished cleanly - waiting for peer $pid to finish its work"
+            wait "$pid"
+            PEER_CODE=$?
+            if [ "$PEER_CODE" -ne 0 ]; then
+                EXIT_CODE=$PEER_CODE
+            fi
+        fi
+    done
+fi
+
+# Publish completion from the orchestrator's node only: a peer trainer node also
+# exits zero at max_steps, and releasing the engines on its word would truncate
+# the eval this block just waited for.
+if [ "$EXIT_CODE" -eq 0 ] && [ -n "${ORCHESTRATOR_PID:-}" ]; then
+    touch "$RUN_DONE"
+fi
 REMAINING_PIDS=$(jobs -p)
 {%- if cleanup_grace_period %}
 # Cross-node teardown is driven by `srun --kill-on-bad-exit=1`, which reaps peer
