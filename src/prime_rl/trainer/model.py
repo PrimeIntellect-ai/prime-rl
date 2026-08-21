@@ -965,16 +965,15 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     model.to_empty(device=device)
     torch.distributed.barrier()
 
-    def _init_buffers_post_meta():
-        if isinstance(model, PreTrainedModelPrimeRL):
-            model.init_buffers_post_meta()
-        else:
-            fix_model_post_empty(model)
+    # Must run before any weight loading: reinit can zero persistent buffers that ship in checkpoints
+    if isinstance(model, PreTrainedModelPrimeRL):
+        model.init_buffers_post_meta()
+    else:
+        fix_model_post_empty(model)
 
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
-        _init_buffers_post_meta()
         _move_buffers_to_cuda(model, config)
         return
 
@@ -1042,7 +1041,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     # Restore weight tying broken by to_empty() for HF models
     if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
         model.tie_weights()
-    _init_buffers_post_meta()
 
     _move_buffers_to_cuda(model, config)
 

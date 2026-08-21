@@ -32,9 +32,6 @@ def model() -> LagunaForCausalLM:
         return LagunaForCausalLM(config)
 
 
-@pytest.mark.xfail(
-    strict=True, reason="Buffer reinit runs after loading and clobbers the checkpoint's persistent expert_bias"
-)
 def test_load_dcp_from_hf_keeps_checkpoint_expert_bias(model, tmp_path, monkeypatch):
     """Checkpoint values for the persistent `expert_bias` buffer must survive loading."""
     expected = torch.tensor([0.1, 0.2, 0.3, 0.4])
