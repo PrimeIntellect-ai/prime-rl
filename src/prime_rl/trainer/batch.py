@@ -441,13 +441,6 @@ class _MicroBatchBin:
     def first_sample(self) -> MicroBatch:
         return self.samples[0]
 
-    @property
-    def first_multimodal_sample(self) -> MicroBatch | None:
-        for sample in self.samples:
-            if _is_multimodal_sample(sample):
-                return sample
-        return None
-
     def can_add(self, sample: MicroBatch, max_seq_len: int) -> bool:
         # Loss routing is per token (component weight streams), so samples of
         # different loss types and raw-image refs pack together freely.
@@ -579,7 +572,7 @@ def _expand_bins_by_splitting(
         candidates = [
             (bin_content.workload(bin_cost), idx)
             for idx, bin_content in enumerate(bins)
-            if len(bin_content.samples) > 1 and bin_content.first_multimodal_sample is None
+            if len(bin_content.samples) > 1
         ]
         if not candidates:
             break

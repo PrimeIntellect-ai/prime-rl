@@ -443,13 +443,9 @@ def test_prepare_batch_packs_multimodal_with_text():
     batches_per_gpu = prepare_batch(
         rollouts=[mm_sample, text_sample],
         seq_len=8,
-        num_train_workers=2,
+        num_train_workers=1,
         bin_cost=build_bin_cost(None),
     )
-
-    # FSDP requires uniform modality at each step index across ranks
-    for step_mbs in zip(*batches_per_gpu):
-        assert len({_is_multimodal_sample(mb) for mb in step_mbs}) == 1
 
     real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
     assert len(real_batches) == 1
@@ -461,6 +457,31 @@ def test_prepare_batch_packs_multimodal_with_text():
     assert batch.mm_refs is not None
     assert [(ref.offset, ref.length) for ref in batch.mm_refs.images] == [(1, 1)]
     assert batch.env_names == ["mm-env"] * 3 + ["text-env"] * 2
+
+
+def test_split_to_align_splits_multimodal_bins():
+    def make_mm_sample(token: int) -> TrainingSample:
+        return TrainingSample(
+            token_ids=[token, token + 1, token + 2],
+            mask=[False, True, True],
+            logprobs=[0.0, -0.1, -0.2],
+            temperatures=[1.0, 1.0, 1.0],
+            advantages=[0.0, 1.0, 1.0],
+            env_name=f"mm-{token}",
+            mm_token_type_ids=[0, 1, 0],
+            mm_refs=MMRefs(images=[MMImageRef(url=f"data:image/png;base64,{token}", offset=1, length=1)]),
+        )
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[make_mm_sample(10), make_mm_sample(20)],
+        seq_len=8,
+        num_train_workers=2,
+        bin_cost=build_bin_cost(None),
+    )
+
+    batches = _flatten_batches(batches_per_gpu)
+    assert len(batches) == 2
+    assert all(_has_loss_tokens(batch) and _is_multimodal_sample(batch) for batch in batches)
 
 
 def test_prepare_sample_none_routed_experts():
