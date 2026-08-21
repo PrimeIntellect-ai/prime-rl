@@ -66,7 +66,8 @@ def episode_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) ->
         return 0, 0, 0
     total = max(0, (training_step - 1) - policy.start)
     in_flight = min(total, max(0, policy.end - policy.start))
-    return total, in_flight, total - in_flight
+    in_queue = total - in_flight
+    return total, in_flight, in_queue
 
 
 async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):

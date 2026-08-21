@@ -33,7 +33,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Literal
+from typing import Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
@@ -129,7 +129,7 @@ def _trace_task(task: vf.Task) -> vf.TraceTask:
     )
 
 
-def _validate_episode_task(episode: vf.Episode[Any, Any, Any], task: vf.Task) -> None:
+def _validate_episode_task(episode: vf.WireEpisode, task: vf.Task) -> None:
     expected = (task.key, task.hash)
     actual = (episode.task.key, episode.task.hash)
     if actual != expected:
@@ -203,7 +203,7 @@ class Dispatcher:
         # in-flight work). One entry per episode — the sinks count episodes,
         # never loose traces — plus one ``Cancellation`` per dropped group.
         maxsize = max(8, max_inflight_ceiling) if max_inflight_ceiling is not None else 0
-        self.out_q: asyncio.Queue[vf.Episode[Any, Any, Any] | Cancellation] = asyncio.Queue(maxsize=maxsize)
+        self.out_q: asyncio.Queue[vf.WireEpisode | Cancellation] = asyncio.Queue(maxsize=maxsize)
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -578,7 +578,7 @@ class Dispatcher:
 
         is_synth_exception = False
         try:
-            episode: vf.Episode[Any, Any, Any] = task.result()
+            episode: vf.WireEpisode = task.result()
         except asyncio.CancelledError:
             return
         except Exception as exc:
@@ -628,7 +628,7 @@ class Dispatcher:
         self,
         meta: InflightEpisode,
         group: GroupState | None,
-        episode: vf.Episode[Any, Any, Any],
+        episode: vf.WireEpisode,
     ) -> None:
         """Stamp one completed episode with its dispatch provenance and emit it."""
         _validate_episode_task(episode, meta.task)
@@ -745,6 +745,6 @@ class Dispatcher:
             "dispatcher/inflight/eval": float(self.inflight_eval_count),
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
-            "dispatcher/off_policy_level/max": float(max(staleness, default=0)),
-            "dispatcher/off_policy_level/mean": sum(staleness) / len(staleness) if staleness else 0.0,
+            "dispatcher/off_policy/max": float(max(staleness, default=0)),
+            "dispatcher/off_policy/mean": sum(staleness) / len(staleness) if staleness else 0.0,
         }

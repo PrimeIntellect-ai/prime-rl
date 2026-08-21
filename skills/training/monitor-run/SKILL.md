@@ -130,7 +130,7 @@ All metrics print to the console log (and W&B when configured).
 | trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU % |
 | orchestrator | `time/step`, `time/save_ckpt` | phase timings |
 | orchestrator | `time/wait_for_policy` | **high → trainer is bottleneck** |
-| orchestrator | `dispatcher/off_policy_level/{mean,max}`, `dispatcher/inflight/{train,eval}`, `dispatcher/queued/eval` | dispatcher / async state |
+| orchestrator | `dispatcher/off_policy/{mean,max}`, `dispatcher/inflight/{train,eval}`, `dispatcher/queued/eval` | dispatcher / async state |
 | orchestrator | `off_policy/{mean,max}`, `off_policy/{in_flight,in_queue}/{mean,max}`, `off_policy/dropped` | per-step staleness of trained rollouts |
 | env server | event loop lag (min/mean/p90/p99/max), active task distribution | periodic |
 
