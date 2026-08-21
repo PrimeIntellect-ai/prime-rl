@@ -45,23 +45,42 @@ Step-by-step plan, one commit each:
 - [x] 4. Heavily Compressed Attention (HCA): compressor, no indexer
 - [x] 5. Standard MoE (router, experts, shared expert)
 - [x] 6. Hash-routed MoE (bootstrap layers)
-- [ ] 7. Decoder layer + model classes + state-dict conversion chain, wiring everything above together
+- [x] 7. Decoder layer + model classes + state-dict conversion chain, wiring everything above together
 
-Open items step 7 needs to handle:
+All seven steps are done, which gets a minimal working model: `DeepseekV4ForCausalLM` is
+registered in `trainer/models/__init__.py`, dispatches through `AutoModelForCausalLMPrimeRL` /
+`get_model()`, loads an HF checkpoint through `converting_deepseek_v4.conversion_chain` with no
+missing or unexpected keys, and matches HF's forward and backward to the float32 floor
+(`tests/unit/train/models/test_deepseek_v4.py`). What follows is what it still takes to call it
+production ready.
+
+Fixed during review: `init_buffers_post_meta` unconditionally zeroed `MoE`'s persistent
+`expert_bias` buffer, which by that point already holds the real value `dcp_load` loaded from a
+checkpoint (`to_empty` -> `dcp_load` -> `init_buffers_post_meta`, per `trainer/model.py`), so it
+silently discarded a checkpoint's load-balancing bias on every load. `tokens_per_expert` (a
+non-persistent buffer, never in a checkpoint) is still correctly reset. The same bug exists in
+`laguna/modeling_laguna.py` (copied from there) and is tracked/fixed on its own branch
+(`fix/laguna-expert-biases`), independent of this port.
+
+Open items:
 
 - **YaRN on the compress RoPE branch is not wired up.** `DeepseekV4Config._nest_rope_parameters`
   forces `rope_type="default"` for both `main` and `compress`. Real checkpoints use YaRN
   (`factor=16`, `attention_factor=1.0`, `rope_theta=160000.0`) for `compress`. Wiring it up also
   needs HF's `validate_rope` override (the base validator keys off `layer_types`, not the
-  `main`/`compress` labels).
-- **No MTP.** `num_nextn_predict_layers` is not carried over (HF doesn't instantiate it either);
-  the conversion chain needs to drop `mtp.*` keys, same as `nemotron_h`.
+  `main`/`compress` labels). This is the one open item that changes the numbers a real
+  checkpoint produces, so it blocks any run against real V4 weights.
+- **No MTP.** `num_nextn_predict_layers` is not carried over and no multi-token-prediction head is
+  built (HF does not build one either). The conversion chain drops `mtp.*` keys at either nesting
+  depth, mirroring HF's `_keys_to_ignore_on_load_unexpected`.
 - **Everything is single-document.** `build_sliding_window_mask`, both compressors, and
-  `DeepseekV4Attention`'s default `position_ids` all assume one document per row (no
-  `cu_seqlens` awareness). A packed multi-document batch would let windows/compression bleed
-  across document boundaries. Step 7 needs to decide between a `cu_seqlens`-aware mask/compressor
-  or a flash-attention path with `window_size` (currently attention is eager-only, since the
-  per-head sink logit has no flash-attention equivalent in prime-rl's vendored kernels).
+  `DeepseekV4Model`'s default `position_ids` all assume one document per row (no `cu_seqlens`
+  awareness). `DeepseekV4Model.forward` accepts `seq_lens` / `seq_lens_are_pre_shard` to satisfy
+  the trainer's contract and ignores them, so a packed multi-document batch would let windows and
+  compression bleed across document boundaries. Fixing it means either a `cu_seqlens`-aware
+  mask and compressor, or a flash-attention path with `window_size` (attention is eager-only
+  today, since the per-head sink logit has no flash-attention equivalent in prime-rl's vendored
+  kernels).
 - **The compressors and attention are stateless (no KV cache), by design.** prime-rl only runs a
   single forward + backward over a full sequence, never `generate()`, so `DeepseekV4HCACache`/
   `DeepseekV4CSACache` are not ported. Only relevant again if prime-rl grows incremental decode.
@@ -70,24 +89,14 @@ Open items step 7 needs to handle:
   `test_csa_indexer_selection_is_not_differentiable`). DeepSeek trains it with a separate
   auxiliary distillation loss not implemented here, so an RL/SFT run leaves it frozen at
   checkpoint values. Fine for fine-tuning, not for pre-training.
-- **Rotary buffers are computed eagerly in `__init__`.** `DeepseekV4RotaryEmbedding` needs an
-  `init_buffers_post_meta` on step 7's `PreTrainedModel` subclass to re-derive them after
-  meta-device loading, mirroring HF's `_init_weights` branch.
-- **`_init_weights` is not wired up anywhere yet.** Every V4 module exposes its own
-  `init_weights(init_std)`, but nothing calls them until step 7's `PreTrainedModel` subclass.
-- **Hash layers need `input_ids` threaded down to them.** `DeepseekV4MoE.forward(x, input_ids,
-  routed_experts)` asserts `input_ids is not None` when `mlp_layer_types[layer_idx] ==
-  "hash_moe"`, so step 7's decoder layer and model must pass the ids through every block, as
-  HF's do. A standard layer accepts and ignores them.
 - **Router replay wins over the hash table.** An explicit `routed_experts` (recorded by the
   inference engine) takes precedence over `tid2eid[input_ids]` in a hash layer. The two agree as
   long as the engine implements hash routing; if a future engine reports zeros for those layers
-  instead, the trainer would silently follow the zeros. Step 7 could drop `routed_experts` for
-  hash layers instead, at the cost of a per-layer special case in the model forward.
+  instead, the trainer would silently follow the zeros. The alternative is dropping
+  `routed_experts` for hash layers, at the cost of a per-layer special case in the model forward.
 - **A missing `tid2eid` fails silently.** It is a persistent buffer that no `init_weights` can
-  reconstruct: zeros mean every token routes to expert 0. Step 7's loading path (meta device,
-  then conversion) has to guarantee it comes from the checkpoint, and should say so loudly if it
-  does not.
+  reconstruct: zeros mean every token routes to expert 0. Nothing in the loading path checks that
+  it actually came from the checkpoint, and it should say so loudly when it did not.
 - **Hash layers have no load balancing.** They pass `load_balance_coeff=None`, so no
   `expert_bias` buffer exists (a frozen selection cannot be steered, and HF's
   `DeepseekV4HashRouter` has no `e_score_correction_bias` to load into one). `tokens_per_expert`
@@ -104,19 +113,33 @@ Open items step 7 needs to handle:
   `GptOssGroupedExperts` has the same EP gap.
 - **No router aux loss.** `output_router_logits`, `router_aux_loss_coef`, `router_jitter_noise`
   are carried by the config and read by nothing.
-- **`tests/unit/train/models/test_deepseek_v4_temp.py` is scaffolding.** Fold it into a proper
-  `test_deepseek_v4.py` full-model parity test once the model classes exist.
+- **No vLLM kernel weight transfer.** `convert_layer_to_vllm_kernel` is not overridden, so the
+  base class's `NotImplementedError` stands, as it does for `nemotron_h` and `laguna`. Serving a
+  trained V4 through the NIXL transport needs a real implementation, and it has no precedent to
+  copy: the fused `gate_up_proj` layout and the grouped output projection are both new.
+- **`n_shared_experts=0` diverges from HF.** HF's `DeepseekV4SparseMoeBlock` always builds a
+  shared expert; `n_shared_experts` is carried by its config and read nowhere. prime-rl's
+  `DeepseekV4MoE` builds one only when the field is positive, so at zero the two key sets
+  disagree. Harmless for real checkpoints (V4 ships `n_shared_experts=1`), wrong for a
+  hand-written config.
+- **bfloat16 routing drifts from HF's.** prime-rl's router upcasts its scores to float32 while HF
+  scores in the activation dtype, so in bfloat16 a few percent of tokens pick a different expert
+  set and the logits diverge by ~10% of their scale. `test_deepseek_v4_float32` pins that this is
+  the *only* remaining difference; `test_deepseek_v4` documents the bfloat16 bound.
+- **`tests/unit/train/models/test_deepseek_v4_temp.py` is per-mechanism scaffolding.** It predates
+  the model classes and still carries the only coverage of several internals (compressor window
+  structure, indexer selection, grouped-mm experts). `test_deepseek_v4.py` covers the assembled
+  model. Fold the still-useful half of the scratch file into it and delete the rest.
 
-State-dict deltas step 7's conversion chain needs (all forced by prime-rl's own `MoE`/router
-naming, identical to what `glm4_moe`/`laguna` already do): `mlp.gate.weight` ->
-`mlp.router.gate.weight`, `mlp.gate.e_score_correction_bias` -> `mlp.expert_bias`,
-`mlp.shared_experts.*` -> `mlp.shared_expert.*`, and, on the hash layers only,
-`mlp.gate.tid2eid` -> `mlp.tid2eid`. The routed experts need **no** conversion:
-`mlp.experts.gate_up_proj`/`down_proj` already match HF's own names and shapes, unlike every
-other prime-rl MoE. The two MoE layer types have different key sets: a hash layer has
-`mlp.tid2eid` and no `mlp.expert_bias`, a standard one the other way round.
+State-dict deltas, all forced by prime-rl's own `MoE`/router naming and all implemented in
+`converting_deepseek_v4.py`: `mlp.gate.weight` -> `mlp.router.gate.weight`,
+`mlp.gate.e_score_correction_bias` -> `mlp.expert_bias`, `mlp.shared_experts.*` ->
+`mlp.shared_expert.*`, and, on the hash layers only, `mlp.gate.tid2eid` -> `mlp.tid2eid`. The
+routed experts need **no** conversion: `mlp.experts.gate_up_proj`/`down_proj` already match HF's
+own names and shapes, unlike every other prime-rl MoE. The two MoE layer types have different key
+sets: a hash layer has `mlp.tid2eid` and no `mlp.expert_bias`, a standard one the other way round.
 
-One structural note for step 7: `DeepseekV4Indexer` subclasses a `DeepseekV4DualSeriesCompressor`
+One structural note: `DeepseekV4Indexer` subclasses a `DeepseekV4DualSeriesCompressor`
 base shared with `DeepseekV4CSACompressor` (HF's two classes run byte-identical compression code
 at different `head_dim`s). `DeepseekV4HCACompressor` deliberately does **not** share that base:
 non-overlapping windows, `head_dim`-wide (not `2*head_dim`) projections.
