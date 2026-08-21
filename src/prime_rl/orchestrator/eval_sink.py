@@ -86,4 +86,8 @@ class EvalSink:
     def process_batch(self, key: tuple[str, int]) -> EvalBatch:
         env_name, step = key
         episodes = self.pending_batches.pop(key, [])
-        return EvalBatch(env_name=env_name, step=step, episodes=EvalEpisodes(episodes))
+        return EvalBatch(
+            env_name=env_name,
+            step=step,
+            episodes=EvalEpisodes(episodes, group_size=self.group_size_for(env_name)),
+        )

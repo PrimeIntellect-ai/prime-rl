@@ -509,30 +509,19 @@ class TrainEpisodes(EpisodeCollection):
 class EvalEpisodes(EpisodeCollection):
     def __init__(
         self,
-        episodes: list[vf.Episode] | None = None,
+        episodes: list[vf.Episode],
+        group_size: int,
         predicate: Callable[[TraceRecord], bool] | None = None,
-        group_size: int | None = None,
     ) -> None:
         super().__init__(episodes, predicate=predicate)
-        self._group_size = group_size
-
-    @property
-    def group_size(self) -> int:
-        if self._group_size is not None:
-            return self._group_size
-        counts: dict = {}
-        for record in self.records:
-            if record.trace.agent.trainable:
-                group_id = episode_group_id(record.episode)
-                counts[group_id] = counts.get(group_id, 0) + 1
-        return max(counts.values(), default=0)
+        self.group_size = group_size
 
     @property
     def effective(self) -> EvalEpisodes:
         return EvalEpisodes(
             self.episodes,
+            self.group_size,
             predicate=lambda record: not record.trace.has_error and record.trace.agent.trainable,
-            group_size=self.group_size,
         )
 
     @property

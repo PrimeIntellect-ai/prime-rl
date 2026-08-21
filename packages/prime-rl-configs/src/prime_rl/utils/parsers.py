@@ -16,8 +16,8 @@ TOOL_CALL_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^PrimeIntellect/INTELLECT-3"), "qwen3_coder"),
     (re.compile(r"^nvidia/NVIDIA-Nemotron-3"), "qwen3_coder"),
     (re.compile(r"^stepfun-ai/Step-3\.5"), "step3p5"),
-    # Qwen3.5 and Qwen3-Coder use qwen3_coder — must be before the Qwen3 catch-all.
-    (re.compile(r"^Qwen/Qwen3\.5-"), "qwen3_coder"),
+    # Qwen3.5/3.6/3.8 and Qwen3-Coder use qwen3_coder — must be before the Qwen3 catch-all.
+    (re.compile(r"^Qwen/Qwen3\.(5|6|8)-"), "qwen3_coder"),
     (re.compile(r"^Qwen/Qwen3-Coder"), "qwen3_coder"),
     (re.compile(r"^Qwen/Qwen3-"), "hermes"),
 ]
@@ -37,7 +37,7 @@ REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^stepfun-ai/Step-3\.5"), "step3p5"),
     # Only Qwen3 Thinking models reason — Instruct/base models do not.
     (re.compile(r"^Qwen/Qwen3-.*Thinking"), "deepseek_r1"),
-    (re.compile(r"^Qwen/Qwen3\.5-"), "qwen3"),
+    (re.compile(r"^Qwen/Qwen3\.(5|6|8)-"), "qwen3"),
 ]
 
 

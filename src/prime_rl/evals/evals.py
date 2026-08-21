@@ -4,10 +4,9 @@ Standalone (no ``[online]``), it runs one epoch of every configured eval
 source against the weights the inference server currently serves, then exits.
 With ``[online]``, it watches a broadcasts directory for new weight
 broadcasts — the trainer writes ``broadcasts/step_{n}`` with a ``STABLE``
-marker on completion — tells the inference server to reload each eligible
-broadcast from disk (``/update_weights``, no NCCL rendezvous), and runs the
-configured evals against the updated weights, sequentially per broadcast so
-every epoch measures exactly one policy version.
+marker on completion — tells the inference server to receive each eligible
+broadcast, and runs the configured evals against the updated weights,
+sequentially per broadcast so every epoch measures exactly one policy version.
 
 Scheduling reuses the orchestrator pipeline unchanged: an eval-only
 ``Dispatcher`` admits episodes under the adaptive ``ConcurrencyController``,
@@ -44,7 +43,7 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import EvalBatch, Policy
 from prime_rl.orchestrator.utils import eval_work, intercept_vf_logging, set_default_executor
-from prime_rl.utils.client import InferencePool
+from prime_rl.utils.client import InferencePool, init_nccl_broadcast
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_config_dir, get_log_dir, get_step_path
@@ -108,6 +107,18 @@ class Evals:
         get_logger().info("Waiting for inference pool to be ready")
         await self.pool.wait_for_ready(config.model)
         get_logger().success("Inference pool ready")
+
+        weight_broadcast = config.weight_broadcast
+        if weight_broadcast is not None and weight_broadcast.type == "nccl":
+            get_logger().info(f"Initializing weight broadcast ({weight_broadcast})")
+            await init_nccl_broadcast(
+                self.pool.admin_clients,
+                weight_broadcast.host,
+                weight_broadcast.port,
+                weight_broadcast.timeout,
+                inference_world_size=weight_broadcast.inference_world_size,
+                quantize_in_weight_transfer=weight_broadcast.quantize_in_weight_transfer,
+            )
 
         is_resumed = config.online is not None and config.online.resume_step is not None
         self.eval_source = EvalSource(self.eval_envs, config.eval, is_resumed=is_resumed)

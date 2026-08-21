@@ -29,7 +29,7 @@ from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
-from prime_rl.orchestrator.sampler import Sampler
+from prime_rl.orchestrator.generation_source import GenerationSource
 from prime_rl.utils.logger import get_logger
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
@@ -74,11 +74,11 @@ class Env:
         await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
         taskset = vf.load_taskset(self.config.env.taskset)
         if type(taskset).INFINITE:
-            self.tasks = iter(taskset.load())
+            self.tasks = iter(taskset)
             self.num_tasks = None
         else:
-            # Materialize off the event loop — load() may pull a dataset.
-            materialized = await asyncio.to_thread(lambda: list(taskset.load()))
+            # Materialize off the event loop — iterating may pull a dataset.
+            materialized = await asyncio.to_thread(lambda: list(taskset))
             self.tasks = iter(materialized)
             self.num_tasks = len(materialized)
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
@@ -118,11 +118,17 @@ class Env:
 class TrainEnv(Env):
     config: TrainSourceConfig
 
-    def __init__(self, config: TrainSourceConfig, address: str, sampler: Sampler, algorithm: Algorithm):
+    def __init__(
+        self,
+        config: TrainSourceConfig,
+        address: str,
+        generation_source: GenerationSource,
+        algorithm: Algorithm,
+    ):
         super().__init__(config, address)
-        self.sampler = sampler
+        self.generation_source = generation_source
         self.algorithm = algorithm
-        self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
+        self.sampling_args = generation_source.sampling_args(config.sampling.to_sampling_args())
 
 
 class EvalEnv(Env):
@@ -175,8 +181,8 @@ class Envs(Generic[EnvT]):
 
 
 class TrainEnvs(Envs[TrainEnv]):
-    """Collection of training environments, each paired with its rollout
-    :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
+    """Collection of training environments, each paired with its
+    :class:`GenerationSource` and runtime :class:`Algorithm`, built from the env's
     resolved algorithm config."""
 
     def __init__(
@@ -193,7 +199,7 @@ class TrainEnvs(Envs[TrainEnv]):
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],
-                Sampler(config.algo.sampling, policy_pool, renderer_config),
+                GenerationSource(config.algo.sampling, policy_pool, renderer_config),
                 build_algorithm(config.algo, policy_pool),
             )
             self._envs[env.name] = env
