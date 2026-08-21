@@ -281,6 +281,14 @@ class TrainSink:
                 payload_tokens(samples, self._trace(trace_id)) for trace_id, samples in samples_by_trace.items()
             )
         self._drop_stale(samples_by_trace)
+        # A group's traces share one dispatch version, so the insertion sweep
+        # voids all or none of them. A fully-voided group shipped nothing —
+        # advance the zero-output budget instead of resetting it, or a stalled
+        # trainer plus a tight bound could void groups forever without ever
+        # tripping the abort.
+        if not any(trace_id in self.pending_batch for trace_id in samples_by_trace):
+            self._record_zero_output(group, [], n_owed)
+            return
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
 
