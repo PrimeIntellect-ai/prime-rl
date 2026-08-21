@@ -44,6 +44,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
+    resolve_weight_broadcast_config,
     validate_shared_ckpt_config,
     validate_shared_max_steps,
     validate_shared_model_name,
@@ -453,16 +454,13 @@ class RLConfig(BaseConfig):
         filesystem when LoRA is enabled (not yet supported by in-memory transfer) or when no
         inference server is configured.
         """
-        if self.weight_broadcast is None:
-            if self.trainer.model.lora is not None or self.inference is None:
-                self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
-            else:
-                self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
-        if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
-            raise ValueError(
-                "LoRA training is not yet supported with in-memory weight broadcast. "
-                "Set weight_broadcast.type = 'filesystem'."
-            )
+        self.weight_broadcast = resolve_weight_broadcast_config(
+            self.weight_broadcast,
+            lora_enabled=self.trainer.model.lora is not None,
+            inference_enabled=self.inference is not None,
+            filesystem_factory=SharedFileSystemWeightBroadcastConfig,
+            nccl_factory=SharedNCCLWeightBroadcastConfig,
+        )
         if self.weight_broadcast.type in ("nccl", "nixl"):
             inference_world_size = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size

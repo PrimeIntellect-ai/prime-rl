@@ -1,10 +1,39 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from collections.abc import Callable
+from typing import Any, Optional, Protocol, TypeVar
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.trainer import TrainerConfig
+
+
+class WeightBroadcastConfigProtocol(Protocol):
+    @property
+    def type(self) -> str: ...
+
+
+WeightBroadcastConfigT = TypeVar("WeightBroadcastConfigT", bound=WeightBroadcastConfigProtocol)
+
+
+def resolve_weight_broadcast_config(
+    config: WeightBroadcastConfigT | None,
+    *,
+    lora_enabled: bool,
+    inference_enabled: bool,
+    filesystem_factory: Callable[[], WeightBroadcastConfigT],
+    nccl_factory: Callable[[], WeightBroadcastConfigT],
+) -> WeightBroadcastConfigT:
+    """Select the default weight transport and validate its LoRA support."""
+    if config is None:
+        factory = filesystem_factory if lora_enabled or not inference_enabled else nccl_factory
+        config = factory()
+    if config.type != "filesystem" and lora_enabled:
+        raise ValueError(
+            "LoRA training is not yet supported with in-memory weight broadcast. "
+            "Set weight_broadcast.type = 'filesystem'."
+        )
+    return config
 
 
 def propagate_shared_fields(data: Any) -> Any:
