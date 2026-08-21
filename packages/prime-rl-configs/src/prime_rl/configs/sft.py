@@ -46,8 +46,8 @@ class BaseDataConfig(BaseConfig):
     micro_batch_size: int = Field(1, ge=1)
     """Per-step micro batch size. ``batch_size`` must be divisible by this."""
 
-    num_workers: int = Field(1, ge=0)
-    """Number of dataloader worker processes. With ``>= 1``, batches are prepared and pinned in the background so tokenization/packing overlaps with training. ``0`` loads inline on the main process."""
+    num_workers: int = Field(1, ge=1)
+    """Number of dataloader worker processes. Batches are prepared and pinned in the background so tokenization/packing overlaps with training."""
 
     @model_validator(mode="after")
     def validate_batch_size(self):

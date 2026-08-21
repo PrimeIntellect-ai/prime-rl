@@ -20,22 +20,22 @@ def test_fake_dataset_single_rank_state():
     dataiter = iter(dataloader)
 
     # Initial state
-    assert get_dataset_state(dataloader) == {"dataset": {"step": 0, "epoch": 0}}
+    assert get_dataset_state(dataloader) == {"worker_0": {"step": 0, "epoch": 0}}
 
     # Iterate over samples
     micro_batch = next(dataiter)
     print(micro_batch)
     assert micro_batch["input_ids"].unique().item() == 0
-    assert get_dataset_state(dataloader) == {"dataset": {"step": 1, "epoch": 0}}
+    assert get_dataset_state(dataloader) == {"worker_0": {"step": 1, "epoch": 0}}
     micro_batch = next(dataiter)
     assert micro_batch["input_ids"].unique().item() == 1
-    assert get_dataset_state(dataloader) == {"dataset": {"step": 2, "epoch": 0}}
+    assert get_dataset_state(dataloader) == {"worker_0": {"step": 2, "epoch": 0}}
     micro_batch = next(dataiter)
     assert micro_batch["input_ids"].unique().item() == 2
-    assert get_dataset_state(dataloader) == {"dataset": {"step": 3, "epoch": 0}}
+    assert get_dataset_state(dataloader) == {"worker_0": {"step": 3, "epoch": 0}}
     micro_batch = next(dataiter)
     assert micro_batch["input_ids"].unique().item() == 3
-    assert get_dataset_state(dataloader) == {"dataset": {"step": 4, "epoch": 0}}
+    assert get_dataset_state(dataloader) == {"worker_0": {"step": 4, "epoch": 0}}
 
 
 @pytest.mark.parametrize("rank", [0, 1], ids=["rank0", "rank1"])
@@ -55,26 +55,26 @@ def test_fake_dataset_multi_rank_state(rank: int):
     dataiter = iter(dataloader)
 
     # Initial state
-    assert get_dataset_state(dataloader) == {"dataset": {"step": 0, "epoch": 0}}
+    assert get_dataset_state(dataloader) == {"worker_0": {"step": 0, "epoch": 0}}
 
     micro_batch = next(dataiter)
     assert micro_batch["input_ids"].unique().item() == 0 + rank
-    assert get_dataset_state(dataloader) == {"dataset": {"step": 1 + rank, "epoch": 0}}
+    assert get_dataset_state(dataloader) == {"worker_0": {"step": 1 + rank, "epoch": 0}}
     micro_batch = next(dataiter)
     assert micro_batch["input_ids"].unique().item() == 2 + rank
-    assert get_dataset_state(dataloader) == {"dataset": {"step": 3 + rank, "epoch": 0}}
+    assert get_dataset_state(dataloader) == {"worker_0": {"step": 3 + rank, "epoch": 0}}
     micro_batch = next(dataiter)
     assert micro_batch["input_ids"].unique().item() == 4 + rank
-    assert get_dataset_state(dataloader) == {"dataset": {"step": 5 + rank, "epoch": 0}}
+    assert get_dataset_state(dataloader) == {"worker_0": {"step": 5 + rank, "epoch": 0}}
     micro_batch = next(dataiter)
     assert micro_batch["input_ids"].unique().item() == 6 + rank
-    assert get_dataset_state(dataloader) == {"dataset": {"step": 7 + rank, "epoch": 0}}
+    assert get_dataset_state(dataloader) == {"worker_0": {"step": 7 + rank, "epoch": 0}}
     micro_batch = next(dataiter)
     assert micro_batch["input_ids"].unique().item() == 8 + rank
-    assert get_dataset_state(dataloader) == {"dataset": {"step": 9 + rank, "epoch": 0}}
+    assert get_dataset_state(dataloader) == {"worker_0": {"step": 9 + rank, "epoch": 0}}
     micro_batch = next(dataiter)
     assert micro_batch["input_ids"].unique().item() == 10 + rank
-    assert get_dataset_state(dataloader) == {"dataset": {"step": 11 + rank, "epoch": 0}}
+    assert get_dataset_state(dataloader) == {"worker_0": {"step": 11 + rank, "epoch": 0}}
 
 
 def test_fake_dataset_single_rank_resume():
@@ -89,7 +89,7 @@ def test_fake_dataset_single_rank_resume():
         micro_batch = next(dataiter)
         assert micro_batch["input_ids"].shape == (1, 128)
         assert micro_batch["input_ids"].unique().item() == step
-        assert get_dataset_state(dataloader) == {"dataset": {"step": step + 1, "epoch": 0}}
+        assert get_dataset_state(dataloader) == {"worker_0": {"step": step + 1, "epoch": 0}}
 
     # Reload dataloader
     state_dict = dataloader.state_dict()
@@ -102,7 +102,7 @@ def test_fake_dataset_single_rank_resume():
         micro_batch = next(dataiter)
         assert micro_batch["input_ids"].shape == (1, 128)
         assert micro_batch["input_ids"].unique().item() == step
-        assert get_dataset_state(dataloader) == {"dataset": {"step": step + 1, "epoch": 0}}
+        assert get_dataset_state(dataloader) == {"worker_0": {"step": step + 1, "epoch": 0}}
 
 
 def test_fake_dataset_single_rank_state_with_packing():
@@ -119,10 +119,10 @@ def test_fake_dataset_single_rank_state_with_packing():
         step += num_packed_examples
         assert micro_batch["input_ids"].shape == (1, 128)
         assert micro_batch["seq_lens"].sum() == micro_batch["input_ids"].shape[1]
-        dataset_state = get_dataset_state(dataloader)
-        pending_sample = dataset_state.get("pending_sample")
+        worker_state = dataloader.state_dict()["_snapshot"]["_worker_snapshots"]["worker_0"]["dataset_state"]
+        pending_sample = worker_state.get("pending_sample")
         expected_dataset_step = step + (pending_sample is not None)
-        assert dataset_state["dataset"] == {"step": expected_dataset_step, "epoch": 0}
+        assert get_dataset_state(dataloader) == {"worker_0": {"step": expected_dataset_step, "epoch": 0}}
         if pending_sample is not None:
             assert pending_sample["input_ids"][0] == step
 

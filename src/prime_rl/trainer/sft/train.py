@@ -248,10 +248,10 @@ def train(config: SFTConfig):
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
     )
 
-    # Create the iterator only after a potential resume: with num_workers > 0, iter()
-    # forks workers with a copy of the dataset's *current* state, so a later
-    # load_state_dict never reaches an already-running worker (the run silently
-    # restarts the data from the beginning and re-saves the stale position).
+    # Create the iterator only after a potential resume: iter() forks workers with a
+    # copy of the dataset's *current* state, so a later load_state_dict never reaches
+    # an already-running worker (the run silently restarts the data from the beginning
+    # and re-saves the stale position).
     dataiter = iter(dataloader)
 
     cp_enabled = parallel_dims.cp_enabled
