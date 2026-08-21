@@ -564,6 +564,14 @@ def clean_stale_eval_artifacts(config: SFTConfig) -> None:
 
 
 def sft(config: SFTConfig):
+    # Launcher-only check: the trainer re-parses a sub-config with [inference] and
+    # [deployment] stripped, so the model validator cannot enforce this.
+    if config.weight_broadcast is not None and config.weight_broadcast.type == "nccl" and config.inference is None:
+        raise ValueError(
+            "NCCL weight broadcast requires launcher-managed inference. "
+            "Add an [inference] block or set weight_broadcast.type = 'filesystem'."
+        )
+
     # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are
     # the vehicle for runtime info between processes, and every spawned process inherits
     # them. Components launched standalone have no run identity.
