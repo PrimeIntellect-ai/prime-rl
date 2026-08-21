@@ -20,7 +20,7 @@ from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
 
 from prime_rl.configs.trainer import WeightBroadcastConfig
-from prime_rl.transports.weights.base import RECEIVER_READY_MARKER, STABLE_MARKER, STARTED_MARKER
+from prime_rl.transports.weights.base import FINISHED_MARKER, RECEIVER_READY_MARKER, STARTED_MARKER
 from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
 from prime_rl.utils.client import (
     init_nccl_broadcast,
@@ -38,7 +38,7 @@ class WeightBroadcastReceiver(ABC):
     # The marker that announces a new version to this receiver: a finished
     # broadcast on disk for filesystem, an in-flight one for live transports
     # (the trainer is already blocked waiting for the receiver).
-    discovery_marker: ClassVar[str] = STABLE_MARKER
+    discovery_marker: ClassVar[str] = FINISHED_MARKER
     # Whether the consumer may skip versions. A live transport strands the
     # trainer inside the transfer when a version is never received.
     can_skip_versions: ClassVar[bool] = True
@@ -95,17 +95,17 @@ class FileSystemReceiver(WeightBroadcastReceiver):
     adapter reload is a vLLM-native op that needs no engine pause; a full
     checkpoint pauses the engines for the load."""
 
-    discovery_marker = STABLE_MARKER
+    discovery_marker = FINISHED_MARKER
     can_skip_versions = True
 
     async def wait_published(self, step: int, cancelled: Callable[[], bool] | None = None) -> None:
-        stable = self.step_dir(step) / STABLE_MARKER
-        if not stable.exists():
+        finished = self.step_dir(step) / FINISHED_MARKER
+        if not finished.exists():
             self.logger.info(
                 f"Orchestrator paused: waiting for trainer to broadcast checkpoint {step}. "
                 "Training is progressing normally."
             )
-            await wait_for_path(stable)
+            await wait_for_path(finished)
 
     async def receive(self, step: int) -> None:
         weights_dir = self.step_dir(step)
@@ -116,8 +116,8 @@ class FileSystemReceiver(WeightBroadcastReceiver):
 
 
 class NCCLReceiver(WeightBroadcastReceiver):
-    """Joins the trainer's NCCL collective. The trainer raises STARTED and
-    blocks; the receiver pauses the engines, raises RECEIVER_READY, and sends
+    """Joins the trainer's NCCL collective. The trainer raises ``.started``
+    and blocks; the receiver pauses the engines, raises ``.receiver_ready``, and sends
     them into the receive RPC — only then does the trainer enter the
     collective, so the handshake can never race a stale marker."""
 

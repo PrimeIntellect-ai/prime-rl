@@ -4,8 +4,8 @@ Standalone (no ``[online]``), it runs one epoch of every configured eval
 source against the weights the inference server currently serves, then exits.
 With ``[online]``, it watches a broadcasts directory for new weight
 broadcasts through a ``WeightBroadcastReceiver`` — filesystem broadcasts are
-announced by their ``STABLE`` marker on completion, in-memory (NCCL)
-broadcasts by ``STARTED`` while the trainer blocks for the receiver — moves
+announced by their ``.finished`` marker on completion, in-memory (NCCL)
+broadcasts by ``.started`` while the trainer blocks for the receiver — moves
 the inference server onto each eligible broadcast, and runs the configured
 evals against the updated weights, sequentially per broadcast so every epoch
 measures exactly one policy version. An in-memory broadcast must always be

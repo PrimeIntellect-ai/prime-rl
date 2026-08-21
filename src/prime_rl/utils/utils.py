@@ -170,17 +170,6 @@ def final_broadcast_version(max_steps: int, broadcast_final: bool) -> int:
     return max_steps if broadcast_final else max_steps - 1
 
 
-def get_latest_ckpt_step(weights_dir: Path) -> int | None:
-    step_dirs = list(weights_dir.glob("step_*"))
-    if len(step_dirs) == 0:
-        return None
-    steps = sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
-    for latest_step in steps[::-1]:
-        if Path(weights_dir / f"step_{latest_step}" / "STABLE").exists():
-            return latest_step
-    return None
-
-
 @contextmanager
 def default_dtype(dtype):
     prev = torch.get_default_dtype()
