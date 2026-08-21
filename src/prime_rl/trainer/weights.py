@@ -1,5 +1,4 @@
 import json
-import re
 import warnings
 from pathlib import Path
 from typing import Literal, cast
@@ -141,20 +140,28 @@ def resolve_fqn(model: nn.Module, key: str) -> str:
     return next(iter(fqns))
 
 
-_LAYER_RE = re.compile(r"^(.*?\blayers\.\d+)\.")
+def _layer_prefixes(model: nn.Module) -> list[str]:
+    """FQN prefixes of the model's decoder blocks: the children of every ``layers``
+    ModuleList. state-dict keys and module names come from the same tree traversal,
+    so the prefixes match keys verbatim, wrapper components and all."""
+    prefixes: list[str] = []
+    for name, module in model.named_modules():
+        if isinstance(module, nn.ModuleList) and name.rsplit(".", 1)[-1] == "layers":
+            prefixes.extend(f"{name}.{i}." for i in range(len(module)))
+    return prefixes
 
 
-def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: torch.dtype) -> dict[str, int]:
+def partition_weights(model: nn.Module, world_size: int, dtype: torch.dtype) -> dict[str, int]:
     """Assign each state-dict key an owner rank, balanced by byte size.
 
     All keys of one decoder layer share an owner, so per-rank prime->HF conversion
     (which stacks/unstacks tensors within a layer) always sees complete layers.
     """
+    prefixes = _layer_prefixes(model)
     key_to_unit: dict[str, str] = {}
     unit_bytes: dict[str, int] = {}
-    for key, value in state_dict.items():
-        match = _LAYER_RE.match(key)
-        unit = match.group(1) if match else ""
+    for key, value in model.state_dict().items():
+        unit = next((prefix for prefix in prefixes if key.startswith(prefix)), "")
         key_to_unit[key] = unit
         itemsize = dtype.itemsize if isinstance(value, DTensor) else value.element_size()
         unit_bytes[unit] = unit_bytes.get(unit, 0) + value.numel() * itemsize
@@ -177,7 +184,7 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     plain blocking transfers; no stream-ordering assumptions.
     """
     world = get_world()
-    owners = partition_weights(model.state_dict(), world.world_size, dtype)
+    owners = partition_weights(model, world.world_size, dtype)
     partial: dict[str, Tensor] = {}
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
