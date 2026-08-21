@@ -23,9 +23,8 @@
 
 # Online-eval job for a decoupled SFT run: the inference pool (one vLLM engine per
 # DP rank behind a single router) plus the evals process and its env servers. The trainer
-# runs in a separate SLURM job and hands weights over via checkpoints on the shared
-# filesystem, so this job outlives the trainer and exits after evaluating the final
-# checkpoint (max_steps).
+# runs in a separate SLURM job. This job exits after evaluating the final weight
+# broadcast (max_steps).
 
 # Exit immediately on any failed command so a crash anywhere releases the
 # allocation instead of leaving zombie processes holding nodes.
@@ -71,6 +70,14 @@ export WANDB_PROGRAM="uv run sft"
 # Networking
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
+{% if use_nccl_broadcast %}
+: "${TRAIN_JOB_ID:?TRAIN_JOB_ID is required for NCCL weight broadcast}"
+TRAIN_HOST_FILE="$OUTPUT_DIR/.sft_nccl_host_$TRAIN_JOB_ID"
+until [ -s "$TRAIN_HOST_FILE" ]; do sleep 1; done
+export TRAIN_HOST=$(<"$TRAIN_HOST_FILE")
+rm -f "$TRAIN_HOST_FILE"
+echo "TRAIN_HOST=${TRAIN_HOST}"
+{% endif %}
 
 # Single global router on node 0 fronts every per-rank endpoint; admin ops
 # (pause/update_weights/resume) bypass it and hit each rank directly.
@@ -214,8 +221,8 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 {%- endfor %}
 {%- endif %}
 
-        # The evals process watches the trainer's weights dir on the shared filesystem and
-        # drives the pool: data plane through the router, admin ops per rank.
+        # The evals process watches trainer broadcast markers and drives the pool:
+        # data plane through the router, admin ops per rank.
 {%- for key, value in evals_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {%- endfor %}
@@ -223,6 +230,8 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
             @ $CONFIG_DIR/evals.json \
             --eval.client.base-url $INFER_URLS \
             --eval.client.admin-base-url $ADMIN_URLS \
+            {% if use_nccl_broadcast %}--weight-broadcast.host $TRAIN_HOST \
+            {% endif %}
             2>&1 | tee $OUTPUT_DIR/logs/evals.log &
         EVALS_PID=$!
     else

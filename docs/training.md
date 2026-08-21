@@ -204,11 +204,11 @@ num_train_gpus = 1  # trainer
 num_infer_gpus = 1  # inference
 ```
 
-The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. The handoff is the filesystem, not NCCL: the trainer broadcasts weights at every step an eval env is due, and the evals process watches `broadcasts/step_{n}`, points the inference server at each stable broadcast (`/update_weights` reload from disk), and runs the due envs against it — sequentially per broadcast, so every epoch measures exactly one policy version. Only the newest broadcast is kept on disk. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
+The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. NCCL is the default weight transport. The trainer broadcasts weights at every step an eval env is due, and the evals process watches `broadcasts/step_{n}` for synchronization markers before it drives the NCCL receive. It runs the due envs sequentially per broadcast, so every epoch measures exactly one policy version. Set `[weight_broadcast] type = "filesystem"` to reload weights from disk instead. LoRA and externally managed inference use filesystem broadcast automatically. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
 
 #### Multi-Node (Decoupled Trainer and Inference Pool)
 
-On a `multi_node` deployment (SLURM), the trainer and the eval deployment are **two independent SLURM jobs**. `deployment.num_nodes` sizes the trainer job; `deployment.num_infer_nodes` sizes the eval job, which runs the inference pool (one vLLM engine per DP rank behind a single router, `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node), one env server per eval source, and the evals process:
+On a `multi_node` deployment (SLURM), the trainer and the eval deployment are **two separate SLURM jobs**. `deployment.num_train_nodes` sizes the trainer job; `deployment.num_infer_nodes` sizes the eval job, which runs the inference pool (one vLLM engine per DP rank behind a single router, `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node), one env server per eval source, and the evals process:
 
 ```toml
 [deployment]
@@ -223,7 +223,7 @@ tensor_parallel_size = 8
 job_name = "my-run"
 ```
 
-The only coupling is weight broadcasts on the shared filesystem, so the jobs' lifetimes are independent: when training finishes, the trainer job exits and releases its nodes even while evals are still running; the eval job evaluates the final broadcast and exits (`max_steps` — without it the eval job never sees a final broadcast and holds its allocation until walltime). Trainer and evals log to a single shared W&B run across both jobs — the trainer creates it, the evals process finalizes it. Any train × inference layout works: `num_nodes` and `num_infer_nodes` are fully independent.
+The launcher submits the eval job after the trainer allocation starts. The trainer publishes its rank-0 hostname in the shared run directory, and the eval job uses it to join the NCCL weight-broadcast group. Each weight transfer is synchronous, but eval rollout execution overlaps with later training steps. After the final transfer, the trainer job releases its nodes while the eval job finishes the final epoch and exits. Without `max_steps`, the eval job never sees a final broadcast and holds its allocation until walltime. Trainer and evals log to one shared W&B run — the trainer creates it, and the evals process finalizes it. Any trainer-to-inference node layout works because `num_train_nodes` and `num_infer_nodes` are independent.
 
 ### SFT-Specific Knobs
 

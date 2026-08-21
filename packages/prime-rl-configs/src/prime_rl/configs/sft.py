@@ -176,9 +176,8 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 
     num_infer_nodes: int = Field(0, ge=0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
     """Inference nodes for online evals (alias: ``num_eval_nodes``). Submitted as a separate SLURM job, decoupled
-    from the trainer job: the handoff is weight broadcasts on the shared filesystem,
-    so the eval job can outlive the trainer job (evals drain after training ends) and
-    exits after evaluating the final broadcast."""
+    from the trainer job. The eval job can outlive the trainer job while it evaluates
+    the final weight broadcast."""
 
     nodes_per_fsdp_group: int | None = None
     """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
@@ -215,7 +214,7 @@ class SFTConfig(BaseConfig):
 
     weight_broadcast: WeightBroadcastConfig | None = None
     """Trainer-to-inference weight transport for online evals. Defaults to NCCL.
-    LoRA, external inference, and multi-node evals use filesystem broadcast."""
+    LoRA and external inference use filesystem broadcast."""
 
     optim: OptimizerConfig = AdamWConfig()
 
@@ -375,7 +374,7 @@ class SFTConfig(BaseConfig):
                 )
 
         if self.weight_broadcast is None:
-            if self.model.lora is not None or self.inference is None or self.deployment.type == "multi_node":
+            if self.model.lora is not None or self.inference is None:
                 self.weight_broadcast = FileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = NCCLWeightBroadcastConfig()
@@ -392,8 +391,6 @@ class SFTConfig(BaseConfig):
                     "NCCL weight broadcast requires launcher-managed inference. "
                     "Add an [inference] block or set weight_broadcast.type = 'filesystem'."
                 )
-            if self.deployment.type == "multi_node":
-                raise ValueError("Multi-node online evals only support weight_broadcast.type = 'filesystem'.")
             if self.eval.retrigger_on_resume:
                 raise ValueError("eval.retrigger_on_resume requires weight_broadcast.type = 'filesystem'.")
 
@@ -422,7 +419,11 @@ class SFTConfig(BaseConfig):
                     f"deployment.gpus_per_node ({self.deployment.gpus_per_node}) must be divisible by "
                     f"inference.vllm.tensor_parallel_size ({self.inference.vllm.tensor_parallel_size})."
                 )
-            self.inference.weight_broadcast.type = "filesystem"
+            if self.weight_broadcast.type == "nccl":
+                self.weight_broadcast.inference_world_size = (
+                    self.deployment.num_infer_nodes * self.deployment.gpus_per_node
+                )
+            self.inference.weight_broadcast.type = self.weight_broadcast.type
             if self.max_steps is None:
                 warnings.warn(
                     "Online evals without max_steps: the evals process never sees a final checkpoint, "

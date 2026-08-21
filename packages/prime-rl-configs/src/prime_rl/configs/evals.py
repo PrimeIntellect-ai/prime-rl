@@ -73,7 +73,7 @@ class EvalsConfig(BaseConfig):
     model: str = "Qwen/Qwen3-0.6B"
     """Name the inference server serves the model under — the ``model`` field of every
     eval request and the startup model check. Auto-filled from ``model.name`` by the
-    ``sft`` launcher; the name stays fixed across checkpoint reloads (weights are
+    ``sft`` launcher; the name stays fixed across weight updates (weights are
     swapped in place), so per-step results are told apart by ``eval/{env}/policy_version``."""
 
     eval: EvalsEvalConfig
