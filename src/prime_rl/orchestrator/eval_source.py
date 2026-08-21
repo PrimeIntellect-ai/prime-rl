@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections import deque
 from itertools import zip_longest
 
+import verifiers.v1 as vf
+
 from prime_rl.configs.orchestrator import EvalConfig
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.types import TaskRequest
@@ -27,10 +29,10 @@ class EvalSource:
         self.eval_envs = eval_envs
         self.eval_config = eval_config
 
-        self.requests_by_env: dict[str, list[TaskRequest]] = {}
+        self.tasks_by_env: dict[str, list[vf.Task]] = {}
         self.intervals: dict[str, int] = {}
         for env in eval_envs:
-            self.requests_by_env[env.name] = [TaskRequest(env_name=env.name, task=task) for task in env.examples]
+            self.tasks_by_env[env.name] = list(env.examples)
             self.intervals[env.name] = env.config.interval
 
         self.queue: deque[TaskRequest] = deque()
@@ -55,12 +57,12 @@ class EvalSource:
         # dispatcher rotates at example granularity. ``try_schedule``'s
         # continue-group branch still keeps each example's group_size
         # rollouts back-to-back, so per-example prefix-cache locality holds
-        iters = [iter(self.requests_by_env[name]) for name in fired]
-        for round_requests in zip_longest(*iters):
-            for request in round_requests:
-                if request is None:
+        iters = [iter(self.tasks_by_env[name]) for name in fired]
+        for round_tasks in zip_longest(*iters):
+            for env_name, task in zip(fired, round_tasks, strict=True):
+                if task is None:
                     continue
-                self.queue.append(TaskRequest(env_name=request.env_name, task=request.task, eval_step=step))
+                self.queue.append(TaskRequest(env_name=env_name, task=task, step=step))
         return fired
 
     def next_task(self) -> TaskRequest | None:

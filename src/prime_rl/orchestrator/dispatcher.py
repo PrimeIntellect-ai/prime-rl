@@ -462,15 +462,16 @@ class Dispatcher:
         return await self.schedule_group_episode(gid, fresh)
 
     def next_fresh_group(self, kind: WorkKind, envs) -> GroupState | None:
-        """Pop the next example from the corresponding source and wrap it in
+        """Pop the next task from the corresponding source and wrap it in
         a ``GroupState``. Returns ``None`` if the source is empty."""
         if kind == "train":
             assert self.train_source is not None
-            source = self.train_source
+            if self.progress is None:
+                raise RuntimeError("Train dispatch requires progress state")
+            request = self.train_source.next_task(step=self.progress.step)
         else:
             assert self.eval_source is not None
-            source = self.eval_source
-        request = source.next_task()
+            request = self.eval_source.next_task()
         if request is None:
             return None
 
@@ -481,9 +482,9 @@ class Dispatcher:
             kind=kind,
             env_name=env_name,
             task=request.task,
+            step=request.step,
             episodes_to_schedule=group_size,
             target_episodes=group_size,
-            eval_step=request.eval_step,
             policy_version_at_start=self.policy.version,
         )
 
@@ -538,20 +539,11 @@ class Dispatcher:
             group_id=group_id,
             task=group.task,
             policy_version=group.policy_version_at_start,
-            step=self._work_step(group.kind, group.eval_step),
+            step=group.step,
             client_config=client,
-            eval_step=group.eval_step,
             started_at=time.monotonic(),
         )
         return True
-
-    def _work_step(self, kind: WorkKind, eval_step: int | None) -> int:
-        if kind == "eval":
-            assert eval_step is not None
-            return eval_step
-        if self.progress is None:
-            raise RuntimeError("Train dispatch requires progress state")
-        return self.progress.step
 
     async def acquire(self) -> None:
         """Reserve one permit + rate-limit it. Caller must precheck
@@ -632,17 +624,13 @@ class Dispatcher:
     ) -> None:
         """Stamp one completed episode with its dispatch provenance and emit it."""
         _validate_episode_task(episode, meta.task)
-        eval_step = meta.eval_step
         policy_version = meta.policy_version
         if group is not None:
-            eval_step = group.eval_step
             policy_version = group.policy_version_at_start
             group.emitted += 1
             if group.emitted >= group.target_episodes:
                 self.groups.pop(meta.group_id, None)
 
-        if meta.kind == "eval":
-            assert eval_step is not None, "eval episode missing eval_step"
         episode.env.name = meta.env_name
         episode.group = vf.GroupInfo(id=str(meta.group_id))
         live_policy = meta.kind == "eval"

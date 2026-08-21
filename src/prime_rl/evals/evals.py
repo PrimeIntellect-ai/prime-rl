@@ -357,7 +357,7 @@ class Evals:
                 await self.pool.update_weights(broadcast_dir, lora_name=lora_name, step=step)
             except Exception as exc:
                 # Skip this step instead of killing the run; drain the queued examples
-                # so they don't leak into a later epoch with the wrong eval_step.
+                # so they don't leak into a later epoch with the wrong step.
                 while self.eval_source.next_task() is not None:
                     pass
                 get_logger().error(f"Failed to update inference weights to step {step} - skipping evals: {exc!r}")

@@ -110,7 +110,7 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     env = SimpleNamespace(name="test", tasks=iter(tasks), num_tasks=len(tasks), config=config)
     source = TrainSource([env])
 
-    sampled = source.next_task().task
+    sampled = source.next_task(step=1).task
     assert source.on_result(make_rollout(sampled, reward=0.25, advantages=[0.0])) is False
     assert source.metrics() == {
         "curriculum/test/admission_rate": 0.0,
