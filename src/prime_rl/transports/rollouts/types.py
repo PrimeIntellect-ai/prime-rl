@@ -1,13 +1,14 @@
 import msgspec
 
 
-# Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
-# Mirrors verifiers' env-serve msgpack encoder so the same wire shape is
-# used end-to-end from renderer → orchestrator → trainer.
-class EncodedTensor(msgspec.Struct, array_like=True, gc=False):
-    dtype: str
-    shape: list[int]
-    data: bytes
+class MMImageRef(msgspec.Struct, array_like=True, gc=False):
+    url: str
+    offset: int
+    length: int
+
+
+class MMRefs(msgspec.Struct, array_like=True, gc=False):
+    images: list[MMImageRef]
 
 
 # Routed experts are large per-token arrays. tolist() is too expensive, so we
@@ -35,15 +36,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     env_name: str
     ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl component)
 
-    # Generic multimodal kwargs: flat dict keyed by the kwarg names the
-    # model's forward expects (e.g. {"pixel_values": ..., "image_grid_thw":
-    # ...} for Qwen3-VL; just {"pixel_values": ...} for Gemma3). The
-    # orchestrator batches per-image renderer items by torch.cat along
-    # dim=0 generically — no model-specific knowledge in prime-rl. The
-    # trainer ``**`` -unpacks this into the model forward, so any VLM
-    # whose HF processor / forward agree on kwarg names works without
-    # touching this transport.
-    mm_kwargs: dict[str, EncodedTensor] | None = None
+    mm_refs: MMRefs | None = None
 
     routed_experts: RoutedExperts | None = None
 
@@ -86,8 +79,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     ref_logprobs: list[float] | None = None
     routed_experts: RoutedExperts | None = None
 
-    # See TrainingSample.mm_kwargs.
-    mm_kwargs: dict[str, EncodedTensor] | None = None
+    mm_refs: MMRefs | None = None
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 
