@@ -388,7 +388,7 @@ class Orchestrator:
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
             tasks_per_minute=config.tasks_per_minute,
-            max_staleness=config.max_staleness,
+            max_off_policy_steps=config.max_off_policy_steps,
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
@@ -732,14 +732,14 @@ class Orchestrator:
         if staleness:
             totals, in_flight, in_queue = (list(values) for values in zip(*staleness))
             metrics |= {
-                "staleness/mean": sum(totals) / len(totals),
-                "staleness/max": float(max(totals)),
-                "staleness/in_flight/mean": sum(in_flight) / len(in_flight),
-                "staleness/in_flight/max": float(max(in_flight)),
-                "staleness/in_queue/mean": sum(in_queue) / len(in_queue),
-                "staleness/in_queue/max": float(max(in_queue)),
+                "off_policy/mean": sum(totals) / len(totals),
+                "off_policy/max": float(max(totals)),
+                "off_policy/in_flight/mean": sum(in_flight) / len(in_flight),
+                "off_policy/in_flight/max": float(max(in_flight)),
+                "off_policy/in_queue/mean": sum(in_queue) / len(in_queue),
+                "off_policy/in_queue/max": float(max(in_queue)),
             }
-        metrics["staleness/dropped"] = float(self.train_sink.stale_drops)
+        metrics["off_policy/dropped"] = float(self.train_sink.stale_drops)
         self.train_sink.stale_drops = 0
         for env_name, env_pool in batch.episodes.by_env().items():
             metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
@@ -759,7 +759,7 @@ class Orchestrator:
         self.maybe_trigger_eval(self.progress.step)
         # Drain right after shipping the final batch. Waiting for a further
         # batch to fill would burn inference on data that can never train —
-        # and with a tight ``max_staleness`` it never fills at all (the
+        # and with a tight ``max_off_policy_steps`` it never fills at all (the
         # versions it would need are never broadcast).
         if config.max_steps is not None and step >= config.max_steps:
             await self.start_draining("Shipped the final batch")
@@ -861,7 +861,7 @@ class Orchestrator:
 
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
-        Every quality metric (Reward, Trainable, Turns, Branches, Max Staleness, Truncation) is
+        Every quality metric (Reward, Trainable, Turns, Branches, Max Off-Policy, Truncation) is
         computed over exactly the traces shipped to the trainer this step (``batch.cohort``).
         ``Error``, ``Cancelled``, and ``Ratio`` are rates over the step's full arrival window —
         over the shipped set they are 0/0/share-of-shipped by construction, so the window is the
@@ -874,13 +874,13 @@ class Orchestrator:
         n_effective = effective.num_traces
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
-        max_staleness = max((episode_staleness(episode, step)[0] for episode in effective), default=0)
+        max_off_policy_steps = max((episode_staleness(episode, step)[0] for episode in effective), default=0)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
             f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Max Staleness {max_staleness} | "
+            f"Max Off-Policy {max_off_policy_steps} | "
             f"Error {episodes.metrics.has_error.mean():.1%} | Cancelled {episodes.metrics.cancelled.mean():.1%} | "
             f"Truncation {eff.is_truncated.mean():.1%}"
         )
@@ -901,7 +901,7 @@ class Orchestrator:
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
-                f"Max Staleness {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
+                f"Max Off-Policy {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
                 f"Error {pool.metrics.has_error.mean():.1%} | Cancelled {pool.metrics.cancelled.mean():.1%} | "
                 f"Truncation {env_eff.is_truncated.mean():.1%}"
             )

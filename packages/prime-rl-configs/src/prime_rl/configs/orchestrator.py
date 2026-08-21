@@ -529,7 +529,7 @@ class OrchestratorConfig(BaseConfig):
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
-    max_staleness: int = Field(8, ge=0)
+    max_off_policy_steps: int = Field(8, ge=0)
     """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the version that generated the rollout, queue time included. Groups past the bound are dropped, in-flight and queued. Higher values yield better throughput at the cost of off-policy noise."""
 
     heartbeat: HeartbeatConfig | None = None

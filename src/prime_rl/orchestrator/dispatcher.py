@@ -15,7 +15,7 @@
   source's emptiness), so in-flight episodes of the opposite kind drain
   naturally on either side of an eval boundary.
 - ``on_version_pending`` (called by the watcher before the engines pause for
-  the weight update) drops train groups already past ``max_staleness`` — a
+  the weight update) drops train groups already past ``max_off_policy_steps`` — a
   compute-saving early cancel; the sink's queue sweep is what guarantees the
   bound. Eval episodes are measurements for the policy version they started
   with, so they are allowed to finish even if training advances. Train
@@ -156,7 +156,7 @@ class Dispatcher:
         initial_max_inflight: int,
         max_inflight_ceiling: int | None,
         tasks_per_minute: float | None,
-        max_staleness: int,
+        max_off_policy_steps: int,
         run_id: str,
         run_name: str | None,
         on_episode_complete: Callable[[str, str, int, float], None] | None = None,
@@ -170,7 +170,7 @@ class Dispatcher:
         self.policy_pool = policy_pool
         self.train_source = train_source
         self.eval_source = eval_source
-        self.max_staleness = max_staleness
+        self.max_off_policy_steps = max_off_policy_steps
         self.run_id = run_id
         self.run_name = run_name
         # ``(env_name, kind, total_tokens, duration_s)`` per completed episode
@@ -364,7 +364,7 @@ class Dispatcher:
             self.task = None
 
     async def on_version_pending(self, step: int) -> None:
-        """Drop train groups past ``max_staleness``: a group dispatched at
+        """Drop train groups past ``max_off_policy_steps``: a group dispatched at
         v{k} ships at earliest in the batch currently collecting, at staleness
         ``(progress.step - 1) - k`` — beyond the bound it can never train, so
         cut it before more inference sinks in. This is a compute saver; the
@@ -379,7 +379,7 @@ class Dispatcher:
         (see ``WeightWatcher.apply_policy_update``)."""
         if self.train_envs is None or self.progress is None:
             return
-        min_version = min_fresh_version(self.progress.step, self.max_staleness)
+        min_version = min_fresh_version(self.progress.step, self.max_off_policy_steps)
         stale_groups = [
             gid
             for gid, group in self.groups.items()
@@ -393,7 +393,7 @@ class Dispatcher:
 
         if cancelled:
             get_logger().warning(
-                f"Cancelled {cancelled} train episodes past max_staleness={self.max_staleness}. "
+                f"Cancelled {cancelled} train episodes past max_off_policy_steps={self.max_off_policy_steps}. "
                 "Consider increasing it to avoid this."
             )
 
@@ -745,6 +745,6 @@ class Dispatcher:
             "dispatcher/inflight/eval": float(self.inflight_eval_count),
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
-            "dispatcher/staleness/max": float(max(staleness, default=0)),
-            "dispatcher/staleness/mean": sum(staleness) / len(staleness) if staleness else 0.0,
+            "dispatcher/off_policy_level/max": float(max(staleness, default=0)),
+            "dispatcher/off_policy_level/mean": sum(staleness) / len(staleness) if staleness else 0.0,
         }

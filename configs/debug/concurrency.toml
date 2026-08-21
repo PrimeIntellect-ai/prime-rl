@@ -87,7 +87,7 @@ type = "sign_sgd"
 [orchestrator]
 batch_size = 128
 group_size = 8
-max_staleness = 32
+max_off_policy_steps = 32
 
 [orchestrator.algo]
 type = "grpo"

@@ -2,7 +2,7 @@
 
 ``add()`` takes one completed episode and ``cancel()`` a dropped group's
 ``Cancellation``; both return ``TrainBatch | None``. Before every readiness
-check the sink sweeps ``pending_batch`` for traces past ``max_staleness`` —
+check the sink sweeps ``pending_batch`` for traces past ``max_off_policy_steps`` —
 this sweep, not the dispatcher's in-flight cancel, is what guarantees nothing
 stale ships."""
 
@@ -164,7 +164,7 @@ class TrainSink:
         return self.process_batch() if ready else None
 
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
-        """Void queued traces past ``max_staleness``. The batch being
+        """Void queued traces past ``max_off_policy_steps``. The batch being
         collected is ``progress.step`` and trains policy v{step-1}, so a
         queued trace generated from v{k} would ship at staleness
         ``(step-1) - k``. This sweep is the hard guarantee on trained
@@ -182,7 +182,7 @@ class TrainSink:
                 return
             self._swept_step = self.progress.step
             trace_ids = list(self.pending_batch)
-        min_version = min_fresh_version(self.progress.step, self.config.max_staleness)
+        min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
         if min_version <= 0:
             return
         dropped = 0
@@ -200,7 +200,7 @@ class TrainSink:
         if dropped:
             self.stale_drops += dropped
             get_logger().warning(
-                f"Dropped {dropped} queued traces past max_staleness={self.config.max_staleness}. "
+                f"Dropped {dropped} queued traces past max_off_policy_steps={self.config.max_off_policy_steps}. "
                 "Consider increasing it to avoid this."
             )
 
