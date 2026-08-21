@@ -270,10 +270,10 @@ class Orchestrator:
         get_logger().info("Waiting for policy inference pool to be ready")
         await self.policy_inference.wait_for_ready(config.model.name)
         get_logger().success("Policy inference pool ready")
-        # Build + ready pools for each env's frozen sampling source and the
+        # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
         await asyncio.gather(
-            *(env.sampler.setup() for env in self.train_envs),
+            *(env.generation_source.setup() for env in self.train_envs),
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
@@ -965,7 +965,7 @@ class Orchestrator:
                 await self.policy_inference.stop()
             if self.train_envs is not None:
                 for env in self.train_envs:
-                    for pool in (*env.sampler.connected_pools, *env.algorithm.connected_pools):
+                    for pool in (*env.generation_source.connected_pools, *env.algorithm.connected_pools):
                         await pool.stop()
 
         task = asyncio.create_task(teardown())

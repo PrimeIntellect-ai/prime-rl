@@ -163,7 +163,7 @@ class Dispatcher:
         self.progress = progress
         self.train_envs = train_envs
         self.eval_envs = eval_envs
-        # Train rollouts go to the env sampler's pool; eval always
+        # Train rollouts go to the env's generation source; eval always
         # evaluates the policy.
         self.policy_pool = policy_pool
         self.train_source = train_source
@@ -218,14 +218,14 @@ class Dispatcher:
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
 
-    def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
+    def _train_generation_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
         """``(pool, model_name, is_live)`` for *train* rollouts of this env —
-        the env sampler's pool. (Eval always uses the policy.)"""
+        eval always uses the policy."""
         assert self.train_envs is not None  # train groups only exist when train is configured
-        sampler = self.train_envs.get(env_name).sampler
-        if sampler.samples_from_live_policy:
-            return sampler.pool, self.policy.model_name, True
-        return sampler.pool, sampler.pool.model_name, False
+        source = self.train_envs.get(env_name).generation_source
+        if source.uses_live_policy:
+            return source.pool, self.policy.model_name, True
+        return source.pool, source.pool.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -374,10 +374,10 @@ class Dispatcher:
         for meta in self.inflight.values():
             if meta.kind != "train":
                 continue
-            # Frozen-sourced rollouts never go stale — their sampler doesn't
+            # Frozen-sourced rollouts never go stale — their generation source doesn't
             # change with policy updates.
             assert self.train_envs is not None
-            if not self.train_envs.get(meta.env_name).sampler.samples_from_live_policy:
+            if not self.train_envs.get(meta.env_name).generation_source.uses_live_policy:
                 continue
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:
@@ -490,7 +490,7 @@ class Dispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the env sampler's pool via the
+        # Train rollouts use the env's generation source via the
         # renderer/token train client. Eval always evaluates the policy and
         # goes through the eval client (chat-completions) so eval scores stay
         # comparable.
@@ -498,7 +498,7 @@ class Dispatcher:
             pool, model_name = self.policy_pool, self.policy.model_name
             live_sourced = True
         else:
-            pool, model_name, live_sourced = self._train_pool_for(group.env_name)
+            pool, model_name, live_sourced = self._train_generation_for(group.env_name)
 
         if group.pinned_client is None:
             group.pinned_client = pool.eval_client if group.kind == "eval" else pool.train_client
@@ -644,7 +644,7 @@ class Dispatcher:
         live_policy = meta.kind == "eval"
         if meta.kind == "train":
             assert self.train_envs is not None
-            live_policy = self.train_envs.get(meta.env_name).sampler.samples_from_live_policy
+            live_policy = self.train_envs.get(meta.env_name).generation_source.uses_live_policy
         policy = vf.PolicySpan(start=policy_version, end=self.policy.version) if live_policy else None
         work: vf.WorkInfo = (
             vf.EvalWorkInfo(step=meta.step, policy=policy)
