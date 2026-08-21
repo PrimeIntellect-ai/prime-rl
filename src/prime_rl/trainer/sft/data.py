@@ -692,5 +692,7 @@ def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
     if "dataset_state" in state:
         return state["dataset_state"]
     worker_snapshots = (state.get("_snapshot") or {}).get("_worker_snapshots") or {}
-    (worker_state,) = worker_snapshots.values()
-    return worker_state["dataset_state"]
+    states = {worker_id: snapshot["dataset_state"] for worker_id, snapshot in sorted(worker_snapshots.items())}
+    if len(states) == 1:
+        return next(iter(states.values()))
+    return states
