@@ -10,6 +10,7 @@ import verifiers.v1 as vf
 
 from prime_rl.orchestrator.curriculum import Curriculum
 from prime_rl.orchestrator.envs import TrainEnvs
+from prime_rl.orchestrator.types import TaskRequest
 from prime_rl.orchestrator.utils import episode_env_name
 
 
@@ -34,12 +35,9 @@ class TrainSource:
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
 
-    def next_example(self) -> dict[str, Any]:
+    def next_task(self) -> TaskRequest:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
-        return {
-            "env_name": env_name,
-            "task": next(self.curricula[env_name].sampler),
-        }
+        return TaskRequest(env_name=env_name, task=next(self.curricula[env_name].sampler))
 
     def on_result(self, group: list[vf.Episode]) -> bool:
         """Report a finalized group and return whether it should train."""

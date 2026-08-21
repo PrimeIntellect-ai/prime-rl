@@ -358,7 +358,7 @@ class Evals:
             except Exception as exc:
                 # Skip this step instead of killing the run; drain the queued examples
                 # so they don't leak into a later epoch with the wrong eval_step.
-                while self.eval_source.next_example() is not None:
+                while self.eval_source.next_task() is not None:
                     pass
                 get_logger().error(f"Failed to update inference weights to step {step} - skipping evals: {exc!r}")
                 return

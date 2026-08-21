@@ -1,7 +1,7 @@
 """Training-side episode, group, and batch assembly.
 
 ``add()`` takes one completed episode and ``cancel()`` a dropped group's
-``Cancellation``; both return ``TrainBatch | None``. Before every readiness
+``GroupCancellation``; both return ``TrainBatch | None``. Before every readiness
 check the sink sweeps ``pending_batch`` for traces past ``max_off_policy_steps`` —
 this sweep, not the dispatcher's in-flight cancel, is what guarantees nothing
 stale ships."""
@@ -20,7 +20,7 @@ from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import Cancellation, Progress, TrainBatch
+from prime_rl.orchestrator.types import GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
 from prime_rl.transports.rollouts import TrainingSample
 from prime_rl.utils.logger import get_logger
@@ -92,7 +92,7 @@ class TrainSink:
         self.pending_groups: dict[str, list[vf.Episode]] = defaultdict(list)
         # A dropped group's terminal marker; its ``count`` fills in for the
         # episodes the group will never deliver.
-        self.pending_group_cancellations: dict[str, Cancellation] = {}
+        self.pending_group_cancellations: dict[str, GroupCancellation] = {}
         self.pending_batch: dict[str, list[TrainingSample]] = {}
         self.episode_by_trace: dict[str, vf.Episode] = {}
         self.pending_tokens = 0
@@ -135,7 +135,7 @@ class TrainSink:
         await self.process_group(group_id)
         return self._maybe_batch()
 
-    async def cancel(self, cancellation: Cancellation) -> TrainBatch | None:
+    async def cancel(self, cancellation: GroupCancellation) -> TrainBatch | None:
         """Process a dropped group's terminal marker: its ``count`` completes
         the group's episode accounting so finalization still fires. A
         ``stale`` drop also voids the group's already-arrived episodes in

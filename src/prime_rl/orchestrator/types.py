@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
 import verifiers.v1 as vf
 
@@ -39,7 +39,7 @@ CancelReason = Literal["stale", "overload"]
 
 
 @dataclass
-class Cancellation:
+class GroupCancellation:
     """Terminal marker for a dropped group: one message covering every episode
     the group still owed the sink (in-flight and never-dispatched), so
     count-to-``group_size`` finalization still fires. ``reason`` distinguishes
@@ -50,6 +50,18 @@ class Cancellation:
     group_id: str
     count: int
     reason: CancelReason
+
+
+DispatchResult: TypeAlias = vf.WireEpisode | GroupCancellation
+
+
+@dataclass(frozen=True)
+class TaskRequest:
+    """A task selected by a train or eval source for dispatch."""
+
+    env_name: str
+    task: vf.Task
+    eval_step: int | None = None
 
 
 @dataclass

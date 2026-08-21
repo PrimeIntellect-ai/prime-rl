@@ -8,7 +8,7 @@
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched episode eventually reaches
   ``out_q`` exactly once — as a native episode, or covered by its group's
-  single ``Cancellation`` message when the group is dropped. Failures
+  single ``GroupCancellation`` message when the group is dropped. Failures
   remain episode errors; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
@@ -42,8 +42,9 @@ from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
-    Cancellation,
     CancelReason,
+    DispatchResult,
+    GroupCancellation,
     GroupState,
     InflightEpisode,
     Policy,
@@ -201,9 +202,9 @@ class Dispatcher:
         # Bounded so the dispatcher backpressures on a slow sink (unbounded
         # when no hard ceiling is configured — the dynamic cap still bounds
         # in-flight work). One entry per episode — the sinks count episodes,
-        # never loose traces — plus one ``Cancellation`` per dropped group.
+        # never loose traces — plus one ``GroupCancellation`` per dropped group.
         maxsize = max(8, max_inflight_ceiling) if max_inflight_ceiling is not None else 0
-        self.out_q: asyncio.Queue[vf.WireEpisode | Cancellation] = asyncio.Queue(maxsize=maxsize)
+        self.out_q: asyncio.Queue[DispatchResult] = asyncio.Queue(maxsize=maxsize)
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -469,21 +470,20 @@ class Dispatcher:
         else:
             assert self.eval_source is not None
             source = self.eval_source
-        example = source.next_example()
-        if example is None:
+        request = source.next_task()
+        if request is None:
             return None
 
-        env_name = example["env_name"]
+        env_name = request.env_name
         group_size = envs.get(env_name).config.group_size
-        eval_step: int | None = example.get("eval_step") if kind == "eval" else None
 
         return GroupState(
             kind=kind,
             env_name=env_name,
-            task=example["task"],
+            task=request.task,
             episodes_to_schedule=group_size,
             target_episodes=group_size,
-            eval_step=eval_step,
+            eval_step=request.eval_step,
             policy_version_at_start=self.policy.version,
         )
 
@@ -661,7 +661,7 @@ class Dispatcher:
 
     async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:
         """Cancel this group's remaining in-flight tasks and emit one
-        ``Cancellation`` covering every episode it still owes the sink (both
+        ``GroupCancellation`` covering every episode it still owes the sink (both
         in-flight and never-dispatched), so count-to-``group_size``
         finalization still fires. Returns the owed count for metrics."""
         group = self.groups.pop(group_id, None)
@@ -694,7 +694,13 @@ class Dispatcher:
                 f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
             )
             await self.out_q.put(
-                Cancellation(kind=kind, env_name=env_name, group_id=str(group_id), count=cancelled, reason=reason)
+                GroupCancellation(
+                    kind=kind,
+                    env_name=env_name,
+                    group_id=str(group_id),
+                    count=cancelled,
+                    reason=reason,
+                )
             )
 
         if claimed:

@@ -58,8 +58,8 @@ from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
-    Cancellation,
     EvalBatch,
+    GroupCancellation,
     Policy,
     Progress,
     TrainBatch,
@@ -555,7 +555,7 @@ class Orchestrator:
             )
 
     async def main_loop(self) -> None:
-        """Consume completed episodes and group ``Cancellation``\\ s from the
+        """Consume completed episodes and ``GroupCancellation`` events from the
         dispatcher and route them to the train / eval sink. The sinks return a
         finalized batch (or ``None``); we just dispatch on the result."""
         while not self.stopped.is_set():
@@ -571,7 +571,7 @@ class Orchestrator:
                 self._raise_if_component_stopped()
                 continue
 
-            if isinstance(item, Cancellation):
+            if isinstance(item, GroupCancellation):
                 assert item.kind == "train"  # eval groups are never dropped
                 train_batch = await self.train_sink.cancel(item)
                 if train_batch is not None and not self.draining and not self.stopped.is_set():
