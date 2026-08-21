@@ -110,20 +110,20 @@ Step-by-step plan, one commit each:
 
 - [x] 1. Config + manifold-constrained hyper-connections (mHC)
 - [x] 2. Rotary embedding + sliding-window attention (one of three attention layer types)
-- [ ] 3. Compressed Sparse Attention (CSA): compressor + Lightning Indexer (second attention layer type)
+- [x] 3. Compressed Sparse Attention (CSA): compressor + Lightning Indexer (second attention layer type)
 - [ ] 4. Heavily Compressed Attention (HCA): compressor, no indexer (third and last attention layer type)
 - [ ] 5. Standard MoE (router, experts, shared expert)
 - [ ] 6. Hash-routed MoE (bootstrap layers)
 - [ ] 7. Decoder layer + model classes + state-dict conversion chain, wiring everything above together
 
-Steps 3 and 4 are why attention isn't finished after step 2: DeepSeek V4 has three
-per-layer attention variants (`sliding_attention`, `compressed_sparse_attention`,
+Step 4 is why attention isn't finished after step 3: DeepSeek V4 has three per-layer
+attention variants (`sliding_attention`, `compressed_sparse_attention`,
 `heavily_compressed_attention`), all sharing the same core built in step 2, but CSA and
-HCA each add their own compressor module on top (CSA also adds the Lightning Indexer for
-sparse top-k selection over the compressed history). `DeepseekV4Attention` currently
-raises `NotImplementedError` for both until those land.
+HCA each add their own compressor module on top (CSA, done in step 3, also adds the
+Lightning Indexer for sparse top-k selection over the compressed history).
+`DeepseekV4Attention` still raises `NotImplementedError` for HCA until step 4 lands.
 
-Deliberate scope reductions taken in steps 1-2 that later steps must revisit:
+Deliberate scope reductions taken in steps 1-3 that later steps must revisit:
 
 - **YaRN on the compress RoPE branch is not wired up.** `DeepseekV4Config._nest_rope_parameters`
   forces `rope_type="default"` for both the `main` and `compress` parameter sets. Real
@@ -141,9 +141,9 @@ Deliberate scope reductions taken in steps 1-2 that later steps must revisit:
   zeros for `base`/`hc_base`, ones for `scale`/`hc_scale`), but nothing calls them until
   the `PreTrainedModel` subclass lands in step 7.
 - **`tests/unit/train/models/test_deepseek_v4_temp.py` is scaffolding.** It isolates the
-  hyper-connections, the rotary and the sliding-window attention against HF's reference
-  classes. Fold it into a proper `test_deepseek_v4.py` full-model parity test once the
-  model classes exist.
+  hyper-connections, the rotary, and the sliding-window and CSA attention layers against
+  HF's reference classes. Fold it into a proper `test_deepseek_v4.py` full-model parity
+  test once the model classes exist.
 - **`build_sliding_window_mask` is single-document only.** It builds a dense
   `[1, 1, S, S]` additive mask from the causal + local-window predicate, with no
   `cu_seqlens` awareness, so a packed multi-document row would let the window bleed
@@ -154,15 +154,60 @@ Deliberate scope reductions taken in steps 1-2 that later steps must revisit:
 - **Attention runs eagerly.** `eager_attention_with_sinks` is a direct port of GPT-OSS's
   reference softmax, chosen because the per-head sink logit has no flash-attention
   equivalent in the kernels prime-rl currently vendors. It is correct but materializes
-  the full `[B, H, S, S + 1]` logit tensor.
-- **`DeepseekV4Attention` rejects non-sliding layers.** The constructor raises
-  `NotImplementedError` for `compressed_sparse_attention` / `heavily_compressed_attention`
-  rather than silently building a compressor-less block that would compute the wrong
-  thing. Drop the guard when the compressors land.
+  the full `[B, H, S, S + 1]` logit tensor, `[B, H, S, S + S / m + 1]` on a CSA layer.
+- **`DeepseekV4Attention` rejects HCA layers.** `COMPRESSOR_CLASSES` only maps
+  `sliding_attention` and `compressed_sparse_attention`; the constructor raises
+  `NotImplementedError` for `heavily_compressed_attention` rather than silently building
+  a compressor-less block that would compute the wrong thing. Add the entry in step 4.
+- **The compressors are stateless (no KV cache).** prime-rl only ever runs a single
+  forward + backward over a full sequence, never `generate()`, so
+  `DeepseekV4HCACache` / `DeepseekV4CSACache` are not ported and nothing threads
+  `past_key_values`. This is not just "delete the cache branch": it collapses HF's
+  incremental window bookkeeping into a plain reshape. `first_window_position` is always
+  `0`, `store_compression_weights`'s leftover buffer becomes "drop the trailing
+  `S % m` tokens", and `update_overlap_state` (which carries the previous call's `Ca`
+  slice across a forward boundary) becomes a one-window shift of the `Ca` series inside
+  the same tensor, with window 0's slot left zero-valued and `-inf`-gated exactly as HF
+  leaves it on a first call. Re-deriving any of this is only needed if prime-rl ever
+  grows an incremental decode path.
+- **The Lightning Indexer gets no gradient.** Its parameters
+  (`compressor.indexer.*`) reach the loss only through integer top-k indices, so a
+  backward pass leaves every one of them with `grad is None` (true of HF's
+  implementation too, and pinned by `test_csa_indexer_selection_is_not_differentiable`).
+  DeepSeek trains the indexer with a separate auxiliary loss that distills the dense
+  attention distribution into the indexer scores; nothing here implements it, so an
+  RL/SFT run would leave the indexer frozen at its checkpoint values. Fine for
+  fine-tuning a released checkpoint, not fine for pre-training.
+- **Top-k selection is plain PyTorch.** `torch.topk` over a dense `[B, S, T]` score
+  tensor plus a dense `[B, 1, S, T]` additive block bias, `T = S / m`. GLM-MoE-DSA's
+  fp8/tilelang indexer kernel is not reusable: it scores with a different formula. This
+  is `O(S^2 / m)` memory on top of the eager attention above.
+- **The compressor is single-document only**, like `build_sliding_window_mask`. It pools
+  fixed windows of `m` tokens off the raw sequence and derives readability from
+  `position_ids`, so a packed multi-document row would pool across document boundaries
+  and let a later document read the compressed history of an earlier one. Same step-7
+  decision as the sliding mask.
+- **`position_ids` defaults to `arange`.** `DeepseekV4Attention.forward` synthesizes
+  sequential positions when the caller passes none, matching the single-document
+  assumption above. Step 7's decoder layer should always pass real ones.
+- **Compressed-position cos/sin are recomputed per module.** The CSA compressor and its
+  indexer each own a `DeepseekV4RotaryEmbedding` (as in HF) and each calls it every
+  forward, even though the compressed positions are the deterministic
+  `arange(S / m) * m` and identical across every CSA layer. Cheap, but step 7 could hoist
+  it next to the model-level rotary.
 - **Rotary buffers are computed eagerly in `__init__`.** `DeepseekV4RotaryEmbedding`
   writes `<type>_inv_freq` on whatever device it is constructed on. Meta-device loading
   needs an `init_buffers_post_meta` on the step-7 `PreTrainedModel` subclass to
   re-derive them, mirroring HF's `_init_weights` branch for the rotary.
+
+One structural departure from HF worth knowing about before step 7: `DeepseekV4Indexer`
+subclasses a `DeepseekV4DualSeriesCompressor` base that also backs
+`DeepseekV4CSACompressor`, because HF's two classes run byte-identical compression code
+differing only in `head_dim` (`config.head_dim` vs `config.index_head_dim`). Every
+parameter name is unchanged (`compressor.kv_proj`, `compressor.indexer.kv_proj`, ...), so
+state-dict conversion is unaffected. HCA compresses non-overlapping windows from
+`head_dim`-wide (not `2 * head_dim`-wide) projections and should *not* be forced onto this
+base in step 4.
 
 Considered and rejected: reusing GLM-MoE-DSA's `apply_rope_interleave_single`
 (`glm_moe_dsa/sparse_mla_attention.py:56-63`) or its reshape-then-shared-`rotate_half`

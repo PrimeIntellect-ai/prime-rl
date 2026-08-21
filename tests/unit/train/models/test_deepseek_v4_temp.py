@@ -1,3 +1,8 @@
+# Scratch file for development-time correctness checks during the DeepSeek V4 port,
+# isolating each mechanism (mHC, rotary, attention variants, MoE) against HF's reference
+# as it lands. Not meant to be merged into test_deepseek_v4.py as-is; once the model
+# classes exist, split or fold what's still relevant and delete this file. See TODO.md.
+
 import pytest
 import torch
 from torch import nn
@@ -48,11 +53,19 @@ _ATTN = dict(
     sliding_window=6,
     o_groups=2,
     o_lora_rank=16,
-    layer_types=["sliding_attention"] * 4,
+    layer_types=["sliding_attention", "compressed_sparse_attention"] * 2,
+    compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 8},
+    index_n_heads=4,
+    index_head_dim=24,
+    # Smaller than the four compressed entries a 16-token sequence yields, so the
+    # Lightning Indexer's selection has to actually discard some of them.
+    index_topk=2,
     rms_norm_eps=1e-6,
 )
 
 _BATCH, _SEQ = 2, 16
+_SLIDING_LAYER, _CSA_LAYER = 0, 1
+_COMPRESS_RATE = _ATTN["compress_rates"]["compressed_sparse_attention"]
 
 
 @pytest.fixture(autouse=True)
@@ -115,6 +128,11 @@ def _compare_grads(hf_module: nn.Module, prime_module: nn.Module, rtol: float = 
     prime_grads = dict(prime_module.named_parameters())
     for name, hf_param in hf_module.named_parameters():
         prime_grad = prime_grads[name].grad
+        # The Lightning Indexer's parameters reach the loss only through integer top-k
+        # indices, so both implementations must agree that they get no gradient at all.
+        if hf_param.grad is None:
+            assert prime_grad is None, f"{name} received a gradient in prime-rl but not in HF"
+            continue
         assert prime_grad is not None, f"{name} received no gradient"
         torch.testing.assert_close(prime_grad, hf_param.grad, rtol=rtol, atol=atol, msg=lambda m, n=name: f"{n}: {m}")
 
@@ -235,14 +253,16 @@ def _attention_configs() -> tuple[HFDeepseekV4Config, DeepseekV4Config]:
 def _randomize_attention(module: nn.Module) -> None:
     """Draw non-degenerate values for every attention parameter.
 
-    Norm gains default to ones and the sinks to zeros, which would leave both paths
-    indistinguishable from an identity, hence the explicit spread.
+    Norm gains default to ones, the sinks and the compressors' position biases to zeros,
+    which would leave all three paths indistinguishable from an identity, hence the
+    explicit spread. The position bias is drawn wide because it is a softmax logit: at the
+    projections' std it would leave the pooling gate all but uniform.
     """
     for name, param in module.named_parameters():
         with torch.no_grad():
             if name.endswith("norm.weight"):
                 param.uniform_(0.5, 1.5)
-            elif name == "sinks":
+            elif name == "sinks" or name.endswith("position_bias"):
                 param.normal_(mean=0.0, std=1.0)
             else:
                 param.normal_(mean=0.0, std=0.02)
@@ -258,11 +278,11 @@ def _hidden_states() -> tuple[torch.Tensor, torch.Tensor]:
     return hidden.clone().requires_grad_(True), hidden.clone().requires_grad_(True)
 
 
-def _attention_pair() -> tuple[nn.Module, nn.Module]:
+def _attention_pair(layer_idx: int = _SLIDING_LAYER) -> tuple[nn.Module, nn.Module]:
     hf_config, prime_config = _attention_configs()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        hf_module = HFDeepseekV4Attention(hf_config, layer_idx=0)
-        prime_module = DeepseekV4Attention(prime_config, layer_idx=0)
+        hf_module = HFDeepseekV4Attention(hf_config, layer_idx=layer_idx)
+        prime_module = DeepseekV4Attention(prime_config, layer_idx=layer_idx)
     _randomize_attention(hf_module)
     _sync(hf_module, prime_module)
     return hf_module, prime_module
@@ -374,3 +394,152 @@ def test_sliding_attention_only_reads_the_local_window():
     # outside the window of query `window`.
     assert not torch.equal(perturbed[:, window - 1], baseline[:, window - 1])
     torch.testing.assert_close(perturbed[:, window:], baseline[:, window:], rtol=0, atol=0)
+
+
+def test_attention_rejects_unported_layer_types():
+    config = DeepseekV4Config(**{**_ATTN, "layer_types": ["heavily_compressed_attention"] * 4})
+
+    with pytest.raises(NotImplementedError, match="heavily_compressed_attention"):
+        DeepseekV4Attention(config, layer_idx=0)
+
+
+def test_csa_attention_matches_hf(_torch_rms_norm):
+    hf_module, prime_module = _attention_pair(_CSA_LAYER)
+    hf_input, prime_input = _hidden_states()
+    position_embeddings = _position_embeddings()
+    position_ids = _position_ids()
+    # HF concatenates the compressor's per-batch block bias onto the mask, so the local
+    # window mask has to carry a batch dimension of its own here.
+    mask = build_sliding_window_mask(_SEQ, _ATTN["sliding_window"], torch.bfloat16, torch.device("cuda"))
+    mask = mask.expand(_BATCH, 1, _SEQ, _SEQ)
+
+    hf_output, _ = hf_module(
+        hf_input,
+        position_embeddings=position_embeddings,
+        position_ids=position_ids,
+        attention_mask=mask,
+    )
+    prime_output, _ = prime_module(
+        prime_input,
+        position_embeddings=position_embeddings,
+        attention_mask=mask,
+        position_ids=position_ids,
+    )
+
+    assert prime_output.shape == (_BATCH, _SEQ, _ATTN["hidden_size"])
+    torch.testing.assert_close(prime_output, hf_output, rtol=0, atol=0)
+
+    with torch.device("cuda"):
+        weight = torch.randn_like(hf_output)
+    (hf_output * weight).sum().backward()
+    (prime_output * weight).sum().backward()
+
+    _compare_grads(hf_module, prime_module)
+    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=0, atol=0)
+
+
+def test_csa_attention_defaults_to_sequential_positions():
+    _, prime_module = _attention_pair(_CSA_LAYER)
+    _, hidden = _hidden_states()
+    position_embeddings = _position_embeddings()
+
+    explicit, _ = prime_module(hidden, position_embeddings=position_embeddings, position_ids=_position_ids())
+    implicit, _ = prime_module(hidden, position_embeddings=position_embeddings)
+
+    torch.testing.assert_close(implicit, explicit, rtol=0, atol=0)
+
+
+def test_csa_attention_reads_beyond_the_local_window():
+    _, prime_module = _attention_pair(_CSA_LAYER)
+    _, hidden = _hidden_states()
+    position_embeddings = _position_embeddings()
+    window = _ATTN["sliding_window"]
+
+    baseline, _ = prime_module(hidden, position_embeddings=position_embeddings)
+    perturbed_input = hidden.clone()
+    perturbed_input[:, 0] += 1.0
+    perturbed, _ = prime_module(perturbed_input, position_embeddings=position_embeddings)
+
+    # Token 0 is outside the local window of every query from `window` on, and a sliding
+    # layer ignores it there (see `test_sliding_attention_only_reads_the_local_window`).
+    # A CSA layer still reaches it through the compressed entries it pools into.
+    assert not torch.equal(perturbed[:, window:], baseline[:, window:])
+
+
+def test_csa_compressor_pools_overlapping_windows():
+    _, prime_module = _attention_pair(_CSA_LAYER)
+    compressor = prime_module.compressor
+    _, hidden = _hidden_states()
+
+    compressed = compressor.compress(hidden)
+    assert compressed.shape == (_BATCH, _SEQ // _COMPRESS_RATE, _ATTN["head_dim"])
+
+    token = _COMPRESS_RATE + 1
+    perturbed_input = hidden.clone()
+    perturbed_input[:, token] += 1.0
+    perturbed = compressor.compress(perturbed_input)
+
+    changed = {w for w in range(compressed.shape[1]) if not torch.equal(perturbed[:, w], compressed[:, w])}
+    # A token feeds its own window's entry through the `Cb` series and the next window's
+    # through `Ca`; nothing earlier and nothing later may move.
+    assert changed == {token // _COMPRESS_RATE, token // _COMPRESS_RATE + 1}
+
+
+def test_csa_compressor_drops_the_trailing_partial_window():
+    _, prime_module = _attention_pair(_CSA_LAYER)
+    compressor = prime_module.compressor
+    _, hidden = _hidden_states()
+
+    full = compressor.compress(hidden)
+    truncated = compressor.compress(hidden[:, : _SEQ - 1])
+
+    assert truncated.shape[1] == full.shape[1] - 1
+    torch.testing.assert_close(truncated, full[:, : truncated.shape[1]], rtol=0, atol=0)
+
+
+def test_csa_indexer_keeps_only_readable_entries():
+    _, prime_module = _attention_pair(_CSA_LAYER)
+    indexer = prime_module.compressor.indexer
+    _, hidden = _hidden_states()
+    position_ids = _position_ids()
+    q_residual = prime_module.q_a_norm(prime_module.q_a_proj(hidden))
+
+    top_k_indices = indexer(hidden, q_residual, position_ids)
+
+    top_k = _ATTN["index_topk"]
+    assert top_k_indices.shape == (_BATCH, _SEQ, top_k)
+    # Entry `w` pools tokens up to `(w + 1) * compress_rate - 1`, so query `t` may read
+    # `(t + 1) // compress_rate` of them.
+    readable = (position_ids + 1) // _COMPRESS_RATE
+    assert readable.max() > top_k, "config must leave the indexer something to discard"
+    assert (top_k_indices < readable.unsqueeze(-1)).all(), "an unreadable entry was selected"
+    # `-1` pads the picks of queries with fewer readable entries than `index_topk`.
+    kept = (top_k_indices >= 0).sum(dim=-1)
+    torch.testing.assert_close(kept, readable.clamp(max=top_k))
+
+
+def test_csa_attention_init_weights_reaches_the_compressor():
+    _, prime_module = _attention_pair(_CSA_LAYER)
+    assert (prime_module.compressor.indexer.position_bias != 0).any(), "fixture must start from a spread"
+
+    prime_module.init_weights(0.02)
+
+    assert (prime_module.sinks == 0).all()
+    assert (prime_module.compressor.position_bias == 0).all()
+    assert (prime_module.compressor.indexer.position_bias == 0).all()
+
+
+def test_csa_indexer_selection_is_not_differentiable():
+    _, prime_module = _attention_pair(_CSA_LAYER)
+    _, hidden = _hidden_states()
+
+    output, _ = prime_module(hidden, position_embeddings=_position_embeddings())
+    output.sum().backward()
+
+    compressor = prime_module.compressor
+    for name, param in compressor.named_parameters():
+        got_grad = param.grad is not None
+        # The compressed entries are attended over, so the compressor trains; the indexer
+        # only emits integer indices, so nothing differentiates back into it. DeepSeek
+        # trains it with a separate auxiliary loss that prime-rl does not have yet.
+        assert got_grad == (not name.startswith("indexer.")), f"unexpected gradient state for {name}"
