@@ -26,8 +26,6 @@ import uuid
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
-from modelexpress import p2p_pb2
-from modelexpress.client import MxClient
 from verifiers.v1.runtimes import set_base_sandbox_labels
 
 if TYPE_CHECKING:
@@ -68,7 +66,6 @@ from prime_rl.orchestrator.utils import (
     episode_group_id,
     episode_staleness,
     eval_work,
-    get_weight_dir,
     intercept_vf_logging,
     set_default_executor,
     setup_policy_inference_pool,
@@ -77,11 +74,11 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transports.rollouts import setup_micro_batch_sender
-from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
+from prime_rl.transports.weights.receiver import WeightBroadcastReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
-from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
+from prime_rl.utils.pathing import get_broadcast_dir
 from prime_rl.utils.utils import (
     clean_exit,
     resolve_latest_ckpt_step,
@@ -145,6 +142,7 @@ class Orchestrator:
     eval_sink: EvalSink | None
     eval_source: EvalSource | None
     lora_name: str | None
+    receiver: WeightBroadcastReceiver
     resume_step: int | None
     lag_task: asyncio.Task | None
 
@@ -188,7 +186,6 @@ class Orchestrator:
         self.lora_name = None
         self.resume_step = None
         self.lag_task = None
-        self.model_express = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -278,36 +275,16 @@ class Orchestrator:
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
-        get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        if config.weight_broadcast.type == "nccl":
-            await init_nccl_broadcast(
-                self.policy_inference.admin_clients,
-                config.weight_broadcast.host,
-                config.weight_broadcast.port,
-                config.weight_broadcast.timeout,
-                inference_world_size=config.weight_broadcast.inference_world_size,
-                quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
-            )
-        elif config.weight_broadcast.type == "nixl":
-            await init_nixl_broadcast(
-                self.policy_inference.admin_clients,
-                config.weight_broadcast.host,
-                config.weight_broadcast.port,
-                config.weight_broadcast.timeout,
-                config.weight_broadcast.inference_world_size,
-                config.weight_broadcast.session_id,
-            )
-            self.model_express = ModelExpressSession(
-                client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
-                role="orchestrator",
-                rank=0,
-                session_id=config.weight_broadcast.session_id,
-                worker_id="orchestrator",
-            )
-            self.model_express.publish()
-            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
-
         self.lora_name = config.model.lora.name if config.model.lora else None
+
+        get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        self.receiver = setup_weight_receiver(
+            get_broadcast_dir(config.output_dir),
+            config.weight_broadcast,
+            admin_clients=self.policy_inference.admin_clients,
+            model_name=self.lora_name or config.model.name,
+        )
+        await self.receiver.initialize()
 
         self.train_source = TrainSource(self.train_envs)
 
@@ -331,33 +308,13 @@ class Orchestrator:
 
         # Sync inference to the incoming policy before the first step, rendezvousing
         # with the trainer's startup broadcast (v{resume_step} on resume, v0 from
-        # scratch).
+        # scratch). The startup broadcast is always coming, so wait for it rather
+        # than failing immediately when it is not there yet.
         sync_version = self.resume_step if self.resume_step is not None else 0
-        if config.weight_broadcast.type == "nixl":
-            weights_path = None
-        else:
-            check_exists = config.weight_broadcast.type == "filesystem"
-            # The trainer's startup broadcast is always coming, so wait for it
-            # rather than failing immediately when the directory is not there yet.
-            wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
-                STARTUP_WEIGHT_WAIT_TIMEOUT_S
-            )
-            weights_path = get_weight_dir(
-                config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
-            )
-        if self.model_express is not None:
-            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
-        await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
-        if self.model_express is not None:
-            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
-            # Complete the startup rendezvous before the watcher begins its next cycle.
-            await asyncio.to_thread(
-                self.model_express.wait_for,
-                "trainer",
-                count=1,
-                status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                timeout=config.weight_broadcast.timeout,
-            )
+        wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
+            STARTUP_WEIGHT_WAIT_TIMEOUT_S
+        )
+        await self.receiver.sync_startup(sync_version, timeout=wait_timeout)
         if self.lora_name is not None:
             self.policy_inference.update_model_name(self.lora_name)
             self.policy.model_name = self.lora_name
@@ -421,13 +378,10 @@ class Orchestrator:
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
-            config,
+            self.receiver,
             policy=self.policy,
-            inference=self.policy_inference,
             observers=[self.dispatcher, self],
-            lora_name=self.lora_name,
             ckpt_step=self.policy.version,
-            model_express=self.model_express,
         )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
@@ -526,7 +480,7 @@ class Orchestrator:
         broadcast is a blocking collective — tearing down the watcher before
         the rendezvous would strand the trainer inside it."""
         config = self.config
-        if config.weight_broadcast.type not in ("nccl", "nixl") or config.max_steps is None:
+        if self.receiver.can_skip_versions or config.max_steps is None:
             return
         final_version = config.max_steps - 1
         if self.policy.version >= final_version:
@@ -995,15 +949,11 @@ class Orchestrator:
     async def on_version_pending(self, step: int) -> None:
         """``VersionObserver`` hook, fired at publish confirmation (pre-apply):
         ``policy.version`` already carries the new version, so wake a held ship."""
-        if self.model_express is not None:
-            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
         self.version_advanced.set()
 
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the weight update completed;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""
-        if self.model_express is not None:
-            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.update_dispatch_gate()
 
     async def stop(self) -> None:

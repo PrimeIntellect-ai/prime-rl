@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -86,8 +87,8 @@ class InferencePool:
         )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+    async def update_weights(self, weight_dir: Path | None, step: int = 0) -> None:
+        await update_weights(self._admin_clients, weight_dir, step=step)
 
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this pool's model (one logprob per
@@ -202,9 +203,6 @@ async def check_health(
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
 
 
-NCCL_READY_MARKER = "NCCL_READY"
-
-
 def _is_retryable_admin_error(exception: BaseException) -> bool:
     """Check if an exception should trigger a retry for an admin op (pause/resume/update_weights)."""
     if isinstance(exception, httpx.HTTPStatusError):
@@ -274,50 +272,39 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
 async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
-    lora_name: str | None = None,
     step: int = 0,
+    on_paused: Callable[[], None] | None = None,
 ) -> None:
     """Update weights on static inference servers.
 
     Pauses all engines first to drain in-flight requests, then performs the
     weight update, then resumes. This ensures all DP workers are idle and can
-    participate in the collective weight transfer.
+    participate in the collective weight transfer. ``on_paused`` runs between
+    the pause and the update RPC — the NCCL receiver signals the trainer there.
 
     Note: the prefix cache is intentionally not reset on weight update. The orchestrator
     salts the prefix cache per weight version (``cache_salt`` in the sampling request, see
     ``orchestrator/envs.py``), so KV computed under old weights is never reused.
     """
-    logger = get_logger()
-
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-    if lora_name is not None and weight_dir is not None:
-        await load_lora_adapter(admin_clients, lora_name, weight_dir)
-    else:
-        # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
-        await _pause_engines(admin_clients, step=step)
-
-        try:
-            # Create ready marker before servers enter receive path (used by NCCL broadcast)
-            if weight_dir is not None:
-                nccl_ready_file = weight_dir / NCCL_READY_MARKER
-                nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
-                nccl_ready_file.touch()
-                logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
-
-            await asyncio.gather(
-                *[
-                    _admin_post(
-                        admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
-                        timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-                    )
-                    for admin_client in admin_clients
-                ]
-            )
-        finally:
-            await _resume_engines(admin_clients)
+    await _pause_engines(admin_clients, step=step)
+    try:
+        if on_paused is not None:
+            on_paused()
+        await asyncio.gather(
+            *[
+                _admin_post(
+                    admin_client,
+                    "/update_weights",
+                    json={"weight_dir": weight_dir_posix},
+                    timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                )
+                for admin_client in admin_clients
+            ]
+        )
+    finally:
+        await _resume_engines(admin_clients)
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
@@ -373,19 +360,6 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
         response.raise_for_status()
 
     await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
-
-
-async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) -> None:
-    """Make a HTTP post request to the vLLM server to unload a LoRA adapter."""
-    logger = get_logger()
-
-    async def _unload_lora_adapter(admin_client: AsyncClient) -> None:
-        logger.debug(f"Sending request to unload LoRA adapter {lora_name}")
-        await admin_client.post("/v1/unload_lora_adapter", json={"lora_name": lora_name})
-        # TODO: The first one can fail, but subsequent ones should succeed.
-        # response.raise_for_status()
-
-    await asyncio.gather(*[_unload_lora_adapter(admin_client) for admin_client in admin_clients])
 
 
 async def init_nccl_broadcast(

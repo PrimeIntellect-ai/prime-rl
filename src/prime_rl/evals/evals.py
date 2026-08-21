@@ -3,10 +3,13 @@
 Standalone (no ``[online]``), it runs one epoch of every configured eval
 source against the weights the inference server currently serves, then exits.
 With ``[online]``, it watches a broadcasts directory for new weight
-broadcasts — the trainer writes ``broadcasts/step_{n}`` with a ``STABLE``
-marker on completion — tells the inference server to receive each eligible
-broadcast, and runs the configured evals against the updated weights,
-sequentially per broadcast so every epoch measures exactly one policy version.
+broadcasts through a ``WeightBroadcastReceiver`` — filesystem broadcasts are
+announced by their ``STABLE`` marker on completion, in-memory (NCCL)
+broadcasts by ``STARTED`` while the trainer blocks for the receiver — moves
+the inference server onto each eligible broadcast, and runs the configured
+evals against the updated weights, sequentially per broadcast so every epoch
+measures exactly one policy version. An in-memory broadcast must always be
+received (a skipped receive strands the trainer), even when no eval is due.
 
 Scheduling reuses the orchestrator pipeline unchanged: an eval-only
 ``Dispatcher`` admits episodes under the adaptive ``ConcurrencyController``,
@@ -30,6 +33,7 @@ from subprocess import Popen
 
 from prime_rl import monitors
 from prime_rl.configs.evals import EvalsConfig
+from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
@@ -43,10 +47,11 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import EvalBatch, Policy
 from prime_rl.orchestrator.utils import eval_work, intercept_vf_logging, set_default_executor
-from prime_rl.utils.client import InferencePool, init_nccl_broadcast
+from prime_rl.transports.weights.receiver import WeightBroadcastReceiver, setup_weight_receiver
+from prime_rl.utils.client import InferencePool
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_all_ckpt_steps, get_config_dir, get_log_dir, get_step_path
+from prime_rl.utils.pathing import get_all_ckpt_steps, get_config_dir, get_log_dir
 from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, cleanup_processes
 from prime_rl.utils.utils import clean_exit
 
@@ -60,6 +65,10 @@ POLL_INTERVAL_S = 2.0
 # with fresh weights each step is supported (the server forces an in-place
 # reload, see /load_lora_adapter).
 LORA_NAME = "eval-adapter"
+
+# Budget for the trainer's startup broadcast: it is always coming, but only
+# after the trainer has finished loading the model.
+STARTUP_BROADCAST_TIMEOUT_S = 1200
 
 
 class Evals:
@@ -108,17 +117,20 @@ class Evals:
         await self.pool.wait_for_ready(config.model)
         get_logger().success("Inference pool ready")
 
-        weight_broadcast = config.weight_broadcast
-        if weight_broadcast is not None and weight_broadcast.type == "nccl":
+        self.receiver: WeightBroadcastReceiver | None = None
+        if config.online is not None:
+            assert config.online.broadcasts_dir is not None
+            # A hand-written online config may omit the transport; broadcasts
+            # are then plain filesystem checkpoints.
+            weight_broadcast = config.weight_broadcast or FileSystemWeightBroadcastConfig()
             get_logger().info(f"Initializing weight broadcast ({weight_broadcast})")
-            await init_nccl_broadcast(
-                self.pool.admin_clients,
-                weight_broadcast.host,
-                weight_broadcast.port,
-                weight_broadcast.timeout,
-                inference_world_size=weight_broadcast.inference_world_size,
-                quantize_in_weight_transfer=weight_broadcast.quantize_in_weight_transfer,
+            self.receiver = setup_weight_receiver(
+                config.online.broadcasts_dir,
+                weight_broadcast,
+                admin_clients=self.pool.admin_clients,
+                model_name=LORA_NAME,
             )
+            await self.receiver.initialize()
 
         is_resumed = config.online is not None and config.online.resume_step is not None
         self.eval_source = EvalSource(self.eval_envs, config.eval, is_resumed=is_resumed)
@@ -242,65 +254,58 @@ class Evals:
         assert config.online is not None
         online = config.online
 
+        # Rendezvous with the trainer's startup broadcast (v0 fresh, the
+        # checkpoint step on resume) — always, for every transport: an
+        # in-memory trainer blocks inside its startup broadcast until this
+        # receive, and for filesystem it guarantees the served weights match
+        # the trainer's incoming policy.
+        assert self.receiver is not None
+        startup_step = online.resume_step or 0
+        await self.receiver.sync_startup(startup_step, timeout=STARTUP_BROADCAST_TIMEOUT_S)
+        self.policy.version = startup_step
+        if (self.receiver.step_dir(startup_step) / "adapter_config.json").exists():
+            self.pool.update_model_name(LORA_NAME)
+            self.policy.model_name = LORA_NAME
+
         if online.resume_step is None:
-            # Base-model eval: the inference server starts with the untrained weights,
-            # so no reload is needed. The first trigger fires every env (policy v0)
-            # unless ``skip_first_step``.
+            # The first trigger fires every env (policy v0) unless ``skip_first_step``.
             await self.maybe_run_evals(step=0)
         elif config.eval.retrigger_on_resume:
             # Re-fire evals at the resume step (e.g. after a crash that lost in-flight
-            # evals). The trainer rebroadcasts the resumed policy on startup, but only
-            # after loading the model — wait for that broadcast instead of checking
-            # once. A newer stable broadcast means the resume step's was already
-            # cleaned away (only the newest is kept) and can never reappear. The
+            # evals); the startup rendezvous above already loaded its weights. The
             # final broadcast force-fires every env, exactly like the watch loop below.
-            assert online.broadcasts_dir is not None and online.resume_step is not None
-            while True:
-                if (get_step_path(online.broadcasts_dir, online.resume_step) / "STABLE").exists():
-                    is_final = online.max_steps is not None and online.resume_step >= online.max_steps
-                    await self.maybe_run_evals(step=online.resume_step, reload_weights=True, force=is_final)
-                    break
-                newer_stable = any(
-                    step > online.resume_step and (get_step_path(online.broadcasts_dir, step) / "STABLE").exists()
-                    for step in get_all_ckpt_steps(online.broadcasts_dir)
-                )
-                if newer_stable:
-                    get_logger().warning(
-                        f"Broadcast for resume step {online.resume_step} was cleaned before it could be "
-                        "re-evaluated (broadcast cleaning outpaced the evals process) - skipping the retrigger"
-                    )
-                    break
-                await asyncio.sleep(POLL_INTERVAL_S)
+            is_final = online.max_steps is not None and online.resume_step >= online.max_steps
+            await self.maybe_run_evals(step=online.resume_step, force=is_final)
 
         get_logger().info(f"Watching {online.broadcasts_dir} for new weight broadcasts (max_steps={online.max_steps})")
         while True:
             assert online.broadcasts_dir is not None  # resolved by the config validator
             steps = get_all_ckpt_steps(online.broadcasts_dir)
-            stable = {step: (get_step_path(online.broadcasts_dir, step) / "STABLE").exists() for step in steps}
-            newest_stable = max((step for step in steps if stable[step]), default=None)
+            published = {step: self.receiver.is_published(step) for step in steps}
+            newest_published = max((step for step in steps if published[step]), default=None)
             # Also walk eval-due steps that are no longer on disk: broadcast cleaning
             # (the trainer keeps only the newest broadcast) can delete a step before
             # this scan sees it, and a vanished step would otherwise be skipped
             # without a trace.
-            for step in sorted(set(steps) | self.deleted_due_steps(steps, newest_stable)):
+            for step in sorted(set(steps) | self.deleted_due_steps(steps, newest_published)):
                 if step <= self.last_step:
                     continue
-                if step not in stable:
+                if step not in published:
                     get_logger().warning(
                         f"Weight broadcast for eval step {step} was deleted before it could be "
                         "evaluated (broadcast cleaning outpaced the evals process) - skipping its evals"
                     )
                     self.last_step = max(self.last_step, step)
                     continue
-                if not stable[step]:
+                if not published[step]:
                     # The trainer writes broadcasts in ascending order, so a marker-less
-                    # step below a stable one is an abandoned partial write (e.g. a crash
-                    # mid-save), not one in progress — skip it instead of wedging on it.
-                    if newest_stable is None or newest_stable < step:
+                    # step below a published one is an abandoned partial write (e.g. a
+                    # crash mid-save), not one in progress — skip it instead of wedging.
+                    if newest_published is None or newest_published < step:
                         break  # still being written — later steps can't be ready either
                     get_logger().warning(
-                        f"Weight broadcast step {step} has no STABLE marker but newer stable "
-                        "broadcasts exist - treating it as abandoned and skipping its evals"
+                        f"Weight broadcast step {step} is not marked published but newer "
+                        "broadcasts are - treating it as abandoned and skipping its evals"
                     )
                     self.last_step = max(self.last_step, step)
                     continue
@@ -310,33 +315,57 @@ class Evals:
                 break
             await asyncio.sleep(POLL_INTERVAL_S)
 
-    def deleted_due_steps(self, steps: list[int], newest_stable: int | None) -> set[int]:
-        """Eval-due steps up to the newest stable broadcast that are missing from the
-        broadcasts dir — the trainer wrote them (it broadcasts at every due step), so
-        their absence means broadcast cleaning removed them before they were
+    def deleted_due_steps(self, steps: list[int], newest_published: int | None) -> set[int]:
+        """Eval-due steps up to the newest published broadcast that are missing from
+        the broadcasts dir — the trainer wrote them (it broadcasts at every due step),
+        so their absence means broadcast cleaning removed them before they were
         evaluated."""
-        if newest_stable is None:
+        if newest_published is None:
             return set()
         due = {
             step
             for interval in self.eval_source.intervals.values()
-            for step in range(interval, newest_stable + 1, interval)
+            for step in range(interval, newest_published + 1, interval)
         }
         return due - set(steps)
 
     async def maybe_run_evals(self, step: int, *, reload_weights: bool = False, force: bool = False) -> None:
         """Fire eligible envs for one checkpoint step and run the full epoch(s),
-        reloading the inference weights first. No-op when no env is due."""
+        reloading the inference weights first. No-op when no env is due — except
+        that a live transport's broadcast must always be received (the trainer
+        is blocked inside it), eval or no eval."""
         if reload_weights:
-            assert self.config.online is not None and self.config.online.broadcasts_dir is not None
-            broadcast_dir = get_step_path(self.config.online.broadcasts_dir, step)
-            if not (broadcast_dir / "STABLE").exists():
-                get_logger().warning(f"No stable weight broadcast for step {step} ({broadcast_dir}) - skipping eval")
+            assert self.receiver is not None
+            broadcast_dir = self.receiver.step_dir(step)
+            if not self.receiver.is_published(step):
+                get_logger().warning(f"No published weight broadcast for step {step} ({broadcast_dir}) - skipping eval")
                 self.last_step = max(self.last_step, step)
                 return
 
         fired = self.eval_source.trigger(step, force=force)
         self.last_step = max(self.last_step, step)
+
+        if reload_weights and (fired or not self.receiver.can_skip_versions):
+            get_logger().info(f"Updating inference weights to broadcast step {step} ({broadcast_dir})")
+            try:
+                await self.receiver.receive(step)
+            except Exception as exc:
+                if not self.receiver.can_skip_versions:
+                    # The trainer is blocked inside this broadcast — a skipped
+                    # receive would strand it, so fail the run loudly instead.
+                    raise
+                # Skip this step instead of killing the run; drain the queued examples
+                # so they don't leak into a later epoch with the wrong eval_step.
+                while self.eval_source.next_example() is not None:
+                    pass
+                get_logger().error(f"Failed to update inference weights to step {step} - skipping evals: {exc!r}")
+                return
+            # LoRA runs broadcast the raw adapter; the receiver loads it under a
+            # fixed adapter name — serve the evals against that name.
+            if (broadcast_dir / "adapter_config.json").exists():
+                self.pool.update_model_name(LORA_NAME)
+                self.policy.model_name = LORA_NAME
+
         if not fired:
             return
 
@@ -347,24 +376,6 @@ class Evals:
             self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
             for env_name in fired
         )
-
-        if reload_weights:
-            get_logger().info(f"Updating inference weights to broadcast step {step} ({broadcast_dir})")
-            # LoRA runs broadcast the raw adapter; load it under a fixed adapter name
-            # and serve the evals against that name (mirrors WeightWatcher).
-            lora_name = LORA_NAME if (broadcast_dir / "adapter_config.json").exists() else None
-            try:
-                await self.pool.update_weights(broadcast_dir, lora_name=lora_name, step=step)
-            except Exception as exc:
-                # Skip this step instead of killing the run; drain the queued examples
-                # so they don't leak into a later epoch with the wrong eval_step.
-                while self.eval_source.next_example() is not None:
-                    pass
-                get_logger().error(f"Failed to update inference weights to step {step} - skipping evals: {exc!r}")
-                return
-            if lora_name is not None:
-                self.pool.update_model_name(lora_name)
-                self.policy.model_name = lora_name
 
         # The dispatcher only schedules eval in PREFER_EVAL, so nothing dispatches
         # between the trigger above and the weight reload completing.

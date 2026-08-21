@@ -179,6 +179,7 @@ def train(config: TrainerConfig):
             config.weight_broadcast,
             parallel_dims,
             config.model.lora,
+            keep_interval=config.ckpt.interval if config.ckpt else None,
         )
 
     if parallel_dims.cp_enabled:
@@ -274,7 +275,7 @@ def train(config: TrainerConfig):
         # optimizer step.
         if progress.step == start_step and weight_broadcast is not None:
             logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
-            weight_broadcast.broadcast_weights(model, step=progress.step - 1)
+            weight_broadcast.broadcast_startup(model, step=progress.step - 1)
 
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")
@@ -590,12 +591,8 @@ def train(config: TrainerConfig):
                 # resident weights; release cached blocks (incl. offload-stream
                 # pools) so the broadcast gets the full headroom.
                 torch.cuda.empty_cache()
-                weight_broadcast.broadcast_weights(model, step=progress.step)
+                weight_broadcast.broadcast(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
-                # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-                if config.weight_broadcast.type == "filesystem":
-                    interval_to_keep = config.ckpt and config.ckpt.interval
-                    weight_broadcast.maybe_clean(progress.step, interval_to_keep)
             else:
                 broadcast_weights_time = 0
 

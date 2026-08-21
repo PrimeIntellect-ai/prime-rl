@@ -3,9 +3,7 @@ import ctypes
 import gc
 import logging
 import math
-import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Any
 
 import verifiers.v1 as vf
@@ -13,11 +11,6 @@ import verifiers.v1 as vf
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
-from prime_rl.utils.utils import (
-    get_broadcast_dir,
-    get_ckpt_dir,
-    get_step_path,
-)
 
 
 def episode_env_name(episode: vf.Episode[Any, Any, Any]) -> str:
@@ -131,51 +124,6 @@ def trim_process_memory() -> None:
         ctypes.CDLL("libc.so.6").malloc_trim(0)
     except Exception as exc:
         get_logger().debug(f"malloc_trim(0) failed: {exc!r}")
-
-
-def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:
-    """Get the weight directory for a given checkpoint step.
-
-    Args:
-        output_dir: The output directory for the run.
-        step: The checkpoint step.
-        check_exists: If True, raises FileNotFoundError if no weight directory exists.
-            If False, returns the broadcast directory path without checking existence
-            (useful for NCCL mode where weights are broadcasted, not stored on disk).
-        wait_timeout: Maximum time in seconds to wait for a stable directory to appear.
-            If None, no waiting is performed.
-    """
-    ckpt_weight_dir = get_step_path(get_ckpt_dir(output_dir), step) / "weight"
-    broadcast_weight_dir = get_step_path(get_broadcast_dir(output_dir), step)
-
-    def find_stable_dir() -> Path | None:
-        # For checkpoint weights, check STABLE file in parent directory (checkpoints/step_{step}/STABLE)
-        ckpt_step_dir = get_step_path(get_ckpt_dir(output_dir), step)
-        if (ckpt_step_dir / "STABLE").exists() and ckpt_weight_dir.exists():
-            return ckpt_weight_dir
-
-        # For broadcast weights, check STABLE file in the broadcast directory itself
-        if (broadcast_weight_dir / "STABLE").exists() and broadcast_weight_dir.exists():
-            return broadcast_weight_dir
-
-        return None
-
-    # Check immediately, then wait if needed
-    result = find_stable_dir()
-    if result is None and wait_timeout:
-        start_time = time.time()
-        while time.time() - start_time < wait_timeout:
-            time.sleep(1)
-            result = find_stable_dir()
-            if result:
-                break
-
-    if result:
-        return result
-    if not check_exists:
-        return broadcast_weight_dir
-
-    raise FileNotFoundError(f"No weight directory found for checkpoint step {step}")
 
 
 def compute_pass_metrics(rewards: list[float]) -> dict[str, float]:
