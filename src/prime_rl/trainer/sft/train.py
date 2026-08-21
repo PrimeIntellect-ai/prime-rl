@@ -216,7 +216,6 @@ def train(config: SFTConfig):
     multimodal = config.model.vlm is not None
     dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer, multimodal=multimodal)
     dataloader = setup_dataloader(dataset, config.data)
-    dataiter = iter(dataloader)
 
     val_raw_dataset = None
     if config.val is not None:
@@ -248,6 +247,12 @@ def train(config: SFTConfig):
     logger.info(
         f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
     )
+
+    # Create the iterator only after a potential resume: with num_workers > 0, iter()
+    # forks workers with a copy of the dataset's *current* state, so a later
+    # load_state_dict never reaches an already-running worker (the run silently
+    # restarts the data from the beginning and re-saves the stale position).
+    dataiter = iter(dataloader)
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
