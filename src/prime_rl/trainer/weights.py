@@ -143,11 +143,6 @@ def resolve_fqn(model: nn.Module, key: str) -> str:
 
 _LAYER_RE = re.compile(r"^(.*?\blayers\.\d+)\.")
 
-# Pinned staging buffers for gather_weights_parallel, keyed by FQN. They persist
-# across saves so the D2H copies never re-pin memory (pinning is slow); each rank
-# holds roughly model_size / world_size bytes.
-_staging_buffers: dict[str, Tensor] = {}
-
 
 def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: torch.dtype) -> dict[str, int]:
     """Assign each state-dict key an owner rank, balanced by byte size.
@@ -177,8 +172,9 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
 
     Every rank participates in the per-tensor all-gathers (a ``full_tensor`` call is
     collective and materializes the full tensor on all ranks anyway), but instead of
-    only the master keeping everything, each rank copies its owned slice into pinned
-    CPU buffers with non-blocking copies that overlap subsequent gathers.
+    only the master keeping everything, each rank copies its owned slice to CPU —
+    so the D2H traffic and the shard writes are split across ranks. The copies are
+    plain blocking transfers; no stream-ordering assumptions.
     """
     world = get_world()
     owners = partition_weights(model.state_dict(), world.world_size, dtype)
@@ -193,23 +189,7 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
                 value = cast(DTensor, value.to(dtype)).full_tensor()
             if owners[key] != world.rank:
                 continue
-            fqn = resolve_fqn(model, key)
-            if value.is_cuda:
-                buffer = _staging_buffers.get(fqn)
-                if buffer is None or buffer.shape != value.shape or buffer.dtype != value.dtype:
-                    buffer = torch.empty_like(value, device="cpu", pin_memory=True)
-                    _staging_buffers[fqn] = buffer
-                # Dropping the GPU temp before this copy completes is safe only
-                # because everything stays on the current stream: the caching
-                # allocator reuses freed blocks per-stream, so later gathers
-                # writing into recycled storage are ordered after this read. If
-                # these copies ever move to a side stream, hold the refs until
-                # the synchronize (or use Tensor.record_stream).
-                buffer.copy_(value, non_blocking=True)
-                partial[fqn] = buffer
-            else:
-                partial[fqn] = value
-        torch.cuda.synchronize()
+            partial[resolve_fqn(model, key)] = value.to("cpu")
         dist.barrier()
 
     if any(".base_layer." in key or "lora_A" in key or "lora_B" in key for key in partial.keys()):
