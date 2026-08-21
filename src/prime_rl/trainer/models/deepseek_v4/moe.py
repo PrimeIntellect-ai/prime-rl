@@ -1,7 +1,8 @@
 """DeepSeek V4 mixture of experts: router, routed experts and shared expert.
 
-Only standard token-choice routing lives here. The hash-routed bootstrap layers
-(`mlp_layer_types == "hash_moe"`) are a separate step; see TODO.md.
+Both MLP layer types live here. `mlp_layer_types[layer_idx]` picks between standard
+token-choice routing and the hash routing of the bootstrap layers, which replaces the
+learned selection with a frozen token-id lookup but keeps the learned gating weights.
 """
 
 from functools import partial
@@ -225,17 +226,25 @@ class DeepseekV4MLP(MLP):
 
 
 class DeepseekV4MoE(MoE):
-    """Standard (non-hash) V4 MoE layer.
+    """A V4 MoE layer, hash-routed or standard according to `config.mlp_layer_types`.
 
     Subclasses the shared `MoE` so `apply_ep` / `setup_fsdp` keep recognizing it, then
     swaps in the three V4-specific pieces. `MoE.forward`'s orchestration is unchanged.
+
+    A hash layer routes each token to `tid2eid[token_id]`, a frozen table read from the
+    checkpoint, instead of to the top-k of the router's scores. That is precisely what the
+    shared router's `routed_experts` bypass does, so the router class is the same for both
+    layer types and only the `forward` below differs: it looks the indices up and lets the
+    base class weight them with the learned scores as usual.
     """
 
-    def __init__(self, config: DeepseekV4Config):
+    def __init__(self, config: DeepseekV4Config, layer_idx: int):
         assert config.hidden_act == "silu", (
             f"the routed experts hardcode SiLU; hidden_act={config.hidden_act!r} is not supported"
         )
         assert not getattr(config, "fp8", False), "FP8 training is not supported for DeepSeek V4"
+
+        is_hash = config.mlp_layer_types[layer_idx] == "hash_moe"
 
         moe_args = MoEArgs(
             num_experts=config.n_routed_experts,
@@ -249,9 +258,15 @@ class DeepseekV4MoE(MoE):
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
             use_grouped_mm=config.use_grouped_mm,
-            load_balance_coeff=1e-3,
+            # A frozen selection cannot be steered, so a hash layer has no use for the
+            # aux-loss-free load-balancing bias, and HF's `DeepseekV4HashRouter` carries no
+            # `e_score_correction_bias` to load into it either. `None` leaves the
+            # `expert_bias` buffer unbuilt, keeping the state dict aligned with HF's.
+            load_balance_coeff=None if is_hash else 1e-3,
         )
         super().__init__(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+        self.layer_idx = layer_idx
+        self.is_hash = is_hash
 
         self.router = DeepseekV4Router(
             dim=config.hidden_size,
@@ -272,3 +287,36 @@ class DeepseekV4MoE(MoE):
         # HF sizes its shared expert at `moe_intermediate_size` regardless of
         # `n_shared_experts`, which therefore only decides whether one exists at all.
         self.shared_expert = DeepseekV4MLP(config) if config.n_shared_experts > 0 else None
+
+        if is_hash:
+            # HF hangs the table off the router (`gate.tid2eid`); prime-rl's router is
+            # shared by both layer types, so it lives here instead, exactly like the
+            # `expert_bias` it stands in for. Zeros until a checkpoint fills it.
+            self.register_buffer(
+                "tid2eid",
+                torch.zeros(config.vocab_size, config.num_experts_per_tok, dtype=torch.long),
+                persistent=True,
+            )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        input_ids: torch.Tensor | None = None,
+        routed_experts: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            x (torch.Tensor): Input tensor with shape ``(bs, slen, dim)``.
+            input_ids (torch.Tensor | None, optional): Token ids with shape ``(bs, slen)``.
+                Required by a hash layer, ignored by a standard one.
+            routed_experts (torch.Tensor | None, optional): Optional tensor with shape
+                ``(bs, slen, top_k)``. Replayed expert indices take precedence over the table.
+
+        Returns:
+            out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
+        """
+        if self.is_hash and routed_experts is None:
+            assert input_ids is not None, f"layer {self.layer_idx} is hash-routed and needs input_ids"
+            bs, slen, _ = x.shape
+            routed_experts = self.tid2eid[input_ids.reshape(-1)].view(bs, slen, -1)
+        return super().forward(x, routed_experts=routed_experts)

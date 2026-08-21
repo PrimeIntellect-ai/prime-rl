@@ -22,7 +22,7 @@ Originally flagged by reviewer `dzautner` on PR #3055; confirmed and extended he
    installed alternative) does take `cu_seqlens`, but its signature doesn't match the current
    call site and its `cu_seqlens` correctness hasn't been verified here. (Checking which
    implementation resolved requires `transformers.utils.import_utils.resolve_internal_import`
-   directly — `functools.wraps` makes the wrapper's `__module__`/signature always look like the
+   directly: `functools.wraps` makes the wrapper's `__module__`/signature always look like the
    reference impl regardless of what actually resolved.)
 
 What still needs to happen: fix the rename with a `getattr` fallback; call the module-level
@@ -44,10 +44,10 @@ Step-by-step plan, one commit each:
 - [x] 3. Compressed Sparse Attention (CSA): compressor + Lightning Indexer
 - [x] 4. Heavily Compressed Attention (HCA): compressor, no indexer
 - [x] 5. Standard MoE (router, experts, shared expert)
-- [ ] 6. Hash-routed MoE (bootstrap layers)
+- [x] 6. Hash-routed MoE (bootstrap layers)
 - [ ] 7. Decoder layer + model classes + state-dict conversion chain, wiring everything above together
 
-Open items step 6/7 need to handle:
+Open items step 7 needs to handle:
 
 - **YaRN on the compress RoPE branch is not wired up.** `DeepseekV4Config._nest_rope_parameters`
   forces `rope_type="default"` for both `main` and `compress`. Real checkpoints use YaRN
@@ -75,10 +75,24 @@ Open items step 6/7 need to handle:
   meta-device loading, mirroring HF's `_init_weights` branch.
 - **`_init_weights` is not wired up anywhere yet.** Every V4 module exposes its own
   `init_weights(init_std)`, but nothing calls them until step 7's `PreTrainedModel` subclass.
-- **Standard routing only.** `DeepseekV4MoE` ignores `mlp_layer_types` and always builds the
-  learned top-k router. Step 6 adds hash routing via a minimal `forward` override that derives
-  `routed_experts` from `input_ids` and hands it to the base `MoE.forward` (which already threads
-  that argument through) — no new router class needed.
+- **Hash layers need `input_ids` threaded down to them.** `DeepseekV4MoE.forward(x, input_ids,
+  routed_experts)` asserts `input_ids is not None` when `mlp_layer_types[layer_idx] ==
+  "hash_moe"`, so step 7's decoder layer and model must pass the ids through every block, as
+  HF's do. A standard layer accepts and ignores them.
+- **Router replay wins over the hash table.** An explicit `routed_experts` (recorded by the
+  inference engine) takes precedence over `tid2eid[input_ids]` in a hash layer. The two agree as
+  long as the engine implements hash routing; if a future engine reports zeros for those layers
+  instead, the trainer would silently follow the zeros. Step 7 could drop `routed_experts` for
+  hash layers instead, at the cost of a per-layer special case in the model forward.
+- **A missing `tid2eid` fails silently.** It is a persistent buffer that no `init_weights` can
+  reconstruct: zeros mean every token routes to expert 0. Step 7's loading path (meta device,
+  then conversion) has to guarantee it comes from the checkpoint, and should say so loudly if it
+  does not.
+- **Hash layers have no load balancing.** They pass `load_balance_coeff=None`, so no
+  `expert_bias` buffer exists (a frozen selection cannot be steered, and HF's
+  `DeepseekV4HashRouter` has no `e_score_correction_bias` to load into one). `tokens_per_expert`
+  is still accumulated, so `get_load_balance_stats` reports a `max_vio` for them that no
+  mechanism can act on.
 - **Three `DeepseekV4Config` fields are asserted, not supported, in `DeepseekV4MoE`**:
   `hidden_act` must be `"silu"`, `mlp_bias` must be `False` (the shared `MLP` never adds a bias
   regardless of the flag), `fp8` is rejected (the fp8 grouped GEMM assumes a different weight
@@ -96,9 +110,11 @@ Open items step 6/7 need to handle:
 State-dict deltas step 7's conversion chain needs (all forced by prime-rl's own `MoE`/router
 naming, identical to what `glm4_moe`/`laguna` already do): `mlp.gate.weight` ->
 `mlp.router.gate.weight`, `mlp.gate.e_score_correction_bias` -> `mlp.expert_bias`,
-`mlp.shared_experts.*` -> `mlp.shared_expert.*`. The routed experts need **no** conversion:
+`mlp.shared_experts.*` -> `mlp.shared_expert.*`, and, on the hash layers only,
+`mlp.gate.tid2eid` -> `mlp.tid2eid`. The routed experts need **no** conversion:
 `mlp.experts.gate_up_proj`/`down_proj` already match HF's own names and shapes, unlike every
-other prime-rl MoE.
+other prime-rl MoE. The two MoE layer types have different key sets: a hash layer has
+`mlp.tid2eid` and no `mlp.expert_bias`, a standard one the other way round.
 
 One structural note for step 7: `DeepseekV4Indexer` subclasses a `DeepseekV4DualSeriesCompressor`
 base shared with `DeepseekV4CSACompressor` (HF's two classes run byte-identical compression code
