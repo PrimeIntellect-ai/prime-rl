@@ -311,15 +311,17 @@ class NemotronHAttentionLayer(GradientCheckpointingLayer):
 
 BLOCK_TYPE_MAP = {
     "mamba": NemotronHMambaLayer,
+    "linear_attention": NemotronHMambaLayer,  # transformers>=5.13 canonical alias for "mamba"
     "moe": NemotronHMoELayer,
     "attention": NemotronHAttentionLayer,
+    "full_attention": NemotronHAttentionLayer,  # transformers>=5.13 canonical alias for "attention"
 }
 
 
 def _build_layer(config: NemotronHConfig, layer_idx: int):
     layer_type = config.layers_block_type[layer_idx]
     cls = BLOCK_TYPE_MAP[layer_type]
-    if layer_type == "mamba":
+    if layer_type in ("mamba", "linear_attention"):
         return cls(config, layer_idx=layer_idx)
     return cls(config)
 

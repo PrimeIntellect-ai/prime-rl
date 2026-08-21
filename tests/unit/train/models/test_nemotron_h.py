@@ -224,7 +224,10 @@ def test_nemotron_h_weight_conversion_roundtrip():
 def test_nemotron_h_hybrid_override_pattern():
     """Verify hybrid_override_pattern correctly maps to layers_block_type."""
     config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
-    assert config.layers_block_type == ["mamba", "moe", "attention", "moe"]
+    # transformers>=5.13 validates `layer_types` (aliased to `layers_block_type` via
+    # `attribute_map`) and silently remaps legacy names to its current convention:
+    # "mamba" -> "linear_attention", "attention" -> "full_attention".
+    assert config.layers_block_type == ["linear_attention", "moe", "full_attention", "moe"]
     assert config.num_hidden_layers == 4
 
 

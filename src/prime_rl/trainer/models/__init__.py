@@ -12,6 +12,7 @@ from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 
 from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig, GlmMoeDsaForCausalLM
 from prime_rl.trainer.models.gpt_oss import GptOssConfig, GptOssForCausalLM
@@ -27,6 +28,7 @@ from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalL
 
 # Make custom config discoverable by AutoConfig
 AutoConfig.register("afmoe", AfmoeConfig, exist_ok=True)
+AutoConfig.register("deepseek_v4", DeepseekV4Config, exist_ok=True)
 AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)
 AutoConfig.register("glm_moe_dsa", GlmMoeDsaConfig, exist_ok=True)
 AutoConfig.register("laguna", LagunaConfig, exist_ok=True)
@@ -45,6 +47,7 @@ _CUSTOM_CAUSAL_LM_MODELS: tuple[
     (LlamaConfig, LlamaForCausalLM),
     (Qwen3Config, Qwen3ForCausalLM),
     (AfmoeConfig, AfmoeForCausalLM),
+    (DeepseekV4Config, DeepseekV4ForCausalLM),
     (Glm4MoeConfig, Glm4MoeForCausalLM),
     (GlmMoeDsaConfig, GlmMoeDsaForCausalLM),
     (LagunaConfig, LagunaForCausalLM),
@@ -56,7 +59,11 @@ _CUSTOM_CAUSAL_LM_MODELS: tuple[
     (GptOssConfig, GptOssForCausalLM),
 )
 for config_cls, model_cls in _CUSTOM_CAUSAL_LM_MODELS:
-    _CUSTOM_CAUSAL_LM_MAPPING.register(config_cls, model_cls, exist_ok=True)
+    # transformers >= 5.13 makes `_LazyAutoMapping.register()` a silent no-op for configs
+    # defined under `transformers.*` (a guard against remote-code hijacking native configs).
+    # Write straight into `_extra_content` -- what `register()` does past that guard -- so
+    # our overrides of native configs (Llama, Qwen3, GptOss, Qwen3_5TextConfig) stick.
+    _CUSTOM_CAUSAL_LM_MAPPING._extra_content[config_cls] = model_cls
 
 _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE = {
     config_cls.model_type: model_cls for config_cls, model_cls in _CUSTOM_CAUSAL_LM_MODELS
