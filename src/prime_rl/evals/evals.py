@@ -61,11 +61,6 @@ monkey_patch_chat_completion_logprobs()
 # How often to re-scan the broadcasts directory for new weight broadcasts.
 POLL_INTERVAL_S = 2.0
 
-# Served model name for adapter broadcasts of LoRA runs. Reloading the same name
-# with fresh weights each step is supported (the server forces an in-place
-# reload, see /load_lora_adapter).
-LORA_NAME = "eval-adapter"
-
 # Budget for the trainer's startup broadcast: it is always coming, but only
 # after the trainer has finished loading the model.
 STARTUP_BROADCAST_TIMEOUT_S = 1200
@@ -128,7 +123,7 @@ class Evals:
                 config.online.broadcasts_dir,
                 weight_broadcast,
                 admin_clients=self.pool.admin_clients,
-                model_name=LORA_NAME,
+                model_name=config.model,
             )
             await self.receiver.initialize()
 
@@ -263,9 +258,6 @@ class Evals:
         startup_step = online.resume_step or 0
         await self.receiver.sync_startup(startup_step, timeout=STARTUP_BROADCAST_TIMEOUT_S)
         self.policy.version = startup_step
-        if (self.receiver.step_dir(startup_step) / "adapter_config.json").exists():
-            self.pool.update_model_name(LORA_NAME)
-            self.policy.model_name = LORA_NAME
 
         if online.resume_step is None:
             # The first trigger fires every env (policy v0) unless ``skip_first_step``.
@@ -360,11 +352,6 @@ class Evals:
                     pass
                 get_logger().error(f"Failed to update inference weights to step {step} - skipping evals: {exc!r}")
                 return
-            # LoRA runs broadcast the raw adapter; the receiver loads it under a
-            # fixed adapter name — serve the evals against that name.
-            if (broadcast_dir / "adapter_config.json").exists():
-                self.pool.update_model_name(LORA_NAME)
-                self.policy.model_name = LORA_NAME
 
         if not fired:
             return

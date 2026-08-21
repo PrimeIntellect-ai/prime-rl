@@ -77,9 +77,6 @@ class InferencePool:
     def admin_clients(self) -> list[AsyncClient]:
         return self._admin_clients
 
-    def update_model_name(self, model_name: str) -> None:
-        self.model_name = model_name
-
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         await check_health(
             self._admin_clients + self._router_clients,

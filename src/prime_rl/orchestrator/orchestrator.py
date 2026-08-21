@@ -142,7 +142,6 @@ class Orchestrator:
     eval_envs: EvalEnvs | None
     eval_sink: EvalSink | None
     eval_source: EvalSource | None
-    lora_name: str | None
     receiver: WeightBroadcastReceiver
     resume_step: int | None
     lag_task: asyncio.Task | None
@@ -184,7 +183,6 @@ class Orchestrator:
         self.eval_envs = None
         self.eval_sink = None
         self.eval_source = None
-        self.lora_name = None
         self.resume_step = None
         self.lag_task = None
 
@@ -276,14 +274,15 @@ class Orchestrator:
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
-        self.lora_name = config.model.lora.name if config.model.lora else None
-
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        # A LoRA run's adapter is registered under the base model name: the
+        # single adapter shadows it (vLLM resolves lora_requests before the
+        # base-model match), so requests keep addressing one stable name.
         self.receiver = setup_weight_receiver(
             get_broadcast_dir(config.output_dir),
             config.weight_broadcast,
             admin_clients=self.policy_inference.admin_clients,
-            model_name=self.lora_name or config.model.name,
+            model_name=config.model.name,
             max_version=self.final_version,
         )
         await self.receiver.initialize()
@@ -317,9 +316,6 @@ class Orchestrator:
             STARTUP_WEIGHT_WAIT_TIMEOUT_S
         )
         await self.receiver.sync_startup(sync_version, timeout=wait_timeout)
-        if self.lora_name is not None:
-            self.policy_inference.update_model_name(self.lora_name)
-            self.policy.model_name = self.lora_name
         self.policy.version = sync_version
 
         self.eval_source: EvalSource | None = (
