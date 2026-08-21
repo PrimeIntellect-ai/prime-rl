@@ -57,6 +57,11 @@ class NemotronHConfig(PretrainedConfig):
 
     model_type = "nemotron_h"
     keys_to_ignore_at_inference = ["past_key_values"]
+    # transformers>=5.13 reads `config.layer_types` directly inside the wrapped
+    # `NemotronHMamba2Mixer` (via its Zamba2 mixer base, which added
+    # `self.layer_type = config.layer_types[layer_idx]` in that release); alias it to
+    # our own `layers_block_type` field rather than renaming that field everywhere.
+    attribute_map = {"layer_types": "layers_block_type"}
 
     PATTERN_MAP = {"M": "mamba", "E": "moe", "*": "attention"}
     REVERSE_PATTERN_MAP = {"mamba": "M", "moe": "E", "attention": "*"}

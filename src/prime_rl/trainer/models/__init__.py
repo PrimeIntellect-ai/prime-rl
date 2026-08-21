@@ -56,7 +56,11 @@ _CUSTOM_CAUSAL_LM_MODELS: tuple[
     (GptOssConfig, GptOssForCausalLM),
 )
 for config_cls, model_cls in _CUSTOM_CAUSAL_LM_MODELS:
-    _CUSTOM_CAUSAL_LM_MAPPING.register(config_cls, model_cls, exist_ok=True)
+    # transformers >= 5.13 makes `_LazyAutoMapping.register()` a silent no-op for configs
+    # defined under `transformers.*` (a guard against remote-code hijacking native configs).
+    # Write straight into `_extra_content` -- what `register()` does past that guard -- so
+    # our overrides of native configs (Llama, Qwen3, GptOss, Qwen3_5TextConfig) stick.
+    _CUSTOM_CAUSAL_LM_MAPPING._extra_content[config_cls] = model_cls
 
 _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE = {
     config_cls.model_type: model_cls for config_cls, model_cls in _CUSTOM_CAUSAL_LM_MODELS
