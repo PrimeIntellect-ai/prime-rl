@@ -8,7 +8,7 @@
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
 - Emit-everything invariant: every dispatched episode eventually reaches
   ``out_q`` exactly once — as a native episode, or covered by its group's
-  single ``Cancellation`` message when the group is dropped. Failures
+  single ``GroupCancellation`` message when the group is dropped. Failures
   remain episode errors; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
@@ -42,8 +42,9 @@ from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
-    Cancellation,
     CancelReason,
+    DispatchResult,
+    GroupCancellation,
     GroupState,
     InflightEpisode,
     Policy,
@@ -201,9 +202,9 @@ class Dispatcher:
         # Bounded so the dispatcher backpressures on a slow sink (unbounded
         # when no hard ceiling is configured — the dynamic cap still bounds
         # in-flight work). One entry per episode — the sinks count episodes,
-        # never loose traces — plus one ``Cancellation`` per dropped group.
+        # never loose traces — plus one ``GroupCancellation`` per dropped group.
         maxsize = max(8, max_inflight_ceiling) if max_inflight_ceiling is not None else 0
-        self.out_q: asyncio.Queue[vf.WireEpisode | Cancellation] = asyncio.Queue(maxsize=maxsize)
+        self.out_q: asyncio.Queue[DispatchResult] = asyncio.Queue(maxsize=maxsize)
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -461,29 +462,29 @@ class Dispatcher:
         return await self.schedule_group_episode(gid, fresh)
 
     def next_fresh_group(self, kind: WorkKind, envs) -> GroupState | None:
-        """Pop the next example from the corresponding source and wrap it in
+        """Pop the next task from the corresponding source and wrap it in
         a ``GroupState``. Returns ``None`` if the source is empty."""
         if kind == "train":
             assert self.train_source is not None
-            source = self.train_source
+            if self.progress is None:
+                raise RuntimeError("Train dispatch requires progress state")
+            request = self.train_source.next_task(step=self.progress.step)
         else:
             assert self.eval_source is not None
-            source = self.eval_source
-        example = source.next_example()
-        if example is None:
+            request = self.eval_source.next_task()
+        if request is None:
             return None
 
-        env_name = example["env_name"]
+        env_name = request.env_name
         group_size = envs.get(env_name).config.group_size
-        eval_step: int | None = example.get("eval_step") if kind == "eval" else None
 
         return GroupState(
             kind=kind,
             env_name=env_name,
-            task=example["task"],
+            task=request.task,
+            step=request.step,
             episodes_to_schedule=group_size,
             target_episodes=group_size,
-            eval_step=eval_step,
             policy_version_at_start=self.policy.version,
         )
 
@@ -536,20 +537,11 @@ class Dispatcher:
             group_id=group_id,
             task=group.task,
             policy_version=group.policy_version_at_start,
-            step=self._work_step(group.kind, group.eval_step),
+            step=group.step,
             client_config=client,
-            eval_step=group.eval_step,
             started_at=time.monotonic(),
         )
         return True
-
-    def _work_step(self, kind: WorkKind, eval_step: int | None) -> int:
-        if kind == "eval":
-            assert eval_step is not None
-            return eval_step
-        if self.progress is None:
-            raise RuntimeError("Train dispatch requires progress state")
-        return self.progress.step
 
     async def acquire(self) -> None:
         """Reserve one permit + rate-limit it. Caller must precheck
@@ -630,17 +622,13 @@ class Dispatcher:
     ) -> None:
         """Stamp one completed episode with its dispatch provenance and emit it."""
         _validate_episode_task(episode, meta.task)
-        eval_step = meta.eval_step
         policy_version = meta.policy_version
         if group is not None:
-            eval_step = group.eval_step
             policy_version = group.policy_version_at_start
             group.emitted += 1
             if group.emitted >= group.target_episodes:
                 self.groups.pop(meta.group_id, None)
 
-        if meta.kind == "eval":
-            assert eval_step is not None, "eval episode missing eval_step"
         episode.env.name = meta.env_name
         episode.group = vf.GroupInfo(id=str(meta.group_id))
         live_policy = meta.kind == "eval"
@@ -659,7 +647,7 @@ class Dispatcher:
 
     async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:
         """Cancel this group's remaining in-flight tasks and emit one
-        ``Cancellation`` covering every episode it still owes the sink (both
+        ``GroupCancellation`` covering every episode it still owes the sink (both
         in-flight and never-dispatched), so count-to-``group_size``
         finalization still fires. Returns the owed count for metrics."""
         group = self.groups.pop(group_id, None)
@@ -692,7 +680,13 @@ class Dispatcher:
                 f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
             )
             await self.out_q.put(
-                Cancellation(kind=kind, env_name=env_name, group_id=str(group_id), count=cancelled, reason=reason)
+                GroupCancellation(
+                    kind=kind,
+                    env_name=env_name,
+                    group_id=str(group_id),
+                    count=cancelled,
+                    reason=reason,
+                )
             )
 
         if claimed:

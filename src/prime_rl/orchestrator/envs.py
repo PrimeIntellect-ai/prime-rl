@@ -137,7 +137,7 @@ class EvalEnv(Env):
     def __init__(self, config: EvalSourceConfig, address: str):
         super().__init__(config, address)
         self.sampling_args = config.sampling.to_sampling_args()
-        self.examples: list[dict] = []
+        self.examples: list[vf.Task] = []
 
     async def start(self) -> None:
         await super().start()
@@ -146,7 +146,7 @@ class EvalEnv(Env):
             raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
         # A fixed eval set, pulled off the tasks once and reused every epoch.
         tasks = list(self.tasks) if n < 0 else list(islice(self.tasks, n))
-        self.examples = [{"task": task} for task in tasks]
+        self.examples = tasks
 
 
 EnvT = TypeVar("EnvT", bound=Env)

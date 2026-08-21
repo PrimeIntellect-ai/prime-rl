@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
 import verifiers.v1 as vf
 
@@ -39,7 +39,7 @@ CancelReason = Literal["stale", "overload"]
 
 
 @dataclass
-class Cancellation:
+class GroupCancellation:
     """Terminal marker for a dropped group: one message covering every episode
     the group still owed the sink (in-flight and never-dispatched), so
     count-to-``group_size`` finalization still fires. ``reason`` distinguishes
@@ -50,6 +50,18 @@ class Cancellation:
     group_id: str
     count: int
     reason: CancelReason
+
+
+DispatchResult: TypeAlias = vf.WireEpisode | GroupCancellation
+
+
+@dataclass(frozen=True)
+class TaskRequest:
+    """A task selected by a train or eval source with its pinned run step."""
+
+    env_name: str
+    task: vf.Task
+    step: int
 
 
 @dataclass
@@ -63,23 +75,22 @@ class InflightEpisode:
     policy_version: int
     step: int
     client_config: vf.ClientConfig | None = None
-    eval_step: int | None = None
     started_at: float = 0.0
     """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
 
 
 @dataclass
 class GroupState:
-    """Per-group dispatcher state: what's left to schedule."""
+    """Per-group dispatcher state with its pinned run step."""
 
     kind: WorkKind
     env_name: str
     task: vf.Task
     """The group's task — its data is shipped on every dispatch."""
+    step: int
     episodes_to_schedule: int
     target_episodes: int
     emitted: int = 0
-    eval_step: int | None = None
     policy_version_at_start: int = 0
 
 
