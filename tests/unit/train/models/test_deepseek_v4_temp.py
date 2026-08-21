@@ -703,6 +703,7 @@ _MOE_TOKENS = _BATCH * _SEQ
 _HF_TO_PRIME_MOE_KEYS = {
     "gate.weight": "router.gate.weight",
     "gate.e_score_correction_bias": "expert_bias",
+    "gate.tid2eid": "tid2eid",
 }
 
 
@@ -739,7 +740,7 @@ def _moe_pair() -> tuple[nn.Module, nn.Module]:
     prime_config = DeepseekV4Config(**_MOE, use_grouped_mm=False)
     with torch.device("cuda"):
         hf_module = HFDeepseekV4SparseMoeBlock(hf_config, layer_idx=0)
-        prime_module = DeepseekV4MoE(prime_config)
+        prime_module = DeepseekV4MoE(prime_config, layer_idx=0)
     _randomize(hf_module)
     # The aux-loss-free load-balancing bias is a buffer, so `_randomize` leaves it at
     # zero and the biased selection path would go untested. It maps onto prime-rl's
@@ -869,7 +870,7 @@ def test_moe_grouped_mm_experts_match_the_for_loop():
 def test_moe_init_weights():
     prime_config = DeepseekV4Config(**_MOE, use_grouped_mm=False)
     with torch.device("cuda"):
-        module = DeepseekV4MoE(prime_config)
+        module = DeepseekV4MoE(prime_config, layer_idx=0)
 
     module.init_weights(0.5, torch.device("cuda"))
 
@@ -885,3 +886,117 @@ def test_moe_init_weights():
     for name, param in module.named_parameters():
         assert param.std().item() == pytest.approx(expected_std[name], rel=0.15), name
     assert (module.expert_bias == 0).all()
+
+
+# A vocabulary small enough that a 32-token batch hits most rows of the table several times.
+_HASH_MOE = dict(_MOE, mlp_layer_types=["hash_moe", "moe"], vocab_size=16)
+_HASH_LAYER = 0
+
+
+def _tid2eid() -> torch.Tensor:
+    """A frozen token id -> expert ids table, distinct experts per row as a real one has."""
+    rows = [
+        torch.randperm(_HASH_MOE["n_routed_experts"])[: _HASH_MOE["num_experts_per_tok"]]
+        for _ in range(_HASH_MOE["vocab_size"])
+    ]
+    return torch.stack(rows).to(device="cuda", dtype=torch.long)
+
+
+def _input_ids() -> torch.Tensor:
+    return torch.randint(_HASH_MOE["vocab_size"], (_BATCH, _SEQ), device="cuda")
+
+
+def _hash_moe_pair() -> tuple[nn.Module, nn.Module]:
+    """Build an HF / prime-rl hash-routed MoE pair from identical weights.
+
+    Float32 for the reason `_moe_pair` documents: hash routing changes which experts a
+    token reaches, not how the scores that weight them are computed. Both sides start from
+    an all-zero table, which would send every token to expert 0, so it is drawn here.
+    """
+    hf_config = HFDeepseekV4Config(**_HASH_MOE)
+    prime_config = DeepseekV4Config(**_HASH_MOE, use_grouped_mm=False)
+    with torch.device("cuda"):
+        hf_module = HFDeepseekV4SparseMoeBlock(hf_config, layer_idx=_HASH_LAYER)
+        prime_module = DeepseekV4MoE(prime_config, layer_idx=_HASH_LAYER)
+    _randomize(hf_module)
+    with torch.no_grad():
+        hf_module.gate.tid2eid.copy_(_tid2eid())
+    _sync_moe(hf_module, prime_module)
+    return hf_module, prime_module
+
+
+def test_hash_moe_matches_hf():
+    hf_module, prime_module = _hash_moe_pair()
+    hf_input, prime_input = _moe_hidden_states()
+    input_ids = _input_ids()
+
+    hf_output = hf_module(hf_input, input_ids=input_ids)
+    prime_output = prime_module(prime_input, input_ids=input_ids)
+
+    assert prime_output.shape == (_BATCH, _SEQ, _HASH_MOE["hidden_size"])
+    # Same float32 arithmetic, different grouping of the expert matmuls, as in
+    # `test_moe_matches_hf`: the tolerance sits at the float32 summation-order floor.
+    torch.testing.assert_close(prime_output, hf_output, rtol=1e-5, atol=1e-8)
+
+    with torch.device("cuda"):
+        weight = torch.randn_like(hf_output)
+    (hf_output * weight).sum().backward()
+    (prime_output * weight).sum().backward()
+
+    _compare_moe_grads(hf_module, prime_module, rtol=1e-4, atol=5e-7)
+    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=1e-5, atol=1e-8)
+
+
+def test_hash_moe_routes_by_token_id_not_by_score():
+    _, prime_module = _hash_moe_pair()
+    _, hidden = _moe_hidden_states()
+    hidden = hidden.detach()
+    table = prime_module.tid2eid
+    assert set(table[0].tolist()) != set(table[1].tolist()), "the two rows must differ for this to bite"
+
+    # Identical hidden states throughout: only the token ids move the routing.
+    for token_id in (0, 1):
+        token_ids = torch.full((_BATCH, _SEQ), token_id, device="cuda", dtype=torch.long)
+        prime_module.tokens_per_expert.zero_()
+        prime_module(hidden, input_ids=token_ids)
+
+        expected = torch.zeros_like(prime_module.tokens_per_expert)
+        expected[table[token_id]] = _MOE_TOKENS
+        torch.testing.assert_close(prime_module.tokens_per_expert, expected)
+
+    # The learned scores are still computed, and they would have picked other experts.
+    _, learned_indices, _, _ = prime_module.router(hidden.reshape(-1, _HASH_MOE["hidden_size"]))
+    assert set(learned_indices.flatten().tolist()) != set(table[0].tolist())
+
+
+def test_hash_moe_trains_the_gate():
+    hf_module, prime_module = _hash_moe_pair()
+    hf_input, prime_input = _moe_hidden_states()
+    input_ids = _input_ids()
+
+    hf_module(hf_input, input_ids=input_ids).sum().backward()
+    prime_module(prime_input, input_ids=input_ids).sum().backward()
+
+    # The table only decides which experts run; the gate still produces the weights their
+    # outputs are scaled by, so it keeps training, by the same gradient HF gets.
+    gate_grad = prime_module.router.gate.weight.grad
+    assert gate_grad is not None and (gate_grad != 0).any()
+    torch.testing.assert_close(gate_grad, hf_module.gate.weight.grad, rtol=1e-4, atol=5e-7)
+    # The table is a buffer, so no optimizer can drift it away from its checkpoint values.
+    assert "tid2eid" not in dict(prime_module.named_parameters())
+
+
+def test_moe_ignores_input_ids_when_not_hash_routed():
+    _, prime_module = _moe_pair()
+    _, hidden = _moe_hidden_states()
+
+    prime_module.tokens_per_expert.zero_()
+    with_ids = prime_module(hidden, input_ids=_input_ids())
+    counts_with_ids = prime_module.tokens_per_expert.clone()
+    prime_module.tokens_per_expert.zero_()
+    without_ids = prime_module(hidden)
+
+    # The selection is identical down to the token count per expert. The outputs only match
+    # to the float32 floor: the scatter-add over experts is not bitwise reproducible.
+    torch.testing.assert_close(counts_with_ids, prime_module.tokens_per_expert, rtol=0, atol=0)
+    torch.testing.assert_close(with_ids, without_ids, rtol=1e-5, atol=1e-8)
