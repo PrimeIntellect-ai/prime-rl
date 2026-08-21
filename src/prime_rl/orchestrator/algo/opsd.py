@@ -14,7 +14,7 @@ from prime_rl.orchestrator.utils import episode_env_name
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.utils.client import InferenceClients
 
 
 class OPSDAlgorithm(Algorithm):
@@ -33,7 +33,7 @@ class OPSDAlgorithm(Algorithm):
 
     action_loss_type = "ref_kl"
 
-    def __init__(self, config: OPSDAlgoConfig, policy_pool: InferencePool):
+    def __init__(self, config: OPSDAlgoConfig, policy_pool: InferenceClients):
         super().__init__(config, policy_pool)
         self.demo_key = config.demo_key
         self.template = config.template

@@ -70,8 +70,7 @@ class InflightEpisode:
 
 @dataclass
 class GroupState:
-    """Per-group dispatcher state: what's left to schedule + the pinned
-    client (for prefix-cache hits)."""
+    """Per-group dispatcher state: what's left to schedule."""
 
     kind: WorkKind
     env_name: str
@@ -81,7 +80,6 @@ class GroupState:
     target_episodes: int
     emitted: int = 0
     eval_step: int | None = None
-    pinned_client: vf.ClientConfig | None = None
     policy_version_at_start: int = 0
 
 

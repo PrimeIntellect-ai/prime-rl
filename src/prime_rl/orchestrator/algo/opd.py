@@ -11,7 +11,7 @@ from prime_rl.orchestrator.algo.routing import assign_reference_logprobs
 from prime_rl.orchestrator.trajectories import iter_trainable_branches
 
 if TYPE_CHECKING:
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.utils.client import InferenceClients
 
 
 class OPDAlgorithm(Algorithm):
@@ -26,10 +26,10 @@ class OPDAlgorithm(Algorithm):
 
     action_loss_type = "ref_kl"
 
-    def __init__(self, config: OPDAlgoConfig, policy_pool: InferencePool):
+    def __init__(self, config: OPDAlgoConfig, policy_pool: InferenceClients):
         super().__init__(config, policy_pool)
         self.teacher = config.teacher
-        self.teacher_pool: InferencePool | None = None  # frozen teacher endpoint, connected in setup()
+        self.teacher_pool: InferenceClients | None = None  # frozen teacher endpoint, connected in setup()
 
     async def setup(self) -> None:
         self.teacher_pool = await self.connect(self.teacher)

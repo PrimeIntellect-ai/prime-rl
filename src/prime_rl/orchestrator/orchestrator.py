@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
     from prime_rl.orchestrator.ckpt import CheckpointManager
     from prime_rl.transports.rollouts.base import MicroBatchSender
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.utils.client import EngineAdmin, InferenceClients
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -122,7 +122,8 @@ class Orchestrator:
 
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
-    policy_inference: InferencePool
+    policy_inference: InferenceClients
+    inference_admin: EngineAdmin
     sender: MicroBatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
@@ -203,7 +204,7 @@ class Orchestrator:
         get_logger().info(
             f"Initializing policy inference pool (base_url={config.model.client.base_url}, model={config.model.name})"
         )
-        self.renderer, self.policy_inference = await setup_policy_inference_pool(
+        self.renderer, self.policy_inference, self.inference_admin = await setup_policy_inference_pool(
             config=config, tokenizer=self.tokenizer
         )
         self.mm_token_type_ids_mapping = (
@@ -265,7 +266,7 @@ class Orchestrator:
         self.policy.model_name = self.policy_inference.model_name
 
         get_logger().info("Waiting for policy inference pool to be ready")
-        await self.policy_inference.wait_for_ready(config.model.name)
+        await self.inference_admin.wait_for_ready(config.model.name)
         get_logger().success("Policy inference pool ready")
         # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
@@ -281,7 +282,7 @@ class Orchestrator:
         self.receiver = setup_weight_receiver(
             get_broadcast_dir(config.output_dir),
             config.weight_broadcast,
-            admin_clients=self.policy_inference.admin_clients,
+            admin_clients=self.inference_admin.clients,
             model_name=config.model.name,
             max_version=self.final_version,
         )
@@ -357,7 +358,7 @@ class Orchestrator:
         # W&B mirroring is gated on the registered monitor (the collector logs
         # to the global W&B session, which only exists when init succeeded).
         self.inference_metrics = InferenceMetricsCollector(
-            self.policy_inference.admin_clients,
+            self.inference_admin.clients,
             roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
             log_to_wandb=wandb_enabled and config.collect_inference_metrics,
@@ -989,11 +990,14 @@ class Orchestrator:
             if self.inference_metrics is not None:
                 await self.inference_metrics.stop()
             if getattr(self, "policy_inference", None) is not None:
-                await self.policy_inference.stop()
+                await self.policy_inference.aclose()
+            if getattr(self, "inference_admin", None) is not None:
+                await self.inference_admin.aclose()
             if self.train_envs is not None:
                 for env in self.train_envs:
-                    for pool in (*env.generation_source.connected_pools, *env.algorithm.connected_pools):
-                        await pool.stop()
+                    for clients in (env.generation_source.connected, env.algorithm.connected):
+                        if clients is not None:
+                            await clients.aclose()
 
         task = asyncio.create_task(teardown())
         _, pending = await asyncio.wait({task}, timeout=SHUTDOWN_TIMEOUT_S)

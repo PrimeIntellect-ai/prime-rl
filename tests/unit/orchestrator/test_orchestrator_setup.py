@@ -21,21 +21,27 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
         )
         renderer = object()
         inference_pool = object()
+        admin = object()
 
         with (
             patch("renderers.base.create_renderer", return_value=renderer) as create_renderer_mock,
             patch(
-                "prime_rl.orchestrator.utils.InferencePool",
+                "prime_rl.orchestrator.utils.InferenceClients",
                 new=MagicMock(return_value=inference_pool),
             ) as setup_pool_mock,
+            patch(
+                "prime_rl.orchestrator.utils.EngineAdmin",
+                new=MagicMock(return_value=admin),
+            ),
         ):
-            returned_renderer, returned_pool = await setup_policy_inference_pool(
+            returned_renderer, returned_pool, returned_admin = await setup_policy_inference_pool(
                 config=config,
                 tokenizer=tokenizer,
             )
 
         assert returned_renderer is renderer
         assert returned_pool is inference_pool
+        assert returned_admin is admin
         create_renderer_mock.assert_called_once_with(tokenizer, renderer_settings)
         setup_pool_mock.assert_called_once_with(
             config.model.client,
@@ -67,21 +73,27 @@ def test_setup_policy_inference_pool_keeps_renderer_without_policy_sampling():
         )
         renderer = object()
         inference_pool = object()
+        admin = object()
 
         with (
             patch("renderers.base.create_renderer", return_value=renderer) as create_renderer_mock,
             patch(
-                "prime_rl.orchestrator.utils.InferencePool",
+                "prime_rl.orchestrator.utils.InferenceClients",
                 new=MagicMock(return_value=inference_pool),
             ) as setup_pool_mock,
+            patch(
+                "prime_rl.orchestrator.utils.EngineAdmin",
+                new=MagicMock(return_value=admin),
+            ),
         ):
-            returned_renderer, returned_pool = await setup_policy_inference_pool(
+            returned_renderer, returned_pool, returned_admin = await setup_policy_inference_pool(
                 config=config,
                 tokenizer=tokenizer,
             )
 
         assert returned_renderer is renderer
         assert returned_pool is inference_pool
+        assert returned_admin is admin
         create_renderer_mock.assert_called_once_with(tokenizer, renderer_settings)
         setup_pool_mock.assert_called_once_with(
             config.model.client,

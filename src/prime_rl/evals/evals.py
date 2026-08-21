@@ -48,7 +48,7 @@ from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import EvalBatch, Policy
 from prime_rl.orchestrator.utils import eval_work, intercept_vf_logging, set_default_executor
 from prime_rl.transports.weights.receiver import WeightBroadcastReceiver, setup_weight_receiver
-from prime_rl.utils.client import InferencePool
+from prime_rl.utils.client import EngineAdmin, InferenceClients
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_config_dir, get_log_dir
@@ -99,7 +99,8 @@ class Evals:
         wandb_enabled = monitors.get(monitors.WandbMonitor) is not None
 
         get_logger().info(f"Initializing inference pool (base_url={config.eval.client.base_url}, model={config.model})")
-        self.pool = InferencePool(config.eval.client, model_name=config.model)
+        self.pool = InferenceClients(config.eval.client, model_name=config.model)
+        self.admin = EngineAdmin(config.eval.client)
 
         self.spawn_env_servers()
 
@@ -109,7 +110,7 @@ class Evals:
         get_logger().success(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
         get_logger().info("Waiting for inference pool to be ready")
-        await self.pool.wait_for_ready(config.model)
+        await self.admin.wait_for_ready(config.model)
         get_logger().success("Inference pool ready")
 
         self.receiver: WeightBroadcastReceiver | None = None
@@ -122,7 +123,7 @@ class Evals:
             self.receiver = setup_weight_receiver(
                 config.online.broadcasts_dir,
                 weight_broadcast,
-                admin_clients=self.pool.admin_clients,
+                admin_clients=self.admin.clients,
                 model_name=config.model,
             )
             await self.receiver.initialize()
@@ -161,7 +162,7 @@ class Evals:
         # The collector always polls — it feeds the concurrency controller;
         # W&B mirroring is gated on the registered monitor.
         self.inference_metrics = InferenceMetricsCollector(
-            self.pool.admin_clients,
+            self.admin.clients,
             on_load=self.concurrency.observe,
             log_to_wandb=wandb_enabled,
         )
@@ -173,7 +174,7 @@ class Evals:
         if not await self.inference_metrics.probe():
             concurrency = config.eval.concurrency
             if concurrency.min_inflight != concurrency.max_inflight:
-                urls = ", ".join(str(client.base_url) for client in self.pool.admin_clients)
+                urls = ", ".join(str(client.base_url) for client in self.admin.clients)
                 raise ValueError(
                     f"No engine metrics at {urls} - adaptive concurrency has no load signal. "
                     "The endpoint does not expose vLLM /metrics (e.g. an external inference API); "
@@ -445,9 +446,12 @@ class Evals:
         dispatcher: Dispatcher | None = getattr(self, "dispatcher", None)
         if dispatcher is not None:
             await dispatcher.stop()
-        pool: InferencePool | None = getattr(self, "pool", None)
+        pool: InferenceClients | None = getattr(self, "pool", None)
         if pool is not None:
-            await pool.stop()
+            await pool.aclose()
+        admin: EngineAdmin | None = getattr(self, "admin", None)
+        if admin is not None:
+            await admin.aclose()
         cleanup_processes(self.env_server_procs)
 
 

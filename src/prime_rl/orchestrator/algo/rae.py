@@ -10,7 +10,7 @@ from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_advantages
 
 if TYPE_CHECKING:
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.utils.client import InferenceClients
 
 
 class RAEAlgorithm(Algorithm):
@@ -31,7 +31,7 @@ class RAEAlgorithm(Algorithm):
     live in orchestrator memory: a restart re-warms them over ~1/(1 − decay)
     traces per agent."""
 
-    def __init__(self, config: RAEAlgoConfig, policy_pool: InferencePool):
+    def __init__(self, config: RAEAlgoConfig, policy_pool: InferenceClients):
         super().__init__(config, policy_pool)
         self.decay = config.decay
         self.baselines: dict[str, float] = defaultdict(float)

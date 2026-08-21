@@ -9,7 +9,7 @@ from typing import Any
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.utils.client import InferencePool
+from prime_rl.utils.client import EngineAdmin, InferenceClients
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
 
 
@@ -64,8 +64,8 @@ def episode_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) ->
 
 
 async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
-    """Build the live policy inference pool + matching renderer. Returns
-    ``(renderer, inference_pool)``.
+    """Build the live policy inference clients + admin plane + matching renderer.
+    Returns ``(renderer, clients, admin)``.
 
     Training is renderer-only: the renderer object is the canonical
     messages → token ids path (sft backfill, opsd scoring prefixes, echo role
@@ -83,14 +83,14 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
         get_logger().info("Using direct renderer rollout client")
     else:
         get_logger().info("No policy-sourced train env — renderer kept for client-side tokenization only")
-    inference_pool = InferencePool(
+    clients = InferenceClients(
         client_config,
         model_name=model_name,
         train_client_type="renderer",
         eval_client_type="openai_chat_completions",
         renderer_config=config.renderer,
     )
-    return renderer, inference_pool
+    return renderer, clients, EngineAdmin(client_config)
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):

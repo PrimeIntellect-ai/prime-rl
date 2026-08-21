@@ -10,7 +10,7 @@ from prime_rl.orchestrator.algo import connect_frozen_pool
 if TYPE_CHECKING:
     from renderers import RendererConfig
 
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.utils.client import InferenceClients
 
 
 class GenerationSource:
@@ -23,20 +23,20 @@ class GenerationSource:
     rollout must carry tokens for training."""
 
     def __init__(
-        self, config: SamplingConfig, policy_pool: InferencePool, renderer_config: RendererConfig | None = None
+        self, config: SamplingConfig, policy_pool: InferenceClients, renderer_config: RendererConfig | None = None
     ):
         assert config.source is not None, "sampling.source must be resolved by config validation"
         self.config = config
-        self.pool: InferencePool = policy_pool
+        self.pool: InferenceClients = policy_pool
         self.renderer_config = renderer_config
-        self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
+        self.connected: InferenceClients | None = None  # frozen clients connected in setup(); closed at shutdown
 
     async def setup(self) -> None:
         """Connect a client pool to a frozen generation source and wait for
         readiness. Must run before dispatching."""
         if isinstance(self.config.source, FrozenModelConfig):
             self.pool = await connect_frozen_pool(self.config.source, renderer_config=self.renderer_config)
-            self.connected_pools.append(self.pool)
+            self.connected = self.pool
 
     @property
     def uses_live_policy(self) -> bool:

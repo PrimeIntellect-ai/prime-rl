@@ -56,7 +56,6 @@ def test_setup_client_creates_renderer_client():
         base_url="http://worker-a:8000/v1",
         api_key_var="PRIME_API_KEY",
         headers={"X-Test": "test"},
-        extra_headers_from_state={"X-Session-ID": "session_id"},
     )
 
     renderer_settings = Qwen3VLRendererConfig()

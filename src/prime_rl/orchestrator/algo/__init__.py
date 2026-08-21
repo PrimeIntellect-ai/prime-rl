@@ -35,7 +35,7 @@ from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
 
 if TYPE_CHECKING:
     from prime_rl.configs.algorithm import AlgoConfig
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.utils.client import InferenceClients
 
 # Runtime dispatch is keyed on ``algo.type`` — it names the algorithm, and
 # each config class's defaults are its vetted parameterization.
@@ -51,7 +51,7 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
 }
 
 
-def build_algorithm(config: AlgoConfig, policy_pool: InferencePool) -> Algorithm:
+def build_algorithm(config: AlgoConfig, policy_pool: InferenceClients) -> Algorithm:
     cls = ALGORITHM_CLASSES[config.type]
     assert cls.action_loss_type == config.action_loss_type  # config and runtime declare in two places
     # The Algorithm is the runtime of the algorithm config's training signal

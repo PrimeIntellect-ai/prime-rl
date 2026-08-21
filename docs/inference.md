@@ -191,15 +191,7 @@ Both backends support the 2 most important things:
 
 ### Routing policies
 The 2 policies you might want to configure are:
-- `consistent_hash` - this is the default policy that optimizes for KV cache re-use across turns - this works by hashing a request header to determine where to route the request to. You can configure what to hash by setting
-`orchestrator.model.client.extra_headers_from_state` to the header the `router` expects to be set.
-
-We set it to a sensible default, that works with all verifiers environments.
-
-```toml
-[orchestrator.model.client.extra_headers_from_state]
-X-Session-ID = "trajectory_id" # this is the default - each rollout has a unique trajectory_id and router expects X-Session-ID
-```
+- `consistent_hash` - this is the default policy that optimizes for KV cache re-use across turns - it hashes the `X-Session-ID` request header (sent per rollout by the verifiers clients) to pick a replica.
 
 - `round_robin` - this policy will round-robin the requests between the available replicas. This is useful if you want to balance the load between the replicas. This might give you better results if you don't have enough rollouts to make `consistent_hash` hashing saturated.
 

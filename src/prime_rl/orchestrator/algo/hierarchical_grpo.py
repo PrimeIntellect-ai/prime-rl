@@ -10,7 +10,7 @@ from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_advantages
 
 if TYPE_CHECKING:
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.utils.client import InferenceClients
 
 
 class HierarchicalGRPOAlgorithm(Algorithm):
@@ -26,7 +26,7 @@ class HierarchicalGRPOAlgorithm(Algorithm):
     within one episode. Other roles are compared across the full rollout group.
     A comparison group with one trace produces zero advantage."""
 
-    def __init__(self, config: HierarchicalGRPOAlgoConfig, policy_pool: InferencePool):
+    def __init__(self, config: HierarchicalGRPOAlgoConfig, policy_pool: InferenceClients):
         super().__init__(config, policy_pool)
         self.episode_agents = set(config.episode_agents)
 

@@ -52,7 +52,7 @@ from prime_rl.orchestrator.types import (
 )
 from prime_rl.orchestrator.utils import min_fresh_version
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
-from prime_rl.utils.client import InferencePool
+from prime_rl.utils.client import InferenceClients
 from prime_rl.utils.logger import get_logger
 
 
@@ -150,7 +150,7 @@ class Dispatcher:
         eval_envs: EvalEnvs | None,
         train_source: TrainSource | None,
         eval_source: EvalSource | None,
-        policy_pool: InferencePool,
+        policy_pool: InferenceClients,
         policy: Policy,
         progress: Progress | None,
         initial_max_inflight: int,
@@ -220,7 +220,7 @@ class Dispatcher:
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
 
-    def _train_generation_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
+    def _train_generation_for(self, env_name: str) -> tuple[InferenceClients, str, bool]:
         """``(pool, model_name, is_live)`` for *train* rollouts of this env —
         eval always uses the policy."""
         assert self.train_envs is not None  # train groups only exist when train is configured
@@ -504,9 +504,7 @@ class Dispatcher:
         else:
             pool, model_name, live_sourced = self._train_generation_for(group.env_name)
 
-        if group.pinned_client is None:
-            group.pinned_client = pool.eval_client if group.kind == "eval" else pool.train_client
-        client = group.pinned_client
+        client = pool.eval_client if group.kind == "eval" else pool.train_client
 
         env_collection = self.train_envs if group.kind == "train" else self.eval_envs
         if env_collection is None:
