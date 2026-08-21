@@ -5,6 +5,7 @@
 
 import pytest
 import torch
+import torch.nn.functional as F
 from torch import nn
 from transformers.masking_utils import create_sliding_window_causal_mask
 from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config as HFDeepseekV4Config
@@ -20,10 +21,14 @@ from transformers.models.deepseek_v4.modeling_deepseek_v4 import (
 from transformers.models.deepseek_v4.modeling_deepseek_v4 import (
     DeepseekV4RotaryEmbedding as HFDeepseekV4RotaryEmbedding,
 )
+from transformers.models.deepseek_v4.modeling_deepseek_v4 import (
+    DeepseekV4SparseMoeBlock as HFDeepseekV4SparseMoeBlock,
+)
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, build_sliding_window_mask
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4HyperHead
+from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4Experts, DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers import norms
 from prime_rl.utils.utils import default_dtype
@@ -673,3 +678,210 @@ def test_hca_attention_init_weights_reaches_the_compressor():
 
     assert (prime_module.sinks == 0).all()
     assert (prime_module.compressor.position_bias == 0).all()
+
+
+_MOE = dict(
+    hidden_size=64,
+    num_hidden_layers=2,
+    moe_intermediate_size=32,
+    n_routed_experts=8,
+    num_experts_per_tok=3,
+    n_shared_experts=1,
+    scoring_func="sqrtsoftplus",
+    routed_scaling_factor=1.5,
+    # Small enough that the parameter spread `_randomize` draws actually reaches the
+    # clamp; the 10.0 default would leave that branch untested.
+    swiglu_limit=0.1,
+    mlp_layer_types=["moe", "moe"],
+    rms_norm_eps=1e-6,
+)
+_MOE_TOKENS = _BATCH * _SEQ
+
+# prime-rl's `MoE` owns the router and the load-balancing bias, so both sit one level up
+# from where HF keeps them, and its shared expert is singular. The routed experts' fused
+# `gate_up_proj` / `down_proj` need no mapping at all.
+_HF_TO_PRIME_MOE_KEYS = {
+    "gate.weight": "router.gate.weight",
+    "gate.e_score_correction_bias": "expert_bias",
+}
+
+
+def _to_prime_moe_key(hf_key: str) -> str:
+    return _HF_TO_PRIME_MOE_KEYS.get(hf_key, hf_key.replace("shared_experts.", "shared_expert.", 1))
+
+
+def _sync_moe(hf_module: nn.Module, prime_module: nn.Module) -> None:
+    hf_state = {_to_prime_moe_key(key): value for key, value in hf_module.state_dict().items()}
+    assert set(hf_state) == set(prime_module.state_dict()), "the HF key set must map onto prime-rl's exactly"
+    prime_module.load_state_dict(hf_state)
+
+
+def _compare_moe_grads(hf_module: nn.Module, prime_module: nn.Module, rtol: float, atol: float) -> None:
+    prime_params = dict(prime_module.named_parameters())
+    for name, hf_param in hf_module.named_parameters():
+        prime_grad = prime_params[_to_prime_moe_key(name)].grad
+        assert prime_grad is not None, f"{name} received no gradient"
+        assert hf_param.grad is not None, f"{name} received no gradient in HF"
+        torch.testing.assert_close(prime_grad, hf_param.grad, rtol=rtol, atol=atol, msg=lambda m, n=name: f"{n}: {m}")
+
+
+def _moe_pair() -> tuple[nn.Module, nn.Module]:
+    """Build an HF / prime-rl MoE pair from identical weights.
+
+    Everything here runs in float32, unlike the rest of this file: prime-rl's router
+    scores in float32 by design (`TokenChoiceTopKRouter` upcasts to keep the training
+    loss from exploding) while HF scores in the activation dtype, so bf16 would put a
+    ~1e-3 floor under every comparison and hide everything else.
+    """
+    hf_config = HFDeepseekV4Config(**_MOE)
+    # The for-loop expert path keeps the comparison in float32; `use_grouped_mm` casts to
+    # bfloat16 internally and is covered separately.
+    prime_config = DeepseekV4Config(**_MOE, use_grouped_mm=False)
+    with torch.device("cuda"):
+        hf_module = HFDeepseekV4SparseMoeBlock(hf_config, layer_idx=0)
+        prime_module = DeepseekV4MoE(prime_config)
+    _randomize(hf_module)
+    # The aux-loss-free load-balancing bias is a buffer, so `_randomize` leaves it at
+    # zero and the biased selection path would go untested. It maps onto prime-rl's
+    # `MoE.expert_bias`, which the forward pass feeds to the router.
+    with torch.no_grad():
+        hf_module.gate.e_score_correction_bias.normal_(mean=0.0, std=0.1)
+    _sync_moe(hf_module, prime_module)
+    return hf_module, prime_module
+
+
+def _moe_hidden_states() -> tuple[torch.Tensor, torch.Tensor]:
+    with torch.device("cuda"):
+        hidden = torch.randn(_BATCH, _SEQ, _MOE["hidden_size"])
+    return hidden.clone().requires_grad_(True), hidden.clone().requires_grad_(True)
+
+
+def test_moe_matches_hf():
+    hf_module, prime_module = _moe_pair()
+    hf_input, prime_input = _moe_hidden_states()
+
+    hf_output = hf_module(hf_input)
+    prime_output = prime_module(prime_input)
+
+    assert prime_output.shape == (_BATCH, _SEQ, _MOE["hidden_size"])
+    # Both implementations run the same float32 arithmetic on the same weights, but they
+    # group it differently: prime-rl sorts the tokens into one contiguous matmul per
+    # expert and scatter-adds the results, HF gathers each expert's tokens and index-adds
+    # them. Only the summation order differs, hence a tolerance at the float32 floor.
+    torch.testing.assert_close(prime_output, hf_output, rtol=1e-5, atol=1e-8)
+
+    with torch.device("cuda"):
+        weight = torch.randn_like(hf_output)
+    (hf_output * weight).sum().backward()
+    (prime_output * weight).sum().backward()
+
+    # Every parameter here trains, unlike the Lightning Indexer's: nothing on this path
+    # goes through an integer selection that the gradient cannot cross.
+    _compare_moe_grads(hf_module, prime_module, rtol=1e-4, atol=5e-7)
+    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=1e-5, atol=1e-8)
+
+
+def test_moe_router_scores_with_sqrt_softplus():
+    _, prime_module = _moe_pair()
+    router = prime_module.router
+    _, hidden = _moe_hidden_states()
+    x = hidden.detach().reshape(-1, _MOE["hidden_size"])
+
+    top_scores, indices, num_tokens_per_expert, _ = router(x)
+
+    scores = F.softplus(F.linear(x, router.gate.weight)).sqrt()
+    expected_scores, expected_indices = torch.topk(scores, _MOE["num_experts_per_tok"], dim=1)
+    expected = expected_scores / expected_scores.sum(dim=-1, keepdim=True) * _MOE["routed_scaling_factor"]
+
+    torch.testing.assert_close(indices, expected_indices)
+    torch.testing.assert_close(top_scores, expected, rtol=0, atol=0)
+    # Normalization happens before the scale, so every token's weights sum to it.
+    torch.testing.assert_close(
+        top_scores.sum(dim=-1), torch.full((x.shape[0],), _MOE["routed_scaling_factor"], device=x.device)
+    )
+    assert num_tokens_per_expert.sum().item() == _MOE_TOKENS * _MOE["num_experts_per_tok"]
+
+
+def test_moe_expert_bias_steers_selection_but_not_the_gate():
+    _, prime_module = _moe_pair()
+    router = prime_module.router
+    _, hidden = _moe_hidden_states()
+    x = hidden.detach().reshape(-1, _MOE["hidden_size"])
+    favored = 5
+
+    _, unbiased_indices, _, _ = router(x)
+    with torch.device("cuda"):
+        expert_bias = torch.zeros(_MOE["n_routed_experts"])
+    expert_bias[favored] = 100.0
+    top_scores, indices, num_tokens_per_expert, _ = router(x, expert_bias=expert_bias)
+
+    assert not torch.equal(indices, unbiased_indices), "the bias must change the selection"
+    assert num_tokens_per_expert[favored].item() == _MOE_TOKENS, "every token must reach the favored expert"
+    # The bias only steers the argmax: the gating values stay the unbiased scores.
+    scores = F.softplus(F.linear(x, router.gate.weight)).sqrt().gather(dim=1, index=indices)
+    expected = scores / scores.sum(dim=-1, keepdim=True) * _MOE["routed_scaling_factor"]
+    torch.testing.assert_close(top_scores, expected, rtol=0, atol=0)
+
+
+def test_moe_shared_expert_clamps_the_swiglu():
+    _, prime_module = _moe_pair()
+    shared_expert = prime_module.shared_expert
+    _, hidden = _moe_hidden_states()
+    x = hidden.detach()
+
+    output = shared_expert(x)
+
+    gate, up = shared_expert.gate_proj(x), shared_expert.up_proj(x)
+    limit = shared_expert.limit
+    assert (gate > limit).any() and (up.abs() > limit).any(), "config must push the pre-activations past the clamp"
+    clamped = shared_expert.down_proj(F.silu(gate.clamp(max=limit)) * up.clamp(min=-limit, max=limit))
+    torch.testing.assert_close(output, clamped, rtol=0, atol=0)
+    assert not torch.equal(output, shared_expert.down_proj(F.silu(gate) * up))
+
+
+def _experts(use_grouped_mm: bool) -> DeepseekV4Experts:
+    return DeepseekV4Experts(
+        dim=_MOE["hidden_size"],
+        hidden_dim=_MOE["moe_intermediate_size"],
+        num_experts=_MOE["n_routed_experts"],
+        swiglu_limit=_MOE["swiglu_limit"],
+        use_grouped_mm=use_grouped_mm,
+    )
+
+
+def test_moe_grouped_mm_experts_match_the_for_loop():
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        for_loop, grouped_mm = _experts(use_grouped_mm=False), _experts(use_grouped_mm=True)
+        x = torch.randn(_MOE_TOKENS, _MOE["hidden_size"])
+    _randomize(for_loop)
+    grouped_mm.load_state_dict(for_loop.state_dict())
+    # Tokens arrive pre-sorted by expert, exactly as `MoE`'s reorderer hands them over.
+    expert_of_token = torch.arange(_MOE_TOKENS, device="cuda") % _MOE["n_routed_experts"]
+    num_tokens_per_expert = torch.histc(expert_of_token, bins=_MOE["n_routed_experts"], min=0, max=8)
+
+    # The grouped GEMM computes the same function through a different kernel, so the
+    # tolerance sits at the bfloat16 rounding floor for outputs of this magnitude.
+    torch.testing.assert_close(
+        grouped_mm(x, num_tokens_per_expert), for_loop(x, num_tokens_per_expert), rtol=1e-2, atol=1e-5
+    )
+
+
+def test_moe_init_weights():
+    prime_config = DeepseekV4Config(**_MOE, use_grouped_mm=False)
+    with torch.device("cuda"):
+        module = DeepseekV4MoE(prime_config)
+
+    module.init_weights(0.5, torch.device("cuda"))
+
+    # The gated branches keep the shared `MoE`'s fixed 0.02, the rest scales with init_std.
+    expected_std = {
+        "router.gate.weight": 0.5,
+        "experts.gate_up_proj": 0.02,
+        "experts.down_proj": 0.5,
+        "shared_expert.gate_proj.weight": 0.02,
+        "shared_expert.up_proj.weight": 0.5,
+        "shared_expert.down_proj.weight": 0.5,
+    }
+    for name, param in module.named_parameters():
+        assert param.std().item() == pytest.approx(expected_std[name], rel=0.15), name
+    assert (module.expert_bias == 0).all()
