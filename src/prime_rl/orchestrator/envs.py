@@ -80,11 +80,11 @@ class Env:
         await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
         taskset = vf.load_taskset(self.config.env.taskset)
         if type(taskset).INFINITE:
-            self.tasks = iter(taskset.load())
+            self.tasks = iter(taskset)
             self.num_tasks = None
         else:
-            # Materialize off the event loop — load() may pull a dataset.
-            materialized = await asyncio.to_thread(lambda: list(taskset.load()))
+            # Materialize off the event loop — iterating may pull a dataset.
+            materialized = await asyncio.to_thread(lambda: list(taskset))
             self.tasks = iter(materialized)
             self.num_tasks = len(materialized)
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
