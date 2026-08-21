@@ -111,19 +111,20 @@ Step-by-step plan, one commit each:
 - [x] 1. Config + manifold-constrained hyper-connections (mHC)
 - [x] 2. Rotary embedding + sliding-window attention (one of three attention layer types)
 - [x] 3. Compressed Sparse Attention (CSA): compressor + Lightning Indexer (second attention layer type)
-- [ ] 4. Heavily Compressed Attention (HCA): compressor, no indexer (third and last attention layer type)
+- [x] 4. Heavily Compressed Attention (HCA): compressor, no indexer (third and last attention layer type)
 - [ ] 5. Standard MoE (router, experts, shared expert)
 - [ ] 6. Hash-routed MoE (bootstrap layers)
 - [ ] 7. Decoder layer + model classes + state-dict conversion chain, wiring everything above together
 
-Step 4 is why attention isn't finished after step 3: DeepSeek V4 has three per-layer
-attention variants (`sliding_attention`, `compressed_sparse_attention`,
-`heavily_compressed_attention`), all sharing the same core built in step 2, but CSA and
-HCA each add their own compressor module on top (CSA, done in step 3, also adds the
-Lightning Indexer for sparse top-k selection over the compressed history).
-`DeepseekV4Attention` still raises `NotImplementedError` for HCA until step 4 lands.
+Attention is complete as of step 4: all three per-layer variants (`sliding_attention`,
+`compressed_sparse_attention`, `heavily_compressed_attention`) share the core built in
+step 2, CSA adds the step-3 compressor plus Lightning Indexer, and HCA adds the step-4
+compressor (no indexer: it attends over every compressed entry its query position has
+made causally readable). `COMPRESSOR_CLASSES` now covers every entry of
+`DEEPSEEK_V4_LAYER_TYPES`, so `DeepseekV4Attention` accepts any config the config's own
+`validate_architecture` accepts.
 
-Deliberate scope reductions taken in steps 1-3 that later steps must revisit:
+Deliberate scope reductions taken in steps 1-4 that later steps must revisit:
 
 - **YaRN on the compress RoPE branch is not wired up.** `DeepseekV4Config._nest_rope_parameters`
   forces `rope_type="default"` for both the `main` and `compress` parameter sets. Real
@@ -141,9 +142,9 @@ Deliberate scope reductions taken in steps 1-3 that later steps must revisit:
   zeros for `base`/`hc_base`, ones for `scale`/`hc_scale`), but nothing calls them until
   the `PreTrainedModel` subclass lands in step 7.
 - **`tests/unit/train/models/test_deepseek_v4_temp.py` is scaffolding.** It isolates the
-  hyper-connections, the rotary, and the sliding-window and CSA attention layers against
-  HF's reference classes. Fold it into a proper `test_deepseek_v4.py` full-model parity
-  test once the model classes exist.
+  hyper-connections, the rotary, and all three attention layer types against HF's
+  reference classes. Fold it into a proper `test_deepseek_v4.py` full-model parity test
+  once the model classes exist.
 - **`build_sliding_window_mask` is single-document only.** It builds a dense
   `[1, 1, S, S]` additive mask from the causal + local-window predicate, with no
   `cu_seqlens` awareness, so a packed multi-document row would let the window bleed
@@ -155,10 +156,6 @@ Deliberate scope reductions taken in steps 1-3 that later steps must revisit:
   reference softmax, chosen because the per-head sink logit has no flash-attention
   equivalent in the kernels prime-rl currently vendors. It is correct but materializes
   the full `[B, H, S, S + 1]` logit tensor, `[B, H, S, S + S / m + 1]` on a CSA layer.
-- **`DeepseekV4Attention` rejects HCA layers.** `COMPRESSOR_CLASSES` only maps
-  `sliding_attention` and `compressed_sparse_attention`; the constructor raises
-  `NotImplementedError` for `heavily_compressed_attention` rather than silently building
-  a compressor-less block that would compute the wrong thing. Add the entry in step 4.
 - **The compressors are stateless (no KV cache).** prime-rl only ever runs a single
   forward + backward over a full sequence, never `generate()`, so
   `DeepseekV4HCACache` / `DeepseekV4CSACache` are not ported and nothing threads
@@ -190,11 +187,18 @@ Deliberate scope reductions taken in steps 1-3 that later steps must revisit:
 - **`position_ids` defaults to `arange`.** `DeepseekV4Attention.forward` synthesizes
   sequential positions when the caller passes none, matching the single-document
   assumption above. Step 7's decoder layer should always pass real ones.
-- **Compressed-position cos/sin are recomputed per module.** The CSA compressor and its
-  indexer each own a `DeepseekV4RotaryEmbedding` (as in HF) and each calls it every
-  forward, even though the compressed positions are the deterministic
-  `arange(S / m) * m` and identical across every CSA layer. Cheap, but step 7 could hoist
-  it next to the model-level rotary.
+- **Compressed-position cos/sin are recomputed per module.** The CSA compressor, its
+  indexer and the HCA compressor each own a `DeepseekV4RotaryEmbedding` (as in HF) and
+  each calls it every forward, even though the compressed positions are the deterministic
+  `arange(S / m) * m` and identical across every layer of the same type. Cheap, but step 7
+  could hoist it next to the model-level rotary.
+- **HCA's `block_bias` is always a tensor, never `None`.** HF returns `None` from
+  `DeepseekV4HCACompressor.forward` when `seq_len == 1` or no window is full, and its
+  attention then zero-pads the mask instead. Stateless, both cases imply
+  `compressed_len == 0` (a single token cannot fill a window of `m >= 4`), so prime-rl
+  returns a `[B, 1, S, 0]` bias and the concatenation is a no-op, which is exactly what
+  the zero-pad degenerates to. An incremental decode path would have to restore the
+  distinction, since there `compressed_len > 0` with `seq_len == 1` is the normal case.
 - **Rotary buffers are computed eagerly in `__init__`.** `DeepseekV4RotaryEmbedding`
   writes `<type>_inv_freq` on whatever device it is constructed on. Meta-device loading
   needs an `init_buffers_post_meta` on the step-7 `PreTrainedModel` subclass to
@@ -205,9 +209,10 @@ subclasses a `DeepseekV4DualSeriesCompressor` base that also backs
 `DeepseekV4CSACompressor`, because HF's two classes run byte-identical compression code
 differing only in `head_dim` (`config.head_dim` vs `config.index_head_dim`). Every
 parameter name is unchanged (`compressor.kv_proj`, `compressor.indexer.kv_proj`, ...), so
-state-dict conversion is unaffected. HCA compresses non-overlapping windows from
-`head_dim`-wide (not `2 * head_dim`-wide) projections and should *not* be forced onto this
-base in step 4.
+state-dict conversion is unaffected. `DeepseekV4HCACompressor` deliberately does *not*
+share that base: it compresses non-overlapping windows from `head_dim`-wide (not
+`2 * head_dim`-wide) projections, so the only code it could have inherited is the
+`(position_ids + 1) // compress_rate` readability threshold, which it spells out itself.
 
 Considered and rejected: reusing GLM-MoE-DSA's `apply_rope_interleave_single`
 (`glm_moe_dsa/sparse_mla_attention.py:56-63`) or its reshape-then-shared-`rotate_half`

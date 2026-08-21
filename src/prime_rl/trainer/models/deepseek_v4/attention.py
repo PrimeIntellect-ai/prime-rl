@@ -264,9 +264,83 @@ class DeepseekV4CSACompressor(DeepseekV4DualSeriesCompressor):
         self.indexer.init_weights(init_std)
 
 
+class DeepseekV4HCACompressor(nn.Module):
+    """Heavily Compressed Attention compressor: the dense long-range half of an HCA layer.
+
+    It pools every non-overlapping window of `compress_rate` (128) tokens into a single
+    entry, `C_w = sum_j softmax(gate_j + position_bias_j) * kv_j` over the window's tokens
+    `j`, then rotates the entry with the `compress` RoPE at its window's first source
+    position, which is what makes it comparable with the attention block's locally rotated
+    KV stream.
+
+    Both differences from `DeepseekV4CSACompressor` pull in the same direction. The windows
+    do not overlap, so `kv_proj` / `gate_proj` / `position_bias` stay `head_dim` wide (CSA
+    doubles them to carry two series) and no entry depends on its predecessor. And there is
+    no Lightning Indexer, so every query reads every entry its position has made causally
+    readable: the returned `block_bias` carries that threshold and nothing else.
+    """
+
+    rope_layer_type = "compress"
+
+    def __init__(self, config: DeepseekV4Config):
+        super().__init__()
+        self.compress_rate = config.compress_rates["heavily_compressed_attention"]
+        self.head_dim = config.head_dim
+        self.kv_proj = nn.Linear(config.hidden_size, self.head_dim, bias=False)
+        self.gate_proj = nn.Linear(config.hidden_size, self.head_dim, bias=False)
+        self.position_bias = nn.Parameter(torch.zeros(self.compress_rate, self.head_dim))
+        self.kv_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+        self.rotary_emb = DeepseekV4RotaryEmbedding(config)
+
+    def compress(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Compress `[batch, seq_len, hidden_size]` to `[batch, seq_len // compress_rate, head_dim]`.
+
+        The trailing `seq_len % compress_rate` tokens do not fill a window and are dropped,
+        as in CSA; they are still visible through the attention block's local window.
+        """
+        batch, seq_len, _ = hidden_states.shape
+        n_windows = seq_len // self.compress_rate
+        if n_windows == 0:
+            return hidden_states.new_zeros(batch, 0, self.head_dim)
+
+        usable = n_windows * self.compress_rate
+        window_shape = (batch, n_windows, self.compress_rate, -1)
+        kv = self.kv_proj(hidden_states)[:, :usable].view(window_shape)
+        gate = self.gate_proj(hidden_states)[:, :usable].view(window_shape) + self.position_bias
+
+        # fp32 softmax: in bf16 the gate logits of a wide window collapse onto each other.
+        weights = gate.softmax(dim=2, dtype=torch.float32).to(kv.dtype)
+        compressed = self.kv_norm((kv * weights).sum(dim=2))
+
+        positions = torch.arange(n_windows, device=compressed.device) * self.compress_rate
+        cos, sin = self.rotary_emb(compressed, positions.unsqueeze(0).expand(batch, -1), self.rope_layer_type)
+        return apply_rotary_pos_emb_interleaved(compressed.unsqueeze(1), cos, sin).squeeze(1)
+
+    def forward(
+        self, hidden_states: torch.Tensor, q_residual: torch.Tensor, position_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """`q_residual` is part of the compressor contract but unused: HCA has no indexer."""
+        batch, seq_len, _ = hidden_states.shape
+        compressed_kv = self.compress(hidden_states).unsqueeze(1)
+        compressed_len = compressed_kv.shape[2]
+
+        # Entry `w` pools source tokens up to index `(w + 1) * compress_rate - 1`, so it
+        # only becomes readable once the query has reached that token.
+        threshold = ((position_ids + 1) // self.compress_rate).unsqueeze(1).unsqueeze(-1)
+        entries = torch.arange(compressed_len, device=compressed_kv.device).view(1, 1, 1, -1)
+        block_bias = compressed_kv.new_zeros((batch, 1, seq_len, compressed_len))
+        return compressed_kv, block_bias.masked_fill_(entries >= threshold, float("-inf"))
+
+    def init_weights(self, init_std: float) -> None:
+        # `init_std` is unused: the projections are initialized by the caller and the
+        # position bias starts at zero, i.e. a uniform gate over the pooling window.
+        nn.init.zeros_(self.position_bias)
+
+
 COMPRESSOR_CLASSES = {
     "sliding_attention": None,
     "compressed_sparse_attention": DeepseekV4CSACompressor,
+    "heavily_compressed_attention": DeepseekV4HCACompressor,
 }
 
 
@@ -284,10 +358,10 @@ class DeepseekV4Attention(nn.Module):
     3. A per-head learnable attention sink.
     4. A grouped low-rank output projection (`o_a_proj` then `o_b_proj`).
 
-    Every layer type runs that same core over its local sliding window. The compressed
+    Every layer type runs that same core over its local sliding window. The two compressed
     types additionally own a `compressor` whose output is concatenated onto the local KV,
-    which is how a layer sees past the window. `heavily_compressed_attention` is not
-    ported yet.
+    which is how a layer sees past the window: CSA reads a sparse top-k of finely
+    compressed entries, HCA reads all of its heavily compressed ones.
     """
 
     def __init__(self, config: DeepseekV4Config, layer_idx: int):
@@ -295,8 +369,6 @@ class DeepseekV4Attention(nn.Module):
         self.config = config
         self.layer_idx = layer_idx
         self.layer_type = config.layer_types[layer_idx]
-        if self.layer_type not in COMPRESSOR_CLASSES:
-            raise NotImplementedError(f"DeepSeek-V4 {self.layer_type} layers are not ported yet.")
         # Rope types are labelled `main` / `compress`, independently of `layer_types`:
         # sliding layers take the plain base, the compressed variants share their
         # compressor's base.
@@ -388,6 +460,7 @@ __all__ = [
     "DeepseekV4Attention",
     "DeepseekV4CSACompressor",
     "DeepseekV4GroupedLinear",
+    "DeepseekV4HCACompressor",
     "DeepseekV4Indexer",
     "DeepseekV4IndexerScorer",
     "build_sliding_window_mask",
