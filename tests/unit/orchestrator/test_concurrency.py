@@ -6,7 +6,7 @@ from httpx import AsyncClient
 from prime_rl.configs.orchestrator import ConcurrencyConfig
 from prime_rl.orchestrator.concurrency import (
     PREEMPTION_CUT_FRACTION,
-    PROBE_FACTOR,
+    QUEUE_CUT_FRACTION,
     QUEUE_PERSISTENCE_POLLS,
     ConcurrencyController,
     EngineLoadSample,
@@ -21,7 +21,12 @@ from prime_rl.orchestrator.inference_metrics import (
 
 
 def make_sample(
-    *, throughput: float, kv_usage: float = 0.0, waiting: int = 0, preemptions: int = 0
+    *,
+    throughput: float,
+    kv_usage: float = 0.0,
+    running: int = 1,
+    waiting: int = 0,
+    preemptions_delta: int = 0,
 ) -> EngineLoadSample:
     return EngineLoadSample(
         engine_id="decode0",
@@ -29,10 +34,10 @@ def make_sample(
         kv_capacity_tokens=None,
         max_model_len=None,
         kv_usage=kv_usage,
-        running=1,
+        running=running,
         waiting=waiting,
         waiting_capacity=waiting,
-        preemptions_delta=preemptions,
+        preemptions_delta=preemptions_delta,
         generation_tokens_per_s=throughput,
     )
 
@@ -60,9 +65,16 @@ def drive(
     *,
     kv_usage_at: Callable[[int], float] = lambda _: 0.0,
     polls: int = 200,
+    complete_turnover: bool = True,
 ) -> None:
     for _ in range(polls):
-        cap = state["inflight"]
+        cap = int(state["inflight"])
+        if complete_turnover:
+            # Simulate one full pool of successful completions between polls.
+            state["inflight"] = cap - 1
+            for _ in range(cap):
+                controller.record_episode("env", "train", tokens=1, duration=1.0)
+            state["inflight"] = cap
         controller.observe(
             [
                 make_sample(
@@ -95,19 +107,59 @@ def test_kv_guardrail_stops_normal_attention_probe_before_memory_pressure() -> N
     assert controller.max_inflight == 7
 
 
-def test_controller_reprobes_down_when_workload_optimum_decreases() -> None:
-    controller, state = make_controller()
-    drive(controller, state, lambda cap: min(100.0 * cap, 800.0))
+def test_low_agentic_inference_demand_never_ratchets_ceiling_down() -> None:
+    controller, state = make_controller(initial=1024, maximum=1024)
+    limits: list[int] = []
+    controller.bind(set_limit=limits.append, get_inflight=lambda: state["inflight"])
+
+    # Reproduce the run failure: a binding episode pool, low active inference,
+    # no completed episodes, and throughput dominated by workload phase.
+    noisy_throughput = iter([200.0, 20.0, 180.0, 15.0] * 25)
+    for throughput in noisy_throughput:
+        controller.observe([make_sample(throughput=throughput)])
+
+    # Even after turnover, reaching the user ceiling is not a reason to probe
+    # downward. Only explicit pressure may reduce it.
+    controller.turnover = 10.0
+    drive(controller, state, lambda _: 10.0, polls=50, complete_turnover=False)
+
+    assert controller.max_inflight == 1024
+    assert controller.incumbent == 1024
+    assert controller.probe_phase == "baseline"
+    assert limits == []
+
+
+def test_transient_capacity_queue_does_not_reduce_concurrency() -> None:
+    controller, state = make_controller(initial=32, maximum=32)
+
+    controller.observe([make_sample(throughput=100.0, waiting=1)])
+    controller.observe([make_sample(throughput=100.0, waiting=1)])
+    controller.observe([make_sample(throughput=100.0, waiting=0)])
+
+    assert controller.max_inflight == 32
     assert controller.incumbent == 32
 
-    def shifted_throughput(cap: int) -> float:
-        if cap <= 5:
-            return 200.0 * cap
-        return 1_000.0 / (1 + 0.1 * (cap - 5))
 
-    drive(controller, state, shifted_throughput, polls=500)
+def test_sustained_substantial_capacity_queue_still_cuts() -> None:
+    controller, state = make_controller(initial=32, maximum=32)
 
-    assert controller.incumbent == 5
+    for _ in range(6):
+        controller.observe([make_sample(throughput=100.0, running=1, waiting=1)])
+
+    assert controller.max_inflight == 28
+
+
+def test_pressure_cut_recovers_only_by_probing_up() -> None:
+    controller, state = make_controller(initial=16, maximum=32)
+
+    controller.observe([make_sample(throughput=100.0, preemptions_delta=1)])
+    cut = controller.max_inflight
+    assert cut == 12
+
+    drive(controller, state, lambda cap: 100.0 * cap, polls=20)
+
+    assert controller.incumbent > cut
+    assert controller.max_inflight >= controller.incumbent
 
 
 def test_engine_queue_aborts_probe_without_cancelling_work() -> None:
@@ -126,9 +178,18 @@ def test_engine_queue_aborts_probe_without_cancelling_work() -> None:
     controller.observe([make_sample(throughput=100.0, waiting=1)])
 
     assert controller.probe_phase == "baseline"
-    assert controller.probe_direction == "down"
     assert controller.max_inflight == controller.incumbent
     assert cancelled == []
+
+
+def test_zero_token_episode_does_not_unlock_throughput_probe() -> None:
+    controller, state = make_controller()
+
+    controller.record_episode("env", "train", tokens=0, duration=1.0)
+    drive(controller, state, lambda cap: 100.0 * cap, polls=20, complete_turnover=False)
+
+    assert controller.turnover == 0.0
+    assert controller.max_inflight == 4
 
 
 def test_generation_counter_rate_uses_interval_delta_and_rejects_reset() -> None:
@@ -193,7 +254,7 @@ def test_persistent_queue_soft_cuts_without_cancelling_active_work() -> None:
         controller.observe([make_sample(throughput=100.0, waiting=60)])
 
     assert controller.signal == "soft"
-    target = int(inflight / PROBE_FACTOR)
+    target = int(inflight * QUEUE_CUT_FRACTION)
     assert controller.max_inflight == target
     assert limits == [target]
     assert cancellations == []
@@ -215,7 +276,7 @@ def test_preemption_hard_cuts_and_cancels_active_work() -> None:
         on_overload=cancellations.append,
     )
 
-    controller.observe([make_sample(throughput=100.0, preemptions=1)])
+    controller.observe([make_sample(throughput=100.0, preemptions_delta=1)])
 
     target = int(inflight * PREEMPTION_CUT_FRACTION)
     assert controller.signal == "hard"
