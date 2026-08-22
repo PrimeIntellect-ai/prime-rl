@@ -22,14 +22,12 @@ from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_w
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
+    PreparedRead,
     group_notification,
     make_agent_name,
     set_ucx_env_defaults,
 )
-from prime_rl.transports.weights.nixl.cuda_malloc_memory import (
-    size_cuda_buffers,
-    use_cuda_malloc_pool,
-)
+from prime_rl.transports.weights.nixl.cuda_malloc_memory import use_cuda_malloc_pool
 from prime_rl.transports.weights.nixl.graph import (
     Destination,
     OperationChain,
@@ -50,7 +48,6 @@ else:
     Worker = object
 
 logger = init_logger("vllm.inference.vllm.worker_nixl")
-MAX_PENDING_READS = 8
 
 
 @dataclass
@@ -75,7 +72,7 @@ class LayerWeightTransferPlan:
 class WeightTransferGroup:
     name: str
     layers: list[LayerWeightTransferPlan]
-    pulls: list[tuple[Any, Any, list[int]]]
+    pulls: list[PreparedRead]
 
 
 @dataclass
@@ -249,10 +246,7 @@ class NIXLWeightUpdateWorker(Worker):
             copies,
             replay_plans,
         )
-        receive_buffer_count = self.choose_receive_buffer_count(
-            receive_buffer_elements,
-            table.staging_buffer_count,
-        )
+        receive_buffer_count = table.staging_buffer_count
         receive_arenas = self.allocate_receive_arenas(
             receive_buffer_elements,
             receive_buffer_count,
@@ -310,31 +304,6 @@ class NIXLWeightUpdateWorker(Worker):
             source_dtype = getattr(torch, source.wire_dtype)
             group_elements[source_dtype][tensor_groups[source.name]] += prod(replay_plans[id(copy)].source_shape)
         return {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
-
-    def choose_receive_buffer_count(
-        self,
-        receive_buffer_elements: dict[torch.dtype, int],
-        staging_buffer_count: int,
-    ) -> int:
-        receive_buffer_bytes = max(
-            1,
-            sum(elements * dtype.itemsize for dtype, elements in receive_buffer_elements.items()),
-        )
-        allocated_bytes = torch.cuda.memory_allocated(self.device)
-        peak_growth_bytes = max(
-            0,
-            torch.cuda.max_memory_allocated(self.device) - allocated_bytes,
-        )
-        free_bytes, _ = torch.cuda.mem_get_info(self.device)
-        max_receive_buffers = min(2, staging_buffer_count) if peak_growth_bytes else 1
-        if peak_growth_bytes or free_bytes < receive_buffer_bytes:
-            torch.cuda.empty_cache()
-        return size_cuda_buffers(
-            receive_buffer_bytes,
-            max_receive_buffers,
-            self.device,
-            extra_headroom_bytes=receive_buffer_bytes + peak_growth_bytes,
-        )
 
     def allocate_receive_arenas(
         self,
@@ -489,8 +458,8 @@ class NIXLWeightUpdateWorker(Worker):
         local_descs: dict[int, list[MemDesc]],
         remote_descs: dict[int, list[MemDesc]],
         peer_names: dict[int, str],
-    ) -> list[tuple[Any, Any, list[int]]]:
-        pulls: list[tuple[Any, Any, list[int]]] = []
+    ) -> list[PreparedRead]:
+        pulls: list[PreparedRead] = []
         agent_indices = sorted(remote_descs)
         rotation = self.model_express.rank % len(agent_indices) if agent_indices else 0
         agent_indices = agent_indices[rotation:] + agent_indices[:rotation]
@@ -499,7 +468,13 @@ class NIXLWeightUpdateWorker(Worker):
             peer_name = peer_names[agent_index]
             local_prepared = self.nixl_agent.prepare_xfer_dlist(local_descs[agent_index])
             remote_prepared = self.nixl_agent.prepare_xfer_dlist(remote, agent_name=peer_name)
-            pulls.append((local_prepared, remote_prepared, list(range(len(remote)))))
+            pulls.append(
+                self.nixl_agent.prepare_read(
+                    local_prepared,
+                    list(range(len(remote))),
+                    remote_prepared,
+                )
+            )
         return pulls
 
     @torch.no_grad()
@@ -552,21 +527,16 @@ class NIXLWeightUpdateWorker(Worker):
                 cancelled=cancelled.is_set,
             )
 
-            for offset in range(0, len(transfer_group.pulls), MAX_PENDING_READS):
-                handles = [
-                    self.nixl_agent.post_read(local, indices, remote)
-                    for local, remote, indices in transfer_group.pulls[offset : offset + MAX_PENDING_READS]
-                ]
-                for handle in handles:
-                    self.nixl_agent.wait(
-                        handle,
-                        context=f"weight pull for {transfer_group.name}",
-                        timeout=self.weight_transfer_timeout,
-                        cancelled=cancelled.is_set,
-                    )
+            for read in transfer_group.pulls:
+                self.nixl_agent.post_read(read, notification)
+            for read in transfer_group.pulls:
+                self.nixl_agent.wait(
+                    read,
+                    context=f"weight pull for {transfer_group.name}",
+                    timeout=self.weight_transfer_timeout,
+                    cancelled=cancelled.is_set,
+                )
 
-            for peer_name in plan.trainer_peer_names:
-                self.nixl_agent.send_notification(peer_name, notification)
             self.group_generations[group_index] += 1
             return transfer_group
 

@@ -5,12 +5,22 @@ from __future__ import annotations
 import os
 import socket
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from torch import Tensor
 
 MemDesc = tuple[int, int, int]
+
+
+@dataclass(slots=True)
+class PreparedRead:
+    """Reusable READ request with descriptor lists kept alive for its lifetime."""
+
+    local_descriptors: Any
+    remote_descriptors: Any
+    handle: Any
 
 
 def group_notification(group_index: int, generation: int) -> str:
@@ -30,6 +40,7 @@ class NixlAgent:
 
         self.name = name
         self._agent = nixl_agent(name, nixl_agent_config(backends=["UCX"]))
+        self._notifications: dict[str, list[bytes]] = {}
 
     def register_tensor(self, tensor: Tensor) -> None:
         self._agent.register_memory(tensor, backends=["UCX"])
@@ -51,7 +62,7 @@ class NixlAgent:
             backends=["UCX"],
         )
 
-    def post_read(self, local: Any, indices: Sequence[int], remote: Any) -> Any:
+    def prepare_read(self, local: Any, indices: Sequence[int], remote: Any) -> PreparedRead:
         handle = self._agent.make_prepped_xfer(
             operation="READ",
             local_xfer_side=local,
@@ -60,10 +71,16 @@ class NixlAgent:
             remote_indices=list(indices),
             backends=["UCX"],
         )
-        state = self._agent.transfer(handle)
+        return PreparedRead(
+            local_descriptors=local,
+            remote_descriptors=remote,
+            handle=handle,
+        )
+
+    def post_read(self, read: PreparedRead, notification: str) -> None:
+        state = self._agent.transfer(read.handle, notification.encode())
         if state in ("ERR", "ERROR", "FAIL"):
             raise RuntimeError(f"NIXL READ post failed with state {state}")
-        return handle
 
     def send_notification(self, peer_name: str, notification: str) -> None:
         self._agent.send_notif(peer_name, notification)
@@ -77,17 +94,17 @@ class NixlAgent:
         cancelled: Callable[[], bool] | None = None,
     ) -> None:
         pending = set(peer_names)
+        encoded_notification = notification.encode()
         deadline = time.monotonic() + timeout
         while pending:
             if cancelled is not None and cancelled():
                 raise RuntimeError("NIXL notification wait cancelled")
+            for sender, messages in self._agent.get_new_notifs(backends=["UCX"]).items():
+                self._notifications.setdefault(sender, []).extend(messages)
             for sender in list(pending):
-                if self._agent.check_remote_xfer_done(
-                    sender,
-                    notification.encode(),
-                    backends=["UCX"],
-                    tag_is_prefix=False,
-                ):
+                messages = self._notifications.get(sender, [])
+                if encoded_notification in messages:
+                    messages.remove(encoded_notification)
                     pending.remove(sender)
             if pending and time.monotonic() >= deadline:
                 raise TimeoutError(f"NIXL notification wait timed out after {timeout}s, missing={sorted(pending)}")
@@ -96,7 +113,7 @@ class NixlAgent:
 
     def wait(
         self,
-        handle: Any,
+        read: PreparedRead,
         context: str = "",
         timeout: float | None = None,
         cancelled: Callable[[], bool] | None = None,
@@ -104,17 +121,16 @@ class NixlAgent:
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             if cancelled is not None and cancelled():
-                self._agent.release_xfer_handle(handle)
+                self._agent.release_xfer_handle(read.handle)
                 raise RuntimeError(f"NIXL transfer cancelled, context={context!r}")
-            state = self._agent.check_xfer_state(handle)
+            state = self._agent.check_xfer_state(read.handle)
             if state in ("DONE", "SUCCESS"):
-                self._agent.release_xfer_handle(handle)
                 return
             if state in ("ERR", "ERROR", "FAIL"):
-                self._agent.release_xfer_handle(handle)
+                self._agent.release_xfer_handle(read.handle)
                 raise RuntimeError(f"NIXL transfer failed with state={state}, context={context!r}")
             if deadline is not None and time.monotonic() >= deadline:
-                self._agent.release_xfer_handle(handle)
+                self._agent.release_xfer_handle(read.handle)
                 raise TimeoutError(f"NIXL transfer timed out after {timeout}s, context={context!r}")
             time.sleep(0.0005)
 

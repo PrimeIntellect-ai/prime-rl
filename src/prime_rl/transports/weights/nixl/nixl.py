@@ -31,10 +31,7 @@ from prime_rl.transports.weights.nixl.agent import (
     policy_notification,
     set_ucx_env_defaults,
 )
-from prime_rl.transports.weights.nixl.cuda_malloc_memory import (
-    size_cuda_buffers,
-    use_cuda_malloc_pool,
-)
+from prime_rl.transports.weights.nixl.cuda_malloc_memory import use_cuda_malloc_pool
 from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
 from prime_rl.transports.weights.nixl.trainer_tensor_table import (
     TrainerAgent,
@@ -45,7 +42,6 @@ from prime_rl.transports.weights.nixl.trainer_tensor_table import (
 )
 
 LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
-MAX_STAGING_BUFFER_COUNT = 8
 
 
 @dataclass
@@ -186,31 +182,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
                 )
         return local_shards
 
-    def choose_staging_buffer_count(self, largest_group_bytes: int) -> int:
-        local_buffer_count = min(len(self.transfer_group_names), MAX_STAGING_BUFFER_COUNT)
-        if self.is_serving_rank and largest_group_bytes:
-            device = self.staged_shards[0].source_tensor.device
-            allocated_bytes = torch.cuda.memory_allocated()
-            peak_growth_bytes = max(0, torch.cuda.max_memory_allocated() - allocated_bytes)
-            free_bytes, _ = torch.cuda.mem_get_info(device)
-            max_buffers = local_buffer_count if peak_growth_bytes else 1
-            if peak_growth_bytes or free_bytes < largest_group_bytes:
-                torch.cuda.empty_cache()
-            local_buffer_count = size_cuda_buffers(
-                largest_group_bytes,
-                max_buffers,
-                device,
-                extra_headroom_bytes=peak_growth_bytes,
-            )
-
-        staging_buffer_count = torch.tensor(
-            local_buffer_count,
-            dtype=torch.int64,
-            device=torch.device("cuda", torch.cuda.current_device()),
-        )
-        dist.all_reduce(staging_buffer_count, op=dist.ReduceOp.MIN)
-        return int(staging_buffer_count.item())
-
     def allocate_staging_arenas(self, largest_group_elements: dict[torch.dtype, int]) -> None:
         if not self.is_serving_rank or not any(largest_group_elements.values()):
             return
@@ -250,8 +221,10 @@ class NIXLWeightBroadcast(WeightBroadcast):
         for shard in self.staged_shards:
             group_elements[shard.wire_dtype][shard.group_index] += shard.source_tensor.numel()
         largest_group_elements = {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
-        largest_group_bytes = sum(elements * dtype.itemsize for dtype, elements in largest_group_elements.items())
-        self.staging_buffer_count = self.choose_staging_buffer_count(largest_group_bytes)
+        self.staging_buffer_count = min(
+            len(self.transfer_group_names),
+            2 if self.config.overlap_transfer_and_replay else 1,
+        )
         self.allocate_staging_arenas(largest_group_elements)
 
         grouped: dict[int, list[StagedTensorShard]] = defaultdict(list)
