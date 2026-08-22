@@ -151,11 +151,11 @@ source .venv/bin/activate
 # inside the task because unexported vars in .env don't cross srun even with normal
 # SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
 srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
-cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && {{ uv_executable | default('uv') }} sync --all-extras --all-packages
+cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && {{ uv_executable | default('uv') }} sync --all-extras --all-packages {{ uv_sync_extra_args | default('') }}
 SYNC_SH
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
-{{ uv_executable | default('uv') }} sync --all-extras --all-packages
+{{ uv_executable | default('uv') }} sync --all-extras --all-packages {{ uv_sync_extra_args | default('') }}
 {% endif %}
 
 {% if pre_run_command %}
