@@ -562,6 +562,16 @@ Hand-coded renderers ship for `qwen3`, `qwen3-vl`, `qwen3.5`, `glm-5`, `glm-4.5`
 name = "auto"   # detect from tokenizer; pass an explicit name for fine-tunes
 ```
 
+`[orchestrator.renderer]` is the typed `renderers.RendererConfig` discriminated union: `name` selects the renderer, and the block then accepts exactly that renderer's template controls — a control that doesn't exist on the selected renderer fails at config-load time instead of being silently ignored. For example, to roll out Qwen3.5 with thinking off:
+
+```toml
+[orchestrator.renderer]
+name = "qwen3.5"
+enable_thinking = false
+```
+
+A control you leave unset falls back to that renderer's per-model default, keyed off the checkpoint — `enable_thinking` defaults off for the small Qwen3.5 sizes and on for the larger ones, and unknown or fine-tuned checkpoints fall back to on. Set it explicitly when rolling out a fine-tune. SFT reads the same typed union from its own top-level `[renderer]` block (see [Training](training.md)).
+
 For the full design rationale (failure modes ruled out, empirical token-identity comparison against `apply_chat_template`, when to write a hand-coded renderer), see [the renderers writeup on the Prime Intellect blog](https://www.primeintellect.ai/blog/renderers) — the canonical reference.
 
 ### Discontinuous Trajectories
