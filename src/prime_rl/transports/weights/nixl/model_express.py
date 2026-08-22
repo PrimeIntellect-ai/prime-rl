@@ -1,9 +1,4 @@
-"""Role-scoped synchronization over ModelExpress.
-
-The policy session coordinates a complete weight update with the orchestrator.
-A separate layer session uses the same READY/INITIALIZING handshake to keep a
-bounded transfer arena live until every inference worker has acknowledged it.
-"""
+"""ModelExpress startup discovery and synchronization for NIXL peers."""
 
 from __future__ import annotations
 
@@ -77,9 +72,6 @@ class ModelExpressSession:
     def list_sources(self, role: Role, status: int | None) -> list[p2p_pb2.SourceInstanceRef]:
         response = self._rpc(lambda: self.client.list_sources(self.identity(role), status_filter=status))
         return list(response.instances)
-
-    def exists_role_with_status(self, role: Role, status: int) -> bool:
-        return bool(self.list_sources(role, status))
 
     def wait_for(
         self,
