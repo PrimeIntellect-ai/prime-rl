@@ -335,15 +335,15 @@ tail -F <run_dir>/logs/latest/inference/router.log # multi-node only
 
 ### Console Output
 
-`scripts/tmux.sh` opens a 4-pane tmux session that follows `trainer.log`, `orchestrator.log`, `inference.log`, and the union of env worker logs. Start it before launching:
+`scripts/tmux.sh` opens a 4-pane tmux session that follows `trainer.log`, `orchestrator.log`, `inference.log`, and the union of env worker logs. The panes wait for the newest run under the output directory (`-o`, default `outputs`) and tail its `logs/latest`, so auto-generated run names work out of the box. Start it before launching:
 
 ```bash
-bash scripts/tmux.sh -o outputs/my-run
+bash scripts/tmux.sh
 # then in the Launcher window:
-uv run rl @ ... --run.name my-run
+uv run rl @ ...
 ```
 
-Pass `-s <session>` and `-o <run_dir>` (the run directory, `<output_dir>/<run_name>`) to run multiple parallel experiments side-by-side in different sessions. The helper also works on a SLURM head node — `bash scripts/tmux.sh my-rl-job /shared/outputs/my-rl-job`.
+Pass `-s <session>` to run multiple parallel experiments side-by-side in different sessions. `-o` also accepts a specific run directory (`<output_dir>/<run_name>`) to pin a session to one run. The helper also works on a SLURM head node — `bash scripts/tmux.sh my-rl-job /shared/outputs`.
 
 ### Weights & Biases
 

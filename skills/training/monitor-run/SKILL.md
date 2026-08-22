@@ -55,7 +55,7 @@ After a restart, verify all processes are back up and progress resumed before th
 
 ### Where to find things
 
-- `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the run dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
+- `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the output directory, the session name, and a command that finds the active run's log directory in its appended prompt — if the output directory or session name is missing, **ask** rather than guess.
 - `{run_dir}/configs/` — resolved configs, written as JSON so explicit None settings round-trip (`rl.json` has the full picture).
 - `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
 - `{run_dir}/rollouts/step_N/{train,eval}/` — saved episodes (see Episodes below).
