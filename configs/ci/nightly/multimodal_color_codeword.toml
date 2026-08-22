@@ -25,16 +25,10 @@ max_completion_tokens = 64
 
 [[orchestrator.train.source]]
 name = "color-codeword"
-
-[orchestrator.train.source.env.taskset]
-id = "color-codeword"
-images_per_turn = 1
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "color-codeword"
+env.taskset.images_per_turn = 1
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [trainer]
 

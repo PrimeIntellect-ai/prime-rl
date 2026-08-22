@@ -134,15 +134,9 @@ clear_thinking = false
 
 [[orchestrator.train.source]]
 name = "r2e"
-
-[orchestrator.train.source.env.taskset]
-id = "r2e-gym"
-
-[orchestrator.train.source.env.agent.harness]
-id = "rlm"
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["glm5-llmd"]
+env.taskset.id = "r2e-gym"
+env.agent.harness.id = "rlm"
+env.agent.runtime.labels = ["glm5-llmd"]
 
 [inference]
 # <0.80 because glm5 layers are too large for 0.85

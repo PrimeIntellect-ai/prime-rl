@@ -114,15 +114,9 @@ max_inflight = 128
 [[eval.source]]
 num_examples = 32   # always cap eval size for smokes
 group_size = 4
-
-[eval.source.env.taskset]
-id = "aime25"
-
-[eval.source.env.agent.harness]
-id = "null"
-
-[eval.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "aime25"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 ```
 
 - Env servers: spawned by the evals process, one per source without an explicit `serve.address`, at `tcp://127.0.0.1:<eval.env_server_base_port + index>`; logs at `{output_dir}/logs/envs/eval/{name}.log`.

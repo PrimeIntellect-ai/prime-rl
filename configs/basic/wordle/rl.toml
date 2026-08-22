@@ -23,15 +23,9 @@ group_size = 8
 
 [[orchestrator.train.source]]
 name = "wordle"
-
-[orchestrator.train.source.env.taskset]
-id = "wordle"
-
-[orchestrator.train.source.env.player.harness]
-id = "null"
-
-[orchestrator.train.source.env.player.runtime]
-type = "subprocess"
+env.taskset.id = "wordle"
+env.player.harness.id = "null"
+env.player.runtime.type = "subprocess"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 1024

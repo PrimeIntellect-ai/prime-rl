@@ -21,24 +21,12 @@ max_inflight = 32
 
 [[eval.source]]
 name = "swebench-verified"
-
-[eval.source.env.taskset]
-id = "swebench-verified"
-
-[eval.source.env.agent.harness]
-id = "bash"
-
-[eval.source.env.agent.timeout]
-rollout = 3600
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 3600
 
 [[eval.source]]
 name = "terminal-bench-2"
-
-[eval.source.env.taskset]
-id = "terminal-bench-2"
-
-[eval.source.env.agent.harness]
-id = "bash"
-
-[eval.source.env.agent.timeout]
-rollout = 3600
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 3600
