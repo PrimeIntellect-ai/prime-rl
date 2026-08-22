@@ -43,7 +43,7 @@ def test_nccl_broadcast(free_port):
         for param in model.parameters():
             param.data = torch.ones_like(param.data)
 
-        nccl_broadcast.broadcast_weights(model, step=0)
+        nccl_broadcast.send(model)
 
     def receive():
         device = torch.device(f"cuda:{1}")

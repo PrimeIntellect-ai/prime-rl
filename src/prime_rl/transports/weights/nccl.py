@@ -15,12 +15,9 @@ from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
 from prime_rl.trainer.conversion_utils import get_max_layer_num
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
-from prime_rl.transports.weights.base import WeightBroadcast
-from prime_rl.utils.client import NCCL_READY_MARKER
+from prime_rl.transports.weights.base import RECEIVER_READY_MARKER, WeightBroadcast
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
-from prime_rl.utils.pathing import sync_wait_for_path
-from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 from prime_rl.utils.vlm import get_layer_prefix
 
 
@@ -117,12 +114,11 @@ class NCCLWeightBroadcastSender:
         world_size: int,
         device: int | str | torch.device,
         timeout: int,
-        dtype: torch.dtype = torch.bfloat16,
         quantize_in_weight_transfer: bool = False,
     ):
         self.logger = get_logger()
         self.world = get_world()
-        self.dtype = dtype
+        self.dtype = torch.bfloat16
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
 
         if self.world.is_master:
@@ -137,7 +133,7 @@ class NCCLWeightBroadcastSender:
             self.logger.debug("NCCL broadcast initialized on non-master rank (no communicator)")
 
     @torch.no_grad()
-    def broadcast_weights(self, model: nn.Module, step: int) -> None:
+    def send(self, model: nn.Module) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
@@ -170,16 +166,17 @@ class NCCLWeightBroadcastSender:
 class NCCLWeightBroadcast(WeightBroadcast):
     """Broadcast weights into the inference engine using NCCL."""
 
+    REQUIRES_LIVE_CONSUMER = True
+
     def __init__(
         self,
         output_dir: Path,
         config: NCCLWeightBroadcastConfig,
         device: int | str | torch.device,
-        dtype: torch.dtype = torch.bfloat16,
+        keep_interval: int | None = None,
     ):
-        super().__init__(output_dir)
-        self.logger = get_logger()
-        self.world = get_world()
+        super().__init__(output_dir, keep_interval)
+        self.timeout = config.timeout
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
             config.host,
             config.port,
@@ -187,38 +184,38 @@ class NCCLWeightBroadcast(WeightBroadcast):
             config.inference_world_size + 1,
             device,
             config.timeout,
-            dtype,
             quantize_in_weight_transfer=config.quantize_in_weight_transfer,
         )
 
     @torch.no_grad()
-    def broadcast_weights(self, model: nn.Module, step: int) -> None:
-        """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
-        self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
-        start_time = time.perf_counter()
-        # Only the master touches the filesystem to notify the orchestrator, but all
-        # ranks must wait for the inference pool before entering the broadcast path:
-        # the broadcast preparation (DTensor resolution, quantization) enqueues
-        # collectives on non-master ranks, and if those ranks start prep before
-        # the orchestrator has paused inference, the collectives sit unmatched
-        # until NCCL's watchdog kills the process after 10 min.
-        save_dir = get_step_path(get_broadcast_dir(self.output_dir), step)
+    def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
+        # Only the master waits for the receiver, but all ranks must be held
+        # back until it is ready: the broadcast preparation (DTensor
+        # resolution, quantization) enqueues collectives on non-master ranks,
+        # and if those start before the receiver has paused inference, the
+        # collectives sit unmatched until NCCL's watchdog kills the process.
         if self.world.is_master:
-            self._notify_orchestrator(save_dir)
-            self._wait_for_nccl_ready(save_dir)
+            self._wait_for_receiver_ready(step_dir)
         if self.world.world_size > 1:
             dist.barrier()
-        self.nccl_broadcast_sender.broadcast_weights(model, step)
-        self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
+        self.nccl_broadcast_sender.send(model)
 
-    def _notify_orchestrator(self, save_dir: Path) -> None:
-        """Create the STABLE marker the orchestrator's weight watcher polls for."""
-        save_dir.mkdir(parents=True, exist_ok=True)
-        (save_dir / "STABLE").touch()
-
-    def _wait_for_nccl_ready(self, save_dir: Path):
-        """Wait for inference workers to signal they are ready to receive NCCL broadcast."""
-        nccl_ready_file = save_dir / NCCL_READY_MARKER
-        self.logger.debug(f"Waiting for NCCL_READY marker at {nccl_ready_file}")
-        sync_wait_for_path(nccl_ready_file, interval=0.1, log_interval=10)
+    def _wait_for_receiver_ready(self, step_dir: Path) -> None:
+        """Wait for the receiver to signal the engines are paused inside the
+        receive path. Bounded: a receiver that dies mid-handshake must fail the
+        run instead of stranding the trainer forever."""
+        ready_file = step_dir / RECEIVER_READY_MARKER
+        self.logger.debug(f"Waiting for the receiver at {ready_file}")
+        start = time.monotonic()
+        last_log = start
+        while not ready_file.exists():
+            now = time.monotonic()
+            if now - start > self.timeout:
+                raise TimeoutError(f"No receiver joined the NCCL broadcast within {self.timeout}s ({ready_file})")
+            if now - last_log > 60:
+                # A busy consumer (e.g. an evals process mid-epoch) can lag legitimately;
+                # raise weight_broadcast.timeout if this trips on long eval epochs.
+                self.logger.warning(f"Still waiting for the broadcast receiver after {now - start:.0f}s")
+                last_log = now
+            time.sleep(0.1)
         self.logger.debug("Inference workers ready for NCCL broadcast")

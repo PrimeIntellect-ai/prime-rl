@@ -37,6 +37,14 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
 
 
+class BaseWeightBroadcastConfig(BaseConfig):
+    broadcast_final: bool = True
+    """Internal - stamped by the RL/SFT launcher, never set by users: whether the
+    trainer broadcasts the final version v{max_steps}. True iff something consumes
+    it (a configured final eval) - training itself never samples from the final
+    version."""
+
+
 class RunConfig(BaseConfig):
     name: str | None = None
     """Run name. Auto-generated as ``<envs>--<model>--<short-id>`` when unset, so every launch gets a fresh, readable run directory; set an explicit name (e.g. an experiment name) to get a predictable run directory, which is also required to resume a previous run. Unless set explicitly, the W&B run name and the Prime platform run name inherit it."""
@@ -168,9 +176,6 @@ class ClientConfig(BaseConfig):
 
     headers_from_env: dict[str, str] = {}
     """Maps HTTP header names to environment variable names; each entry is resolved via ``os.getenv`` and merged into request headers. e.g. ``{"X-Prime-Team-ID": "PRIME_TEAM_ID"}``."""
-
-    extra_headers_from_state: dict[str, str] = {}
-    """Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "trajectory_id"}`` enables sticky routing at the inference router."""
 
     skip_model_check: bool = False
     """Skip checking that the model is available in the inference pool. Useful for external APIs or keys that do not expose ``/models``."""

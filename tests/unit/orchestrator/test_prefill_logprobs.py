@@ -3,7 +3,7 @@ import json
 
 import httpx
 
-from prime_rl.utils.client import prefill_logprobs
+from prime_rl.orchestrator.clients import prefill_logprobs
 
 
 class _FakeOpenAIClient:

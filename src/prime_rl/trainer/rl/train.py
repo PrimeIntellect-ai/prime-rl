@@ -10,6 +10,7 @@ from datetime import timedelta
 
 from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.transports.weights import setup_weight_broadcast
+from prime_rl.transports.weights.base import prune_broadcasts_beyond
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
@@ -67,7 +68,7 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
+from prime_rl.utils.utils import clean_exit, final_broadcast_version, resolve_latest_ckpt_step
 from ring_flash_attn import substitute_hf_flash_attn
 
 
@@ -179,6 +180,7 @@ def train(config: TrainerConfig):
             config.weight_broadcast,
             parallel_dims,
             config.model.lora,
+            keep_interval=config.ckpt.interval if config.ckpt else None,
         )
 
     if parallel_dims.cp_enabled:
@@ -263,7 +265,7 @@ def train(config: TrainerConfig):
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
-        is_last_step = config.max_steps is not None and progress.step == config.max_steps
+        is_last_step = config.max_steps is not None and progress.step >= config.max_steps
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
@@ -273,8 +275,12 @@ def train(config: TrainerConfig):
         # and so a broken broadcast path fails at startup instead of after the first
         # optimizer step.
         if progress.step == start_step and weight_broadcast is not None:
-            logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
-            weight_broadcast.broadcast_weights(model, step=progress.step - 1)
+            startup_version = progress.step - 1
+            if world.is_master:
+                prune_broadcasts_beyond(config.output_dir, startup_version)
+            if weight_broadcast.REQUIRES_LIVE_CONSUMER or not weight_broadcast.is_finished(startup_version):
+                logger.info(f"Broadcasting startup policy weights (v{startup_version}) to inference engines")
+                weight_broadcast.broadcast(model, startup_version)
 
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")
@@ -573,16 +579,16 @@ def train(config: TrainerConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
-        # sample its next step from it. Only the final version is unused (nothing samples from
-        # v{max_steps}) — the orchestrator stays alive for every other in-memory rendezvous;
-        # filesystem broadcast still writes every version for resume.
+        # sample its next step from it. A live transport skips versions past the last consumed
+        # one (``final_broadcast_version``: training never samples v{max_steps}, but a
+        # configured final eval measures it); filesystem writes every version for inspection.
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
             broadcast_unused = (
-                config.weight_broadcast.type in ("nccl", "nixl")
+                weight_broadcast.REQUIRES_LIVE_CONSUMER
                 and config.max_steps is not None
-                and progress.step >= config.max_steps
+                and progress.step > final_broadcast_version(config.max_steps, config.weight_broadcast.broadcast_final)
             )
             if not broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()
@@ -590,12 +596,8 @@ def train(config: TrainerConfig):
                 # resident weights; release cached blocks (incl. offload-stream
                 # pools) so the broadcast gets the full headroom.
                 torch.cuda.empty_cache()
-                weight_broadcast.broadcast_weights(model, step=progress.step)
+                weight_broadcast.broadcast(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
-                # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-                if config.weight_broadcast.type == "filesystem":
-                    interval_to_keep = config.ckpt and config.ckpt.interval
-                    weight_broadcast.maybe_clean(progress.step, interval_to_keep)
             else:
                 broadcast_weights_time = 0
 

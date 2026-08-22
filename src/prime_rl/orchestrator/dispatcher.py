@@ -38,6 +38,7 @@ from typing import Literal
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
 
+from prime_rl.orchestrator.clients import InferenceClient
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
@@ -53,7 +54,6 @@ from prime_rl.orchestrator.types import (
 )
 from prime_rl.orchestrator.utils import min_fresh_version
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
-from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import get_logger
 
 
@@ -151,7 +151,7 @@ class Dispatcher:
         eval_envs: EvalEnvs | None,
         train_source: TrainSource | None,
         eval_source: EvalSource | None,
-        policy_pool: InferencePool,
+        policy_clients: InferenceClient,
         policy: Policy,
         progress: Progress | None,
         initial_max_inflight: int,
@@ -168,7 +168,7 @@ class Dispatcher:
         self.eval_envs = eval_envs
         # Train rollouts go to the env's generation source; eval always
         # evaluates the policy.
-        self.policy_pool = policy_pool
+        self.policy_clients = policy_clients
         self.train_source = train_source
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
@@ -221,14 +221,14 @@ class Dispatcher:
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
 
-    def _train_generation_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
-        """``(pool, model_name, is_live)`` for *train* rollouts of this env —
+    def _train_generation_for(self, env_name: str) -> tuple[InferenceClient, str, bool]:
+        """``(clients, model_name, is_live)`` for *train* rollouts of this env —
         eval always uses the policy."""
         assert self.train_envs is not None  # train groups only exist when train is configured
         source = self.train_envs.get(env_name).generation_source
         if source.uses_live_policy:
-            return source.pool, self.policy.model_name, True
-        return source.pool, source.pool.model_name, False
+            return source.clients, self.policy.model_name, True
+        return source.clients, source.clients.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -500,14 +500,12 @@ class Dispatcher:
         # goes through the eval client (chat-completions) so eval scores stay
         # comparable.
         if group.kind == "eval":
-            pool, model_name = self.policy_pool, self.policy.model_name
+            clients, model_name = self.policy_clients, self.policy.model_name
             live_sourced = True
         else:
-            pool, model_name, live_sourced = self._train_generation_for(group.env_name)
+            clients, model_name, live_sourced = self._train_generation_for(group.env_name)
 
-        if group.pinned_client is None:
-            group.pinned_client = pool.eval_client if group.kind == "eval" else pool.train_client
-        client = group.pinned_client
+        client = clients.eval_client if group.kind == "eval" else clients.train_client
 
         env_collection = self.train_envs if group.kind == "train" else self.eval_envs
         if env_collection is None:

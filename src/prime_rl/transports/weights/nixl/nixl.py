@@ -22,7 +22,6 @@ from torch.distributed.tensor._utils import compute_local_shape_and_global_offse
 from prime_rl.configs.trainer import NIXLWeightBroadcastConfig
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightBroadcast
 from prime_rl.transports.weights.nixl.agent import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.transports.weights.nixl.cuda_malloc_memory import (
@@ -68,11 +67,18 @@ class TransferGroupIndex:
 
 
 class NIXLWeightBroadcast(WeightBroadcast):
-    def __init__(self, output_dir: Path, config: NIXLWeightBroadcastConfig, parallel_dims: ParallelDims) -> None:
-        super().__init__(output_dir)
+    REQUIRES_LIVE_CONSUMER = True
+
+    def __init__(
+        self,
+        output_dir: Path,
+        config: NIXLWeightBroadcastConfig,
+        parallel_dims: ParallelDims,
+        keep_interval: int | None = None,
+    ) -> None:
+        super().__init__(output_dir, keep_interval)
         self.config = config
         self.parallel_dims = parallel_dims
-        self.world = get_world()
         if self.is_serving_rank:
             set_ucx_env_defaults()
             self.nixl_agent = NixlAgent(make_agent_name("trainer", self.world.rank))
@@ -82,6 +88,8 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.staged_shards_by_group: dict[int, list[StagedTensorShard]] = {}
         self.staging_arenas: dict[torch.dtype, torch.Tensor] = {}
         self.staging_buffer_count: int
+        self.model_express: ModelExpressSession | None = None
+        self.buffer_sessions: list[ModelExpressSession] = []
 
     @property
     def is_serving_rank(self) -> bool:
@@ -405,7 +413,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         dist.barrier()
 
     @torch.no_grad()
-    def broadcast_weights(self, model: nn.Module, step: int) -> None:
+    def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
         self.initialize_transfer(model)
         start = time.perf_counter()
 

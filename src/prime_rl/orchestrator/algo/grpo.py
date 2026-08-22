@@ -10,7 +10,7 @@ from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_advantages
 
 if TYPE_CHECKING:
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.orchestrator.clients import InferenceClient
 
 
 class GRPOAlgorithm(Algorithm):
@@ -18,8 +18,8 @@ class GRPOAlgorithm(Algorithm):
     policy per example; credit = reward minus the group mean (optionally
     length-shaped); action tokens feed the ``rl`` loss."""
 
-    def __init__(self, config: GRPOAlgoConfig, policy_pool: InferencePool):
-        super().__init__(config, policy_pool)
+    def __init__(self, config: GRPOAlgoConfig, clients: InferenceClient):
+        super().__init__(config, clients)
         self.length_penalty = config.length_penalty
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
