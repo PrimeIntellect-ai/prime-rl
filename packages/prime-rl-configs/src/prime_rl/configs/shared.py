@@ -82,9 +82,6 @@ class SlurmConfig(BaseConfig):
     uv_executable: str = "uv"
     """Executable used to synchronize the project environment before launch."""
 
-    uv_sync_extra_args: str = ""
-    """Additional arguments passed to ``uv sync`` before launch."""
-
     template_path: Path | None = None
     """SLURM template file. If None, uses the bundled single-node or multi-node template."""
 
@@ -119,7 +116,6 @@ class SlurmConfig(BaseConfig):
             "job_name": self.job_name,
             "project_dir": self.project_dir,
             "uv_executable": self.uv_executable,
-            "uv_sync_extra_args": self.uv_sync_extra_args,
             "partition": self.partition,
             "nodelist": self.nodelist,
             "exclude": self.exclude,
