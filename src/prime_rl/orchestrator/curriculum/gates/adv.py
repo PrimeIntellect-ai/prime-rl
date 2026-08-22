@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import verifiers.v1 as vf
+
 from prime_rl.orchestrator.curriculum.gates.base import AdmissionGate
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import AdvRangeGateConfig
-    from prime_rl.orchestrator.types import Rollout
 
 
 class AdvRangeGate(AdmissionGate):
@@ -21,13 +22,15 @@ class AdvRangeGate(AdmissionGate):
     def __init__(self, config: AdvRangeGateConfig) -> None:
         self.config = config
 
-    def admit(self, group: list[Rollout]) -> bool:
-        advantages: list[float] = []
-        for rollout in group:
-            if rollout.advantages is None:
-                continue
-            trainable = [value for sample in rollout.samples for value in sample.mask]
-            advantages.extend(advantage for advantage, keep in zip(rollout.advantages, trainable, strict=True) if keep)
+    def admit(self, group: list[vf.Episode]) -> bool:
+        advantages = [
+            advantage
+            for episode in group
+            for trace in episode.traces
+            if not trace.has_error and trace.agent.trainable
+            for node in trace.nodes
+            for advantage in node.advantages or []
+        ]
         if not advantages:
             return True
         return not all(self.config.reject_min <= advantage <= self.config.reject_max for advantage in advantages)

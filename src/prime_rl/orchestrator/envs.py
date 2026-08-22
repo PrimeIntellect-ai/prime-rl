@@ -29,14 +29,8 @@ from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
-from prime_rl.orchestrator.sampler import Sampler
-from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.generation_source import GenerationSource
 from prime_rl.utils.logger import get_logger
-
-# Every wire trace validates into this type. WireTaskData (extra="allow") keeps the env's task
-# fields without importing the env package — the orchestrator never reads them typed (only
-# task.idx + task.model_dump).
-ROLLOUT_TYPE = Rollout[vf.WireTaskData]
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
 # servers concurrently with the orchestrator, and a server imports its env package
@@ -80,11 +74,11 @@ class Env:
         await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
         taskset = vf.load_taskset(self.config.env.taskset)
         if type(taskset).INFINITE:
-            self.tasks = iter(taskset.load())
+            self.tasks = iter(taskset)
             self.num_tasks = None
         else:
-            # Materialize off the event loop — load() may pull a dataset.
-            materialized = await asyncio.to_thread(lambda: list(taskset.load()))
+            # Materialize off the event loop — iterating may pull a dataset.
+            materialized = await asyncio.to_thread(lambda: list(taskset))
             self.tasks = iter(materialized)
             self.num_tasks = len(materialized)
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
@@ -102,40 +96,39 @@ class Env:
         model_name: str,
         cache_salt: str | None,
         task_data: dict,
-    ) -> list[Rollout]:
-        """Run one episode; return its typed Traces. A zero-trace episode raises (the
-        dispatcher synthesizes the error marker); a not-``ok`` episode marks its clean
-        traces failed so partial episodes never train."""
+    ) -> vf.WireEpisode:
+        """Run and return one typed episode. A failed multi-trace episode marks
+        its otherwise-clean traces failed so partial episodes never train."""
         episode = await self.env_client.run(
             task_data=task_data,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        if not episode.traces:
-            error = episode.last_error
-            detail = f"{error.type}: {error.message}" if error is not None else "no traces and no error recorded"
-            raise RuntimeError(f"episode failed before any trace was produced — {detail}")
-        rollouts = [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in episode.traces]
-        for rollout in rollouts:
-            rollout.episode_id = episode.id
-            if not episode.ok and rollout.ok:
+        for trace in episode.traces:
+            if not episode.ok and trace.ok:
                 error = episode.last_error or vf.Error(
                     type="EpisodeFailed", message="A sibling trace in this episode failed"
                 )
-                rollout.errors = [*rollout.errors, error]
-                rollout.ok = False
-        return rollouts
+                trace.errors = [*trace.errors, error]
+                trace.ok = False
+        return episode
 
 
 class TrainEnv(Env):
     config: TrainSourceConfig
 
-    def __init__(self, config: TrainSourceConfig, address: str, sampler: Sampler, algorithm: Algorithm):
+    def __init__(
+        self,
+        config: TrainSourceConfig,
+        address: str,
+        generation_source: GenerationSource,
+        algorithm: Algorithm,
+    ):
         super().__init__(config, address)
-        self.sampler = sampler
+        self.generation_source = generation_source
         self.algorithm = algorithm
-        self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
+        self.sampling_args = generation_source.sampling_args(config.sampling.to_sampling_args())
 
 
 class EvalEnv(Env):
@@ -188,8 +181,8 @@ class Envs(Generic[EnvT]):
 
 
 class TrainEnvs(Envs[TrainEnv]):
-    """Collection of training environments, each paired with its rollout
-    :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
+    """Collection of training environments, each paired with its
+    :class:`GenerationSource` and runtime :class:`Algorithm`, built from the env's
     resolved algorithm config."""
 
     def __init__(
@@ -206,7 +199,7 @@ class TrainEnvs(Envs[TrainEnv]):
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],
-                Sampler(config.algo.sampling, policy_pool, renderer_config),
+                GenerationSource(config.algo.sampling, policy_pool, renderer_config),
                 build_algorithm(config.algo, policy_pool),
             )
             self._envs[env.name] = env

@@ -1,8 +1,9 @@
-import hashlib
 from pathlib import Path
 from typing import Callable
 
 import pytest
+import torch
+from torch.distributed.checkpoint.format_utils import dcp_to_torch_save
 
 from tests.conftest import ProcessResult
 from tests.utils import check_loss_goes_down, strip_escape_codes
@@ -150,19 +151,22 @@ def test_loss_goes_down_resume(sft_resume_process: ProcessResult, run_dir: Path)
 def test_full_offload_model_only_resume_preserves_weights(
     sft_full_offload_model_only_resume_process: ProcessResult,
     run_dir: Path,
+    tmp_path: Path,
 ):
     assert sft_full_offload_model_only_resume_process.returncode == 0, (
         f"Process has non-zero return code ({sft_full_offload_model_only_resume_process})"
     )
-    before_dir = run_dir / "weights" / "step_5"
-    after_dir = run_dir / "weights" / "step_6"
-    before_files = sorted(before_dir.glob("*.safetensors"))
-    after_files = sorted(after_dir.glob("*.safetensors"))
-    assert before_files
-    assert [path.name for path in before_files] == [path.name for path in after_files]
-    for before, after in zip(before_files, after_files):
-        with before.open("rb") as before_handle, after.open("rb") as after_handle:
-            assert (
-                hashlib.file_digest(before_handle, "sha256").digest()
-                == hashlib.file_digest(after_handle, "sha256").digest()
-            )
+
+    def model_state(step: int) -> dict[str, torch.Tensor]:
+        torch_save_path = tmp_path / f"step_{step}.pt"
+        dcp_to_torch_save(run_dir / "checkpoints" / f"step_{step}" / "trainer", torch_save_path)
+        return torch.load(torch_save_path, map_location="cpu", weights_only=False)["app"]["model"]
+
+    before, after = model_state(5), model_state(6)
+    assert before.keys() == after.keys()
+    # The runs train in different compute dtypes (fp32 vs bf16 under full offload),
+    # so compare in the dtype the resumed model actually loaded.
+    for key in before:
+        assert torch.equal(before[key].to(torch.bfloat16), after[key].to(torch.bfloat16)), (
+            f"Weight mismatch after model-only resume: {key}"
+        )

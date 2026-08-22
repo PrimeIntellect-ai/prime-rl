@@ -1,6 +1,5 @@
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -19,12 +18,10 @@ from prime_rl.utils.pathing import (
     clean_future_steps,
     create_attempt_log_dir,
     format_log_message,
-    get_all_ckpt_steps,
+    get_broadcast_dir,
     get_ckpt_dir,
     get_config_dir,
     get_log_dir,
-    get_step_path,
-    get_weights_dir,
     latest_log_dir,
     resolve_latest_ckpt_step,
     validate_run_dir,
@@ -66,7 +63,7 @@ def eval_env_servers(config: SFTConfig) -> list[tuple[EvalSourceConfig, str]]:
 
 
 def get_ckpt_base(config: SFTConfig) -> Path:
-    """Where checkpoints and weights live: ``ckpt.output_dir`` when set, else the run dir."""
+    """Where checkpoints live: ``ckpt.output_dir`` when set, else the run dir."""
     return (config.ckpt.output_dir if config.ckpt else None) or config.run_dir
 
 
@@ -92,8 +89,9 @@ def build_evals_config(config: SFTConfig) -> EvalsConfig:
     return EvalsConfig(
         model=config.model.name,
         eval=eval_config,
+        weight_broadcast=config.weight_broadcast,
         online=OnlineConfig(
-            weights_dir=get_weights_dir(get_ckpt_base(config)),
+            broadcasts_dir=get_broadcast_dir(config.run_dir),
             max_steps=config.max_steps,
             resume_step=resolve_resume_step(config),
         ),
@@ -176,6 +174,11 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, 
             ranks_filter=",".join(map(str, config.log.ranks_filter)),
             prl_run_id=prl_run_id,
             run_name=config.run.name,
+            use_nccl_broadcast=(
+                config.eval is not None
+                and config.weight_broadcast is not None
+                and config.weight_broadcast.type == "nccl"
+            ),
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -226,6 +229,7 @@ def write_eval_slurm_script(config: SFTConfig, config_dir: Path, script_path: Pa
         eval_env_names=[source.resolved_name for source, _ in eval_env_servers(config)],
         prl_run_id=prl_run_id,
         run_name=config.run.name,
+        use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
     )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,9 +239,8 @@ def write_eval_slurm_script(config: SFTConfig, config_dir: Path, script_path: Pa
 def sft_slurm(config: SFTConfig):
     """Run SFT training via SLURM. With online evals on a multi-node deployment, the
     trainer and the eval deployment (inference pool + evals) are two independent
-    SLURM jobs: the handoff is weight checkpoints on the shared filesystem, so the
-    trainer job releases its allocation when training finishes while the eval job
-    keeps draining evals and exits after the final checkpoint."""
+    SLURM jobs. The trainer publishes its rank-0 hostname through the shared run
+    directory so the eval deployment can join its NCCL weight-broadcast group."""
     assert config.slurm is not None
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
@@ -252,7 +255,7 @@ def sft_slurm(config: SFTConfig):
         else {"slurm", "dry_run", "clean"}
     )
     if decoupled_eval:
-        # The trainer job only needs [eval] for the weight-checkpoint cadence; the
+        # The trainer job only needs [eval] for the weight-broadcast cadence; the
         # inference pool lives in the eval job.
         exclude = exclude | {"inference"}
     write_config(config, config_path, exclude=exclude)
@@ -298,9 +301,19 @@ def sft_slurm(config: SFTConfig):
         ).removeprefix("Logs:\n")
 
     if config.dry_run:
-        submit = "\n".join(f"  sbatch {path}" for path in script_paths)
+        if decoupled_eval:
+            trainer_submit = f"  TRAIN_JOB_ID=$(sbatch --parsable {script_paths[0]} | cut -d';' -f1)"
+            eval_submit = f"  sbatch --dependency=after:$TRAIN_JOB_ID {script_paths[1]}"
+            if config.weight_broadcast is not None and config.weight_broadcast.type == "nccl":
+                eval_submit = (
+                    "  sbatch --dependency=after:$TRAIN_JOB_ID "
+                    f"--export=ALL,TRAIN_JOB_ID=$TRAIN_JOB_ID {script_paths[1]}"
+                )
+            submit = "\n".join((trainer_submit, eval_submit))
+        else:
+            submit = f"  sbatch {script_paths[0]}"
         note = (
-            "\n\nSubmit the trainer job first — the evals process joins the W&B run the trainer creates."
+            "\n\nSubmit the trainer job first. The eval job starts after the trainer allocation is ready."
             if decoupled_eval
             else ""
         )
@@ -315,6 +328,8 @@ def sft_slurm(config: SFTConfig):
         if submitted_job_ids:
             # Hold the eval job until the trainer job has started (not finished).
             cmd.append(f"--dependency=after:{submitted_job_ids[-1]}")
+            if config.weight_broadcast is not None and config.weight_broadcast.type == "nccl":
+                cmd.append(f"--export=ALL,TRAIN_JOB_ID={submitted_job_ids[-1]}")
         cmd.append(str(path))
         logger.info(f"Submitting: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -535,29 +550,28 @@ def sft_local(config: SFTConfig):
 
 
 def clean_stale_eval_artifacts(config: SFTConfig) -> None:
-    """Remove eval artifacts a previous run left behind: weight checkpoints and rollout
+    """Remove eval artifacts a previous run left behind: weight broadcasts and rollout
     trace dirs — everything on a fresh start, steps past the resume step on resume.
-    Without this the evals process would replay stale checkpoints (and then skip the
+    Without this the evals process would replay stale broadcasts (and then skip the
     re-trained ones at the same steps), and the append-only trace files would mix two
     policies' rollouts under one step."""
     logger = setup_logger(config.log.level or "info")
     if os.environ.get("NEVER_CLEAN"):
-        logger.warning("NEVER_CLEAN is set - keeping stale weight checkpoints; the evals process may replay them")
+        logger.warning("NEVER_CLEAN is set - keeping stale weight broadcasts; the evals process may replay them")
         return
     resume_step = resolve_resume_step(config)
-    weights_dir = get_weights_dir(get_ckpt_base(config))
-    stale_steps = [step for step in get_all_ckpt_steps(weights_dir) if resume_step is None or step > resume_step]
-    if stale_steps:
-        logger.info(
-            f"Deleting {len(stale_steps)} stale weight checkpoint(s) in {weights_dir} "
-            f"({','.join(map(str, stale_steps))})"
-        )
-        for step in stale_steps:
-            shutil.rmtree(get_step_path(weights_dir, step), ignore_errors=True)
     clean_future_steps(config.run_dir, resume_step if resume_step is not None else -1)
 
 
 def sft(config: SFTConfig):
+    # Launcher-only check: the trainer re-parses a sub-config with [inference] and
+    # [deployment] stripped, so the model validator cannot enforce this.
+    if config.weight_broadcast is not None and config.weight_broadcast.type == "nccl" and config.inference is None:
+        raise ValueError(
+            "NCCL weight broadcast requires launcher-managed inference. "
+            "Add an [inference] block or set weight_broadcast.type = 'filesystem'."
+        )
+
     # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are
     # the vehicle for runtime info between processes, and every spawned process inherits
     # them. Components launched standalone have no run identity.

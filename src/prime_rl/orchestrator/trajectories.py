@@ -89,6 +89,25 @@ def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[b
             yield branch, mask
 
 
+def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> list[float] | None:
+    """Flatten one graph-native loss stream, training each shared node once."""
+    weights: list[float] = []
+    for node in branch.nodes:
+        node_weights = (node.loss_weights or {}).get(name)
+        if node_weights is None or id(node) in trained_nodes:
+            weights.extend([0.0] * len(node.token_ids))
+            continue
+        if len(node_weights) != len(node.token_ids):
+            raise ValueError(
+                f"loss weight stream {name!r} must align with node token_ids: "
+                f"got {len(node_weights)}, expected {len(node.token_ids)}"
+            )
+        weights.extend(node_weights)
+        if any(node_weights):
+            trained_nodes.add(id(node))
+    return weights if any(weights) else None
+
+
 def trace_to_samples(
     trace: vf.Trace,
     *,
@@ -100,13 +119,14 @@ def trace_to_samples(
     Each `trace.branches` entry is already a flat token sequence (`branch.token_ids` /
     `branch.sampled_mask` / `branch.logprobs`), so a sample carries it directly: `mask` marks
     the trainable (model-sampled) tokens, the context tokens between completions stay masked
-    out. Errored rollouts are dropped upstream (`TrainSink.process_rollout`), so no error
+    out. Errored traces are dropped upstream (`TrainSink.process_episode`), so no error
     handling happens here. A branch carrying images also gets `mm_kwargs` (the concatenated
     pixel tensors) and `mm_token_type_ids` (the renderer's `mm_token_type_id_map` applied to
     the branch tokens). Branches with no sampled tokens (e.g. an openai client carrying none)
     yield nothing.
     """
     samples: list[TrainingSample] = []
+    trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
         mm_kwargs: dict[str, EncodedTensor] | None = None
@@ -123,9 +143,14 @@ def trace_to_samples(
                 logprobs=branch.logprobs,
                 temperatures=[],  # filled by TrainSink.process_group
                 env_name=env_name,
+                ref_logprobs=branch.reference_logprobs,
                 mm_kwargs=mm_kwargs,
                 mm_token_type_ids=mm_token_type_ids,
                 routed_experts=_encode_routed_experts(branch.routed_experts, len(token_ids)),
+                rl_weights=_loss_weights(branch, "rl", trained_loss_nodes["rl"]),
+                ce_weights=_loss_weights(branch, "ce", trained_loss_nodes["ce"]),
+                ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
+                advantages=branch.advantages,
             )
         )
     if not samples:

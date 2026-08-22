@@ -14,7 +14,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_managers
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
@@ -39,7 +39,6 @@ from prime_rl.trainer.rl.token_export import setup_token_exporter
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
-    setup_tokenizer,
     setup_model,
     is_tt_moe_model,
     get_load_balance_stats,
@@ -128,10 +127,8 @@ def train(config: TrainerConfig):
 
     # Check for checkpoint to resume from
     checkpoint_step = None
-    logger.info(f"Initializing checkpoint managers ({config.ckpt})")
-    ckpt_manager, weight_ckpt_manager = setup_ckpt_managers(
-        config.output_dir, config.ckpt, config.model.lora, resume=config.resume
-    )
+    logger.info(f"Initializing checkpoint manager ({config.ckpt})")
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, resume=config.resume)
 
     if config.resume is not None:
         if config.resume.dir is not None:
@@ -145,9 +142,6 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
-
-    logger.info(f"Initializing tokenizer ({config.tokenizer})")
-    tokenizer = setup_tokenizer(config.tokenizer)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")
@@ -607,23 +601,12 @@ def train(config: TrainerConfig):
             and not is_last_step
             and progress.step % config.ckpt.interval == 0
         ):
-            save_ckpt_time = 0
-
-            if not config.ckpt.weights_only:
-                logger.info(f"Saving checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
+            logger.info(f"Saving checkpoint at step {progress.step}")
+            save_ckpt_start_time = time.perf_counter()
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
-
-            # Save weight checkpoint
-            if weight_ckpt_manager is not None:
-                logger.info(f"Saving weight checkpoint at step {progress.step}")
-                save_ckpt_start_time = time.perf_counter()
-                weight_ckpt_manager.save(progress.step, model, tokenizer)
-                save_ckpt_time += time.perf_counter() - save_ckpt_start_time
-                weight_ckpt_manager.maybe_clean()
         else:
             save_ckpt_time = 0
 
@@ -738,15 +721,9 @@ def train(config: TrainerConfig):
 
     # Write final checkpoint
     if config.ckpt is not None:
-        if not config.ckpt.weights_only:
-            logger.info("Writing final checkpoint")
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        logger.info("Writing final checkpoint")
+        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.maybe_clean()
-
-    if weight_ckpt_manager is not None:
-        logger.info("Writing final weight checkpoint")
-        weight_ckpt_manager.save(progress.step, model, tokenizer)
-        weight_ckpt_manager.maybe_clean()
 
     if gradient_manager is not None:
         gradient_manager.close()

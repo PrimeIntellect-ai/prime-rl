@@ -224,6 +224,25 @@ def bucket_deltas(sample: EngineSample, previous: TimedSnapshot | None) -> dict[
     return deltas
 
 
+def counter_rate(
+    sample: EngineSample,
+    previous: TimedSnapshot | None,
+    names: tuple[str, ...],
+) -> float | None:
+    """Return the interval rate for the first available counter alias."""
+    if previous is None:
+        return None
+    dt = sample.timestamp - previous.timestamp
+    if dt <= 0:
+        return None
+    for name in names:
+        if name not in sample.snapshot.counters:
+            continue
+        delta = sample.snapshot.counters[name] - previous.snapshot.counters.get(name, 0.0)
+        return delta / dt if delta >= 0 else None
+    return None
+
+
 def build_scope_metrics(
     scope: str,
     values_per_engine: list[dict[str, float]],
@@ -411,6 +430,11 @@ class InferenceMetricsCollector:
                 else None
             ),
             preemptions_delta=preemptions_delta,
+            generation_tokens_per_s=counter_rate(
+                sample,
+                previous,
+                ("generation_tokens", "generation_tokens_total"),
+            ),
         )
 
     def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:

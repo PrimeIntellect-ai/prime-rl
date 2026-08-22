@@ -58,7 +58,7 @@ After a restart, verify all processes are back up and progress resumed before th
 - `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the run dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
 - `{run_dir}/configs/` — resolved configs, written as JSON so explicit None settings round-trip (`rl.json` has the full picture).
 - `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
-- `{run_dir}/rollouts/step_N/{train,eval}/` — saved rollout traces (see Traces below).
+- `{run_dir}/rollouts/step_N/{train,eval}/` — saved episodes (see Episodes below).
 
 ### Logs
 
@@ -136,35 +136,34 @@ All metrics print to the console log (and W&B when configured).
 For live vLLM stats, query Prometheus directly:
 
 ```bash
-curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  # engine port (8000 is the router)
-# vllm:num_requests_running, vllm:num_requests_waiting, vllm:gpu_cache_usage_perc (→1.0 = KV cache saturated)
+curl -s http://localhost:8100/metrics | grep -E "generation_tokens|num_requests|kv_cache_usage|gpu_cache_usage"  # engine port (8000 is the router)
+# generation_tokens drives adaptive throughput probes; request queues and KV usage are safety guardrails
 ```
 
-### Traces
+### Episodes
 
 ```
-{run_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per rollout as it completes
+{run_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per episode as it completes
 {run_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
 
-JSONL files of `vf.Trace` records (training tensors excluded), one line per trace — a
-multi-agent env's episode contributes several lines sharing one `info.episode_id`. `all`
-gets every completed rollout the moment it arrives — errored, curriculum-rejected, and never-batched
-ones included — so it's crash-durable; `effective` gets the clean trainable subset that went
-into the step's train batch (eval: the non-errored trainable epoch cohort; multiple eval envs
-share the step file) — untrainable traces (a frozen judge's) appear only in `all`. Each record carries `run` (`{type, id, step}`; for eval, `step` is the trigger step),
-`verifiers` (producing build), `agent` (model, sampling, harness, `name`, `trainable`), `ok`
-(the success sentinel — `errors` alone keeps retry history even after a recovery), and
-`runtime` (config + provisioned resource id, e.g. the sandbox id), plus `env_name`,
-`group_id`, `episode_id`, and `policy_version` under `info`.
+JSONL files of native `vf.Episode` records (training tensors excluded), one line per episode.
+`all` gets every completed episode as it arrives — including trace-less failures,
+curriculum-rejected work, and work that never enters a batch — so it is crash-durable.
+`effective` contains the admitted clean trainable traces grouped into their original episodes
+(eval: the non-errored trainable epoch cohort). Each record carries its provenance at the
+episode level: `env` (`id` plus the orchestrator's `name`), full `task`, `group` (`id`),
+and `run`. Training-run records discriminate train/eval work and include dispatch
+step plus an optional live-policy version span. Traces retain their own task,
+verifiers, agent, and runtime fields.
 
 ```bash
 wc -l {run_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
-jq '.rewards' {run_dir}/rollouts/step_42/train/effective/traces.jsonl
-jq 'select(.ok | not) | {id, env: .info.env_name, runtime}' {run_dir}/rollouts/step_*/train/all/traces.jsonl
+jq '.traces[].rewards' {run_dir}/rollouts/step_42/train/effective/traces.jsonl
+jq 'select(.ok | not) | {id, env: .env.id, errors}' {run_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
-The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_N/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the trace subtrees.
+The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_N/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the episode subtrees.
 
 ### Common failure modes
 
