@@ -154,8 +154,7 @@ class Orchestrator:
         # Route the in-process v1 library logging through our handler. The
         # env server runs in a child process, so its logging is separate.
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
-        algorithms = sorted({env.algo.type for env in config.train.source if env.algo is not None})
-        get_logger().info(f"Starting orchestrator (algorithm: {', '.join(algorithms)})")
+        get_logger().info("Starting orchestrator")
 
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
@@ -218,8 +217,6 @@ class Orchestrator:
         if self.mm_token_type_ids_mapping == {}:
             self.mm_token_type_ids_mapping = None
 
-        get_logger().info(f"Initializing monitors ({config.monitors})")
-        t0 = time.perf_counter()
         await monitors.setup(
             wandb=config.monitors.wandb,
             prime=config.monitors.prime,
@@ -229,7 +226,6 @@ class Orchestrator:
             train_env_names=[env.resolved_name for env in config.train.source],
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval is not None else [],
         )
-        get_logger().debug(f"Initialized monitors in {format_time(time.perf_counter() - t0)}")
         # The launcher-set $PRL_RUN_ID is the run identity; standalone runs mint a local one.
         self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
         # Base labels for sandboxes created in this process; env-server processes read

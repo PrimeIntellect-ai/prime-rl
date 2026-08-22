@@ -82,14 +82,11 @@ def train(config: TrainerConfig):
     logger.info(f"Starting RL trainer in {world} (output_dir={config.output_dir})")
 
     # Setup the monitors
-    logger.info(f"Initializing monitors ({config.monitors})")
-    t0 = time.perf_counter()
     asyncio.run(
         monitors.setup(
             wandb=config.monitors.wandb, file=config.monitors.file, output_dir=config.output_dir, run_config=config
         )
     )
-    logger.debug(f"Initialized monitors in {format_time(time.perf_counter() - t0)}")
 
     # Setup heartbeat (only on rank 0)
     heart = None

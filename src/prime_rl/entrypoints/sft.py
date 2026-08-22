@@ -446,7 +446,7 @@ def sft_local(config: SFTConfig):
         # deterministic address, polling until the server is up.
         for source, address in eval_env_servers(config):
             name = source.resolved_name
-            logger.info(f"Starting eval env server {name} at {address}")
+            logger.info(f"Starting {name} server")
             start_process(
                 f"env/eval/{name}",
                 ["env-server", "@", (config_dir / ENVS_DIR / "eval" / f"{name}.json").as_posix()],
@@ -455,7 +455,7 @@ def sft_local(config: SFTConfig):
             )
 
         if config.eval is not None:
-            logger.info("Starting evals process")
+            logger.info("Starting evals")
             start_process(
                 "evals",
                 ["evals", "@", (config_dir / EVALS_CONFIG).as_posix()],

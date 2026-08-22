@@ -198,6 +198,7 @@ class TrainEnvs(Envs[TrainEnv]):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainSourceConfig.algo must be resolved before env construction"
+            get_logger().info(f"Initializing {config.algo.type} algorithm for {config.resolved_name}")
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],

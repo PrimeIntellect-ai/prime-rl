@@ -86,9 +86,7 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     model_name = config.model.name
     renderer = create_renderer(tokenizer, config.renderer)
     get_logger().debug(f"Initialized {type(renderer).__name__} for {model_name}")
-    if config.any_policy_sourced:
-        get_logger().info("Using direct renderer rollout client")
-    else:
+    if not config.any_policy_sourced:
         get_logger().info("No policy-sourced train env — renderer kept for client-side tokenization only")
     inference_pool = InferencePool(
         client_config,

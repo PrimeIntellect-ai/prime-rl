@@ -75,7 +75,6 @@ def train(config: SFTConfig):
     logger.info(f"Starting SFT trainer in {world} (output_dir={config.run_dir})")
 
     # Setup the monitors
-    logger.info(f"Initializing monitors ({config.monitors})")
     asyncio.run(
         monitors.setup(
             wandb=config.monitors.wandb,
