@@ -13,6 +13,14 @@ from torch import Tensor
 MemDesc = tuple[int, int, int]
 
 
+def group_notification(group_index: int, generation: int) -> str:
+    return f"{group_index:08x}:{generation:016x}"
+
+
+def policy_notification(step: int, event: str) -> str:
+    return f"policy:{step:016x}:{event}"
+
+
 class NixlAgent:
     def __init__(self, name: str) -> None:
         try:
@@ -30,7 +38,7 @@ class NixlAgent:
         return self._agent.get_agent_metadata()
 
     def add_remote_agent(self, metadata: bytes) -> str:
-        return self._agent.add_remote_agent(metadata)
+        return self._agent.add_remote_agent(metadata).decode()
 
     def make_connection(self, peer_name: str) -> None:
         self._agent.make_connection(peer_name)
@@ -56,6 +64,35 @@ class NixlAgent:
         if state in ("ERR", "ERROR", "FAIL"):
             raise RuntimeError(f"NIXL READ post failed with state {state}")
         return handle
+
+    def send_notification(self, peer_name: str, notification: str) -> None:
+        self._agent.send_notif(peer_name, notification)
+
+    def wait_for_notification(
+        self,
+        peer_names: Sequence[str],
+        notification: str,
+        *,
+        timeout: float,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> None:
+        pending = set(peer_names)
+        deadline = time.monotonic() + timeout
+        while pending:
+            if cancelled is not None and cancelled():
+                raise RuntimeError("NIXL notification wait cancelled")
+            for sender in list(pending):
+                if self._agent.check_remote_xfer_done(
+                    sender,
+                    notification.encode(),
+                    backends=["UCX"],
+                    tag_is_prefix=False,
+                ):
+                    pending.remove(sender)
+            if pending and time.monotonic() >= deadline:
+                raise TimeoutError(f"NIXL notification wait timed out after {timeout}s, missing={sorted(pending)}")
+            if pending:
+                time.sleep(0.0005)
 
     def wait(
         self,

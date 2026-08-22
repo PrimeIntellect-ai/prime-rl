@@ -77,7 +77,9 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transports.rollouts import setup_micro_batch_sender
+from prime_rl.transports.weights.nixl.agent import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
+from prime_rl.transports.weights.nixl.trainer_tensor_table import TrainerTensorTable
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
@@ -189,6 +191,7 @@ class Orchestrator:
         self.resume_step = None
         self.lag_task = None
         self.model_express = None
+        self.nixl_peer = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -297,6 +300,8 @@ class Orchestrator:
                 config.weight_broadcast.inference_world_size,
                 config.weight_broadcast.session_id,
             )
+            set_ucx_env_defaults(0)
+            self.policy_nixl_agent = NixlAgent(make_agent_name("orchestrator", 0))
             self.model_express = ModelExpressSession(
                 client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
                 role="orchestrator",
@@ -304,7 +309,7 @@ class Orchestrator:
                 session_id=config.weight_broadcast.session_id,
                 worker_id="orchestrator",
             )
-            self.model_express.publish()
+            self.model_express.publish(nixl_metadata=self.policy_nixl_agent.get_metadata())
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
         self.lora_name = config.model.lora.name if config.model.lora else None
@@ -351,13 +356,18 @@ class Orchestrator:
         if self.model_express is not None:
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
             # Complete the startup rendezvous before the watcher begins its next cycle.
-            await asyncio.to_thread(
+            trainer_refs = await asyncio.to_thread(
                 self.model_express.wait_for,
                 "trainer",
                 count=1,
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 timeout=config.weight_broadcast.timeout,
             )
+            trainer_worker = await asyncio.to_thread(self.model_express.fetch, trainer_refs[0])
+            trainer_table = TrainerTensorTable.decode(trainer_worker.nixl_metadata)
+            trainer_peer_name = self.policy_nixl_agent.add_remote_agent(trainer_table.agents[0].metadata)
+            self.policy_nixl_agent.make_connection(trainer_peer_name)
+            self.nixl_peer = (self.policy_nixl_agent, trainer_peer_name)
         if self.lora_name is not None:
             self.policy_inference.update_model_name(self.lora_name)
             self.policy.model_name = self.lora_name
@@ -427,7 +437,7 @@ class Orchestrator:
             observers=[self.dispatcher, self],
             lora_name=self.lora_name,
             ckpt_step=self.policy.version,
-            model_express=self.model_express,
+            nixl_peer=self.nixl_peer,
         )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
@@ -995,15 +1005,11 @@ class Orchestrator:
     async def on_version_pending(self, step: int) -> None:
         """``VersionObserver`` hook, fired at publish confirmation (pre-apply):
         ``policy.version`` already carries the new version, so wake a held ship."""
-        if self.model_express is not None:
-            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
         self.version_advanced.set()
 
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the weight update completed;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""
-        if self.model_express is not None:
-            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.update_dispatch_gate()
 
     async def stop(self) -> None:

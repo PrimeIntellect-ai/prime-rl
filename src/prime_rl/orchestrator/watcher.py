@@ -7,11 +7,9 @@ from __future__ import annotations
 import asyncio
 import time
 
-from modelexpress import p2p_pb2
-
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.types import Policy, VersionObserver
-from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
+from prime_rl.transports.weights.nixl.agent import NixlAgent, policy_notification
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import format_time, get_logger
@@ -32,7 +30,7 @@ class WeightWatcher:
         lora_name: str | None,
         ckpt_step: int = 0,
         poll_interval: float = 1.0,
-        model_express: ModelExpressSession | None = None,
+        nixl_peer: tuple[NixlAgent, str] | None = None,
     ) -> None:
         self.config = config
         self.policy = policy
@@ -41,7 +39,7 @@ class WeightWatcher:
         self.lora_name = lora_name
         self.ckpt_step = ckpt_step
         self.poll_interval = poll_interval
-        self.model_express = model_express
+        self.nixl_peer = nixl_peer
 
         self.last_update_weights_time: float = 0.0
         self.last_wait_for_ckpt_time: float = 0.0
@@ -58,6 +56,7 @@ class WeightWatcher:
                 next_step = self.compute_next_ckpt_step()
                 if next_step > self.ckpt_step:
                     await self.apply_policy_update(next_step)
+                    continue
                 await asyncio.sleep(self.poll_interval)
         except asyncio.CancelledError:
             return
@@ -76,12 +75,11 @@ class WeightWatcher:
 
     def compute_next_ckpt_step(self) -> int:
         """Return the next policy version exposed by the configured transport."""
-        if self.model_express is not None:
+        if self.nixl_peer is not None:
             # The trainer broadcasts every version except v{max_steps}.
             if self.config.max_steps is not None and self.ckpt_step >= self.config.max_steps - 1:
                 return self.ckpt_step
-            # ModelExpress status changes are unversioned, so its rendezvous advances
-            # exactly one policy version per READY/INITIALIZING cycle.
+            # Each notification advances exactly one policy version.
             return self.ckpt_step + 1
 
         broadcast_dir = get_broadcast_dir(self.config.output_dir)
@@ -96,8 +94,15 @@ class WeightWatcher:
 
             t0 = time.perf_counter()
             weights_path = None
-            if self.model_express is not None:
-                await self.wait_for_model_express_status(p2p_pb2.SOURCE_STATUS_READY)
+            if self.nixl_peer is not None:
+                agent, trainer_peer_name = self.nixl_peer
+                await asyncio.to_thread(
+                    agent.wait_for_notification,
+                    [trainer_peer_name],
+                    policy_notification(next_step, "ready"),
+                    timeout=self.config.weight_broadcast.timeout,
+                    cancelled=self.stopped.is_set,
+                )
             else:
                 broadcast_dir = get_broadcast_dir(self.config.output_dir)
                 weights_path = get_step_path(broadcast_dir, next_step)
@@ -154,20 +159,12 @@ class WeightWatcher:
                         f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
                     )
 
-            if self.model_express is not None:
-                await self.wait_for_model_express_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-
-    async def wait_for_model_express_status(self, status: int) -> None:
-        while not self.stopped.is_set():
-            found = await asyncio.to_thread(
-                self.model_express.exists_role_with_status,
-                "trainer",
-                status,
-            )
-            if found:
-                return
-            await asyncio.sleep(self.poll_interval)
-        raise asyncio.CancelledError
+            if self.nixl_peer is not None:
+                agent, trainer_peer_name = self.nixl_peer
+                agent.send_notification(
+                    trainer_peer_name,
+                    policy_notification(next_step, "complete"),
+                )
 
     def gauges(self) -> dict[str, float]:
         return {

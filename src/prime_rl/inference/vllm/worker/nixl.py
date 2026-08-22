@@ -19,7 +19,13 @@ from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
-from prime_rl.transports.weights.nixl.agent import MemDesc, NixlAgent, make_agent_name, set_ucx_env_defaults
+from prime_rl.transports.weights.nixl.agent import (
+    MemDesc,
+    NixlAgent,
+    group_notification,
+    make_agent_name,
+    set_ucx_env_defaults,
+)
 from prime_rl.transports.weights.nixl.cuda_malloc_memory import (
     size_cuda_buffers,
     use_cuda_malloc_pool,
@@ -44,7 +50,7 @@ else:
     Worker = object
 
 logger = init_logger("vllm.inference.vllm.worker_nixl")
-_BUFFER_POLL_INTERVAL = 0.01
+MAX_PENDING_READS = 8
 
 
 @dataclass
@@ -76,6 +82,7 @@ class WeightTransferGroup:
 class WeightTransferPlan:
     receive_arenas: dict[torch.dtype, torch.Tensor]
     receive_buffer_count: int
+    trainer_peer_names: list[str]
     groups: list[WeightTransferGroup]
 
 
@@ -111,6 +118,7 @@ class NIXLWeightUpdateWorker(Worker):
         )
         self.weight_transfer_timeout = timeout
         self.weight_transfer_plan: WeightTransferPlan | None = None
+        self.policy_update_count = 0
         logger.info(
             "NIXL worker configured: global_rank=%d, ModelExpress=%s, session=%s",
             global_rank,
@@ -132,24 +140,10 @@ class NIXLWeightUpdateWorker(Worker):
         table = TrainerTensorTable.decode(self.model_express.fetch(trainer_ref).nixl_metadata)
         copies = self.trace_weight_loads(table)
         plan = self.build_transfer_plan(table, copies)
-        self.buffer_sessions = []
-        for buffer_index in range(table.staging_buffer_count):
-            session = ModelExpressSession(
-                client=self.model_express.client,
-                role="inference",
-                rank=self.model_express.rank,
-                session_id=f"{self.model_express.session_id}:layers:{buffer_index}",
-                worker_id=f"inference-buffer-{self.model_express.rank}-{buffer_index}",
-            )
-            session.publish()
-            session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-            self.buffer_sessions.append(session)
-        # Join the current generation directly. Publishing a transient READY
-        # before the first pull would let the trainer mistake initialization
-        # for a completed acknowledgement.
         self.model_express.publish(nixl_metadata=self.nixl_agent.get_metadata())
         self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.weight_transfer_plan = plan
+        self.group_generations = [0] * len(plan.groups)
         logger.info(
             "Initialized NIXL transfer plan on rank %d with %d groups",
             self.model_express.rank,
@@ -263,6 +257,11 @@ class NIXLWeightUpdateWorker(Worker):
             receive_buffer_elements,
             receive_buffer_count,
         )
+        peer_names: dict[int, str] = {}
+        for agent_index, agent in enumerate(table.agents):
+            peer_name = self.nixl_agent.add_remote_agent(agent.metadata)
+            self.nixl_agent.make_connection(peer_name)
+            peer_names[agent_index] = peer_name
         groups = self.build_transfer_groups(
             table,
             copies,
@@ -270,10 +269,12 @@ class NIXLWeightUpdateWorker(Worker):
             receive_buffer_elements,
             receive_arenas,
             receive_buffer_count,
+            peer_names,
         )
         return WeightTransferPlan(
             receive_arenas=receive_arenas,
             receive_buffer_count=receive_buffer_count,
+            trainer_peer_names=[peer_names[index] for index in range(len(table.agents))],
             groups=groups,
         )
 
@@ -362,6 +363,7 @@ class NIXLWeightUpdateWorker(Worker):
         receive_buffer_elements: dict[torch.dtype, int],
         receive_arenas: dict[torch.dtype, torch.Tensor],
         receive_buffer_count: int,
+        peer_names: dict[int, str],
     ) -> list[WeightTransferGroup]:
         tensors = {tensor.name: tensor for group in table.groups for tensor in group.tensors}
         tensor_groups = {
@@ -390,7 +392,6 @@ class NIXLWeightUpdateWorker(Worker):
                 )
 
         agent_devices = {agent_index: agent.device_id for agent_index, agent in enumerate(table.agents)}
-        peer_names: dict[int, str] = {}
         transfer_groups: list[WeightTransferGroup] = []
 
         for group_index, group in enumerate(table.groups):
@@ -432,7 +433,6 @@ class NIXLWeightUpdateWorker(Worker):
                         persistent_plans_by_layer,
                     ),
                     pulls=self.prepare_group_pulls(
-                        table,
                         local_descs,
                         remote_descs,
                         peer_names,
@@ -486,7 +486,6 @@ class NIXLWeightUpdateWorker(Worker):
 
     def prepare_group_pulls(
         self,
-        table: TrainerTensorTable,
         local_descs: dict[int, list[MemDesc]],
         remote_descs: dict[int, list[MemDesc]],
         peer_names: dict[int, str],
@@ -497,11 +496,7 @@ class NIXLWeightUpdateWorker(Worker):
         agent_indices = agent_indices[rotation:] + agent_indices[:rotation]
         for agent_index in agent_indices:
             remote = remote_descs[agent_index]
-            peer_name = peer_names.get(agent_index)
-            if peer_name is None:
-                peer_name = self.nixl_agent.add_remote_agent(table.agents[agent_index].metadata)
-                self.nixl_agent.make_connection(peer_name)
-                peer_names[agent_index] = peer_name
+            peer_name = peer_names[agent_index]
             local_prepared = self.nixl_agent.prepare_xfer_dlist(local_descs[agent_index])
             remote_prepared = self.nixl_agent.prepare_xfer_dlist(remote, agent_name=peer_name)
             pulls.append((local_prepared, remote_prepared, list(range(len(remote)))))
@@ -511,19 +506,22 @@ class NIXLWeightUpdateWorker(Worker):
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
         del weight_dir
         plan = self.initialize_transfer()
-        self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-        self.model_express.wait_for(
-            "trainer",
-            count=1,
-            status=p2p_pb2.SOURCE_STATUS_READY,
-            timeout=self.weight_transfer_timeout,
-        )
+        if self.policy_update_count == 0:
+            self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            self.model_express.wait_for(
+                "trainer",
+                count=1,
+                status=p2p_pb2.SOURCE_STATUS_READY,
+                timeout=self.weight_transfer_timeout,
+            )
 
         started = time.perf_counter()
         self.apply_transfer_plan(plan)
         update_mla_absorbed_weights(self.raw_model)
         torch.cuda.synchronize(self.device)
-        self.model_express.set_status(p2p_pb2.SOURCE_STATUS_READY)
+        if self.policy_update_count == 0:
+            self.model_express.set_status(p2p_pb2.SOURCE_STATUS_READY)
+        self.policy_update_count += 1
         logger.info(
             "Applied NIXL policy update on rank %d in %.2fs",
             self.model_express.rank,
@@ -546,44 +544,35 @@ class NIXLWeightUpdateWorker(Worker):
 
         def pull_group(group_index: int) -> WeightTransferGroup:
             transfer_group = plan.groups[group_index]
-            session = self.buffer_sessions[group_index % len(self.buffer_sessions)]
-            session.wait_for(
-                "trainer",
-                count=1,
-                status=p2p_pb2.SOURCE_STATUS_READY,
+            notification = group_notification(group_index, self.group_generations[group_index])
+            self.nixl_agent.wait_for_notification(
+                plan.trainer_peer_names,
+                notification,
                 timeout=self.weight_transfer_timeout,
-                poll_interval=_BUFFER_POLL_INTERVAL,
                 cancelled=cancelled.is_set,
             )
 
-            for local, remote, indices in transfer_group.pulls:
-                handle = self.nixl_agent.post_read(local, indices, remote)
-                self.nixl_agent.wait(
-                    handle,
-                    context=f"weight pull for {transfer_group.name}",
-                    timeout=self.weight_transfer_timeout,
-                    cancelled=cancelled.is_set,
-                )
+            for offset in range(0, len(transfer_group.pulls), MAX_PENDING_READS):
+                handles = [
+                    self.nixl_agent.post_read(local, indices, remote)
+                    for local, remote, indices in transfer_group.pulls[offset : offset + MAX_PENDING_READS]
+                ]
+                for handle in handles:
+                    self.nixl_agent.wait(
+                        handle,
+                        context=f"weight pull for {transfer_group.name}",
+                        timeout=self.weight_transfer_timeout,
+                        cancelled=cancelled.is_set,
+                    )
+
+            for peer_name in plan.trainer_peer_names:
+                self.nixl_agent.send_notification(peer_name, notification)
+            self.group_generations[group_index] += 1
             return transfer_group
-
-        def acknowledge_group(group_index: int) -> None:
-            session = self.buffer_sessions[group_index % len(self.buffer_sessions)]
-            session.set_status(p2p_pb2.SOURCE_STATUS_READY)
-            session.wait_for(
-                "trainer",
-                count=1,
-                status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                timeout=self.weight_transfer_timeout,
-                poll_interval=_BUFFER_POLL_INTERVAL,
-                cancelled=cancelled.is_set,
-            )
-            session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
         def prefetch_group(group_index: int) -> WeightTransferGroup:
             torch.cuda.set_device(self.device)
-            transfer_group = pull_group(group_index)
-            acknowledge_group(group_index)
-            return transfer_group
+            return pull_group(group_index)
 
         def replay_group(transfer_group: WeightTransferGroup) -> None:
             for layer_plan in transfer_group.layers:
@@ -629,9 +618,6 @@ class NIXLWeightUpdateWorker(Worker):
 
                     replay_group(transfer_group)
                     torch.cuda.synchronize(self.device)
-
-                    if not pipelined:
-                        acknowledge_group(group_index)
             finally:
                 cancelled.set()
                 if executor is not None:

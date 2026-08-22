@@ -241,6 +241,8 @@ With the default `weight_broadcast.host = "localhost"`, the generated job starts
 
 The launcher requires the CUDA and InfiniBand transports from `third_party/ucx`. Each NIXL process selects the active InfiniBand port nearest its GPU; an explicitly configured `UCX_NET_DEVICES` takes precedence. Inference ranks start their pulls at different trainer ranks so concurrent workers distribute traffic across all available source rails.
 
+ModelExpress exchanges peer metadata during startup. Weight updates use versioned NIXL notifications and up to eight concurrent reads per transfer group, while retaining the existing bounded trainer staging and inference receive arenas.
+
 ### Custom Templates
 
 For unusual partitions, module loads, or environment setup, supply your own Jinja2 template:

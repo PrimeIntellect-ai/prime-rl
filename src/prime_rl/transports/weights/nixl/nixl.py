@@ -24,7 +24,13 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightBroadcast
-from prime_rl.transports.weights.nixl.agent import NixlAgent, make_agent_name, set_ucx_env_defaults
+from prime_rl.transports.weights.nixl.agent import (
+    NixlAgent,
+    group_notification,
+    make_agent_name,
+    policy_notification,
+    set_ucx_env_defaults,
+)
 from prime_rl.transports.weights.nixl.cuda_malloc_memory import (
     size_cuda_buffers,
     use_cuda_malloc_pool,
@@ -39,7 +45,6 @@ from prime_rl.transports.weights.nixl.trainer_tensor_table import (
 )
 
 LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
-BUFFER_POLL_INTERVAL = 0.01
 MAX_STAGING_BUFFER_COUNT = 8
 
 
@@ -82,6 +87,10 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.staged_shards_by_group: dict[int, list[StagedTensorShard]] = {}
         self.staging_arenas: dict[torch.dtype, torch.Tensor] = {}
         self.staging_buffer_count: int
+        self.inference_peer_names: list[str]
+        self.orchestrator_peer_name: str
+        self.group_generations: list[int]
+        self.broadcast_count = 0
 
     @property
     def is_serving_rank(self) -> bool:
@@ -356,18 +365,6 @@ class NIXLWeightBroadcast(WeightBroadcast):
             table = self.merge_trainer_table_fragments(table_fragments)
             server_url = f"{self.config.host}:{self.config.port}"
             client = MxClient(server_url=server_url)
-            self.buffer_sessions = []
-            for buffer_index in range(self.staging_buffer_count):
-                session = ModelExpressSession(
-                    client=client,
-                    role="trainer",
-                    rank=0,
-                    session_id=f"{self.config.session_id}:layers:{buffer_index}",
-                    worker_id=f"trainer-buffer-{buffer_index}",
-                )
-                session.publish()
-                session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-                self.buffer_sessions.append(session)
             self.model_express = ModelExpressSession(
                 client=client,
                 role="trainer",
@@ -384,59 +381,77 @@ class NIXLWeightBroadcast(WeightBroadcast):
             )
         self.initialized = True
 
-    def finish_staging_buffer_transfer(self, buffer_index: int) -> None:
-        if self.world.is_master:
-            session = self.buffer_sessions[buffer_index]
-            session.wait_for(
-                "inference",
-                count=self.config.inference_world_size,
-                status=p2p_pb2.SOURCE_STATUS_READY,
-                timeout=self.config.timeout,
-                poll_interval=BUFFER_POLL_INTERVAL,
-            )
-            session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-            session.wait_for(
-                "inference",
-                count=self.config.inference_world_size,
-                status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                timeout=self.config.timeout,
-                poll_interval=BUFFER_POLL_INTERVAL,
-            )
-        dist.barrier()
+    def finish_staging_buffer_transfer(self, group_index: int) -> None:
+        if not self.is_serving_rank:
+            return
+        notification = group_notification(group_index, self.group_generations[group_index])
+        self.nixl_agent.wait_for_notification(
+            self.inference_peer_names,
+            notification,
+            timeout=self.config.timeout,
+        )
+        self.group_generations[group_index] += 1
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         self.initialize_transfer(model)
         start = time.perf_counter()
 
-        if self.world.is_master:
+        startup = self.broadcast_count == 0
+        if self.world.is_master and startup:
             self.model_express.set_status(p2p_pb2.SOURCE_STATUS_READY)
-            self.model_express.wait_for(
+            orchestrator_ref = self.model_express.wait_for(
                 "orchestrator",
                 count=1,
                 status=p2p_pb2.SOURCE_STATUS_READY,
                 timeout=self.config.timeout,
-            )
-            self.model_express.wait_for(
+            )[0]
+            inference_refs = self.model_express.wait_for(
                 "inference",
                 count=self.config.inference_world_size,
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 timeout=self.config.timeout,
+            )
+            inference_metadata: list[bytes] | None = [
+                self.model_express.fetch(ref).nixl_metadata for ref in inference_refs
+            ]
+            orchestrator_metadata = self.model_express.fetch(orchestrator_ref).nixl_metadata
+        else:
+            inference_metadata = None
+
+        if startup:
+            objects = [inference_metadata]
+            dist.broadcast_object_list(objects, src=0)
+            if self.is_serving_rank:
+                self.inference_peer_names = []
+                for metadata in cast(list[bytes], objects[0]):
+                    peer_name = self.nixl_agent.add_remote_agent(metadata)
+                    self.nixl_agent.make_connection(peer_name)
+                    self.inference_peer_names.append(peer_name)
+                self.group_generations = [0] * len(self.transfer_group_names)
+            if self.world.is_master:
+                self.orchestrator_peer_name = self.nixl_agent.add_remote_agent(orchestrator_metadata)
+                self.nixl_agent.make_connection(self.orchestrator_peer_name)
+        elif self.world.is_master:
+            self.nixl_agent.send_notification(
+                self.orchestrator_peer_name,
+                policy_notification(step, "ready"),
             )
 
         for group, group_name in enumerate(self.transfer_group_names):
             group_start = time.perf_counter()
             buffer_index = group % self.staging_buffer_count
             if group >= self.staging_buffer_count:
-                self.finish_staging_buffer_transfer(buffer_index)
+                self.finish_staging_buffer_transfer(group - self.staging_buffer_count)
 
             if self.is_serving_rank:
                 for shard in self.staged_shards_by_group.get(group, ()):
                     shard.copy_to_staging()
                 torch.cuda.synchronize()
-            dist.barrier()
+                notification = group_notification(group, self.group_generations[group])
+                for peer_name in self.inference_peer_names:
+                    self.nixl_agent.send_notification(peer_name, notification)
             if self.world.is_master:
-                self.buffer_sessions[buffer_index].set_status(p2p_pb2.SOURCE_STATUS_READY)
                 self.logger.debug(
                     f"NIXL+ModelExpress policy v{step} group {group_name} staged in buffer {buffer_index} in "
                     f"{time.perf_counter() - group_start:.2f}s"
@@ -444,22 +459,29 @@ class NIXLWeightBroadcast(WeightBroadcast):
 
         first_pending_group = max(0, len(self.transfer_group_names) - self.staging_buffer_count)
         for group in range(first_pending_group, len(self.transfer_group_names)):
-            buffer_index = group % self.staging_buffer_count
-            self.finish_staging_buffer_transfer(buffer_index)
+            self.finish_staging_buffer_transfer(group)
 
         if self.world.is_master:
-            self.model_express.wait_for(
-                "inference",
-                count=self.config.inference_world_size,
-                status=p2p_pb2.SOURCE_STATUS_READY,
-                timeout=self.config.timeout,
-            )
-            self.model_express.wait_for(
-                "orchestrator",
-                count=1,
-                status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                timeout=self.config.timeout,
-            )
-            self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            if startup:
+                self.model_express.wait_for(
+                    "inference",
+                    count=self.config.inference_world_size,
+                    status=p2p_pb2.SOURCE_STATUS_READY,
+                    timeout=self.config.timeout,
+                )
+                self.model_express.wait_for(
+                    "orchestrator",
+                    count=1,
+                    status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
+                    timeout=self.config.timeout,
+                )
+                self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            else:
+                self.nixl_agent.wait_for_notification(
+                    [self.orchestrator_peer_name],
+                    policy_notification(step, "complete"),
+                    timeout=self.config.timeout,
+                )
         dist.barrier()
+        self.broadcast_count += 1
         self.logger.info(f"NIXL+ModelExpress policy v{step} synchronized in {time.perf_counter() - start:.2f}s")
