@@ -79,9 +79,6 @@ class SlurmConfig(BaseConfig):
     project_dir: Path = Path(".")
     """Path to the project root, used to source .env, activate .venv, and run uv sync."""
 
-    uv_executable: str = "uv"
-    """Executable used to synchronize the project environment before launch."""
-
     template_path: Path | None = None
     """SLURM template file. If None, uses the bundled single-node or multi-node template."""
 
@@ -115,7 +112,6 @@ class SlurmConfig(BaseConfig):
         return {
             "job_name": self.job_name,
             "project_dir": self.project_dir,
-            "uv_executable": self.uv_executable,
             "partition": self.partition,
             "nodelist": self.nodelist,
             "exclude": self.exclude,
