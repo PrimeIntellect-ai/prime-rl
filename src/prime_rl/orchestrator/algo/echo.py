@@ -11,7 +11,7 @@ from prime_rl.utils.utils import import_object
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
-    from prime_rl.utils.client import InferenceClients
+    from prime_rl.orchestrator.clients import InferenceClient
 
 
 class EchoAlgorithm(GRPOAlgorithm):
@@ -22,8 +22,8 @@ class EchoAlgorithm(GRPOAlgorithm):
     mask and its denominator. An optional user filter narrows the selection
     per rollout (e.g. dropping tool-output warnings)."""
 
-    def __init__(self, config: EchoAlgoConfig, policy_pool: InferenceClients):
-        super().__init__(config, policy_pool)
+    def __init__(self, config: EchoAlgoConfig, clients: InferenceClient):
+        super().__init__(config, clients)
         self.role_weights = {
             role: role_config.alpha
             for role in ("system", "user", "assistant", "tool")

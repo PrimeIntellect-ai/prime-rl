@@ -34,6 +34,7 @@ from subprocess import Popen
 from prime_rl import monitors
 from prime_rl.configs.evals import EvalsConfig
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
+from prime_rl.orchestrator.clients import AdminClients, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
@@ -48,7 +49,6 @@ from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import EvalBatch, Policy
 from prime_rl.orchestrator.utils import eval_work, intercept_vf_logging, set_default_executor
 from prime_rl.transports.weights.receiver import WeightBroadcastReceiver, setup_weight_receiver
-from prime_rl.utils.client import EngineAdmin, InferenceClients
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_config_dir, get_log_dir
@@ -99,8 +99,8 @@ class Evals:
         wandb_enabled = monitors.get(monitors.WandbMonitor) is not None
 
         get_logger().info(f"Initializing inference pool (base_url={config.eval.client.base_url}, model={config.model})")
-        self.pool = InferenceClients(config.eval.client, model_name=config.model)
-        self.admin = EngineAdmin(config.eval.client)
+        self.clients = InferenceClient(config.eval.client, model_name=config.model)
+        self.admin_clients = AdminClients(config.eval.client)
 
         self.spawn_env_servers()
 
@@ -110,7 +110,7 @@ class Evals:
         get_logger().success(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
         get_logger().info("Waiting for inference pool to be ready")
-        await self.admin.wait_for_ready(config.model)
+        await self.admin_clients.wait_for_ready(config.model)
         get_logger().success("Inference pool ready")
 
         self.receiver: WeightBroadcastReceiver | None = None
@@ -123,7 +123,7 @@ class Evals:
             self.receiver = setup_weight_receiver(
                 config.online.broadcasts_dir,
                 weight_broadcast,
-                admin_clients=self.admin.clients,
+                admin_clients=self.admin_clients.clients,
                 model_name=config.model,
             )
             await self.receiver.initialize()
@@ -142,7 +142,7 @@ class Evals:
             eval_envs=self.eval_envs,
             train_source=None,
             eval_source=self.eval_source,
-            policy_pool=self.pool,
+            policy_clients=self.clients,
             policy=self.policy,
             progress=None,
             initial_max_inflight=self.concurrency.max_inflight,
@@ -162,7 +162,7 @@ class Evals:
         # The collector always polls — it feeds the concurrency controller;
         # W&B mirroring is gated on the registered monitor.
         self.inference_metrics = InferenceMetricsCollector(
-            self.admin.clients,
+            self.admin_clients.clients,
             on_load=self.concurrency.observe,
             log_to_wandb=wandb_enabled,
         )
@@ -174,7 +174,7 @@ class Evals:
         if not await self.inference_metrics.probe():
             concurrency = config.eval.concurrency
             if concurrency.min_inflight != concurrency.max_inflight:
-                urls = ", ".join(str(client.base_url) for client in self.admin.clients)
+                urls = ", ".join(str(client.base_url) for client in self.admin_clients.clients)
                 raise ValueError(
                     f"No engine metrics at {urls} - adaptive concurrency has no load signal. "
                     "The endpoint does not expose vLLM /metrics (e.g. an external inference API); "
@@ -338,12 +338,12 @@ class Evals:
         fired = self.eval_source.trigger(step, force=force)
         self.last_step = max(self.last_step, step)
 
-        if reload_weights and (fired or not self.receiver.can_skip_versions):
+        if reload_weights and (fired or not self.receiver.CAN_SKIP_VERSIONS):
             get_logger().info(f"Updating inference weights to broadcast step {step} ({broadcast_dir})")
             try:
                 await self.receiver.receive(step)
             except Exception as exc:
-                if not self.receiver.can_skip_versions:
+                if not self.receiver.CAN_SKIP_VERSIONS:
                     # The trainer is blocked inside this broadcast — a skipped
                     # receive would strand it, so fail the run loudly instead.
                     raise
@@ -446,10 +446,10 @@ class Evals:
         dispatcher: Dispatcher | None = getattr(self, "dispatcher", None)
         if dispatcher is not None:
             await dispatcher.stop()
-        pool: InferenceClients | None = getattr(self, "pool", None)
+        pool: InferenceClient | None = getattr(self, "pool", None)
         if pool is not None:
             await pool.aclose()
-        admin: EngineAdmin | None = getattr(self, "admin", None)
+        admin: AdminClients | None = getattr(self, "admin", None)
         if admin is not None:
             await admin.aclose()
         cleanup_processes(self.env_server_procs)

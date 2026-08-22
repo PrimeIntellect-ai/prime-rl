@@ -22,6 +22,7 @@ from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import setup_weight_broadcast
+from prime_rl.transports.weights.base import prune_broadcasts_beyond
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
@@ -422,8 +423,12 @@ def train(config: SFTConfig):
         # (older broadcasts may have been cleaned), and skips when the
         # previous run's broadcast survived on disk — rewriting the same dir
         # in place would race an evals process already reloading it.
-        logger.info(f"Broadcasting startup policy weights (v{checkpoint_step or 0}) for online evals")
-        weight_broadcast.broadcast_startup(model, step=checkpoint_step or 0)
+        startup_version = checkpoint_step or 0
+        if world.is_master:
+            prune_broadcasts_beyond(config.output_dir, startup_version)
+        if weight_broadcast.REQUIRES_LIVE_CONSUMER or not weight_broadcast.is_finished(startup_version):
+            logger.info(f"Broadcasting startup policy weights (v{startup_version}) for online evals")
+            weight_broadcast.broadcast(model, startup_version)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB

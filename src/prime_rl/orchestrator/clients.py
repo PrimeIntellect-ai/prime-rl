@@ -41,7 +41,7 @@ class PrefillScorer:
             await self._client.close()
 
 
-class InferenceClients:
+class InferenceClient:
     """Data-plane clients for one inference endpoint (the router of the policy
     deployment, or an external API for frozen models)."""
 
@@ -73,7 +73,7 @@ class InferenceClients:
         await self._scorer.aclose()
 
 
-class EngineAdmin:
+class AdminClients:
     """Admin plane of the policy inference deployment: one httpx client per
     engine process. The router serves no admin routes (pause/resume,
     update_weights, init_broadcaster, load_lora_adapter live on the engines),
@@ -109,7 +109,7 @@ async def check_inference_ready(client_config: ClientConfig, model_name: str) ->
     """One-shot readiness check of an inference endpoint (health + model
     listing) with transient clients — for frozen endpoints that never need a
     persistent admin plane."""
-    admin = EngineAdmin(client_config)
+    admin = AdminClients(client_config)
     try:
         await admin.wait_for_ready(model_name)
     finally:

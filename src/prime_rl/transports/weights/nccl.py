@@ -166,7 +166,7 @@ class NCCLWeightBroadcastSender:
 class NCCLWeightBroadcast(WeightBroadcast):
     """Broadcast weights into the inference engine using NCCL."""
 
-    requires_live_consumer = True
+    REQUIRES_LIVE_CONSUMER = True
 
     def __init__(
         self,

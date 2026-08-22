@@ -190,7 +190,7 @@ class TrainEnvs(Envs[TrainEnv]):
         configs: Sequence[TrainSourceConfig],
         addresses: dict[tuple[str, str], str],
         *,
-        policy_pool,
+        clients,
         renderer_config=None,
     ):
         self._envs: dict[str, TrainEnv] = {}
@@ -199,8 +199,8 @@ class TrainEnvs(Envs[TrainEnv]):
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],
-                GenerationSource(config.algo.sampling, policy_pool, renderer_config),
-                build_algorithm(config.algo, policy_pool),
+                GenerationSource(config.algo.sampling, clients, renderer_config),
+                build_algorithm(config.algo, clients),
             )
             self._envs[env.name] = env
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from prime_rl.orchestrator.algo.base import Algorithm, connect_frozen_pool
+from prime_rl.orchestrator.algo.base import Algorithm, connect_frozen_client
 from prime_rl.orchestrator.algo.echo import EchoAlgorithm
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.hierarchical_grpo import HierarchicalGRPOAlgorithm
@@ -35,7 +35,7 @@ from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
 
 if TYPE_CHECKING:
     from prime_rl.configs.algorithm import AlgoConfig
-    from prime_rl.utils.client import InferenceClients
+    from prime_rl.orchestrator.clients import InferenceClient
 
 # Runtime dispatch is keyed on ``algo.type`` — it names the algorithm, and
 # each config class's defaults are its vetted parameterization.
@@ -51,7 +51,7 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
 }
 
 
-def build_algorithm(config: AlgoConfig, policy_pool: InferenceClients) -> Algorithm:
+def build_algorithm(config: AlgoConfig, clients: InferenceClient) -> Algorithm:
     cls = ALGORITHM_CLASSES[config.type]
     assert cls.action_loss_type == config.action_loss_type  # config and runtime declare in two places
     # The Algorithm is the runtime of the algorithm config's training signal
@@ -59,7 +59,7 @@ def build_algorithm(config: AlgoConfig, policy_pool: InferenceClients) -> Algori
     # handed the live policy pool — opsd self-distills against it, others may
     # judge against it or ignore it. Other models (a frozen teacher, a hint
     # renderer) are built from the algorithm's own config in setup().
-    return cls(config, policy_pool)
+    return cls(config, clients)
 
 
 __all__ = [
@@ -73,7 +73,7 @@ __all__ = [
     "RAEAlgorithm",
     "SFTDistillAlgorithm",
     "build_algorithm",
-    "connect_frozen_pool",
+    "connect_frozen_client",
     "assign_advantages",
     "stamp_loss_routing",
 ]

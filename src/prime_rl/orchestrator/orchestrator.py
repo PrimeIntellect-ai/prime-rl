@@ -33,8 +33,8 @@ if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
 
     from prime_rl.orchestrator.ckpt import CheckpointManager
+    from prime_rl.orchestrator.clients import AdminClients, InferenceClient
     from prime_rl.transports.rollouts.base import MicroBatchSender
-    from prime_rl.utils.client import EngineAdmin, InferenceClients
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -68,7 +68,7 @@ from prime_rl.orchestrator.utils import (
     eval_work,
     intercept_vf_logging,
     set_default_executor,
-    setup_policy_inference_pool,
+    setup_policy_clients,
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -122,8 +122,8 @@ class Orchestrator:
 
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
-    policy_inference: InferenceClients
-    inference_admin: EngineAdmin
+    clients: InferenceClient
+    admin_clients: AdminClients
     sender: MicroBatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
@@ -204,7 +204,7 @@ class Orchestrator:
         get_logger().info(
             f"Initializing policy inference pool (base_url={config.model.client.base_url}, model={config.model.name})"
         )
-        self.renderer, self.policy_inference, self.inference_admin = await setup_policy_inference_pool(
+        self.renderer, self.clients, self.admin_clients = await setup_policy_clients(
             config=config, tokenizer=self.tokenizer
         )
         self.mm_token_type_ids_mapping = (
@@ -238,7 +238,7 @@ class Orchestrator:
         self.train_envs = TrainEnvs(
             config.train.source,
             config.env_addresses,
-            policy_pool=self.policy_inference,
+            clients=self.clients,
             renderer_config=config.renderer,
         )
         get_logger().debug(
@@ -263,10 +263,10 @@ class Orchestrator:
                     self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
 
         # Resume below may bump ``policy.version`` and the LoRA model name
-        self.policy.model_name = self.policy_inference.model_name
+        self.policy.model_name = self.clients.model_name
 
         get_logger().info("Waiting for policy inference pool to be ready")
-        await self.inference_admin.wait_for_ready(config.model.name)
+        await self.admin_clients.wait_for_ready(config.model.name)
         get_logger().success("Policy inference pool ready")
         # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
@@ -282,7 +282,7 @@ class Orchestrator:
         self.receiver = setup_weight_receiver(
             get_broadcast_dir(config.output_dir),
             config.weight_broadcast,
-            admin_clients=self.inference_admin.clients,
+            admin_clients=self.admin_clients.clients,
             model_name=config.model.name,
             max_version=self.final_version,
         )
@@ -338,7 +338,7 @@ class Orchestrator:
             eval_envs=self.eval_envs,
             train_source=self.train_source,
             eval_source=self.eval_source,
-            policy_pool=self.policy_inference,
+            policy_clients=self.clients,
             policy=self.policy,
             progress=self.progress,
             initial_max_inflight=self.concurrency.max_inflight,
@@ -358,7 +358,7 @@ class Orchestrator:
         # W&B mirroring is gated on the registered monitor (the collector logs
         # to the global W&B session, which only exists when init succeeded).
         self.inference_metrics = InferenceMetricsCollector(
-            self.inference_admin.clients,
+            self.admin_clients.clients,
             roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
             log_to_wandb=wandb_enabled and config.collect_inference_metrics,
@@ -509,7 +509,7 @@ class Orchestrator:
         """Stay alive for the trainer's last live broadcast. A live broadcast
         is a blocking rendezvous — tearing down the watcher before it would
         strand the trainer inside the transfer."""
-        if self.receiver.can_skip_versions or self.final_version is None:
+        if self.receiver.CAN_SKIP_VERSIONS or self.final_version is None:
             return
         await self.wait_for_version(self.final_version, reason="before shutdown")
 
@@ -989,10 +989,10 @@ class Orchestrator:
             self.component_tasks.clear()
             if self.inference_metrics is not None:
                 await self.inference_metrics.stop()
-            if getattr(self, "policy_inference", None) is not None:
-                await self.policy_inference.aclose()
-            if getattr(self, "inference_admin", None) is not None:
-                await self.inference_admin.aclose()
+            if getattr(self, "clients", None) is not None:
+                await self.clients.aclose()
+            if getattr(self, "admin_clients", None) is not None:
+                await self.admin_clients.aclose()
             if self.train_envs is not None:
                 for env in self.train_envs:
                     for clients in (env.generation_source.connected, env.algorithm.connected):

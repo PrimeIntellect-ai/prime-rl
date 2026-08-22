@@ -67,7 +67,7 @@ class TransferGroupIndex:
 
 
 class NIXLWeightBroadcast(WeightBroadcast):
-    requires_live_consumer = True
+    REQUIRES_LIVE_CONSUMER = True
 
     def __init__(
         self,

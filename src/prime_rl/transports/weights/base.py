@@ -21,6 +21,16 @@ FINISHED_MARKER = ".finished"
 RECEIVER_READY_MARKER = ".receiver_ready"
 
 
+def prune_broadcasts_beyond(output_dir: Path, step: int) -> None:
+    """Remove broadcast dirs beyond ``step``. Resume hygiene, run by the
+    trainer master before its startup broadcast: stale leftovers of a longer
+    crashed run would otherwise steer the consumer past the resume point."""
+    broadcast_dir = get_broadcast_dir(output_dir)
+    for old_step in get_all_ckpt_steps(broadcast_dir):
+        if old_step > step:
+            shutil.rmtree(get_step_path(broadcast_dir, old_step), ignore_errors=True)
+
+
 class WeightBroadcast(ABC):
     """Trainer-side weight publisher. ``broadcast`` wraps the transport's
     ``_broadcast`` with the shared sentinel protocol: the master resets the
@@ -30,7 +40,7 @@ class WeightBroadcast(ABC):
     # A live transport transfers directly into a running consumer: the trainer
     # blocks until the receiver joins, and a version the consumer never
     # receives strands the trainer inside the transfer.
-    requires_live_consumer: ClassVar[bool] = False
+    REQUIRES_LIVE_CONSUMER: ClassVar[bool] = False
 
     def __init__(self, output_dir: Path, keep_interval: int | None = None):
         self.logger = get_logger()
@@ -54,24 +64,6 @@ class WeightBroadcast(ABC):
             (step_dir / FINISHED_MARKER).touch()
             self._clean(step)
             self.logger.debug(f"Broadcasted weights for step {step} in {time.perf_counter() - start_time:.2f}s")
-
-    @final
-    def broadcast_startup(self, model: nn.Module, step: int) -> None:
-        """Startup broadcast of v{step}, run before the first training step so
-        a broken transport fails fast. Prunes broadcast dirs beyond ``step``
-        first — stale leftovers of a longer crashed run would otherwise steer
-        the consumer past the resume point. Filesystem skips when v{step} is
-        already finished on disk (rewriting a dir a consumer may be reading is
-        never safe); live transports always re-send, nothing persists."""
-        if self.world.is_master:
-            broadcast_dir = get_broadcast_dir(self.output_dir)
-            for old_step in get_all_ckpt_steps(broadcast_dir):
-                if old_step > step:
-                    shutil.rmtree(get_step_path(broadcast_dir, old_step), ignore_errors=True)
-        if not self.requires_live_consumer and self.is_finished(step):
-            self.logger.debug(f"Skipping startup broadcast - step {step} is already finished on disk")
-            return
-        self.broadcast(model, step)
 
     def is_finished(self, step: int) -> bool:
         """Whether a complete broadcast for ``step`` is on disk."""

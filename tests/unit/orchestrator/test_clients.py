@@ -6,7 +6,7 @@ import httpx
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import _is_retryable_lora_error, check_health, load_lora_adapter, setup_client
+from prime_rl.orchestrator.clients import _is_retryable_lora_error, check_health, load_lora_adapter, setup_client
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -80,7 +80,7 @@ def test_check_health_retries_non_success_status():
     client.get.side_effect = [unavailable, healthy]
     client.base_url = httpx.URL("http://worker")
 
-    with patch("prime_rl.utils.client.asyncio.sleep", new=AsyncMock()):
+    with patch("prime_rl.orchestrator.clients.asyncio.sleep", new=AsyncMock()):
         asyncio.run(check_health([client], interval=1, timeout=2))
 
     assert client.get.await_count == 2

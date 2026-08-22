@@ -4,10 +4,10 @@ from unittest.mock import MagicMock, patch
 
 from renderers import Qwen3VLRendererConfig
 
-from prime_rl.orchestrator.utils import setup_policy_inference_pool
+from prime_rl.orchestrator.utils import setup_policy_clients
 
 
-def test_setup_policy_inference_pool_uses_renderer_when_enabled():
+def test_setup_policy_clients_uses_renderer_when_enabled():
     async def run() -> None:
         tokenizer = object()
         renderer_settings = Qwen3VLRendererConfig()
@@ -26,15 +26,15 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
         with (
             patch("renderers.base.create_renderer", return_value=renderer) as create_renderer_mock,
             patch(
-                "prime_rl.orchestrator.utils.InferenceClients",
+                "prime_rl.orchestrator.utils.InferenceClient",
                 new=MagicMock(return_value=inference_pool),
             ) as setup_pool_mock,
             patch(
-                "prime_rl.orchestrator.utils.EngineAdmin",
+                "prime_rl.orchestrator.utils.AdminClients",
                 new=MagicMock(return_value=admin),
             ),
         ):
-            returned_renderer, returned_pool, returned_admin = await setup_policy_inference_pool(
+            returned_renderer, returned_pool, returned_admin = await setup_policy_clients(
                 config=config,
                 tokenizer=tokenizer,
             )
@@ -54,7 +54,7 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
     asyncio.run(run())
 
 
-def test_setup_policy_inference_pool_keeps_renderer_without_policy_sampling():
+def test_setup_policy_clients_keeps_renderer_without_policy_sampling():
     """Frozen-sourced runs (e.g. sft) have no train env sampling from the live
     policy, but training is renderer-only: the renderer is still built and the
     pool is wired with the renderer train client. ``any_policy_sourced`` only
@@ -78,15 +78,15 @@ def test_setup_policy_inference_pool_keeps_renderer_without_policy_sampling():
         with (
             patch("renderers.base.create_renderer", return_value=renderer) as create_renderer_mock,
             patch(
-                "prime_rl.orchestrator.utils.InferenceClients",
+                "prime_rl.orchestrator.utils.InferenceClient",
                 new=MagicMock(return_value=inference_pool),
             ) as setup_pool_mock,
             patch(
-                "prime_rl.orchestrator.utils.EngineAdmin",
+                "prime_rl.orchestrator.utils.AdminClients",
                 new=MagicMock(return_value=admin),
             ),
         ):
-            returned_renderer, returned_pool, returned_admin = await setup_policy_inference_pool(
+            returned_renderer, returned_pool, returned_admin = await setup_policy_clients(
                 config=config,
                 tokenizer=tokenizer,
             )

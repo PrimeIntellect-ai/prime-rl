@@ -10,6 +10,7 @@ from datetime import timedelta
 
 from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 from prime_rl.transports.weights import setup_weight_broadcast
+from prime_rl.transports.weights.base import prune_broadcasts_beyond
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
@@ -274,8 +275,12 @@ def train(config: TrainerConfig):
         # and so a broken broadcast path fails at startup instead of after the first
         # optimizer step.
         if progress.step == start_step and weight_broadcast is not None:
-            logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
-            weight_broadcast.broadcast_startup(model, step=progress.step - 1)
+            startup_version = progress.step - 1
+            if world.is_master:
+                prune_broadcasts_beyond(config.output_dir, startup_version)
+            if weight_broadcast.REQUIRES_LIVE_CONSUMER or not weight_broadcast.is_finished(startup_version):
+                logger.info(f"Broadcasting startup policy weights (v{startup_version}) to inference engines")
+                weight_broadcast.broadcast(model, startup_version)
 
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")
@@ -581,7 +586,7 @@ def train(config: TrainerConfig):
             broadcast_weights_time = 0
         else:
             broadcast_unused = (
-                weight_broadcast.requires_live_consumer
+                weight_broadcast.REQUIRES_LIVE_CONSUMER
                 and config.max_steps is not None
                 and progress.step > final_broadcast_version(config.max_steps, config.weight_broadcast.broadcast_final)
             )

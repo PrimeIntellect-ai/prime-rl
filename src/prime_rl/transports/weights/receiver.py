@@ -20,14 +20,14 @@ from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
 
 from prime_rl.configs.trainer import WeightBroadcastConfig
-from prime_rl.transports.weights.base import FINISHED_MARKER, RECEIVER_READY_MARKER, STARTED_MARKER
-from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
-from prime_rl.utils.client import (
+from prime_rl.orchestrator.clients import (
     init_nccl_broadcast,
     init_nixl_broadcast,
     load_lora_adapter,
     update_weights,
 )
+from prime_rl.transports.weights.base import FINISHED_MARKER, RECEIVER_READY_MARKER, STARTED_MARKER
+from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_step_path, wait_for_path
 
@@ -38,10 +38,10 @@ class WeightBroadcastReceiver(ABC):
     # The marker that announces a new version to this receiver: a finished
     # broadcast on disk for filesystem, an in-flight one for live transports
     # (the trainer is already blocked waiting for the receiver).
-    discovery_marker: ClassVar[str] = FINISHED_MARKER
+    DISCOVERY_MARKER: ClassVar[str] = FINISHED_MARKER
     # Whether the consumer may skip versions. A live transport strands the
     # trainer inside the transfer when a version is never received.
-    can_skip_versions: ClassVar[bool] = True
+    CAN_SKIP_VERSIONS: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -65,8 +65,8 @@ class WeightBroadcastReceiver(ABC):
         return get_step_path(self.broadcast_dir, step)
 
     def is_published(self, step: int) -> bool:
-        """Whether the trainer has announced v{step} (see ``discovery_marker``)."""
-        return (self.step_dir(step) / self.discovery_marker).exists()
+        """Whether the trainer has announced v{step} (see ``DISCOVERY_MARKER``)."""
+        return (self.step_dir(step) / self.DISCOVERY_MARKER).exists()
 
     def next_version(self, current: int) -> int:
         """Newest version announced beyond ``current``; ``current`` if none."""
@@ -95,8 +95,8 @@ class FileSystemReceiver(WeightBroadcastReceiver):
     adapter reload is a vLLM-native op that needs no engine pause; a full
     checkpoint pauses the engines for the load."""
 
-    discovery_marker = FINISHED_MARKER
-    can_skip_versions = True
+    DISCOVERY_MARKER = FINISHED_MARKER
+    CAN_SKIP_VERSIONS = True
 
     async def wait_published(self, step: int, cancelled: Callable[[], bool] | None = None) -> None:
         finished = self.step_dir(step) / FINISHED_MARKER
@@ -121,8 +121,8 @@ class NCCLReceiver(WeightBroadcastReceiver):
     them into the receive RPC — only then does the trainer enter the
     collective, so the handshake can never race a stale marker."""
 
-    discovery_marker = STARTED_MARKER
-    can_skip_versions = False
+    DISCOVERY_MARKER = STARTED_MARKER
+    CAN_SKIP_VERSIONS = False
 
     async def initialize(self) -> None:
         await init_nccl_broadcast(
@@ -154,8 +154,8 @@ class NIXLReceiver(WeightBroadcastReceiver):
     are unversioned, so versions are counted: one READY/INITIALIZING cycle per
     policy version, capped at ``max_version`` (the trainer's final broadcast)."""
 
-    discovery_marker = STARTED_MARKER
-    can_skip_versions = False
+    DISCOVERY_MARKER = STARTED_MARKER
+    CAN_SKIP_VERSIONS = False
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)

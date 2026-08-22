@@ -14,7 +14,7 @@ from prime_rl.orchestrator.utils import episode_env_name
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.utils.client import InferenceClients
+    from prime_rl.orchestrator.clients import InferenceClient
 
 
 class OPSDAlgorithm(Algorithm):
@@ -33,8 +33,8 @@ class OPSDAlgorithm(Algorithm):
 
     action_loss_type = "ref_kl"
 
-    def __init__(self, config: OPSDAlgoConfig, policy_pool: InferenceClients):
-        super().__init__(config, policy_pool)
+    def __init__(self, config: OPSDAlgoConfig, clients: InferenceClient):
+        super().__init__(config, clients)
         self.demo_key = config.demo_key
         self.template = config.template
         self.renderer_config = config.renderer
@@ -42,7 +42,7 @@ class OPSDAlgorithm(Algorithm):
         # Self-distillation: the teacher *is* the live policy. Scoring against
         # the shared policy pool tracks its current weights, model name, and
         # endpoint churn for free.
-        self.teacher_pool = self.policy_pool
+        self.teacher_clients = self.clients
 
     async def setup(self) -> None:
         """Build opsd's own hint-block renderer from config — it is not handed
@@ -51,7 +51,7 @@ class OPSDAlgorithm(Algorithm):
         identically to the policy's own prompts."""
         from renderers.base import create_renderer, load_tokenizer
 
-        self.renderer = create_renderer(load_tokenizer(self.policy_pool.model_name), self.renderer_config)
+        self.renderer = create_renderer(load_tokenizer(self.clients.model_name), self.renderer_config)
 
     def _demonstration(self, episode: vf.Episode, trace: vf.Trace) -> str:
         demonstration = trace.info.get(self.demo_key)
@@ -66,13 +66,13 @@ class OPSDAlgorithm(Algorithm):
         return demonstration
 
     async def score_episode(self, episode: vf.Episode) -> None:
-        pool = self.teacher_pool
+        teacher = self.teacher_clients
         renderer = self.renderer
         assert renderer is not None, "renderer not built — Algorithm.setup() must run first"
         for _, trace in iter_trainable_traces([episode]):
             hint = self.template.format(demonstration=self._demonstration(episode, trace))
             hint_block = renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)
             branches = [branch for branch, _ in iter_trainable_branches(trace)]
-            scores = await asyncio.gather(*(pool.score(hint_block + branch.token_ids) for branch in branches))
+            scores = await asyncio.gather(*(teacher.score(hint_block + branch.token_ids) for branch in branches))
             for branch, full_logprobs in zip(branches, scores, strict=True):
                 assign_reference_logprobs(branch, full_logprobs[len(hint_block) :])

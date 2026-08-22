@@ -37,6 +37,14 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
 
 
+class BaseWeightBroadcastConfig(BaseConfig):
+    broadcast_final: bool = True
+    """Internal - stamped by the RL/SFT launcher, never set by users: whether the
+    trainer broadcasts the final version v{max_steps}. True iff something consumes
+    it (a configured final eval) - training itself never samples from the final
+    version."""
+
+
 class RunConfig(BaseConfig):
     name: str | None = None
     """Run name. Auto-generated as ``<envs>--<model>--<short-id>`` when unset, so every launch gets a fresh, readable run directory; set an explicit name (e.g. an experiment name) to get a predictable run directory, which is also required to resume a previous run. Unless set explicitly, the W&B run name and the Prime platform run name inherit it."""

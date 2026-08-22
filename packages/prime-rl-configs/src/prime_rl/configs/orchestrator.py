@@ -12,6 +12,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.monitors import OrchestratorMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    BaseWeightBroadcastConfig,
     ClientConfig,
     EnvVars,
     HeartbeatConfig,
@@ -373,21 +374,11 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the progress from checkpoint."""
 
 
-class FileSystemWeightBroadcastConfig(BaseConfig):
+class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
-    broadcast_final: bool = True
-    """Whether the trainer broadcasts the final version v{max_steps}. Stamped by the
-    launcher: True iff something consumes it (a configured final eval) - training itself
-    never samples from the final version."""
 
-
-class InMemoryWeightBroadcastConfig(BaseConfig):
-    broadcast_final: bool = True
-    """Whether the trainer broadcasts the final version v{max_steps}. Stamped by the
-    launcher: True iff something consumes it (a configured final eval) - training itself
-    never samples from the final version."""
-
+class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"
     """Weight transfer host."""
 

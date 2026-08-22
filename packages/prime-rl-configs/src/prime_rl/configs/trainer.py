@@ -7,6 +7,7 @@ from pydantic import BeforeValidator, Field, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    BaseWeightBroadcastConfig,
     EnvVars,
     HeartbeatConfig,
     MetricsServerConfig,
@@ -543,13 +544,6 @@ class FakeDataLoaderConfig(BaseConfig):
 class DataLoaderConfig(BaseConfig):
     fake: FakeDataLoaderConfig | None = None
     """Use a fake data loader sampling random micro-batches (for debugging)."""
-
-
-class BaseWeightBroadcastConfig(BaseConfig):
-    broadcast_final: bool = True
-    """Whether the trainer broadcasts the final version v{max_steps}. Stamped by the
-    launcher: True iff something consumes it (a configured final eval) - training itself
-    never samples from the final version."""
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
