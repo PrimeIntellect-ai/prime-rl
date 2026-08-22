@@ -6,9 +6,7 @@ the checkpoint's model state, gather rank-parallel, convert to HF format, and
 write sharded safetensors plus config/tokenizer assets.
 
 The model and tokenizer configs are read from the run's resolved config
-(``<run>/configs/trainer.json`` or ``sft.json``); ``--model.*`` /
-``--tokenizer.*`` override individual fields, or supply the full config when
-the checkpoint lives outside a run directory. LoRA checkpoints are not
+(``<run>/configs/trainer.json`` or ``sft.json``). LoRA checkpoints are not
 supported — the script exports full fine-tunes only.
 
 Usage (from the prime-rl repo; more ranks = faster gathers and writes, and
@@ -47,9 +45,9 @@ from prime_rl.utils.weights import (
     save_state_dict_parallel,
 )
 
-# Fields forced to conversion-safe values unless set explicitly on the CLI: the
-# run's compile/parallelism settings don't apply to an offline export, and a
-# resolved EP degree from a larger world would fail at the conversion world size.
+# Fields forced to conversion-safe values: the run's compile/parallelism settings
+# don't apply to an offline export, and a resolved EP degree from a larger world
+# would fail at the conversion world size.
 CONVERSION_OVERRIDES = {"compile": None, "ac": None, "dp_replicate": 1, "cp": 1, "ep": "auto"}
 
 RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
@@ -61,12 +59,6 @@ class DcpToHfConfig(BaseConfig):
 
     output_dir: Path | None = None
     """Where to write the HF-format weights. Defaults to ``<ckpt_dir>/weights``."""
-
-    model: ModelConfig = ModelConfig()
-    """Model config of the run that wrote the checkpoint. Read from the run's resolved config; CLI fields override."""
-
-    tokenizer: TokenizerConfig = TokenizerConfig()
-    """Tokenizer config of the run. Read from the run's resolved config; CLI fields override."""
 
     cpu: bool = False
     """Convert on CPU without a process group. Needs host RAM for the full model. Defaults to on when no GPU is available."""
@@ -81,34 +73,24 @@ def resolve_dcp_dir(ckpt_dir: Path) -> Path:
     raise FileNotFoundError(f"No DCP checkpoint found at {ckpt_dir} (expected {ckpt_dir}/trainer/.metadata)")
 
 
-def resolve_run_configs(config: DcpToHfConfig, step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
-    """Model/tokenizer configs from the run's resolved config, overlaid with CLI fields."""
+def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
+    """Model/tokenizer configs from the run's resolved config."""
     logger = get_logger()
-    run_config = None
     for name in RUN_CONFIG_NAMES:
         path = step_dir.parent.parent / "configs" / name
         if path.exists():
             logger.info(f"Reading model config from {path}")
             run_config = json.loads(path.read_text())
             break
-
-    if run_config is None:
-        if "name" not in config.model.model_fields_set:
-            raise FileNotFoundError(
-                f"No resolved run config ({' or '.join(RUN_CONFIG_NAMES)}) found under {step_dir.parent.parent / 'configs'}. "
-                "Pass the run's model config explicitly (at least --model.name)."
-            )
-        model, tokenizer = config.model, config.tokenizer
     else:
-        model = ModelConfig(**run_config["model"])
-        tokenizer = TokenizerConfig(**run_config["tokenizer"])
-        model = model.model_copy(update={key: getattr(config.model, key) for key in config.model.model_fields_set})
-        tokenizer = tokenizer.model_copy(
-            update={key: getattr(config.tokenizer, key) for key in config.tokenizer.model_fields_set}
+        raise FileNotFoundError(
+            f"No resolved run config ({' or '.join(RUN_CONFIG_NAMES)}) found under {step_dir.parent.parent / 'configs'} "
+            "- the checkpoint must live in its run directory"
         )
 
-    overrides = {key: value for key, value in CONVERSION_OVERRIDES.items() if key not in config.model.model_fields_set}
-    return model.model_copy(update=overrides), tokenizer
+    model = ModelConfig(**run_config["model"])
+    tokenizer = TokenizerConfig(**run_config["tokenizer"])
+    return model.model_copy(update=CONVERSION_OVERRIDES), tokenizer
 
 
 def check_not_lora(model_config: ModelConfig, dcp_dir: Path) -> None:
@@ -209,7 +191,7 @@ def main(config: DcpToHfConfig) -> None:
     dcp_dir = resolve_dcp_dir(config.ckpt_dir)
     step_dir = dcp_dir.parent
     output_dir = config.output_dir if config.output_dir is not None else step_dir / "weights"
-    model_config, tokenizer_config = resolve_run_configs(config, step_dir)
+    model_config, tokenizer_config = resolve_run_configs(step_dir)
     check_not_lora(model_config, dcp_dir)
 
     if config.cpu or not torch.cuda.is_available():
