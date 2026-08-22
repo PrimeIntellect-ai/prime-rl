@@ -231,6 +231,20 @@ Full multi-node configs ship under [`examples/advanced/`](https://github.com/Pri
 
 For inference-only multi-node, set `[deployment] type = "multi_node"` on an inference TOML — each node runs an independent vLLM replica (TP and DP must fit within one node), fronted by a single global router on node 0. Point clients at the router URL the launcher prints.
 
+### NIXL weight broadcast
+
+Set `[weight_broadcast] type = "nixl"` to use receiver-driven NIXL weight transfer. Before the first SLURM run, install the NIXL/UCX build and the ModelExpress service binaries on the shared filesystem:
+
+```bash
+bash scripts/install_nixl_from_source.sh
+uv pip install --reinstall --no-deps deps/nixl_cu12-*.whl
+bash scripts/install_modelexpress.sh
+```
+
+With the default `weight_broadcast.host = "localhost"`, the generated job starts a job-scoped ModelExpress server and Redis backend on the trainer head node and passes that address to every component. Set `weight_broadcast.host` to a non-local hostname to connect to an externally managed ModelExpress service instead.
+
+The launcher requires the CUDA and InfiniBand transports from `third_party/ucx`. Each NIXL process selects the active InfiniBand port nearest its GPU; an explicitly configured `UCX_NET_DEVICES` takes precedence. Inference ranks start their pulls at different trainer ranks so concurrent workers distribute traffic across all available source rails.
+
 ### Custom Templates
 
 For unusual partitions, module loads, or environment setup, supply your own Jinja2 template:

@@ -38,4 +38,86 @@ uv sync --all-extras --all-packages
 {{ pre_run_command }}
 {% endif %}
 export PRL_RUN_ID=${PRL_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
+{% if use_nixl_broadcast %}
+UCX_DIR="$PROJECT_DIR/third_party/ucx"
+if [ ! -x "$UCX_DIR/bin/ucx_info" ]; then
+    echo "NIXL requires the UCX build installed by scripts/install_nixl_from_source.sh" >&2
+    exit 1
+fi
+export LD_LIBRARY_PATH="$UCX_DIR/lib:$UCX_DIR/lib/ucx:${LD_LIBRARY_PATH:-}"
+UCX_TRANSPORTS=$("$UCX_DIR/bin/ucx_info" -d)
+grep -q "Transport: cuda_copy" <<< "$UCX_TRANSPORTS" || {
+    echo "NIXL requires UCX cuda_copy support" >&2
+    exit 1
+}
+grep -q "Transport: rc_verbs" <<< "$UCX_TRANSPORTS" || {
+    echo "NIXL requires UCX rc_verbs support" >&2
+    exit 1
+}
+{% endif %}
+{% if launch_modelexpress %}
+MX_BIN="$PROJECT_DIR/third_party/modelexpress/bin"
+if [ ! -x "$MX_BIN/modelexpress-server" ] || [ ! -x "$MX_BIN/redis-server" ]; then
+    echo "ModelExpress server dependencies are missing; run scripts/install_modelexpress.sh" >&2
+    exit 1
+fi
+
+MX_STATE_DIR="{{ output_dir }}/modelexpress"
+mkdir -p "$MX_STATE_DIR/cache"
+"$MX_BIN/redis-server" \
+    --port {{ modelexpress_redis_port }} \
+    --bind 127.0.0.1 \
+    --protected-mode no \
+    --save "" \
+    --appendonly no \
+    --dir "$MX_STATE_DIR" \
+    > "$MX_STATE_DIR/redis.log" 2>&1 &
+REDIS_PID=$!
+trap '[ -z "${MODEL_EXPRESS_PID:-}" ] || kill -TERM "$MODEL_EXPRESS_PID" 2>/dev/null; kill -TERM "$REDIS_PID" 2>/dev/null || true' EXIT
+
+for _ in $(seq 1 60); do
+    timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/{{ modelexpress_redis_port }}" 2>/dev/null && break
+    kill -0 "$REDIS_PID" 2>/dev/null || {
+        tail -50 "$MX_STATE_DIR/redis.log" >&2
+        exit 1
+    }
+    sleep 1
+done
+timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/{{ modelexpress_redis_port }}" 2>/dev/null || {
+    echo "Redis did not become ready on port {{ modelexpress_redis_port }}" >&2
+    exit 1
+}
+
+MX_METADATA_BACKEND=redis \
+REDIS_URL="redis://127.0.0.1:{{ modelexpress_redis_port }}" \
+MX_HEARTBEAT_TIMEOUT_SECS=31536000 \
+    "$MX_BIN/modelexpress-server" \
+    --port {{ modelexpress_port }} \
+    --database-path "$MX_STATE_DIR/models.db" \
+    --cache-directory "$MX_STATE_DIR/cache" \
+    > "$MX_STATE_DIR/server.log" 2>&1 &
+MODEL_EXPRESS_PID=$!
+
+for _ in $(seq 1 120); do
+    timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/{{ modelexpress_port }}" 2>/dev/null && break
+    kill -0 "$MODEL_EXPRESS_PID" 2>/dev/null || {
+        tail -50 "$MX_STATE_DIR/server.log" >&2
+        exit 1
+    }
+    sleep 1
+done
+timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/{{ modelexpress_port }}" 2>/dev/null || {
+    echo "ModelExpress did not become ready on port {{ modelexpress_port }}" >&2
+    exit 1
+}
+{% elif use_nixl_broadcast %}
+for _ in $(seq 1 120); do
+    timeout 1 bash -c "echo > /dev/tcp/{{ modelexpress_host }}/{{ modelexpress_port }}" 2>/dev/null && break
+    sleep 1
+done
+timeout 1 bash -c "echo > /dev/tcp/{{ modelexpress_host }}/{{ modelexpress_port }}" 2>/dev/null || {
+    echo "ModelExpress is not reachable at {{ modelexpress_host }}:{{ modelexpress_port }}" >&2
+    exit 1
+}
+{% endif %}
 uv run rl @ {{ config_path }}
