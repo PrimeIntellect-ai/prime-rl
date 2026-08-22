@@ -172,7 +172,7 @@ async def maybe_check_has_model(
 
 
 async def check_health(
-    admin_clients: list[AsyncClient], interval: int = 1, log_interval: int = 10, timeout: int = 1800
+    admin_clients: list[AsyncClient], interval: int = 1, log_interval: int = 30, timeout: int = 1800
 ) -> None:
     logger = get_logger()
 
@@ -190,9 +190,10 @@ async def check_health(
                 return
             except Exception as e:
                 if wait_time % log_interval == 0 and wait_time > 0:
-                    logger.warning(
-                        f"Inference server was not reached after {wait_time} seconds (Error: {e}) on {admin_client.base_url}"
+                    logger.info(
+                        f"Waiting for inference server at {admin_client.base_url} to start up ({wait_time}s elapsed)"
                     )
+                    logger.debug(f"Inference server at {admin_client.base_url} not reachable: {e!r}")
                 await asyncio.sleep(interval)
                 wait_time += interval
         msg = f"Inference server is not ready after {wait_time} (>{timeout}) seconds. Aborting..."

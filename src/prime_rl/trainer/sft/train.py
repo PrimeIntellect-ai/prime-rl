@@ -236,16 +236,18 @@ def train(config: SFTConfig):
             dataloader=dataloader if not skip.skip_dataloader else None,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
-        logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         if not skip.skip_progress:
             progress.step += 1
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
-    logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
-    )
+        logger.info(
+            f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
+            f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
+        )
+    else:
+        logger.info("Starting from scratch")
 
     # Create the iterator only after a potential resume: iter() forks workers with a
     # copy of the dataset's *current* state, so a later load_state_dict never reaches

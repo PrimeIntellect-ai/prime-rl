@@ -232,11 +232,12 @@ def train(config: TrainerConfig):
         )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         progress.step += 1
-        logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
-
-    logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
-    )
+        logger.info(
+            f"Resuming from step {checkpoint_step} "
+            f"(total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
+        )
+    else:
+        logger.info("Starting from scratch")
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
@@ -279,11 +280,11 @@ def train(config: TrainerConfig):
         # and so a broken broadcast path fails at startup instead of after the first
         # optimizer step.
         if progress.step == start_step and weight_broadcast is not None:
-            logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
+            logger.info(f"Broadcasting base policy weights (v{progress.step - 1}) to inference engines")
             t0 = time.perf_counter()
             weight_broadcast.broadcast_weights(model, step=progress.step - 1)
             logger.debug(
-                f"Broadcast startup policy weights (v{progress.step - 1}) in {format_time(time.perf_counter() - t0)}"
+                f"Broadcast base policy weights (v{progress.step - 1}) in {format_time(time.perf_counter() - t0)}"
             )
 
         # Wait for the batch to be available

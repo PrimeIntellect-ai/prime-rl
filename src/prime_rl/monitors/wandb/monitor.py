@@ -64,7 +64,7 @@ class WandbMonitor(Monitor):
                 x_primary=primary,
                 x_update_finish_state=finisher,
             )
-            self.logger.info(f"Using shared W&B mode ({label=}, {primary=}, {finisher=})")
+            self.logger.debug(f"Using shared W&B mode ({label=}, {primary=}, {finisher=})")
             is_online = True
         else:
             run_id = None

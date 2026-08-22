@@ -243,17 +243,8 @@ class Orchestrator:
             policy_pool=self.policy_inference,
             renderer_config=config.renderer,
         )
-        get_logger().info(f"Loading train environments ({', '.join(self.train_envs.names)})")
-        t0 = time.perf_counter()
-        await self.train_envs.start()
-        get_logger().success(f"Train environments ready in {format_time(time.perf_counter() - t0)}")
-
         if config.eval is not None:
             self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses)
-            get_logger().info(f"Loading eval environments ({', '.join(self.eval_envs.names)})")
-            t0 = time.perf_counter()
-            await self.eval_envs.start()
-            get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
 
         if config.resume is not None:
             if config.resume.dir is not None:
@@ -265,6 +256,47 @@ class Orchestrator:
 
         # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.policy_inference.model_name
+        self.lora_name = config.model.lora.name if config.model.lora else None
+
+        # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
+        # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
+        # trainer even when ``ckpt.skip_progress`` leaves the counter unrestored. The curricula
+        # themselves are restored below, once the envs are loaded.
+        if self.resume_step is not None:
+            self.progress.step = self.resume_step + 1
+            get_logger().info(f"Resuming from step {self.resume_step}")
+        else:
+            get_logger().info("Starting from scratch")
+
+        # Transports are local setup — initialize them before the env and inference waits.
+        self.packer = BatchPacker(config)
+        get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
+        self.sender = setup_micro_batch_sender(
+            config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
+        )
+        if config.weight_broadcast.type == "filesystem":
+            # Nothing to set up client-side — the watcher polls the broadcast dir.
+            get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
+
+        # Wait phase: envs, then inference, then the trainer's startup broadcast —
+        # the last things before the main loop starts.
+        get_logger().info(f"Loading train environments ({', '.join(self.train_envs.names)})")
+        t0 = time.perf_counter()
+        await self.train_envs.start()
+        get_logger().success(f"Train environments ready in {format_time(time.perf_counter() - t0)}")
+
+        if self.eval_envs is not None:
+            get_logger().info(f"Loading eval environments ({', '.join(self.eval_envs.names)})")
+            t0 = time.perf_counter()
+            await self.eval_envs.start()
+            get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
+
+        self.train_source = TrainSource(self.train_envs)
+        if self.resume_step is not None:
+            resume = self.config.resume
+            resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
+            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
+            self.progress.step = self.resume_step + 1
 
         get_logger().info("Waiting for policy inference pool to be ready")
         t0 = time.perf_counter()
@@ -277,58 +309,39 @@ class Orchestrator:
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
-        get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        t0 = time.perf_counter()
-        if config.weight_broadcast.type == "nccl":
-            await init_nccl_broadcast(
-                self.policy_inference.admin_clients,
-                config.weight_broadcast.host,
-                config.weight_broadcast.port,
-                config.weight_broadcast.timeout,
-                inference_world_size=config.weight_broadcast.inference_world_size,
-                quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
-            )
-        elif config.weight_broadcast.type == "nixl":
-            await init_nixl_broadcast(
-                self.policy_inference.admin_clients,
-                config.weight_broadcast.host,
-                config.weight_broadcast.port,
-                config.weight_broadcast.timeout,
-                config.weight_broadcast.inference_world_size,
-                config.weight_broadcast.session_id,
-            )
-            self.model_express = ModelExpressSession(
-                client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
-                role="orchestrator",
-                rank=0,
-                session_id=config.weight_broadcast.session_id,
-                worker_id="orchestrator",
-            )
-            self.model_express.publish()
-            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
-        get_logger().debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
-
-        self.lora_name = config.model.lora.name if config.model.lora else None
-
-        self.train_source = TrainSource(self.train_envs)
-
-        if self.resume_step is not None:
-            resume = self.config.resume
-            resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
-            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
-            # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
-            # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
-            # trainer even when ``ckpt.skip_progress`` left the counter unrestored.
-            self.progress.step = self.resume_step + 1
-            get_logger().info(f"Resuming orchestrator from checkpoint step {self.resume_step}")
-        else:
-            get_logger().info("Training from scratch")
-
-        self.packer = BatchPacker(config)
-        get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
-        self.sender = setup_micro_batch_sender(
-            config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
-        )
+        # The in-memory broadcast transports rendezvous with live inference
+        # engines, so their setup must follow pool readiness.
+        if config.weight_broadcast.type in ("nccl", "nixl"):
+            get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
+            t0 = time.perf_counter()
+            if config.weight_broadcast.type == "nccl":
+                await init_nccl_broadcast(
+                    self.policy_inference.admin_clients,
+                    config.weight_broadcast.host,
+                    config.weight_broadcast.port,
+                    config.weight_broadcast.timeout,
+                    inference_world_size=config.weight_broadcast.inference_world_size,
+                    quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
+                )
+            else:
+                await init_nixl_broadcast(
+                    self.policy_inference.admin_clients,
+                    config.weight_broadcast.host,
+                    config.weight_broadcast.port,
+                    config.weight_broadcast.timeout,
+                    config.weight_broadcast.inference_world_size,
+                    config.weight_broadcast.session_id,
+                )
+                self.model_express = ModelExpressSession(
+                    client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
+                    role="orchestrator",
+                    rank=0,
+                    session_id=config.weight_broadcast.session_id,
+                    worker_id="orchestrator",
+                )
+                self.model_express.publish()
+                await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            get_logger().debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
 
         # Sync inference to the incoming policy before the first step, rendezvousing
         # with the trainer's startup broadcast (v{resume_step} on resume, v0 from
@@ -412,6 +425,9 @@ class Orchestrator:
             log_to_wandb=wandb_enabled and config.collect_inference_metrics,
         )
         await self.inference_metrics.start()
+        # One awaited scrape so the concurrency controller derives (and logs) its
+        # initial limit before the loop-start line; failures are tolerated.
+        await self.inference_metrics.probe()
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
