@@ -45,6 +45,7 @@ dependencies = [
     "msgspec>=0.18",
     "torchao>=0.17.0",
     "modelexpress==0.3.0",
+    "hillclimb",
 ]
 
 [project.scripts]
@@ -113,6 +114,7 @@ dev = [
 ]
 
 [tool.uv]
+default-groups = ["dev", "mamba-ssm"]
 # Enforce a uv version that supports the friendly-duration form
 # (`"7 days"`) in the static pyproject parser. Older uvs silently parse
 # the value as an RFC 3339 date, emit a TOML parse warning, and proceed
@@ -142,6 +144,7 @@ override-dependencies = [
 [tool.uv.workspace]
 members = [
     "deps/prime-envs/environments/*/*",
+    "deps/prime-envs-private/environments/hillclimb",
     "deps/verifiers/environments/alphabet_sort",
     "deps/verifiers/environments/color_codeword",
     "deps/verifiers/environments/gsm8k",
@@ -205,6 +208,7 @@ prime-kernels = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
+hillclimb = { workspace = true }
 # prime-rl consumes `verifiers.v1` (incl. the built-in harnesses/tasksets); env tasksets
 # live under deps/{verifiers,prime-envs}/environments.
 verifiers = { path = "deps/verifiers", editable = true }

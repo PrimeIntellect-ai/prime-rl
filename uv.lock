@@ -22,17 +22,20 @@ prime-pydantic-config = false
 vllm-router = false
 dion = false
 nixl-cu12 = false
-fastokens = false
+prime-rl = "2100-01-01T08:00:00Z"
 flash-attn-3 = false
 prime-tunnel = false
+fastokens = false
 deep-gemm = false
 prime-evals = false
 torchao = false
+tasksets = "2100-01-01T08:00:00Z"
 tokenspeed-mla = false
 deep-ep = false
 prime-sandboxes = false
 renderers = false
 prime-kernels = false
+harnesses = "2100-01-01T08:00:00Z"
 prime = false
 
 [manifest]
@@ -61,6 +64,7 @@ members = [
     "gpqa",
     "graphwalks",
     "gsm8k",
+    "hillclimb",
     "hle",
     "humaneval",
     "i3-code",
@@ -2241,6 +2245,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/95/7f/1be593c1f28613be2e196473481cd81bfc5910795e30a34e8f744f6cac4f/hf_xet-1.5.0-cp37-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:1e60df5a42e9bed8628b6416af2cba4cba57ae9f02de226a06b020d98e1aab18", size = 4459835, upload-time = "2026-05-06T06:18:08.026Z" },
     { url = "https://files.pythonhosted.org/packages/aa/b2/703569fc881f3284487e68cda7b42179978480da3c438042a6bbbb4a671c/hf_xet-1.5.0-cp37-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:4b35549ce62601b84da4ff9b24d970032ace3d4430f52d91bcbb26c901d6c690", size = 4672414, upload-time = "2026-05-06T06:18:09.864Z" },
 ]
+
+[[package]]
+name = "hillclimb"
+version = "0.1.0"
+source = { editable = "deps/prime-envs-private/environments/hillclimb" }
+dependencies = [
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.0" }]
 
 [[package]]
 name = "hle"
@@ -4852,6 +4867,7 @@ dependencies = [
     { name = "datasets" },
     { name = "dion" },
     { name = "flash-linear-attention" },
+    { name = "hillclimb" },
     { name = "jaxtyping" },
     { name = "loguru" },
     { name = "modelexpress" },
@@ -4966,6 +4982,7 @@ requires-dist = [
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "flash-attn-4", marker = "extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151" },
     { name = "flash-linear-attention", git = "https://github.com/fla-org/flash-linear-attention" },
+    { name = "hillclimb", editable = "deps/prime-envs-private/environments/hillclimb" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "kernels", marker = "extra == 'gpt-oss'" },
     { name = "loguru", specifier = ">=0.7.3" },

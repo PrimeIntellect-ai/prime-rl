@@ -13,3 +13,6 @@
 [submodule "prime-kernels"]
 	path = deps/prime-kernels
 	url = https://github.com/PrimeIntellect-ai/prime-kernels
+[submodule "deps/prime-envs-private"]
+	path = deps/prime-envs-private
+	url = https://github.com/PrimeIntellect-ai/prime-envs-private.git
