@@ -63,12 +63,13 @@ def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[T
     return entropy
 
 
-def shift_tensor_left(t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch seq"]:
+def shift_tensor_left(t: Tensor) -> Tensor:
     """Shifts the tensor one token to the left.
 
-    Used to create labels from input_ids: labels[i] = input_ids[i+1].
-    The last position is padded with 0 (a valid token index) since this value
-    will be shifted off by shift_tensor_right and never used.
+    Used to create labels from input_ids: labels[i] = input_ids[i+1], and to move
+    a per-token mask onto the next-token positions the LM head runs on.
+    The last position is padded with 0 (a valid token index, and False for a mask)
+    since this value will be shifted off by shift_tensor_right and never used.
     """
     return torch.cat([t[:, 1:], torch.full((t.shape[0], 1), 0, device=t.device, dtype=t.dtype)], dim=1)
 

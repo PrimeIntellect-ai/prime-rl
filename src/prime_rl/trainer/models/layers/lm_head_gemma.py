@@ -6,8 +6,11 @@ from torch import Tensor
 
 from prime_rl.trainer.models.layers.lm_head import (
     PrimeLmOutput,
+    _compact,
+    _expand,
     _online_logsumexp_and_weighted_update,
     _patch_model_forward,
+    lm_head_keep_index,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -23,21 +26,30 @@ class GemmaFusedOutputLinear(torch.nn.Linear):
         hidden_states: torch.Tensor,
         labels: torch.Tensor | None = None,
         temperature: Tensor | None = None,
+        keep_mask: Tensor | None = None,
     ) -> PrimeLmOutput:
         assert labels is not None, "GemmaFusedOutputLinear requires labels for chunked logprob computation"
         assert temperature is not None, "GemmaFusedOutputLinear requires per-token temperatures"
 
         b, s, h = hidden_states.shape
-        hidden_states = hidden_states.reshape(b * s, h).contiguous()
-        labels = labels.reshape(b * s).contiguous()
-        inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
+        n = b * s
+        hidden_states = hidden_states.reshape(n, h)
+        labels = labels.reshape(n)
+        inv_t = 1.0 / temperature.reshape(n)  # [N]
+
+        keep_index = lm_head_keep_index(keep_mask) if keep_mask is not None else None
 
         logprobs, entropy = _GemmaChunkedLogProbEntropyFn.apply(
-            hidden_states, self.weight, labels, inv_t, self.chunk_size, self.softcap
+            _compact(hidden_states, keep_index),
+            self.weight,
+            _compact(labels, keep_index),
+            _compact(inv_t, keep_index),
+            self.chunk_size,
+            self.softcap,
         )
 
-        logprobs = logprobs.reshape(b, s)
-        entropy = entropy.reshape(b, s)
+        logprobs = _expand(logprobs, keep_index, n).reshape(b, s)
+        entropy = _expand(entropy, keep_index, n).reshape(b, s)
         return PrimeLmOutput(logprobs=logprobs, entropy=entropy)
 
 
@@ -47,7 +59,11 @@ class GemmaVanillaOutputLinear(torch.nn.Linear):
         self.softcap = softcap
 
     def forward(
-        self, hidden_states: torch.Tensor, labels: torch.Tensor | None = None, temperature: Tensor | None = None
+        self,
+        hidden_states: torch.Tensor,
+        labels: torch.Tensor | None = None,
+        temperature: Tensor | None = None,
+        keep_mask: Tensor | None = None,
     ) -> PrimeLmOutput:
         logits = super().forward(hidden_states)
         logits = self.softcap * torch.tanh(logits / self.softcap)

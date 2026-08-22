@@ -455,3 +455,56 @@ def test_hf_model_fused_vs_vanilla_matches():
     # Compare results
     torch.testing.assert_close(fused_logprobs, vanilla_logprobs, rtol=1e-3, atol=1e-4)
     torch.testing.assert_close(fused_entropy, vanilla_entropy, rtol=1e-3, atol=1e-4)
+
+
+def test_fused_lm_head_keep_mask_matches_full_pass_cpu():
+    """Skipping masked tokens must leave every kept value — and their gradients — untouched."""
+    torch.manual_seed(0)
+    b, s, h, v = 1, 16, 8, 37
+    temperature = torch.rand(b, s, dtype=torch.float32) + 0.5
+    labels = torch.randint(0, v, (b, s), dtype=torch.long)
+    keep_mask = torch.rand(b, s) > 0.5
+    upstream = torch.randn(b, s, dtype=torch.float32)
+
+    hidden0 = torch.randn(b, s, h, dtype=torch.float32, requires_grad=True)
+    weight0 = torch.randn(v, h, dtype=torch.float32)
+
+    def run(keep: torch.Tensor | None):
+        hidden = hidden0.detach().clone().requires_grad_(True)
+        lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=5)
+        lm.weight = torch.nn.Parameter(weight0.detach().clone())
+        out = lm(hidden, labels, temperature=temperature, keep_mask=keep)
+        # Only kept tokens carry gradient, exactly as the loss does.
+        (out["logprobs"] * upstream * keep_mask).sum().backward()
+        return out["logprobs"], out["entropy"], hidden.grad, lm.weight.grad
+
+    logp_full, ent_full, grad_hidden_full, grad_weight_full = run(None)
+    logp_kept, ent_kept, grad_hidden_kept, grad_weight_kept = run(keep_mask)
+
+    # Per-token results are chunk-independent by construction; the slack is gemm rounding.
+    torch.testing.assert_close(logp_kept[keep_mask], logp_full[keep_mask], rtol=0, atol=1e-6)
+    torch.testing.assert_close(ent_kept[keep_mask], ent_full[keep_mask], rtol=0, atol=1e-6)
+    assert (logp_kept[~keep_mask] == 0).all()
+    assert (ent_kept[~keep_mask] == 0).all()
+    torch.testing.assert_close(grad_hidden_kept, grad_hidden_full, rtol=0, atol=1e-6)
+    torch.testing.assert_close(grad_weight_kept, grad_weight_full, rtol=0, atol=1e-6)
+
+
+def test_fused_lm_head_empty_keep_mask_still_grads_weight():
+    """An all-masked micro batch must keep the head in the autograd graph, or the rank
+    would skip backward collectives its peers still run."""
+    torch.manual_seed(0)
+    b, s, h, v = 1, 8, 8, 37
+    hidden = torch.randn(b, s, h, dtype=torch.float32, requires_grad=True)
+    lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=4)
+
+    out = lm(
+        hidden,
+        torch.randint(0, v, (b, s), dtype=torch.long),
+        temperature=torch.ones(b, s, dtype=torch.float32),
+        keep_mask=torch.zeros(b, s, dtype=torch.bool),
+    )
+    out["logprobs"].sum().backward()
+
+    assert lm.weight.grad is not None
+    assert hidden.grad is not None

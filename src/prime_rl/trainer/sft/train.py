@@ -260,6 +260,14 @@ def train(config: SFTConfig):
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     cp_size = parallel_dims.cp
 
+    skip_masked_head = config.model.skip_masked_lm_head_tokens
+    if skip_masked_head and not isinstance(config.model.fused_lm_head_token_chunk_size, int):
+        logger.warning(
+            "Ignoring model.skip_masked_lm_head_tokens: the vanilla LM head returns full-length logits, "
+            "so there is nothing to skip. Set model.fused_lm_head_token_chunk_size to an int to enable it."
+        )
+        skip_masked_head = False
+
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
@@ -314,6 +322,7 @@ def train(config: SFTConfig):
                     seq_lens=seq_lens,
                     labels=target_ids,
                     temperature=temperature,
+                    keep_mask=loss_mask if skip_masked_head else None,
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_type_ids,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
@@ -644,6 +653,9 @@ def train(config: SFTConfig):
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/peak_memory": peak_memory,
             "perf/mfu": mfu,
+            "perf/lm_head_token_fraction": (
+                global_token_count_val / num_tokens if skip_masked_head and num_tokens > 0 else 1.0
+            ),
             "step": progress.step,
         }
         asyncio.run(monitors.log(perf_metrics, step=progress.step))
