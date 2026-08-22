@@ -100,7 +100,7 @@ class NIXLWeightUpdateWorker(Worker):
         del inference_world_size, quantize_in_weight_transfer
         global_rank = rank_offset + self.device.index
         server_url = f"{host}:{port}"
-        set_ucx_env_defaults()
+        set_ucx_env_defaults(self.device.index)
         self.nixl_agent = NixlAgent(make_agent_name("inference", global_rank))
         self.model_express = ModelExpressSession(
             client=MxClient(server_url=server_url),
@@ -492,7 +492,11 @@ class NIXLWeightUpdateWorker(Worker):
         peer_names: dict[int, str],
     ) -> list[tuple[Any, Any, list[int]]]:
         pulls: list[tuple[Any, Any, list[int]]] = []
-        for agent_index, remote in sorted(remote_descs.items()):
+        agent_indices = sorted(remote_descs)
+        rotation = self.model_express.rank % len(agent_indices) if agent_indices else 0
+        agent_indices = agent_indices[rotation:] + agent_indices[:rotation]
+        for agent_index in agent_indices:
+            remote = remote_descs[agent_index]
             peer_name = peer_names.get(agent_index)
             if peer_name is None:
                 peer_name = self.nixl_agent.add_remote_agent(table.agents[agent_index].metadata)

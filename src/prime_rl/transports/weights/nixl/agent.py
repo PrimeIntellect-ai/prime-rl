@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import time
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from torch import Tensor
@@ -85,7 +86,60 @@ def make_agent_name(role: str, global_rank: int) -> str:
     return f"{role}-{socket.gethostname()}-r{global_rank}"
 
 
-def set_ucx_env_defaults() -> None:
+def set_ucx_env_defaults(device_index: int) -> None:
+    if "UCX_NET_DEVICES" not in os.environ:
+        import pynvml
+
+        visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+        visible_device = str(device_index)
+        if visible_devices:
+            visible_device = visible_devices.split(",")[device_index].strip()
+
+        pynvml.nvmlInit()
+        try:
+            if visible_device.isdecimal():
+                handle = pynvml.nvmlDeviceGetHandleByIndex(int(visible_device))
+            elif visible_device.startswith("GPU-"):
+                handle = pynvml.nvmlDeviceGetHandleByUUID(visible_device.encode())
+            else:
+                raise RuntimeError(f"Unsupported CUDA_VISIBLE_DEVICES entry for NIXL: {visible_device}")
+            bus_id = pynvml.nvmlDeviceGetPciInfo(handle).busId
+        finally:
+            pynvml.nvmlShutdown()
+
+        if isinstance(bus_id, bytes):
+            bus_id = bus_id.decode()
+        domain, bus, device = bus_id.rsplit(":", 2)
+        gpu_path = Path("/sys/bus/pci/devices") / f"{int(domain, 16):04x}:{bus.lower()}:{device.lower()}"
+        if not gpu_path.exists():
+            raise RuntimeError(f"GPU PCI device is missing from sysfs: {gpu_path}")
+
+        rdma_ports: list[tuple[str, Path]] = []
+        for hca_path in sorted(Path("/sys/class/infiniband").glob("*")):
+            for port_path in sorted((hca_path / "ports").glob("*")):
+                if (port_path / "link_layer").read_text().strip() != "InfiniBand":
+                    continue
+                if "ACTIVE" not in (port_path / "state").read_text():
+                    continue
+                rdma_ports.append((f"{hca_path.name}:{port_path.name}", (hca_path / "device").resolve()))
+        if not rdma_ports:
+            raise RuntimeError("NIXL requires an active InfiniBand port")
+
+        gpu_parts = gpu_path.resolve().parts
+        ports_by_distance: list[tuple[int, str]] = []
+        for port, device_path in rdma_ports:
+            device_parts = device_path.parts
+            common_parts = 0
+            for gpu_part, device_part in zip(gpu_parts, device_parts):
+                if gpu_part != device_part:
+                    break
+                common_parts += 1
+            distance = len(gpu_parts) + len(device_parts) - 2 * common_parts
+            ports_by_distance.append((distance, port))
+
+        os.environ["UCX_NET_DEVICES"] = min(ports_by_distance)[1]
+        os.environ.setdefault("UCX_MAX_RNDV_RAILS", "1")
+        os.environ.setdefault("UCX_MAX_RMA_RAILS", "1")
     os.environ.setdefault("UCX_TLS", "rc_x,rc,dc_x,dc,cuda_copy")
     os.environ.setdefault("UCX_IB_GPU_DIRECT_RDMA", "y")
     os.environ.setdefault("UCX_RNDV_SCHEME", "get_zcopy")
