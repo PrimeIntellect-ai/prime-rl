@@ -54,103 +54,59 @@ max_inflight = 4096
 name = "swe"
 ratio = 0.3
 curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
-
-[orchestrator.train.source.env.taskset]
-id = "r2e-gym"
-
-[orchestrator.train.source.env.agent.harness]
-id = "bash"
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["intellect-3.1", "swe"]
+env.taskset.id = "r2e-gym"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["intellect-3.1", "swe"]
 
 [[orchestrator.train.source]]
 name = "deepdive"
 ratio = 0.2
 curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
-
-[orchestrator.train.source.env.taskset]
-id = "deepdive"
-
-[orchestrator.train.source.env.agent.harness]
-id = "rlm"
-skills = ["search"]
-forward_env = ["SERPER_API_KEY"]
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["intellect-3.1", "deepdive"]
+env.taskset.id = "deepdive"
+env.agent.harness.id = "rlm"
+env.agent.harness.skills = ["search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.runtime.labels = ["intellect-3.1", "deepdive"]
 
 [[orchestrator.train.source]]
 name = "math"
 ratio = 0.3
 curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
-
-[orchestrator.train.source.env.taskset]
-id = "i3_math"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "i3_math"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [[orchestrator.train.source]]
 name = "logic"
 ratio = 0.2
 curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
-
-[orchestrator.train.source.env.taskset]
-id = "i3_logic"
-
-[orchestrator.train.source.env.taskset.filter]
-max = 0.874
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "i3_logic"
+env.taskset.filter.max = 0.874
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [[orchestrator.train.source]]
 name = "code"
 ratio = 0.2
 curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
-
-[orchestrator.train.source.env.taskset]
-id = "i3_code"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "i3_code"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [orchestrator.eval]
 interval = 25
 
 [[orchestrator.eval.source]]
 name = "swe-bench-verified"
-
-[orchestrator.eval.source.env.taskset]
-id = "swebench-verified"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "bash"
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["intellect-3.1", "swe-bench-verified"]
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["intellect-3.1", "swe-bench-verified"]
 
 [[orchestrator.eval.source]]
 name = "aime2025"
-
-[orchestrator.eval.source.env.taskset]
-id = "aime25"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "null"
-
-[orchestrator.eval.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "aime25"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [inference.vllm]
 tensor_parallel_size = 8

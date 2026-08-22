@@ -45,15 +45,9 @@ max_completion_tokens = 512
 [[orchestrator.train.source]]
 name = "wiki-search"
 curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
-
-[orchestrator.train.source.env.taskset]
-id = "wiki-search"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "wiki-search"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [ckpt] # Checkpoint at the end of training
 

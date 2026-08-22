@@ -40,6 +40,8 @@ num_infer_replicas = 3
 project = "swe-ablations"
 name = "glm45air-scaleswe"
 
+[monitors.prime]
+
 [weight_broadcast]
 type = "nccl"
 timeout = 3600
@@ -103,18 +105,10 @@ thinking_retention = "all"
 
 [[orchestrator.train.source]]
 name = "scaleswe"
-
-[orchestrator.train.source.env.taskset]
-id = "scaleswe"
-
-[orchestrator.train.source.env.agent.harness]
-id = "rlm"
-summarize_at_tokens = [65536, 131072]
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["glm45air-swe"]
-
-[monitors.prime]
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "rlm"
+env.agent.harness.summarize_at_tokens = [65536, 131072]
+env.agent.runtime.labels = ["glm45air-swe"]
 
 # --- Eval: SWE-Bench Verified at step 0 + every 20 steps, rlm harness on prime ---
 
@@ -123,19 +117,11 @@ interval = 20
 
 [[orchestrator.eval.source]]
 name = "swebench-verified"
-
-[orchestrator.eval.source.env.taskset]
-id = "swebench-verified"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "rlm"
-summarize_at_tokens = 98304
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["glm45air-swe"]
-
-[orchestrator.eval.source.env.agent.timeout]
-rollout = 3600
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "rlm"
+env.agent.harness.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["glm45air-swe"]
+env.agent.timeout.rollout = 3600
 
 # --- Inference ---
 
