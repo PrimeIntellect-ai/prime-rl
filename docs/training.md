@@ -263,8 +263,8 @@ Checkpointing is split across processes because the orchestrator and trainer can
 
 | Process | What's saved | Where |
 |---|---|---|
-| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_N/trainer/` |
-| Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_N/orchestrator/` |
+| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
+| Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 
 ### Enabling Checkpoints
@@ -307,6 +307,9 @@ uv run python scripts/dcp_to_hf.py --ckpt-dir outputs/my-run/checkpoints/step_10
 
 # multi-rank for faster gathers and models that don't fit one GPU
 uv run torchrun --nproc-per-node 8 scripts/dcp_to_hf.py --ckpt-dir outputs/my-run/checkpoints/step_10
+
+# no GPU (default on GPU-less machines): reads the model entries into host RAM
+uv run python scripts/dcp_to_hf.py --ckpt-dir outputs/my-run/checkpoints/step_10 --cpu
 ```
 
 The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `scripts/bf16_to_fp8.py <dir>`; dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `scripts/fp8_to_bf16.py <dir>`.

@@ -13,13 +13,18 @@ supported — the script exports full fine-tunes only.
 
 Usage (from the prime-rl repo; more ranks = faster gathers and writes, and
 models too big for one GPU need enough ranks to shard across):
-    uv run python scripts/dcp_to_hf.py --ckpt-dir <run>/checkpoints/step_N
+    uv run python scripts/dcp_to_hf.py --ckpt-dir <run>/checkpoints/step_{n}
     uv run torchrun --nproc-per-node 8 scripts/dcp_to_hf.py \
-        --ckpt-dir <run>/checkpoints/step_N --output-dir <out>
+        --ckpt-dir <run>/checkpoints/step_{n} --output-dir <out>
+
+``--cpu`` (the default when no GPU is available) converts without a process
+group or GPU: the checkpoint's model entries are read straight into host
+memory, so the machine needs RAM for the full model in its training dtype.
 """
 
 import json
 import os
+import shutil
 import socket
 from copy import deepcopy
 from pathlib import Path
@@ -52,7 +57,7 @@ RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
 
 class DcpToHfConfig(BaseConfig):
     ckpt_dir: Path
-    """The DCP checkpoint to convert (``<run>/checkpoints/step_N`` or ``.../step_N/trainer``)."""
+    """The DCP checkpoint to convert (``<run>/checkpoints/step_{n}`` or ``.../step_{n}/trainer``)."""
 
     output_dir: Path | None = None
     """Where to write the HF-format weights. Defaults to ``<ckpt_dir>/weights``."""
@@ -63,9 +68,12 @@ class DcpToHfConfig(BaseConfig):
     tokenizer: TokenizerConfig = TokenizerConfig()
     """Tokenizer config of the run. Read from the run's resolved config; CLI fields override."""
 
+    cpu: bool = False
+    """Convert on CPU without a process group. Needs host RAM for the full model. Defaults to on when no GPU is available."""
+
 
 def resolve_dcp_dir(ckpt_dir: Path) -> Path:
-    """The DCP checkpoint id for a step dir (``step_N``) or its ``trainer`` subdir."""
+    """The DCP checkpoint id for a step dir (``step_{n}``) or its ``trainer`` subdir."""
     if (ckpt_dir / "trainer" / ".metadata").exists():
         return ckpt_dir / "trainer"
     if (ckpt_dir / ".metadata").exists():
@@ -146,6 +154,53 @@ def save_model_assets(model, model_config: ModelConfig, tokenizer_config: Tokeni
     if tokenizer_config.name is None:
         tokenizer_config = tokenizer_config.model_copy(update={"name": model_config.name})
     setup_tokenizer(tokenizer_config).save_pretrained(output_dir)
+    # Local trust_remote_code models localize auto_map to plain module names, so the
+    # custom code files must travel with the weights.
+    source_dir = Path(model_config.name)
+    if source_dir.is_dir():
+        for path in source_dir.glob("*.py"):
+            shutil.copyfile(path, output_dir / path.name)
+
+
+def pop_tied_keys(model, state_dict: dict) -> None:
+    if getattr(model.config, "tie_word_embeddings", False):
+        for key in getattr(model, "_tied_weights_keys", []):
+            state_dict.pop(key, None)
+
+
+def convert_cpu(dcp_dir: Path, output_dir: Path, model_config: ModelConfig, tokenizer_config: TokenizerConfig) -> None:
+    """Convert without a process group: read the checkpoint's model entries into host
+    memory and use a meta-device model only for key resolution and the prime->HF chain."""
+    from torch.distributed.checkpoint.state_dict_loader import _load_state_dict_from_keys
+
+    from prime_rl.trainer.model import get_model, resolve_auto_attn
+    from prime_rl.utils.weights import save_state_dict
+
+    logger = get_logger()
+    if torch.cuda.is_available():
+        resolve_auto_attn(model_config)
+    elif model_config.attn == "auto":
+        # resolve_auto_attn probes the GPU; the meta model never runs kernels.
+        model_config.attn = "flash_attention_2"
+    model = get_model(model_config, device=torch.device("meta"), dtype=torch.bfloat16)
+
+    logger.info(f"Loading model entries from {dcp_dir} into host memory")
+    loaded = _load_state_dict_from_keys({"app.model"}, checkpoint_id=dcp_dir)
+    state_dict = (
+        loaded["app"]["model"]
+        if "app" in loaded
+        else {key.removeprefix("app.model."): value for key, value in loaded.items()}
+    )
+    state_dict = {key: value.to(torch.bfloat16) for key, value in state_dict.items()}
+
+    logger.info("Converting weights")
+    pop_tied_keys(model, state_dict)
+    state_dict = convert_state_dict_to_hf(model, state_dict)
+
+    logger.info(f"Writing HF weights to {output_dir}")
+    save_state_dict(state_dict, output_dir)
+    save_model_assets(model, model_config, tokenizer_config, output_dir)
+    logger.info(f"Done: {output_dir}")
 
 
 def main(config: DcpToHfConfig) -> None:
@@ -156,6 +211,10 @@ def main(config: DcpToHfConfig) -> None:
     output_dir = config.output_dir if config.output_dir is not None else step_dir / "weights"
     model_config, tokenizer_config = resolve_run_configs(config, step_dir)
     check_not_lora(model_config, dcp_dir)
+
+    if config.cpu or not torch.cuda.is_available():
+        convert_cpu(dcp_dir, output_dir, model_config, tokenizer_config)
+        return
 
     setup_single_process_env()
     world = get_world()
@@ -170,9 +229,7 @@ def main(config: DcpToHfConfig) -> None:
 
     logger.info("Gathering and converting weights")
     state_dict = gather_weights_parallel(model, dtype=torch.bfloat16)
-    if getattr(model.config, "tie_word_embeddings", False):
-        for key in getattr(model, "_tied_weights_keys", []):
-            state_dict.pop(key, None)
+    pop_tied_keys(model, state_dict)
     state_dict = convert_state_dict_to_hf(model, state_dict)
 
     logger.info(f"Writing HF weights to {output_dir}")

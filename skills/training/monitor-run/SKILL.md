@@ -58,7 +58,7 @@ After a restart, verify all processes are back up and progress resumed before th
 - `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the run dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
 - `{run_dir}/configs/` — resolved configs, written as JSON so explicit None settings round-trip (`rl.json` has the full picture).
 - `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
-- `{run_dir}/rollouts/step_N/{train,eval}/` — saved episodes (see Episodes below).
+- `{run_dir}/rollouts/step_{n}/{train,eval}/` — saved episodes (see Episodes below).
 
 ### Logs
 
@@ -144,8 +144,8 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 ### Episodes
 
 ```
-{run_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per episode as it completes
-{run_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
+{run_dir}/rollouts/step_{n}/{train,eval}/all/traces.jsonl        # appended per episode as it completes
+{run_dir}/rollouts/step_{n}/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
 
 JSONL files of native `vf.Episode` records (training tensors excluded), one line per episode.
@@ -164,7 +164,7 @@ jq '.traces[].rewards' {run_dir}/rollouts/step_42/train/effective/traces.jsonl
 jq 'select(.ok | not) | {id, env: .env.id, errors}' {run_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
-The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_N/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the episode subtrees.
+The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_{n}/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the episode subtrees.
 
 ### Common failure modes
 
