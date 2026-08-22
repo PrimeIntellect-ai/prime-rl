@@ -185,6 +185,7 @@ def train(config: TrainerConfig):
             config.weight_broadcast,
             parallel_dims,
             config.model.lora,
+            model_name=config.model.name,
         )
 
     if parallel_dims.cp_enabled:
@@ -585,7 +586,7 @@ def train(config: TrainerConfig):
             broadcast_weights_time = 0
         else:
             broadcast_unused = (
-                config.weight_broadcast.type in ("nccl", "nixl")
+                config.weight_broadcast.type in ("nccl", "nixl", "mx_refit")
                 and config.max_steps is not None
                 and progress.step >= config.max_steps - 1
             )

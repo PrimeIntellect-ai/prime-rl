@@ -30,6 +30,10 @@ from typing import TYPE_CHECKING
 import verifiers.v1 as vf
 from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
+from modelexpress_rl import ModelExpressControlClient
+
+from prime_rl.transports.weights.mx_refit import resolve_ready_version
+from prime_rl.utils.pathing import get_broadcast_dir
 from verifiers.v1.runtimes import set_base_sandbox_labels
 
 if TYPE_CHECKING:
@@ -77,7 +81,7 @@ from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transports.rollouts import setup_micro_batch_sender
 from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
-from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
+from prime_rl.utils.client import init_mx_refit_broadcast, init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.utils import (
@@ -187,6 +191,7 @@ class Orchestrator:
         self.resume_step = None
         self.lag_task = None
         self.model_express = None
+        self.mx_control = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -304,6 +309,16 @@ class Orchestrator:
             )
             self.model_express.publish()
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
+        elif config.weight_broadcast.type == "mx_refit":
+            await init_mx_refit_broadcast(
+                self.policy_inference.admin_clients,
+                config.weight_broadcast.host,
+                config.weight_broadcast.port,
+                config.weight_broadcast.timeout,
+            )
+            self.mx_control = ModelExpressControlClient.connect(
+                server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"
+            )
 
         self.lora_name = config.model.lora.name if config.model.lora else None
 
@@ -331,7 +346,8 @@ class Orchestrator:
         # with the trainer's startup broadcast (v{resume_step} on resume, v0 from
         # scratch).
         sync_version = self.resume_step if self.resume_step is not None else 0
-        if config.weight_broadcast.type == "nixl":
+        version_uid: str | None = None
+        if config.weight_broadcast.type in ("nixl", "mx_refit"):
             weights_path = None
         else:
             check_exists = config.weight_broadcast.type == "filesystem"
@@ -343,9 +359,17 @@ class Orchestrator:
             weights_path = get_weight_dir(
                 config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
             )
+        if self.mx_control is not None:
+            # Same version lifecycle as steady state (v0 is not special); resolve the
+            # trainer's startup version and wait for it to be READY.
+            version_uid = await resolve_ready_version(
+                self.mx_control, get_broadcast_dir(config.output_dir), sync_version
+            )
         if self.model_express is not None:
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
-        await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
+        await self.policy_inference.update_weights(
+            weights_path, lora_name=self.lora_name, step=sync_version, version_uid=version_uid
+        )
         if self.model_express is not None:
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
             # Complete the startup rendezvous before the watcher begins its next cycle.
@@ -356,6 +380,10 @@ class Orchestrator:
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 timeout=config.weight_broadcast.timeout,
             )
+        elif self.mx_control is not None:
+            # Retire the startup version (-> RELEASING) to unblock the trainer's
+            # startup broadcast, mirroring the watcher's post-update delete.
+            await asyncio.to_thread(self.mx_control.delete_weight_version, version_uid)
         if self.lora_name is not None:
             self.policy_inference.update_model_name(self.lora_name)
             self.policy.model_name = self.lora_name
@@ -421,6 +449,7 @@ class Orchestrator:
             lora_name=self.lora_name,
             ckpt_step=self.policy.version,
             model_express=self.model_express,
+            control=self.mx_control,
         )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
@@ -893,7 +922,7 @@ class Orchestrator:
         # The trainer skips the final in-memory weight broadcasts, so policy.version never
         # reaches the last step. Let the final batch through instead of waiting for it.
         building_final_batch_without_update = (
-            self.config.weight_broadcast.type in ("nccl", "nixl")
+            self.config.weight_broadcast.type in ("nccl", "nixl", "mx_refit")
             and self.config.max_steps is not None
             and self.progress.step >= self.config.max_steps - 1
         )

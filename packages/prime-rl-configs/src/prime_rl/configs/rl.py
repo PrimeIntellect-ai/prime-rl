@@ -18,6 +18,9 @@ from prime_rl.configs.orchestrator import (
     NIXLWeightBroadcastConfig as OrchestratorNIXLWeightBroadcastConfig,
 )
 from prime_rl.configs.orchestrator import (
+    MXRefitWeightBroadcastConfig as OrchestratorMXRefitWeightBroadcastConfig,
+)
+from prime_rl.configs.orchestrator import (
     OrchestratorConfig,
 )
 from prime_rl.configs.shared import (
@@ -36,6 +39,9 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.configs.trainer import (
     NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
+)
+from prime_rl.configs.trainer import (
+    MXRefitWeightBroadcastConfig as TrainerMXRefitWeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
     TokenizerConfig,
@@ -159,12 +165,22 @@ class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
     """ModelExpress session ID."""
 
 
+class SharedMXRefitWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
+    type: Literal["mx_refit"] = "mx_refit"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+
 class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
 
 SharedWeightBroadcastConfig: TypeAlias = Annotated[
-    SharedFileSystemWeightBroadcastConfig | SharedNCCLWeightBroadcastConfig | SharedNIXLWeightBroadcastConfig,
+    SharedFileSystemWeightBroadcastConfig
+    | SharedNCCLWeightBroadcastConfig
+    | SharedNIXLWeightBroadcastConfig
+    | SharedMXRefitWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 
@@ -463,7 +479,7 @@ class RLConfig(BaseConfig):
                 "LoRA training is not yet supported with in-memory weight broadcast. "
                 "Set weight_broadcast.type = 'filesystem'."
             )
-        if self.weight_broadcast.type in ("nccl", "nixl"):
+        if self.weight_broadcast.type in ("nccl", "nixl", "mx_refit"):
             inference_world_size = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
                 if self.inference
@@ -481,10 +497,16 @@ class RLConfig(BaseConfig):
                 )
                 trainer_config_type = TrainerNCCLWeightBroadcastConfig
                 orchestrator_config_type = OrchestratorNCCLWeightBroadcastConfig
-            else:
+            elif self.weight_broadcast.type == "nixl":
                 transport_config = dict(session_id=self.weight_broadcast.session_id)
                 trainer_config_type = TrainerNIXLWeightBroadcastConfig
                 orchestrator_config_type = OrchestratorNIXLWeightBroadcastConfig
+            else:  # mx_refit
+                # mx_refit versions are keyed by model_name + version UID, so no
+                # session_id (unlike nixl, which names NIXL session buffers with it).
+                transport_config = dict()
+                trainer_config_type = TrainerMXRefitWeightBroadcastConfig
+                orchestrator_config_type = OrchestratorMXRefitWeightBroadcastConfig
             self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
             self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
         elif self.weight_broadcast.type == "filesystem":

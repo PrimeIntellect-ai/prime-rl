@@ -8,9 +8,11 @@ import asyncio
 import time
 
 from modelexpress import p2p_pb2
+from modelexpress_rl import ModelExpressControlClient
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.types import Policy, VersionObserver
+from prime_rl.transports.weights.mx_refit import get_latest_uid_marker_step, resolve_ready_version
 from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import InferencePool
@@ -33,6 +35,7 @@ class WeightWatcher:
         ckpt_step: int = 0,
         poll_interval: float = 1.0,
         model_express: ModelExpressSession | None = None,
+        control: ModelExpressControlClient | None = None,
     ) -> None:
         self.config = config
         self.policy = policy
@@ -42,6 +45,7 @@ class WeightWatcher:
         self.ckpt_step = ckpt_step
         self.poll_interval = poll_interval
         self.model_express = model_express
+        self.control = control
 
         self.last_update_weights_time: float = 0.0
         self.last_wait_for_ckpt_time: float = 0.0
@@ -76,6 +80,15 @@ class WeightWatcher:
 
     def compute_next_ckpt_step(self) -> int:
         """Return the next policy version exposed by the configured transport."""
+        if self.control is not None:
+            # mx_refit carries the trainer's step explicitly in the uid marker,
+            # so read the latest published step rather than assume lockstep.
+            # TODO: replace the filesystem marker with a clean MX API that returns
+            # the latest version_id + version_number the trainer published.
+            broadcast_dir = get_broadcast_dir(self.config.output_dir)
+            latest = get_latest_uid_marker_step(broadcast_dir)
+            return max(self.ckpt_step, latest if latest is not None else self.ckpt_step)
+
         if self.model_express is not None:
             if self.config.max_steps is not None and self.ckpt_step >= self.config.max_steps - 2:
                 return self.ckpt_step
@@ -95,7 +108,20 @@ class WeightWatcher:
 
             t0 = time.perf_counter()
             weights_path = None
-            if self.model_express is not None:
+            version_uid: str | None = None
+            if self.control is not None:
+                # mx_refit: the trainer published this step's uid in a marker;
+                # resolve it and wait for the version to be READY (all ranks published).
+                # TODO: replace the filesystem marker with a clean MX API that returns
+                # the latest version_id + version_number the trainer published.
+                version_uid = await resolve_ready_version(
+                    self.control,
+                    get_broadcast_dir(self.config.output_dir),
+                    next_step,
+                    self.poll_interval,
+                    self.stopped,
+                )
+            elif self.model_express is not None:
                 await self.wait_for_model_express_status(p2p_pb2.SOURCE_STATUS_READY)
             else:
                 broadcast_dir = get_broadcast_dir(self.config.output_dir)
@@ -136,7 +162,9 @@ class WeightWatcher:
 
             get_logger().debug(f"Updating weights to step {next_step}")
             t1 = time.perf_counter()
-            await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
+            await self.inference.update_weights(
+                weights_path, lora_name=self.lora_name, step=next_step, version_uid=version_uid
+            )
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
             get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
@@ -153,7 +181,11 @@ class WeightWatcher:
                         f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
                     )
 
-            if self.model_express is not None:
+            if self.control is not None:
+                # Retire the version (-> RELEASING); unblocks the trainer's broadcast.
+                assert version_uid is not None
+                await asyncio.to_thread(self.control.delete_weight_version, version_uid)
+            elif self.model_express is not None:
                 await self.wait_for_model_express_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
     async def wait_for_model_express_status(self, status: int) -> None:

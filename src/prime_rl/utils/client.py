@@ -86,8 +86,16 @@ class InferencePool:
         )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+    async def update_weights(
+        self,
+        weight_dir: Path | None,
+        lora_name: str | None = None,
+        step: int = 0,
+        version_uid: str | None = None,
+    ) -> None:
+        await update_weights(
+            self._admin_clients, weight_dir, lora_name=lora_name, step=step, version_uid=version_uid
+        )
 
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this pool's model (one logprob per
@@ -276,6 +284,7 @@ async def update_weights(
     weight_dir: Path | None,
     lora_name: str | None = None,
     step: int = 0,
+    version_uid: str | None = None,
 ) -> None:
     """Update weights on static inference servers.
 
@@ -310,7 +319,7 @@ async def update_weights(
                     _admin_post(
                         admin_client,
                         "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
+                        json={"weight_dir": weight_dir_posix, "version_uid": version_uid},
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                     )
                     for admin_client in admin_clients
@@ -474,6 +483,30 @@ async def init_nixl_broadcast(
     await asyncio.gather(
         *[initialize(admin_client, index * workers_per_server) for index, admin_client in enumerate(admin_clients)]
     )
+
+
+async def init_mx_refit_broadcast(
+    admin_clients: list[AsyncClient],
+    host: str,
+    port: int,
+    timeout: int,
+) -> None:
+    """Build a ModelExpress reshard generator client on every vLLM worker.
+
+    Only the MX server address is needed: the version lifecycle carries the trainer
+    sources, so there is no rank offset or source count to configure (the worker
+    absorbs the nixl/nccl-shaped extras of ``/init_broadcaster``).
+    """
+
+    async def initialize(admin_client: AsyncClient) -> None:
+        await _admin_post(
+            admin_client,
+            "/init_broadcaster",
+            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
+            json={"host": host, "port": port},
+        )
+
+    await asyncio.gather(*[initialize(admin_client) for admin_client in admin_clients])
 
 
 async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:

@@ -589,8 +589,18 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     """ModelExpress session ID."""
 
 
+class MXRefitWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["mx_refit"] = "mx_refit"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig
+    | NCCLWeightBroadcastConfig
+    | NIXLWeightBroadcastConfig
+    | MXRefitWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 
