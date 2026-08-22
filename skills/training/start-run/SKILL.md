@@ -124,6 +124,10 @@ env.agent.runtime.type = "subprocess"
 - Config: `EvalsConfig` (`packages/prime-rl-configs/src/prime_rl/configs/evals.py`)
 - Entrypoint: `src/prime_rl/entrypoints/evals.py` (implementation: `src/prime_rl/evals/evals.py`)
 
+## Exporting checkpoints
+
+Trainer checkpoints are DCP-sharded (`<run_dir>/checkpoints/step_N/trainer`). Convert to HF safetensors with `uv run python scripts/dcp_to_hf.py --ckpt-dir <run_dir>/checkpoints/step_N` (writes `<ckpt_dir>/weights`, serveable via `uv run inference --vllm.model <dir>`; model config auto-read from the run's `configs/trainer.json`/`sft.json`; multi-rank via `torchrun --nproc-per-node N`; full fine-tunes only, LoRA rejected). Quantize a bf16 HF dir to blockwise FP8 with `scripts/bf16_to_fp8.py <dir>` (vLLM-native format); dequantize fp8-only releases with `scripts/fp8_to_bf16.py <dir>`.
+
 ## Summary
 
 | Command | Purpose | Typical use |
