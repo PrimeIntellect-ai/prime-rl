@@ -129,6 +129,17 @@ export MASTER_ADDR="${HOSTNAMES[$NUM_INFER_NODES]}"
 export MASTER_PORT=29500
 echo "MASTER_ADDR=${MASTER_ADDR}"
 echo "MASTER_PORT=${MASTER_PORT}"
+{% if use_nixl_broadcast -%}
+{% if launch_modelexpress -%}
+export WEIGHT_BROADCAST_HOST="$MASTER_ADDR"
+{% else -%}
+export WEIGHT_BROADCAST_HOST="{{ modelexpress_host }}"
+{% endif -%}
+export MODEL_EXPRESS_PORT={{ modelexpress_port }}
+export MODEL_EXPRESS_REDIS_PORT={{ modelexpress_redis_port }}
+echo "WEIGHT_BROADCAST_HOST=${WEIGHT_BROADCAST_HOST}"
+echo "MODEL_EXPRESS_PORT=${MODEL_EXPRESS_PORT}"
+{% endif %}
 
 # The orchestrator runs on trainer rank 0's node (SLURM_PROCID == NUM_INFER_NODES) by
 # default; with orchestrator_on_inference it moves to the last inference node (a decode
@@ -224,6 +235,83 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     # Infiniband setup
     IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
     export NCCL_IB_HCA=$IB_HCA
+
+{% if use_nixl_broadcast -%}
+    UCX_DIR="$PROJECT_DIR/third_party/ucx"
+    if [ ! -x "$UCX_DIR/bin/ucx_info" ]; then
+        echo "NIXL requires the UCX build installed by scripts/install_nixl_from_source.sh" >&2
+        exit 1
+    fi
+    export LD_LIBRARY_PATH="$UCX_DIR/lib:$UCX_DIR/lib/ucx:${LD_LIBRARY_PATH:-}"
+    UCX_TRANSPORTS=$("$UCX_DIR/bin/ucx_info" -d)
+    grep -q "Transport: cuda_copy" <<< "$UCX_TRANSPORTS" || {
+        echo "NIXL requires UCX cuda_copy support" >&2
+        exit 1
+    }
+    grep -q "Transport: rc_verbs" <<< "$UCX_TRANSPORTS" || {
+        echo "NIXL requires UCX rc_verbs support" >&2
+        exit 1
+    }
+{% if launch_modelexpress %}
+
+    if [ "$SLURM_PROCID" -eq "$NUM_INFER_NODES" ]; then
+        MX_BIN="$PROJECT_DIR/third_party/modelexpress/bin"
+        if [ ! -x "$MX_BIN/modelexpress-server" ] || [ ! -x "$MX_BIN/redis-server" ]; then
+            echo "ModelExpress server dependencies are missing; run scripts/install_modelexpress.sh" >&2
+            exit 1
+        fi
+
+        MX_STATE_DIR="$LOG_DIR/modelexpress"
+        mkdir -p "$MX_STATE_DIR/cache"
+        "$MX_BIN/redis-server" \
+            --port "$MODEL_EXPRESS_REDIS_PORT" \
+            --bind 127.0.0.1 \
+            --protected-mode no \
+            --save "" \
+            --appendonly no \
+            --dir "$MX_STATE_DIR" \
+            > "$MX_STATE_DIR/redis.log" 2>&1 &
+        REDIS_PID=$!
+        trap '[ -z "${MODEL_EXPRESS_PID:-}" ] || kill -TERM "$MODEL_EXPRESS_PID" 2>/dev/null; kill -TERM "$REDIS_PID" 2>/dev/null || true' EXIT
+
+        for _ in $(seq 1 60); do
+            timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$MODEL_EXPRESS_REDIS_PORT" 2>/dev/null && break
+            kill -0 "$REDIS_PID" 2>/dev/null || {
+                tail -50 "$MX_STATE_DIR/redis.log" >&2
+                exit 1
+            }
+            sleep 1
+        done
+        timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$MODEL_EXPRESS_REDIS_PORT" 2>/dev/null || {
+            echo "Redis did not become ready on port $MODEL_EXPRESS_REDIS_PORT" >&2
+            exit 1
+        }
+
+        MX_METADATA_BACKEND=redis \
+        REDIS_URL="redis://127.0.0.1:$MODEL_EXPRESS_REDIS_PORT" \
+        MX_HEARTBEAT_TIMEOUT_SECS=31536000 \
+            "$MX_BIN/modelexpress-server" \
+            --port "$MODEL_EXPRESS_PORT" \
+            --database-path "$MX_STATE_DIR/models.db" \
+            --cache-directory "$MX_STATE_DIR/cache" \
+            > "$MX_STATE_DIR/server.log" 2>&1 &
+        MODEL_EXPRESS_PID=$!
+    fi
+{% endif %}
+
+    for _ in $(seq 1 120); do
+        timeout 1 bash -c "echo > /dev/tcp/$WEIGHT_BROADCAST_HOST/$MODEL_EXPRESS_PORT" 2>/dev/null && break
+        if [ -n "${MODEL_EXPRESS_PID:-}" ] && ! kill -0 "$MODEL_EXPRESS_PID" 2>/dev/null; then
+            tail -50 "$MX_STATE_DIR/server.log" >&2
+            exit 1
+        fi
+        sleep 1
+    done
+    timeout 1 bash -c "echo > /dev/tcp/$WEIGHT_BROADCAST_HOST/$MODEL_EXPRESS_PORT" 2>/dev/null || {
+        echo "ModelExpress is not reachable at $WEIGHT_BROADCAST_HOST:$MODEL_EXPRESS_PORT" >&2
+        exit 1
+    }
+{% endif %}
 
 {% if num_infer_nodes > 0 -%}
 
@@ -413,7 +501,8 @@ else
         --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.rl.train \
         @ $CONFIG_DIR/trainer.json \
-        {% if use_zmq_transport %}--rollout_transport.host $ORCH_ADDR \
+        {% if use_nixl_broadcast %}--weight-broadcast.host $WEIGHT_BROADCAST_HOST \
+        {% endif %}{% if use_zmq_transport %}--rollout_transport.host $ORCH_ADDR \
         {% endif %}2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log &
 {% if num_infer_nodes > 0 %}    fi{% endif %}
 {% if num_infer_nodes > 0 %}
@@ -451,6 +540,7 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
 {%- endif %}
 
     {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
+    {% elif use_nixl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $WEIGHT_BROADCAST_HOST"
     {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
     {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
         2>&1 | tee $LOG_DIR/orchestrator.log &

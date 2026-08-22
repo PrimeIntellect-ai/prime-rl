@@ -74,7 +74,7 @@ class NIXLWeightBroadcast(WeightBroadcast):
         self.parallel_dims = parallel_dims
         self.world = get_world()
         if self.is_serving_rank:
-            set_ucx_env_defaults()
+            set_ucx_env_defaults(torch.cuda.current_device())
             self.nixl_agent = NixlAgent(make_agent_name("trainer", self.world.rank))
         self.initialized = False
         self.transfer_group_names: list[str] = []
