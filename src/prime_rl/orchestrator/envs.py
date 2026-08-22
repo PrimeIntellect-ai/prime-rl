@@ -20,6 +20,7 @@ keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Iterator, Sequence
 from itertools import islice
 from typing import Generic, TypeVar
@@ -30,7 +31,7 @@ from verifiers.v1.serve import EnvClient
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.generation_source import GenerationSource
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
 # servers concurrently with the orchestrator, and a server imports its env package
@@ -68,6 +69,7 @@ class Env:
     async def start(self) -> None:
         """Connect to the env server and load the taskset client-side."""
         get_logger().debug(f"Connecting {self.name} to env server {self.address}")
+        t0 = time.perf_counter()
         self._env_client = EnvClient(address=self.address)
         # The server may still be coming up (the launcher spawns it concurrently with
         # the orchestrator), so poll until it answers.
@@ -82,7 +84,7 @@ class Env:
             self.tasks = iter(materialized)
             self.num_tasks = len(materialized)
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
-        get_logger().info(f"Env {self.name} ready: num_tasks={num_tasks}")
+        get_logger().info(f"Env {self.name} ready in {format_time(time.perf_counter() - t0)} (num_tasks={num_tasks})")
 
     def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
         sampling = {**self.sampling_args}

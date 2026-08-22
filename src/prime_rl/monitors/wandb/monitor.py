@@ -16,6 +16,7 @@ from prime_rl.configs.monitors import WandbMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.wandb.overview import ensure_overview_view
 from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.logger import format_time
 
 if TYPE_CHECKING:
     import verifiers.v1 as vf
@@ -140,6 +141,8 @@ class WandbMonitor(Monitor):
 
     async def finalize(self) -> None:
         self.logger.info(f"Finalizing W&B run {self.wandb.id}")
+        t0 = time.perf_counter()
         # Explicit finish: in (experimental) shared mode the SDK's atexit finish does
         # not land the run state - without this, even clean runs decay to "crashed".
         await asyncio.to_thread(wandb.finish, exit_code=0)
+        self.logger.debug(f"Finalized W&B run in {format_time(time.perf_counter() - t0)}")

@@ -85,7 +85,7 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     client_config = config.model.client
     model_name = config.model.name
     renderer = create_renderer(tokenizer, config.renderer)
-    get_logger().info(f"Initialized {type(renderer).__name__} for {model_name}")
+    get_logger().debug(f"Initialized {type(renderer).__name__} for {model_name}")
     if config.any_policy_sourced:
         get_logger().info("Using direct renderer rollout client")
     else:
@@ -120,7 +120,7 @@ def setup_env_server_logging(log_level: str, json_logging: bool = False) -> None
 
 def set_default_executor(max_workers: int = 64) -> None:
     """Scale the default asyncio thread pool so asyncio.to_thread has enough capacity."""
-    get_logger().info(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
+    get_logger().debug(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
     asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
 
 

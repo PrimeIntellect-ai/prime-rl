@@ -21,7 +21,7 @@ from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path
 
 
@@ -194,7 +194,7 @@ class CheckpointManager:
         # Save sharded state
         dcp_save(state_dict, checkpoint_id=path)
 
-        self.logger.debug(f"Training checkpoint saved in {time.perf_counter() - start_time:.2f} seconds")
+        self.logger.debug(f"Saved training checkpoint in {format_time(time.perf_counter() - start_time)}")
 
     def load_from_path(
         self,
@@ -232,7 +232,7 @@ class CheckpointManager:
                     )
             dataloader.load_state_dict(torch.load(dataloader_path, weights_only=False))
 
-        self.logger.debug(f"Training checkpoint loaded in {time.perf_counter() - start_time:.2f} seconds")
+        self.logger.debug(f"Loaded training checkpoint in {format_time(time.perf_counter() - start_time)}")
 
     def load(
         self,

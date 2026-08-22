@@ -17,6 +17,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
 from dataclasses import dataclass
 from functools import cached_property
 
@@ -25,7 +26,7 @@ from torch._utils import _get_available_device_type
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 
 from prime_rl.configs.trainer import ModelConfig
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 
 device_type = _get_available_device_type() or "cuda"
 
@@ -105,7 +106,9 @@ class ParallelDims:
                 names.append(name)
 
         self.logger.info(f"Building {len(dims)}-D device mesh with {names}, {dims}")
+        t0 = time.perf_counter()
         mesh = init_device_mesh(device_type, dims, mesh_dim_names=names)
+        self.logger.debug(f"Built device mesh in {format_time(time.perf_counter() - t0)}")
 
         # Create all the submesh here to ensure all required process groups are
         # initialized:
@@ -163,7 +166,9 @@ class ParallelDims:
                 names.append(name)
 
         self.logger.info(f"Building {len(dims)}-D device mesh with {names}, {dims}")
+        t0 = time.perf_counter()
         mesh = init_device_mesh(device_type, dims, mesh_dim_names=names)
+        self.logger.debug(f"Built device mesh in {format_time(time.perf_counter() - t0)}")
 
         # Create all the submesh here to ensure all required process groups are
         # initialized:
