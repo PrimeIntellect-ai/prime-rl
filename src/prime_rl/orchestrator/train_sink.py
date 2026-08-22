@@ -70,7 +70,6 @@ class TrainSink:
         *,
         tokenizer,
         train_envs: TrainEnvs,
-        mm_token_type_ids_mapping: dict[int, int] | None,
         progress: Progress,
         batch_size: int | None,
         token_batch_size: int | None,
@@ -82,7 +81,6 @@ class TrainSink:
         self.config = config
         self.tokenizer = tokenizer
         self.train_envs = train_envs
-        self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.progress = progress
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
@@ -254,12 +252,7 @@ class TrainSink:
         samples_by_trace: dict[str, list[TrainingSample]] = {}
         temperature = env.sampling_args["temperature"]
         for trace in survivors:
-            samples = await asyncio.to_thread(
-                trace_to_samples,
-                trace,
-                env_name=env_name,
-                mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
-            )
+            samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
