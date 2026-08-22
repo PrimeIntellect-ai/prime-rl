@@ -574,9 +574,6 @@ class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     port: int = 29501
     """Port for the NCCL broadcast rendezvous."""
 
-    quantize_in_weight_transfer: bool = False
-    """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
-
 
 class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     type: Literal["nixl"] = "nixl"

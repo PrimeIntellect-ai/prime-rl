@@ -71,6 +71,8 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 
 OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly. It starts a `vllm-router` on `server.port` (default 8000, the client-facing URL) fronting the engine on `backend_port` (default 8100); admin endpoints must target the engine port directly.
 
+Before debugging dependency import or version errors from a reused checkout, run `uv sync --all-extras --all-packages --locked`. Stale packages left in `.venv` can be imported even when they are absent from the lockfile; for example, a mismatched `flashinfer-cubin` can prevent vLLM from starting.
+
 ```bash
 uv run inference --vllm.model Qwen/Qwen3-0.6B
 uv run inference --vllm.model Qwen/Qwen3-0.6B --vllm.enforce-eager

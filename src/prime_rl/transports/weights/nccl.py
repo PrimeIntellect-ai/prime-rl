@@ -1,70 +1,29 @@
-import pickle
+import json
 import time
 from pathlib import Path
-from typing import Callable, Generator, cast
+from typing import Generator, cast
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 from torch.distributed.tensor import DTensor
-from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-from vllm.distributed.utils import StatelessProcessGroup
+from vllm.distributed.weight_transfer.nccl_engine import (
+    NCCLTrainerSendWeightsArgs,
+    NCCLWeightTransferEngine,
+)
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
 from prime_rl.trainer.conversion_utils import get_max_layer_num
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightBroadcast
-from prime_rl.utils.client import NCCL_READY_MARKER
+from prime_rl.utils.client import NCCL_MANIFEST, NCCL_READY_MARKER, get_nccl_chunk_manifest
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 from prime_rl.utils.vlm import get_layer_prefix
-
-
-def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
-    """Broadcast an integer to a process group using NCCL communicator."""
-    integer_tensor = torch.tensor([integer], dtype=torch.long).cuda()
-    communicator.broadcast(integer_tensor, src=0)
-
-
-def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclCommunicator) -> None:
-    """Broadcast a state dict to NCCL process group using the PyNcclCommunicator."""
-    # Group tensors by dtype
-    dtype_groups: dict[torch.dtype, list[tuple[str, Tensor]]] = {}
-    for key, value in state_dict.items():
-        assert not isinstance(value, DTensor), (
-            "DTensor is not supported for broadcast, should have been converted to tensor already"
-        )
-        dtype = value.dtype
-        if dtype not in dtype_groups:
-            dtype_groups[dtype] = []
-        dtype_groups[dtype].append((key, value))
-
-    # Build metadata: for each dtype group, store keys and shapes
-    metadata = {}
-    for dtype, items in dtype_groups.items():
-        metadata[dtype] = [(key, value.shape, value.numel()) for key, value in items]
-
-    # Send metadata
-    state = pickle.dumps(metadata)
-    size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
-    communicator.broadcast(size_tensor, src=0)
-    state_tensor = torch.ByteTensor(list(state)).cuda()
-    communicator.broadcast(state_tensor, src=0)
-
-    # Concatenate and broadcast tensors grouped by dtype
-    for dtype, items in dtype_groups.items():
-        # Flatten all tensors and concatenate
-        flat_tensors = [value.flatten() for _, value in items]
-        concatenated = torch.cat(flat_tensors)
-        communicator.broadcast(concatenated, src=0)
-        del concatenated
-        # Clean up individual tensors
-        for _, value in items:
-            del value
 
 
 def filter_state_dict_by_layers(
@@ -98,67 +57,68 @@ def preprocess_layer_checkpoint(
     return revert_weight_conversion(model, layer_state_dict)
 
 
-def preprocess_layer_quantized(
-    model: nn.Module,
-    layer_state_dict: dict[str, Tensor],
-    layer_idx: int,
-) -> dict[str, Tensor]:
-    if layer_idx < 0:
-        return layer_state_dict
-    return model.convert_layer_to_vllm_kernel(layer_state_dict, layer_idx, quantize_fp8=True)
-
-
 class NCCLWeightBroadcastSender:
     def __init__(
         self,
         host: str,
         port: int,
-        rank: int,
         world_size: int,
-        device: int | str | torch.device,
-        timeout: int,
         dtype: torch.dtype = torch.bfloat16,
-        quantize_in_weight_transfer: bool = False,
     ):
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = dtype
-        self.quantize_in_weight_transfer = quantize_in_weight_transfer
 
         if self.world.is_master:
             disable_nccl_p2p_if_unavailable()
-            # Trainer is on rank 0 in process group with all inference GPUs
-            pg = StatelessProcessGroup.create(
-                host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
+            self.communicator = NCCLWeightTransferEngine.trainer_init(
+                {
+                    "master_address": host,
+                    "master_port": port,
+                    "world_size": world_size,
+                }
             )
-            self.communicator = PyNcclCommunicator(pg, device=device)
             self.logger.debug("NCCL broadcast initialized on master rank")
         else:
             self.logger.debug("NCCL broadcast initialized on non-master rank (no communicator)")
 
     @torch.no_grad()
-    def broadcast_weights(self, model: nn.Module, step: int) -> None:
-        """Broadcast the state dict of a model into the inference pool using NCCL."""
+    def broadcast_weights(self, model: nn.Module, step: int, save_dir: Path) -> None:
+        """Broadcast checkpoint-format model weights through vLLM's native NCCL engine."""
+        self._broadcast_native_weights(model, save_dir)
+
+    def _broadcast_native_weights(self, model: nn.Module, save_dir: Path) -> None:
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
-        num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
 
         if self.world.is_master:
-            broadcast_integer(num_state_dict_to_send, self.communicator)
+            self._write_manifest(save_dir / NCCL_MANIFEST, {"num_chunks": num_layers + 1})
 
-        self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
-        preprocess_fn: Callable[[nn.Module, dict[str, Tensor], int], dict[str, Tensor]]
-        if self.quantize_in_weight_transfer:
-            preprocess_fn = preprocess_layer_quantized
-        else:
-            preprocess_fn = preprocess_layer_checkpoint
-
-        for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
+        for chunk_id, (layer_id, layer_state_dict) in enumerate(
+            filter_state_dict_by_layers(state_dict, num_layers, layer_prefix)
+        ):
             layer_state_dict = self._resolve_dtensors(layer_state_dict)
-            layer_state_dict = preprocess_fn(model, layer_state_dict, layer_id)
-            if self.world.is_master:
-                broadcast_state_dict(layer_state_dict, self.communicator)
+            layer_state_dict = preprocess_layer_checkpoint(model, layer_state_dict, layer_id)
+            if not self.world.is_master:
+                continue
+
+            update_info = {
+                "names": list(layer_state_dict),
+                "dtype_names": [str(tensor.dtype).removeprefix("torch.") for tensor in layer_state_dict.values()],
+                "shapes": [list(tensor.shape) for tensor in layer_state_dict.values()],
+            }
+            self._write_manifest(get_nccl_chunk_manifest(save_dir, chunk_id), update_info)
+            NCCLWeightTransferEngine.trainer_send_weights(
+                iter(layer_state_dict.items()),
+                NCCLTrainerSendWeightsArgs(group=self.communicator),
+            )
+
+    @staticmethod
+    def _write_manifest(path: Path, payload: dict) -> None:
+        temporary_path = path.with_suffix(".tmp")
+        temporary_path.write_text(json.dumps(payload))
+        temporary_path.replace(path)
 
     def _resolve_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         for key, value in list(state_dict.items()):
@@ -174,7 +134,6 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self,
         output_dir: Path,
         config: NCCLWeightBroadcastConfig,
-        device: int | str | torch.device,
         dtype: torch.dtype = torch.bfloat16,
     ):
         super().__init__(output_dir)
@@ -183,12 +142,8 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
             config.host,
             config.port,
-            0,
             config.inference_world_size + 1,
-            device,
-            config.timeout,
             dtype,
-            quantize_in_weight_transfer=config.quantize_in_weight_transfer,
         )
 
     @torch.no_grad()
@@ -208,12 +163,16 @@ class NCCLWeightBroadcast(WeightBroadcast):
             self._wait_for_nccl_ready(save_dir)
         if self.world.world_size > 1:
             dist.barrier()
-        self.nccl_broadcast_sender.broadcast_weights(model, step)
+        self.nccl_broadcast_sender.broadcast_weights(model, step, save_dir)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
     def _notify_orchestrator(self, save_dir: Path) -> None:
         """Create the STABLE marker the orchestrator's weight watcher polls for."""
         save_dir.mkdir(parents=True, exist_ok=True)
+        (save_dir / NCCL_READY_MARKER).unlink(missing_ok=True)
+        (save_dir / NCCL_MANIFEST).unlink(missing_ok=True)
+        for chunk_manifest in save_dir.glob("NCCL_CHUNK_*.json"):
+            chunk_manifest.unlink()
         (save_dir / "STABLE").touch()
 
     def _wait_for_nccl_ready(self, save_dir: Path):

@@ -5,6 +5,10 @@ import uvloop
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.datastructures import State
+from vllm.distributed.weight_transfer.base import (
+    WeightTransferInitRequest,
+    WeightTransferUpdateRequest,
+)
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.openai.api_server import init_app_state
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
@@ -83,7 +87,23 @@ async def resume(request: Request):
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
-    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    update_info = data.get("update_info")
+    if update_info is not None:
+        await engine_client(request).update_weights(WeightTransferUpdateRequest(update_info=update_info))
+    else:
+        await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    return {"status": "ok"}
+
+
+@router.post("/start_weight_update")
+async def start_weight_update(request: Request):
+    await engine_client(request).start_weight_update()
+    return {"status": "ok"}
+
+
+@router.post("/finish_weight_update")
+async def finish_weight_update(request: Request):
+    await engine_client(request).finish_weight_update()
     return {"status": "ok"}
 
 
@@ -133,17 +153,29 @@ async def liveness(raw_request: Request):
 @router.post("/init_broadcaster")
 async def init_broadcaster(request: Request):
     data = await request.json()
-    host = data.get("host")
-    port = data.get("port")
-    timeout = data.get("timeout")
-    rank_offset = data.get("rank_offset")
-    inference_world_size = data.get("inference_world_size")
-    quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
-    session_id = data.get("session_id", "default")
-    await engine_client(request).collective_rpc(
-        "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer, session_id),
-    )
+    if data.get("backend") == "nixl":
+        await engine_client(request).collective_rpc(
+            "init_broadcaster",
+            args=(
+                data.get("host"),
+                data.get("port"),
+                data.get("rank_offset"),
+                data.get("inference_world_size"),
+                data.get("timeout"),
+                data.get("session_id", "default"),
+            ),
+        )
+    else:
+        await engine_client(request).init_weight_transfer_engine(
+            WeightTransferInitRequest(
+                init_info={
+                    "master_address": data.get("host"),
+                    "master_port": data.get("port"),
+                    "rank_offset": data.get("rank_offset") + 1,
+                    "world_size": data.get("inference_world_size") + 1,
+                }
+            )
+        )
     return {"status": "ok"}
 
 
@@ -229,8 +261,11 @@ def server(config: InferenceConfig):
     assert args is not None
     validate_parsed_serve_args(args)
 
-    # Set the worker extension class based on the broadcast backend
+    # Default NCCL uses vLLM's native worker lifecycle; the extension remains
+    # available for liveness and the custom quantized transfer path.
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
+    if config.weight_broadcast.type == "nccl":
+        args.weight_transfer_config = {"backend": "nccl"}
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)
