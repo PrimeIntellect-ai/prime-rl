@@ -8,6 +8,8 @@ from verifiers.v1.serve import env_config_data, serve_env
 from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.orchestrator.utils import setup_env_server_logging
 from prime_rl.utils.config import cli
+from prime_rl.utils.logger import get_logger
+from prime_rl.utils.platform_env import apply_platform_env
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 
@@ -19,7 +21,13 @@ def setup_worker(log_level: str | None, json_logging: bool, sandbox_labels: list
 
 @clean_exit
 def run_server(config: EnvServerConfig):
-    run_name = os.environ.get("PRL_RUN_NAME")
+    platform_overrides = apply_platform_env(config, "env-server")
+    if platform_overrides:
+        setup_env_server_logging(config.log.level, config.log.json_logging)
+        for override in platform_overrides:
+            get_logger().warning(override)
+
+    run_name = os.environ.get("PRL_RUN_NAME") or os.environ.get("PRL_RUN_ID")
     sandbox_labels = [run_name] if run_name else []
     # ``serve.pool`` (static or elastic) sizes the server. serve_env applies the worker
     # setup in this process and in every spawned worker.

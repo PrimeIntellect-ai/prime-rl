@@ -81,6 +81,7 @@ from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, s
 from prime_rl.utils.client import init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
+from prime_rl.utils.platform_env import apply_platform_env
 from prime_rl.utils.utils import (
     clean_exit,
     resolve_latest_ckpt_step,
@@ -149,7 +150,10 @@ class Orchestrator:
 
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
+        platform_overrides = apply_platform_env(config, "orchestrator")
         setup_logger(config.log.level, json_logging=config.log.json_logging)
+        for override in platform_overrides:
+            get_logger().warning(override)
         # Route the in-process v1 library logging through our handler. The
         # env server runs in a child process, so its logging is separate.
         intercept_vf_logging(logger="verifiers.v1", level="WARN")

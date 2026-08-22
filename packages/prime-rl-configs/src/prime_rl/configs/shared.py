@@ -7,12 +7,17 @@ from pydantic import AfterValidator, Field, model_validator
 
 from prime_rl.utils.config import BaseConfig
 
-# Launcher-managed env vars that a component's `env_vars` must not set: GPU partitioning
-# and the single shared W&B run. The launcher always sets these last, so allowing them in
-# `env_vars` would be a silent no-op (or, on multi-node, a footgun) — reject them instead.
+# Launcher-managed env vars that a component's `env_vars` must not set: platform wiring,
+# GPU partitioning, and the single shared W&B run. Launchers set these last, so allowing
+# them in `env_vars` would be a silent no-op (or, on multi-node, a footgun) — reject them.
 PROTECTED_ENV_VARS = frozenset(
     {
         "CUDA_VISIBLE_DEVICES",
+        "PRL_FORCE_PRIME_MONITOR",
+        "PRL_FORCE_WANDB_MONITOR",
+        "PRL_JSON_LOGGING",
+        "PRL_METRICS_PORT",
+        "PRL_OUTPUT_DIR",
         "PRL_RUN_ID",
         "PRL_RUN_NAME",
         "WANDB_RUN_ID",

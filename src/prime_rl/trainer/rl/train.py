@@ -64,6 +64,7 @@ from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer
+from prime_rl.utils.platform_env import apply_platform_env
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
@@ -73,12 +74,16 @@ from ring_flash_attn import substitute_hf_flash_attn
 
 @clean_exit
 def train(config: TrainerConfig):
+    platform_overrides = apply_platform_env(config, "trainer")
+
     # Setup world and logger
     world = get_world()
     logger = setup_logger(
         config.log.level,
         json_logging=config.log.json_logging,
     )
+    for override in platform_overrides:
+        logger.warning(override)
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     # Setup the monitors

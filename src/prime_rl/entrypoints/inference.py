@@ -11,6 +11,7 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import format_log_message, get_config_dir, latest_log_dir
+from prime_rl.utils.platform_env import apply_platform_env
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_INFERENCE_ENV_VARS,
@@ -123,7 +124,10 @@ def inference_slurm(config: InferenceConfig):
     """Run inference via SLURM."""
     assert config.slurm is not None
 
+    platform_overrides = apply_platform_env(config, "inference")
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
+    for override in platform_overrides:
+        logger.warning(override)
 
     config_dir = get_config_dir(config.output_dir)
     is_multi_node = config.deployment.type in ("multi_node", "disaggregated")
@@ -183,7 +187,10 @@ def inference_local(config: InferenceConfig):
     """Run inference locally: a router on ``server.port`` fronting the engine on ``backend_port``."""
     from prime_rl.inference.server import setup_vllm_env
 
+    platform_overrides = apply_platform_env(config, "inference")
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
+    for override in platform_overrides:
+        logger.warning(override)
 
     if config.dry_run:
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
