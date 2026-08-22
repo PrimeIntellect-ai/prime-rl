@@ -80,6 +80,14 @@ class Evals:
         self.env_server_procs: list[Popen] = []
         self.dispatcher_task: asyncio.Task | None = None
 
+        # Assigned in setup(); None-initialized so stop() can tear down a
+        # partially completed setup with plain attribute checks.
+        self.clients: InferenceClient | None = None
+        self.admin_clients: AdminClients | None = None
+        self.dispatcher: Dispatcher | None = None
+        self.inference_metrics: InferenceMetricsCollector | None = None
+        self.periodic_logger: PeriodicLogger | None = None
+
     async def setup(self) -> None:
         config = self.config
         set_default_executor()
@@ -437,21 +445,16 @@ class Evals:
 
     async def stop(self) -> None:
         """Best-effort teardown; tolerates a partially completed ``setup()``."""
-        periodic_logger: PeriodicLogger | None = getattr(self, "periodic_logger", None)
-        if periodic_logger is not None:
-            await periodic_logger.stop()
-        inference_metrics: InferenceMetricsCollector | None = getattr(self, "inference_metrics", None)
-        if inference_metrics is not None:
-            await inference_metrics.stop()
-        dispatcher: Dispatcher | None = getattr(self, "dispatcher", None)
-        if dispatcher is not None:
-            await dispatcher.stop()
-        pool: InferenceClient | None = getattr(self, "pool", None)
-        if pool is not None:
-            await pool.aclose()
-        admin: AdminClients | None = getattr(self, "admin", None)
-        if admin is not None:
-            await admin.aclose()
+        if self.periodic_logger is not None:
+            await self.periodic_logger.stop()
+        if self.inference_metrics is not None:
+            await self.inference_metrics.stop()
+        if self.dispatcher is not None:
+            await self.dispatcher.stop()
+        if self.clients is not None:
+            await self.clients.aclose()
+        if self.admin_clients is not None:
+            await self.admin_clients.aclose()
         cleanup_processes(self.env_server_procs)
 
 

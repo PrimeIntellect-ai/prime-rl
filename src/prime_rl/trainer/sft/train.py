@@ -425,7 +425,7 @@ def train(config: SFTConfig):
         # in place would race an evals process already reloading it.
         startup_version = checkpoint_step or 0
         if world.is_master:
-            prune_broadcasts_beyond(config.output_dir, startup_version)
+            prune_broadcasts_beyond(config.run_dir, startup_version)
         if weight_broadcast.REQUIRES_LIVE_CONSUMER or not weight_broadcast.is_finished(startup_version):
             logger.info(f"Broadcasting startup policy weights (v{startup_version}) for online evals")
             weight_broadcast.broadcast(model, startup_version)

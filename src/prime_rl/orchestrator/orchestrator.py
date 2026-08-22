@@ -122,8 +122,8 @@ class Orchestrator:
 
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
-    clients: InferenceClient
-    admin_clients: AdminClients
+    clients: InferenceClient | None
+    admin_clients: AdminClients | None
     sender: MicroBatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
@@ -174,6 +174,11 @@ class Orchestrator:
         self.version_advanced = asyncio.Event()
         self.wait_for_policy_time = 0.0
         self.component_tasks = []
+
+        # Always assigned by ``setup()``; None-initialized so teardown can run
+        # on a partially completed setup with plain attribute checks
+        self.clients = None
+        self.admin_clients = None
 
         # Optional attributes — ``setup()`` populates them when the relevant
         # config is present
@@ -989,9 +994,9 @@ class Orchestrator:
             self.component_tasks.clear()
             if self.inference_metrics is not None:
                 await self.inference_metrics.stop()
-            if getattr(self, "clients", None) is not None:
+            if self.clients is not None:
                 await self.clients.aclose()
-            if getattr(self, "admin_clients", None) is not None:
+            if self.admin_clients is not None:
                 await self.admin_clients.aclose()
             if self.train_envs is not None:
                 for env in self.train_envs:
