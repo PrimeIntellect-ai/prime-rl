@@ -6,7 +6,7 @@ from httpx import AsyncClient
 from prime_rl.configs.orchestrator import ConcurrencyConfig
 from prime_rl.orchestrator.concurrency import (
     PREEMPTION_CUT_FRACTION,
-    QUEUE_CUT_FRACTION,
+    PROBE_FACTOR,
     QUEUE_PERSISTENCE_POLLS,
     ConcurrencyController,
     EngineLoadSample,
@@ -193,8 +193,9 @@ def test_persistent_queue_soft_cuts_without_cancelling_active_work() -> None:
         controller.observe([make_sample(throughput=100.0, waiting=60)])
 
     assert controller.signal == "soft"
-    assert controller.max_inflight == int(inflight * QUEUE_CUT_FRACTION)
-    assert limits == [int(inflight * QUEUE_CUT_FRACTION)]
+    target = int(inflight / PROBE_FACTOR)
+    assert controller.max_inflight == target
+    assert limits == [target]
     assert cancellations == []
     assert controller.draining
     assert not controller.escalated

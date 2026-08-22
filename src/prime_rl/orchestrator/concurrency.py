@@ -316,6 +316,7 @@ class ConcurrencyController:
         if capacity_queue_persisted and self.probe_phase == "baseline" and self.incumbent > self.floor:
             target = int(self.clamp(math.floor(self.incumbent / PROBE_FACTOR)))
             self.resize_down(target, inflight, reason="persistent engine queue", cancel=False)
+            self.draining = True
             self.reset_optimizer(target, direction="down")
             return
 
