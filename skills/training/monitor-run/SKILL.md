@@ -136,8 +136,8 @@ All metrics print to the console log (and W&B when configured).
 For live vLLM stats, query Prometheus directly:
 
 ```bash
-curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  # engine port (8000 is the router)
-# vllm:num_requests_running, vllm:num_requests_waiting, vllm:gpu_cache_usage_perc (→1.0 = KV cache saturated)
+curl -s http://localhost:8100/metrics | grep -E "generation_tokens|num_requests|kv_cache_usage|gpu_cache_usage"  # engine port (8000 is the router)
+# generation_tokens drives adaptive throughput probes; request queues and KV usage are safety guardrails
 ```
 
 ### Episodes
