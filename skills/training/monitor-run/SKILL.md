@@ -137,7 +137,7 @@ For live vLLM stats, query Prometheus directly:
 
 ```bash
 curl -s http://localhost:8100/metrics | grep -E "generation_tokens|num_requests|kv_cache_usage|gpu_cache_usage"  # engine port (8000 is the router)
-# generation_tokens drives adaptive throughput probes; request queues and KV usage are safety guardrails
+# generation_tokens drives upward concurrency probes; sustained request queues and KV usage are safety guardrails
 ```
 
 ### Episodes

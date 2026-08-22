@@ -421,10 +421,10 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 
 
 class ConcurrencyConfig(BaseConfig):
-    """Adaptive in-flight concurrency control. The orchestrator probes nearby
-    episode caps and keeps the largest one near maximum inference throughput,
-    subject to KV, queue, and preemption guardrails. These fields only bound
-    and seed the search."""
+    """Adaptive in-flight concurrency control. The orchestrator probes upward
+    after completed pipeline turnovers and keeps the largest episode cap near
+    maximum inference throughput. Only KV, sustained queue, and preemption
+    pressure reduce it. These fields bound and seed the search."""
 
     initial_inflight: int | None = Field(None, ge=1)
     """Optional initial in-flight episodes to start from. Set it when a good value is known to skip the initial ramp; otherwise auto-derive a pessimistic bound at runtime."""

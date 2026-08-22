@@ -2,13 +2,14 @@
 
 A unit is whatever the dispatcher admits against one permit — the controller
 treats it as a black box. There is no workload or architecture model: the
-controller runs bracketed throughput probes and keeps the largest cap within
-five percent of the local throughput maximum:
+controller runs bracketed upward throughput probes and keeps the largest cap
+within five percent of the local throughput maximum:
 
-- **Probe** neighboring caps while the engines are clear and the cap binds
-  admission. Each candidate is measured between two incumbent windows to
-  reject slow workload drift. Upward probes are accepted while they preserve
-  near-peak throughput; downward probes must materially improve it.
+- **Probe up** after each completed pipeline turnover while the engines are
+  clear and the cap binds admission. Each candidate is measured between two
+  incumbent windows to reject slow workload drift. Throughput may veto an
+  increase, but never justifies shrinking an agentic episode pool: engine
+  demand also varies with sandbox, verifier, and tool-call phases.
 - **Trim** above ``KV_USAGE_SOFT_CAP``: lower the cap to what the engines
   hold at ``KV_USAGE_TARGET`` and let completions drain the pool (soft). If
   usage still climbs past ``KV_USAGE_HARD_CAP`` — units maturing in place
@@ -44,7 +45,10 @@ PROBE_FACTOR = 1.25
 """Multiplicative distance between the incumbent and a probe cap."""
 
 PROBE_THROUGHPUT_TOLERANCE = 0.05
-"""Near-peak tolerance for upward probes and minimum gain for downward probes."""
+"""Near-peak tolerance for accepting an upward probe."""
+
+PROBE_MIN_TURNOVER = 1.0
+"""Completed pipeline turnovers required between upward probes."""
 
 PROBE_WINDOW_POLLS = 3
 """Qualified throughput polls in each baseline or probe window."""
@@ -124,7 +128,6 @@ class EngineLoadSample:
 
 
 ProbePhase = Literal["baseline", "probe", "confirm"]
-ProbeDirection = Literal["up", "down"]
 
 
 class ConcurrencyController:
@@ -143,7 +146,6 @@ class ConcurrencyController:
         self.turnover = 0.0
         self.signal: Signal = "clear"
         self.prev_waiting: dict[str, int] = {}
-        self.prev_capacity_waiting: dict[str, int] = {}
         self.queue_overload_polls = 0
         self.trim_cooldown = 0
         self.escalation_grace = 0
@@ -154,13 +156,13 @@ class ConcurrencyController:
 
         self.incumbent = self.max_inflight
         self.probe_phase: ProbePhase = "baseline"
-        self.probe_direction: ProbeDirection = "up"
         self.probe_cap: int | None = None
         self.baseline_before: float | None = None
         self.probe_throughput: float | None = None
         self.throughput_samples: list[float] = []
         self.settle_polls = 0
         self.probe_cooldown = 0
+        self.last_probe_turnover = 0.0
         self.throughput_engine_ids: frozenset[str] | None = None
 
         self.set_limit: Callable[[int], None] | None = None
@@ -187,6 +189,8 @@ class ConcurrencyController:
 
     def record_episode(self, env_name: str, kind: str, tokens: int, duration: float) -> None:
         """Advance the scale-independent pipeline-turnover clock."""
+        if tokens <= 0:
+            return
         # The dispatcher releases the permit before this hook fires, so add
         # the completing episode back to the turnover denominator.
         inflight = (self.get_inflight() if self.get_inflight is not None else 0) + 1
@@ -214,24 +218,16 @@ class ConcurrencyController:
         total_running = 0
         total_queued = 0
         preempted = False
-        capacity_queue_persisted = False
         for sample in samples:
             if sample.preemptions_delta > 0:
                 preempted = True
                 worst = "hard"
             if sample.waiting > 0 and self.prev_waiting.get(sample.engine_id, 0) > 0:
                 worst = max(worst, "soft", key=SEVERITY.__getitem__)
-            capacity_waiting = sample.waiting_capacity if sample.waiting_capacity is not None else sample.waiting
-            if capacity_waiting > 0 and self.prev_capacity_waiting.get(sample.engine_id, 0) > 0:
-                capacity_queue_persisted = True
             max_usage = max(max_usage, sample.kv_usage)
             total_running += sample.running
             total_queued += sample.waiting_capacity if sample.waiting_capacity is not None else sample.waiting
         self.prev_waiting = {sample.engine_id: sample.waiting for sample in samples}
-        self.prev_capacity_waiting = {
-            sample.engine_id: sample.waiting_capacity if sample.waiting_capacity is not None else sample.waiting
-            for sample in samples
-        }
 
         if total_running > 0 and total_queued > QUEUE_RATIO * total_running:
             self.queue_overload_polls += 1
@@ -289,7 +285,7 @@ class ConcurrencyController:
             self.resize_down(target, inflight, reason=reason)
             self.draining = True
             self.escalated = True
-            self.reset_optimizer(target, direction="down")
+            self.reset_optimizer(target)
             return
 
         if max_usage > KV_USAGE_SOFT_CAP and inflight > 0 and self.trim_cooldown == 0:
@@ -302,7 +298,7 @@ class ConcurrencyController:
                 cancel=hard,
             )
             self.trim_cooldown = KV_TRIM_COOLDOWN_POLLS
-            self.reset_optimizer(target, direction="down")
+            self.reset_optimizer(target)
             return
 
         if total_queued > 0 and self.probe_phase != "baseline":
@@ -311,12 +307,6 @@ class ConcurrencyController:
         if max_usage > KV_USAGE_GROW and self.probe_phase != "baseline":
             self.abort_probe(inflight, reason=f"kv headroom during throughput probe (usage {max_usage:.2f})")
             return
-        if capacity_queue_persisted and self.probe_phase == "baseline" and self.incumbent > self.floor:
-            target = int(self.clamp(math.floor(self.incumbent / PROBE_FACTOR)))
-            self.resize_down(target, inflight, reason="persistent engine queue", cancel=False)
-            self.reset_optimizer(target, direction="down")
-            return
-
         throughput_values = [sample.generation_tokens_per_s for sample in samples]
         engine_ids = frozenset(sample.engine_id for sample in samples)
         if self.throughput_engine_ids is None:
@@ -335,7 +325,7 @@ class ConcurrencyController:
             and cap_reached
         )
         if qualified:
-            self.observe_throughput(sum(value or 0.0 for value in throughput_values), inflight)
+            self.observe_throughput(sum(value or 0.0 for value in throughput_values))
 
     # ── internals ────────────────────────────────────────────────────────────
 
@@ -349,13 +339,15 @@ class ConcurrencyController:
         if cancel and self.on_overload is not None and inflight > target:
             self.on_overload(inflight - target)
 
-    def observe_throughput(self, throughput: float, inflight: int) -> None:
-        """Advance one qualified window of the bracketed throughput search."""
+    def observe_throughput(self, throughput: float) -> None:
+        """Advance one qualified window of the bracketed upward search."""
         if self.settle_polls > 0:
             self.settle_polls -= 1
             return
         if self.probe_phase == "baseline" and self.probe_cooldown > 0:
             self.probe_cooldown -= 1
+            return
+        if self.probe_phase == "baseline" and self.turnover - self.last_probe_turnover < PROBE_MIN_TURNOVER:
             return
 
         self.throughput_samples.append(throughput)
@@ -366,7 +358,7 @@ class ConcurrencyController:
 
         if self.probe_phase == "baseline":
             self.baseline_before = window_throughput
-            self.start_probe(inflight)
+            self.start_probe()
             return
         if self.probe_phase == "probe":
             self.probe_throughput = window_throughput
@@ -381,89 +373,64 @@ class ConcurrencyController:
         assert self.probe_cap is not None
         baseline = (self.baseline_before + window_throughput) / 2
         gain = self.probe_throughput / baseline - 1
-        direction = self.probe_direction
         probe_cap = self.probe_cap
-        if direction == "up":
-            accepted = gain >= -PROBE_THROUGHPUT_TOLERANCE
-        else:
-            accepted = gain >= PROBE_THROUGHPUT_TOLERANCE
+        accepted = gain >= -PROBE_THROUGHPUT_TOLERANCE
 
         if accepted:
             self.incumbent = probe_cap
             self.cap = float(probe_cap)
             self.apply_limit(
                 probe_cap,
-                reason=f"throughput probe {direction} accepted ({gain:+.1%})",
+                reason=f"throughput probe up accepted ({gain:+.1%})",
             )
-            self.probe_direction = direction
             self.probe_cooldown = 0
         else:
             self.cap = float(self.incumbent)
             self.apply_limit(
                 self.incumbent,
-                reason=f"throughput probe {direction} rejected ({gain:+.1%})",
+                reason=f"throughput probe up rejected ({gain:+.1%})",
             )
-            self.probe_direction = "down" if direction == "up" else "up"
             self.probe_cooldown = PROBE_COOLDOWN_POLLS
         self.probe_phase = "baseline"
         self.probe_cap = None
         self.baseline_before = None
         self.probe_throughput = None
         self.settle_polls = PROBE_SETTLE_POLLS
+        self.last_probe_turnover = self.turnover
 
-    def start_probe(self, inflight: int) -> None:
-        direction = self.probe_direction
-        if direction == "up":
-            target = int(self.clamp(math.ceil(self.incumbent * PROBE_FACTOR)))
-            if target == self.incumbent:
-                direction = "down"
-        if direction == "down":
-            target = int(self.clamp(math.floor(self.incumbent / PROBE_FACTOR)))
-            if target == self.incumbent:
-                direction = "up"
-                target = int(self.clamp(math.ceil(self.incumbent * PROBE_FACTOR)))
+    def start_probe(self) -> None:
+        target = int(self.clamp(math.ceil(self.incumbent * PROBE_FACTOR)))
         if target == self.incumbent:
             self.probe_cooldown = PROBE_COOLDOWN_POLLS
             self.baseline_before = None
+            self.last_probe_turnover = self.turnover
             return
 
-        self.probe_direction = direction
         self.probe_cap = target
         self.probe_phase = "probe"
         self.cap = float(target)
-        if target < self.incumbent:
-            self.resize_down(target, inflight, reason="throughput probe down", cancel=False)
-        else:
-            self.apply_limit(target, reason="throughput probe up")
+        self.apply_limit(target, reason="throughput probe up")
         self.settle_polls = PROBE_SETTLE_POLLS
 
     def abort_probe(self, inflight: int, *, reason: str) -> None:
         target = self.incumbent
-        if self.probe_direction == "down" and self.probe_cap is not None:
-            target = self.probe_cap
         if self.max_inflight > target:
             self.resize_down(target, inflight, reason=reason, cancel=False)
         else:
             self.cap = float(target)
             self.apply_limit(target, reason=reason)
-        self.reset_optimizer(target, cooldown=PROBE_COOLDOWN_POLLS, direction="down")
+        self.reset_optimizer(target, cooldown=PROBE_COOLDOWN_POLLS)
 
-    def reset_optimizer(
-        self,
-        incumbent: int,
-        *,
-        cooldown: int = 0,
-        direction: ProbeDirection = "up",
-    ) -> None:
+    def reset_optimizer(self, incumbent: int, *, cooldown: int = 0) -> None:
         self.incumbent = incumbent
         self.probe_phase = "baseline"
-        self.probe_direction = direction
         self.probe_cap = None
         self.baseline_before = None
         self.probe_throughput = None
         self.throughput_samples.clear()
         self.settle_polls = PROBE_SETTLE_POLLS
         self.probe_cooldown = cooldown
+        self.last_probe_turnover = self.turnover
 
     def apply_limit(self, n_max: int, *, reason: str | None) -> None:
         if n_max == self.max_inflight:
