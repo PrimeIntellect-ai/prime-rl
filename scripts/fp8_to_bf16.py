@@ -51,6 +51,8 @@ def main() -> None:
 
     config = json.loads((input_dir / "config.json").read_text())
     quantization_config = config.pop("quantization_config", {})
+    if quantization_config.get("scale_fmt") == "ue8m0":
+        raise ValueError("ue8m0 scales are not supported - only plain float weight_scale_inv checkpoints")
     block_size = tuple(quantization_config.get("weight_block_size", [128, 128]))
 
     index_path = input_dir / "model.safetensors.index.json"
