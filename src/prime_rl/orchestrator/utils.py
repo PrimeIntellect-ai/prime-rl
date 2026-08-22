@@ -8,8 +8,6 @@ from typing import Any
 
 import verifiers.v1 as vf
 
-from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.clients import AdminClients, InferenceClient
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
 
 
@@ -61,36 +59,6 @@ def episode_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) ->
     in_flight = min(total, max(0, policy.end - policy.start))
     in_queue = total - in_flight
     return total, in_flight, in_queue
-
-
-async def setup_policy_clients(*, config: OrchestratorConfig, tokenizer):
-    """Build the live policy inference clients + admin plane + matching renderer.
-    Returns ``(renderer, clients, admin)``.
-
-    Training is renderer-only: the renderer object is the canonical
-    messages → token ids path (sft backfill, opsd scoring prefixes, echo role
-    attribution) and is always built. The renderer-client sampling path is
-    wired onto the pool; when no train env samples from the live policy the
-    renderer is still kept for client-side tokenization and the pool's evals
-    use plain chat-completions."""
-    from renderers.base import create_renderer
-
-    client_config = config.model.client
-    model_name = config.model.name
-    renderer = create_renderer(tokenizer, config.renderer)
-    get_logger().info(f"Initialized {type(renderer).__name__} for {model_name}")
-    if config.any_policy_sourced:
-        get_logger().info("Using direct renderer rollout client")
-    else:
-        get_logger().info("No policy-sourced train env — renderer kept for client-side tokenization only")
-    clients = InferenceClient(
-        client_config,
-        model_name=model_name,
-        train_client_type="renderer",
-        eval_client_type="openai_chat_completions",
-        renderer_config=config.renderer,
-    )
-    return renderer, clients, AdminClients(client_config)
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):

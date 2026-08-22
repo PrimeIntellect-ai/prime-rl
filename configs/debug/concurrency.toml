@@ -41,6 +41,8 @@ num_infer_replicas = 1
 project = "swe-ablations"
 name = "debug-concurrency"
 
+[monitors.prime]
+
 [weight_broadcast]
 type = "nccl"
 timeout = 3600
@@ -104,17 +106,9 @@ thinking_retention = "all"
 
 [[orchestrator.train.source]]
 name = "scaleswe"
-
-[orchestrator.train.source.env.taskset]
-id = "scaleswe"
-
-[orchestrator.train.source.env.agent.harness]
-id = "bash"
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["debug-concurrency"]
-
-[monitors.prime]
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["debug-concurrency"]
 
 # --- Eval: SWE-Bench Verified at step 0 + every 20 steps, rlm harness on prime ---
 
@@ -124,18 +118,10 @@ interval = 20
 [[orchestrator.eval.source]]
 name = "swebench-verified"
 num_examples = 100
-
-[orchestrator.eval.source.env.taskset]
-id = "swebench-verified"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "bash"
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["debug-concurrency"]
-
-[orchestrator.eval.source.env.agent.timeout]
-rollout = 3600
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["debug-concurrency"]
+env.agent.timeout.rollout = 3600
 
 # --- Inference ---
 

@@ -29,17 +29,16 @@ import verifiers.v1 as vf
 from verifiers.v1.runtimes import set_base_sandbox_labels
 
 if TYPE_CHECKING:
-    from renderers.base import Renderer
     from transformers.tokenization_utils import PreTrainedTokenizer
 
     from prime_rl.orchestrator.ckpt import CheckpointManager
-    from prime_rl.orchestrator.clients import AdminClients, InferenceClient
     from prime_rl.transports.rollouts.base import MicroBatchSender
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
+from prime_rl.orchestrator.clients import AdminClients, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -68,7 +67,6 @@ from prime_rl.orchestrator.utils import (
     eval_work,
     intercept_vf_logging,
     set_default_executor,
-    setup_policy_clients,
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -136,8 +134,6 @@ class Orchestrator:
     periodic_logger: PeriodicLogger
 
     # Set by ``setup()`` only when relevant config is present
-    renderer: Renderer | None
-    mm_token_type_ids_mapping: dict[int, int] | None
     heart: Heartbeat | None
     inference_metrics: InferenceMetricsCollector | None
     eval_envs: EvalEnvs | None
@@ -182,8 +178,6 @@ class Orchestrator:
 
         # Optional attributes — ``setup()`` populates them when the relevant
         # config is present
-        self.renderer = None
-        self.mm_token_type_ids_mapping = None
         self.heart = None
         self.inference_metrics = None
         self.eval_envs = None
@@ -209,14 +203,14 @@ class Orchestrator:
         get_logger().info(
             f"Initializing policy inference pool (base_url={config.model.client.base_url}, model={config.model.name})"
         )
-        self.renderer, self.clients, self.admin_clients = await setup_policy_clients(
-            config=config, tokenizer=self.tokenizer
+        self.clients = InferenceClient(
+            config.model.client,
+            model_name=config.model.name,
+            train_client_type="renderer",
+            eval_client_type="openai_chat_completions",
+            renderer_config=config.renderer,
         )
-        self.mm_token_type_ids_mapping = (
-            getattr(self.renderer, "mm_token_type_id_map", None) if self.renderer is not None else None
-        )
-        if self.mm_token_type_ids_mapping == {}:
-            self.mm_token_type_ids_mapping = None
+        self.admin_clients = AdminClients(config.model.client)
 
         get_logger().info(f"Initializing monitors ({config.monitors})")
         await monitors.setup(
@@ -373,7 +367,6 @@ class Orchestrator:
             config,
             tokenizer=self.tokenizer,
             train_envs=self.train_envs,
-            mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             progress=self.progress,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,

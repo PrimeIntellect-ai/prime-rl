@@ -187,15 +187,9 @@ num_examples = 32
 
 [[eval.source]]
 name = "reverse-text"
-
-[eval.source.env.taskset]
-id = "reverse-text"
-
-[eval.source.env.agent.harness]
-id = "null"
-
-[eval.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [inference]
 
