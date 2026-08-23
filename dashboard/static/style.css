@@ -402,11 +402,11 @@ mark.hit {
 
 /* ------------------------------------------------------------------ logs */
 /* vertical stack of component panes (trainer / orchestrator / inference / envs) */
-/* fixed comfortable pane height; the stack scrolls, maximize fills the tab */
-#log-panes { flex: 1; display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; padding-right: 10px; }
+/* split view always fills the tab: panes share the height equally */
+#log-panes { flex: 1; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .log-pane {
-  flex: none;
-  height: 300px;
+  flex: 1 1 0;
+  min-height: 80px;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--hairline);
