@@ -16,6 +16,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.trainer.models.layers.row_sparse import backbone_keep_index, mask_grad
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -68,7 +69,12 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        keep_mask: torch.Tensor | None = None,
+        keep_index: torch.Tensor | None = None,
     ) -> torch.FloatTensor:
+        # Stop-grad through context rows: gradients flowing out of this layer's
+        # kept rows never propagate into context rows of the layer below.
+        hidden_states = mask_grad(hidden_states, keep_mask)
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states, _ = self.self_attn(
@@ -76,12 +82,13 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            keep_index=keep_index,
         )
         hidden_states = residual + hidden_states
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, keep_index=keep_index)
         return residual + hidden_states
 
 
@@ -160,12 +167,16 @@ class Qwen3Model(Qwen3PreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        keep_mask: Optional[torch.Tensor] = None,
     ) -> BaseModelOutputWithPast:
         r"""
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
+        keep_mask (`torch.Tensor` of shape `(batch, seq)`, *optional*):
+            Rows that keep gradients (``model.stop_grad_context_tokens``). The forward
+            is unchanged; the backward is row-sparse (see layers/row_sparse.py).
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -184,12 +195,22 @@ class Qwen3Model(Qwen3PreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
+        keep_index = None
+        if keep_mask is not None and torch.is_grad_enabled():
+            keep_index = backbone_keep_index(keep_mask)
+            if keep_index is not None:
+                torch._dynamo.mark_dynamic(keep_index, 0)
+            else:
+                keep_mask = None  # nothing masked — run the plain path
+
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                keep_mask=keep_mask,
+                keep_index=keep_index,
             )
 
         hidden_states = self.norm(hidden_states)

@@ -1351,7 +1351,13 @@ def setup_model(
     if isinstance(config.fused_lm_head_token_chunk_size, int):
         lm_head_chunk_size = config.fused_lm_head_token_chunk_size
 
-    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
+    if config.stop_grad_context_tokens and not type(model).__module__.startswith("prime_rl.trainer.models.qwen3."):
+        raise ValueError(
+            "model.stop_grad_context_tokens currently requires the custom Qwen3 dense implementation "
+            f"(got {type(model).__module__}); other backbones don't accept keep_mask yet."
+        )
+
+    inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, stop_grad_context=config.stop_grad_context_tokens)
 
     apply_quantization(model, config)
 
