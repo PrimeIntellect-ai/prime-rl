@@ -165,6 +165,23 @@ select:focus, .search:focus { border-color: var(--grey-6); }
   inset: 0 auto 0 0;
   background: repeating-linear-gradient(90deg, var(--accent) 0 6px, transparent 6px 9px);
 }
+/* unbounded runs: no percentage to show — while running, a lime sweep signals liveness */
+.ov-bar.indeterminate.live .sweep {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(90deg, var(--accent) 0 6px, transparent 6px 9px);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 40%, #000 60%, transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 40%, #000 60%, transparent 100%);
+  mask-size: 25% 100%;
+  -webkit-mask-size: 25% 100%;
+  mask-repeat: no-repeat;
+  -webkit-mask-repeat: no-repeat;
+  animation: bar-sweep 4s linear infinite;
+}
+@keyframes bar-sweep {
+  from { mask-position: -30% 0; -webkit-mask-position: -30% 0; }
+  to { mask-position: 130% 0; -webkit-mask-position: 130% 0; }
+}
 
 /* slider controls (smoothing, pane size) */
 .ctl {
@@ -404,18 +421,20 @@ mark.hit {
 
 /* ------------------------------------------------------------------ logs */
 /* vertical stack of component panes (trainer / orchestrator / inference / envs) */
-#log-panes { flex: 1; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+/* fixed comfortable pane height; the stack scrolls, maximize fills the tab */
+#log-panes { flex: 1; display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; padding-right: 10px; }
 .log-pane {
-  flex: 1 1 0;
-  min-height: 100px;
+  flex: none;
+  height: 300px;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--hairline);
   background: var(--grey-1);
   min-width: 0;
 }
+#log-panes.maxed { overflow: hidden; }
 #log-panes.maxed .log-pane { display: none; }
-#log-panes.maxed .log-pane.maximized { display: flex; }
+#log-panes.maxed .log-pane.maximized { display: flex; flex: 1; height: auto; }
 .log-pane-head {
   display: flex;
   align-items: center;
@@ -460,7 +479,12 @@ mark.hit {
 .fg96 { color: #7adfff; } .fg97 { color: var(--grey-6); }
 
 /* ---------------------------------------------------------------- traces */
-#step-slider { flex: 1; max-width: 420px; accent-color: var(--accent); }
+/* step selector: one block per rollout step, filled up to the selection */
+#step-blocks { flex: 1; display: flex; gap: 2px; height: 16px; min-width: 0; }
+.sb-cell { flex: 1; min-width: 0; background: var(--grey-2); border: 1px solid var(--hairline); cursor: pointer; }
+.sb-cell:hover { border-color: var(--grey-6); }
+.sb-cell.on { background: var(--accent); border-color: var(--accent); }
+.sb-cell.eval { box-shadow: inset 0 -3px 0 var(--infra); }
 #trace-filter-wrap { position: relative; }
 #trace-filter-btn { display: inline-flex; align-items: center; gap: 6px; }
 #trace-filter-btn.active { color: var(--accent); border-color: var(--accent); }

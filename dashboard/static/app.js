@@ -184,7 +184,12 @@ function renderOverview() {
     `<div class="steps">${(step ?? 0).toLocaleString()}${meta.max_steps ? ` / ${meta.max_steps.toLocaleString()}` : ""} Steps</div></div>` +
     fields.map(([label, value]) => `<div class="ov-field"><span class="lbl">${label}</span>${value}</div>`).join("") +
     `</div>` +
-    (pct != null ? `<div class="ov-bar"><div class="fill" style="width:${pct.toFixed(2)}%"></div></div>` : "");
+    (pct != null
+      ? `<div class="ov-bar"><div class="fill" style="width:${pct.toFixed(2)}%"></div></div>`
+      : step != null
+        ? // unbounded run: no percentage — grey track, lime sweep while running
+          `<div class="ov-bar indeterminate${status === "running" ? " live" : ""}"><div class="sweep"></div></div>`
+        : "");
 }
 
 function updateHash() {
@@ -1153,11 +1158,16 @@ function adjustKindSubset() {
 function renderStepControl() {
   const traces = state.traces;
   const steps = traces.steps;
-  const slider = $("#step-slider");
   const idx = steps.findIndex((s) => s.step === traces.step);
-  slider.max = Math.max(0, steps.length - 1);
-  slider.value = Math.max(0, idx);
-  slider.disabled = steps.length <= 1;
+  $("#step-blocks").innerHTML = steps
+    .map((s, i) => {
+      const hasEval = s.counts["eval/all"] || s.counts["eval/effective"];
+      return (
+        `<span class="sb-cell${i <= idx ? " on" : ""}${hasEval ? " eval" : ""}" data-i="${i}"` +
+        ` title="step ${s.step}${hasEval ? " · eval" : ""}"></span>`
+      );
+    })
+    .join("");
   $("#step-prev").disabled = idx <= 0;
   $("#step-next").disabled = idx < 0 || idx >= steps.length - 1;
   const info = stepInfo(traces.step);
@@ -1774,7 +1784,16 @@ $("#log-search").addEventListener("input", () => {
 });
 $("#log-older").addEventListener("click", loadOlder);
 
-$("#step-slider").addEventListener("input", (e) => selectStepByIndex(+e.target.value));
+$("#step-blocks").addEventListener("click", (e) => {
+  const cell = e.target.closest(".sb-cell");
+  if (cell) selectStepByIndex(+cell.dataset.i);
+});
+// scrub across blocks with the button held
+$("#step-blocks").addEventListener("pointerover", (e) => {
+  if (!(e.buttons & 1)) return;
+  const cell = e.target.closest(".sb-cell");
+  if (cell) selectStepByIndex(+cell.dataset.i);
+});
 $("#step-prev").addEventListener("click", () => {
   const idx = state.traces.steps.findIndex((s) => s.step === state.traces.step);
   selectStepByIndex(idx - 1);
