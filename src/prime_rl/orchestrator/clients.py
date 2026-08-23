@@ -86,9 +86,8 @@ class AdminClients:
 
     def __init__(self, client_config: ClientConfig):
         self.clients = setup_admin_clients(client_config)
-        # When admin URLs bypass a router, health-check the client-facing
-        # (router) endpoint instead of each engine - it only turns healthy
-        # once all engines are healthy.
+        # When admin URLs bypass a router, also health-check the client-facing
+        # (router) endpoint - it only starts serving once its workers are healthy.
         self._router_clients = (
             setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
             if client_config.admin_base_url
@@ -98,7 +97,14 @@ class AdminClients:
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
 
     async def wait_for_ready(self, model_name: str) -> None:
-        await check_health(self._router_clients or self.clients, timeout=self._wait_for_ready_timeout)
+        # The engines are waited on even when a router fronts them: the llm-d
+        # router (Envoy) 404s /health, which check_health treats as "no health
+        # route", so the router alone is not a readiness signal. The router
+        # owns the info-level waiting log; the per-engine waits log at debug.
+        await asyncio.gather(
+            check_health(self.clients, timeout=self._wait_for_ready_timeout, quiet=bool(self._router_clients)),
+            check_health(self._router_clients, timeout=self._wait_for_ready_timeout),
+        )
         await maybe_check_has_model(self.clients, model_name, skip_model_check=self._skip_model_check)
 
     async def aclose(self) -> None:
@@ -191,8 +197,15 @@ async def maybe_check_has_model(
 
 
 async def check_health(
-    admin_clients: list[AsyncClient], interval: int = 1, log_interval: int = 30, timeout: int = 1800
+    admin_clients: list[AsyncClient],
+    interval: int = 1,
+    log_interval: int = 30,
+    timeout: int = 1800,
+    quiet: bool = False,
 ) -> None:
+    """Wait until every client's /health responds. With ``quiet``, the periodic
+    waiting lines log at debug instead of info - used for engines fronted by a
+    router, so startup logs one waiting line instead of one per engine."""
     logger = get_logger()
 
     async def _check_health(admin_client: AsyncClient) -> None:
@@ -209,9 +222,8 @@ async def check_health(
                 return
             except Exception as e:
                 if wait_time % log_interval == 0 and wait_time > 0:
-                    logger.info(
-                        f"Waiting for inference server at {admin_client.base_url} to start up ({wait_time}s elapsed)"
-                    )
+                    log = logger.debug if quiet else logger.info
+                    log(f"Waiting for inference server at {admin_client.base_url} to start up ({wait_time}s elapsed)")
                     logger.debug(f"Inference server at {admin_client.base_url} not reachable: {e!r}")
                 await asyncio.sleep(interval)
                 wait_time += interval
