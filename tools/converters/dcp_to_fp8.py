@@ -14,6 +14,7 @@ Writes to ``<ckpt_dir>/weights-FP8`` by default.
 import argparse
 from pathlib import Path
 
+import torch.distributed as dist
 from bf16_to_fp8 import convert as bf16_to_fp8
 from dcp_to_bf16 import convert as dcp_to_bf16
 
@@ -30,6 +31,9 @@ def main() -> None:
     args = parser.parse_args()
 
     bf16_dir = dcp_to_bf16(args.ckpt_dir)
+    # The fp8 pass is master-only and can run for minutes; tear down the process
+    # group first so the other ranks exit instead of idling toward the NCCL timeout.
+    dist.destroy_process_group()
     if get_world().is_master:
         bf16_to_fp8(bf16_dir, args.output_dir, args.block_size)
 
