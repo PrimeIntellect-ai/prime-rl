@@ -131,17 +131,19 @@ def save_model_assets(model, model_config: ModelConfig, tokenizer_config: Tokeni
             shutil.copyfile(path, output_dir / path.name)
 
 
-def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
+def load_and_convert(ckpt_dir: Path):
+    """DCP-load a checkpoint and gather it as a rank-partial HF-format bf16 state dict.
+
+    Returns ``(model, model_config, tokenizer_config, state_dict, step_dir)``.
+    """
     logger = setup_logger("info")
 
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
-    output_dir = output_dir if output_dir is not None else step_dir / "weights"
     model_config, tokenizer_config = resolve_run_configs(step_dir)
     check_not_lora(model_config, dcp_dir)
 
     setup_single_process_env()
-    world = get_world()
     setup_torch_distributed()
 
     resolve_ep(model_config)
@@ -157,10 +159,17 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
         for key in getattr(model, "_tied_weights_keys", []):
             state_dict.pop(key, None)
     state_dict = convert_state_dict_to_hf(model, state_dict)
+    return model, model_config, tokenizer_config, state_dict, step_dir
+
+
+def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
+    logger = get_logger()
+    model, model_config, tokenizer_config, state_dict, step_dir = load_and_convert(ckpt_dir)
+    output_dir = output_dir if output_dir is not None else step_dir / "weights"
 
     logger.info(f"Writing HF weights to {output_dir}")
     save_state_dict_parallel(state_dict, output_dir)
-    if world.is_master:
+    if get_world().is_master:
         save_model_assets(model, model_config, tokenizer_config, output_dir)
         logger.info(f"Done: {output_dir}")
     return output_dir

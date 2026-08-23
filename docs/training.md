@@ -309,7 +309,7 @@ uv run python tools/converters/dcp_to_bf16.py outputs/my-run/checkpoints/step_10
 uv run torchrun --nproc-per-node 8 tools/converters/dcp_to_bf16.py outputs/my-run/checkpoints/step_10
 ```
 
-The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/converters/bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/converters/dcp_to_fp8.py <ckpt_dir>` (writes the bf16 export plus `<ckpt_dir>/weights-FP8`); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/converters/fp8_to_bf16.py <dir>`.
+The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/converters/bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/converters/dcp_to_fp8.py <ckpt_dir>` (each rank quantizes its gathered slice, writes only `<ckpt_dir>/weights-FP8` — no intermediate bf16 export); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/converters/fp8_to_bf16.py <dir>`.
 
 ## Observability
 

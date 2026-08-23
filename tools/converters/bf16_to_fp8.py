@@ -52,6 +52,36 @@ def should_quantize(name: str, tensor: torch.Tensor) -> bool:
     )
 
 
+def quantize_state_dict(
+    tensors: dict[str, torch.Tensor], block_size: int, device: str
+) -> tuple[dict[str, torch.Tensor], list[str]]:
+    """Quantize the quantizable tensors of one state-dict slice; returns (out, modules kept in bf16)."""
+    out: dict[str, torch.Tensor] = {}
+    modules_to_not_convert: list[str] = []
+    for name, tensor in tensors.items():
+        if should_quantize(name, tensor):
+            quantized, scales = quantize_to_fp8_blockwise(tensor.to(device), block_size)
+            out[name] = quantized.cpu()
+            out[name + "_scale_inv"] = scales.cpu()
+        else:
+            if name.endswith(".weight") and tensor.ndim == 2 and tensor.is_floating_point():
+                modules_to_not_convert.append(name.removesuffix(".weight"))
+            if name.endswith(".weight") and tensor.ndim > 2 and tensor.numel() > 1_000_000:
+                print(f"Warning: leaving large {tensor.ndim}D tensor unquantized: {name} {tuple(tensor.shape)}")
+            out[name] = tensor.cpu()
+    return out, modules_to_not_convert
+
+
+def quantization_config(modules_to_not_convert: list[str], block_size: int) -> dict:
+    return {
+        "quant_method": "fp8",
+        "fmt": "e4m3",
+        "activation_scheme": "dynamic",
+        "weight_block_size": [block_size, block_size],
+        "modules_to_not_convert": sorted(set(modules_to_not_convert)),
+    }
+
+
 def list_shards(model_dir: Path) -> list[str]:
     index_path = model_dir / "model.safetensors.index.json"
     if index_path.exists():
@@ -74,21 +104,11 @@ def convert(input_dir: Path, output_dir: Path | None = None, block_size: int = 1
     num_quantized = 0
 
     for shard_name in list_shards(input_dir):
-        out_shard: dict[str, torch.Tensor] = {}
         with safe_open(input_dir / shard_name, framework="pt", device=device) as f:
-            for name in f.keys():
-                tensor = f.get_tensor(name)
-                if should_quantize(name, tensor):
-                    quantized, scales = quantize_to_fp8_blockwise(tensor, block_size)
-                    out_shard[name] = quantized.cpu()
-                    out_shard[name + "_scale_inv"] = scales.cpu()
-                    num_quantized += 1
-                else:
-                    if name.endswith(".weight") and tensor.ndim == 2 and tensor.is_floating_point():
-                        modules_to_not_convert.append(name.removesuffix(".weight"))
-                    if name.endswith(".weight") and tensor.ndim > 2 and tensor.numel() > 1_000_000:
-                        print(f"Warning: leaving large {tensor.ndim}D tensor unquantized: {name} {tuple(tensor.shape)}")
-                    out_shard[name] = tensor.cpu()
+            tensors = {name: f.get_tensor(name) for name in f.keys()}
+        out_shard, shard_modules = quantize_state_dict(tensors, block_size, device)
+        modules_to_not_convert.extend(shard_modules)
+        num_quantized += sum(1 for name in out_shard if name.endswith("_scale_inv"))
         for name, tensor in out_shard.items():
             weight_map[name] = shard_name
             total_size += tensor.nbytes
@@ -107,13 +127,7 @@ def convert(input_dir: Path, output_dir: Path | None = None, block_size: int = 1
 
     config_path = input_dir / "config.json"
     config = json.loads(config_path.read_text())
-    config["quantization_config"] = {
-        "quant_method": "fp8",
-        "fmt": "e4m3",
-        "activation_scheme": "dynamic",
-        "weight_block_size": [block_size, block_size],
-        "modules_to_not_convert": sorted(set(modules_to_not_convert)),
-    }
+    config["quantization_config"] = quantization_config(modules_to_not_convert, block_size)
     (output_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     print(f"Done: {num_quantized} weights quantized -> {output_dir}")
     return output_dir
