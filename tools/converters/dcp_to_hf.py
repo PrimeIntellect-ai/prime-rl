@@ -11,11 +11,14 @@ supported — the script exports full fine-tunes only.
 
 Usage (from the prime-rl repo; more ranks = faster gathers and writes, and
 models too big for one GPU need enough ranks to shard across):
-    uv run python tools/converters/dcp_to_hf.py --ckpt-dir <run>/checkpoints/step_{n}
+    uv run python tools/converters/dcp_to_hf.py <run>/checkpoints/step_{n} [output_dir]
     uv run torchrun --nproc-per-node 8 tools/converters/dcp_to_hf.py \
-        --ckpt-dir <run>/checkpoints/step_{n} --output-dir <out>
+        <run>/checkpoints/step_{n} [output_dir]
+
+Writes to ``<ckpt_dir>/weights`` by default.
 """
 
+import argparse
 import json
 import os
 import shutil
@@ -33,7 +36,6 @@ from prime_rl.trainer.model import setup_model, setup_processor, setup_tokenizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.utils import setup_torch_distributed
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.config import BaseConfig, cli
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
@@ -47,14 +49,6 @@ from prime_rl.utils.weights import (
 CONVERSION_OVERRIDES = {"compile": None, "ac": None, "dp_replicate": 1, "cp": 1, "ep": "auto"}
 
 RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
-
-
-class DcpToHfConfig(BaseConfig):
-    ckpt_dir: Path
-    """The DCP checkpoint to convert (``<run>/checkpoints/step_{n}`` or ``.../step_{n}/trainer``)."""
-
-    output_dir: Path | None = None
-    """Where to write the HF-format weights. Defaults to ``<ckpt_dir>/weights``."""
 
 
 def resolve_dcp_dir(ckpt_dir: Path) -> Path:
@@ -137,12 +131,19 @@ def save_model_assets(model, model_config: ModelConfig, tokenizer_config: Tokeni
             shutil.copyfile(path, output_dir / path.name)
 
 
-def main(config: DcpToHfConfig) -> None:
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "ckpt_dir", type=Path, help="the DCP checkpoint (<run>/checkpoints/step_{n} or .../step_{n}/trainer)"
+    )
+    parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <ckpt_dir>/weights")
+    args = parser.parse_args()
+
     logger = setup_logger("info")
 
-    dcp_dir = resolve_dcp_dir(config.ckpt_dir)
+    dcp_dir = resolve_dcp_dir(args.ckpt_dir)
     step_dir = dcp_dir.parent
-    output_dir = config.output_dir if config.output_dir is not None else step_dir / "weights"
+    output_dir = args.output_dir if args.output_dir is not None else step_dir / "weights"
     model_config, tokenizer_config = resolve_run_configs(step_dir)
     check_not_lora(model_config, dcp_dir)
 
@@ -172,4 +173,4 @@ def main(config: DcpToHfConfig) -> None:
 
 
 if __name__ == "__main__":
-    main(cli(DcpToHfConfig))
+    main()

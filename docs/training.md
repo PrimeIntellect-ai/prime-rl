@@ -299,14 +299,14 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
 
 ### Exporting Checkpoints
 
-Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/converters/dcp_to_hf.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (override with `--output-dir`). It exports full fine-tunes only — LoRA checkpoints are rejected.
+Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/converters/dcp_to_hf.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected.
 
 ```bash
 # single process (1 GPU)
-uv run python tools/converters/dcp_to_hf.py --ckpt-dir outputs/my-run/checkpoints/step_10
+uv run python tools/converters/dcp_to_hf.py outputs/my-run/checkpoints/step_10
 
 # multi-rank for faster gathers and models that don't fit one GPU
-uv run torchrun --nproc-per-node 8 tools/converters/dcp_to_hf.py --ckpt-dir outputs/my-run/checkpoints/step_10
+uv run torchrun --nproc-per-node 8 tools/converters/dcp_to_hf.py outputs/my-run/checkpoints/step_10
 ```
 
 The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/converters/bf16_to_fp8.py <dir>`; dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/converters/fp8_to_bf16.py <dir>`.
