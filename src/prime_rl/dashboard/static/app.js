@@ -39,8 +39,8 @@ const state = {
   traces: {
     loaded: false, steps: [], step: null, env: "",
     kind: prefs.traceKind ?? "train",
-    preferred: prefs.tracePreferred ?? "effective",
-    subset: prefs.tracePreferred ?? "effective",
+    preferred: "effective",
+    subset: "effective",
     errorsOnly: prefs.traceErrorsOnly ?? false,
     sort: (prefs.traceSort ?? "line:asc").split(":")[0],
     order: (prefs.traceSort ?? "line:asc").split(":")[1],
@@ -933,7 +933,7 @@ function renderPanelCard(grid, panel, lazy = false) {
   const entry = { card, u: null, series };
   state.metrics.charts.push(entry);
   if (!series.length) {
-    card.insertAdjacentHTML("beforeend", `<div class="chart-empty">no data yet</div>`);
+    card.insertAdjacentHTML("beforeend", `<div class="chart-empty" style="height:${chartHeight()}px">no data yet</div>`);
     return;
   }
   if (lazy) {
@@ -1780,7 +1780,8 @@ async function loadEpisodes() {
     return;
   }
   renderEpisodeRows(fresh);
-  $("#trace-status").textContent = `${data.total} episodes`;
+  const fellBack = traces.subset !== traces.preferred && !$("#trace-subset").hidden;
+  $("#trace-status").textContent = `${data.total} episodes${fellBack ? ` · no ${traces.preferred} at this step` : ""}`;
 }
 
 function episodeRowHtml(ep) {
@@ -2685,8 +2686,13 @@ $("#tm-meta").addEventListener("click", (e) => {
 });
 
 function resizeCharts() {
-  for (const entry of state.metrics.charts)
+  for (const entry of state.metrics.charts) {
     if (entry.u) entry.u.setSize({ width: chartWidth(entry.card), height: chartHeight() });
+    // unmounted (lazy) and no-data cards track the pane height too
+    if (entry.card.style.minHeight) entry.card.style.minHeight = `${chartHeight() + 40}px`;
+    const empty = entry.card.querySelector(".chart-empty");
+    if (empty) empty.style.height = `${chartHeight()}px`;
+  }
 }
 window.addEventListener("resize", resizeCharts);
 
@@ -2703,7 +2709,6 @@ function savePrefs() {
       metricsSearch: state.metrics.search,
       collapsedSections: [...state.metrics.collapsedSections],
       traceKind: state.traces.kind,
-      tracePreferred: state.traces.preferred,
       traceErrorsOnly: state.traces.errorsOnly,
       traceSort: `${state.traces.sort}:${state.traces.order}`,
       logView: state.logs.view,
