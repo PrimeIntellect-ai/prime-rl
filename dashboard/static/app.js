@@ -799,25 +799,61 @@ async function loadConfig() {
     /* show raw content if not valid JSON */
   }
   state.config.text = text;
-  $("#config-status").textContent = `configs/${data.file}`;
   applyConfigSearch();
 }
 
-/* re-render the config with syntax highlighting, then mark every search hit
-   by walking text nodes (keeps syntax spans intact) */
+/* prune the config to matching subtrees: a matching key keeps its whole
+   subtree, a nested match keeps its ancestors for context */
+function pruneConfig(node, re) {
+  if (typeof node !== "object" || node === null) {
+    return re.test(String(node)) ? node : undefined;
+  }
+  if (Array.isArray(node)) {
+    const kept = node.map((v) => pruneConfig(v, re)).filter((v) => v !== undefined);
+    return kept.length ? kept : undefined;
+  }
+  const out = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (re.test(key)) {
+      out[key] = value;
+      continue;
+    }
+    const kept = pruneConfig(value, re);
+    if (kept !== undefined) out[key] = kept;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/* filter the config to matched subtrees, re-render with syntax highlighting,
+   then mark every hit by walking text nodes (keeps syntax spans intact) */
 function applyConfigSearch() {
   const view = $("#config-view");
-  view.innerHTML = highlightJson(state.config.text ?? "");
   const query = $("#config-search").value.trim();
   const hitsEl = $("#config-hits");
   hitsEl.textContent = "";
-  if (!query) return;
+  if (!query) {
+    view.innerHTML = highlightJson(state.config.text ?? "");
+    return;
+  }
   let re;
   try {
     re = new RegExp(query, "gi");
   } catch {
     re = new RegExp(escRe(query), "gi");
   }
+  let text = state.config.text ?? "";
+  try {
+    const pruned = pruneConfig(JSON.parse(text), new RegExp(re.source, "i"));
+    if (pruned === undefined) {
+      view.innerHTML = emptyState("no hits", "nothing in this config matches the filter");
+      hitsEl.textContent = "no hits";
+      return;
+    }
+    text = JSON.stringify(pruned, null, 2);
+  } catch {
+    /* not valid JSON: fall back to highlighting the full text */
+  }
+  view.innerHTML = highlightJson(text);
   const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
   const nodes = [];
   while (walker.nextNode()) nodes.push(walker.currentNode);
@@ -860,7 +896,6 @@ async function initConfig() {
     sel.innerHTML = `<option>no configs</option>`;
     sel.disabled = true;
     $("#config-view").innerHTML = emptyState("no configs", "this run has no configs/ directory");
-    $("#config-status").textContent = "";
     return;
   }
   sel.disabled = false;
@@ -1146,10 +1181,13 @@ function adjustKindSubset() {
   const hasEval = counts["eval/all"] || counts["eval/effective"];
   if (traces.kind === "train" && !hasTrain && hasEval) traces.kind = "eval";
   if (traces.kind === "eval" && !hasEval && hasTrain) traces.kind = "train";
-  if (!counts[`${traces.kind}/${traces.subset}`]) {
-    const other = traces.subset === "all" ? "effective" : "all";
-    if (counts[`${traces.kind}/${other}`]) traces.subset = other;
-  }
+  // fall back when the preferred subset is missing at this step (e.g. the latest
+  // step's effective file lands only at ship time), but return to it as soon as
+  // it exists again — advantages are only stamped on effective records
+  const preferred = traces.preferred ?? "effective";
+  const other = preferred === "all" ? "effective" : "all";
+  if (counts[`${traces.kind}/${preferred}`]) traces.subset = preferred;
+  else if (counts[`${traces.kind}/${other}`]) traces.subset = other;
   $("#trace-kind [data-kind=train]").disabled = !hasTrain;
   $("#trace-kind [data-kind=eval]").disabled = !hasEval;
   document.querySelectorAll("#trace-kind button").forEach((b) => b.classList.toggle("active", b.dataset.kind === traces.kind));
@@ -1814,6 +1852,7 @@ document.querySelectorAll("#trace-kind button").forEach((b) =>
 );
 document.querySelectorAll("#trace-subset button").forEach((b) =>
   b.addEventListener("click", () => {
+    state.traces.preferred = b.dataset.subset;
     state.traces.subset = b.dataset.subset;
     state.traces.page = 0;
     adjustKindSubset();

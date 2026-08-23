@@ -481,7 +481,6 @@ mark.hit {
 /* ---------------------------------------------------------------- traces */
 /* step selector: one block per rollout step, filled up to the selection */
 #step-blocks { flex: 1; display: flex; gap: 2px; height: 16px; min-width: 0; }
-#step-prev, #step-next { height: 16px; padding: 0 6px; font-size: 10px; line-height: 1; }
 .sb-cell { flex: 1; min-width: 0; background: var(--grey-2); border: 1px solid var(--hairline); cursor: pointer; }
 .sb-cell:hover { border-color: var(--grey-6); }
 .sb-cell.on { background: var(--accent); border-color: var(--accent); }
