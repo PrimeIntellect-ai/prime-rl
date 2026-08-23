@@ -26,6 +26,7 @@ const state = {
     collapsedSections: new Set(prefs.collapsedSections ?? []),
     mode: prefs.metricsMode ?? "overview", search: prefs.metricsSearch ?? "",
     smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 260, paneH: prefs.paneH ?? 150,
+    allLayout: prefs.allLayout ?? "flat",
     paneOrder: prefs.paneOrder ?? {},
   },
   compare: { runs: [], data: new Map() },
@@ -559,7 +560,7 @@ function resolvePanel(panel) {
     const expanded = [];
     for (const key of keys) {
       expanded.push(key);
-      if (key.endsWith("/mean"))
+      if (!panel.noBand && key.endsWith("/mean"))
         for (const stat of ["p10", "p90"]) {
           const sibling = key.slice(0, -"mean".length) + stat;
           if (store.byKey.has(sibling) && !keys.includes(sibling)) expanded.push(sibling);
@@ -994,31 +995,27 @@ function addSection(body, name, count, display = name) {
   return { div, grid };
 }
 
-/* all-mode: nested sections along key path segments (train → env → all/effective),
-   so a fleet of hundreds of keys stays navigable */
-function renderKeyGroup(parent, name, keys, depth) {
+/* all-mode: fully recursive sections along family path segments (train → agg →
+   all → agent → …). A leaf card charts one metric family: the mean as the main
+   line with its band, every other logged stat as a dashed overlay. */
+function renderKeyTree(parent, name, families, depth) {
   const display = depth === 1 ? name : name.split("/").pop();
-  const { div, grid } = addSection(parent, name, keys.length, display);
+  const { div, grid } = addSection(parent, name, families.length, display);
   const children = new Map();
   const leaves = [];
-  for (const key of keys) {
-    const segments = key.split("/");
-    if (segments.length <= depth + 1) leaves.push(key);
+  for (const f of families) {
+    const segments = f.family.split("/");
+    if (segments.length <= depth + 1) leaves.push(f);
     else {
       const segment = segments[depth];
       if (!children.has(segment)) children.set(segment, []);
-      children.get(segment).push(key);
+      children.get(segment).push(f);
     }
   }
-  if (depth >= 3 || keys.length <= 8 || !children.size) {
-    for (const key of keys) renderPanelCard(grid, { metric: key }, true);
-    applyPaneOrder(grid);
-    return;
-  }
-  for (const key of leaves) renderPanelCard(grid, { metric: key }, true);
+  for (const f of leaves) renderPanelCard(grid, { metrics: f.keys }, true);
   if (grid.children.length) applyPaneOrder(grid);
   else grid.remove();
-  for (const [segment, childKeys] of children) renderKeyGroup(div, `${name}/${segment}`, childKeys, depth + 1);
+  for (const [segment, childFamilies] of children) renderKeyTree(div, `${name}/${segment}`, childFamilies, depth + 1);
 }
 
 function renderMetricsBody() {
@@ -1061,18 +1058,38 @@ function renderMetricsBody() {
       body.innerHTML = emptyState("no keys match", "no overview panels match the filter");
     return;
   }
-  // all: every key charted, grouped by top-level namespace, regex-filtered
-  const groups = new Map();
+  // all: one card per metric family - flat lists a section per family with a
+  // pane per stat, nested groups families recursively along path segments
+  const familyKeys = new Map();
+  let shown = 0;
   for (const key of [...m.byKey.keys()].sort()) {
     if (activeFilter && !activeFilter.test(key)) continue;
-    const group = key.split("/")[0];
-    if (!groups.has(group)) groups.set(group, []);
-    groups.get(group).push(key);
+    shown++;
+    const family = familyOf(key);
+    if (!familyKeys.has(family)) familyKeys.set(family, []);
+    familyKeys.get(family).push(key);
   }
-  const shown = [...groups.values()].reduce((n, keys) => n + keys.length, 0);
   $("#metrics-status").textContent = activeFilter ? `${shown} / ${m.byKey.size} keys` : "";
-  for (const [group, keys] of groups) renderKeyGroup(body, group, keys, 1);
-  if (!groups.size) body.innerHTML = emptyState("no keys match", `0 of ${m.byKey.size} keys match the filter`);
+  if (!familyKeys.size) {
+    body.innerHTML = emptyState("no keys match", `0 of ${m.byKey.size} keys match the filter`);
+    return;
+  }
+  if (m.allLayout === "flat") {
+    for (const [family, keys] of familyKeys) {
+      const { div, grid } = addSection(body, family, keys.length);
+      for (const key of keys) renderPanelCard(grid, { metric: key, noBand: true }, true);
+      if (!grid.children.length) div.remove();
+      else applyPaneOrder(grid);
+    }
+    return;
+  }
+  const groups = new Map();
+  for (const [family, keys] of familyKeys) {
+    const group = family.split("/")[0];
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push({ family, keys });
+  }
+  for (const [group, families] of groups) renderKeyTree(body, group, families, 1);
 }
 
 async function initMetrics() {
@@ -2329,6 +2346,7 @@ document.querySelectorAll("#metrics-mode button").forEach((b) =>
   b.addEventListener("click", () => {
     state.metrics.mode = b.dataset.mode;
     setActive("#metrics-mode", "mode", b.dataset.mode);
+    $("#all-layout").hidden = b.dataset.mode !== "all";
     renderMetricsBody();
     savePrefs();
   })
@@ -2345,6 +2363,14 @@ $("#config-search").addEventListener(
   "input",
   debounce(() => {
     applyConfigSearch();
+    savePrefs();
+  })
+);
+document.querySelectorAll("#all-layout button").forEach((b) =>
+  b.addEventListener("click", () => {
+    state.metrics.allLayout = b.dataset.layout;
+    setActive("#all-layout", "layout", b.dataset.layout);
+    renderMetricsBody();
     savePrefs();
   })
 );
@@ -2653,6 +2679,7 @@ function savePrefs() {
     "prl-dash",
     JSON.stringify({
       smooth: state.metrics.smooth,
+      allLayout: state.metrics.allLayout,
       paneMin: state.metrics.paneMin,
       paneH: state.metrics.paneH,
       paneOrder: state.metrics.paneOrder,
@@ -2725,6 +2752,8 @@ setInterval(async () => {
   $("#trace-sort").value = `${state.traces.sort}:${state.traces.order}`;
   $("#trace-errors").checked = state.traces.errorsOnly;
   setActive("#metrics-mode", "mode", state.metrics.mode);
+  setActive("#all-layout", "layout", state.metrics.allLayout);
+  $("#all-layout").hidden = state.metrics.mode !== "all";
   setActive("#log-view", "view", state.logs.view);
   applyPaneSize();
   const params = new URLSearchParams(location.hash.slice(1));
