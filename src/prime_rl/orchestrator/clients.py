@@ -86,8 +86,9 @@ class AdminClients:
 
     def __init__(self, client_config: ClientConfig):
         self.clients = setup_admin_clients(client_config)
-        # When admin URLs bypass a router, also health-check the client-facing
-        # (router) endpoint - it only starts serving once its workers are healthy.
+        # When admin URLs bypass a router, health-check the client-facing
+        # (router) endpoint instead of each engine - it only turns healthy
+        # once all engines are healthy.
         self._router_clients = (
             setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
             if client_config.admin_base_url
@@ -97,7 +98,7 @@ class AdminClients:
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
 
     async def wait_for_ready(self, model_name: str) -> None:
-        await check_health(self.clients + self._router_clients, timeout=self._wait_for_ready_timeout)
+        await check_health(self._router_clients or self.clients, timeout=self._wait_for_ready_timeout)
         await maybe_check_has_model(self.clients, model_name, skip_model_check=self._skip_model_check)
 
     async def aclose(self) -> None:
