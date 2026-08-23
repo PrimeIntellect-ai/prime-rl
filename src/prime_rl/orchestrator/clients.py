@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -234,8 +235,6 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
     return False
 
 
-NCCL_READY_MARKER = "NCCL_READY"
-
 # Per-attempt read timeout for admin ops, overridable per call. The admin
 # AsyncClient uses `timeout=None`, so without this a stuck server would hang the
 # weight update forever: the read timeout converts a hang into a TimeoutException
@@ -291,54 +290,39 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
 async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
-    model_name: str,
     step: int = 0,
+    on_paused: Callable[[], None] | None = None,
 ) -> None:
     """Update weights on static inference servers.
 
     Pauses all engines first to drain in-flight requests, then performs the
     weight update, then resumes. This ensures all DP workers are idle and can
-    participate in the collective weight transfer.
+    participate in the collective weight transfer. ``on_paused`` runs between
+    the pause and the update RPC — the NCCL receiver signals the trainer there.
 
     Note: the prefix cache is intentionally not reset on weight update. The orchestrator
     salts the prefix cache per weight version (``cache_salt`` in the sampling request, see
     ``orchestrator/envs.py``), so KV computed under old weights is never reused.
     """
-    logger = get_logger()
-
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-    if weight_dir is not None and (weight_dir / "adapter_config.json").exists():
-        # A LoRA run broadcasts the PEFT-shaped adapter; register it under the
-        # base model name - the single adapter shadows it (vLLM resolves
-        # lora_requests before the base-model match), so requests keep
-        # addressing one stable name and no engine pause is needed.
-        await load_lora_adapter(admin_clients, model_name, weight_dir)
-    else:
-        # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
-        await _pause_engines(admin_clients, step=step)
-
-        try:
-            # Create ready marker before servers enter receive path (used by NCCL broadcast)
-            if weight_dir is not None:
-                nccl_ready_file = weight_dir / NCCL_READY_MARKER
-                nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
-                nccl_ready_file.touch()
-                logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
-
-            await asyncio.gather(
-                *[
-                    _admin_post(
-                        admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
-                        timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-                    )
-                    for admin_client in admin_clients
-                ]
-            )
-        finally:
-            await _resume_engines(admin_clients)
+    await _pause_engines(admin_clients, step=step)
+    try:
+        if on_paused is not None:
+            on_paused()
+        await asyncio.gather(
+            *[
+                _admin_post(
+                    admin_client,
+                    "/update_weights",
+                    json={"weight_dir": weight_dir_posix},
+                    timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                )
+                for admin_client in admin_clients
+            ]
+        )
+    finally:
+        await _resume_engines(admin_clients)
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:

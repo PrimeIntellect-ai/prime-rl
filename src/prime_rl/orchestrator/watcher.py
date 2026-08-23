@@ -1,22 +1,16 @@
-"""WeightWatcher: polls the broadcast dir, advances ``Policy``, notifies
-observers (dispatcher → staleness cancel). Standalone async task; the
-orchestrator's barrier bounds the in-flight lead."""
+"""WeightWatcher: discovers new policy versions via the transport's receiver,
+advances ``Policy``, and notifies observers (dispatcher → staleness cancel).
+Standalone async task; the orchestrator's barrier bounds the in-flight lead."""
 
 from __future__ import annotations
 
 import asyncio
 import time
 
-from modelexpress import p2p_pb2
-
-from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.clients import AdminClients, InferenceClient, update_weights
 from prime_rl.orchestrator.types import Policy, VersionObserver
-from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
+from prime_rl.transports.weights import WeightReceiver
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.logger import format_time, get_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_step_path, wait_for_path
-from prime_rl.utils.utils import get_latest_ckpt_step
 
 
 class WeightWatcher:
@@ -24,24 +18,18 @@ class WeightWatcher:
 
     def __init__(
         self,
-        config: OrchestratorConfig,
+        receiver: WeightReceiver,
         *,
         policy: Policy,
-        clients: InferenceClient,
-        admin_clients: AdminClients,
         observers: list[VersionObserver],
         ckpt_step: int = 0,
         poll_interval: float = 1.0,
-        model_express: ModelExpressSession | None = None,
     ) -> None:
-        self.config = config
+        self.receiver = receiver
         self.policy = policy
-        self.clients = clients
-        self.admin_clients = admin_clients
         self.observers = observers
         self.ckpt_step = ckpt_step
         self.poll_interval = poll_interval
-        self.model_express = model_express
 
         self.last_update_weights_time: float = 0.0
         self.last_wait_for_ckpt_time: float = 0.0
@@ -55,7 +43,7 @@ class WeightWatcher:
         self.task = asyncio.current_task()
         try:
             while not self.stopped.is_set():
-                next_step = self.compute_next_ckpt_step()
+                next_step = self.receiver.next_version(self.ckpt_step)
                 if next_step > self.ckpt_step:
                     await self.apply_policy_update(next_step)
                 await asyncio.sleep(self.poll_interval)
@@ -74,20 +62,6 @@ class WeightWatcher:
             await safe_cancel(self.task)
             self.task = None
 
-    def compute_next_ckpt_step(self) -> int:
-        """Return the next policy version exposed by the configured transport."""
-        if self.model_express is not None:
-            # The trainer broadcasts every version except v{max_steps}.
-            if self.config.max_steps is not None and self.ckpt_step >= self.config.max_steps - 1:
-                return self.ckpt_step
-            # ModelExpress status changes are unversioned, so its rendezvous advances
-            # exactly one policy version per READY/INITIALIZING cycle.
-            return self.ckpt_step + 1
-
-        broadcast_dir = get_broadcast_dir(self.config.output_dir)
-        latest_ckpt_step = get_latest_ckpt_step(broadcast_dir) or 0
-        return max(self.policy.version, latest_ckpt_step)
-
     async def apply_policy_update(self, next_step: int) -> None:
         async with self.update_lock:
             if next_step <= self.ckpt_step:
@@ -95,16 +69,7 @@ class WeightWatcher:
                 return
 
             t0 = time.perf_counter()
-            weights_path = None
-            if self.model_express is not None:
-                await self.wait_for_model_express_status(p2p_pb2.SOURCE_STATUS_READY)
-            else:
-                broadcast_dir = get_broadcast_dir(self.config.output_dir)
-                weights_path = get_step_path(broadcast_dir, next_step)
-                stable_marker = weights_path / "STABLE"
-                if not stable_marker.exists():
-                    get_logger().info(f"Waiting for the trainer to broadcast policy v{next_step}")
-                    await wait_for_path(stable_marker)
+            await self.receiver.wait_published(next_step, cancelled=self.stopped.is_set)
             self.last_wait_for_ckpt_time = time.perf_counter() - t0
 
             # Publish confirmed: the policy version advances here, before the
@@ -134,7 +99,7 @@ class WeightWatcher:
 
             get_logger().debug(f"Updating inference weights to policy v{next_step}")
             t1 = time.perf_counter()
-            await update_weights(self.admin_clients.clients, weights_path, self.clients.model_name, step=next_step)
+            await self.receiver.receive(next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
             get_logger().debug(
@@ -148,21 +113,6 @@ class WeightWatcher:
                     get_logger().warning(
                         f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
                     )
-
-            if self.model_express is not None:
-                await self.wait_for_model_express_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-
-    async def wait_for_model_express_status(self, status: int) -> None:
-        while not self.stopped.is_set():
-            found = await asyncio.to_thread(
-                self.model_express.exists_role_with_status,
-                "trainer",
-                status,
-            )
-            if found:
-                return
-            await asyncio.sleep(self.poll_interval)
-        raise asyncio.CancelledError
 
     def gauges(self) -> dict[str, float]:
         return {

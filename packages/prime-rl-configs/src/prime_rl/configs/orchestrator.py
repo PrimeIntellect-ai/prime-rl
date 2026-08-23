@@ -12,6 +12,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.monitors import OrchestratorMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    BaseWeightBroadcastConfig,
     ClientConfig,
     EnvVars,
     HeartbeatConfig,
@@ -373,19 +374,16 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the progress from checkpoint."""
 
 
-class FileSystemWeightBroadcastConfig(BaseConfig):
+class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
 
-class InMemoryWeightBroadcastConfig(BaseConfig):
+class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"
     """Weight transfer host."""
 
     port: int
     """Weight transfer port."""
-
-    timeout: int = 1200
-    """Weight transfer timeout in seconds."""
 
     inference_world_size: int = Field(1, ge=1)
     """Total inference workers across all servers."""

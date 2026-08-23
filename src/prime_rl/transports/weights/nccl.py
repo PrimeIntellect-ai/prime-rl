@@ -1,5 +1,4 @@
 import pickle
-import time
 from pathlib import Path
 from typing import Callable, Generator, cast
 
@@ -12,15 +11,13 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
-from prime_rl.orchestrator.clients import NCCL_READY_MARKER
+from prime_rl.orchestrator.clients import init_nccl_broadcast, update_weights
 from prime_rl.trainer.conversion_utils import get_max_layer_num
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
-from prime_rl.transports.weights.base import WeightBroadcast
-from prime_rl.utils.logger import format_time, get_logger
+from prime_rl.transports.weights.base import WeightReceiver, WeightSender
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
-from prime_rl.utils.pathing import sync_wait_for_path
-from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 from prime_rl.utils.vlm import get_layer_prefix
 
 
@@ -108,7 +105,7 @@ def preprocess_layer_quantized(
     return model.convert_layer_to_vllm_kernel(layer_state_dict, layer_idx, quantize_fp8=True)
 
 
-class NCCLWeightBroadcastSender:
+class NCCLBroadcaster:
     def __init__(
         self,
         host: str,
@@ -117,12 +114,11 @@ class NCCLWeightBroadcastSender:
         world_size: int,
         device: int | str | torch.device,
         timeout: int,
-        dtype: torch.dtype = torch.bfloat16,
         quantize_in_weight_transfer: bool = False,
     ):
         self.logger = get_logger()
         self.world = get_world()
-        self.dtype = dtype
+        self.dtype = torch.bfloat16
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
 
         if self.world.is_master:
@@ -137,7 +133,7 @@ class NCCLWeightBroadcastSender:
             self.logger.debug("Initialized NCCL broadcast on non-master rank (no communicator)")
 
     @torch.no_grad()
-    def broadcast_weights(self, model: nn.Module, step: int) -> None:
+    def send(self, model: nn.Module) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
@@ -167,7 +163,7 @@ class NCCLWeightBroadcastSender:
         return state_dict
 
 
-class NCCLWeightBroadcast(WeightBroadcast):
+class NCCLWeightSender(WeightSender):
     """Broadcast weights into the inference engine using NCCL."""
 
     def __init__(
@@ -175,50 +171,50 @@ class NCCLWeightBroadcast(WeightBroadcast):
         output_dir: Path,
         config: NCCLWeightBroadcastConfig,
         device: int | str | torch.device,
-        dtype: torch.dtype = torch.bfloat16,
     ):
-        super().__init__(output_dir)
-        self.logger = get_logger()
-        self.world = get_world()
-        self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
+        super().__init__(output_dir, config.timeout)
+        self.nccl_broadcast_sender = NCCLBroadcaster(
             config.host,
             config.port,
             0,
             config.inference_world_size + 1,
             device,
             config.timeout,
-            dtype,
             quantize_in_weight_transfer=config.quantize_in_weight_transfer,
         )
 
     @torch.no_grad()
-    def broadcast_weights(self, model: nn.Module, step: int) -> None:
-        """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
-        self.logger.debug(f"Broadcasting policy weights (v{step}) via NCCL")
-        start_time = time.perf_counter()
-        # Only the master touches the filesystem to notify the orchestrator, but all
-        # ranks must wait for the inference pool before entering the broadcast path:
-        # the broadcast preparation (DTensor resolution, quantization) enqueues
-        # collectives on non-master ranks, and if those ranks start prep before
-        # the orchestrator has paused inference, the collectives sit unmatched
-        # until NCCL's watchdog kills the process after 10 min.
-        save_dir = get_step_path(get_broadcast_dir(self.output_dir), step)
-        if self.world.is_master:
-            self._notify_orchestrator(save_dir)
-            self._wait_for_nccl_ready(save_dir)
+    def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
+        # The master enters only after the receiver acknowledged the handshake,
+        # but all ranks must be held back until then: the broadcast preparation
+        # (DTensor resolution, quantization) enqueues collectives on non-master
+        # ranks, and if those start before the receiver has paused inference,
+        # the collectives sit unmatched until NCCL's watchdog kills the process.
         if self.world.world_size > 1:
             dist.barrier()
-        self.nccl_broadcast_sender.broadcast_weights(model, step)
-        self.logger.debug(f"Broadcast policy weights (v{step}) in {format_time(time.perf_counter() - start_time)}")
+        self.nccl_broadcast_sender.send(model)
 
-    def _notify_orchestrator(self, save_dir: Path) -> None:
-        """Create the STABLE marker the orchestrator's weight watcher polls for."""
-        save_dir.mkdir(parents=True, exist_ok=True)
-        (save_dir / "STABLE").touch()
 
-    def _wait_for_nccl_ready(self, save_dir: Path):
-        """Wait for inference workers to signal they are ready to receive NCCL broadcast."""
-        nccl_ready_file = save_dir / NCCL_READY_MARKER
-        self.logger.debug(f"Waiting for NCCL_READY marker at {nccl_ready_file}")
-        sync_wait_for_path(nccl_ready_file, interval=0.1, log_interval=10)
-        self.logger.debug("Inference workers ready for NCCL broadcast")
+class NCCLWeightReceiver(WeightReceiver):
+    """Joins the trainer's NCCL collective. The receiver pauses the engines,
+    acknowledges, and sends them into the receive RPC — only then does the
+    trainer enter the collective, so the handshake can never race a stale
+    marker."""
+
+    async def initialize(self) -> None:
+        await init_nccl_broadcast(
+            self.admin_clients,
+            self.config.host,
+            self.config.port,
+            self.config.timeout,
+            inference_world_size=self.config.inference_world_size,
+            quantize_in_weight_transfer=self.config.quantize_in_weight_transfer,
+        )
+
+    async def receive(self, step: int) -> None:
+        await update_weights(
+            self.admin_clients,
+            self.step_dir(step),
+            step=step,
+            on_paused=lambda: self._ack(step),
+        )

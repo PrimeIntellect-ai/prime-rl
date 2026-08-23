@@ -112,7 +112,8 @@ class VllmConfig(BaseConfig):
     """Enable LoRA."""
 
     max_loras: int = 1
-    """Maximum number of LoRAs. The single training adapter is reloaded in place every policy version, reusing one slot."""
+    """Maximum number of concurrently served LoRAs. prime-rl serves one adapter and reloads
+    it in place every policy version (same name, same lora_int_id), so one slot suffices."""
 
     max_lora_rank: int | None = None
     """Maximum LoRA rank. Rounded up to the nearest value vLLM accepts."""

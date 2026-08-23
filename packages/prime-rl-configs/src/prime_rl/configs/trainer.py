@@ -7,6 +7,7 @@ from pydantic import BeforeValidator, Field, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    BaseWeightBroadcastConfig,
     EnvVars,
     HeartbeatConfig,
     MetricsServerConfig,
@@ -545,10 +546,6 @@ class DataLoaderConfig(BaseConfig):
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
 
-class BaseWeightBroadcastConfig(BaseConfig):
-    pass
-
-
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
@@ -559,9 +556,6 @@ class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
 
     port: int
     """Weight transfer port."""
-
-    timeout: int = 1200
-    """Weight transfer timeout in seconds."""
 
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: int = 1
