@@ -25,6 +25,9 @@ if TYPE_CHECKING:
     from prime_rl.trainer.optim import GradientOffloadManager
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
+_DISTRIBUTED_ENV_VARS = frozenset(
+    {"RANK", "WORLD_SIZE", "LOCAL_RANK", "LOCAL_WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"}
+)
 
 
 class GarbageCollection:
@@ -170,7 +173,7 @@ def setup_full_cpu_optimizer_offload(config: "OptimizerInBackwardOffloadConfig")
     configure_cpu_optimizer_threads()
 
 
-def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
+def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False) -> None:
     get_logger().info(f"Initializing torch distributed (timeout={int(timeout.total_seconds())}s)")
     t0 = time.perf_counter()
     device_id = get_world().local_rank
@@ -189,7 +192,18 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
     # module default so every subsequently created PG inherits it.
     dist.distributed_c10d.default_pg_timeout = timeout
 
-    dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
+    if any(name in os.environ for name in _DISTRIBUTED_ENV_VARS):
+        dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
+    else:
+        get_logger().info("Using standalone single-process distributed mode")
+        dist.init_process_group(
+            backend=backend,
+            store=dist.HashStore(),
+            rank=0,
+            world_size=1,
+            timeout=timeout,
+            device_id=device_id,
+        )
     get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")
 
 
