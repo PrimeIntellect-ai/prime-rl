@@ -146,7 +146,6 @@ class Orchestrator:
     eval_envs: EvalEnvs | None
     eval_sink: EvalSink | None
     eval_source: EvalSource | None
-    lora_name: str | None
     resume_step: int | None
     lag_task: asyncio.Task | None
 
@@ -184,7 +183,6 @@ class Orchestrator:
         self.eval_envs = None
         self.eval_sink = None
         self.eval_source = None
-        self.lora_name = None
         self.resume_step = None
         self.lag_task = None
         self.model_express = None
@@ -254,7 +252,6 @@ class Orchestrator:
 
         # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.clients.model_name
-        self.lora_name = config.model.lora.name if config.model.lora else None
 
         # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
         # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
@@ -361,7 +358,7 @@ class Orchestrator:
             )
         if self.model_express is not None:
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
-        await update_weights(self.admin_clients.clients, weights_path, lora_name=self.lora_name, step=sync_version)
+        await update_weights(self.admin_clients.clients, weights_path, config.model.name, step=sync_version)
         if self.model_express is not None:
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
             # Complete the startup rendezvous before the watcher begins its next cycle.
@@ -372,9 +369,6 @@ class Orchestrator:
                 status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
                 timeout=config.weight_broadcast.timeout,
             )
-        if self.lora_name is not None:
-            self.clients.update_model_name(self.lora_name)
-            self.policy.model_name = self.lora_name
         self.policy.version = sync_version
         get_logger().debug(f"Synced inference to policy v{sync_version} in {format_time(time.perf_counter() - t0)}")
 
@@ -443,7 +437,6 @@ class Orchestrator:
             clients=self.clients,
             admin_clients=self.admin_clients,
             observers=[self.dispatcher, self],
-            lora_name=self.lora_name,
             ckpt_step=self.policy.version,
             model_express=self.model_express,
         )

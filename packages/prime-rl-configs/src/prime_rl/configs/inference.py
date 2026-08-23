@@ -111,14 +111,8 @@ class VllmConfig(BaseConfig):
     enable_lora: bool = False
     """Enable LoRA."""
 
-    max_loras: int = 8
-    """Maximum number of LoRAs."""
-
-    # TODO: The default value is very high because our areal impl for lora isn't ideal
-    # We add a lora with the same name instead of changing weights inplace
-    # Because we dont cancel requests that are past max_async, these requests could be using a LoRA that gets unloaded which will crash the inference server
-    max_cpu_loras: int = 100
-    """Maximum number of LoRAs on CPU."""
+    max_loras: int = 1
+    """Maximum number of LoRAs. The single training adapter is reloaded in place every policy version, reusing one slot."""
 
     max_lora_rank: int | None = None
     """Maximum LoRA rank. Rounded up to the nearest value vLLM accepts."""
