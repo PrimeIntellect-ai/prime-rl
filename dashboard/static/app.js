@@ -22,7 +22,7 @@ const state = {
   live: true,
   metrics: {
     loaded: false, offset: 0, byKey: new Map(),
-    charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null,
+    charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null, maxStep: null,
     collapsedSections: new Set(prefs.collapsedSections ?? []),
     mode: prefs.metricsMode ?? "overview", search: prefs.metricsSearch ?? "",
     smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 320, paneH: prefs.paneH ?? 150,
@@ -36,7 +36,7 @@ const state = {
     view: prefs.logView ?? "merge", maximized: null, buffers: new Map(), gseq: 0,
   },
   traces: {
-    loaded: false, steps: [], step: null, page: 0, limit: 5000, total: 0, env: "",
+    loaded: false, steps: [], step: null, env: "",
     kind: prefs.traceKind ?? "train",
     preferred: prefs.tracePreferred ?? "effective",
     subset: prefs.tracePreferred ?? "effective",
@@ -65,8 +65,33 @@ function fmtCompact(n) {
   if (abs >= 1000) return `${+(n / 1000).toFixed(abs >= 10000 ? 0 : 1)}K`;
   return String(n);
 }
-const fmtBytes = (n) => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)}M` : n >= 1024 ? `${(n / 1024).toFixed(0)}K` : `${n}B`);
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/* regex filter with a case-insensitive substring fallback for invalid patterns */
+function makeFilter(query) {
+  if (!query) return null;
+  try {
+    return new RegExp(query, "i");
+  } catch {
+    const needle = query.toLowerCase();
+    return { test: (s) => s.toLowerCase().includes(needle) };
+  }
+}
+
+function debounce(fn, ms = 200) {
+  let t = 0;
+  return () => {
+    clearTimeout(t);
+    t = setTimeout(fn, ms);
+  };
+}
+
+const rewardClass = (v) => (v == null ? "" : v > 0 ? "r-pos" : v < 0 ? "r-neg" : "r-zero");
+
+const preview = (text, n) => esc(text.replace(/\s+/g, " ").slice(0, n));
+
+const setActive = (sel, attr, value) =>
+  document.querySelectorAll(`${sel} button`).forEach((b) => b.classList.toggle("active", b.dataset[attr] === value));
+
 const emptyState = (title, detail = "") =>
   `<div class="empty-box"><img src="/static/butterfly-white.svg" alt="">` +
   `<div class="empty-title">${esc(title)}</div>` +
@@ -130,15 +155,15 @@ async function selectRun(name) {
   state.run = name;
   state.compare = { runs: [], data: new Map() };
   $("#run-select").value = name;
-  state.meta = await api(`/api/runs/${encodeURIComponent(name)}`);
+  state.meta = state.runs.find((r) => r.name === name) ?? (await api(`/api/runs/${encodeURIComponent(name)}`));
   state.metrics = {
     ...state.metrics,
     loaded: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
-    timeKeys: new Set(), timeZero: null,
+    timeKeys: new Set(), timeZero: null, maxStep: null,
   };
   state.config = { loaded: false, files: [], file: null };
   state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], paneFile: {}, maximized: null, buffers: new Map() };
-  state.traces = { ...state.traces, loaded: false, steps: [], step: null, page: 0, env: "", subset: state.traces.preferred ?? "effective" };
+  state.traces = { ...state.traces, loaded: false, steps: [], step: null, env: "", episodes: [], subset: state.traces.preferred };
   renderOverview();
   renderCompareMenu();
   updateHash();
@@ -170,12 +195,7 @@ function fmtAgo(ts) {
 }
 
 function currentStep() {
-  let step = null;
-  for (const [key, producers] of state.metrics.byKey) {
-    if (state.metrics.timeKeys.has(key)) continue; // time-keyed x values are not steps
-    for (const series of producers.values()) for (const s of series.keys()) step = Math.max(step ?? 0, s);
-  }
-  return step ?? state.meta?.last_step ?? null;
+  return state.metrics.maxStep ?? state.meta?.last_step ?? null;
 }
 
 function runStatus(step) {
@@ -233,7 +253,7 @@ function updateHash() {
 async function activateTab(tab, force = false) {
   if (tab === state.tab && !force) return;
   state.tab = tab;
-  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  setActive("#tabs", "tab", tab);
   document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
   updateHash();
   if (tab === "metrics" && !state.metrics.loaded) await initMetrics();
@@ -291,6 +311,7 @@ function ingestInto(store, rows, meta) {
     } else {
       if (typeof row.step !== "number") continue;
       x = row.step;
+      if (store.maxStep == null || x > store.maxStep) store.maxStep = x;
     }
     const producer = isTime ? "infer" : rowProducer(row, meta);
     for (const [key, value] of Object.entries(row)) {
@@ -321,26 +342,28 @@ async function fetchMetrics() {
 }
 
 async function fetchCompares() {
-  let grew = false;
-  for (const name of state.compare.runs) {
-    let store = state.compare.data.get(name);
-    if (!store) {
-      store = { offset: 0, byKey: new Map(), timeKeys: new Set(), timeZero: null, meta: null };
-      state.compare.data.set(name, store);
-    }
-    try {
-      store.meta ??= await api(`/api/runs/${encodeURIComponent(name)}`);
-      const data = await api(`/api/runs/${encodeURIComponent(name)}/metrics?offset=${store.offset}`);
-      store.offset = data.offset;
-      if (data.rows.length) {
-        ingestInto(store, data.rows, store.meta);
-        grew = true;
+  const results = await Promise.all(
+    state.compare.runs.map(async (name) => {
+      let store = state.compare.data.get(name);
+      if (!store) {
+        store = { offset: 0, byKey: new Map(), timeKeys: new Set(), timeZero: null, maxStep: null, meta: null };
+        state.compare.data.set(name, store);
       }
-    } catch (err) {
-      console.warn(`compare fetch failed for ${name}`, err);
-    }
-  }
-  return grew;
+      try {
+        store.meta ??= await api(`/api/runs/${encodeURIComponent(name)}`);
+        const data = await api(`/api/runs/${encodeURIComponent(name)}/metrics?offset=${store.offset}`);
+        store.offset = data.offset;
+        if (data.rows.length) {
+          ingestInto(store, data.rows, store.meta);
+          return true;
+        }
+      } catch (err) {
+        console.warn(`compare fetch failed for ${name}`, err);
+      }
+      return false;
+    })
+  );
+  return results.some(Boolean);
 }
 
 function buildSections(meta) {
@@ -387,17 +410,6 @@ function buildSections(meta) {
 }
 
 let activeFilter = null;
-
-function metricsFilter() {
-  const query = state.metrics.search.trim();
-  if (!query) return null;
-  try {
-    return new RegExp(query, "i");
-  } catch {
-    const needle = query.toLowerCase();
-    return { test: (k) => k.toLowerCase().includes(needle) };
-  }
-}
 
 function compareStores() {
   const stores = [{ run: state.run, store: state.metrics }];
@@ -454,19 +466,23 @@ function seriesColors(series) {
 
 function rollingMean(values, window) {
   if (window <= 1) return values;
-  return values.map((value, i) => {
-    if (value == null) return null;
-    let sum = 0;
-    let count = 0;
-    for (let j = Math.max(0, i - window + 1); j <= i; j++) {
-      const x = values[j];
-      if (x != null) {
-        sum += x;
-        count++;
-      }
+  const out = new Array(values.length);
+  const inWindow = []; // non-null {i, v} pairs, head-trimmed as the window slides
+  let head = 0;
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (v != null) {
+      inWindow.push({ i, v });
+      sum += v;
     }
-    return sum / count;
-  });
+    while (head < inWindow.length && inWindow[head].i <= i - window) {
+      sum -= inWindow[head].v;
+      head++;
+    }
+    out[i] = v == null ? null : sum / (inWindow.length - head);
+  }
+  return out;
 }
 
 /* each logical series feeds two uPlot series: a raw ghost (visible only while
@@ -489,6 +505,10 @@ function chartHeight() {
   return state.metrics.paneH;
 }
 
+function chartWidth(card) {
+  return card.clientWidth - 22;
+}
+
 /* axis labels stay compact so they fit the gutter: K-notation above 1000,
    two significant digits below 0.1, one exponent digit outside that */
 function fmtAxis(v) {
@@ -496,7 +516,7 @@ function fmtAxis(v) {
   if (v === 0) return "0";
   const abs = Math.abs(v);
   if (abs >= 1e6 || abs < 1e-3) return v.toExponential(1).replace(".0e", "e");
-  if (abs >= 1000) return `${+(v / 1000).toFixed(abs >= 10000 ? 0 : 1)}K`;
+  if (abs >= 1000) return fmtCompact(v);
   if (abs < 0.1) return String(+v.toPrecision(2));
   return fmtNum(v);
 }
@@ -623,11 +643,11 @@ function makeChart(el, labels, colorList, width, timeAxis = false) {
 let lazyObserver = null;
 
 function mountChart(entry) {
-  if (entry.u || !entry.series.length) return;
+  if (entry.u) return;
   const plotEl = document.createElement("div");
   entry.card.appendChild(plotEl);
   const timeAxis = entry.series.every((s) => s.time);
-  entry.u = makeChart(plotEl, seriesLabels(entry.series), seriesColors(entry.series), entry.card.clientWidth - 22, timeAxis);
+  entry.u = makeChart(plotEl, seriesLabels(entry.series), seriesColors(entry.series), chartWidth(entry.card), timeAxis);
   updateChart(entry);
 }
 
@@ -673,7 +693,7 @@ function renderPanelCard(grid, panel, lazy = false) {
     persistPaneOrder(card.parentElement);
     dragCard = null;
   });
-  const entry = { card, panel, u: null, series };
+  const entry = { card, u: null, series };
   state.metrics.charts.push(entry);
   if (!series.length) {
     card.insertAdjacentHTML("beforeend", `<div class="chart-empty">no data yet</div>`);
@@ -717,8 +737,9 @@ function updateChart(entry) {
   entry.u.setData(data);
   const last = entry.series[0]?.points;
   if (last?.size) {
-    const maxStep = Math.max(...last.keys());
-    entry.card.querySelector(".chart-last").textContent = fmtNum(last.get(maxStep));
+    let maxX = -Infinity;
+    for (const x of last.keys()) if (x > maxX) maxX = x;
+    entry.card.querySelector(".chart-last").textContent = fmtNum(last.get(maxX));
   }
 }
 
@@ -726,19 +747,46 @@ function updateCharts() {
   for (const entry of state.metrics.charts) updateChart(entry);
 }
 
-function addSection(body, name, count) {
+function addSection(body, name, count, display = name) {
   const div = document.createElement("details");
   div.className = "section";
   div.dataset.name = name;
   div.open = !state.metrics.collapsedSections.has(name);
   div.innerHTML =
-    `<summary>${esc(name)}${count != null ? ` <span class="muted">${count}</span>` : ""}` +
+    `<summary>${esc(display)}${count != null ? ` <span class="muted">${count}</span>` : ""}` +
     `<span class="sec-chev">›</span></summary>`;
   const grid = document.createElement("div");
   grid.className = "chart-grid";
   div.appendChild(grid);
   body.appendChild(div);
   return { div, grid };
+}
+
+/* all-mode: nested sections along key path segments (train → env → all/effective),
+   so a fleet of hundreds of keys stays navigable */
+function renderKeyGroup(parent, name, keys, depth) {
+  const display = depth === 1 ? name : name.split("/").pop();
+  const { div, grid } = addSection(parent, name, keys.length, display);
+  const children = new Map();
+  const leaves = [];
+  for (const key of keys) {
+    const segments = key.split("/");
+    if (segments.length <= depth + 1) leaves.push(key);
+    else {
+      const segment = segments[depth];
+      if (!children.has(segment)) children.set(segment, []);
+      children.get(segment).push(key);
+    }
+  }
+  if (depth >= 3 || keys.length <= 8 || !children.size) {
+    for (const key of keys) renderPanelCard(grid, { metric: key }, true);
+    applyPaneOrder(grid);
+    return;
+  }
+  for (const key of leaves) renderPanelCard(grid, { metric: key }, true);
+  if (grid.children.length) applyPaneOrder(grid);
+  else grid.remove();
+  for (const [segment, childKeys] of children) renderKeyGroup(div, `${name}/${segment}`, childKeys, depth + 1);
 }
 
 function renderMetricsBody() {
@@ -759,7 +807,7 @@ function renderMetricsBody() {
     },
     { root: body, rootMargin: "400px" }
   );
-  activeFilter = metricsFilter();
+  activeFilter = makeFilter(state.metrics.search.trim());
   if (!state.meta?.has_metrics && !m.byKey.size) {
     body.innerHTML = emptyState("no metrics", "this run has no metrics.jsonl yet");
     $("#metrics-status").textContent = "";
@@ -787,11 +835,7 @@ function renderMetricsBody() {
   }
   const shown = [...groups.values()].reduce((n, keys) => n + keys.length, 0);
   $("#metrics-status").textContent = activeFilter ? `${shown} / ${m.byKey.size} keys` : "";
-  for (const [group, keys] of groups) {
-    const { grid } = addSection(body, group, keys.length);
-    for (const key of keys) renderPanelCard(grid, { metric: key }, true);
-    applyPaneOrder(grid);
-  }
+  for (const [group, keys] of groups) renderKeyGroup(body, group, keys, 1);
   if (!groups.size) body.innerHTML = emptyState("no keys match", `0 of ${m.byKey.size} keys match the filter`);
 }
 
@@ -803,26 +847,6 @@ async function initMetrics() {
 
 /* ----------------------------------------------------------------- config */
 
-function highlightJson(text) {
-  let out = "";
-  let last = 0;
-  const re = /("(?:[^"\\]|\\.)*")(\s*:)?|-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|\b(?:true|false|null)\b/g;
-  let match;
-  while ((match = re.exec(text))) {
-    out += esc(text.slice(last, match.index));
-    if (match[1]) {
-      out += match[2]
-        ? `<span class="j-key">${esc(match[1])}</span>${match[2]}`
-        : `<span class="j-str">${esc(match[1])}</span>`;
-    } else if (/^(true|false|null)$/.test(match[0])) {
-      out += `<span class="j-lit">${match[0]}</span>`;
-    } else {
-      out += `<span class="j-num">${match[0]}</span>`;
-    }
-    last = re.lastIndex;
-  }
-  return out + esc(text.slice(last));
-}
 
 async function loadConfig() {
   const data = await api(
@@ -904,7 +928,8 @@ function applyConfigSearch() {
     parsed = undefined; // not valid JSON: plain highlighted text, no folding
   }
   if (!query) {
-    view.innerHTML = parsed !== undefined ? renderJsonNode(null, parsed, 0, true) : highlightJson(state.config.text ?? "");
+    if (parsed !== undefined) view.innerHTML = renderJsonNode(null, parsed, 0, true);
+    else view.textContent = state.config.text ?? "";
     return;
   }
   let re;
@@ -922,7 +947,7 @@ function applyConfigSearch() {
     }
     view.innerHTML = renderJsonNode(null, pruned, 0, true);
   } else {
-    view.innerHTML = highlightJson(state.config.text ?? "");
+    view.textContent = state.config.text ?? "";
   }
   const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
   const nodes = [];
@@ -1021,7 +1046,6 @@ function parseLines(text, file) {
       plain,
       html: null,
       component: file.component,
-      label: file.label,
       gseq: state.logs.gseq++,
       t: 0,
       level: null,
@@ -1030,17 +1054,19 @@ function parseLines(text, file) {
   return entries;
 }
 
-function retime(buffer) {
-  let lastSec = null, dayOffset = 0, lastLevel = null;
-  for (const line of buffer.lines) {
+function retime(buffer, from = 0) {
+  const s = from > 0 && buffer.tstate ? buffer.tstate : { lastSec: null, dayOffset: 0, lastLevel: null };
+  for (let i = from; i < buffer.lines.length; i++) {
+    const line = buffer.lines[i];
     if (line.rawTime != null) {
-      if (lastSec != null && line.rawTime < lastSec - 12 * 3600) dayOffset++;
-      lastSec = line.rawTime;
+      if (s.lastSec != null && line.rawTime < s.lastSec - 12 * 3600) s.dayOffset++;
+      s.lastSec = line.rawTime;
     }
-    line.t = dayOffset * 86400 + (line.rawTime ?? lastSec ?? 0);
-    if (line.ownLevel) lastLevel = line.ownLevel;
-    line.level = line.ownLevel ?? lastLevel; // continuation lines (tracebacks, noise) inherit
+    line.t = s.dayOffset * 86400 + (line.rawTime ?? s.lastSec ?? 0);
+    if (line.ownLevel) s.lastLevel = line.ownLevel;
+    line.level = line.ownLevel ?? s.lastLevel; // continuation lines (tracebacks, noise) inherit
   }
+  buffer.tstate = s;
 }
 
 async function fetchLogChunk(file, params) {
@@ -1055,8 +1081,6 @@ const LOG_PANES = [
   { comp: "evals", title: "evals", match: (f) => f.component === "evals" },
   { comp: "envs", title: "envs", match: (f) => f.component.startsWith("env:"), merged: true },
 ];
-
-const fmtCount = fmtCompact;
 
 function paneFiles(pane) {
   return state.logs.files.filter(pane.match);
@@ -1077,17 +1101,6 @@ function allSelectedIds() {
   const ids = new Set();
   for (const pane of enabledPanes()) for (const id of paneSelectedIds(pane)) ids.add(id);
   return ids;
-}
-
-function logFilter() {
-  const query = $("#log-search").value.trim();
-  if (!query) return null;
-  try {
-    return new RegExp(query, "i");
-  } catch {
-    const needle = query.toLowerCase();
-    return { test: (s) => s.toLowerCase().includes(needle) };
-  }
 }
 
 function enabledPanes() {
@@ -1190,13 +1203,13 @@ function paneLines(pane, minRank, filter) {
 
 function compName(component) {
   if (component.startsWith("env:")) return component.slice(4);
-  return { trainer: "trainer", orch: "orchestrator", infer: "inference", evals: "evals" }[component] ?? component;
+  return LOG_PANES.find((p) => p.comp === component)?.title ?? component;
 }
 
 function renderLogPane(el) {
   const stream = el.querySelector(".log-pane-stream");
   const minRank = LEVEL_RANK[$("#log-level").value] ?? 0;
-  const filter = logFilter();
+  const filter = makeFilter($("#log-search").value.trim());
   let lines;
   let multi;
   if (el.dataset.comp === "__merged__") {
@@ -1220,7 +1233,7 @@ function renderLogPane(el) {
         `<span class="ltext">${(line.html ??= ansiToHtml(line.raw))}</span></div>`
     )
     .join("");
-  el.querySelector(".lp-count").textContent = `${fmtCount(lines.length)} lines`;
+  el.querySelector(".lp-count").textContent = `${fmtCompact(lines.length)} lines`;
   if (pinned) stream.scrollTop = stream.scrollHeight;
 }
 
@@ -1230,7 +1243,7 @@ function renderAllLogPanes() {
 
 async function pollLogs(render = true) {
   const logs = state.logs;
-  let changed = false;
+  const changed = new Set();
   await Promise.all(
     [...allSelectedIds()].map(async (id) => {
       const file = logs.files.find((f) => f.id === id);
@@ -1238,27 +1251,38 @@ async function pollLogs(render = true) {
       let buffer = logs.buffers.get(id);
       if (!buffer) {
         const chunk = await fetchLogChunk(file, { tail: TAIL_BYTES });
-        buffer = { file, lines: parseLines(chunk.text, file), headStart: chunk.start, end: chunk.end, size: chunk.size };
+        buffer = { file, lines: parseLines(chunk.text, file), headStart: chunk.start, end: chunk.end };
         retime(buffer);
         logs.buffers.set(id, buffer);
-        changed = true;
+        changed.add(id);
       } else {
         const chunk = await fetchLogChunk(file, { start: buffer.end });
         if (chunk.end > buffer.end) {
-          buffer.lines.push(...parseLines(chunk.text, file));
+          const appended = parseLines(chunk.text, file);
+          buffer.lines.push(...appended);
           buffer.end = chunk.end;
-          buffer.size = chunk.size;
           if (buffer.lines.length > 20000) {
             buffer.lines.splice(0, buffer.lines.length - 20000);
             buffer.headStart = Math.max(buffer.headStart, 1); // older data no longer contiguous
           }
-          retime(buffer);
-          changed = true;
+          retime(buffer, buffer.lines.length - appended.length);
+          changed.add(id);
         }
       }
     })
   );
-  if (changed && render) renderAllLogPanes();
+  if (changed.size && render) renderChangedLogPanes(changed);
+}
+
+/* only re-render the panes whose files actually grew */
+function renderChangedLogPanes(ids) {
+  document.querySelectorAll("#log-panes .log-pane").forEach((el) => {
+    const paneIds =
+      el.dataset.comp === "__merged__"
+        ? [...allSelectedIds()]
+        : paneSelectedIds(LOG_PANES.find((p) => p.comp === el.dataset.comp) ?? { comp: "", match: () => false });
+    if (paneIds.some((id) => ids.has(id))) renderLogPane(el);
+  });
 }
 
 async function loadOlder() {
@@ -1299,7 +1323,7 @@ async function loadRollouts() {
   if (traces.step == null && data.steps.length) {
     // default to the newest step that already shipped the preferred subset —
     // the newest step is usually in-flight with only "all" (no advantages yet)
-    const preferred = traces.preferred ?? "effective";
+    const preferred = traces.preferred;
     const shipped = [...data.steps].reverse().find((s) => s.counts[`${traces.kind}/${preferred}`]);
     traces.step = (shipped ?? data.steps[data.steps.length - 1]).step;
     adjustKindSubset();
@@ -1327,20 +1351,24 @@ function adjustKindSubset() {
   // fall back when the preferred subset is missing at this step (e.g. the latest
   // step's effective file lands only at ship time), but return to it as soon as
   // it exists again — advantages are only stamped on effective records
-  const preferred = traces.preferred ?? "effective";
+  const preferred = traces.preferred;
   const other = preferred === "all" ? "effective" : "all";
   if (counts[`${traces.kind}/${preferred}`]) traces.subset = preferred;
   else if (counts[`${traces.kind}/${other}`]) traces.subset = other;
   $("#trace-kind [data-kind=train]").disabled = !hasTrain;
   $("#trace-kind [data-kind=eval]").disabled = !hasEval;
-  document.querySelectorAll("#trace-kind button").forEach((b) => b.classList.toggle("active", b.dataset.kind === traces.kind));
-  document.querySelectorAll("#trace-subset button").forEach((b) => b.classList.toggle("active", b.dataset.subset === traces.subset));
+  setActive("#trace-kind", "kind", traces.kind);
+  setActive("#trace-subset", "subset", traces.subset);
 }
 
 function renderStepControl() {
   const traces = state.traces;
   const steps = traces.steps;
   const idx = steps.findIndex((s) => s.step === traces.step);
+  const signature =
+    `${traces.step}:` + steps.map((s) => (s.counts["eval/all"] || s.counts["eval/effective"] ? 1 : 0)).join("");
+  if (signature === traces.stepControlSignature) return;
+  traces.stepControlSignature = signature;
   $("#step-blocks").innerHTML = steps
     .map((s, i) => {
       const hasEval = s.counts["eval/all"] || s.counts["eval/effective"];
@@ -1365,7 +1393,6 @@ function selectStepByIndex(index) {
   const step = state.traces.steps[index];
   if (!step || step.step === state.traces.step) return;
   state.traces.step = step.step;
-  state.traces.page = 0;
   adjustKindSubset();
   renderStepControl();
   loadEpisodes();
@@ -1373,7 +1400,6 @@ function selectStepByIndex(index) {
 
 function showTraceEmpty(title, detail) {
   $("#episode-table-wrap").hidden = true;
-  $("#episode-pager").innerHTML = "";
   const el = $("#trace-empty");
   el.hidden = false;
   el.innerHTML = emptyState(title, detail);
@@ -1388,13 +1414,7 @@ async function loadEpisodes() {
     showTraceEmpty("no rollouts", "this run has no saved rollouts yet");
     return;
   }
-  const qs = new URLSearchParams({
-    page: traces.page,
-    limit: traces.limit,
-    sort: traces.sort,
-    order: traces.order,
-    errors_only: traces.errorsOnly,
-  });
+  const qs = new URLSearchParams({ sort: traces.sort, order: traces.order, errors_only: traces.errorsOnly });
   if (traces.env) qs.set("env", traces.env);
   let data;
   try {
@@ -1404,8 +1424,10 @@ async function loadEpisodes() {
     showTraceEmpty("no traces", `no ${traces.kind}/${traces.subset} rollouts at step ${traces.step}`);
     return;
   }
-  traces.total = data.total;
   traces.episodes = data.episodes;
+  const signature = JSON.stringify([traces.step, traces.kind, traces.subset, traces.env, traces.errorsOnly, traces.sort, traces.order, data.total]);
+  if (signature === traces.renderedSignature) return;
+  traces.renderedSignature = signature;
   $("#trace-empty").hidden = true;
   $("#episode-table-wrap").hidden = false;
   const envSel = $("#trace-env");
@@ -1418,7 +1440,6 @@ async function loadEpisodes() {
     showTraceEmpty("no episodes", "nothing matches the current filters");
     return;
   }
-  const rewardClass = (v) => (v == null ? "" : v > 0 ? "r-pos" : v < 0 ? "r-neg" : "r-zero");
   tbody.innerHTML = data.episodes
     .map(
       (ep) => `<tr data-line="${ep.line}">
@@ -1476,12 +1497,23 @@ function filteredRollouts() {
   );
 }
 
+let rolloutListState = { episodes: null, query: null };
+
 function renderRolloutList() {
+  const query = $("#tm-search").value;
   const episodes = filteredRollouts();
+  if (rolloutListState.episodes === state.traces.episodes && rolloutListState.query === query) {
+    document
+      .querySelectorAll("#tm-list .tm-item")
+      .forEach((el) => el.classList.toggle("active", +el.dataset.line === currentLine));
+    document.querySelector("#tm-list .tm-item.active")?.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  rolloutListState = { episodes: state.traces.episodes, query };
   $("#tm-count").textContent = fmtCompact(episodes.length);
   $("#tm-list").innerHTML = episodes
     .map((e) => {
-      const cls = e.reward > 0 ? "r-pos" : e.reward < 0 ? "r-neg" : "r-zero";
+      const cls = rewardClass(e.reward);
       return (
         `<div class="tm-item ${e.line === currentLine ? "active" : ""}" data-line="${e.line}">` +
         `<span>Episode ${e.line}</span><span class="muted">${esc(e.env ?? "")}</span>` +
@@ -1516,7 +1548,6 @@ async function modalStep(delta) {
   const target = traces.steps[idx + delta];
   if (!target) return;
   traces.step = target.step;
-  traces.page = 0;
   adjustKindSubset();
   renderStepControl();
   await loadEpisodes();
@@ -1627,7 +1658,7 @@ function subBlock(name, content) {
   const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
   return (
     `<details class="sub"><summary><span class="sub-name">${esc(name)}</span>` +
-    `<span class="sub-preview">${esc(text.replace(/\s+/g, " ").slice(0, 140))}</span>` +
+    `<span class="entry-preview">${preview(text, 140)}</span>` +
     `<span class="entry-chev">›</span></summary><div class="entry-body">${esc(text)}</div></details>`
   );
 }
@@ -1665,7 +1696,7 @@ function renderMessages(trace, branches) {
       `<details class="entry ${esc(role)}"${role === "system" ? "" : " open"}>` +
         `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
         `<span class="entry-role">${esc(role)}</span>` +
-        `<span class="entry-preview">${esc(text.replace(/\s+/g, " ").slice(0, 180))}</span>` +
+        `<span class="entry-preview">${preview(text, 180)}</span>` +
         chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("") +
         `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>` +
         `<span class="entry-chev">›</span></summary>` +
@@ -1831,25 +1862,24 @@ function renderEpisode() {
 
 $("#run-select").addEventListener("change", (e) => selectRun(e.target.value));
 $("#live-toggle").addEventListener("change", (e) => (state.live = e.target.checked));
-$("#compare-btn").addEventListener("click", () => {
-  const menu = $("#compare-menu");
-  menu.hidden = !menu.hidden;
-  if (!menu.hidden) renderCompareMenu();
-});
 $("#compare-menu").addEventListener("change", (e) => {
   const box = e.target.closest("[data-compare]");
   if (box) toggleCompare(box.dataset.compare, box.checked);
 });
+// one delegated handler for every .dd-wrap dropdown: button toggles its menu,
+// clicking anywhere else closes them all
 document.addEventListener("click", (e) => {
-  if (!e.target.closest("#compare-wrap")) $("#compare-menu").hidden = true;
-  if (!e.target.closest("#trace-filter-wrap")) $("#trace-filter-menu").hidden = true;
-  if (!e.target.closest("#log-comp-wrap")) $("#log-comp-menu").hidden = true;
+  const wrap = e.target.closest(".dd-wrap");
+  document.querySelectorAll(".dd-menu").forEach((menu) => {
+    if (!wrap || !wrap.contains(menu)) menu.hidden = true;
+  });
+  const btn = e.target.closest(".dd-btn");
+  if (btn && wrap) {
+    const menu = wrap.querySelector(".dd-menu");
+    menu.hidden = !menu.hidden;
+    if (!menu.hidden && menu.id === "compare-menu") renderCompareMenu();
+  }
 });
-$("#trace-filter-btn").addEventListener("click", () => {
-  const menu = $("#trace-filter-menu");
-  menu.hidden = !menu.hidden;
-});
-
 function updateTraceFilterBtn() {
   const t = state.traces;
   $("#trace-filter-btn").classList.toggle("active", !!(t.env || t.errorsOnly || t.sort !== "line"));
@@ -1860,7 +1890,7 @@ document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("cli
 document.querySelectorAll("#metrics-mode button").forEach((b) =>
   b.addEventListener("click", () => {
     state.metrics.mode = b.dataset.mode;
-    document.querySelectorAll("#metrics-mode button").forEach((x) => x.classList.toggle("active", x === b));
+    setActive("#metrics-mode", "mode", b.dataset.mode);
     renderMetricsBody();
     savePrefs();
   })
@@ -1869,23 +1899,21 @@ $("#config-file").addEventListener("change", (e) => {
   state.config.file = e.target.value;
   loadConfig();
 });
-let configSearchDebounce = 0;
-$("#config-search").addEventListener("input", () => {
-  clearTimeout(configSearchDebounce);
-  configSearchDebounce = setTimeout(() => {
+$("#config-search").addEventListener(
+  "input",
+  debounce(() => {
     applyConfigSearch();
     savePrefs();
-  }, 200);
-});
-let searchDebounce = 0;
-$("#metrics-search").addEventListener("input", (e) => {
-  state.metrics.search = e.target.value;
-  clearTimeout(searchDebounce);
-  searchDebounce = setTimeout(() => {
+  })
+);
+$("#metrics-search").addEventListener(
+  "input",
+  debounce(() => {
+    state.metrics.search = $("#metrics-search").value;
     renderMetricsBody();
     savePrefs();
-  }, 250);
-});
+  }, 250)
+);
 
 // remember collapsed sections across re-renders; charts created while hidden
 // have zero width, so resize on expand ("toggle" doesn't bubble → capture)
@@ -1983,10 +2011,6 @@ $("#log-panes").addEventListener("click", (e) => {
   renderLogPanes();
   renderAllLogPanes();
 });
-$("#log-comp-btn").addEventListener("click", () => {
-  const menu = $("#log-comp-menu");
-  menu.hidden = !menu.hidden;
-});
 $("#log-comp-menu").addEventListener("change", async (e) => {
   const box = e.target.closest("[data-comp]");
   if (!box) return;
@@ -2002,7 +2026,7 @@ $("#log-comp-menu").addEventListener("change", async (e) => {
 document.querySelectorAll("#log-view button").forEach((b) =>
   b.addEventListener("click", () => {
     state.logs.view = b.dataset.view;
-    document.querySelectorAll("#log-view button").forEach((x) => x.classList.toggle("active", x === b));
+    setActive("#log-view", "view", b.dataset.view);
     renderLogPanes();
     renderAllLogPanes();
     savePrefs();
@@ -2012,14 +2036,13 @@ $("#log-level").addEventListener("change", () => {
   renderAllLogPanes();
   savePrefs();
 });
-let logSearchDebounce = 0;
-$("#log-search").addEventListener("input", () => {
-  clearTimeout(logSearchDebounce);
-  logSearchDebounce = setTimeout(() => {
+$("#log-search").addEventListener(
+  "input",
+  debounce(() => {
     renderAllLogPanes();
     savePrefs();
-  }, 200);
-});
+  })
+);
 $("#log-older").addEventListener("click", loadOlder);
 
 $("#step-blocks").addEventListener("click", (e) => {
@@ -2044,7 +2067,6 @@ document.querySelectorAll("#trace-kind button").forEach((b) =>
   b.addEventListener("click", () => {
     if (b.disabled) return;
     state.traces.kind = b.dataset.kind;
-    state.traces.page = 0;
     adjustKindSubset();
     loadEpisodes();
     savePrefs();
@@ -2054,17 +2076,15 @@ document.querySelectorAll("#trace-subset button").forEach((b) =>
   b.addEventListener("click", () => {
     state.traces.preferred = b.dataset.subset;
     state.traces.subset = b.dataset.subset;
-    state.traces.page = 0;
     adjustKindSubset();
     loadEpisodes();
     savePrefs();
   })
 );
-$("#trace-env").addEventListener("change", (e) => { state.traces.env = e.target.value; state.traces.page = 0; loadEpisodes(); });
-$("#trace-errors").addEventListener("change", (e) => { state.traces.errorsOnly = e.target.checked; state.traces.page = 0; loadEpisodes(); savePrefs(); });
+$("#trace-env").addEventListener("change", (e) => { state.traces.env = e.target.value; loadEpisodes(); });
+$("#trace-errors").addEventListener("change", (e) => { state.traces.errorsOnly = e.target.checked; loadEpisodes(); savePrefs(); });
 $("#trace-sort").addEventListener("change", (e) => {
   [state.traces.sort, state.traces.order] = e.target.value.split(":");
-  state.traces.page = 0;
   loadEpisodes();
   savePrefs();
 });
@@ -2124,7 +2144,7 @@ $("#tm-meta").addEventListener("click", (e) => {
 
 function resizeCharts() {
   for (const entry of state.metrics.charts)
-    if (entry.u) entry.u.setSize({ width: entry.card.clientWidth - 22, height: chartHeight() });
+    if (entry.u) entry.u.setSize({ width: chartWidth(entry.card), height: chartHeight() });
 }
 window.addEventListener("resize", resizeCharts);
 
@@ -2140,7 +2160,7 @@ function savePrefs() {
       metricsSearch: state.metrics.search,
       collapsedSections: [...state.metrics.collapsedSections],
       traceKind: state.traces.kind,
-      tracePreferred: state.traces.preferred ?? "effective",
+      tracePreferred: state.traces.preferred,
       traceErrorsOnly: state.traces.errorsOnly,
       traceSort: `${state.traces.sort}:${state.traces.order}`,
       logView: state.logs.view,
@@ -2166,8 +2186,10 @@ $("#smooth-range").addEventListener("input", (e) => {
 });
 
 let tickCount = 0;
+let ticking = false;
 setInterval(async () => {
-  if (!state.live) return;
+  if (!state.live || ticking) return;
+  ticking = true;
   tickCount++;
   try {
     // keep the run list fresh so new runs register without a page refresh
@@ -2186,6 +2208,8 @@ setInterval(async () => {
     }
   } catch (err) {
     console.warn("poll failed", err);
+  } finally {
+    ticking = false;
   }
 }, POLL_MS);
 
@@ -2199,12 +2223,12 @@ setInterval(async () => {
   $("#token-signal").value = prefs.tokenSignal ?? "";
   $("#trace-sort").value = `${state.traces.sort}:${state.traces.order}`;
   $("#trace-errors").checked = state.traces.errorsOnly;
-  document.querySelectorAll("#metrics-mode button").forEach((b) => b.classList.toggle("active", b.dataset.mode === state.metrics.mode));
-  document.querySelectorAll("#log-view button").forEach((b) => b.classList.toggle("active", b.dataset.view === state.logs.view));
+  setActive("#metrics-mode", "mode", state.metrics.mode);
+  setActive("#log-view", "view", state.logs.view);
   applyPaneSize();
   const params = new URLSearchParams(location.hash.slice(1));
   state.tab = params.get("tab") || "metrics";
-  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab));
+  setActive("#tabs", "tab", state.tab);
   document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== `tab-${state.tab}`));
   await loadRuns();
   const wanted = params.get("run");

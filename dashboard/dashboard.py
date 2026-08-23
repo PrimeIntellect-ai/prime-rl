@@ -20,7 +20,6 @@ View from another machine via an SSH tunnel (the startup banner prints the comma
 """
 
 import argparse
-import json
 import sys
 import threading
 from pathlib import Path
@@ -33,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 
 STATIC_DIR = Path(__file__).parent / "static"
 MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "evals.log"}
+MAX_LOG_CHUNK = 2_000_000
 
 app = FastAPI()
 output_dir = Path("outputs")
@@ -42,6 +42,7 @@ _lock = threading.Lock()
 _offsets_cache: dict[Path, tuple[int, list[int]]] = {}
 _summaries_cache: dict[Path, tuple[int, list[dict]]] = {}
 _tokenizer_cache: dict[str, object] = {}
+_started_cache: dict[Path, float] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
 
 
@@ -54,28 +55,44 @@ def get_run_dir(run: str) -> Path:
     return run_dir
 
 
+def safe_child(base: Path, rel: str, *, suffix: str | None = None) -> Path:
+    path = (base / rel).resolve()
+    if not path.is_relative_to(base.resolve()) or (suffix and path.suffix != suffix) or not path.is_file():
+        raise HTTPException(404, f"{rel} not found")
+    return path
+
+
 def read_json(path: Path) -> dict:
     try:
-        return json.loads(path.read_text())
+        return orjson.loads(path.read_bytes())
     except (OSError, ValueError):
         return {}
 
 
-def run_meta(run_dir: Path) -> dict:
+def main_config(run_dir: Path) -> tuple[str, dict]:
     configs = run_dir / "configs"
     if (configs / "sft.json").exists():
-        run_type, main_config = "sft", read_json(configs / "sft.json")
-    elif (configs / "orchestrator.json").exists() or (configs / "trainer.json").exists():
-        run_type = "rl"
-        main_config = read_json(configs / "orchestrator.json") or read_json(configs / "trainer.json")
-    else:
-        run_type, main_config = "other", {}
-    envs = lambda split: sorted(p.stem for p in (configs / "envs" / split).glob("*.json"))  # noqa: E731
-    attempts = sorted(
+        return "sft", read_json(configs / "sft.json")
+    if (configs / "orchestrator.json").exists() or (configs / "trainer.json").exists():
+        return "rl", read_json(configs / "orchestrator.json") or read_json(configs / "trainer.json")
+    return "other", {}
+
+
+def attempt_numbers(run_dir: Path) -> list[int]:
+    return sorted(
         int(p.name.removeprefix("attempt_"))
         for p in (run_dir / "logs").glob("attempt_*")
         if p.name.removeprefix("attempt_").isdigit()
     )
+
+
+def run_meta(run_dir: Path) -> dict:
+    configs = run_dir / "configs"
+    run_type, config = main_config(run_dir)
+
+    def envs(split: str) -> list[str]:
+        return sorted(p.stem for p in (configs / "envs" / split).glob("*.json"))
+
     steps = [
         int(p.name.removeprefix("step_"))
         for p in (run_dir / "rollouts").glob("step_*")
@@ -85,19 +102,22 @@ def run_meta(run_dir: Path) -> dict:
     started = updated = None
     if metrics_path.is_file():
         updated = metrics_path.stat().st_mtime
-        with metrics_path.open("rb") as f:
-            try:
-                started = orjson.loads(f.readline()).get("time")
-            except orjson.JSONDecodeError:
-                pass
+        started = _started_cache.get(metrics_path)
+        if started is None:
+            with metrics_path.open("rb") as f:
+                try:
+                    started = orjson.loads(f.readline()).get("time")
+                    _started_cache[metrics_path] = started
+                except orjson.JSONDecodeError:
+                    pass
     return {
         "name": run_dir.name,
         "type": run_type,
-        "model": (main_config.get("model") or {}).get("name"),
-        "max_steps": main_config.get("max_steps"),
+        "model": (config.get("model") or {}).get("name"),
+        "max_steps": config.get("max_steps"),
         "train_envs": envs("train"),
         "eval_envs": envs("eval"),
-        "attempts": attempts,
+        "attempts": attempt_numbers(run_dir),
         "has_metrics": metrics_path.exists(),
         "last_step": max(steps, default=None),
         "started": started,
@@ -152,8 +172,7 @@ def log_component(rel: Path) -> tuple[str, str]:
 @app.get("/api/runs/{run}/logfiles")
 def list_logfiles(run: str, attempt: str = "latest") -> dict:
     run_dir = get_run_dir(run)
-    meta = run_meta(run_dir)
-    attempts = meta["attempts"]
+    attempts = attempt_numbers(run_dir)
     if attempt == "latest":
         latest = (run_dir / "logs" / "latest").resolve()
         attempt_num = (
@@ -189,25 +208,15 @@ def list_logfiles(run: str, attempt: str = "latest") -> dict:
 
 
 @app.get("/api/runs/{run}/log")
-def read_log(
-    run: str,
-    file: str,
-    start: int | None = None,
-    end: int | None = None,
-    tail: int | None = None,
-    max_bytes: int = Query(default=2_000_000, le=8_000_000),
-) -> dict:
-    run_dir = get_run_dir(run)
-    path = (run_dir / file).resolve()
-    if not path.is_relative_to(run_dir.resolve()) or not path.is_file():
-        raise HTTPException(404, "log file not found")
+def read_log(run: str, file: str, start: int | None = None, end: int | None = None, tail: int | None = None) -> dict:
+    path = safe_child(get_run_dir(run), file)
     size = path.stat().st_size
     if tail is not None:
         start = max(0, size - tail)
     start = min(start or 0, size)
     with path.open("rb") as f:
         f.seek(start)
-        data = f.read(min(max_bytes, (end if end is not None else size) - start))
+        data = f.read(min(MAX_LOG_CHUNK, (end if end is not None else size) - start))
     if tail is not None and start > 0:  # snap the head to a line boundary
         cut = data.find(b"\n")
         if cut != -1:
@@ -220,7 +229,7 @@ def read_log(
         if last_nl != -1 and last_nl + 1 < len(data):
             data = data[: last_nl + 1]
             chunk_end = start + len(data)
-    return {"text": data.decode("utf-8", errors="replace"), "start": start, "end": chunk_end, "size": size}
+    return {"text": data.decode("utf-8", errors="replace"), "start": start, "end": chunk_end}
 
 
 # ------------------------------------------------------------------------- configs
@@ -239,10 +248,7 @@ def list_configs(run: str) -> dict:
 
 @app.get("/api/runs/{run}/config")
 def read_config(run: str, file: str) -> dict:
-    configs_dir = (get_run_dir(run) / "configs").resolve()
-    path = (configs_dir / file).resolve()
-    if not path.is_relative_to(configs_dir) or path.suffix != ".json" or not path.is_file():
-        raise HTTPException(404, "config file not found")
+    path = safe_child(get_run_dir(run) / "configs", file, suffix=".json")
     return {"file": file, "content": path.read_text()}
 
 
@@ -298,7 +304,7 @@ def line_offsets(path: Path) -> list[int]:
         if cached_size == size:
             return offsets
     scan_from = offsets[-1] if offsets else 0
-    new_offsets = offsets[: len(offsets) - 1] if offsets else []
+    new_offsets = offsets[:-1]
     with path.open("rb") as f:
         f.seek(scan_from)
         pos = scan_from
@@ -314,11 +320,11 @@ def line_offsets(path: Path) -> list[int]:
 def summarize_episode(line: int, rec: dict) -> dict:
     rewards, advantages = [], []
     input_tokens = output_tokens = turns = branches = 0
-    stop_condition = completed = None
+    stop_condition = None
     for trace in rec.get("traces") or []:
         nodes = trace.get("nodes") or []
         parents = {node.get("parent") for node in nodes if "parent" in node}
-        branches += max(0, len(nodes) - len(parents)) if nodes else 0
+        branches += max(0, len(nodes) - len(parents))
         total = sum(
             (r.get("score") or 0) * (r.get("weight") if r.get("weight") is not None else 1)
             for r in (trace.get("rewards") or {}).values()
@@ -328,7 +334,7 @@ def summarize_episode(line: int, rec: dict) -> dict:
         advantage = (trace.get("info") or {}).get("advantage")
         if advantage is not None:
             advantages.append(advantage)
-        for node in trace.get("nodes") or []:
+        for node in nodes:
             n_tokens = len(node.get("token_ids") or [])
             if node.get("sampled"):
                 output_tokens += n_tokens
@@ -337,14 +343,11 @@ def summarize_episode(line: int, rec: dict) -> dict:
             if (node.get("message") or {}).get("role") == "assistant":
                 turns += 1
         stop_condition = trace.get("stop_condition", stop_condition)
-        completed = trace.get("is_completed", completed)
         if input_tokens == 0 and output_tokens == 0:  # some eval traces carry no token arrays
             for call in trace.get("calls") or []:
                 usage = call.get("usage") or {}
                 input_tokens += usage.get("prompt_tokens") or 0
                 output_tokens += usage.get("completion_tokens") or 0
-    run = rec.get("run") or {}
-    dispatch_step = ((run.get("work") or {}).get("step")) or ((run.get("metadata") or {}).get("step"))
     return {
         "line": line,
         "id": rec.get("id"),
@@ -352,7 +355,6 @@ def summarize_episode(line: int, rec: dict) -> dict:
         "group": (rec.get("group") or {}).get("id"),
         "ok": rec.get("ok"),
         "num_errors": len(rec.get("errors") or []),
-        "num_traces": len(rec.get("traces") or []),
         "reward": sum(rewards) / len(rewards) if rewards else None,
         "advantage": sum(advantages) / len(advantages) if advantages else None,
         "input_tokens": input_tokens,
@@ -360,8 +362,6 @@ def summarize_episode(line: int, rec: dict) -> dict:
         "turns": turns,
         "branches": branches,
         "stop_condition": stop_condition,
-        "is_completed": completed,
-        "dispatch_step": dispatch_step,
     }
 
 
@@ -371,18 +371,19 @@ def episode_summaries(path: Path) -> list[dict]:
         cached_count, summaries = _summaries_cache.get(path, (0, []))
         if cached_count > len(offsets):
             cached_count, summaries = 0, []
-        summaries = list(summaries)
-    if cached_count < len(offsets):
-        with path.open("rb") as f:
-            f.seek(offsets[cached_count])
-            for line_no in range(cached_count, len(offsets)):
-                raw = f.readline()
-                try:
-                    summaries.append(summarize_episode(line_no, orjson.loads(raw)))
-                except orjson.JSONDecodeError:
-                    summaries.append({"line": line_no, "id": None, "error": "unparseable"})
-        with _lock:
-            _summaries_cache[path] = (len(offsets), summaries)
+    if cached_count == len(offsets):
+        return summaries
+    summaries = list(summaries)
+    with path.open("rb") as f:
+        f.seek(offsets[cached_count])
+        for line_no in range(cached_count, len(offsets)):
+            raw = f.readline()
+            try:
+                summaries.append(summarize_episode(line_no, orjson.loads(raw)))
+            except orjson.JSONDecodeError:
+                summaries.append({"line": line_no, "id": None, "error": "unparseable"})
+    with _lock:
+        _summaries_cache[path] = (len(offsets), summaries)
     return summaries
 
 
@@ -406,8 +407,7 @@ def list_episodes(
     step: int,
     kind: str,
     subset: str,
-    page: int = 0,
-    limit: int = Query(default=50, le=5000),
+    limit: int = Query(default=5000, le=5000),
     env: str | None = None,
     errors_only: bool = False,
     sort: str = "line",
@@ -421,8 +421,7 @@ def list_episodes(
         summaries = [s for s in summaries if s.get("num_errors") or not s.get("ok")]
     if sort in ("reward", "advantage", "output_tokens", "turns", "group"):
         summaries = sorted(summaries, key=lambda s: (s.get(sort) is None, s.get(sort) or 0), reverse=(order == "desc"))
-    total = len(summaries)
-    return {"total": total, "envs": envs, "episodes": summaries[page * limit : (page + 1) * limit]}
+    return {"total": len(summaries), "envs": envs, "episodes": summaries[:limit]}
 
 
 def get_tokenizer(model: str):
@@ -455,7 +454,7 @@ def decode_pieces(model: str, ids: list[int]) -> list[str] | None:
 
 
 @app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}")
-def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: bool = False) -> dict:
+def get_episode(run: str, step: int, kind: str, subset: str, line: int) -> dict:
     path = traces_path(run, step, kind, subset)
     offsets = line_offsets(path)
     if not 0 <= line < len(offsets):
@@ -463,16 +462,15 @@ def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: 
     with path.open("rb") as f:
         f.seek(offsets[line])
         rec = orjson.loads(f.readline())
-    if tokens:
-        fallback_model = run_meta(get_run_dir(run)).get("model")
-        for trace in rec.get("traces") or []:
-            client = ((trace.get("agent") or {}).get("config") or {}).get("client") or {}
-            model = client.get("renderer_model_name") or fallback_model
-            if not model:
-                continue
-            for node in trace.get("nodes") or []:
-                if node.get("token_ids"):
-                    node["token_strs"] = decode_pieces(model, node["token_ids"])
+    fallback_model = (main_config(get_run_dir(run))[1].get("model") or {}).get("name")
+    for trace in rec.get("traces") or []:
+        client = ((trace.get("agent") or {}).get("config") or {}).get("client") or {}
+        model = client.get("renderer_model_name") or fallback_model
+        if not model:
+            continue
+        for node in trace.get("nodes") or []:
+            if node.get("token_ids"):
+                node["token_strs"] = decode_pieces(model, node["token_ids"])
     return rec
 
 

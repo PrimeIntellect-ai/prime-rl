@@ -14,7 +14,7 @@
     <img src="/static/butterfly-white.svg" alt="Prime Intellect">
   </div>
   <select id="run-select" title="run"></select>
-  <div id="compare-wrap">
+  <div id="compare-wrap" class="dd-wrap">
     <button id="compare-btn" class="btn dd-btn">compare</button>
     <div id="compare-menu" class="dd-menu" hidden></div>
   </div>
@@ -74,7 +74,7 @@
       </div>
       <span id="trace-status" class="muted"></span>
       <div class="spacer"></div>
-      <div id="trace-filter-wrap">
+      <div id="trace-filter-wrap" class="dd-wrap">
         <button id="trace-filter-btn" class="btn dd-btn" title="filter &amp; sort">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
           filter
@@ -106,14 +106,13 @@
         <tbody></tbody>
       </table>
     </div>
-    <div id="episode-pager" class="controls"></div>
   </section>
 
   <section id="tab-logs" hidden>
     <div class="controls">
       <label class="t-label">attempt</label>
       <select id="attempt-select"></select>
-      <div id="log-comp-wrap">
+      <div id="log-comp-wrap" class="dd-wrap">
         <button id="log-comp-btn" class="btn dd-btn">components</button>
         <div id="log-comp-menu" class="dd-menu" hidden></div>
       </div>
