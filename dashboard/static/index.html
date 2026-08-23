@@ -15,8 +15,6 @@
     <span class="brand-name">prime-rl</span>
   </div>
   <select id="run-select" title="run"></select>
-  <span id="run-type" class="badge type-badge"></span>
-  <div id="run-progress"></div>
   <nav id="tabs">
     <button data-tab="metrics" class="active">Metrics</button>
     <button data-tab="config">Config</button>
@@ -26,6 +24,8 @@
   <label class="toggle" title="poll for updates"><input type="checkbox" id="live-toggle" checked><span class="dot"></span>live</label>
 </header>
 
+<div id="run-overview"></div>
+
 <main>
   <section id="tab-metrics">
     <div class="controls">
@@ -34,6 +34,8 @@
         <button data-mode="all">All metrics</button>
       </div>
       <input id="metrics-search" class="search" type="search" placeholder="filter keys…" hidden>
+      <label class="ctl">smooth <input id="smooth-range" type="range" min="1" max="50" value="1"><span id="smooth-val">off</span></label>
+      <label class="ctl">size <input id="pane-range" type="range" min="220" max="560" step="20" value="320"></label>
       <span id="metrics-status" class="muted"></span>
     </div>
     <div id="metrics-body"></div>

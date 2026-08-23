@@ -8,11 +8,12 @@ const api = async (path) => {
   return res.json();
 };
 
-/* PI line-chart palette (prime-context brand.md); single series uses the default
-   dark-mode data mark #BCBCBC — color only where it distinguishes series. */
-const PALETTE = ["#78f8a5", "#b7a6fa", "#fcdaa4", "#4a9eff", "#ff6b4a", "#bcbcbc", "#7adfff", "#b6ff3c"];
-const SINGLE_SERIES = "#bcbcbc";
+/* Platform violet is the default line color; extra series pull from the
+   prime-context chart palette. */
+const PALETTE = ["#9d85ff", "#78f8a5", "#fcdaa4", "#4a9eff", "#ff6b4a", "#bcbcbc", "#7adfff", "#b7a6fa"];
+const SINGLE_SERIES = "#9d85ff";
 const POLL_MS = 3000;
+const prefs = JSON.parse(localStorage.getItem("prl-dash") || "{}");
 
 const state = {
   runs: [],
@@ -20,7 +21,11 @@ const state = {
   meta: null,
   tab: "metrics",
   live: true,
-  metrics: { loaded: false, offset: 0, byKey: new Map(), mode: "overview", search: "", pinned: [], charts: [], renderedKeys: -1 },
+  metrics: {
+    loaded: false, offset: 0, byKey: new Map(), mode: "overview", search: "",
+    pinned: [], charts: [], renderedKeys: -1,
+    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 320,
+  },
   config: { loaded: false, files: [], file: null },
   logs: { loaded: false, attempt: "latest", attempts: [], files: [], selected: new Set(), buffers: new Map(), gseq: 0 },
   traces: { loaded: false, steps: [], step: null, kind: "train", subset: "effective", page: 0, limit: 50, total: 0, env: "", errorsOnly: false, sort: "line", order: "asc" },
@@ -47,6 +52,11 @@ async function loadRuns() {
   const current = state.run;
   sel.innerHTML = state.runs.map((r) => `<option value="${esc(r.name)}">${esc(r.name)}</option>`).join("");
   if (current && state.runs.some((r) => r.name === current)) sel.value = current;
+  const fresh = state.runs.find((r) => r.name === current);
+  if (fresh && state.meta) {
+    Object.assign(state.meta, { updated: fresh.updated, started: fresh.started, last_step: fresh.last_step });
+    renderOverview();
+  }
 }
 
 async function selectRun(name) {
@@ -58,39 +68,76 @@ async function selectRun(name) {
   state.config = { loaded: false, files: [], file: null };
   state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], selected: new Set(), buffers: new Map() };
   state.traces = { ...state.traces, loaded: false, steps: [], step: null, page: 0, env: "", kind: "train", subset: "effective" };
-  const badge = $("#run-type");
-  badge.textContent = state.meta.type;
-  badge.className = `badge type-badge ${state.meta.type}`;
-  updateProgress();
+  renderOverview();
   updateHash();
   await activateTab(state.tab, true);
 }
 
-function updateProgress() {
-  const meta = state.meta;
-  if (!meta) return;
+function fmtDuration(secs) {
+  if (secs == null || !isFinite(secs) || secs < 0) return "–";
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  const parts = [];
+  if (d) parts.push(`${d}d`);
+  if (d || h) parts.push(`${h}h`);
+  if (d || h || m) parts.push(`${m}m`);
+  parts.push(`${s}s`);
+  return parts.join(" ");
+}
+
+function fmtAgo(ts) {
+  if (!ts) return "–";
+  const secs = Date.now() / 1000 - ts;
+  if (secs < 90) return "just now";
+  if (secs < 3600) return `${Math.round(secs / 60)} min ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)} h ago`;
+  const days = Math.floor(secs / 86400);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+function currentStep() {
   let step = null;
   for (const producers of state.metrics.byKey.values())
     for (const series of producers.values()) for (const s of series.keys()) step = Math.max(step ?? 0, s);
-  step = step ?? state.runs.find((r) => r.name === state.run)?.last_step;
-  const el = $("#run-progress");
-  const model = meta.model ? `<span class="pmodel" title="${esc(meta.model)}">${esc(meta.model)}</span>` : "";
-  if (step == null) {
-    el.innerHTML = model;
+  return step ?? state.meta?.last_step ?? null;
+}
+
+function runStatus(step) {
+  const meta = state.meta;
+  if (meta.updated && Date.now() / 1000 - meta.updated < 180) return "running";
+  if (step != null && meta.max_steps && step >= meta.max_steps) return "completed";
+  return "stopped";
+}
+
+function renderOverview() {
+  const el = $("#run-overview");
+  const meta = state.meta;
+  if (!meta) {
+    el.hidden = true;
     return;
   }
-  if (!meta.max_steps) {
-    el.innerHTML = `${model}<span class="plabel">step ${step}</span>`;
-    return;
-  }
-  const cells = Math.min(meta.max_steps, 30);
-  const done = Math.min(step, meta.max_steps);
-  const filled = Math.round((done / meta.max_steps) * cells);
-  const bar = Array.from({ length: cells }, (_, i) => `<span class="cell${i < filled ? " on" : ""}"></span>`).join("");
-  const pct = Math.round((done / meta.max_steps) * 100);
+  el.hidden = false;
+  const step = currentStep();
+  const status = runStatus(step);
+  const pct = meta.max_steps && step != null ? Math.min(100, (step / meta.max_steps) * 100) : null;
+  const durationEnd = status === "running" ? Date.now() / 1000 : meta.updated;
+  const duration = meta.started && durationEnd ? fmtDuration(durationEnd - meta.started) : "–";
+  const fields = [
+    ["status", `<span class="badge st-${status}">${status}</span>`],
+    ["duration", `<span class="val">${duration}</span>`],
+    ["objective", `<span class="badge">${esc(meta.type)}</span>`],
+    ["model", `<span class="val">${esc(meta.model ?? "–")}</span>`],
+    ["created", `<span class="val">${fmtAgo(meta.created)}</span>`],
+  ];
   el.innerHTML =
-    `${model}<span class="pbar">${bar}</span>` +
-    `<span class="plabel">step ${step}/${meta.max_steps} <span class="pct">${pct}%</span></span>`;
+    `<div class="ov-top">` +
+    `<div class="ov-pct"><div class="pct">${pct != null ? `${pct.toFixed(2)}%` : step != null ? `step ${step}` : "–"}</div>` +
+    `<div class="steps">${(step ?? 0).toLocaleString()}${meta.max_steps ? ` / ${meta.max_steps.toLocaleString()}` : ""} Steps</div></div>` +
+    fields.map(([label, value]) => `<div class="ov-field"><span class="lbl">${label}</span>${value}</div>`).join("") +
+    `</div>` +
+    (pct != null ? `<div class="ov-bar"><div class="fill" style="width:${pct.toFixed(2)}%"></div></div>` : "");
 }
 
 function updateHash() {
@@ -152,7 +199,7 @@ async function fetchMetrics() {
   state.metrics.offset = data.offset;
   if (data.rows.length) {
     ingestRows(data.rows);
-    updateProgress();
+    renderOverview();
     if (state.metrics.byKey.size !== state.metrics.renderedKeys) renderMetricsBody();
     else updateCharts();
   }
@@ -227,11 +274,35 @@ function seriesLabels(series) {
   });
 }
 
+function rollingMean(values, window) {
+  if (window <= 1) return values;
+  return values.map((value, i) => {
+    if (value == null) return null;
+    let sum = 0;
+    let count = 0;
+    for (let j = Math.max(0, i - window + 1); j <= i; j++) {
+      const x = values[j];
+      if (x != null) {
+        sum += x;
+        count++;
+      }
+    }
+    return sum / count;
+  });
+}
+
 function panelData(series) {
   const stepSet = new Set();
   for (const s of series) for (const step of s.points.keys()) stepSet.add(step);
   const steps = [...stepSet].sort((a, b) => a - b);
-  return [steps, ...series.map((s) => steps.map((st) => s.points.get(st) ?? null))];
+  return [
+    steps,
+    ...series.map((s) => rollingMean(steps.map((st) => s.points.get(st) ?? null), state.metrics.smooth)),
+  ];
+}
+
+function chartHeight() {
+  return Math.max(110, Math.min(260, Math.round(state.metrics.paneMin * 0.42)));
 }
 
 function makeChart(el, labels, width) {
@@ -245,7 +316,7 @@ function makeChart(el, labels, width) {
   return new uPlot(
     {
       width,
-      height: 130,
+      height: chartHeight(),
       cursor: { points: { size: 5 }, drag: { x: true, y: false } },
       scales: { x: { time: false } },
       axes: [{ ...axis, size: 26 }, { ...axis, size: 64, values: (u, vals) => vals.map(fmtNum) }],
@@ -1039,9 +1110,31 @@ $("#drawer-body").addEventListener("click", (e) => {
   if (branchBtn) { currentBranchIdx = +branchBtn.dataset.branch; renderEpisode(); }
 });
 
-window.addEventListener("resize", () => {
+function resizeCharts() {
   for (const entry of state.metrics.charts)
-    if (entry.u) entry.u.setSize({ width: entry.card.clientWidth - 26, height: 130 });
+    if (entry.u) entry.u.setSize({ width: entry.card.clientWidth - 26, height: chartHeight() });
+}
+window.addEventListener("resize", resizeCharts);
+
+function savePrefs() {
+  localStorage.setItem("prl-dash", JSON.stringify({ smooth: state.metrics.smooth, paneMin: state.metrics.paneMin }));
+}
+
+function applyPaneSize() {
+  $("#metrics-body").style.setProperty("--pane-min", `${state.metrics.paneMin}px`);
+  resizeCharts();
+}
+
+$("#smooth-range").addEventListener("input", (e) => {
+  state.metrics.smooth = +e.target.value;
+  $("#smooth-val").textContent = state.metrics.smooth > 1 ? String(state.metrics.smooth) : "off";
+  updateCharts();
+  savePrefs();
+});
+$("#pane-range").addEventListener("input", (e) => {
+  state.metrics.paneMin = +e.target.value;
+  applyPaneSize();
+  savePrefs();
 });
 
 let tickCount = 0;
@@ -1049,6 +1142,7 @@ setInterval(async () => {
   if (!state.live || !state.run) return;
   tickCount++;
   try {
+    renderOverview(); // keeps the duration field ticking
     if (state.tab === "metrics" && state.metrics.loaded) await fetchMetrics();
     else if (state.tab === "logs" && state.logs.loaded) await pollLogs();
     else if (state.tab === "traces" && state.traces.loaded) {
@@ -1062,6 +1156,10 @@ setInterval(async () => {
 }, POLL_MS);
 
 (async function init() {
+  $("#smooth-range").value = state.metrics.smooth;
+  $("#smooth-val").textContent = state.metrics.smooth > 1 ? String(state.metrics.smooth) : "off";
+  $("#pane-range").value = state.metrics.paneMin;
+  applyPaneSize();
   const params = new URLSearchParams(location.hash.slice(1));
   state.tab = params.get("tab") || "metrics";
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab));

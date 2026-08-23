@@ -77,6 +77,20 @@ def run_meta(run_dir: Path) -> dict:
         for p in (run_dir / "logs").glob("attempt_*")
         if p.name.removeprefix("attempt_").isdigit()
     )
+    steps = [
+        int(p.name.removeprefix("step_"))
+        for p in (run_dir / "rollouts").glob("step_*")
+        if p.name.removeprefix("step_").isdigit()
+    ]
+    metrics_path = run_dir / "metrics.jsonl"
+    started = updated = None
+    if metrics_path.is_file():
+        updated = metrics_path.stat().st_mtime
+        with metrics_path.open("rb") as f:
+            try:
+                started = orjson.loads(f.readline()).get("time")
+            except orjson.JSONDecodeError:
+                pass
     return {
         "name": run_dir.name,
         "type": run_type,
@@ -85,7 +99,11 @@ def run_meta(run_dir: Path) -> dict:
         "train_envs": envs("train"),
         "eval_envs": envs("eval"),
         "attempts": attempts,
-        "has_metrics": (run_dir / "metrics.jsonl").exists(),
+        "has_metrics": metrics_path.exists(),
+        "last_step": max(steps, default=None),
+        "started": started,
+        "updated": updated,
+        "created": configs.stat().st_mtime if configs.is_dir() else run_dir.stat().st_mtime,
         "mtime": run_dir.stat().st_mtime,
     }
 
@@ -98,10 +116,7 @@ def list_runs() -> dict:
             continue
         if not any((run_dir / marker).exists() for marker in ("configs", "logs", "metrics.jsonl", "rollouts")):
             continue
-        meta = run_meta(run_dir)
-        steps = [s["step"] for s in rollout_steps(run_dir)]
-        meta["last_step"] = max(steps) if steps else None
-        runs.append(meta)
+        runs.append(run_meta(run_dir))
     runs.sort(key=lambda r: r["mtime"], reverse=True)
     return {"output_dir": str(output_dir.resolve()), "runs": runs}
 
