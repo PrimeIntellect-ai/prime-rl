@@ -1741,7 +1741,7 @@ async function loadEpisodes() {
   updateTraceFilterBtn();
   if (traces.step == null) {
     $("#trace-status").textContent = "";
-    showTraceEmpty("no rollouts", "this run has no saved rollouts yet");
+    showTraceEmpty("no traces", "this run has no saved traces yet");
     return;
   }
   const qs = new URLSearchParams({ sort: traces.sort, order: traces.order, errors_only: traces.errorsOnly });
@@ -1755,7 +1755,7 @@ async function loadEpisodes() {
     data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}?${qs}`);
   } catch {
     $("#trace-status").textContent = "";
-    showTraceEmpty("no traces", `no ${traces.kind}/${traces.subset} rollouts at step ${traces.step}`);
+    showTraceEmpty("no traces", `no ${traces.kind}/${traces.subset} traces at step ${traces.step}`);
     return;
   }
   if (data.unchanged) return;
