@@ -491,8 +491,9 @@ function buildSections(meta) {
       ...COMMON_REGEXES.map((r) => ({ regex: `${escRe(scope)}/${r}` })),
     ],
   });
-  const evalSection = (name, envPattern) => ({
+  const evalSection = (name, envPattern, configured = false) => ({
     name,
+    configured,
     panels: [
       { regex: `eval/${envPattern}/all/[^/]+/avg@.*` },
       { regex: `eval/${envPattern}/effective/[^/]+/avg@.*` },
@@ -506,7 +507,7 @@ function buildSections(meta) {
   const evalEnvs = meta.eval_envs || [];
   if (meta.type === "sft") {
     sections.push({ name: "train", panels: SFT_TRAIN_METRICS.map((m) => ({ metric: m })) });
-    if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e))));
+    if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true)));
     else sections.push(evalSection("eval", ".*"));
     sections.push({ name: "stability", panels: SFT_STABILITY_METRICS.map((m) => ({ metric: m })) });
     sections.push({ name: "performance", panels: SFT_PERFORMANCE_METRICS.map((m) => ({ metric: m })) });
@@ -518,7 +519,7 @@ function buildSections(meta) {
     sections.push(trainSection("train/agg", "train/agg"));
     sections.push(...trainEnvs.map((e) => trainSection(`train/${e}`, `train/${e}`)));
   } else sections.push(trainSection("train", "train/agg"));
-  if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e))));
+  if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true)));
   else sections.push(evalSection("eval", ".*"));
   sections.push({ name: "stability", panels: STABILITY_METRICS.map((m) => ({ metric: m })) });
   sections.push({ name: "inference", panels: INFERENCE_PANELS.map((metrics) => ({ metrics })) });
@@ -1055,8 +1056,11 @@ function renderMetricsBody() {
         if (panel.split) for (const key of splitPanelKeys(panel)) renderPanelCard(grid, { metric: key });
         else renderPanelCard(grid, panel);
       }
-      if (!grid.children.length) div.remove();
-      else applyPaneOrder(grid);
+      if (!grid.children.length) {
+        // a configured eval env stays visible before its first eval fires
+        if (section.configured && !activeFilter) grid.innerHTML = `<div class="chart-empty">no eval data yet</div>`;
+        else div.remove();
+      } else applyPaneOrder(grid);
     }
     if (activeFilter && !body.children.length)
       body.innerHTML = emptyState("no keys match", "no overview panels match the filter");
