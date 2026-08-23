@@ -227,6 +227,7 @@ function renderOverview() {
   const stepText = `${step != null ? step.toLocaleString() : "–"}/${meta.max_steps ? meta.max_steps.toLocaleString() : "∞"}`;
   const left = [
     ["status", `<span class="badge st-${status}">${status}</span>`],
+    ["type", `<span class="val">${esc((meta.type ?? "–").toUpperCase())}</span>`],
     ["step", `<span class="val">${stepText}</span>`],
     ["model", `<span class="val" title="${esc(meta.model ?? "")}">${esc(meta.model ?? "–")}</span>`],
     ["train envs", envListField(meta.train_envs)],

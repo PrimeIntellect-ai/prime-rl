@@ -65,8 +65,12 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
             page.wait_for_timeout(PAGE_SETTLE_MS)
             status = page.locator("#run-overview .badge").first.inner_text()
             assert status, "overview card did not render a status"
-            step_label = page.locator("#run-overview .ov-field .val").first.inner_text()
-            assert "/" in step_label, f"overview step field did not render: {step_label!r}"
+            fields = page.evaluate(
+                """() => Object.fromEntries([...document.querySelectorAll('#run-overview .ov-field')]
+                    .map(f => [f.querySelector('.lbl').innerText, f.querySelector('.val, .badge').innerText]))"""
+            )
+            assert fields.get("TYPE") in ("RL", "SFT"), f"overview type field did not render: {fields!r}"
+            assert "/" in fields.get("STEP", ""), f"overview step field did not render: {fields!r}"
             charts = page.locator(".chart-card").count()
             assert charts >= 5, f"expected >=5 metric panels, got {charts}"
             with_data = page.evaluate("""() => [...document.querySelectorAll('.chart-card .u-wrap')].length""")
