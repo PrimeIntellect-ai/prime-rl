@@ -41,7 +41,11 @@ def setup_weight_receiver(
     admin_clients: list[AsyncClient],
     model_name: str,
 ) -> WeightReceiver:
-    receivers = {"filesystem": FileSystemWeightReceiver, "nccl": NCCLWeightReceiver, "nixl": NIXLWeightReceiver}
-    if config.type not in receivers:
+    if config.type == "nccl":
+        return NCCLWeightReceiver(broadcast_dir, config, admin_clients, model_name)
+    elif config.type == "filesystem":
+        return FileSystemWeightReceiver(broadcast_dir, config, admin_clients, model_name)
+    elif config.type == "nixl":
+        return NIXLWeightReceiver(broadcast_dir, config, admin_clients, model_name)
+    else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")
-    return receivers[config.type](broadcast_dir, config, admin_clients, model_name)
