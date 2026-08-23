@@ -30,7 +30,7 @@ const state = {
     paneOrder: prefs.paneOrder ?? {},
   },
   compare: { runs: [], data: new Map() },
-  config: { loaded: false, files: [], file: null, fmt: "toml" },
+  config: { loaded: false, files: [], file: null, fmt: "toml", cache: new Map() },
   logs: {
     loaded: false, attempt: "latest", attempts: [], files: [], paneFile: {},
     components: prefs.logComponents ? new Set(prefs.logComponents) : null,
@@ -180,7 +180,7 @@ async function selectRun(name) {
     evalEtag: null, evalCount: 0, evalCost: null,
   };
   if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
-  state.config = { loaded: false, files: [], file: null, fmt: state.config.fmt };
+  state.config = { loaded: false, files: [], file: null, fmt: state.config.fmt, cache: new Map() };
   state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], paneFile: {}, maximized: null, buffers: new Map() };
   state.traces = { ...state.traces, loaded: false, steps: [], step: null, env: "", episodes: [], etag: null, kind: "train", subset: state.traces.preferred };
   applyRunTypeControls();
@@ -1105,17 +1105,24 @@ async function initMetrics() {
 /* ----------------------------------------------------------------- config */
 
 
-async function loadConfig() {
-  const data = await api(
-    `/api/runs/${encodeURIComponent(state.run)}/config?file=${encodeURIComponent(state.config.file)}`
-  );
+/* both views are fetched once per run, so the TOML/JSON toggle never waits on
+   the network */
+async function fetchConfigText(file) {
+  const cache = state.config.cache;
+  if (cache.has(file)) return cache.get(file);
+  const data = await api(`/api/runs/${encodeURIComponent(state.run)}/config?file=${encodeURIComponent(file)}`);
   let text = data.content;
   try {
     text = JSON.stringify(JSON.parse(text), null, 2);
   } catch {
     /* show raw content if not valid JSON */
   }
-  state.config.text = text;
+  cache.set(file, text);
+  return text;
+}
+
+async function loadConfig() {
+  state.config.text = await fetchConfigText(state.config.file);
   applyConfigSearch();
 }
 
@@ -1311,6 +1318,8 @@ async function initConfig() {
   state.config.file = configFileFor(state.config.fmt);
   renderConfigFormat();
   await loadConfig();
+  const other = configFileFor(state.config.fmt === "toml" ? "json" : "toml");
+  if (other) fetchConfigText(other); // warm the other side of the toggle
 }
 
 /* ------------------------------------------------------------------- logs */
