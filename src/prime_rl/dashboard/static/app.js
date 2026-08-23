@@ -631,7 +631,7 @@ function buildChartLayout(entry, timeAxis) {
         spanGaps: true,
         points: { show: false },
       });
-      const m = { label: labels[mainIdx] || "value", color, dataIdx: cols.length };
+      const m = { label: labels[mainIdx] || "value", stat: statOf(strand.main.key) ?? "value", color, dataIdx: cols.length };
       meta.push(m);
       mainIdx++;
       const aux = [strand.lo, strand.hi, ...strand.overlays].filter(Boolean);
@@ -792,15 +792,17 @@ function tooltipPlugin(meta, timeAxis) {
           any = true;
           const lo = m.lo ? u.data[m.lo.dataIdx][idx] : null;
           const hi = m.hi ? u.data[m.hi.dataIdx][idx] : null;
-          const range =
-            lo != null && hi != null
-              ? `<span class="u-tip-r">${esc(m.lo.stat)} ${fmtNum(lo)} · ${esc(m.hi.stat)} ${fmtNum(hi)}</span>`
-              : "";
-          rows +=
-            `<div class="u-tip-row"><span class="sw" style="background:${m.color}"></span>` +
-            `${meta.length > 1 ? `<span class="u-tip-l">${esc(m.label)}</span>` : ""}` +
-            `<span class="u-tip-v">${fmtNum(v)}</span></div>` +
-            (range ? `<div class="u-tip-row u-tip-sub">${range}</div>` : "");
+          const row = (swatch, label, value) =>
+            `<div class="u-tip-row"><span class="sw"${swatch ? ` style="background:${m.color}"` : ""}></span>` +
+            `${label ? `<span class="u-tip-l">${esc(label)}</span>` : ""}<span class="u-tip-v">${fmtNum(value)}</span></div>`;
+          if (lo != null && hi != null) {
+            // banded: three lines, hi over mean over lo
+            rows += row(false, m.hi.stat, hi);
+            rows += row(true, meta.length > 1 ? m.label : m.stat, v);
+            rows += row(false, m.lo.stat, lo);
+          } else {
+            rows += row(true, meta.length > 1 ? m.label : "", v);
+          }
         });
         if (!any) {
           tip.style.display = "none";
