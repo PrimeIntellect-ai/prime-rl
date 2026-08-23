@@ -432,8 +432,15 @@ body.resizing { user-select: none; }
   margin: 0;
   font-size: 12px;
   line-height: 1.55;
-  white-space: pre;
+  white-space: normal;
 }
+/* collapsible JSON tree */
+#config-view .j-line { white-space: pre; padding: 0 6px; }
+#config-view div.j-line:hover, #config-view summary.j-line:hover { background: rgba(255, 255, 255, 0.05); }
+details.j-fold > summary { list-style: none; cursor: pointer; user-select: none; }
+details.j-fold > summary::-webkit-details-marker { display: none; }
+.j-ellip { color: var(--grey-4); }
+details.j-fold[open] > summary .j-ellip { display: none; }
 #config-search { flex: 1; max-width: 460px; }
 mark.hit {
   background: rgba(182, 255, 60, 0.22);

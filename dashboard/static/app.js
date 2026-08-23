@@ -860,15 +860,51 @@ function pruneConfig(node, re) {
   return Object.keys(out).length ? out : undefined;
 }
 
-/* filter the config to matched subtrees, re-render with syntax highlighting,
-   then mark every hit by walking text nodes (keeps syntax spans intact) */
+/* collapsible JSON tree: object/array lines fold on click */
+function jsonLeafHtml(value) {
+  if (typeof value === "string") return `<span class="j-str">${esc(JSON.stringify(value))}</span>`;
+  if (typeof value === "number") return `<span class="j-num">${value}</span>`;
+  return `<span class="j-lit">${value === null ? "null" : value}</span>`;
+}
+
+function renderJsonNode(key, value, indent, isLast) {
+  const pad = "  ".repeat(indent);
+  const keyHtml = key != null ? `<span class="j-key">${esc(JSON.stringify(key))}</span><span class="j-punc">: </span>` : "";
+  const comma = isLast ? "" : ",";
+  if (value !== null && typeof value === "object") {
+    const isArray = Array.isArray(value);
+    const entries = isArray ? value.map((v) => [null, v]) : Object.entries(value);
+    const close = isArray ? "]" : "}";
+    if (!entries.length)
+      return `<div class="j-line">${pad}${keyHtml}<span class="j-punc">${isArray ? "[]" : "{}"}${comma}</span></div>`;
+    const children = entries
+      .map(([k, v], i) => renderJsonNode(k, v, indent + 1, i === entries.length - 1))
+      .join("");
+    return (
+      `<details class="j-fold" open><summary class="j-line">${pad}${keyHtml}<span class="j-punc">${isArray ? "[" : "{"}</span>` +
+      `<span class="j-ellip"> … ${entries.length} <span class="j-punc">${close}${comma}</span></span></summary>` +
+      children +
+      `<div class="j-line">${pad}<span class="j-punc">${close}${comma}</span></div></details>`
+    );
+  }
+  return `<div class="j-line">${pad}${keyHtml}${jsonLeafHtml(value)}<span class="j-punc">${comma}</span></div>`;
+}
+
+/* filter the config to matched subtrees, render the collapsible tree, then
+   mark every hit by walking text nodes (keeps syntax spans intact) */
 function applyConfigSearch() {
   const view = $("#config-view");
   const query = $("#config-search").value.trim();
   const hitsEl = $("#config-hits");
   hitsEl.textContent = "";
+  let parsed;
+  try {
+    parsed = JSON.parse(state.config.text ?? "");
+  } catch {
+    parsed = undefined; // not valid JSON: plain highlighted text, no folding
+  }
   if (!query) {
-    view.innerHTML = highlightJson(state.config.text ?? "");
+    view.innerHTML = parsed !== undefined ? renderJsonNode(null, parsed, 0, true) : highlightJson(state.config.text ?? "");
     return;
   }
   let re;
@@ -877,19 +913,17 @@ function applyConfigSearch() {
   } catch {
     re = new RegExp(escRe(query), "gi");
   }
-  let text = state.config.text ?? "";
-  try {
-    const pruned = pruneConfig(JSON.parse(text), new RegExp(re.source, "i"));
+  if (parsed !== undefined) {
+    const pruned = pruneConfig(parsed, new RegExp(re.source, "i"));
     if (pruned === undefined) {
       view.innerHTML = emptyState("no hits", "nothing in this config matches the filter");
       hitsEl.textContent = "no hits";
       return;
     }
-    text = JSON.stringify(pruned, null, 2);
-  } catch {
-    /* not valid JSON: fall back to highlighting the full text */
+    view.innerHTML = renderJsonNode(null, pruned, 0, true);
+  } else {
+    view.innerHTML = highlightJson(state.config.text ?? "");
   }
-  view.innerHTML = highlightJson(text);
   const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
   const nodes = [];
   while (walker.nextNode()) nodes.push(walker.currentNode);
