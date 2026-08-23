@@ -905,6 +905,7 @@ function parseLines(text, file) {
     entries.push({
       rawTime: timeMatch ? +timeMatch[1] * 3600 + +timeMatch[2] * 60 + +timeMatch[3] : null,
       ownLevel: levelMatch ? levelMatch[1] : null,
+      router: plain.includes("vllm_router_rs"),
       raw,
       plain,
       html: null,
@@ -953,6 +954,11 @@ function paneFiles(pane) {
 function paneSelectedIds(pane) {
   if (pane.merged) return paneFiles(pane).map((f) => f.id);
   const id = state.logs.paneFile[pane.comp];
+  if (pane.comp === "infer" && id === "__router__") {
+    // virtual selection: router lines live inside the single-node inference.log
+    const master = paneFiles(pane).find((f) => f.master);
+    return master ? [master.id] : [];
+  }
   return id ? [id] : [];
 }
 
@@ -984,7 +990,8 @@ function renderLogPanes() {
   for (const pane of LOG_PANES) {
     const files = paneFiles(pane);
     if (!files.length) continue;
-    if (!pane.merged && !files.some((f) => f.id === logs.paneFile[pane.comp]))
+    const isVirtual = pane.comp === "infer" && logs.paneFile[pane.comp] === "__router__";
+    if (!pane.merged && !isVirtual && !files.some((f) => f.id === logs.paneFile[pane.comp]))
       logs.paneFile[pane.comp] = (files.find((f) => f.master) ?? files[0]).id;
     const el = document.createElement("div");
     el.className = `log-pane${logs.maximized === pane.comp ? " maximized" : ""}`;
@@ -995,7 +1002,11 @@ function renderLogPanes() {
         ? `<span class="lp-count muted">${files.length} file${files.length === 1 ? "" : "s"} merged</span>`
         : `<select class="lp-file">${files
             .map((f) => `<option value="${esc(f.id)}"${f.id === logs.paneFile[pane.comp] ? " selected" : ""}>${esc(f.label)}</option>`)
-            .join("")}</select>`) +
+            .join("")}${
+            pane.comp === "infer" && files.some((f) => f.master)
+              ? `<option value="__router__"${logs.paneFile.infer === "__router__" ? " selected" : ""}>router</option>`
+              : ""
+          }</select>`) +
       `<span class="lp-count"></span><div class="spacer"></div>` +
       `<button class="btn lp-max" title="${logs.maximized === pane.comp ? "restore" : "maximize"}">${logs.maximized === pane.comp ? "\u2921" : "\u2922"}</button></div>` +
       `<div class="log-pane-stream"></div>`;
@@ -1011,11 +1022,18 @@ function renderLogPane(el) {
   const minRank = LEVEL_RANK[$("#log-level").value] ?? 0;
   const filter = logFilter();
   const ids = paneSelectedIds(pane);
+  // single-node inference.log interleaves router and engine lines: show only
+  // engine lines by default, router lines via the virtual "router" file entry
+  const selected = state.logs.paneFile[pane.comp];
+  const routerOnly = pane.comp === "infer" && selected === "__router__";
+  const engineOnly = pane.comp === "infer" && !routerOnly && /(^|\/)inference\.log$/.test(selected ?? "");
   const lines = [];
   for (const id of ids) {
     const buffer = state.logs.buffers.get(id);
     if (!buffer) continue;
     for (const line of buffer.lines) {
+      if (engineOnly && line.router) continue;
+      if (routerOnly && !line.router) continue;
       if (minRank && (LEVEL_RANK[line.level] ?? minRank) < minRank) continue;
       if (filter && !filter.test(line.plain)) continue;
       lines.push(line);
