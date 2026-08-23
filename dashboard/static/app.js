@@ -464,14 +464,15 @@ function chartHeight() {
   return state.metrics.paneH;
 }
 
-/* axis labels stay compact so they fit the 50px gutter: K-notation above
-   1000, one exponent digit outside that */
+/* axis labels stay compact so they fit the gutter: K-notation above 1000,
+   two significant digits below 0.1, one exponent digit outside that */
 function fmtAxis(v) {
   if (v == null) return "";
   if (v === 0) return "0";
   const abs = Math.abs(v);
   if (abs >= 1e6 || abs < 1e-3) return v.toExponential(1).replace(".0e", "e");
   if (abs >= 1000) return `${+(v / 1000).toFixed(abs >= 10000 ? 0 : 1)}K`;
+  if (abs < 0.1) return String(+v.toPrecision(2));
   return fmtNum(v);
 }
 
@@ -582,7 +583,7 @@ function makeChart(el, labels, colorList, width, timeAxis = false) {
       padding: [10, 12, 0, 0],
       cursor: { points: { size: 5 }, drag: { x: true, y: false } },
       scales: { x: { time: false } },
-      axes: [xAxis, { ...axis, size: 50, values: (u, vals) => vals.map(fmtAxis) }],
+      axes: [xAxis, { ...axis, size: 54, values: (u, vals) => vals.map(fmtAxis) }],
       legend: { show: false },
       plugins: [tooltipPlugin(meta, timeAxis), unzoomPlugin()],
       series,
