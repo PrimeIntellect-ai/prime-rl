@@ -4,20 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>prime-rl dashboard</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 29 27H3Z' fill='%238b5cf6'/%3E%3C/svg%3E">
+<link rel="icon" href="/static/butterfly-white.svg">
 <link rel="stylesheet" href="/static/vendor/uPlot.min.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header id="topbar">
-  <div class="brand"><span class="brand-mark">▲</span>prime<span class="brand-accent">rl</span></div>
+  <div class="brand">
+    <img src="/static/butterfly-white.svg" alt="Prime Intellect">
+    <span class="brand-name">prime-rl</span>
+  </div>
   <select id="run-select" title="run"></select>
   <span id="run-type" class="badge type-badge"></span>
-  <span id="run-progress" class="muted mono"></span>
+  <div id="run-progress"></div>
   <nav id="tabs">
     <button data-tab="metrics" class="active">Metrics</button>
-    <button data-tab="logs">Logs</button>
+    <button data-tab="config">Config</button>
     <button data-tab="traces">Traces</button>
+    <button data-tab="logs">Logs</button>
   </nav>
   <label class="toggle" title="poll for updates"><input type="checkbox" id="live-toggle" checked><span class="dot"></span>live</label>
 </header>
@@ -35,31 +39,12 @@
     <div id="metrics-body"></div>
   </section>
 
-  <section id="tab-logs" hidden>
-    <div id="logs-layout">
-      <aside id="log-sidebar">
-        <div class="sidebar-head">
-          <label class="muted">attempt</label>
-          <select id="attempt-select"></select>
-        </div>
-        <div id="log-files"></div>
-      </aside>
-      <div id="log-main">
-        <div class="controls">
-          <label class="toggle"><input type="checkbox" id="log-follow" checked><span class="dot"></span>follow</label>
-          <select id="log-level">
-            <option value="DEBUG">all levels</option>
-            <option value="INFO">info+</option>
-            <option value="WARNING">warn+</option>
-            <option value="ERROR">error+</option>
-          </select>
-          <input id="log-search" class="search" type="search" placeholder="filter lines…">
-          <button id="log-older" class="btn">load older</button>
-          <span id="log-status" class="muted"></span>
-        </div>
-        <div id="log-stream" class="mono"></div>
-      </div>
+  <section id="tab-config" hidden>
+    <div class="controls">
+      <select id="config-file"></select>
+      <span id="config-status" class="muted"></span>
     </div>
+    <pre id="config-view"></pre>
   </section>
 
   <section id="tab-traces" hidden>
@@ -97,6 +82,33 @@
       </table>
     </div>
     <div id="episode-pager" class="controls"></div>
+  </section>
+
+  <section id="tab-logs" hidden>
+    <div id="logs-layout">
+      <aside id="log-sidebar">
+        <div class="sidebar-head">
+          <label class="t-label">attempt</label>
+          <select id="attempt-select"></select>
+        </div>
+        <div id="log-files"></div>
+      </aside>
+      <div id="log-main">
+        <div class="controls">
+          <label class="toggle"><input type="checkbox" id="log-follow" checked><span class="dot"></span>follow</label>
+          <select id="log-level">
+            <option value="DEBUG">all levels</option>
+            <option value="INFO">info+</option>
+            <option value="WARNING">warn+</option>
+            <option value="ERROR">error+</option>
+          </select>
+          <input id="log-search" class="search" type="search" placeholder="filter lines…">
+          <button id="log-older" class="btn">load older</button>
+          <span id="log-status" class="muted"></span>
+        </div>
+        <div id="log-stream" class="mono"></div>
+      </div>
+    </div>
   </section>
 </main>
 

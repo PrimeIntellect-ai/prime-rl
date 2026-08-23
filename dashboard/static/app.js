@@ -8,7 +8,10 @@ const api = async (path) => {
   return res.json();
 };
 
-const PALETTE = ["#a78bfa", "#22d3ee", "#f472b6", "#4ade80", "#fbbf24", "#60a5fa", "#f87171", "#c084fc"];
+/* PI line-chart palette (prime-context brand.md); single series uses the default
+   dark-mode data mark #BCBCBC — color only where it distinguishes series. */
+const PALETTE = ["#78f8a5", "#b7a6fa", "#fcdaa4", "#4a9eff", "#ff6b4a", "#bcbcbc", "#7adfff", "#b6ff3c"];
+const SINGLE_SERIES = "#bcbcbc";
 const POLL_MS = 3000;
 
 const state = {
@@ -18,6 +21,7 @@ const state = {
   tab: "metrics",
   live: true,
   metrics: { loaded: false, offset: 0, byKey: new Map(), mode: "overview", search: "", pinned: [], charts: [], renderedKeys: -1 },
+  config: { loaded: false, files: [], file: null },
   logs: { loaded: false, attempt: "latest", attempts: [], files: [], selected: new Set(), buffers: new Map(), gseq: 0 },
   traces: { loaded: false, steps: [], step: null, kind: "train", subset: "effective", page: 0, limit: 50, total: 0, env: "", errorsOnly: false, sort: "line", order: "asc" },
 };
@@ -29,7 +33,7 @@ function fmtNum(v) {
   if (abs >= 1e6 || abs < 1e-3) return v.toExponential(2);
   if (abs >= 100) return v.toFixed(1);
   if (Number.isInteger(v)) return String(v);
-  return v.toPrecision(4);
+  return v.toPrecision(4).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
 }
 const fmtBytes = (n) => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)}M` : n >= 1024 ? `${(n / 1024).toFixed(0)}K` : `${n}B`);
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -51,6 +55,7 @@ async function selectRun(name) {
   $("#run-select").value = name;
   state.meta = await api(`/api/runs/${encodeURIComponent(name)}`);
   state.metrics = { ...state.metrics, loaded: false, offset: 0, byKey: new Map(), pinned: [], charts: [], renderedKeys: -1 };
+  state.config = { loaded: false, files: [], file: null };
   state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], selected: new Set(), buffers: new Map() };
   state.traces = { ...state.traces, loaded: false, steps: [], step: null, page: 0, env: "", kind: "train", subset: "effective" };
   const badge = $("#run-type");
@@ -68,8 +73,24 @@ function updateProgress() {
   for (const producers of state.metrics.byKey.values())
     for (const series of producers.values()) for (const s of series.keys()) step = Math.max(step ?? 0, s);
   step = step ?? state.runs.find((r) => r.name === state.run)?.last_step;
-  $("#run-progress").textContent =
-    (meta.model ? `${meta.model}  ·  ` : "") + (step != null ? `step ${step}${meta.max_steps ? `/${meta.max_steps}` : ""}` : "");
+  const el = $("#run-progress");
+  const model = meta.model ? `<span class="pmodel" title="${esc(meta.model)}">${esc(meta.model)}</span>` : "";
+  if (step == null) {
+    el.innerHTML = model;
+    return;
+  }
+  if (!meta.max_steps) {
+    el.innerHTML = `${model}<span class="plabel">step ${step}</span>`;
+    return;
+  }
+  const cells = Math.min(meta.max_steps, 30);
+  const done = Math.min(step, meta.max_steps);
+  const filled = Math.round((done / meta.max_steps) * cells);
+  const bar = Array.from({ length: cells }, (_, i) => `<span class="cell${i < filled ? " on" : ""}"></span>`).join("");
+  const pct = Math.round((done / meta.max_steps) * 100);
+  el.innerHTML =
+    `${model}<span class="pbar">${bar}</span>` +
+    `<span class="plabel">step ${step}/${meta.max_steps} <span class="pct">${pct}%</span></span>`;
 }
 
 function updateHash() {
@@ -83,6 +104,7 @@ async function activateTab(tab, force = false) {
   document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
   updateHash();
   if (tab === "metrics" && !state.metrics.loaded) await initMetrics();
+  if (tab === "config" && !state.config.loaded) await initConfig();
   if (tab === "logs" && !state.logs.loaded) await initLogs();
   if (tab === "traces" && !state.traces.loaded) await initTraces();
 }
@@ -214,25 +236,26 @@ function panelData(series) {
 
 function makeChart(el, labels, width) {
   const axis = {
-    stroke: "#6b6b7d",
-    grid: { stroke: "#1e1e2a", width: 1 },
-    ticks: { stroke: "#1e1e2a" },
-    font: "10px ui-monospace, monospace",
+    stroke: "#767676",
+    grid: { stroke: "rgba(255,255,255,0.06)", width: 1 },
+    ticks: { stroke: "rgba(255,255,255,0.10)" },
+    font: "10px 'ABC Favorit Mono', 'JetBrains Mono', ui-monospace, monospace",
   };
+  const colors = labels.length > 1 ? PALETTE : [SINGLE_SERIES];
   return new uPlot(
     {
       width,
       height: 130,
-      cursor: { points: { size: 6 }, drag: { x: true, y: false } },
+      cursor: { points: { size: 5 }, drag: { x: true, y: false } },
       scales: { x: { time: false } },
-      axes: [{ ...axis, size: 26 }, { ...axis, size: 56, values: (u, vals) => vals.map(fmtNum) }],
+      axes: [{ ...axis, size: 26 }, { ...axis, size: 64, values: (u, vals) => vals.map(fmtNum) }],
       legend: { show: labels.length > 1 },
       series: [
         { label: "step" },
         ...labels.map((label, i) => ({
           label: label || "value",
-          stroke: PALETTE[i % PALETTE.length],
-          width: 1.5,
+          stroke: colors[i % colors.length],
+          width: 1.25,
           spanGaps: true,
           points: { show: false },
         })),
@@ -258,7 +281,7 @@ function renderPanelCard(grid, panel) {
   }
   const plotEl = document.createElement("div");
   card.appendChild(plotEl);
-  const u = makeChart(plotEl, seriesLabels(series), card.clientWidth - 22);
+  const u = makeChart(plotEl, seriesLabels(series), card.clientWidth - 26);
   const entry = { card, panel, u, series };
   state.metrics.charts.push(entry);
   updateChart(entry);
@@ -340,6 +363,59 @@ async function initMetrics() {
   state.metrics.loaded = true;
   await fetchMetrics();
   renderMetricsBody();
+}
+
+/* ----------------------------------------------------------------- config */
+
+function highlightJson(text) {
+  let out = "";
+  let last = 0;
+  const re = /("(?:[^"\\]|\\.)*")(\s*:)?|-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|\b(?:true|false|null)\b/g;
+  let match;
+  while ((match = re.exec(text))) {
+    out += esc(text.slice(last, match.index));
+    if (match[1]) {
+      out += match[2]
+        ? `<span class="j-key">${esc(match[1])}</span>${match[2]}`
+        : `<span class="j-str">${esc(match[1])}</span>`;
+    } else if (/^(true|false|null)$/.test(match[0])) {
+      out += `<span class="j-lit">${match[0]}</span>`;
+    } else {
+      out += `<span class="j-num">${match[0]}</span>`;
+    }
+    last = re.lastIndex;
+  }
+  return out + esc(text.slice(last));
+}
+
+async function loadConfig() {
+  const data = await api(
+    `/api/runs/${encodeURIComponent(state.run)}/config?file=${encodeURIComponent(state.config.file)}`
+  );
+  let text = data.content;
+  try {
+    text = JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    /* show raw content if not valid JSON */
+  }
+  $("#config-view").innerHTML = highlightJson(text);
+  $("#config-status").textContent = `configs/${data.file}`;
+}
+
+async function initConfig() {
+  state.config.loaded = true;
+  const data = await api(`/api/runs/${encodeURIComponent(state.run)}/configs`);
+  state.config.files = data.files;
+  const sel = $("#config-file");
+  sel.innerHTML = data.files.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join("");
+  if (!data.files.length) {
+    $("#config-view").textContent = "no configs/ in this run";
+    $("#config-status").textContent = "";
+    return;
+  }
+  if (!data.files.includes(state.config.file)) state.config.file = data.files[0];
+  sel.value = state.config.file;
+  await loadConfig();
 }
 
 /* ------------------------------------------------------------------- logs */
@@ -625,7 +701,7 @@ async function loadEpisodes() {
         <td class="muted">${ep.line}</td>
         <td>${esc(ep.env ?? "?")}</td>
         <td class="muted" title="${esc(ep.group ?? "")}">${esc((ep.group ?? "").slice(0, 8))}</td>
-        <td class="${rewardClass(ep.reward)}">${fmtNum(ep.reward)}</td>
+        <td>${fmtNum(ep.reward)}</td>
         <td class="${rewardClass(ep.advantage)}">${fmtNum(ep.advantage)}</td>
         <td class="muted">${ep.input_tokens ?? ""}</td>
         <td>${ep.output_tokens ?? ""}</td>
@@ -730,14 +806,14 @@ function renderTokenNode(node, signal, maxAbsAdv) {
     const logprob = logprobAt(i), advantage = advantageAt(i);
     let bg = "";
     if (signal === "advantage" && advantage != null && maxAbsAdv > 0) {
-      const alpha = Math.min(1, Math.abs(advantage) / maxAbsAdv) * 0.55;
-      bg = `background:rgba(${advantage > 0 ? "74,222,128" : "248,113,113"},${alpha.toFixed(3)})`;
+      const alpha = Math.min(1, Math.abs(advantage) / maxAbsAdv) * 0.45;
+      bg = `background:rgba(${advantage > 0 ? "182,255,60" : "255,69,57"},${alpha.toFixed(3)})`;
     } else if (signal === "logprob" && logprob != null) {
-      bg = `background:rgba(139,92,246,${(Math.min(1, -logprob / 6) * 0.7).toFixed(3)})`;
+      bg = `background:rgba(183,166,250,${(Math.min(1, -logprob / 6) * 0.6).toFixed(3)})`;
     } else if (signal === "mask" && node.mask?.[i]) {
-      bg = "background:rgba(139,92,246,0.35)";
+      bg = "background:rgba(74,158,255,0.3)";
     } else if (signal === "is_content" && node.is_content?.[i]) {
-      bg = "background:rgba(34,211,238,0.3)";
+      bg = "background:rgba(252,218,164,0.28)";
     }
     const tip = `#${i} id=${id}${logprob != null ? ` lp=${logprob.toFixed(4)}` : ""}${advantage != null ? ` adv=${fmtNum(advantage)}` : ""} mask=${node.mask?.[i] ?? "?"}`;
     return `<span class="tok" style="${bg}" title="${esc(tip)}">${esc(text)}</span>`;
@@ -877,6 +953,10 @@ document.querySelectorAll("#metrics-mode button").forEach((b) =>
     renderMetricsBody();
   })
 );
+$("#config-file").addEventListener("change", (e) => {
+  state.config.file = e.target.value;
+  loadConfig();
+});
 $("#metrics-search").addEventListener("input", (e) => {
   state.metrics.search = e.target.value;
   renderKeyList();
@@ -961,7 +1041,7 @@ $("#drawer-body").addEventListener("click", (e) => {
 
 window.addEventListener("resize", () => {
   for (const entry of state.metrics.charts)
-    if (entry.u) entry.u.setSize({ width: entry.card.clientWidth - 22, height: 130 });
+    if (entry.u) entry.u.setSize({ width: entry.card.clientWidth - 26, height: 130 });
 });
 
 let tickCount = 0;

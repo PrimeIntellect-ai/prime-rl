@@ -209,6 +209,29 @@ def read_log(
     return {"text": data.decode("utf-8", errors="replace"), "start": start, "end": chunk_end, "size": size}
 
 
+# ------------------------------------------------------------------------- configs
+
+CONFIG_ORDER = ["rl.json", "sft.json", "orchestrator.json", "trainer.json", "inference.json", "evals.json"]
+
+
+@app.get("/api/runs/{run}/configs")
+def list_configs(run: str) -> dict:
+    configs_dir = get_run_dir(run) / "configs"
+    files = [str(p.relative_to(configs_dir)) for p in configs_dir.rglob("*.json")] if configs_dir.is_dir() else []
+    rank = {name: i for i, name in enumerate(CONFIG_ORDER)}
+    files.sort(key=lambda f: (rank.get(f, len(rank)), f))
+    return {"files": files}
+
+
+@app.get("/api/runs/{run}/config")
+def read_config(run: str, file: str) -> dict:
+    configs_dir = (get_run_dir(run) / "configs").resolve()
+    path = (configs_dir / file).resolve()
+    if not path.is_relative_to(configs_dir) or path.suffix != ".json" or not path.is_file():
+        raise HTTPException(404, "config file not found")
+    return {"file": file, "content": path.read_text()}
+
+
 # ------------------------------------------------------------------------- metrics
 
 
