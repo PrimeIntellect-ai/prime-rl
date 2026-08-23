@@ -47,6 +47,8 @@ def _qwen3_5_moe_vlm_config():
     tc.num_attention_heads = 4
     tc.num_key_value_heads = 2
     tc.head_dim = 64
+    # mrope_section must sum to rotary_dim // 2 for the shrunken head_dim
+    tc.rope_parameters["mrope_section"] = [3, 3, 2]
     tc.moe_intermediate_size = 128
     tc.shared_expert_intermediate_size = 128
     tc.num_experts = 4

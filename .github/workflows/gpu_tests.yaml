@@ -84,6 +84,21 @@ jobs:
           - test: reverse_text_moe
             runner: vm
             pytest_args: "tests/integration/test_reverse_text_moe.py"
+          - test: converters_glm4_moe
+            runner: vm
+            pytest_args: "tests/converters/test_converters.py -k glm4_moe"
+          - test: converters_laguna
+            runner: vm
+            pytest_args: "tests/converters/test_converters.py -k laguna"
+          - test: converters_minimax_m2
+            runner: vm
+            pytest_args: "tests/converters/test_converters.py -k minimax_m2"
+          - test: converters_qwen3_5_moe_vlm
+            runner: vm
+            pytest_args: "tests/converters/test_converters.py -k qwen3_5_moe_vlm"
+          - test: converters_sft_checkpoint
+            runner: vm
+            pytest_args: "tests/converters/test_sft_checkpoint.py"
           - test: benchmark_regression
             runner: 4xa6000
             pytest_args: "tests/integration/test_benchmark_regression.py"
