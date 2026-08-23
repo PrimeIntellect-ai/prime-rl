@@ -2089,14 +2089,9 @@ function renderMeta(ep, trace, branches) {
       if (usage.cached) parts.push(metaRow("cached tokens", fmtCompact(usage.cached)));
       // API-priced runs report per-call cost; local deployments usually don't
       const traceCost = (t) => (t.calls || []).reduce((acc, c) => acc + (c.usage?.cost ?? 0), 0);
-      const hasCost = (t) => (t.calls || []).some((c) => c.usage?.cost != null);
-      if (hasCost(trace)) parts.push(metaRow("cost", fmtCost(traceCost(trace))));
       const allTraces = ep.traces || [];
-      if (allTraces.length > 1 && allTraces.some(hasCost)) {
-        for (const t of allTraces)
-          if (t !== trace && hasCost(t)) parts.push(metaRow(`cost · ${t.agent?.name ?? "trace"}`, fmtCost(traceCost(t))));
-        parts.push(metaRow("cost · episode", fmtCost(allTraces.reduce((acc, t) => acc + traceCost(t), 0))));
-      }
+      if (allTraces.some((t) => (t.calls || []).some((c) => c.usage?.cost != null)))
+        parts.push(metaRow("cost", fmtCost(allTraces.reduce((acc, t) => acc + traceCost(t), 0))));
       parts.push(metaRow("total tokens", fmtCompact(usage.input + usage.output)));
     }
 
