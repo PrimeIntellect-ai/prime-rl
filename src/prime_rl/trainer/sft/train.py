@@ -419,16 +419,13 @@ def train(config: SFTConfig):
             config.model.lora,
         )
         # Startup broadcast of the incoming policy: fails fast on a broken
-        # transport, lets the evals process re-trigger at the resume step
-        # (older broadcasts may have been cleaned), and skips when the
-        # previous run's broadcast survived on disk — rewriting the same dir
-        # in place would race an evals process already reloading it.
+        # transport and lets the evals process re-trigger at the resume step
+        # (older broadcasts may have been cleaned).
         startup_version = checkpoint_step or 0
         if world.is_master:
             prune_broadcasts_beyond(config.run_dir, startup_version)
-        if weight_broadcast.REQUIRES_LIVE_CONSUMER or not weight_broadcast.is_finished(startup_version):
-            logger.info(f"Broadcasting startup policy weights (v{startup_version}) for online evals")
-            weight_broadcast.broadcast(model, startup_version)
+        logger.info(f"Broadcasting startup policy weights (v{startup_version}) for online evals")
+        weight_broadcast.broadcast(model, startup_version)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB

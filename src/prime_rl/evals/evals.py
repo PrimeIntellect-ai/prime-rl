@@ -2,14 +2,13 @@
 
 Standalone (no ``[online]``), it runs one epoch of every configured eval
 source against the weights the inference server currently serves, then exits.
-With ``[online]``, it watches a broadcasts directory for new weight
-broadcasts through a ``WeightBroadcastReceiver`` — filesystem broadcasts are
-announced by their ``.finished`` marker on completion, in-memory (NCCL)
-broadcasts by ``.started`` while the trainer blocks for the receiver — moves
-the inference server onto each eligible broadcast, and runs the configured
-evals against the updated weights, sequentially per broadcast so every epoch
-measures exactly one policy version. An in-memory broadcast must always be
-received (a skipped receive strands the trainer), even when no eval is due.
+With ``[online]``, it watches a broadcasts directory for offered weight
+broadcasts through a ``WeightBroadcastReceiver`` (announced by their
+``.sender_ready`` marker), moves the inference server onto each of them, and
+runs the configured evals against the updated weights, sequentially per
+broadcast so every epoch measures exactly one policy version. Every offered
+broadcast must be received, even when no eval is due — the trainer blocks
+inside the handshake until the receiver acknowledges.
 
 Scheduling reuses the orchestrator pipeline unchanged: an eval-only
 ``Dispatcher`` admits episodes under the adaptive ``ConcurrencyController``,
@@ -346,21 +345,11 @@ class Evals:
         fired = self.eval_source.trigger(step, force=force)
         self.last_step = max(self.last_step, step)
 
-        if reload_weights and (fired or not self.receiver.CAN_SKIP_VERSIONS):
+        if reload_weights:
+            # Every offered version must be received: the trainer blocks inside
+            # the handshake, so a failed receive fails the run loudly.
             get_logger().info(f"Updating inference weights to broadcast step {step} ({broadcast_dir})")
-            try:
-                await self.receiver.receive(step)
-            except Exception as exc:
-                if not self.receiver.CAN_SKIP_VERSIONS:
-                    # The trainer is blocked inside this broadcast — a skipped
-                    # receive would strand it, so fail the run loudly instead.
-                    raise
-                # Skip this step instead of killing the run; drain the queued examples
-                # so they don't leak into a later epoch with the wrong step.
-                while self.eval_source.next_task() is not None:
-                    pass
-                get_logger().error(f"Failed to update inference weights to step {step} - skipping evals: {exc!r}")
-                return
+            await self.receiver.receive(step)
 
         if not fired:
             return

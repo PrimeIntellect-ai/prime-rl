@@ -38,6 +38,10 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 
 
 class BaseWeightBroadcastConfig(BaseConfig):
+    timeout: int = 1200
+    """Timeout in seconds for the broadcast handshake and transfer. The trainer
+    fails the run when no consumer acknowledges an offered version in time."""
+
     broadcast_final: bool = True
     """Internal - stamped by the RL/SFT launcher, never set by users: whether the
     trainer broadcasts the final version v{max_steps}. True iff something consumes

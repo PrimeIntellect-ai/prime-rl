@@ -67,16 +67,13 @@ class TransferGroupIndex:
 
 
 class NIXLWeightBroadcast(WeightBroadcast):
-    REQUIRES_LIVE_CONSUMER = True
-
     def __init__(
         self,
         output_dir: Path,
         config: NIXLWeightBroadcastConfig,
         parallel_dims: ParallelDims,
-        keep_interval: int | None = None,
     ) -> None:
-        super().__init__(output_dir, keep_interval)
+        super().__init__(output_dir, config.timeout)
         self.config = config
         self.parallel_dims = parallel_dims
         if self.is_serving_rank:

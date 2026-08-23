@@ -180,7 +180,6 @@ def train(config: TrainerConfig):
             config.weight_broadcast,
             parallel_dims,
             config.model.lora,
-            keep_interval=config.ckpt.interval if config.ckpt else None,
         )
 
     if parallel_dims.cp_enabled:
@@ -278,9 +277,8 @@ def train(config: TrainerConfig):
             startup_version = progress.step - 1
             if world.is_master:
                 prune_broadcasts_beyond(config.output_dir, startup_version)
-            if weight_broadcast.REQUIRES_LIVE_CONSUMER or not weight_broadcast.is_finished(startup_version):
-                logger.info(f"Broadcasting startup policy weights (v{startup_version}) to inference engines")
-                weight_broadcast.broadcast(model, startup_version)
+            logger.info(f"Broadcasting startup policy weights (v{startup_version}) to inference engines")
+            weight_broadcast.broadcast(model, startup_version)
 
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")
@@ -579,16 +577,14 @@ def train(config: TrainerConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
-        # sample its next step from it. A live transport skips versions past the last consumed
-        # one (``final_broadcast_version``: training never samples v{max_steps}, but a
-        # configured final eval measures it); filesystem writes every version for inspection.
+        # sample its next step from it. Every broadcast is a handshake with the consumer, so
+        # versions past the last consumed one are skipped (``final_broadcast_version``:
+        # training never samples v{max_steps}, but a configured final eval measures it).
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
-            broadcast_unused = (
-                weight_broadcast.REQUIRES_LIVE_CONSUMER
-                and config.max_steps is not None
-                and progress.step > final_broadcast_version(config.max_steps, config.weight_broadcast.broadcast_final)
+            broadcast_unused = config.max_steps is not None and progress.step > final_broadcast_version(
+                config.max_steps, config.weight_broadcast.broadcast_final
             )
             if not broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()

@@ -4,7 +4,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch.distributed.tensor import DTensor
 
-from prime_rl.configs.trainer import LoRAConfig
+from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, LoRAConfig
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.transports.weights.base import WeightBroadcast
 from prime_rl.utils.weights import (
@@ -19,8 +19,13 @@ class FileSystemWeightBroadcast(WeightBroadcast):
     """Broadcast weights by saving a HF-compatible checkpoint (or, for LoRA
     runs, the PEFT-shaped adapter) to a shared filesystem."""
 
-    def __init__(self, output_dir: Path, lora_config: LoRAConfig | None = None, keep_interval: int | None = None):
-        super().__init__(output_dir, keep_interval)
+    def __init__(
+        self,
+        output_dir: Path,
+        config: FileSystemWeightBroadcastConfig,
+        lora_config: LoRAConfig | None = None,
+    ):
+        super().__init__(output_dir, config.timeout)
         self.lora_config = lora_config
         self.logger.debug("Filesystem broadcast initialized")
 

@@ -385,9 +385,6 @@ class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     port: int
     """Weight transfer port."""
 
-    timeout: int = 1200
-    """Weight transfer timeout in seconds."""
-
     inference_world_size: int = Field(1, ge=1)
     """Total inference workers across all servers."""
 

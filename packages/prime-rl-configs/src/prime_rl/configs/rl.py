@@ -136,7 +136,7 @@ class SharedInMemoryWeightBroadcastConfig(BaseConfig):
     """Weight transfer port."""
 
     timeout: int = 1200
-    """Timeout in seconds for in-memory weight transfer."""
+    """Timeout in seconds for the broadcast handshake and transfer."""
 
 
 class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
@@ -161,6 +161,9 @@ class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
 
 class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
+
+    timeout: int = 1200
+    """Timeout in seconds for the broadcast handshake and transfer."""
 
 
 SharedWeightBroadcastConfig: TypeAlias = Annotated[
@@ -493,9 +496,11 @@ class RLConfig(BaseConfig):
             self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
             self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
         elif self.weight_broadcast.type == "filesystem":
-            self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(broadcast_final=broadcast_final)
+            self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
+                timeout=self.weight_broadcast.timeout, broadcast_final=broadcast_final
+            )
             self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
-                broadcast_final=broadcast_final
+                timeout=self.weight_broadcast.timeout, broadcast_final=broadcast_final
             )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)

@@ -1,10 +1,13 @@
 """Consumer-side counterpart of ``WeightBroadcast``.
 
-A ``WeightBroadcastReceiver`` discovers new policy versions from the
-transport's sentinels and moves the inference engines onto them. It is the
-single owner of the per-transport consumer protocol — the weight watcher, the
+A ``WeightBroadcastReceiver`` discovers offered policy versions from the
+shared sentinels and moves the inference engines onto them. It is the single
+owner of the per-transport consumer protocol — the weight watcher, the
 orchestrator's startup rendezvous, and the evals process all drive the same
-object instead of hand-rolling transport branches.
+object instead of hand-rolling transport branches. Every transport runs the
+same handshake: the trainer offers a version (``.sender_ready``) and blocks
+until the receiver acknowledges (``.receiver_ready``), so every offered
+version must be received.
 """
 
 from __future__ import annotations
@@ -13,7 +16,6 @@ import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar
 
 from httpx import AsyncClient
 from modelexpress import p2p_pb2
@@ -26,22 +28,14 @@ from prime_rl.orchestrator.clients import (
     load_lora_adapter,
     update_weights,
 )
-from prime_rl.transports.weights.base import FINISHED_MARKER, RECEIVER_READY_MARKER, STARTED_MARKER
+from prime_rl.transports.weights.base import FINISHED_MARKER, RECEIVER_READY_MARKER, SENDER_READY_MARKER
 from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_step_path, wait_for_path
 
 
 class WeightBroadcastReceiver(ABC):
-    """Moves the inference engines onto trainer-published policy versions."""
-
-    # The marker that announces a new version to this receiver: a finished
-    # broadcast on disk for filesystem, an in-flight one for live transports
-    # (the trainer is already blocked waiting for the receiver).
-    DISCOVERY_MARKER: ClassVar[str] = FINISHED_MARKER
-    # Whether the consumer may skip versions. A live transport strands the
-    # trainer inside the transfer when a version is never received.
-    CAN_SKIP_VERSIONS: ClassVar[bool] = True
+    """Moves the inference engines onto trainer-offered policy versions."""
 
     def __init__(
         self,
@@ -49,14 +43,12 @@ class WeightBroadcastReceiver(ABC):
         config: WeightBroadcastConfig,
         admin_clients: list[AsyncClient],
         model_name: str,
-        max_version: int | None = None,
     ) -> None:
         self.logger = get_logger()
         self.broadcast_dir = broadcast_dir
         self.config = config
         self.admin_clients = admin_clients
         self.model_name = model_name
-        self.max_version = max_version
 
     async def initialize(self) -> None:
         """One-time transport bootstrap (rendezvous groups, sessions)."""
@@ -65,23 +57,31 @@ class WeightBroadcastReceiver(ABC):
         return get_step_path(self.broadcast_dir, step)
 
     def is_published(self, step: int) -> bool:
-        """Whether the trainer has announced v{step} (see ``DISCOVERY_MARKER``)."""
-        return (self.step_dir(step) / self.DISCOVERY_MARKER).exists()
+        """Whether the trainer has offered v{step}."""
+        return (self.step_dir(step) / SENDER_READY_MARKER).exists()
 
     def next_version(self, current: int) -> int:
-        """Newest version announced beyond ``current``; ``current`` if none."""
+        """Newest version offered beyond ``current``; ``current`` if none."""
         published = [step for step in get_all_ckpt_steps(self.broadcast_dir) if self.is_published(step)]
         return max(published, default=current)
 
-    @abstractmethod
     async def wait_published(self, step: int, cancelled: Callable[[], bool] | None = None) -> None:
-        """Block until v{step} is committed by the trainer. Runs before the
-        orchestrator advances ``policy.version`` — the version must never move
-        ahead of a confirmed publish."""
+        """Block until the trainer offers v{step}. Runs before the orchestrator
+        advances ``policy.version`` — the version must never move ahead of a
+        confirmed offer."""
+        sender_ready = self.step_dir(step) / SENDER_READY_MARKER
+        while not sender_ready.exists():
+            if cancelled is not None and cancelled():
+                raise asyncio.CancelledError
+            await asyncio.sleep(0.2)
+
+    def _ack(self, step: int) -> None:
+        """Acknowledge the offered version — unblocks the waiting trainer."""
+        (self.step_dir(step) / RECEIVER_READY_MARKER).touch()
 
     @abstractmethod
     async def receive(self, step: int) -> None:
-        """Move the engines onto the published v{step}."""
+        """Acknowledge the offered v{step} and move the engines onto it."""
 
     async def sync_startup(self, step: int, timeout: float) -> None:
         """Rendezvous with the trainer's startup broadcast of v{step}."""
@@ -90,25 +90,16 @@ class WeightBroadcastReceiver(ABC):
 
 
 class FileSystemReceiver(WeightBroadcastReceiver):
-    """Loads finished broadcasts from the shared filesystem. An adapter
-    broadcast (PEFT dir) is hot-swapped under live traffic — an in-place
-    adapter reload is a vLLM-native op that needs no engine pause; a full
-    checkpoint pauses the engines for the load."""
-
-    DISCOVERY_MARKER = FINISHED_MARKER
-    CAN_SKIP_VERSIONS = True
-
-    async def wait_published(self, step: int, cancelled: Callable[[], bool] | None = None) -> None:
-        finished = self.step_dir(step) / FINISHED_MARKER
-        if not finished.exists():
-            self.logger.info(
-                f"Orchestrator paused: waiting for trainer to broadcast checkpoint {step}. "
-                "Training is progressing normally."
-            )
-            await wait_for_path(finished)
+    """Loads broadcasts from the shared filesystem. The acknowledgement lets
+    the trainer start writing; the engines are only touched once the weights
+    are fully on disk. An adapter broadcast (PEFT dir) is hot-swapped under
+    live traffic — an in-place adapter reload is a vLLM-native op that needs
+    no engine pause; a full checkpoint pauses the engines for the load."""
 
     async def receive(self, step: int) -> None:
         weights_dir = self.step_dir(step)
+        self._ack(step)
+        await wait_for_path(weights_dir / FINISHED_MARKER)
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_clients, self.model_name, weights_dir)
         else:
@@ -116,13 +107,10 @@ class FileSystemReceiver(WeightBroadcastReceiver):
 
 
 class NCCLReceiver(WeightBroadcastReceiver):
-    """Joins the trainer's NCCL collective. The trainer raises ``.started``
-    and blocks; the receiver pauses the engines, raises ``.receiver_ready``, and sends
-    them into the receive RPC — only then does the trainer enter the
-    collective, so the handshake can never race a stale marker."""
-
-    DISCOVERY_MARKER = STARTED_MARKER
-    CAN_SKIP_VERSIONS = False
+    """Joins the trainer's NCCL collective. The receiver pauses the engines,
+    acknowledges, and sends them into the receive RPC — only then does the
+    trainer enter the collective, so the handshake can never race a stale
+    marker."""
 
     async def initialize(self) -> None:
         await init_nccl_broadcast(
@@ -134,28 +122,19 @@ class NCCLReceiver(WeightBroadcastReceiver):
             quantize_in_weight_transfer=self.config.quantize_in_weight_transfer,
         )
 
-    async def wait_published(self, step: int, cancelled: Callable[[], bool] | None = None) -> None:
-        started = self.step_dir(step) / STARTED_MARKER
-        if not started.exists():
-            await wait_for_path(started)
-
     async def receive(self, step: int) -> None:
-        step_dir = self.step_dir(step)
         await update_weights(
             self.admin_clients,
-            step_dir,
+            self.step_dir(step),
             step=step,
-            on_paused=lambda: (step_dir / RECEIVER_READY_MARKER).touch(),
+            on_paused=lambda: self._ack(step),
         )
 
 
 class NIXLReceiver(WeightBroadcastReceiver):
-    """Drives the orchestrator's side of the ModelExpress rendezvous. Statuses
-    are unversioned, so versions are counted: one READY/INITIALIZING cycle per
-    policy version, capped at ``max_version`` (the trainer's final broadcast)."""
-
-    DISCOVERY_MARKER = STARTED_MARKER
-    CAN_SKIP_VERSIONS = False
+    """Drives the orchestrator's side of the ModelExpress rendezvous. Version
+    discovery runs on the shared sentinels; the unversioned ModelExpress
+    statuses only choreograph the transfer itself."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -182,25 +161,10 @@ class NIXLReceiver(WeightBroadcastReceiver):
     async def set_status(self, status: int) -> None:
         await asyncio.to_thread(self.session.set_status, status)
 
-    def next_version(self, current: int) -> int:
-        if self.max_version is not None and current >= self.max_version:
-            return current
-        return current + 1
-
-    async def wait_published(self, step: int, cancelled: Callable[[], bool] | None = None) -> None:
-        """The trainer flips to READY when it starts broadcasting the next version."""
-        while cancelled is None or not cancelled():
-            found = await asyncio.to_thread(
-                self.session.exists_role_with_status, "trainer", p2p_pb2.SOURCE_STATUS_READY
-            )
-            if found:
-                return
-            await asyncio.sleep(1.0)
-        raise asyncio.CancelledError
-
     async def receive(self, step: int) -> None:
         # ACK the trainer (it waits for the orchestrator's READY before the
         # engines' INITIALIZING), run the transfer, then close the cycle.
+        self._ack(step)
         await self.set_status(p2p_pb2.SOURCE_STATUS_READY)
         await update_weights(self.admin_clients, None, step=step)
         await self.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
@@ -212,20 +176,14 @@ class NIXLReceiver(WeightBroadcastReceiver):
             timeout=self.config.timeout,
         )
 
-    async def sync_startup(self, step: int, timeout: float) -> None:
-        # The trainer's startup broadcast sets READY before waiting for the
-        # orchestrator, so receive() alone completes the rendezvous.
-        await self.receive(step)
-
 
 def setup_weight_receiver(
     broadcast_dir: Path,
     config: WeightBroadcastConfig,
     admin_clients: list[AsyncClient],
     model_name: str,
-    max_version: int | None = None,
 ) -> WeightBroadcastReceiver:
     receivers = {"filesystem": FileSystemReceiver, "nccl": NCCLReceiver, "nixl": NIXLReceiver}
     if config.type not in receivers:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")
-    return receivers[config.type](broadcast_dir, config, admin_clients, model_name, max_version)
+    return receivers[config.type](broadcast_dir, config, admin_clients, model_name)

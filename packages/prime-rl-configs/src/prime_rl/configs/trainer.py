@@ -557,9 +557,6 @@ class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     port: int
     """Weight transfer port."""
 
-    timeout: int = 1200
-    """Weight transfer timeout in seconds."""
-
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: int = 1
     """Number of inference workers."""

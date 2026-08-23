@@ -283,7 +283,6 @@ class Orchestrator:
             config.weight_broadcast,
             admin_clients=self.admin_clients.clients,
             model_name=config.model.name,
-            max_version=self.final_version,
         )
         await self.receiver.initialize()
 
@@ -497,17 +496,17 @@ class Orchestrator:
                 except asyncio.TimeoutError:
                     pass
 
-        timeout = getattr(self.config.weight_broadcast, "timeout", None) or STARTUP_WEIGHT_WAIT_TIMEOUT_S
+        timeout = self.config.weight_broadcast.timeout
         try:
             await asyncio.wait_for(wait(), timeout=timeout)
         except asyncio.TimeoutError:
             get_logger().warning(f"Trainer did not broadcast v{version} within {timeout}s — proceeding anyway")
 
     async def wait_for_final_broadcast(self) -> None:
-        """Stay alive for the trainer's last live broadcast. A live broadcast
-        is a blocking rendezvous — tearing down the watcher before it would
-        strand the trainer inside the transfer."""
-        if self.receiver.CAN_SKIP_VERSIONS or self.final_version is None:
+        """Stay alive for the trainer's last broadcast. Every broadcast is a
+        blocking rendezvous — tearing down the watcher before it would strand
+        the trainer inside the handshake."""
+        if self.final_version is None:
             return
         await self.wait_for_version(self.final_version, reason="before shutdown")
 
