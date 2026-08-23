@@ -1669,6 +1669,13 @@ function traceBranches(trace) {
   });
 }
 
+/* branch -1 = the concatenated conversation view: every node once, top to bottom
+   in write order, so shared prefixes never repeat */
+function currentPath(trace, branches) {
+  if (currentBranchIdx === -1) return (trace.nodes || []).map((_, i) => i);
+  return branches[Math.min(currentBranchIdx, branches.length - 1)] || [];
+}
+
 function traceReward(trace) {
   return Object.values(trace.rewards || {}).reduce(
     (acc, r) => acc + (r.score ?? 0) * (r.weight ?? 1), 0
@@ -1740,7 +1747,8 @@ function renderMessages(trace, branches) {
     return;
   }
   const signal = $("#token-signal").value;
-  const path = branches[Math.min(currentBranchIdx, branches.length - 1)] || [];
+  const path = currentPath(trace, branches);
+  const concatenated = currentBranchIdx === -1;
   let maxAbsAdv = 0;
   for (const node of trace.nodes || [])
     for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
@@ -1750,6 +1758,7 @@ function renderMessages(trace, branches) {
     const role = node.message?.role ?? "?";
     const call = callsByNode.get(idx);
     const chips = [];
+    if (concatenated && node.parent != null && node.parent !== idx - 1) chips.push(`↳ branches from ${node.parent + 1}`);
     if (node.sampled) chips.push("sampled");
     if (call?.finish_reason) chips.push(call.finish_reason);
     if (call?.usage) chips.push(`${call.usage.prompt_tokens ?? "?"}→${call.usage.completion_tokens ?? "?"} tok`);
@@ -1843,8 +1852,7 @@ function renderMeta(ep, trace, branches) {
   }
 
   if (trace) {
-    const path = branches[Math.min(currentBranchIdx, branches.length - 1)] || [];
-    const nodes = path.map((i) => trace.nodes[i]);
+    const nodes = currentPath(trace, branches).map((i) => trace.nodes[i]);
     parts.push(`<div class="meta-sec">activity</div>`);
     parts.push(metaRow("turns", nodes.filter((n) => n.sampled).length));
     parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
@@ -1927,13 +1935,14 @@ function renderEpisode() {
   if (currentBranchIdx >= branches.length) currentBranchIdx = 0;
   const traceTabs = $("#tm-trace-tabs");
   traceTabs.hidden = traces.length <= 1;
+  // multi-agent episodes: label each trace by its agent name (seat), index only
+  // as a tiebreak when names repeat or are missing
+  const names = traces.map((t) => t.agent?.name);
+  const label = (i) => (names[i] && names.indexOf(names[i]) === names.lastIndexOf(names[i]) ? names[i] : `${names[i] ?? "trace"} ${i}`);
   traceTabs.innerHTML =
     traces.length > 1
       ? traces
-          .map(
-            (t, i) =>
-              `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(t.agent?.name ?? "trace")} ${i}</button>`
-          )
+          .map((_, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(label(i))}</button>`)
           .join("")
       : "";
   const branchTabs = $("#tm-branch-tabs");
@@ -1942,7 +1951,8 @@ function renderEpisode() {
     branches.length > 1
       ? branches
           .map((_, i) => `<button data-branch="${i}" class="${i === currentBranchIdx ? "active" : ""}">branch ${i}</button>`)
-          .join("")
+          .join("") +
+        `<button data-branch="-1" class="${currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
       : "";
   renderRolloutList();
   renderMessages(trace, branches);
