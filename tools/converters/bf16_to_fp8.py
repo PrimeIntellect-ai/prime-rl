@@ -55,10 +55,15 @@ def should_quantize(name: str, tensor: torch.Tensor) -> bool:
 def quantize_state_dict(
     tensors: dict[str, torch.Tensor], block_size: int, device: str
 ) -> tuple[dict[str, torch.Tensor], list[str]]:
-    """Quantize the quantizable tensors of one state-dict slice; returns (out, modules kept in bf16)."""
+    """Quantize the quantizable tensors of one CPU state-dict slice; returns (out, modules kept in bf16).
+
+    Tensors move to ``device`` one at a time (and are popped from the input as they
+    are consumed), so peak device memory stays near the largest single weight.
+    """
     out: dict[str, torch.Tensor] = {}
     modules_to_not_convert: list[str] = []
-    for name, tensor in tensors.items():
+    for name in list(tensors):
+        tensor = tensors.pop(name)
         if should_quantize(name, tensor):
             quantized, scales = quantize_to_fp8_blockwise(tensor.to(device), block_size)
             out[name] = quantized.cpu()
@@ -104,7 +109,9 @@ def convert(input_dir: Path, output_dir: Path | None = None, block_size: int = 1
     num_quantized = 0
 
     for shard_name in list_shards(input_dir):
-        with safe_open(input_dir / shard_name, framework="pt", device=device) as f:
+        # Shards land in host memory; quantize_state_dict streams them through the
+        # device tensor-by-tensor so a whole shard never sits on the GPU at once.
+        with safe_open(input_dir / shard_name, framework="pt", device="cpu") as f:
             tensors = {name: f.get_tensor(name) for name in f.keys()}
         out_shard, shard_modules = quantize_state_dict(tensors, block_size, device)
         modules_to_not_convert.extend(shard_modules)
