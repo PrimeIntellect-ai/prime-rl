@@ -1,28 +1,10 @@
 import os
 
 import pytest
-import torch.distributed as dist
 
 from prime_rl.trainer.world import get_world
 
 ENV_VARS = ["RANK", "WORLD_SIZE", "LOCAL_RANK", "LOCAL_WORLD_SIZE"]
-TORCHRUN_ENV_VARS = [*ENV_VARS, "MASTER_ADDR", "MASTER_PORT"]
-
-
-@pytest.mark.gpu
-def test_setup_torch_distributed_without_launcher_env(monkeypatch: pytest.MonkeyPatch):
-    from prime_rl.trainer.utils import setup_torch_distributed
-
-    for name in TORCHRUN_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
-
-    try:
-        setup_torch_distributed()
-        assert dist.get_rank() == 0
-        assert dist.get_world_size() == 1
-    finally:
-        if dist.is_initialized():
-            dist.destroy_process_group()
 
 
 def test_init_with_default_args():

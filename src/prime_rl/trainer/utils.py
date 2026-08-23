@@ -25,9 +25,6 @@ if TYPE_CHECKING:
     from prime_rl.trainer.optim import GradientOffloadManager
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
-_DISTRIBUTED_ENV_VARS = frozenset(
-    {"RANK", "WORLD_SIZE", "LOCAL_RANK", "LOCAL_WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"}
-)
 
 
 class GarbageCollection:
@@ -192,7 +189,7 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
     # module default so every subsequently created PG inherits it.
     dist.distributed_c10d.default_pg_timeout = timeout
 
-    if any(name in os.environ for name in _DISTRIBUTED_ENV_VARS):
+    if "RANK" in os.environ:
         dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
     else:
         get_logger().info("Using standalone single-process distributed mode")

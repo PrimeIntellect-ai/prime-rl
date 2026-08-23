@@ -1,6 +1,6 @@
 ---
 name: start-run
-description: How to launch prime-rl training runs — the `rl`, `trainer`, `sft`, `inference`, and `evals` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint.
+description: How to launch prime-rl training runs — the `rl`, `sft`, `inference`, and `evals` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint.
 ---
 
 # Start a run
@@ -52,24 +52,6 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
   --package prime-rl --package <env>` (one) — they're auto-discovered, no
   `pyproject.toml` edit needed. Keep `--all-extras` for training so a targeted
   package sync does not prune accelerator dependencies from the environment.
-
-## `trainer` — standalone RL trainer
-
-Runs the trainer without inference or orchestration. With no distributed launcher
-environment, the command initializes a single-process group on GPU 0. Use fake data
-for a self-contained smoke test:
-
-```bash
-uv run trainer @ configs/debug/fake/rl.toml
-```
-
-Multi-process trainer workers receive their distributed environment from `rl`,
-`torchrun`, or the project's SLURM templates, which launch `torchrun`; the direct
-command without a launcher always uses one GPU.
-
-- Config: `TrainerConfig` (`packages/prime-rl-configs/src/prime_rl/configs/trainer.py`)
-- Entrypoint: `src/prime_rl/entrypoints/trainer.py`
-- Implementation: `src/prime_rl/trainer/rl/train.py`
 
 ## `sft` — SFT training
 
@@ -147,7 +129,6 @@ env.agent.runtime.type = "subprocess"
 | Command | Purpose | Typical use |
 |---------|---------|-------------|
 | `rl` | Full RL pipeline | Production RL training |
-| `trainer` | Standalone RL trainer | Fake-data smokes and isolated trainer debugging |
 | `sft` | Supervised fine-tuning | SFT and hard-distill |
 | `inference` | vLLM server | Standalone serving / debugging |
 | `evals` | Multi-env evals | Standalone evals / SFT online evals |
