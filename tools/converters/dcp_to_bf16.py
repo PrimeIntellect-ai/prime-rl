@@ -27,6 +27,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
@@ -183,6 +184,7 @@ def main() -> None:
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <ckpt_dir>/weights")
     args = parser.parse_args()
     convert(args.ckpt_dir, args.output_dir)
+    dist.destroy_process_group()
 
 
 if __name__ == "__main__":
