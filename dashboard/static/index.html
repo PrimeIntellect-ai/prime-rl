@@ -51,7 +51,10 @@
 
   <section id="tab-traces" hidden>
     <div class="controls">
-      <div id="step-strip"></div>
+      <button id="step-prev" class="btn tm-nav" title="previous step">‹</button>
+      <input id="step-slider" type="range" min="0" max="0" value="0">
+      <button id="step-next" class="btn tm-nav" title="next step">›</button>
+      <span id="step-label" class="t-label"></span>
     </div>
     <div class="controls">
       <div class="seg" id="trace-kind">

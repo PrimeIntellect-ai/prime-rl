@@ -22,7 +22,7 @@ const state = {
   live: true,
   metrics: {
     loaded: false, offset: 0, byKey: new Map(), mode: "overview", search: "",
-    charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null,
+    charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null, collapsedSections: new Set(),
     smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 320, paneH: prefs.paneH ?? 150,
   },
   config: { loaded: false, files: [], file: null },
@@ -344,14 +344,20 @@ function rollingMean(values, window) {
   });
 }
 
+/* each logical series feeds two uPlot series: a raw ghost (visible only while
+   smoothing) drawn under the smoothed main line */
 function panelData(series) {
   const stepSet = new Set();
   for (const s of series) for (const step of s.points.keys()) stepSet.add(step);
   const steps = [...stepSet].sort((a, b) => a - b);
-  return [
-    steps,
-    ...series.map((s) => rollingMean(steps.map((st) => s.points.get(st) ?? null), state.metrics.smooth)),
-  ];
+  const window = state.metrics.smooth;
+  const out = [steps];
+  for (const s of series) {
+    const raw = steps.map((st) => s.points.get(st) ?? null);
+    out.push(window > 1 ? raw : raw.map(() => null));
+    out.push(window > 1 ? rollingMean(raw, window) : raw);
+  }
+  return out;
 }
 
 function chartHeight() {
@@ -375,6 +381,56 @@ function fmtTickDur(secs) {
   return `${+(secs / 86400).toFixed(1)}d`;
 }
 
+function hexToRgba(hex, alpha) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+}
+
+/* hover popover with the x value and every series' y value */
+function tooltipPlugin(meta, timeAxis) {
+  let tip;
+  return {
+    hooks: {
+      init: (u) => {
+        tip = document.createElement("div");
+        tip.className = "u-tip";
+        tip.style.display = "none";
+        u.over.appendChild(tip);
+        u.over.addEventListener("mouseleave", () => (tip.style.display = "none"));
+      },
+      setCursor: (u) => {
+        const { left, top, idx } = u.cursor;
+        if (idx == null || left == null || left < 0) {
+          tip.style.display = "none";
+          return;
+        }
+        const x = u.data[0][idx];
+        let rows = `<div class="u-tip-x">${timeAxis ? fmtTickDur(x) : `step ${x}`}</div>`;
+        let any = false;
+        meta.forEach((m, i) => {
+          const v = u.data[2 + i * 2][idx]; // the main (smoothed) series
+          if (v == null) return;
+          any = true;
+          rows +=
+            `<div class="u-tip-row"><span class="sw" style="background:${m.color}"></span>` +
+            `${meta.length > 1 ? `<span class="u-tip-l">${esc(m.label)}</span>` : ""}` +
+            `<span class="u-tip-v">${fmtNum(v)}</span></div>`;
+        });
+        if (!any) {
+          tip.style.display = "none";
+          return;
+        }
+        tip.innerHTML = rows;
+        tip.style.display = "block";
+        let tx = left + 14;
+        if (tx + tip.offsetWidth > u.over.clientWidth) tx = left - tip.offsetWidth - 14;
+        const ty = Math.max(0, Math.min(u.over.clientHeight - tip.offsetHeight, top - tip.offsetHeight / 2));
+        tip.style.transform = `translate(${Math.round(tx)}px, ${Math.round(ty)}px)`;
+      },
+    },
+  };
+}
+
 function makeChart(el, labels, width, timeAxis = false) {
   const axis = {
     stroke: "#767676",
@@ -385,13 +441,19 @@ function makeChart(el, labels, width, timeAxis = false) {
   const xAxis = timeAxis
     ? {
         ...axis,
-        size: 22,
+        size: 28,
         values: (u, vals) => vals.map(fmtTickDur),
         incrs: [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 43200, 86400, 172800],
       }
     : // step axis: integer ticks only
-      { ...axis, size: 22, incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000] };
+      { ...axis, size: 28, incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000] };
   const colors = labels.length > 1 ? PALETTE : [SINGLE_SERIES];
+  const meta = labels.map((label, i) => ({ label: label || "value", color: colors[i % colors.length] }));
+  const series = [{ label: timeAxis ? "time" : "step" }];
+  for (const m of meta) {
+    series.push({ stroke: hexToRgba(m.color, 0.25), width: 1, spanGaps: true, points: { show: false } });
+    series.push({ label: m.label, stroke: m.color, width: 1.25, spanGaps: true, points: { show: false } });
+  }
   return new uPlot(
     {
       width,
@@ -400,19 +462,11 @@ function makeChart(el, labels, width, timeAxis = false) {
       cursor: { points: { size: 5 }, drag: { x: true, y: false } },
       scales: { x: { time: false } },
       axes: [xAxis, { ...axis, size: 50, values: (u, vals) => vals.map(fmtAxis) }],
-      legend: { show: labels.length > 1 },
-      series: [
-        { label: timeAxis ? "time" : "step", value: timeAxis ? (u, v) => fmtTickDur(v) : (u, v) => v },
-        ...labels.map((label, i) => ({
-          label: label || "value",
-          stroke: colors[i % colors.length],
-          width: 1.25,
-          spanGaps: true,
-          points: { show: false },
-        })),
-      ],
+      legend: { show: false },
+      plugins: [tooltipPlugin(meta, timeAxis)],
+      series,
     },
-    [[], ...labels.map(() => [])],
+    [[], ...meta.flatMap(() => [[], []])],
     el
   );
 }
@@ -480,9 +534,13 @@ function updateCharts() {
 }
 
 function addSection(body, name, count) {
-  const div = document.createElement("div");
+  const div = document.createElement("details");
   div.className = "section";
-  div.innerHTML = `<h2>${esc(name)}${count != null ? ` <span class="muted">${count}</span>` : ""}</h2>`;
+  div.dataset.name = name;
+  div.open = !state.metrics.collapsedSections.has(name);
+  div.innerHTML =
+    `<summary>${esc(name)}${count != null ? ` <span class="muted">${count}</span>` : ""}` +
+    `<span class="sec-chev">›</span></summary>`;
   const grid = document.createElement("div");
   grid.className = "chart-grid";
   div.appendChild(grid);
@@ -515,7 +573,7 @@ function renderMetricsBody() {
     return;
   }
   if (m.mode === "overview") {
-    $("#metrics-status").textContent = `${m.byKey.size} keys`;
+    $("#metrics-status").textContent = "";
     for (const section of buildSections(state.meta)) {
       const { div, grid } = addSection(body, section.name);
       for (const panel of section.panels) renderPanelCard(grid, panel);
@@ -534,7 +592,7 @@ function renderMetricsBody() {
     groups.get(group).push(key);
   }
   const shown = [...groups.values()].reduce((n, keys) => n + keys.length, 0);
-  $("#metrics-status").textContent = `${shown} / ${m.byKey.size} keys`;
+  $("#metrics-status").textContent = activeFilter ? `${shown} / ${m.byKey.size} keys` : "";
   for (const [group, keys] of groups) {
     const { grid } = addSection(body, group, keys.length);
     for (const key of keys) renderPanelCard(grid, { metric: key }, true);
@@ -871,7 +929,7 @@ async function loadRollouts() {
     traces.step = data.steps[data.steps.length - 1].step;
     adjustKindSubset();
   }
-  renderStepStrip();
+  renderStepControl();
 }
 
 function stepInfo(step) {
@@ -895,18 +953,33 @@ function adjustKindSubset() {
   document.querySelectorAll("#trace-subset button").forEach((b) => b.classList.toggle("active", b.dataset.subset === traces.subset));
 }
 
-function renderStepStrip() {
+function renderStepControl() {
   const traces = state.traces;
-  $("#step-strip").innerHTML = traces.steps
-    .map((s) => {
-      const train = s.counts["train/effective"] ?? s.counts["train/all"];
-      return (
-        `<div class="step-chip ${s.step === traces.step ? "active" : ""}" data-step="${s.step}">` +
-        `${s.step}${train != null ? ` <span class="muted">${train}</span>` : ""}` +
-        `${s.counts["eval/all"] || s.counts["eval/effective"] ? '<span class="eval-dot" title="eval rollouts"></span>' : ""}</div>`
-      );
-    })
-    .join("");
+  const steps = traces.steps;
+  const slider = $("#step-slider");
+  const idx = steps.findIndex((s) => s.step === traces.step);
+  slider.max = Math.max(0, steps.length - 1);
+  slider.value = Math.max(0, idx);
+  slider.disabled = steps.length <= 1;
+  $("#step-prev").disabled = idx <= 0;
+  $("#step-next").disabled = idx < 0 || idx >= steps.length - 1;
+  const info = stepInfo(traces.step);
+  const hasEval = info && (info.counts["eval/all"] || info.counts["eval/effective"]);
+  $("#step-label").innerHTML =
+    traces.step == null
+      ? ""
+      : `step ${traces.step}${steps.length > 1 ? ` <span class="muted">(${idx + 1}/${steps.length})</span>` : ""}` +
+        (hasEval ? ' <span class="eval-dot" title="eval rollouts"></span>' : "");
+}
+
+function selectStepByIndex(index) {
+  const step = state.traces.steps[index];
+  if (!step || step.step === state.traces.step) return;
+  state.traces.step = step.step;
+  state.traces.page = 0;
+  adjustKindSubset();
+  renderStepControl();
+  loadEpisodes();
 }
 
 function showTraceEmpty(title, detail) {
@@ -1326,6 +1399,23 @@ $("#metrics-search").addEventListener("input", (e) => {
   searchDebounce = setTimeout(renderMetricsBody, 250);
 });
 
+// remember collapsed sections across re-renders; charts created while hidden
+// have zero width, so resize on expand ("toggle" doesn't bubble → capture)
+$("#metrics-body").addEventListener(
+  "toggle",
+  (e) => {
+    const section = e.target;
+    if (!section.matches?.("details.section")) return;
+    if (section.open) {
+      state.metrics.collapsedSections.delete(section.dataset.name);
+      resizeCharts();
+    } else {
+      state.metrics.collapsedSections.add(section.dataset.name);
+    }
+  },
+  true
+);
+
 /* wandb-style resize handles: resizing one pane resizes all of them */
 $("#metrics-body").addEventListener("pointerdown", (e) => {
   const grip = e.target.closest("[data-rz]");
@@ -1380,14 +1470,14 @@ $("#log-level").addEventListener("change", renderLogStream);
 $("#log-search").addEventListener("input", renderLogStream);
 $("#log-older").addEventListener("click", loadOlder);
 
-$("#step-strip").addEventListener("click", (e) => {
-  const chip = e.target.closest(".step-chip");
-  if (!chip) return;
-  state.traces.step = +chip.dataset.step;
-  state.traces.page = 0;
-  adjustKindSubset();
-  renderStepStrip();
-  loadEpisodes();
+$("#step-slider").addEventListener("input", (e) => selectStepByIndex(+e.target.value));
+$("#step-prev").addEventListener("click", () => {
+  const idx = state.traces.steps.findIndex((s) => s.step === state.traces.step);
+  selectStepByIndex(idx - 1);
+});
+$("#step-next").addEventListener("click", () => {
+  const idx = state.traces.steps.findIndex((s) => s.step === state.traces.step);
+  selectStepByIndex(idx + 1);
 });
 document.querySelectorAll("#trace-kind button").forEach((b) =>
   b.addEventListener("click", () => {
