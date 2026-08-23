@@ -11,12 +11,13 @@
 # ///
 """Local dashboard for prime-rl runs: logs, metrics, and rollout traces.
 
-Reads everything from a run's output directory (metrics.jsonl, logs/attempt_N,
+Reads everything from run output directories (metrics.jsonl, logs/attempt_N,
 rollouts/step_N) — no wandb or network required. Usage:
 
-    ./dashboard/dashboard.py [output_dir] [--port 7788] [--host 127.0.0.1]
+    uv run dashboard [output_dir ...] [--port 7788] [--host 127.0.0.1]
 
-View from another machine via an SSH tunnel (the startup banner prints the command).
+Multiple output directories can be tracked at once. View from another machine
+via an SSH tunnel (``ssh -L 7788:localhost:7788 <host>``).
 """
 
 import argparse
@@ -35,7 +36,11 @@ MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "evals.log"}
 MAX_LOG_CHUNK = 2_000_000
 
 app = FastAPI()
-output_dir = Path("outputs")
+output_dirs: list[Path] = [Path("outputs")]
+
+# run id -> run dir, rebuilt on every /api/runs poll; ids are the run name,
+# qualified with the output dir's basename when two dirs hold the same name
+_run_registry: dict[str, Path] = {}
 
 _lock = threading.Lock()
 # Append-only file caches keyed by absolute path: line-start offsets and per-episode summaries.
@@ -46,11 +51,35 @@ _started_cache: dict[Path, float] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
 
 
+def is_run_dir(path: Path) -> bool:
+    if not path.is_dir() or path.name.startswith("."):
+        return False
+    return any((path / marker).exists() for marker in ("configs", "logs", "metrics.jsonl", "rollouts"))
+
+
+def scan_runs() -> dict[str, Path]:
+    global _run_registry
+    by_name: dict[str, list[Path]] = {}
+    for base in output_dirs:
+        if not base.is_dir():
+            continue
+        for run_dir in sorted(base.iterdir()):
+            if is_run_dir(run_dir):
+                by_name.setdefault(run_dir.name, []).append(run_dir)
+    registry: dict[str, Path] = {}
+    for name, dirs in by_name.items():
+        if len(dirs) == 1:
+            registry[name] = dirs[0]
+        else:
+            for run_dir in dirs:
+                registry[f"{run_dir.parent.name}/{name}"] = run_dir
+    _run_registry = registry
+    return registry
+
+
 def get_run_dir(run: str) -> Path:
-    if "/" in run or run.startswith("."):
-        raise HTTPException(400, "invalid run name")
-    run_dir = output_dir / run
-    if not run_dir.is_dir():
+    run_dir = _run_registry.get(run) or scan_runs().get(run)
+    if run_dir is None or not run_dir.is_dir():
         raise HTTPException(404, f"run {run} not found")
     return run_dir
 
@@ -130,14 +159,12 @@ def run_meta(run_dir: Path) -> dict:
 @app.get("/api/runs")
 def list_runs() -> dict:
     runs = []
-    for run_dir in sorted(output_dir.iterdir()) if output_dir.is_dir() else []:
-        if not run_dir.is_dir() or run_dir.name.startswith("."):
-            continue
-        if not any((run_dir / marker).exists() for marker in ("configs", "logs", "metrics.jsonl", "rollouts")):
-            continue
-        runs.append(run_meta(run_dir))
+    for run_id, run_dir in scan_runs().items():
+        meta = run_meta(run_dir)
+        meta["name"] = run_id
+        runs.append(meta)
     runs.sort(key=lambda r: r["mtime"], reverse=True)
-    return {"output_dir": str(output_dir.resolve()), "runs": runs}
+    return {"output_dir": ", ".join(str(d.resolve()) for d in output_dirs), "runs": runs}
 
 
 @app.get("/api/runs/{run}")
@@ -485,21 +512,24 @@ def index() -> FileResponse:
 
 
 def main() -> None:
-    global output_dir
+    global output_dirs
     parser = argparse.ArgumentParser(description="prime-rl run dashboard")
-    parser.add_argument("output_dir", nargs="?", default="outputs", type=Path)
+    parser.add_argument("output_dirs", nargs="*", default=[Path("outputs")], type=Path, metavar="output_dir")
     parser.add_argument("--port", type=int, default=7788)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
-    output_dir = args.output_dir
-    if not output_dir.is_dir():
-        raise SystemExit(f"output dir {output_dir} does not exist")
+    output_dirs = [d for d in args.output_dirs if d.is_dir()]
+    for missing in set(args.output_dirs) - set(output_dirs):
+        print(f"warning: output dir {missing} does not exist", file=sys.stderr)
+    if not output_dirs:
+        raise SystemExit("no existing output dir given")
     url = f"http://localhost:{args.port}"
     sep = "·"
     if sys.stdout.isatty():
         url = f"\033[4;38;2;182;255;60m{url}\033[0m"  # accent green, underlined
         sep = "\033[2m·\033[0m"
-    print(f"\n  prime-rl dashboard {sep} {output_dir.resolve()}\n  {url}\n", flush=True)
+    dirs = ", ".join(str(d.resolve()) for d in output_dirs)
+    print(f"\n  prime-rl dashboard {sep} {dirs}\n  {url}\n", flush=True)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

@@ -4,6 +4,7 @@ from typing import Callable
 import pytest
 
 from tests.conftest import ProcessResult
+from tests.integration.dashboard_smoke import check_dashboard_smoke
 from tests.utils import check_loss_goes_down, strip_escape_codes
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
@@ -112,3 +113,7 @@ def test_loss_goes_down_resume(sft_lora_resume_process: ProcessResult, run_dir: 
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_loss_goes_down(trainer_stdout)
+
+
+def test_dashboard(sft_lora_process: ProcessResult, test_no_error, output_dir: Path):
+    check_dashboard_smoke(output_dir, RUN_NAME)
