@@ -25,9 +25,6 @@ from prime_rl.utils.config import BaseConfig
 
 
 class LoRAConfig(BaseConfig):
-    name: str | None = None
-    """LoRA adapter name. If None, auto-generated from rank and alpha."""
-
     rank: int | None = Field(None, ge=1)
     """LoRA rank for this run. Must be ≤ trainer's max rank. If None, uses the trainer's rank."""
 
