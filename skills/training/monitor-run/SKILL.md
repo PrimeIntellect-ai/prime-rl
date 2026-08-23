@@ -63,10 +63,10 @@ After a restart, verify all processes are back up and progress resumed before th
 ### Dashboard
 
 `./dashboard/dashboard.py <output_dir>` (default `outputs/`) serves a local web dashboard
-at `http://localhost:8000` with four views per run: metrics (the W&B overview sections,
+at `http://localhost:7788` with four views per run: metrics (the W&B overview sections,
 read from `metrics.jsonl`), the resolved config files, a rollout trace viewer with a
 per-token advantage/logprob view, and merged component logs. It only reads the run dir —
-safe to run against a live run. View from a laptop via `ssh -L 8000:localhost:8000 <host>`
+safe to run against a live run. View from a laptop via `ssh -L 7788:localhost:7788 <host>`
 (the startup banner prints the command).
 
 ### Logs
