@@ -81,7 +81,7 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
             page.click("#tabs [data-tab=config]")
             page.wait_for_timeout(1500)
             assert page.eval_on_selector("#config-view", "e => e.innerText.length") > 100, "config view did not render"
-            page.select_option("#config-file", "resolved")
+            page.click("#config-format [data-fmt=json]")
             page.wait_for_timeout(1500)
             assert page.locator("#config-view .j-line").count() > 10, "resolved config tree did not render"
 

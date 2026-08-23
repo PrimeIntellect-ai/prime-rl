@@ -720,6 +720,17 @@ details.meta-fold > pre { margin: 0; border: none; border-top: 1px solid var(--h
 
 .tok { padding: 0 1px; }
 .tok:hover { outline: 1px solid var(--grey-6); }
+.tok-tip {
+  position: fixed;
+  z-index: 100;
+  pointer-events: none;
+  background: var(--grey-1);
+  border: 1px solid var(--grey-3);
+  padding: 4px 8px;
+  font: 400 11px var(--font-mono);
+  color: var(--grey-5);
+  white-space: nowrap;
+}
 
 pre.json { background: var(--grey-2); border: 1px solid var(--hairline); padding: 12px; font-size: 11px; overflow-x: auto; }
 

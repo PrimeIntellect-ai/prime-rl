@@ -29,7 +29,7 @@ const state = {
     paneOrder: prefs.paneOrder ?? {},
   },
   compare: { runs: [], data: new Map() },
-  config: { loaded: false, files: [], file: null },
+  config: { loaded: false, files: [], file: null, fmt: "toml" },
   logs: {
     loaded: false, attempt: "latest", attempts: [], files: [], paneFile: {},
     components: prefs.logComponents ? new Set(prefs.logComponents) : null,
@@ -179,7 +179,7 @@ async function selectRun(name) {
     evalEtag: null, evalCount: 0, evalCost: null,
   };
   if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
-  state.config = { loaded: false, files: [], file: null };
+  state.config = { loaded: false, files: [], file: null, fmt: state.config.fmt };
   state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], paneFile: {}, maximized: null, buffers: new Map() };
   state.traces = { ...state.traces, loaded: false, steps: [], step: null, env: "", episodes: [], etag: null, subset: state.traces.preferred };
   applyRunTypeControls();
@@ -1134,21 +1134,31 @@ function applyConfigSearch() {
   view.querySelector("mark.hit")?.scrollIntoView({ block: "center" });
 }
 
+/* TOML = the launch config as it was passed, JSON = the concatenated resolved dumps */
+function configFileFor(fmt) {
+  const files = state.config.files || [];
+  return fmt === "toml" ? files.find((f) => f.endsWith(".toml")) : files.find((f) => f === "resolved");
+}
+
+function renderConfigFormat() {
+  for (const btn of document.querySelectorAll("#config-format button")) {
+    btn.disabled = !configFileFor(btn.dataset.fmt);
+    btn.classList.toggle("active", btn.dataset.fmt === state.config.fmt);
+  }
+}
+
 async function initConfig() {
   state.config.loaded = true;
   const data = await api(`/api/runs/${encodeURIComponent(state.run)}/configs`);
   state.config.files = data.files;
-  const sel = $("#config-file");
-  sel.innerHTML = data.files.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join("");
   if (!data.files.length) {
-    sel.innerHTML = `<option>no configs</option>`;
-    sel.disabled = true;
+    renderConfigFormat();
     $("#config-view").innerHTML = emptyState("no configs", "this run has no configs/ directory");
     return;
   }
-  sel.disabled = false;
-  if (!data.files.includes(state.config.file)) state.config.file = data.files[0];
-  sel.value = state.config.file;
+  if (!configFileFor(state.config.fmt)) state.config.fmt = configFileFor("toml") ? "toml" : "json";
+  state.config.file = configFileFor(state.config.fmt);
+  renderConfigFormat();
   await loadConfig();
 }
 
@@ -1613,8 +1623,11 @@ function episodeRowHtml(ep) {
         <td class="muted" title="${esc(ep.group ?? "")}">${esc((ep.group ?? "").slice(0, 8))}</td>
         <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
         <td class="${rewardClass(ep.advantage)}">${fmtReward(ep.advantage)}</td>
-        <td class="muted">${ep.input_tokens != null ? fmtCompact(ep.input_tokens) : ""}</td>
-        <td>${ep.output_tokens != null ? fmtCompact(ep.output_tokens) : ""}</td>
+        <td>${
+          ep.input_tokens != null || ep.output_tokens != null
+            ? `<span class="muted">in</span> ${fmtCompact(ep.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(ep.output_tokens ?? 0)}`
+            : ""
+        }</td>
         <td>${ep.turns ?? ""}</td>
         <td>${ep.branches ?? ""}</td>
         <td class="muted">${esc(ep.stop_condition ?? "")}</td>
@@ -1640,7 +1653,7 @@ function renderEpisodeRows(reset = false) {
   }
   const start = Math.max(0, Math.floor(wrap.scrollTop / episodeRowH) - 20);
   const end = Math.min(episodes.length, start + Math.ceil(wrap.clientHeight / episodeRowH) + 40);
-  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="11" style="height:${h}px"></td></tr>` : "");
+  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="10" style="height:${h}px"></td></tr>` : "");
   tbody.innerHTML =
     pad(start * episodeRowH) +
     episodes.slice(start, end).map(episodeRowHtml).join("") +
@@ -1884,7 +1897,7 @@ function renderTokenNode(node, signal, maxAbsAdv) {
       tip += ` lp=${logprob.toFixed(4)} (${(Math.exp(logprob) * 100).toFixed(1)}%)`;
     else if (signal === "mask") tip += ` mask=${node.mask?.[i] ?? "?"}`;
     else if (signal === "is_content") tip += ` content=${node.is_content?.[i] ?? "?"}`;
-    return `<span class="tok" style="${bg}" title="${esc(tip)}">${esc(text)}</span>`;
+    return `<span class="tok" style="${bg}" data-tip="${esc(tip)}">${esc(text)}</span>`;
   });
   return spans.join("");
 }
@@ -2017,8 +2030,8 @@ function renderMeta(ep, trace, branches) {
     parts.push(`<div class="meta-sec">activity</div>`);
     parts.push(metaRow("messages", nodes.filter((n) => n.message).length));
     parts.push(metaRow("turns", nodes.filter((n) => n.sampled).length));
-    parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
     parts.push(metaRow("branches", branches.length));
+    parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
 
     const usage = { input: 0, output: 0, reasoning: 0, cached: 0 };
     let hasUsage = false;
@@ -2164,8 +2177,12 @@ document.querySelectorAll("#metrics-mode button").forEach((b) =>
     savePrefs();
   })
 );
-$("#config-file").addEventListener("change", (e) => {
-  state.config.file = e.target.value;
+$("#config-format").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-fmt]");
+  if (!btn || btn.disabled || btn.dataset.fmt === state.config.fmt) return;
+  state.config.fmt = btn.dataset.fmt;
+  state.config.file = configFileFor(btn.dataset.fmt);
+  renderConfigFormat();
   loadConfig();
 });
 $("#config-search").addEventListener(
@@ -2413,6 +2430,23 @@ document.addEventListener("keydown", (e) => {
 });
 $("#tm-step-prev").addEventListener("click", () => modalStep(-1));
 $("#tm-step-next").addEventListener("click", () => modalStep(1));
+// instant per-token tooltip (native title is too laggy over thousands of spans)
+const tokTip = document.createElement("div");
+tokTip.className = "tok-tip";
+tokTip.hidden = true;
+document.body.appendChild(tokTip);
+$("#tm-messages").addEventListener("mouseover", (e) => {
+  const tok = e.target.closest(".tok[data-tip]");
+  if (!tok) return;
+  tokTip.textContent = tok.dataset.tip;
+  tokTip.hidden = false;
+  const rect = tok.getBoundingClientRect();
+  tokTip.style.left = `${Math.min(rect.left, window.innerWidth - tokTip.offsetWidth - 12)}px`;
+  tokTip.style.top = `${rect.top - tokTip.offsetHeight - 6}px`;
+});
+$("#tm-messages").addEventListener("mouseout", (e) => {
+  if (e.target.closest(".tok[data-tip]")) tokTip.hidden = true;
+});
 $("#token-signal").addEventListener("change", async () => {
   await ensureTokens();
   renderEpisode();
