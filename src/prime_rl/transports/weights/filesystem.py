@@ -11,6 +11,7 @@ from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.trainer.utils import maybe_clean
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.weights.base import WeightBroadcast
+from prime_rl.utils.logger import format_time
 from prime_rl.utils.utils import get_all_ckpt_steps, get_broadcast_dir, get_step_path
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
@@ -28,11 +29,11 @@ class FileSystemWeightBroadcast(WeightBroadcast):
     ):
         super().__init__(output_dir, lora_config)
         self.world = get_world()
-        self.logger.debug("Filesystem broadcast initialized")
+        self.logger.debug("Initialized filesystem weight broadcast")
 
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
-        self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
+        self.logger.debug(f"Broadcasting policy weights (v{step}) via the shared filesystem")
         start_time = time.perf_counter()
         adapter_only = self.lora_config is not None
 
@@ -67,7 +68,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
         if self.world.is_master:
             self._notify_orchestrator(save_dir)
-            self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
+            self.logger.debug(f"Broadcast policy weights (v{step}) in {format_time(time.perf_counter() - start_time)}")
 
     def _notify_orchestrator(self, save_dir: Path):
         """Notify the orchestrator that the weights have been broadcast by writing a 'STABLE' file to a shared filesystem."""

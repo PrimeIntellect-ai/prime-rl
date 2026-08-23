@@ -103,10 +103,7 @@ class WeightWatcher:
                 weights_path = get_step_path(broadcast_dir, next_step)
                 stable_marker = weights_path / "STABLE"
                 if not stable_marker.exists():
-                    get_logger().info(
-                        f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
-                        "Training is progressing normally."
-                    )
+                    get_logger().info(f"Waiting for the trainer to broadcast policy v{next_step}")
                     await wait_for_path(stable_marker)
             self.last_wait_for_ckpt_time = time.perf_counter() - t0
 
@@ -135,12 +132,14 @@ class WeightWatcher:
                         f"Observer {type(observer).__name__}.on_version_pending({next_step}) raised: {exc!r}"
                     )
 
-            get_logger().debug(f"Updating weights to step {next_step}")
+            get_logger().debug(f"Updating inference weights to policy v{next_step}")
             t1 = time.perf_counter()
             await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
-            get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
+            get_logger().debug(
+                f"Updated inference weights to policy v{next_step} in {format_time(self.last_update_weights_time)}"
+            )
 
             if self.lora_name is not None:
                 self.inference.update_model_name(self.lora_name)

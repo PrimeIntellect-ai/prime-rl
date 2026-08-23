@@ -70,7 +70,6 @@ class TrainSink:
         *,
         tokenizer,
         train_envs: TrainEnvs,
-        mm_token_type_ids_mapping: dict[int, int] | None,
         progress: Progress,
         batch_size: int | None,
         token_batch_size: int | None,
@@ -82,7 +81,6 @@ class TrainSink:
         self.config = config
         self.tokenizer = tokenizer
         self.train_envs = train_envs
-        self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.progress = progress
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
@@ -232,8 +230,8 @@ class TrainSink:
             self.pending_episodes.extend(group, admitted=False, cancelled=True)
             self._record_zero_output(group, [], n_owed)
             get_logger().debug(
-                f"Finished group | env={env_name} task_idx={task_idx} | "
-                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | dropped: cancelled (stale)"
+                f"Dropped group | env={env_name} task_idx={task_idx} | "
+                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason=cancelled (stale)"
             )
             return
 
@@ -246,20 +244,15 @@ class TrainSink:
             self._record_zero_output(group, survivors, n_owed)
             reason = "no trainable survivors" if not survivors else "rejected by curriculum"
             get_logger().debug(
-                f"Finished group | env={env_name} task_idx={task_idx} | "
-                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | dropped: {reason}"
+                f"Dropped group | env={env_name} task_idx={task_idx} | "
+                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason={reason}"
             )
             return
 
         samples_by_trace: dict[str, list[TrainingSample]] = {}
         temperature = env.sampling_args["temperature"]
         for trace in survivors:
-            samples = await asyncio.to_thread(
-                trace_to_samples,
-                trace,
-                env_name=env_name,
-                mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
-            )
+            samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
@@ -291,13 +284,6 @@ class TrainSink:
             return
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
-
-        rewards = [trace.reward for trace in survivors if trace.id in samples_by_trace]
-        avg_reward = sum(rewards) / len(rewards)
-        get_logger().debug(
-            f"Finished group | env={env_name} task_idx={task_idx} | "
-            f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reward={avg_reward:.4f}"
-        )
 
     def _trace(self, trace_id: str) -> vf.Trace:
         episode = self.episode_by_trace[trace_id]

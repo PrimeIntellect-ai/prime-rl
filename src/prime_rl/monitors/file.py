@@ -28,7 +28,7 @@ class FileMonitor(Monitor):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
-        self.logger.info(f"Logging metrics to {self.path} and episodes to {output_dir / 'rollouts'}")
+        self.logger.info(f"Logging metrics and episodes to the local filesystem ({output_dir})")
 
     async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
         sanitized, dropped = sanitize(metrics)

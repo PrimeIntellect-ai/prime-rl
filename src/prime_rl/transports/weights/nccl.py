@@ -17,7 +17,7 @@ from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightBroadcast
 from prime_rl.utils.client import NCCL_READY_MARKER
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
@@ -132,9 +132,9 @@ class NCCLWeightBroadcastSender:
                 host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
             )
             self.communicator = PyNcclCommunicator(pg, device=device)
-            self.logger.debug("NCCL broadcast initialized on master rank")
+            self.logger.debug("Initialized NCCL broadcast on master rank")
         else:
-            self.logger.debug("NCCL broadcast initialized on non-master rank (no communicator)")
+            self.logger.debug("Initialized NCCL broadcast on non-master rank (no communicator)")
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
@@ -194,7 +194,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
-        self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
+        self.logger.debug(f"Broadcasting policy weights (v{step}) via NCCL")
         start_time = time.perf_counter()
         # Only the master touches the filesystem to notify the orchestrator, but all
         # ranks must wait for the inference pool before entering the broadcast path:
@@ -209,7 +209,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         if self.world.world_size > 1:
             dist.barrier()
         self.nccl_broadcast_sender.broadcast_weights(model, step)
-        self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
+        self.logger.debug(f"Broadcast policy weights (v{step}) in {format_time(time.perf_counter() - start_time)}")
 
     def _notify_orchestrator(self, save_dir: Path) -> None:
         """Create the STABLE marker the orchestrator's weight watcher polls for."""

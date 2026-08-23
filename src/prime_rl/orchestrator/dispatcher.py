@@ -678,7 +678,7 @@ class Dispatcher:
             env_name = group.env_name if group is not None else claimed[-1][1].env_name
             self.metrics.record_cancellation(kind=kind, env_name=env_name, n=cancelled)
             get_logger().debug(
-                f"drop {kind} | group={str(group_id)[:8]} env={env_name} reason={reason} | "
+                f"Dropped {kind} group | group={str(group_id)[:8]} env={env_name} reason={reason} | "
                 f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
             )
             await self.out_q.put(

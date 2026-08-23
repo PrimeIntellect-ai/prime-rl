@@ -17,7 +17,7 @@ from torchtitan.distributed.utils import clip_grad_norm_ as torch_clip_grad_norm
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
 from prime_rl.utils.utils import get_step_path
 
@@ -52,7 +52,7 @@ class GarbageCollection:
     def _collect(self, generation: int = 1):
         begin = time.monotonic()
         gc.collect(generation)
-        get_logger().info(f"[GC] collection took {time.monotonic() - begin:.2f}s")
+        get_logger().debug(f"Collected garbage in {format_time(time.monotonic() - begin)}")
 
 
 def prepare_gradient_offload(
@@ -172,6 +172,8 @@ def setup_full_cpu_optimizer_offload(config: "OptimizerInBackwardOffloadConfig")
 
 
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
+    get_logger().info(f"Initializing torch distributed (timeout={int(timeout.total_seconds())}s)")
+    t0 = time.perf_counter()
     device_id = get_world().local_rank
     torch.cuda.set_device(device_id)
     # Use Gloo backend for CPU and NCCL for GPU when CPU offloading is enabled
@@ -189,6 +191,7 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
     dist.distributed_c10d.default_pg_timeout = timeout
 
     dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
+    get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")
 
 
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
