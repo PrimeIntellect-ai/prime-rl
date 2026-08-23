@@ -8,9 +8,9 @@ const api = async (path) => {
   return res.json();
 };
 
-/* prime-context line-chart palette, purple first as the default line color */
-const PALETTE = ["#b7a6fa", "#78f8a5", "#fcdaa4", "#4a9eff", "#ff6b4a", "#bcbcbc", "#7adfff"];
-const SINGLE_SERIES = "#b7a6fa";
+/* accent-first line palette, then the prime-context chart palette */
+const PALETTE = ["#b6ff3c", "#b7a6fa", "#78f8a5", "#fcdaa4", "#4a9eff", "#ff6b4a", "#bcbcbc"];
+const SINGLE_SERIES = "#b6ff3c";
 const POLL_MS = 3000;
 const prefs = JSON.parse(localStorage.getItem("prl-dash") || "{}");
 
@@ -286,6 +286,19 @@ function buildSections(meta) {
   return sections;
 }
 
+let activeFilter = null;
+
+function metricsFilter() {
+  const query = state.metrics.search.trim();
+  if (!query) return null;
+  try {
+    return new RegExp(query, "i");
+  } catch {
+    const needle = query.toLowerCase();
+    return { test: (k) => k.toLowerCase().includes(needle) };
+  }
+}
+
 function resolvePanel(panel) {
   const byKey = state.metrics.byKey;
   let keys;
@@ -295,6 +308,7 @@ function resolvePanel(panel) {
     const re = new RegExp(`^(?:${panel.regex})$`);
     keys = [...byKey.keys()].filter((k) => re.test(k)).sort();
   }
+  if (activeFilter) keys = keys.filter((k) => activeFilter.test(k));
   const series = [];
   for (const key of keys)
     for (const [producer, points] of byKey.get(key)) series.push({ key, producer, points });
@@ -384,19 +398,7 @@ function makeChart(el, labels, width, timeAxis = false) {
       height: chartHeight(),
       padding: [10, 12, 0, 0],
       cursor: { points: { size: 5 }, drag: { x: true, y: false } },
-      scales: {
-        x: { time: false, range: (u, min, max) => [0, max ?? 1] },
-        y: {
-          range: (u, min, max) => {
-            if (min == null) return [0, 1];
-            let lo = Math.min(0, min);
-            let hi = Math.max(0, max);
-            if (lo === hi) hi = lo + 1;
-            const pad = (hi - lo) * 0.05;
-            return [lo === 0 ? 0 : lo - pad, hi === 0 ? 0 : hi + pad];
-          },
-        },
-      },
+      scales: { x: { time: false } },
       axes: [xAxis, { ...axis, size: 50, values: (u, vals) => vals.map(fmtAxis) }],
       legend: { show: labels.length > 1 },
       series: [
@@ -438,7 +440,7 @@ function panelTitle(panel) {
 
 function renderPanelCard(grid, panel, lazy = false) {
   const series = resolvePanel(panel);
-  if (!series.length && (panel.regex || panel.metrics)) return; // data-dependent panel with no matches yet
+  if (!series.length && (panel.regex || panel.metrics || activeFilter)) return; // no matches (yet)
   const card = document.createElement("div");
   card.className = "chart-card";
   const title = panelTitle(panel);
@@ -506,7 +508,7 @@ function renderMetricsBody() {
     },
     { root: body, rootMargin: "400px" }
   );
-  $("#metrics-search").hidden = m.mode !== "all";
+  activeFilter = metricsFilter();
   if (!state.meta?.has_metrics && !m.byKey.size) {
     body.innerHTML = emptyState("no metrics", "this run has no metrics.jsonl yet");
     $("#metrics-status").textContent = "";
@@ -519,21 +521,14 @@ function renderMetricsBody() {
       for (const panel of section.panels) renderPanelCard(grid, panel);
       if (!grid.children.length) div.remove();
     }
+    if (activeFilter && !body.children.length)
+      body.innerHTML = emptyState("no keys match", "no overview panels match the filter");
     return;
   }
-  // all-metrics: every key charted, grouped by top-level namespace, regex-filtered
-  let filter = null;
-  if (m.search.trim()) {
-    try {
-      filter = new RegExp(m.search.trim(), "i");
-    } catch {
-      const needle = m.search.trim().toLowerCase();
-      filter = { test: (k) => k.toLowerCase().includes(needle) };
-    }
-  }
+  // all: every key charted, grouped by top-level namespace, regex-filtered
   const groups = new Map();
   for (const key of [...m.byKey.keys()].sort()) {
-    if (filter && !filter.test(key)) continue;
+    if (activeFilter && !activeFilter.test(key)) continue;
     const group = key.split("/")[0];
     if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push(key);
@@ -947,6 +942,7 @@ async function loadEpisodes() {
     return;
   }
   traces.total = data.total;
+  traces.episodes = data.episodes;
   $("#trace-empty").hidden = true;
   $("#episode-table-wrap").hidden = false;
   const envSel = $("#trace-env");
@@ -990,27 +986,79 @@ async function initTraces() {
 /* ----------------------------------------------------------- episode view */
 
 let currentEpisode = null;
+let currentLine = null;
 let currentTraceIdx = 0;
 let currentBranchIdx = 0;
 
+const COPY_SVG =
+  `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">` +
+  `<rect x="9" y="9" width="12" height="12"></rect><path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>`;
+
+function copyText(text, el) {
+  navigator.clipboard
+    ?.writeText(text)
+    .then(() => {
+      el.classList.add("copied");
+      setTimeout(() => el.classList.remove("copied"), 700);
+    })
+    .catch(() => {});
+}
+
+function filteredRollouts() {
+  const query = $("#tm-search").value.trim().toLowerCase();
+  const episodes = state.traces.episodes || [];
+  if (!query) return episodes;
+  return episodes.filter((e) =>
+    `${e.line} ${e.id ?? ""} ${e.group ?? ""} ${e.env ?? ""} ${e.stop_condition ?? ""}`.toLowerCase().includes(query)
+  );
+}
+
+function renderRolloutList() {
+  const episodes = filteredRollouts();
+  $("#tm-count").textContent = episodes.length;
+  $("#tm-list").innerHTML = episodes
+    .map((e) => {
+      const cls = e.reward > 0 ? "r-pos" : e.reward < 0 ? "r-neg" : "r-zero";
+      return (
+        `<div class="tm-item ${e.line === currentLine ? "active" : ""}" data-line="${e.line}">` +
+        `<span>Rollout ${e.line}</span><span class="muted">${esc(e.env ?? "")}</span>` +
+        `<span class="tm-reward ${cls}">${fmtNum(e.reward)}</span></div>`
+      );
+    })
+    .join("");
+  $("#tm-list .tm-item.active")?.scrollIntoView({ block: "nearest" });
+}
+
+function stepRollout(delta) {
+  const episodes = filteredRollouts();
+  const idx = episodes.findIndex((e) => e.line === currentLine);
+  const next = episodes[idx + delta];
+  if (next) openEpisode(next.line);
+}
+
 async function openEpisode(line) {
   const traces = state.traces;
-  $("#drawer").hidden = false;
+  $("#trace-modal").hidden = false;
   $("#drawer-backdrop").hidden = false;
-  $("#drawer-body").innerHTML = `<div class="chart-empty">loading episode…</div>`;
-  $("#drawer-title").textContent = `step ${traces.step} · ${traces.kind}/${traces.subset} · #${line}`;
-  currentEpisode = await api(
+  currentLine = line;
+  renderRolloutList();
+  $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
+  $("#tm-meta").innerHTML = "";
+  const episode = await api(
     `/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}?tokens=true`
   );
+  if (line !== currentLine) return; // user already moved to another rollout
+  currentEpisode = episode;
   currentTraceIdx = 0;
   currentBranchIdx = 0;
   renderEpisode();
 }
 
 function closeDrawer() {
-  $("#drawer").hidden = true;
+  $("#trace-modal").hidden = true;
   $("#drawer-backdrop").hidden = true;
   currentEpisode = null;
+  currentLine = null;
 }
 
 function traceBranches(trace) {
@@ -1077,122 +1125,175 @@ function renderTokenNode(node, signal, maxAbsAdv) {
   return spans.join("");
 }
 
-function renderEpisode() {
-  const ep = currentEpisode;
-  if (!ep) return;
-  const traces = ep.traces || [];
-  const trace = traces[currentTraceIdx];
-  const signal = $("#token-signal").value;
-  const parts = [];
-
-  const badges = [
-    ["env", ep.env?.id ?? ep.env?.name],
-    ["group", (ep.group?.id ?? "").slice(0, 12)],
-    ["episode", (ep.id ?? "").slice(0, 12)],
-    ["dispatch step", ep.run?.work?.step ?? ep.run?.metadata?.step],
-    ["ok", ep.ok],
-  ];
-  parts.push(
-    `<div class="ep-meta">` +
-      badges.filter(([, v]) => v != null).map(([k, v]) => `<span class="badge">${esc(k)}: ${esc(v)}</span>`).join("") +
-      `</div>`
+function subBlock(name, content) {
+  const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+  return (
+    `<details class="sub"><summary><span class="sub-name">${esc(name)}</span>` +
+    `<span class="sub-preview">${esc(text.replace(/\s+/g, " ").slice(0, 140))}</span>` +
+    `<span class="entry-chev">›</span></summary><div class="entry-body">${esc(text)}</div></details>`
   );
+}
 
-  if (traces.length > 1)
-    parts.push(
-      `<div class="trace-tabs seg">` +
-        traces
-          .map((t, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(t.agent?.name ?? "trace")} ${i}</button>`)
-          .join("") +
-        `</div>`
-    );
-
+function renderMessages(trace, branches) {
+  const container = $("#tm-messages");
   if (!trace) {
-    parts.push(emptyState("no traces", "this episode carries no trace data"));
-    if (ep.errors?.length) parts.push(`<h3 class="sec">errors</h3><pre class="json">${esc(JSON.stringify(ep.errors, null, 2))}</pre>`);
-    $("#drawer-body").innerHTML = parts.join("");
+    container.innerHTML = emptyState("no traces", "this episode carries no trace data");
     return;
   }
-
-  const branches = traceBranches(trace);
-  if (branches.length > 1) {
-    if (currentBranchIdx >= branches.length) currentBranchIdx = 0;
-    parts.push(
-      `<div class="trace-tabs seg">` +
-        branches.map((_, i) => `<button data-branch="${i}" class="${i === currentBranchIdx ? "active" : ""}">branch ${i}</button>`).join("") +
-        `</div>`
-    );
-  }
+  const signal = $("#token-signal").value;
   const path = branches[Math.min(currentBranchIdx, branches.length - 1)] || [];
-
   let maxAbsAdv = 0;
   for (const node of trace.nodes || [])
     for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
-
   const callsByNode = new Map((trace.calls || []).map((c) => [c.node, c]));
-  for (const idx of path) {
+  const parts = [];
+  path.forEach((idx, i) => {
     const node = trace.nodes[idx];
     const role = node.message?.role ?? "?";
     const call = callsByNode.get(idx);
     const chips = [];
     if (node.sampled) chips.push("sampled");
-    if (call) {
-      if (call.finish_reason) chips.push(call.finish_reason);
-      if (call.usage) chips.push(`${call.usage.prompt_tokens ?? "?"}→${call.usage.completion_tokens ?? "?"} tok`);
-    } else if (node.token_ids?.length) chips.push(`${node.token_ids.length} tok`);
-    let body;
-    if (signal && node.token_ids?.length) body = renderTokenNode(node, signal, maxAbsAdv);
-    else {
-      body = esc(messageText(node.message));
-      for (const toolCall of node.message?.tool_calls || [])
-        body += `\n<span class="badge">tool: ${esc(toolCall.function?.name ?? "?")}</span> ${esc(toolCall.function?.arguments ?? "")}`;
-    }
+    if (call?.finish_reason) chips.push(call.finish_reason);
+    if (call?.usage) chips.push(`${call.usage.prompt_tokens ?? "?"}→${call.usage.completion_tokens ?? "?"} tok`);
+    else if (node.token_ids?.length) chips.push(`${node.token_ids.length} tok`);
+    const text = messageText(node.message);
+    const body = signal && node.token_ids?.length ? renderTokenNode(node, signal, maxAbsAdv) : esc(text);
+    const subs = [];
+    const reasoning = node.message?.reasoning_content ?? node.message?.reasoning;
+    if (reasoning) subs.push(subBlock("Reasoning", reasoning));
+    for (const toolCall of node.message?.tool_calls || [])
+      subs.push(subBlock(`Tool call · ${toolCall.function?.name ?? "?"}`, toolCall.function?.arguments ?? toolCall));
     parts.push(
-      `<div class="msg ${esc(role)}"><div class="msg-head">${esc(role)}${chips.map((c) => ` <span class="chip">${esc(c)}</span>`).join("")}</div>` +
-        `<div class="msg-body">${body}</div></div>`
+      `<details class="entry ${esc(role)}"${role === "system" ? "" : " open"}>` +
+        `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
+        `<span class="entry-role">${esc(role)}</span>` +
+        `<span class="entry-preview">${esc(text.replace(/\s+/g, " ").slice(0, 180))}</span>` +
+        chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("") +
+        `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>` +
+        `<span class="entry-chev">›</span></summary>` +
+        subs.join("") +
+        `<div class="entry-body">${body}</div></details>`
     );
+  });
+  container.innerHTML = parts.join("");
+}
+
+function metaRow(key, value, asId = false) {
+  if (value == null) return "";
+  return (
+    `<div class="meta-row"><span class="k">${esc(key)}</span>` +
+    `<span class="v${asId ? " id" : ""}" title="${esc(value)}">${esc(value)}</span>` +
+    (asId ? `<button class="icon-btn" data-copytext="${esc(value)}" title="copy">${COPY_SVG}</button>` : "") +
+    `</div>`
+  );
+}
+
+function renderMeta(ep, trace, branches) {
+  const parts = [];
+  const reward = trace ? traceReward(trace) : null;
+  if (reward != null)
+    parts.push(
+      `<div class="meta-row"><span class="k">reward</span>` +
+        `<span class="tm-reward-big${reward < 0 ? " neg" : ""}" style="margin-left:auto">${fmtNum(reward)}</span></div>`
+    );
+
+  parts.push(`<div class="meta-sec">identity</div>`);
+  parts.push(metaRow("episode ID", ep.id, true));
+  if (trace?.id) parts.push(metaRow("trace ID", trace.id, true));
+  if (ep.group?.id) parts.push(metaRow("group ID", ep.group.id, true));
+  parts.push(metaRow("env", ep.env?.id ?? ep.env?.name));
+  parts.push(metaRow("dispatch step", ep.run?.work?.step ?? ep.run?.metadata?.step));
+
+  if (trace) {
+    const path = branches[Math.min(currentBranchIdx, branches.length - 1)] || [];
+    const nodes = path.map((i) => trace.nodes[i]);
+    const roleCount = (role) => nodes.filter((n) => n.message?.role === role).length;
+    parts.push(`<div class="meta-sec">activity</div>`);
+    parts.push(metaRow("total entries", nodes.length));
+    parts.push(metaRow("user messages", roleCount("user")));
+    parts.push(metaRow("model turns", nodes.filter((n) => n.sampled).length));
+    parts.push(metaRow("model calls", (trace.calls || []).length));
+    parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
+    parts.push(metaRow("tool results", roleCount("tool")));
+    if (branches.length > 1) parts.push(metaRow("branches", branches.length));
+
+    if (trace.tools?.length)
+      parts.push(
+        `<details class="meta-fold"><summary>tool definitions (${trace.tools.length})</summary>` +
+          `<pre class="json">${esc(JSON.stringify(trace.tools, null, 2))}</pre></details>`
+      );
+
+    parts.push(`<div class="meta-sec">state</div>`);
+    parts.push(metaRow("stop_condition", trace.stop_condition));
+    parts.push(metaRow("is_completed", trace.is_completed));
+    parts.push(metaRow("ok", trace.ok));
+    parts.push(metaRow("advantage", trace.info?.advantage != null ? fmtNum(trace.info.advantage) : null));
+
+    const rewards = Object.entries(trace.rewards || {});
+    if (rewards.length) {
+      parts.push(`<div class="meta-sec">rewards</div>`);
+      for (const [name, r] of rewards) parts.push(metaRow(name, `${fmtNum(r.score)} × ${fmtNum(r.weight ?? 1)}`));
+    }
+
+    parts.push(`<div class="meta-sec">sampling</div>`);
+    parts.push(metaRow("model", trace.agent?.config?.model));
+    parts.push(metaRow("renderer", trace.agent?.config?.client?.renderer_model_name));
+    parts.push(metaRow("temperature", trace.agent?.config?.sampling?.temperature));
+    parts.push(metaRow("max_tokens", trace.agent?.config?.sampling?.max_tokens));
+
+    const durations = [];
+    (function walkTiming(obj, prefix) {
+      if (!obj || typeof obj !== "object") return;
+      if (typeof obj.duration === "number") durations.push([prefix, obj.duration]);
+      else if (typeof obj.start === "number" && typeof obj.end === "number") durations.push([prefix, obj.end - obj.start]);
+      for (const [k, v] of Object.entries(obj)) if (typeof v === "object") walkTiming(v, prefix ? `${prefix}/${k}` : k);
+    })(trace.timing, "");
+    if (durations.length) {
+      parts.push(`<div class="meta-sec">timing</div>`);
+      for (const [name, secs] of durations) parts.push(metaRow(name || "total", `${secs.toFixed(2)}s`));
+    }
   }
 
-  const rewards = Object.entries(trace.rewards || {});
-  if (rewards.length) {
-    parts.push(`<h3 class="sec">rewards</h3><table class="kv-table"><tr><th>name</th><th>score</th><th>weight</th></tr>`);
-    for (const [name, r] of rewards)
-      parts.push(`<tr><td>${esc(name)}</td><td>${fmtNum(r.score)}</td><td>${fmtNum(r.weight ?? 1)}</td></tr>`);
-    parts.push(`<tr><th>total</th><th colspan="2">${fmtNum(traceReward(trace))}</th></tr></table>`);
-  }
+  const errors = [...(ep.errors || []), ...(trace?.errors || [])];
+  if (errors.length)
+    parts.push(
+      `<details class="meta-fold" open><summary>errors (${errors.length})</summary>` +
+        `<pre class="json">${esc(JSON.stringify(errors, null, 2))}</pre></details>`
+    );
 
-  const info = { ...(trace.info || {}) };
-  const meta = {
-    advantage: info.advantage,
-    stop_condition: trace.stop_condition,
-    is_completed: trace.is_completed,
-    ok: trace.ok,
-    model: trace.agent?.config?.model,
-    renderer_model: trace.agent?.config?.client?.renderer_model_name,
-    temperature: trace.agent?.config?.sampling?.temperature,
-    max_tokens: trace.agent?.config?.sampling?.max_tokens,
-  };
-  parts.push(`<h3 class="sec">trace</h3><table class="kv-table">`);
-  for (const [k, v] of Object.entries(meta)) if (v != null) parts.push(`<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`);
-  parts.push(`</table>`);
+  $("#tm-meta").innerHTML = parts.join("");
+}
 
-  const durations = [];
-  (function walkTiming(obj, prefix) {
-    if (!obj || typeof obj !== "object") return;
-    if (typeof obj.duration === "number") durations.push([prefix, obj.duration]);
-    else if (typeof obj.start === "number" && typeof obj.end === "number") durations.push([prefix, obj.end - obj.start]);
-    for (const [k, v] of Object.entries(obj)) if (typeof v === "object") walkTiming(v, prefix ? `${prefix}/${k}` : k);
-  })(trace.timing, "");
-  if (durations.length) {
-    parts.push(`<h3 class="sec">timing</h3><table class="kv-table">`);
-    for (const [name, secs] of durations) parts.push(`<tr><th>${esc(name || "total")}</th><td>${secs.toFixed(2)}s</td></tr>`);
-    parts.push(`</table>`);
-  }
-
-  const errors = [...(ep.errors || []), ...(trace.errors || [])];
-  if (errors.length) parts.push(`<h3 class="sec">errors</h3><pre class="json">${esc(JSON.stringify(errors, null, 2))}</pre>`);
-
-  $("#drawer-body").innerHTML = parts.join("");
+function renderEpisode() {
+  const ep = currentEpisode;
+  if (!ep) return;
+  const traces = ep.traces || [];
+  if (currentTraceIdx >= traces.length) currentTraceIdx = 0;
+  const trace = traces[currentTraceIdx];
+  const branches = trace ? traceBranches(trace) : [];
+  if (currentBranchIdx >= branches.length) currentBranchIdx = 0;
+  const traceTabs = $("#tm-trace-tabs");
+  traceTabs.hidden = traces.length <= 1;
+  traceTabs.innerHTML =
+    traces.length > 1
+      ? traces
+          .map(
+            (t, i) =>
+              `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(t.agent?.name ?? "trace")} ${i}</button>`
+          )
+          .join("")
+      : "";
+  const branchTabs = $("#tm-branch-tabs");
+  branchTabs.hidden = branches.length <= 1;
+  branchTabs.innerHTML =
+    branches.length > 1
+      ? branches
+          .map((_, i) => `<button data-branch="${i}" class="${i === currentBranchIdx ? "active" : ""}">branch ${i}</button>`)
+          .join("")
+      : "";
+  renderRolloutList();
+  renderMessages(trace, branches);
+  renderMeta(ep, trace, branches);
 }
 
 /* ---------------------------------------------------------------- wiring */
@@ -1318,13 +1419,45 @@ $("#episode-table").addEventListener("click", (e) => {
 });
 $("#drawer-close").addEventListener("click", closeDrawer);
 $("#drawer-backdrop").addEventListener("click", closeDrawer);
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") return closeDrawer();
+  if ($("#trace-modal").hidden || e.target.matches("input, select, textarea")) return;
+  if (e.key === "ArrowDown") { e.preventDefault(); stepRollout(1); }
+  if (e.key === "ArrowUp") { e.preventDefault(); stepRollout(-1); }
+});
 $("#token-signal").addEventListener("change", renderEpisode);
-$("#drawer-body").addEventListener("click", (e) => {
-  const traceBtn = e.target.closest("[data-trace]");
-  if (traceBtn) { currentTraceIdx = +traceBtn.dataset.trace; currentBranchIdx = 0; renderEpisode(); return; }
-  const branchBtn = e.target.closest("[data-branch]");
-  if (branchBtn) { currentBranchIdx = +branchBtn.dataset.branch; renderEpisode(); }
+$("#tm-trace-tabs").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-trace]");
+  if (btn) { currentTraceIdx = +btn.dataset.trace; currentBranchIdx = 0; renderEpisode(); }
+});
+$("#tm-branch-tabs").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-branch]");
+  if (btn) { currentBranchIdx = +btn.dataset.branch; renderEpisode(); }
+});
+$("#tm-list").addEventListener("click", (e) => {
+  const item = e.target.closest("[data-line]");
+  if (item) openEpisode(+item.dataset.line);
+});
+$("#tm-search").addEventListener("input", renderRolloutList);
+$("#tm-prev").addEventListener("click", () => stepRollout(-1));
+$("#tm-next").addEventListener("click", () => stepRollout(1));
+$("#tm-collapse").addEventListener("click", () =>
+  document.querySelectorAll("#tm-messages details.entry").forEach((d) => (d.open = false))
+);
+$("#tm-expand").addEventListener("click", () =>
+  document.querySelectorAll("#tm-messages details").forEach((d) => (d.open = true))
+);
+$("#tm-messages").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-copy]");
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const node = currentEpisode?.traces?.[currentTraceIdx]?.nodes?.[+btn.dataset.copy];
+  if (node) copyText(messageText(node.message), btn);
+});
+$("#tm-meta").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-copytext]");
+  if (btn) copyText(btn.dataset.copytext, btn);
 });
 
 function resizeCharts() {
@@ -1354,9 +1487,16 @@ $("#smooth-range").addEventListener("input", (e) => {
 
 let tickCount = 0;
 setInterval(async () => {
-  if (!state.live || !state.run) return;
+  if (!state.live) return;
   tickCount++;
   try {
+    // keep the run list fresh so new runs register without a page refresh
+    if (tickCount % 3 === 0 || !state.run) await loadRuns();
+    if (!state.run) {
+      const first = state.runs[0]?.name;
+      if (first) await selectRun(first);
+      return;
+    }
     renderOverview(); // keeps the duration field ticking
     if (state.tab === "metrics" && state.metrics.loaded) await fetchMetrics();
     else if (state.tab === "logs" && state.logs.loaded) await pollLogs();
@@ -1364,7 +1504,6 @@ setInterval(async () => {
       await loadRollouts();
       if (tickCount % 5 === 0) await loadEpisodes();
     }
-    if (tickCount % 10 === 0) await loadRuns();
   } catch (err) {
     console.warn("poll failed", err);
   }

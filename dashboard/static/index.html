@@ -12,12 +12,11 @@
 <header id="topbar">
   <div class="brand">
     <img src="/static/butterfly-white.svg" alt="Prime Intellect">
-    <span class="brand-name">prime-rl</span>
   </div>
   <select id="run-select" title="run"></select>
   <nav id="tabs">
-    <button data-tab="metrics" class="active">Metrics</button>
     <button data-tab="config">Config</button>
+    <button data-tab="metrics" class="active">Metrics</button>
     <button data-tab="traces">Traces</button>
     <button data-tab="logs">Logs</button>
   </nav>
@@ -31,9 +30,9 @@
     <div class="controls">
       <div class="seg" id="metrics-mode">
         <button data-mode="overview" class="active">Overview</button>
-        <button data-mode="all">All metrics</button>
+        <button data-mode="all">All</button>
       </div>
-      <input id="metrics-search" class="search" type="search" placeholder="regex filter, e.g. ^entropy/ or reward" hidden>
+      <input id="metrics-search" class="search" type="search" placeholder="regex filter, e.g. ^entropy/ or reward">
       <label class="ctl">smooth <input id="smooth-range" type="range" min="1" max="50" value="1"><span id="smooth-val">off</span></label>
       <span id="metrics-status" class="muted"></span>
     </div>
@@ -117,21 +116,42 @@
 </main>
 
 <div id="drawer-backdrop" hidden></div>
-<aside id="drawer" hidden>
-  <div id="drawer-head">
-    <button id="drawer-close" class="btn">✕</button>
-    <div id="drawer-title"></div>
-    <div class="spacer"></div>
-    <select id="token-signal">
-      <option value="">text view</option>
-      <option value="advantage">tokens: advantage</option>
-      <option value="logprob">tokens: logprob</option>
-      <option value="mask">tokens: mask</option>
-      <option value="is_content">tokens: is_content</option>
-    </select>
-  </div>
-  <div id="drawer-body"></div>
-</aside>
+<div id="trace-modal" hidden>
+  <aside id="tm-left">
+    <div class="tm-head">
+      <span class="t-label">rollouts</span>
+      <span id="tm-count" class="badge"></span>
+      <div class="spacer"></div>
+      <button id="tm-prev" class="btn tm-nav" title="previous">↑</button>
+      <button id="tm-next" class="btn tm-nav" title="next">↓</button>
+    </div>
+    <input id="tm-search" class="search" type="search" placeholder="search…">
+    <div id="tm-list"></div>
+  </aside>
+  <section id="tm-main">
+    <div class="tm-head">
+      <span class="tm-title">Trace Viewer</span>
+      <div id="tm-trace-tabs" class="seg" hidden></div>
+      <div id="tm-branch-tabs" class="seg" hidden></div>
+      <div class="spacer"></div>
+      <select id="token-signal">
+        <option value="">text view</option>
+        <option value="advantage">tokens: advantage</option>
+        <option value="logprob">tokens: logprob</option>
+        <option value="mask">tokens: mask</option>
+        <option value="is_content">tokens: is_content</option>
+      </select>
+      <button id="tm-collapse" class="btn" title="collapse all">collapse</button>
+      <button id="tm-expand" class="btn" title="expand all">expand</button>
+      <button id="drawer-close" class="btn">✕</button>
+    </div>
+    <div id="tm-messages"></div>
+  </section>
+  <aside id="tm-right">
+    <div class="tm-head"><span class="tm-title">Overview</span></div>
+    <div id="tm-meta"></div>
+  </aside>
+</div>
 
 <script src="/static/vendor/uPlot.iife.min.js"></script>
 <script src="/static/app.js"></script>
