@@ -225,7 +225,22 @@ main > section { flex: 1; min-height: 0; display: flex; flex-direction: column; 
 .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 .seg { display: inline-flex; border: 1px solid var(--grey-3); }
+.seg { flex-shrink: 0; }
+/* arrow stepper (log level): ‹ label › */
+.stepper { display: inline-flex; align-items: center; border: 1px solid var(--grey-3); height: 28px; }
+.stepper button { background: none; border: none; color: var(--grey-4); width: 24px; height: 100%; cursor: pointer; font: 400 13px var(--font-mono); }
+.stepper button:hover:not(:disabled) { color: var(--grey-6); }
+.stepper button:disabled { opacity: 0.3; cursor: default; }
+.stepper span {
+  font-size: 11px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--grey-5);
+  min-width: 52px;
+  text-align: center;
+}
 .seg button {
+  white-space: nowrap;
   background: transparent;
   border: none;
   color: var(--grey-4);
@@ -258,11 +273,10 @@ main > section { flex: 1; min-height: 0; display: flex; flex-direction: column; 
 /* stable gutter: no layout shift when collapsing sections hides the scrollbar */
 #metrics-body { flex: 1; overflow-y: auto; scrollbar-gutter: stable; min-height: 0; padding-right: 10px; }
 .chart-card.dragging { opacity: 0.45; }
+/* one 12px rhythm everywhere: section-to-section, header-to-panes, pane-to-pane */
 details.section { margin-bottom: 12px; }
 /* nested sections (all-mode key tree) indent one step */
 details.section details.section { margin-left: 14px; }
-/* collapsed sections stack directly */
-details.section:not([open]) { margin-bottom: 6px; }
 details.section:not([open]) > summary { margin-bottom: 0; }
 /* section headers are full-width bars so the clickable region is obvious */
 details.section > summary {
@@ -282,6 +296,21 @@ details.section > summary:hover { color: var(--grey-6); border-color: var(--grey
 details.section .sec-chev { margin-left: auto; transition: transform 0.12s; font-size: 10px; color: var(--grey-4); }
 details.section[open] .sec-chev { transform: rotate(90deg); }
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--pane-min, 320px), 1fr)); gap: 12px; }
+/* eval runs: running-average stat cards instead of x/y chart panes */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.stat-card { background: var(--grey-2); border: 1px solid var(--hairline); padding: 12px 14px; min-width: 0; }
+.stat-card:hover { border-color: var(--grey-3); }
+.stat-label {
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--grey-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stat-value { font-size: 20px; color: var(--grey-6); margin: 6px 0 2px; }
+.stat-n { font-size: 10px; color: var(--grey-4); }
 .chart-card {
   position: relative;
   background: var(--grey-2);
@@ -312,27 +341,21 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
   text-transform: uppercase;
 }
 
-/* fixed-width empty state, shared by every "nothing here" case */
+/* minimal empty state, shared by every "nothing here" case: just dim text */
 .empty-box {
-  width: 420px;
-  max-width: 90%;
   margin: 64px auto;
-  border: 1px solid var(--hairline);
-  background: var(--grey-2);
-  padding: 40px 28px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   text-align: center;
   white-space: normal;
 }
-.empty-box img { height: 22px; opacity: 0.3; margin-bottom: 8px; }
 .empty-title {
   font-size: 11px;
   letter-spacing: var(--track-caps);
   text-transform: uppercase;
-  color: var(--grey-5);
+  color: var(--grey-4);
 }
 .empty-detail {
   font-size: 11px;
@@ -406,6 +429,10 @@ body.resizing { user-select: none; }
 }
 /* collapsible JSON tree */
 #config-view .j-line { white-space: pre; padding: 0 6px; }
+/* TOML (launch config) lines: whitespace preserved, minimal highlighting */
+#config-view .t-line { white-space: pre-wrap; padding: 0 6px; min-height: 1.55em; }
+#config-view .t-line:hover { background: rgba(255, 255, 255, 0.05); }
+.t-section { color: var(--accent); }
 #config-view div.j-line:hover, #config-view summary.j-line:hover { background: rgba(255, 255, 255, 0.05); }
 .j-ellip { color: var(--grey-4); }
 details.j-fold[open] > summary .j-ellip { display: none; }
@@ -672,9 +699,9 @@ details.sub .sub-name { font-weight: 500; color: var(--grey-6); }
 details.sub > .entry-body { border-top: 1px solid var(--hairline); }
 
 /* right pane: overview metadata */
-.tm-reward-big { font-size: 18px; font-weight: 500; color: var(--positive); }
+.tm-reward-big { color: var(--positive); }
 .tm-reward-big.neg { color: var(--negative); }
-.tm-reward-big.na { color: var(--grey-4); font-size: 13px; }
+.tm-reward-big.na { color: var(--grey-4); }
 .meta-sec {
   font-size: 10px;
   letter-spacing: var(--track-caps);

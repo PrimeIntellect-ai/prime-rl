@@ -76,10 +76,14 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
             with_data = page.evaluate("""() => [...document.querySelectorAll('.chart-card .u-wrap')].length""")
             assert with_data >= 5, f"expected >=5 mounted charts, got {with_data}"
 
-            # config: the resolved config tree renders
+            # config: the default view renders (launch TOML on new runs), and the
+            # resolved concatenated document renders as a tree
             page.click("#tabs [data-tab=config]")
             page.wait_for_timeout(1500)
-            assert page.locator("#config-view .j-line").count() > 10, "config tree did not render"
+            assert page.eval_on_selector("#config-view", "e => e.innerText.length") > 100, "config view did not render"
+            page.select_option("#config-file", "resolved")
+            page.wait_for_timeout(1500)
+            assert page.locator("#config-view .j-line").count() > 10, "resolved config tree did not render"
 
             # traces: when the run saved rollouts, episodes must render and open
             rollout_steps = page.evaluate(

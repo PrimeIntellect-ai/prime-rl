@@ -56,7 +56,7 @@
   </section>
 
   <section id="tab-traces" hidden>
-    <div class="controls">
+    <div class="controls" id="step-bar">
       <button id="step-prev" class="btn tm-nav" title="previous step">‹</button>
       <div id="step-blocks"></div>
       <button id="step-next" class="btn tm-nav" title="next step">›</button>
@@ -119,12 +119,11 @@
         <button data-view="merge" class="active">Merge</button>
         <button data-view="split">Split</button>
       </div>
-      <select id="log-level">
-        <option value="DEBUG">all levels</option>
-        <option value="INFO">info+</option>
-        <option value="WARNING">warn+</option>
-        <option value="ERROR">error+</option>
-      </select>
+      <div class="stepper" id="log-level" title="minimum log level">
+        <button id="log-level-down" title="more verbose">‹</button>
+        <span id="log-level-label">all</span>
+        <button id="log-level-up" title="less verbose">›</button>
+      </div>
       <input id="log-search" class="search" type="search" placeholder="regex filter, e.g. ERROR|WARN">
       <button id="log-older" class="btn">load older</button>
     </div>
@@ -153,8 +152,6 @@
   <section id="tm-main">
     <div class="tm-head">
       <span class="tm-title">Trace Viewer</span>
-      <div id="tm-trace-tabs" class="seg" hidden></div>
-      <div id="tm-branch-tabs" class="seg" hidden></div>
       <div class="spacer"></div>
       <select id="token-signal">
         <option value="">text view</option>
@@ -166,6 +163,10 @@
       <button id="tm-collapse" class="btn">collapse</button>
       <button id="tm-expand" class="btn">expand</button>
       <button id="drawer-close" class="btn">✕</button>
+    </div>
+    <div class="tm-head tm-tabs-row" id="tm-tabs-row" hidden>
+      <div id="tm-trace-tabs" class="seg" hidden></div>
+      <div id="tm-branch-tabs" class="seg" hidden></div>
     </div>
     <div id="tm-messages"></div>
   </section>

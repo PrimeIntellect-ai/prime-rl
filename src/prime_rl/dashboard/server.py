@@ -7,6 +7,7 @@
 #   "orjson>=3.10",
 #   "tokenizers>=0.20",
 #   "huggingface_hub>=0.25",
+#   "rich>=14.0",
 # ]
 # ///
 """Local dashboard for prime-rl runs: logs, metrics, and rollout traces.
@@ -97,12 +98,22 @@ def read_json(path: Path) -> dict:
         return {}
 
 
-def main_config(run_dir: Path) -> tuple[str, dict]:
+def resolved_config_dir(run_dir: Path) -> Path:
+    """Where the resolved JSON dumps live: `configs/resolved/`, or `configs/` on
+    runs from before the launch-TOML split."""
     configs = run_dir / "configs"
+    resolved = configs / "resolved"
+    return resolved if resolved.is_dir() else configs
+
+
+def main_config(run_dir: Path) -> tuple[str, dict]:
+    configs = resolved_config_dir(run_dir)
     if (configs / "sft.json").exists():
         return "sft", read_json(configs / "sft.json")
     if (configs / "orchestrator.json").exists() or (configs / "trainer.json").exists():
         return "rl", read_json(configs / "orchestrator.json") or read_json(configs / "trainer.json")
+    if (configs / "eval.json").exists():  # verifiers `uv run eval` run dir
+        return "eval", read_json(configs / "eval.json")
     return "other", {}
 
 
@@ -119,7 +130,7 @@ def run_meta(run_dir: Path) -> dict:
     run_type, config = main_config(run_dir)
 
     def envs(split: str) -> list[str]:
-        return sorted(p.stem for p in (configs / "envs" / split).glob("*.json"))
+        return sorted(p.stem for p in (resolved_config_dir(run_dir) / "envs" / split).glob("*.json"))
 
     steps = [
         int(p.name.removeprefix("step_"))
@@ -138,11 +149,17 @@ def run_meta(run_dir: Path) -> dict:
                     _started_cache[metrics_path] = started
                 except orjson.JSONDecodeError:
                     pass
+    root_traces = run_dir / "traces.jsonl"
+    if updated is None and root_traces.is_file():  # eval runs have no metrics.jsonl
+        updated = root_traces.stat().st_mtime
+        started = configs.stat().st_mtime if configs.is_dir() else None
+    model = config.get("model")
     return {
         "name": run_dir.name,
         "type": run_type,
-        "model": (config.get("model") or {}).get("name"),
+        "model": model if isinstance(model, str) else (model or {}).get("name"),
         "dataset": (config.get("data") or {}).get("name"),
+        "env": ((config.get("env") or {}).get("taskset") or {}).get("id"),
         "max_steps": config.get("max_steps"),
         "train_envs": envs("train"),
         "eval_envs": envs("eval"),
@@ -184,6 +201,7 @@ def log_component(rel: Path) -> tuple[str, str]:
             "orchestrator.log": ("orch", "orchestrator"),
             "inference.log": ("infer", "inference"),
             "evals.log": ("evals", "evals"),
+            "eval.log": ("evals", "eval"),
         }.get(parts[0], ("other", parts[0]))
     if parts[0] == "trainer":
         if parts[1] == "torchrun":  # trainer/torchrun/<rdzv>/attempt_0/<rank>/std{out,err}.log
@@ -261,21 +279,35 @@ def read_log(run: str, file: str, start: int | None = None, end: int | None = No
 
 # ------------------------------------------------------------------------- configs
 
-CONFIG_ORDER = ["rl.json", "sft.json", "orchestrator.json", "trainer.json", "inference.json", "evals.json"]
+CONFIG_ORDER = ["rl", "sft", "eval", "evals", "orchestrator", "trainer", "inference"]
+
+
+def config_rank(name: str) -> tuple[int, str]:
+    stem = name.split("/")[0].removesuffix(".toml")
+    return (CONFIG_ORDER.index(stem) if stem in CONFIG_ORDER else len(CONFIG_ORDER), name)
 
 
 @app.get("/api/runs/{run}/configs")
 def list_configs(run: str) -> dict:
-    configs_dir = get_run_dir(run) / "configs"
-    files = [str(p.relative_to(configs_dir)) for p in configs_dir.rglob("*.json")] if configs_dir.is_dir() else []
-    rank = {name: i for i, name in enumerate(CONFIG_ORDER)}
-    files.sort(key=lambda f: (rank.get(f, len(rank)), f))
+    """Two views of a run's config: each launch TOML (verbatim, as the run was
+    started) and one "resolved" document concatenating every resolved JSON dump."""
+    run_dir = get_run_dir(run)
+    configs_dir = run_dir / "configs"
+    files = sorted((p.name for p in configs_dir.glob("*.toml")), key=config_rank) if configs_dir.is_dir() else []
+    if any(resolved_config_dir(run_dir).rglob("*.json")):
+        files.append("resolved")
     return {"files": files}
 
 
 @app.get("/api/runs/{run}/config")
 def read_config(run: str, file: str) -> dict:
-    path = safe_child(get_run_dir(run) / "configs", file, suffix=".json")
+    run_dir = get_run_dir(run)
+    if file == "resolved":
+        base = resolved_config_dir(run_dir)
+        names = sorted((str(p.relative_to(base).with_suffix("")) for p in base.rglob("*.json")), key=config_rank)
+        doc = {name: read_json(base / f"{name}.json") for name in names}
+        return {"file": file, "content": orjson.dumps(doc).decode()}
+    path = safe_child(run_dir / "configs", file, suffix=".toml")
     return {"file": file, "content": path.read_text()}
 
 
@@ -320,6 +352,9 @@ def rollout_steps(run_dir: Path) -> list[dict]:
                     available[f"{kind}/{subset}"] = True
         if available:
             steps.append({"step": int(step_dir.name.removeprefix("step_")), "available": available})
+    root_traces = run_dir / "traces.jsonl"  # `uv run eval` writes one stepless file
+    if not steps and root_traces.is_file() and root_traces.stat().st_size > 0:
+        steps.append({"step": 0, "available": {"eval/all": True}})
     return sorted(steps, key=lambda s: s["step"])
 
 
@@ -345,20 +380,50 @@ def line_offsets(path: Path) -> list[int]:
     return new_offsets
 
 
+def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
+    """Flatten a trace timing tree to phase -> seconds (same walk as the viewer)."""
+    if isinstance(obj.get("duration"), (int, float)):
+        out[prefix] = out.get(prefix, 0.0) + obj["duration"]
+    elif isinstance(obj.get("start"), (int, float)) and isinstance(obj.get("end"), (int, float)):
+        out[prefix] = out.get(prefix, 0.0) + (obj["end"] - obj["start"])
+    for key, value in obj.items():
+        if isinstance(value, dict):
+            walk_timing(value, f"{prefix}/{key}" if prefix else key, out)
+
+
 def summarize_episode(line: int, rec: dict) -> dict:
     rewards, advantages = [], []
     input_tokens = output_tokens = turns = branches = 0
     stop_condition = None
+    reward_parts: dict[str, list[float]] = {}
+    metric_parts: dict[str, list[float]] = {}
+    timing: dict[str, float] = {}
+    costs: list[float] = []
     for trace in rec.get("traces") or []:
+        costs.extend(
+            usage["cost"]
+            for call in trace.get("calls") or []
+            if isinstance(usage := call.get("usage") or {}, dict) and isinstance(usage.get("cost"), (int, float))
+        )
         nodes = trace.get("nodes") or []
         parents = {node.get("parent") for node in nodes if "parent" in node}
         branches += max(0, len(nodes) - len(parents))
-        total = sum(
-            (r.get("score") or 0) * (r.get("weight") if r.get("weight") is not None else 1)
-            for r in (trace.get("rewards") or {}).values()
-            if isinstance(r, dict)
-        )
-        rewards.append(total)
+        if trace.get("rewards"):  # skip reward-less seats (e.g. a judge) in the episode mean
+            rewards.append(
+                sum(
+                    (r.get("score") or 0) * (r.get("weight") if r.get("weight") is not None else 1)
+                    for r in trace["rewards"].values()
+                    if isinstance(r, dict)
+                )
+            )
+        for name, r in (trace.get("rewards") or {}).items():
+            if isinstance(r, dict) and isinstance(r.get("score"), (int, float)):
+                reward_parts.setdefault(name, []).append(r["score"])
+        for name, value in (trace.get("metrics") or {}).items():
+            if isinstance(value, (int, float)):
+                metric_parts.setdefault(name, []).append(value)
+        if isinstance(trace.get("timing"), dict):
+            walk_timing(trace["timing"], "", timing)
         advantage = (trace.get("info") or {}).get("advantage")
         if advantage is not None:
             advantages.append(advantage)
@@ -377,6 +442,10 @@ def summarize_episode(line: int, rec: dict) -> dict:
                 input_tokens += usage.get("prompt_tokens") or 0
                 output_tokens += usage.get("completion_tokens") or 0
     return {
+        "rewards": {name: sum(v) / len(v) for name, v in reward_parts.items()},
+        "metrics": {name: sum(v) / len(v) for name, v in metric_parts.items()},
+        "timing": timing,
+        "cost": sum(costs) if costs else None,
         "line": line,
         "id": rec.get("id"),
         "env": (rec.get("env") or {}).get("id") or (rec.get("env") or {}).get("name"),
@@ -418,10 +487,14 @@ def episode_summaries(path: Path) -> list[dict]:
 def traces_path(run: str, step: int, kind: str, subset: str) -> Path:
     if kind not in ("train", "eval") or subset not in ("all", "effective"):
         raise HTTPException(400, "kind must be train|eval, subset all|effective")
-    path = get_run_dir(run) / "rollouts" / f"step_{step}" / kind / subset / "traces.jsonl"
-    if not path.is_file():
-        raise HTTPException(404, "no traces for this step/kind/subset")
-    return path
+    run_dir = get_run_dir(run)
+    path = run_dir / "rollouts" / f"step_{step}" / kind / subset / "traces.jsonl"
+    if path.is_file():
+        return path
+    root = run_dir / "traces.jsonl"
+    if (step, kind, subset) == (0, "eval", "all") and root.is_file():
+        return root
+    raise HTTPException(404, "no traces for this step/kind/subset")
 
 
 @app.get("/api/runs/{run}/rollouts")
@@ -488,6 +561,33 @@ def decode_pieces(model: str, ids: list[int]) -> list[str] | None:
     return pieces
 
 
+@app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/series")
+def episode_series(run: str, step: int, kind: str, subset: str, etag: str | None = None) -> dict:
+    """Per-episode series over a traces file (x = episode order): reward, shape, and the
+    nested rewards/metrics/timing keys — the metrics view for eval runs."""
+    path = traces_path(run, step, kind, subset)
+    current_etag = str(path.stat().st_size)
+    if etag is not None and etag == current_etag:
+        return {"unchanged": True, "etag": current_etag}
+    summaries = episode_summaries(path)
+    keys: set[str] = set()
+    for s in summaries:
+        keys.update(
+            k
+            for k in ("reward", "advantage", "cost", "turns", "branches", "input_tokens", "output_tokens")
+            if s.get(k) is not None
+        )
+        for group in ("rewards", "metrics", "timing"):
+            keys.update(f"{group}/{name}" for name in s.get(group) or {})
+
+    def value(s: dict, key: str):
+        group, _, name = key.partition("/")
+        return (s.get(group) or {}).get(name) if name else s.get(key)
+
+    series = {key: [value(s, key) for s in summaries] for key in sorted(keys)}
+    return {"etag": current_etag, "count": len(summaries), "series": series}
+
+
 @app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}")
 def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: bool = False) -> dict:
     path = traces_path(run, step, kind, subset)
@@ -499,7 +599,8 @@ def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: 
         rec = orjson.loads(f.readline())
     if not tokens:
         return rec
-    fallback_model = (main_config(get_run_dir(run))[1].get("model") or {}).get("name")
+    fallback = main_config(get_run_dir(run))[1].get("model")
+    fallback_model = fallback if isinstance(fallback, str) else (fallback or {}).get("name")
     for trace in rec.get("traces") or []:
         client = ((trace.get("agent") or {}).get("config") or {}).get("client") or {}
         model = client.get("renderer_model_name") or fallback_model
@@ -521,6 +622,24 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+def render_status(url: str):
+    """The startup console: the URL plus each tracked dir with its discovered runs."""
+    from rich.text import Text
+
+    text = Text()
+    text.append("\n  prime-rl dashboard", style="bold white")
+    text.append(" · ", style="dim")
+    text.append(url + "\n", style="underline #B6FF3C")
+    runs = scan_runs()
+    for base in output_dirs:
+        text.append(f"\n  {base.resolve()}/\n", style="dim")
+        names = sorted(name for name, run_dir in runs.items() if run_dir.parent == base) or ["(no runs yet)"]
+        for i, name in enumerate(names):
+            connector = "└── " if i == len(names) - 1 else "├── "
+            text.append(f"  {connector}{name}\n", style="dim")
+    return text
+
+
 def main() -> None:
     global output_dirs
     parser = argparse.ArgumentParser(description="prime-rl run dashboard")
@@ -534,12 +653,23 @@ def main() -> None:
     if not output_dirs:
         raise SystemExit("no existing output dir given")
     url = f"http://localhost:{args.port}"
-    sep = "·"
     if sys.stdout.isatty():
-        url = f"\033[4;38;2;182;255;60m{url}\033[0m"  # accent green, underlined
-        sep = "\033[2m·\033[0m"
-    dirs = ", ".join(str(d.resolve()) for d in output_dirs)
-    print(f"\n  prime-rl dashboard {sep} {dirs}\n  {url}\n", flush=True)
+        # live console: re-scan every few seconds so new runs show up as tracked
+        import time
+
+        from rich.console import Console
+        from rich.live import Live
+
+        def watch() -> None:
+            with Live(render_status(url), console=Console(), refresh_per_second=1) as live:
+                while True:
+                    time.sleep(3)
+                    live.update(render_status(url))
+
+        threading.Thread(target=watch, daemon=True).start()
+    else:
+        dirs = ", ".join(str(d.resolve()) for d in output_dirs)
+        print(f"\n  prime-rl dashboard · {dirs}\n  {url}\n", flush=True)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

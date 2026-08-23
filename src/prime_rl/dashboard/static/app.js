@@ -33,7 +33,7 @@ const state = {
   logs: {
     loaded: false, attempt: "latest", attempts: [], files: [], paneFile: {},
     components: prefs.logComponents ? new Set(prefs.logComponents) : null,
-    view: prefs.logView ?? "merge", maximized: null, buffers: new Map(), gseq: 0,
+    view: prefs.logView ?? "merge", level: "DEBUG", maximized: null, buffers: new Map(), gseq: 0,
   },
   traces: {
     loaded: false, steps: [], step: null, env: "",
@@ -65,6 +65,11 @@ function fmtCompact(n) {
   if (abs >= 1000) return `${+(n / 1000).toFixed(abs >= 10000 ? 0 : 1)}K`;
   return String(n);
 }
+function fmtCost(v) {
+  if (v == null || Number.isNaN(v)) return "–";
+  return `$${v >= 1 ? v.toFixed(2) : v.toFixed(4)}`;
+}
+
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /* regex filter with a case-insensitive substring fallback for invalid patterns */
 function makeFilter(query) {
@@ -93,8 +98,7 @@ const setActive = (sel, attr, value) =>
   document.querySelectorAll(`${sel} button`).forEach((b) => b.classList.toggle("active", b.dataset[attr] === value));
 
 const emptyState = (title, detail = "") =>
-  `<div class="empty-box"><img src="/static/butterfly-white.svg" alt="">` +
-  `<div class="empty-title">${esc(title)}</div>` +
+  `<div class="empty-box"><div class="empty-title">${esc(title)}</div>` +
   (detail ? `<div class="empty-detail">${esc(detail)}</div>` : "") +
   `</div>`;
 
@@ -148,6 +152,20 @@ async function toggleCompare(name, on) {
   renderMetricsBody();
 }
 
+/* eval runs have one env and no steps: the step bar, kind/subset toggles, chart
+   mode, and smoothing make no sense there */
+function applyRunTypeControls() {
+  const isEval = state.meta?.type === "eval";
+  $("#metrics-mode").hidden = isEval;
+  $("#smooth-range").closest(".ctl").hidden = isEval;
+  $("#step-bar").hidden = isEval;
+  // rl: train/eval + all/effective per step - sft: eval only - eval: neither, no steps
+  $("#trace-kind").hidden = isEval || state.meta?.type === "sft";
+  $("#trace-subset").hidden = isEval;
+  $("#tm-step-prev").hidden = isEval;
+  $("#tm-step-next").hidden = isEval;
+}
+
 async function selectRun(name) {
   if (!name) return;
   state.run = name;
@@ -158,10 +176,13 @@ async function selectRun(name) {
     ...state.metrics,
     loaded: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
     timeKeys: new Set(), timeZero: null, maxStep: null,
+    evalEtag: null, evalCount: 0, evalCost: null,
   };
+  if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
   state.config = { loaded: false, files: [], file: null };
   state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], paneFile: {}, maximized: null, buffers: new Map() };
   state.traces = { ...state.traces, loaded: false, steps: [], step: null, env: "", episodes: [], etag: null, subset: state.traces.preferred };
+  applyRunTypeControls();
   renderOverview();
   renderCompareMenu();
   updateHash();
@@ -228,14 +249,23 @@ function renderOverview() {
   const left = [
     ["status", `<span class="badge st-${status}">${status}</span>`],
     ["type", `<span class="val">${esc((meta.type ?? "–").toUpperCase())}</span>`],
-    ["step", `<span class="val">${stepText}</span>`],
+    meta.type === "eval"
+      ? ["episodes", `<span class="val">${step != null ? step.toLocaleString() : "–"}</span>`]
+      : ["step", `<span class="val">${stepText}</span>`],
     ["model", `<span class="val" title="${esc(meta.model ?? "")}">${esc(meta.model ?? "–")}</span>`],
-    meta.type === "sft"
-      ? ["dataset", `<span class="val" title="${esc(meta.dataset ?? "")}">${esc(meta.dataset ?? "–")}</span>`]
-      : ["train envs", envListField(meta.train_envs)],
-    ["eval envs", envListField(meta.eval_envs)],
+    ...(meta.type === "eval"
+      ? [["env", `<span class="val" title="${esc(meta.env ?? "")}">${esc(meta.env ?? "–")}</span>`]]
+      : [
+          meta.type === "sft"
+            ? ["dataset", `<span class="val" title="${esc(meta.dataset ?? "")}">${esc(meta.dataset ?? "–")}</span>`]
+            : ["train envs", envListField(meta.train_envs)],
+          ["eval envs", envListField(meta.eval_envs)],
+        ]),
   ];
   const right = [
+    ...(meta.type === "eval" && state.metrics.evalCost != null
+      ? [["cost", `<span class="val">${fmtCost(state.metrics.evalCost)}</span>`]]
+      : []),
     ["duration", `<span class="val">${duration}</span>`],
     ["created", `<span class="val">${fmtAgo(meta.created)}</span>`],
   ];
@@ -328,6 +358,7 @@ function ingestInto(store, rows, meta) {
 }
 
 async function fetchMetrics() {
+  if (state.meta?.type === "eval") return fetchEvalSeries();
   const data = await api(`/api/runs/${encodeURIComponent(state.run)}/metrics?offset=${state.metrics.offset}`);
   state.metrics.offset = data.offset;
   if (data.rows.length) {
@@ -340,6 +371,74 @@ async function fetchMetrics() {
     else updateCharts();
   }
   return data.rows.length;
+}
+
+/* eval runs have no metrics.jsonl and no step axis — their metrics view is a
+   grid of stat cards showing the running average over the episodes so far */
+async function fetchEvalSeries() {
+  const m = state.metrics;
+  let data;
+  try {
+    const qs = m.evalEtag ? `?etag=${encodeURIComponent(m.evalEtag)}` : "";
+    data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/0/eval/all/series${qs}`);
+  } catch {
+    return 0;
+  }
+  if (data.unchanged) return 0;
+  m.evalEtag = data.etag;
+  m.evalSeries = data.series;
+  m.evalCount = data.count;
+  m.maxStep = data.count; // the overview's episode count
+  const costs = (data.series.cost || []).filter((v) => v != null);
+  m.evalCost = costs.length ? costs.reduce((a, b) => a + b, 0) : null;
+  renderOverview();
+  if (m.loaded) renderMetricsBody();
+  return data.count;
+}
+
+const EVAL_CARD_GROUPS = [
+  ["rewards", (k) => k === "reward" || k === "advantage" || k.startsWith("rewards/")],
+  ["metrics", (k) => k.startsWith("metrics/")],
+  ["usage", (k) => ["cost", "input_tokens", "output_tokens", "turns", "branches"].includes(k)],
+  ["timing", (k) => k.startsWith("timing/")],
+];
+
+function renderEvalCards(body) {
+  const m = state.metrics;
+  const series = m.evalSeries || {};
+  const filter = makeFilter(m.search.trim());
+  const fmtVal = (key, v) => {
+    if (v == null) return "–";
+    if (key === "cost") return fmtCost(v);
+    if (key.startsWith("timing/")) return fmtDuration(v);
+    if (key.endsWith("tokens")) return fmtCompact(Math.round(v));
+    return fmtNum(v);
+  };
+  let shown = 0;
+  for (const [name, match] of EVAL_CARD_GROUPS) {
+    const keys = Object.keys(series)
+      .filter(match)
+      .filter((k) => !filter || filter.test(k))
+      .sort();
+    if (!keys.length) continue;
+    shown += keys.length;
+    const { grid } = addSection(body, name);
+    grid.className = "stat-grid";
+    grid.innerHTML = keys
+      .map((key) => {
+        const values = series[key].filter((v) => v != null);
+        const avg = values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+        const label = /^(rewards|metrics|timing)\//.test(key) ? key.split("/").slice(1).join("/") : key;
+        return (
+          `<div class="stat-card"><div class="stat-label" title="${esc(key)}">${esc(label)}</div>` +
+          `<div class="stat-value">${fmtVal(key, avg)}</div>` +
+          `<div class="stat-n">avg of ${values.length}</div></div>`
+        );
+      })
+      .join("");
+  }
+  $("#metrics-status").textContent = m.evalCount ? `running avg over ${m.evalCount} episodes` : "";
+  if (!shown) body.innerHTML = emptyState("no episodes yet", "metrics appear as episodes land");
 }
 
 async function fetchCompares() {
@@ -512,14 +611,19 @@ function chartWidth(card) {
 
 /* axis labels stay compact so they fit the gutter: K-notation above 1000,
    two significant digits below 0.1, one exponent digit outside that */
+/* axis ticks, at most ~5 chars: 1e5 · 1e4 · 1000 · 100 · 10 · 1 · 0.3 · 0.01 ·
+   0.001 · 1e-4 — decimals only below 10, exponent form outside [0.001, 10000) */
 function fmtAxis(v) {
   if (v == null) return "";
   if (v === 0) return "0";
   const abs = Math.abs(v);
-  if (abs >= 1e6 || abs < 1e-3) return v.toExponential(1).replace(".0e", "e");
-  if (abs >= 1000) return fmtCompact(v);
-  if (abs < 0.1) return String(+v.toPrecision(2));
-  return fmtNum(v);
+  if (abs >= 1e4 || abs < 1e-3) {
+    const exp = Math.floor(Math.log10(abs));
+    const mant = +(v / 10 ** exp).toFixed(1);
+    return `${mant}e${exp}`;
+  }
+  if (abs >= 10) return String(Math.round(v));
+  return String(+v.toPrecision(2));
 }
 
 function fmtTickDur(secs) {
@@ -808,6 +912,7 @@ function renderMetricsBody() {
     },
     { root: body, rootMargin: "400px" }
   );
+  if (state.meta?.type === "eval") return renderEvalCards(body);
   activeFilter = makeFilter(state.metrics.search.trim());
   if (!state.meta?.has_metrics && !m.byKey.size) {
     body.innerHTML = emptyState("no metrics", "this run has no metrics.jsonl yet");
@@ -915,6 +1020,36 @@ function renderJsonNode(key, value, indent, isLast) {
   return `<div class="j-line">${pad}${keyHtml}${jsonLeafHtml(value)}<span class="j-punc">${comma}</span></div>`;
 }
 
+/* minimal TOML highlighting in the same palette as the JSON tree */
+function tomlValueHtml(value) {
+  const re = /("(?:[^"\\]|\\.)*"|'[^']*')|(#.*$)|(\btrue\b|\bfalse\b)|(-?\b\d[\d_]*(?:\.[\d_]+)?(?:[eE][+-]?\d+)?\b)/g;
+  let out = "";
+  let last = 0;
+  let m;
+  while ((m = re.exec(value))) {
+    out += esc(value.slice(last, m.index));
+    const cls = m[1] ? "j-str" : m[2] ? "j-punc" : m[3] ? "j-lit" : "j-num";
+    out += `<span class="${cls}">${esc(m[0])}</span>`;
+    last = m.index + m[0].length;
+  }
+  return out + esc(value.slice(last));
+}
+
+function tomlLineHtml(line) {
+  if (/^\s*#/.test(line)) return `<span class="j-punc">${esc(line)}</span>`;
+  if (/^\s*\[/.test(line)) return `<span class="t-section">${esc(line)}</span>`;
+  const kv = line.match(/^(\s*[\w."'-]+\s*)=([\s\S]*)$/);
+  if (kv) return `<span class="j-key">${esc(kv[1])}</span><span class="j-punc">=</span>${tomlValueHtml(kv[2])}`;
+  return tomlValueHtml(line);
+}
+
+function renderToml(text) {
+  return text
+    .split("\n")
+    .map((line) => `<div class="t-line">${tomlLineHtml(line)}</div>`)
+    .join("");
+}
+
 /* filter the config to matched subtrees, render the collapsible tree, then
    mark every hit by walking text nodes (keeps syntax spans intact) */
 function applyConfigSearch() {
@@ -930,7 +1065,7 @@ function applyConfigSearch() {
   }
   if (!query) {
     if (parsed !== undefined) view.innerHTML = renderJsonNode(null, parsed, 0, true);
-    else view.textContent = state.config.text ?? "";
+    else view.innerHTML = renderToml(state.config.text ?? "");
     return;
   }
   let re;
@@ -948,7 +1083,24 @@ function applyConfigSearch() {
     }
     view.innerHTML = renderJsonNode(null, pruned, 0, true);
   } else {
-    view.textContent = state.config.text ?? "";
+    // TOML (launch config): filter to matching lines, keeping [section] headers
+    const kept = [];
+    let section = null;
+    for (const line of (state.config.text ?? "").split("\n")) {
+      if (/^\s*\[/.test(line)) section = line;
+      re.lastIndex = 0;
+      if (!re.test(line)) continue;
+      if (section !== null && section !== line) kept.push(section);
+      if (/^\s*\[/.test(line)) section = null;
+      else section = null;
+      kept.push(line);
+    }
+    if (!kept.length) {
+      view.innerHTML = emptyState("no hits", "nothing in this config matches the filter");
+      hitsEl.textContent = "no hits";
+      return;
+    }
+    view.innerHTML = renderToml(kept.join("\n"));
   }
   const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
   const nodes = [];
@@ -1209,7 +1361,7 @@ function compName(component) {
 
 function renderLogPane(el) {
   const stream = el.querySelector(".log-pane-stream");
-  const minRank = LEVEL_RANK[$("#log-level").value] ?? 0;
+  const minRank = LEVEL_RANK[state.logs.level] ?? 0;
   const filter = makeFilter($("#log-search").value.trim());
   let lines;
   let multi;
@@ -1584,6 +1736,10 @@ function stepRollout(delta) {
 
 function renderModalStep() {
   const traces = state.traces;
+  if (state.meta?.type === "eval") {
+    $("#tm-step-label").innerHTML = "";
+    return;
+  }
   const idx = traces.steps.findIndex((s) => s.step === traces.step);
   $("#tm-step-label").innerHTML =
     `step ${traces.step}` +
@@ -1722,7 +1878,12 @@ function renderTokenNode(node, signal, maxAbsAdv) {
     } else if (signal === "is_content" && node.is_content?.[i]) {
       bg = "background:rgba(252,218,164,0.28)";
     }
-    const tip = `#${i} id=${id}${logprob != null ? ` lp=${logprob.toFixed(4)}` : ""}${advantage != null ? ` adv=${fmtNum(advantage)}` : ""} mask=${node.mask?.[i] ?? "?"}`;
+    let tip = `#${i} id=${id}`;
+    if (signal === "advantage" && advantage != null) tip += ` adv=${fmtNum(advantage)}`;
+    else if (signal === "logprob" && logprob != null)
+      tip += ` lp=${logprob.toFixed(4)} (${(Math.exp(logprob) * 100).toFixed(1)}%)`;
+    else if (signal === "mask") tip += ` mask=${node.mask?.[i] ?? "?"}`;
+    else if (signal === "is_content") tip += ` content=${node.is_content?.[i] ?? "?"}`;
     return `<span class="tok" style="${bg}" title="${esc(tip)}">${esc(text)}</span>`;
   });
   return spans.join("");
@@ -1854,8 +2015,10 @@ function renderMeta(ep, trace, branches) {
   if (trace) {
     const nodes = currentPath(trace, branches).map((i) => trace.nodes[i]);
     parts.push(`<div class="meta-sec">activity</div>`);
+    parts.push(metaRow("messages", nodes.filter((n) => n.message).length));
     parts.push(metaRow("turns", nodes.filter((n) => n.sampled).length));
     parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
+    parts.push(metaRow("branches", branches.length));
 
     const usage = { input: 0, output: 0, reasoning: 0, cached: 0 };
     let hasUsage = false;
@@ -1873,14 +2036,18 @@ function renderMeta(ep, trace, branches) {
       parts.push(metaRow("output tokens", fmtCompact(usage.output)));
       if (usage.reasoning) parts.push(metaRow("reasoning tokens", fmtCompact(usage.reasoning)));
       if (usage.cached) parts.push(metaRow("cached tokens", fmtCompact(usage.cached)));
+      // API-priced runs report per-call cost; local deployments usually don't
+      const traceCost = (t) => (t.calls || []).reduce((acc, c) => acc + (c.usage?.cost ?? 0), 0);
+      const hasCost = (t) => (t.calls || []).some((c) => c.usage?.cost != null);
+      if (hasCost(trace)) parts.push(metaRow("cost", fmtCost(traceCost(trace))));
+      const allTraces = ep.traces || [];
+      if (allTraces.length > 1 && allTraces.some(hasCost)) {
+        for (const t of allTraces)
+          if (t !== trace && hasCost(t)) parts.push(metaRow(`cost · ${t.agent?.name ?? "trace"}`, fmtCost(traceCost(t))));
+        parts.push(metaRow("cost · episode", fmtCost(allTraces.reduce((acc, t) => acc + traceCost(t), 0))));
+      }
       parts.push(metaRow("total tokens", fmtCompact(usage.input + usage.output)));
     }
-
-    if (trace.tools?.length)
-      parts.push(
-        `<details class="meta-fold"><summary>tool definitions (${trace.tools.length})</summary>` +
-          `<pre class="json">${esc(JSON.stringify(trace.tools, null, 2))}</pre></details>`
-      );
 
     parts.push(`<div class="meta-sec">state</div>`);
     parts.push(metaRow("stop_condition", trace.stop_condition));
@@ -1954,6 +2121,7 @@ function renderEpisode() {
           .join("") +
         `<button data-branch="-1" class="${currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
       : "";
+  $("#tm-tabs-row").hidden = traceTabs.hidden && branchTabs.hidden;
   renderRolloutList();
   renderMessages(trace, branches);
   renderMeta(ep, trace, branches);
@@ -2133,10 +2301,32 @@ document.querySelectorAll("#log-view button").forEach((b) =>
     savePrefs();
   })
 );
-$("#log-level").addEventListener("change", () => {
+const LOG_LEVELS = [
+  ["DEBUG", "all"],
+  ["INFO", "info+"],
+  ["WARNING", "warn+"],
+  ["ERROR", "error+"],
+];
+
+function renderLogLevel() {
+  const idx = LOG_LEVELS.findIndex(([level]) => level === state.logs.level);
+  $("#log-level-label").textContent = LOG_LEVELS[idx][1];
+  $("#log-level-down").disabled = idx <= 0;
+  $("#log-level-up").disabled = idx >= LOG_LEVELS.length - 1;
+}
+
+function stepLogLevel(delta) {
+  const idx = LOG_LEVELS.findIndex(([level]) => level === state.logs.level);
+  const next = LOG_LEVELS[idx + delta];
+  if (!next) return;
+  state.logs.level = next[0];
+  renderLogLevel();
   renderAllLogPanes();
   savePrefs();
-});
+}
+
+$("#log-level-down").addEventListener("click", () => stepLogLevel(-1));
+$("#log-level-up").addEventListener("click", () => stepLogLevel(1));
 $("#log-search").addEventListener(
   "input",
   debounce(() => {
@@ -2285,7 +2475,7 @@ function savePrefs() {
       traceSort: `${state.traces.sort}:${state.traces.order}`,
       logView: state.logs.view,
       logComponents: state.logs.components ? [...state.logs.components] : null,
-      logLevel: $("#log-level").value,
+      logLevel: state.logs.level,
       logSearch: $("#log-search").value,
       configSearch: $("#config-search").value,
       tokenSignal: $("#token-signal").value,
@@ -2337,7 +2527,8 @@ setInterval(async () => {
   $("#smooth-range").value = state.metrics.smooth;
   $("#smooth-val").textContent = state.metrics.smooth > 1 ? String(state.metrics.smooth) : "off";
   $("#metrics-search").value = state.metrics.search;
-  $("#log-level").value = prefs.logLevel ?? "DEBUG";
+  state.logs.level = LOG_LEVELS.some(([level]) => level === prefs.logLevel) ? prefs.logLevel : "DEBUG";
+  renderLogLevel();
   $("#log-search").value = prefs.logSearch ?? "";
   $("#config-search").value = prefs.configSearch ?? "";
   $("#token-signal").value = prefs.tokenSignal ?? "";
