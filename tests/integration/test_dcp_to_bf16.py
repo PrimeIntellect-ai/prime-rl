@@ -51,7 +51,7 @@ def convert_process(
         "uv",
         "run",
         "python",
-        "tools/converters/dcp_to_hf.py",
+        "tools/converters/dcp_to_bf16.py",
         (run_dir / "checkpoints" / "step_2").as_posix(),
     ]
     return run_process(cmd, timeout=TIMEOUT)

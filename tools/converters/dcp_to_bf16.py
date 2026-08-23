@@ -1,4 +1,4 @@
-"""Convert a DCP trainer checkpoint into HF-format weights offline.
+"""Convert a DCP trainer checkpoint into bf16 HF-format weights offline.
 
 The trainer saves only DCP checkpoints; every HF export goes through this
 script. It mirrors the trainer's broadcast save path: build the model, DCP-load
@@ -11,8 +11,8 @@ supported — the script exports full fine-tunes only.
 
 Usage (from the prime-rl repo; more ranks = faster gathers and writes, and
 models too big for one GPU need enough ranks to shard across):
-    uv run python tools/converters/dcp_to_hf.py <run>/checkpoints/step_{n} [output_dir]
-    uv run torchrun --nproc-per-node 8 tools/converters/dcp_to_hf.py \
+    uv run python tools/converters/dcp_to_bf16.py <run>/checkpoints/step_{n} [output_dir]
+    uv run torchrun --nproc-per-node 8 tools/converters/dcp_to_bf16.py \
         <run>/checkpoints/step_{n} [output_dir]
 
 Writes to ``<ckpt_dir>/weights`` by default.
@@ -82,12 +82,12 @@ def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
 
 def check_not_lora(model_config: ModelConfig, dcp_dir: Path) -> None:
     if model_config.lora is not None:
-        raise ValueError("LoRA checkpoints are not supported - dcp_to_hf exports full fine-tunes only")
+        raise ValueError("LoRA checkpoints are not supported - dcp_to_bf16 exports full fine-tunes only")
     metadata = FileSystemReader(dcp_dir).read_metadata()
     lora_keys = [k for k in metadata.state_dict_metadata if "lora_A" in k or "lora_B" in k or ".base_layer." in k]
     if lora_keys:
         raise ValueError(
-            f"Checkpoint contains LoRA keys (e.g. {lora_keys[0]}) - dcp_to_hf exports full fine-tunes only"
+            f"Checkpoint contains LoRA keys (e.g. {lora_keys[0]}) - dcp_to_bf16 exports full fine-tunes only"
         )
 
 
@@ -131,19 +131,12 @@ def save_model_assets(model, model_config: ModelConfig, tokenizer_config: Tokeni
             shutil.copyfile(path, output_dir / path.name)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "ckpt_dir", type=Path, help="the DCP checkpoint (<run>/checkpoints/step_{n} or .../step_{n}/trainer)"
-    )
-    parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <ckpt_dir>/weights")
-    args = parser.parse_args()
-
+def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
     logger = setup_logger("info")
 
-    dcp_dir = resolve_dcp_dir(args.ckpt_dir)
+    dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
-    output_dir = args.output_dir if args.output_dir is not None else step_dir / "weights"
+    output_dir = output_dir if output_dir is not None else step_dir / "weights"
     model_config, tokenizer_config = resolve_run_configs(step_dir)
     check_not_lora(model_config, dcp_dir)
 
@@ -170,6 +163,17 @@ def main() -> None:
     if world.is_master:
         save_model_assets(model, model_config, tokenizer_config, output_dir)
         logger.info(f"Done: {output_dir}")
+    return output_dir
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "ckpt_dir", type=Path, help="the DCP checkpoint (<run>/checkpoints/step_{n} or .../step_{n}/trainer)"
+    )
+    parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <ckpt_dir>/weights")
+    args = parser.parse_args()
+    convert(args.ckpt_dir, args.output_dir)
 
 
 if __name__ == "__main__":

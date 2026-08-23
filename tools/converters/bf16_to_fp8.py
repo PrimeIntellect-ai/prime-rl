@@ -62,15 +62,9 @@ def list_shards(model_dir: Path) -> list[str]:
     raise FileNotFoundError(f"No safetensors checkpoint found in {model_dir}")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("input_dir", type=Path, help="HF safetensors model dir (bf16/fp16/fp32)")
-    parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <input_dir>-FP8")
-    parser.add_argument("--block-size", type=int, default=128)
-    args = parser.parse_args()
-
-    input_dir = args.input_dir.resolve()
-    output_dir = args.output_dir or input_dir.with_name(input_dir.name + "-FP8")
+def convert(input_dir: Path, output_dir: Path | None = None, block_size: int = 128) -> Path:
+    input_dir = input_dir.resolve()
+    output_dir = output_dir or input_dir.with_name(input_dir.name + "-FP8")
     output_dir.mkdir(parents=True, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -85,7 +79,7 @@ def main() -> None:
             for name in f.keys():
                 tensor = f.get_tensor(name)
                 if should_quantize(name, tensor):
-                    quantized, scales = quantize_to_fp8_blockwise(tensor, args.block_size)
+                    quantized, scales = quantize_to_fp8_blockwise(tensor, block_size)
                     out_shard[name] = quantized.cpu()
                     out_shard[name + "_scale_inv"] = scales.cpu()
                     num_quantized += 1
@@ -117,11 +111,21 @@ def main() -> None:
         "quant_method": "fp8",
         "fmt": "e4m3",
         "activation_scheme": "dynamic",
-        "weight_block_size": [args.block_size, args.block_size],
+        "weight_block_size": [block_size, block_size],
         "modules_to_not_convert": sorted(set(modules_to_not_convert)),
     }
     (output_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     print(f"Done: {num_quantized} weights quantized -> {output_dir}")
+    return output_dir
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("input_dir", type=Path, help="HF safetensors model dir (bf16/fp16/fp32)")
+    parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <input_dir>-FP8")
+    parser.add_argument("--block-size", type=int, default=128)
+    args = parser.parse_args()
+    convert(args.input_dir, args.output_dir, args.block_size)
 
 
 if __name__ == "__main__":
