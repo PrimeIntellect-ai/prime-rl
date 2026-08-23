@@ -170,7 +170,7 @@ def setup_full_cpu_optimizer_offload(config: "OptimizerInBackwardOffloadConfig")
     configure_cpu_optimizer_threads()
 
 
-def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False) -> None:
+def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
     get_logger().info(f"Initializing torch distributed (timeout={int(timeout.total_seconds())}s)")
     t0 = time.perf_counter()
     device_id = get_world().local_rank
