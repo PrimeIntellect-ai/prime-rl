@@ -1989,7 +1989,7 @@ function renderMessages(trace, branches) {
       `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>` +
       `<span class="entry-chev">›</span></summary>` +
       subs.join("") +
-      `<div class="entry-body">${body}</div>` +
+      (body ? `<div class="entry-body">${body}</div>` : "") +
       toolCalls.join("") +
       `</details>`
     );
