@@ -127,9 +127,9 @@ class NCCLWeightBroadcastSender:
                 host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
             )
             self.communicator = PyNcclCommunicator(pg, device=device)
-            self.logger.debug("NCCL broadcast initialized on master rank")
+            self.logger.debug("Initialized NCCL broadcast on master rank")
         else:
-            self.logger.debug("NCCL broadcast initialized on non-master rank (no communicator)")
+            self.logger.debug("Initialized NCCL broadcast on non-master rank (no communicator)")
 
     @torch.no_grad()
     def send(self, model: nn.Module) -> None:

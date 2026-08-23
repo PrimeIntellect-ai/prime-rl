@@ -81,7 +81,7 @@ def setup_env_server_logging(log_level: str, json_logging: bool = False) -> None
 
 def set_default_executor(max_workers: int = 64) -> None:
     """Scale the default asyncio thread pool so asyncio.to_thread has enough capacity."""
-    get_logger().info(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
+    get_logger().debug(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
     asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
 
 

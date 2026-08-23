@@ -97,12 +97,14 @@ class WeightWatcher:
                         f"Observer {type(observer).__name__}.on_version_pending({next_step}) raised: {exc!r}"
                     )
 
-            get_logger().debug(f"Updating weights to step {next_step}")
+            get_logger().debug(f"Updating inference weights to policy v{next_step}")
             t1 = time.perf_counter()
             await self.receiver.receive(next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
-            get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
+            get_logger().debug(
+                f"Updated inference weights to policy v{next_step} in {format_time(self.last_update_weights_time)}"
+            )
 
             for observer in self.observers:
                 try:

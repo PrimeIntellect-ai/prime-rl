@@ -190,13 +190,13 @@ async def maybe_check_has_model(
 
 
 async def check_health(
-    admin_clients: list[AsyncClient], interval: int = 1, log_interval: int = 10, timeout: int = 1800
+    admin_clients: list[AsyncClient], interval: int = 1, log_interval: int = 30, timeout: int = 1800
 ) -> None:
     logger = get_logger()
 
     async def _check_health(admin_client: AsyncClient) -> None:
         wait_time = 0
-        logger.debug("Starting pinging /health to check health")
+        logger.debug("Pinging /health until the inference server is ready")
         while wait_time < timeout:
             try:
                 response = await admin_client.get("/health")
@@ -208,9 +208,10 @@ async def check_health(
                 return
             except Exception as e:
                 if wait_time % log_interval == 0 and wait_time > 0:
-                    logger.warning(
-                        f"Inference server was not reached after {wait_time} seconds (Error: {e}) on {admin_client.base_url}"
+                    logger.info(
+                        f"Waiting for inference server at {admin_client.base_url} to start up ({wait_time}s elapsed)"
                     )
+                    logger.debug(f"Inference server at {admin_client.base_url} not reachable: {e!r}")
                 await asyncio.sleep(interval)
                 wait_time += interval
         msg = f"Inference server is not ready after {wait_time} (>{timeout}) seconds. Aborting..."
@@ -268,7 +269,7 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
 async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
-    logger.info(f"Updating policy in-flight to v{step}")
+    logger.debug(f"Pausing inference engines to update weights to policy v{step}")
     await asyncio.gather(
         *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
     )

@@ -72,10 +72,9 @@ def train(config: SFTConfig):
         config.log.level,
         json_logging=config.log.json_logging,
     )
-    logger.info(f"Starting SFT trainer in {world}")
+    logger.info(f"Starting SFT trainer in {world} (output_dir={config.run_dir})")
 
     # Setup the monitors
-    logger.info(f"Initializing monitors ({config.monitors})")
     asyncio.run(
         monitors.setup(
             wandb=config.monitors.wandb,
@@ -184,7 +183,7 @@ def train(config: SFTConfig):
         renderer = create_renderer(tokenizer, config.renderer)
         if processor is not None and hasattr(renderer, "_processor"):
             renderer._processor = processor
-        logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
+        logger.debug(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -208,7 +207,7 @@ def train(config: SFTConfig):
         if config.max_steps is not None and (config.ckpt and config.ckpt.skip_scheduler and checkpoint_step is not None)
         else config.max_steps
     )
-    logger.info(f"Setting up {config.scheduler.type} scheduler with {scheduler_steps} steps ({config.scheduler})")
+    logger.info(f"Initializing scheduler with {scheduler_steps} steps ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
     # Set up the dataset and dataloader
@@ -237,16 +236,18 @@ def train(config: SFTConfig):
             dataloader=dataloader if not skip.skip_dataloader else None,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
-        logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         if not skip.skip_progress:
             progress.step += 1
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
-    logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
-    )
+        logger.info(
+            f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
+            f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
+        )
+    else:
+        logger.info("Starting from scratch")
 
     # Create the iterator only after a potential resume: iter() forks workers with a
     # copy of the dataset's *current* state, so a later load_state_dict never reaches
@@ -700,7 +701,7 @@ def train(config: SFTConfig):
 
     # Write final checkpoint
     if config.ckpt is not None:
-        logger.info("Writing final checkpoint")
+        logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
 
@@ -713,7 +714,7 @@ def train(config: SFTConfig):
         gradient_manager.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
-    logger.success("SFT trainer finished!")
+    logger.success("SFT trainer finished")
 
 
 def main():

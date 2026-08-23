@@ -27,7 +27,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
     ):
         super().__init__(output_dir, config.timeout)
         self.lora_config = lora_config
-        self.logger.debug("Filesystem broadcast initialized")
+        self.logger.debug("Initialized filesystem weight broadcast")
 
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
         if self.lora_config is not None:
