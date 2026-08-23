@@ -245,7 +245,10 @@ function renderOverview() {
   const durationEnd = status === "running" ? Date.now() / 1000 : meta.updated;
   const duration = meta.started && durationEnd ? fmtDuration(durationEnd - meta.started) : "–";
   const field = ([label, value]) => `<div class="ov-field"><span class="lbl">${label}</span>${value}</div>`;
-  const stepText = `${step != null ? step.toLocaleString() : "–"}/${meta.max_steps ? meta.max_steps.toLocaleString() : "∞"}`;
+  // rollout dirs can run one step past max_steps (the final ship drains late
+  // arrivals), so the headline caps at the configured horizon
+  const shownStep = step != null && meta.max_steps ? Math.min(step, meta.max_steps) : step;
+  const stepText = `${shownStep != null ? shownStep.toLocaleString() : "–"}/${meta.max_steps ? meta.max_steps.toLocaleString() : "∞"}`;
   const left = [
     ["status", `<span class="badge st-${status}">${status}</span>`],
     ["type", `<span class="val">${esc((meta.type ?? "–").toUpperCase())}</span>`],
