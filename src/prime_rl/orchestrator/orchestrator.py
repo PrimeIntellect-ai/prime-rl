@@ -406,14 +406,12 @@ class Orchestrator:
             on_overload=self.dispatcher.cancel_inflight,
         )
         # The collector always polls — it feeds the concurrency controller;
-        # metric mirroring is gated per sink: W&B needs the global session from
-        # a successful init, the file sink a registered FileMonitor.
+        # metrics fan out to every registered monitor when collection is on.
         self.inference_metrics = InferenceMetricsCollector(
             self.policy_inference.admin_clients,
             roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
-            log_to_wandb=wandb_enabled and config.collect_inference_metrics,
-            log_to_file=monitors.get(monitors.FileMonitor) is not None and config.collect_inference_metrics,
+            log_metrics=config.collect_inference_metrics,
         )
         await self.inference_metrics.start()
         # One awaited scrape so the concurrency controller derives (and logs) its

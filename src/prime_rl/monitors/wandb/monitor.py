@@ -113,6 +113,8 @@ class WandbMonitor(Monitor):
         self.wandb = init_wandb(max_retries)
 
         wandb.define_metric("*", step_metric="step")
+        # inference metrics are sampled on wall time, not the training step
+        wandb.define_metric("inference/*", step_metric="_timestamp")
 
         # Provision the curated "overview" saved view once per project (the run's primary process
         # in shared mode, else the single master). Best-effort: a workspaces/API failure must never
@@ -133,8 +135,8 @@ class WandbMonitor(Monitor):
 
         self.logger.info(f"Logging metrics to W&B ({self.wandb.url})")
 
-    async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
-        wandb.log({**metrics, "step": step})
+    async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
+        wandb.log(metrics if step is None else {**metrics, "step": step})
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         pass

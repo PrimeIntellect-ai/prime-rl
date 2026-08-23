@@ -24,7 +24,7 @@ class Monitor(ABC):
         """Initialize run. Overrides name their own kwargs."""
 
     @overload
-    async def log(self, data: dict[str, Any], step: int) -> None: ...
+    async def log(self, data: dict[str, Any], step: int | None) -> None: ...
 
     @overload
     async def log(self, data: vf.Episode | list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None: ...
@@ -32,7 +32,7 @@ class Monitor(ABC):
     async def log(
         self,
         data: dict[str, Any] | vf.Episode | list[vf.Episode],
-        step: int,
+        step: int | None,
         kind: Kind = "train",
         subset: Subset = "effective",
     ) -> None:
@@ -41,11 +41,13 @@ class Monitor(ABC):
             await self.log_metrics(data, step=step)
         else:
             episodes = data if isinstance(data, list) else [data]
+            assert step is not None
             await self.log_episodes(episodes, step=step, kind=kind, subset=subset)
 
     @abstractmethod
-    async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
-        """Log scalar metrics."""
+    async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
+        """Log scalar metrics. ``step=None`` logs a time-keyed row (e.g. inference
+        metrics, which are sampled on wall time rather than the training step)."""
 
     @abstractmethod
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:

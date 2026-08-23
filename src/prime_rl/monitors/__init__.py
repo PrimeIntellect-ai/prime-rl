@@ -99,7 +99,7 @@ def get(monitor_cls: type[Monitor]) -> Monitor | None:
 
 
 @overload
-async def log(data: dict[str, Any], step: int) -> None: ...
+async def log(data: dict[str, Any], step: int | None) -> None: ...
 
 
 @overload
@@ -108,7 +108,7 @@ async def log(data: vf.Episode | list[vf.Episode], step: int, kind: Kind, subset
 
 async def log(
     data: dict[str, Any] | vf.Episode | list[vf.Episode],
-    step: int,
+    step: int | None,
     kind: Kind = "train",
     subset: Subset = "effective",
 ) -> None:

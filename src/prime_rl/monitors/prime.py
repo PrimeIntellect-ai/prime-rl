@@ -87,7 +87,7 @@ class PrimeMonitor(Monitor):
             )
         await self.run.create(name=self.config.name, **run_fields)
 
-    async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
+    async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         metrics, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
