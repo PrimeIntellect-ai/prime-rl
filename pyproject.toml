@@ -103,6 +103,16 @@ all = [
 mamba-ssm = [
     "mamba-ssm>=2.3.0",
 ]
+# Pre-built FlashInfer kernel artifacts for offline / air-gapped deployments: without
+# them vLLM downloads cubins and JIT-compiles kernels on first run. Versions must match
+# the locked flashinfer-python (mismatched artifact packages are ignored at runtime and
+# vLLM falls back to downloading) — re-pin when bumping vLLM. A dependency group, not an
+# extra, so `uv sync --all-extras` doesn't pull in ~2GB of wheels by default; opt in
+# with `uv sync --all-extras --group flashinfer-aot`.
+flashinfer-aot = [
+    "flashinfer-cubin==0.6.14",
+    "flashinfer-jit-cache==0.6.14",
+]
 dev = [
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.7",
@@ -196,6 +206,8 @@ renderers = false
 prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
+flashinfer-cubin = false
+flashinfer-jit-cache = false
 dion = false
 deep-ep = false
 deep-gemm = false
@@ -238,6 +250,13 @@ prime-kernels = [
     { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
+# 0.6.14 is not published to PyPI (only up to 0.6.13); the jit-cache wheels are only
+# ever distributed per-CUDA-version outside PyPI (cu129 matches the vLLM wheel).
+flashinfer-cubin = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_cubin-0.6.14-py3-none-any.whl" }
+flashinfer-jit-cache = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_jit_cache-0.6.14+cu129-cp39-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_jit_cache-0.6.14+cu129-cp39-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+]
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 flash_attn_3 = { index = "pytorch-cu128-test" }
 

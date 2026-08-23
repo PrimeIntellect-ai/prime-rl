@@ -28,8 +28,10 @@ prime-tunnel = false
 deep-gemm = false
 prime-evals = false
 torchao = false
+flashinfer-jit-cache = false
 tokenspeed-mla = false
 deep-ep = false
+flashinfer-cubin = false
 prime-sandboxes = false
 renderers = false
 prime-kernels = false
@@ -1810,6 +1812,36 @@ source = { git = "https://github.com/fla-org/flash-linear-attention#a95475391465
 dependencies = [
     { name = "einops" },
     { name = "transformers" },
+]
+
+[[package]]
+name = "flashinfer-cubin"
+version = "0.6.14"
+source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_cubin-0.6.14-py3-none-any.whl" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_cubin-0.6.14-py3-none-any.whl", hash = "sha256:7bbed9f3851b59f3f6f6cb344810775bbce8a1c012ecf9a502bebd91cfb6433e" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache"
+version = "0.6.14+cu129"
+source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_jit_cache-0.6.14+cu129-cp39-abi3-manylinux_2_28_aarch64.whl" }
+resolution-markers = [
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_jit_cache-0.6.14+cu129-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:04c6ce06e1f321f2043f895f355c4c9735c3360663c0ebf0de4dee5ac8d33528" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache"
+version = "0.6.14+cu129"
+source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_jit_cache-0.6.14+cu129-cp39-abi3-manylinux_2_28_x86_64.whl" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_jit_cache-0.6.14+cu129-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:66817e5c13668910b197da3881414f9561a9a83e4dd6121b367fbf342580282c" },
 ]
 
 [[package]]
@@ -4946,6 +4978,11 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
+flashinfer-aot = [
+    { name = "flashinfer-cubin" },
+    { name = "flashinfer-jit-cache", version = "0.6.14+cu129", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_jit_cache-0.6.14+cu129-cp39-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
+    { name = "flashinfer-jit-cache", version = "0.6.14+cu129", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_jit_cache-0.6.14+cu129-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
+]
 mamba-ssm = [
     { name = "mamba-ssm" },
 ]
@@ -5030,6 +5067,12 @@ dev = [
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "ruff", specifier = ">=0.12.1" },
+]
+flashinfer-aot = [
+    { name = "flashinfer-cubin", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_cubin-0.6.14-py3-none-any.whl" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = "==0.6.14" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine == 'aarch64'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_jit_cache-0.6.14+cu129-cp39-abi3-manylinux_2_28_aarch64.whl" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine == 'x86_64'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_jit_cache-0.6.14+cu129-cp39-abi3-manylinux_2_28_x86_64.whl" },
 ]
 mamba-ssm = [{ name = "mamba-ssm", specifier = ">=2.3.0" }]
 
