@@ -373,6 +373,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
   word-break: break-word;
 }
 
+.u-cursor-pt { display: none !important; }
 /* drag-to-zoom selection highlight */
 .u-select { background: rgba(182, 255, 60, 0.1); outline: 1px solid rgba(182, 255, 60, 0.35); }
 
@@ -401,6 +402,8 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 .u-tip-row .sw { width: 7px; height: 7px; flex-shrink: 0; }
 .u-tip-l { color: var(--grey-4); }
 .u-tip-v { color: var(--grey-6); margin-left: auto; padding-left: 10px; }
+.u-tip-sub { padding-left: 13px; }
+.u-tip-r { color: var(--grey-4); font-size: 10px; white-space: nowrap; }
 
 /* metrics regex filter (overview + all) */
 #metrics-search { flex: 1; max-width: 460px; }

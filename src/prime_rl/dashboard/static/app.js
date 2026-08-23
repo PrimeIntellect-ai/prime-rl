@@ -631,7 +631,8 @@ function buildChartLayout(entry, timeAxis) {
         spanGaps: true,
         points: { show: false },
       });
-      meta.push({ label: labels[mainIdx] || "value", color, dataIdx: cols.length });
+      const m = { label: labels[mainIdx] || "value", color, dataIdx: cols.length };
+      meta.push(m);
       mainIdx++;
       const aux = [strand.lo, strand.hi, ...strand.overlays].filter(Boolean);
       const bandIdx = {};
@@ -641,7 +642,12 @@ function buildChartLayout(entry, timeAxis) {
         if (s === strand.lo) bandIdx.lo = cols.length;
         if (s === strand.hi) bandIdx.hi = cols.length;
       }
-      if (bandIdx.lo && bandIdx.hi) bands.push({ series: [bandIdx.hi, bandIdx.lo], fill: hexToRgba(color, 0.09) });
+      if (bandIdx.lo && bandIdx.hi) {
+        bands.push({ series: [bandIdx.hi, bandIdx.lo], fill: hexToRgba(color, 0.09) });
+        // the tooltip spells out lo/mean/hi so the band is interpretable
+        m.lo = { dataIdx: bandIdx.lo, stat: statOf(strand.lo.key) };
+        m.hi = { dataIdx: bandIdx.hi, stat: statOf(strand.hi.key) };
+      }
     }
   }
   return { cols, uSeries, bands, meta };
@@ -784,10 +790,17 @@ function tooltipPlugin(meta, timeAxis) {
           const v = u.data[m.dataIdx][idx]; // the strand's main (smoothed) series
           if (v == null) return;
           any = true;
+          const lo = m.lo ? u.data[m.lo.dataIdx][idx] : null;
+          const hi = m.hi ? u.data[m.hi.dataIdx][idx] : null;
+          const range =
+            lo != null && hi != null
+              ? `<span class="u-tip-r">${esc(m.lo.stat)} ${fmtNum(lo)} · ${esc(m.hi.stat)} ${fmtNum(hi)}</span>`
+              : "";
           rows +=
             `<div class="u-tip-row"><span class="sw" style="background:${m.color}"></span>` +
             `${meta.length > 1 ? `<span class="u-tip-l">${esc(m.label)}</span>` : ""}` +
-            `<span class="u-tip-v">${fmtNum(v)}</span></div>`;
+            `<span class="u-tip-v">${fmtNum(v)}</span></div>` +
+            (range ? `<div class="u-tip-row u-tip-sub">${range}</div>` : "");
         });
         if (!any) {
           tip.style.display = "none";
