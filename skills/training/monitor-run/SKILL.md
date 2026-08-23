@@ -66,8 +66,7 @@ After a restart, verify all processes are back up and progress resumed before th
 at `http://localhost:7788` with four views per run: metrics (the W&B overview sections,
 read from `metrics.jsonl`), the resolved config files, a rollout trace viewer with a
 per-token advantage/logprob view, and merged component logs. It only reads the run dir —
-safe to run against a live run. View from a laptop via `ssh -L 7788:localhost:7788 <host>`
-(the startup banner prints the command).
+safe to run against a live run. View from a laptop via `ssh -L 7788:localhost:7788 <host>`.
 
 ### Logs
 

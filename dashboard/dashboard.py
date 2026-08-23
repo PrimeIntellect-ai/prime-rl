@@ -20,9 +20,8 @@ View from another machine via an SSH tunnel (the startup banner prints the comma
 """
 
 import argparse
-import getpass
 import json
-import socket
+import sys
 import threading
 from pathlib import Path
 
@@ -497,10 +496,12 @@ def main() -> None:
     output_dir = args.output_dir
     if not output_dir.is_dir():
         raise SystemExit(f"output dir {output_dir} does not exist")
-    print(f"prime-rl dashboard - serving {output_dir.resolve()} at http://localhost:{args.port}", flush=True)
-    if args.host in ("127.0.0.1", "localhost"):
-        tunnel = f"ssh -L {args.port}:localhost:{args.port} {getpass.getuser()}@{socket.gethostname()}"
-        print(f"viewing remotely? tunnel with: {tunnel}", flush=True)
+    url = f"http://localhost:{args.port}"
+    sep = "·"
+    if sys.stdout.isatty():
+        url = f"\033[4;38;2;182;255;60m{url}\033[0m"  # accent green, underlined
+        sep = "\033[2m·\033[0m"
+    print(f"\n  prime-rl dashboard {sep} {output_dir.resolve()}\n  {url}\n", flush=True)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
