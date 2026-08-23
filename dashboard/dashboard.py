@@ -420,7 +420,7 @@ def list_episodes(
         summaries = [s for s in summaries if s.get("env") == env]
     if errors_only:
         summaries = [s for s in summaries if s.get("num_errors") or not s.get("ok")]
-    if sort in ("reward", "advantage", "output_tokens", "turns"):
+    if sort in ("reward", "advantage", "output_tokens", "turns", "group"):
         summaries = sorted(summaries, key=lambda s: (s.get(sort) is None, s.get(sort) or 0), reverse=(order == "desc"))
     total = len(summaries)
     return {"total": total, "envs": envs, "episodes": summaries[page * limit : (page + 1) * limit]}

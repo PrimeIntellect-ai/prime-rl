@@ -243,7 +243,8 @@ main > section[hidden] { display: none; }
 }
 
 /* --------------------------------------------------------------- metrics */
-#metrics-body { flex: 1; overflow-y: auto; min-height: 0; padding-right: 10px; }
+/* stable gutter: no layout shift when collapsing sections hides the scrollbar */
+#metrics-body { flex: 1; overflow-y: auto; scrollbar-gutter: stable; min-height: 0; padding-right: 10px; }
 .chart-head { cursor: grab; }
 .chart-card.dragging { opacity: 0.45; }
 details.section { margin-bottom: 20px; }
