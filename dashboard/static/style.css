@@ -106,8 +106,35 @@ select, .search, .btn {
   letter-spacing: var(--track-mono);
   outline: none;
 }
-select { background: var(--grey-1); }
+/* flat selects: no native chrome, hairline chevron */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--grey-1);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='%23767676' stroke-width='1.2'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  padding-right: 26px;
+  cursor: pointer;
+}
+select:hover { border-color: var(--grey-6); color: var(--grey-6); }
+option { background: var(--grey-1); color: var(--grey-5); }
 select:focus, .search:focus { border-color: var(--grey-6); }
+
+/* dropdown-opening buttons carry a caret; menus share one flat panel style */
+.dd-btn { display: inline-flex; align-items: center; gap: 6px; }
+.dd-btn::after {
+  content: "";
+  width: 8px;
+  height: 5px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='%23767676' stroke-width='1.2'/%3E%3C/svg%3E") no-repeat center;
+}
+.dd-menu {
+  background: var(--grey-1);
+  border: 1px solid var(--grey-3);
+  padding: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
 .btn {
   cursor: pointer;
   text-transform: uppercase;
@@ -330,6 +357,9 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
   color: var(--grey-4);
   word-break: break-word;
 }
+
+/* drag-to-zoom selection highlight */
+.u-select { background: rgba(182, 255, 60, 0.1); outline: 1px solid rgba(182, 255, 60, 0.35); }
 
 /* hover popover with x/y values */
 .u-tip {

@@ -1861,9 +1861,9 @@ $("#metrics-body").addEventListener("dragover", (e) => {
   e.preventDefault();
   const target = e.target.closest(".chart-card");
   if (!target || target === dragCard) return;
-  const rect = target.getBoundingClientRect();
-  const after = e.clientX - rect.left > rect.width / 2;
-  grid.insertBefore(dragCard, after ? target.nextSibling : target);
+  // reorder the moment the cursor enters another pane
+  const cards = [...grid.children];
+  grid.insertBefore(dragCard, cards.indexOf(dragCard) < cards.indexOf(target) ? target.nextSibling : target);
 });
 
 /* wandb-style resize handles: resizing one pane resizes all of them */

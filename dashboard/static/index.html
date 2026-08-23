@@ -15,8 +15,8 @@
   </div>
   <select id="run-select" title="run"></select>
   <div id="compare-wrap">
-    <button id="compare-btn" class="btn">compare</button>
-    <div id="compare-menu" hidden></div>
+    <button id="compare-btn" class="btn dd-btn">compare</button>
+    <div id="compare-menu" class="dd-menu" hidden></div>
   </div>
   <nav id="tabs">
     <button data-tab="config">Config</button>
@@ -73,11 +73,11 @@
       <span id="trace-status" class="muted"></span>
       <div class="spacer"></div>
       <div id="trace-filter-wrap">
-        <button id="trace-filter-btn" class="btn" title="filter & sort">
+        <button id="trace-filter-btn" class="btn dd-btn" title="filter &amp; sort">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
           filter
         </button>
-        <div id="trace-filter-menu" hidden>
+        <div id="trace-filter-menu" class="dd-menu" hidden>
           <label class="t-label">env</label>
           <select id="trace-env"><option value="">all envs</option></select>
           <label class="t-label">sort</label>
@@ -112,8 +112,8 @@
       <label class="t-label">attempt</label>
       <select id="attempt-select"></select>
       <div id="log-comp-wrap">
-        <button id="log-comp-btn" class="btn">components</button>
-        <div id="log-comp-menu" hidden></div>
+        <button id="log-comp-btn" class="btn dd-btn">components</button>
+        <div id="log-comp-menu" class="dd-menu" hidden></div>
       </div>
       <div class="seg" id="log-view">
         <button data-view="merge" class="active">Merge</button>
