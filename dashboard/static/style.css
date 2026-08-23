@@ -580,7 +580,7 @@ mark.hit {
 .r-pos { color: var(--positive); }
 .r-neg { color: var(--negative); }
 .r-zero { color: var(--grey-4); }
-.status-ok { color: var(--grey-4); }
+.status-ok { color: var(--positive); }
 .status-err { color: var(--negative); }
 
 /* ----------------------------------------------------- trace viewer modal */
