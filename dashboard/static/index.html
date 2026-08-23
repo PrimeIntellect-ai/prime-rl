@@ -38,8 +38,9 @@
       </div>
       <input id="metrics-search" class="search" type="search" placeholder="regex filter, e.g. ^entropy/ or reward">
       <label class="ctl">smooth <input id="smooth-range" type="range" min="1" max="50" value="1"><span id="smooth-val">off</span></label>
-      <button id="metrics-fold" class="btn">collapse</button>
       <span id="metrics-status" class="muted"></span>
+      <div class="spacer"></div>
+      <button id="metrics-fold" class="btn">collapse</button>
     </div>
     <div id="metrics-body"></div>
   </section>
@@ -97,7 +98,7 @@
       <table id="episode-table">
         <thead><tr>
           <th>#</th><th>env</th><th>group</th><th>reward</th><th>adv</th>
-          <th>in tok</th><th>out tok</th><th>turns</th><th>stop</th><th>status</th>
+          <th>in tok</th><th>out tok</th><th>turns</th><th>branches</th><th>stop</th><th>status</th>
         </tr></thead>
         <tbody></tbody>
       </table>

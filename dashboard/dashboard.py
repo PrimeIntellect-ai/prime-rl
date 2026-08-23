@@ -314,9 +314,12 @@ def line_offsets(path: Path) -> list[int]:
 
 def summarize_episode(line: int, rec: dict) -> dict:
     rewards, advantages = [], []
-    input_tokens = output_tokens = turns = 0
+    input_tokens = output_tokens = turns = branches = 0
     stop_condition = completed = None
     for trace in rec.get("traces") or []:
+        nodes = trace.get("nodes") or []
+        parents = {node.get("parent") for node in nodes if "parent" in node}
+        branches += max(0, len(nodes) - len(parents)) if nodes else 0
         total = sum(
             (r.get("score") or 0) * (r.get("weight") if r.get("weight") is not None else 1)
             for r in (trace.get("rewards") or {}).values()
@@ -356,6 +359,7 @@ def summarize_episode(line: int, rec: dict) -> dict:
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "turns": turns,
+        "branches": branches,
         "stop_condition": stop_condition,
         "is_completed": completed,
         "dispatch_step": dispatch_step,

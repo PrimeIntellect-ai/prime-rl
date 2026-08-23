@@ -45,6 +45,15 @@ function fmtNum(v) {
   return v.toPrecision(4).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
 }
 const fmtReward = (v) => (v == null || Number.isNaN(v) ? "–" : v.toFixed(3));
+/* compact human counts that never overflow: 1.1K, 2.2M, 3.3B */
+function fmtCompact(n) {
+  if (n == null || Number.isNaN(n)) return "–";
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return `${+(n / 1e9).toFixed(abs >= 1e10 ? 0 : 1)}B`;
+  if (abs >= 1e6) return `${+(n / 1e6).toFixed(abs >= 1e7 ? 0 : 1)}M`;
+  if (abs >= 1000) return `${+(n / 1000).toFixed(abs >= 10000 ? 0 : 1)}K`;
+  return String(n);
+}
 const fmtBytes = (n) => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)}M` : n >= 1024 ? `${(n / 1024).toFixed(0)}K` : `${n}B`);
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const emptyState = (title, detail = "") =>
@@ -183,21 +192,24 @@ function renderOverview() {
   const status = runStatus(step);
   const durationEnd = status === "running" ? Date.now() / 1000 : meta.updated;
   const duration = meta.started && durationEnd ? fmtDuration(durationEnd - meta.started) : "–";
-  const resumes = Math.max(0, (meta.attempts?.length ?? 1) - 1);
-  const fields = [
+  const field = ([label, value]) => `<div class="ov-field"><span class="lbl">${label}</span>${value}</div>`;
+  const stepText = `${step != null ? step.toLocaleString() : "–"}/${meta.max_steps ? meta.max_steps.toLocaleString() : "∞"}`;
+  const left = [
     ["status", `<span class="badge st-${status}">${status}</span>`],
-    ["duration", `<span class="val">${duration}</span>`],
+    ["step", `<span class="val">${stepText}</span>`],
     ["model", `<span class="val" title="${esc(meta.model ?? "")}">${esc(meta.model ?? "–")}</span>`],
-    ["resumes", `<span class="val">${resumes}</span>`],
     ["train envs", envListField(meta.train_envs)],
     ["eval envs", envListField(meta.eval_envs)],
+  ];
+  const right = [
+    ["duration", `<span class="val">${duration}</span>`],
     ["created", `<span class="val">${fmtAgo(meta.created)}</span>`],
   ];
   el.innerHTML =
     `<div class="ov-top">` +
-    `<div class="ov-pct"><div class="pct">${step != null ? `step ${step.toLocaleString()}` : "–"}</div>` +
-    `${meta.max_steps ? `<div class="steps">of ${meta.max_steps.toLocaleString()}</div>` : ""}</div>` +
-    fields.map(([label, value]) => `<div class="ov-field"><span class="lbl">${label}</span>${value}</div>`).join("") +
+    left.map(field).join("") +
+    `<div class="spacer"></div>` +
+    right.map(field).join("") +
     `</div>`;
 }
 
@@ -999,7 +1011,7 @@ const LOG_PANES = [
   { comp: "envs", title: "envs", match: (f) => f.component.startsWith("env:"), merged: true },
 ];
 
-const fmtCount = (n) => (n >= 1000 ? `${Math.floor(n / 1000)}K` : String(n));
+const fmtCount = fmtCompact;
 
 function paneFiles(pane) {
   return state.logs.files.filter(pane.match);
@@ -1232,6 +1244,12 @@ async function loadRollouts() {
   if (traces.step == null && data.steps.length) {
     traces.step = data.steps[data.steps.length - 1].step;
     adjustKindSubset();
+  } else if (traces.step != null) {
+    // the preferred subset may have shipped since the last poll (a live step's
+    // effective file lands late) — re-adjust and reload when it changes
+    const before = `${traces.kind}/${traces.subset}`;
+    adjustKindSubset();
+    if (`${traces.kind}/${traces.subset}` !== before) await loadEpisodes();
   }
   renderStepControl();
 }
@@ -1350,9 +1368,10 @@ async function loadEpisodes() {
         <td class="muted" title="${esc(ep.group ?? "")}">${esc((ep.group ?? "").slice(0, 8))}</td>
         <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
         <td class="${rewardClass(ep.advantage)}">${fmtReward(ep.advantage)}</td>
-        <td class="muted">${ep.input_tokens ?? ""}</td>
-        <td>${ep.output_tokens ?? ""}</td>
+        <td class="muted">${ep.input_tokens != null ? fmtCompact(ep.input_tokens) : ""}</td>
+        <td>${ep.output_tokens != null ? fmtCompact(ep.output_tokens) : ""}</td>
         <td>${ep.turns ?? ""}</td>
+        <td>${ep.branches ?? ""}</td>
         <td class="muted">${esc(ep.stop_condition ?? "")}</td>
         <td class="${ep.ok && !ep.num_errors ? "status-ok" : "status-err"}">${ep.ok && !ep.num_errors ? "ok" : `${ep.num_errors || ""} err`}</td>
       </tr>`
@@ -1400,7 +1419,7 @@ function filteredRollouts() {
 
 function renderRolloutList() {
   const episodes = filteredRollouts();
-  $("#tm-count").textContent = episodes.length;
+  $("#tm-count").textContent = fmtCompact(episodes.length);
   $("#tm-list").innerHTML = episodes
     .map((e) => {
       const cls = e.reward > 0 ? "r-pos" : e.reward < 0 ? "r-neg" : "r-zero";
@@ -1609,14 +1628,25 @@ function metaRow(key, value, asId = false) {
   );
 }
 
+const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "context_length"]);
+
+/* mirrors verifiers Trace.is_truncated (not serialized): framework limits or a
+   length-finished final response */
+function traceTruncated(trace) {
+  if (TRUNCATING_STOPS.has(trace.stop_condition)) return true;
+  const last = [...(trace.calls || [])].reverse().find((c) => !c.error);
+  return !!(last && last.finish_reason === "length");
+}
+
 function renderMeta(ep, trace, branches) {
   const parts = [];
-  const reward = trace ? traceReward(trace) : null;
-  if (reward != null)
-    parts.push(
-      `<div class="meta-row"><span class="k">reward</span>` +
-        `<span class="tm-reward-big${reward < 0 ? " neg" : ""}" style="margin-left:auto">${fmtReward(reward)}</span></div>`
-    );
+  const headline = (label, value) =>
+    `<div class="meta-row"><span class="k">${label}</span>` +
+    `<span class="tm-reward-big${value != null && value < 0 ? " neg" : ""}${value == null ? " na" : ""}" style="margin-left:auto">` +
+    `${value != null ? fmtReward(value) : "n/a"}</span></div>`;
+  const rewardValue = trace && Object.keys(trace.rewards || {}).length ? traceReward(trace) : null;
+  parts.push(headline("reward", rewardValue));
+  parts.push(headline("advantage", trace?.info?.advantage ?? null));
 
   if (trace) {
     const rewards = Object.entries(trace.rewards || {});
@@ -1631,14 +1661,6 @@ function renderMeta(ep, trace, branches) {
         parts.push(metaRow(name, typeof value === "number" ? fmtNum(value) : String(value)));
     }
   }
-
-  parts.push(`<div class="meta-sec">identity</div>`);
-  parts.push(metaRow("episode ID", ep.id, true));
-  if (trace?.id) parts.push(metaRow("trace ID", trace.id, true));
-  if (ep.group?.id) parts.push(metaRow("group ID", ep.group.id, true));
-  if (trace?.agent?.runtime?.id) parts.push(metaRow("runtime ID", trace.agent.runtime.id, true));
-  parts.push(metaRow("env", ep.env?.id ?? ep.env?.name));
-  parts.push(metaRow("dispatch step", ep.run?.work?.step ?? ep.run?.metadata?.step));
 
   if (trace) {
     const path = branches[Math.min(currentBranchIdx, branches.length - 1)] || [];
@@ -1659,11 +1681,11 @@ function renderMeta(ep, trace, branches) {
     }
     if (hasUsage) {
       parts.push(`<div class="meta-sec">usage</div>`);
-      parts.push(metaRow("input tokens", usage.input.toLocaleString()));
-      parts.push(metaRow("output tokens", usage.output.toLocaleString()));
-      if (usage.reasoning) parts.push(metaRow("reasoning tokens", usage.reasoning.toLocaleString()));
-      if (usage.cached) parts.push(metaRow("cached tokens", usage.cached.toLocaleString()));
-      parts.push(metaRow("total tokens", (usage.input + usage.output).toLocaleString()));
+      parts.push(metaRow("input tokens", fmtCompact(usage.input)));
+      parts.push(metaRow("output tokens", fmtCompact(usage.output)));
+      if (usage.reasoning) parts.push(metaRow("reasoning tokens", fmtCompact(usage.reasoning)));
+      if (usage.cached) parts.push(metaRow("cached tokens", fmtCompact(usage.cached)));
+      parts.push(metaRow("total tokens", fmtCompact(usage.input + usage.output)));
     }
 
     if (trace.tools?.length)
@@ -1675,8 +1697,8 @@ function renderMeta(ep, trace, branches) {
     parts.push(`<div class="meta-sec">state</div>`);
     parts.push(metaRow("stop_condition", trace.stop_condition));
     parts.push(metaRow("is_completed", trace.is_completed));
+    parts.push(metaRow("is_truncated", traceTruncated(trace)));
     parts.push(metaRow("ok", trace.ok));
-    parts.push(metaRow("advantage", trace.info?.advantage != null ? fmtReward(trace.info.advantage) : null));
 
     const durations = [];
     (function walkTiming(obj, prefix) {
@@ -1698,6 +1720,12 @@ function renderMeta(ep, trace, branches) {
       }
     }
   }
+
+  parts.push(`<div class="meta-sec">identity</div>`);
+  parts.push(metaRow("episode ID", ep.id, true));
+  if (trace?.id) parts.push(metaRow("trace ID", trace.id, true));
+  if (ep.group?.id) parts.push(metaRow("group ID", ep.group.id, true));
+  if (trace?.agent?.runtime?.id) parts.push(metaRow("runtime ID", trace.agent.runtime.id, true));
 
   const errors = [...(ep.errors || []), ...(trace?.errors || [])];
   if (errors.length)
