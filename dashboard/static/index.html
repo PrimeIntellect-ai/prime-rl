@@ -96,7 +96,7 @@
       <table id="episode-table">
         <thead><tr>
           <th>#</th><th>env</th><th>group</th><th>reward</th><th>adv</th>
-          <th>in tok</th><th>out tok</th><th>turns</th><th>stop</th><th>disp.step</th><th>status</th>
+          <th>in tok</th><th>out tok</th><th>turns</th><th>stop</th><th>status</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -108,6 +108,14 @@
     <div class="controls">
       <label class="t-label">attempt</label>
       <select id="attempt-select"></select>
+      <div id="log-comp-wrap">
+        <button id="log-comp-btn" class="btn">components</button>
+        <div id="log-comp-menu" hidden></div>
+      </div>
+      <div class="seg" id="log-view">
+        <button data-view="merge" class="active">Merge</button>
+        <button data-view="split">Split</button>
+      </div>
       <select id="log-level">
         <option value="DEBUG">all levels</option>
         <option value="INFO">info+</option>

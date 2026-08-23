@@ -435,6 +435,20 @@ mark.hit {
 #log-panes.maxed { overflow: hidden; }
 #log-panes.maxed .log-pane { display: none; }
 #log-panes.maxed .log-pane.maximized { display: flex; flex: 1; height: auto; }
+/* merge view: a single pane fills the tab */
+.log-pane.merged { flex: 1; height: auto; }
+#log-comp-wrap { position: relative; }
+#log-comp-btn.active { color: var(--accent); border-color: var(--accent); }
+#log-comp-menu {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  z-index: 40;
+  min-width: 220px;
+  background: var(--grey-1);
+  border: 1px solid var(--grey-3);
+  padding: 6px;
+}
 .log-pane-head {
   display: flex;
   align-items: center;

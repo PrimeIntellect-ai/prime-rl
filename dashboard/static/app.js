@@ -28,7 +28,10 @@ const state = {
   },
   compare: { runs: [], data: new Map() },
   config: { loaded: false, files: [], file: null },
-  logs: { loaded: false, attempt: "latest", attempts: [], files: [], paneFile: {}, maximized: null, buffers: new Map(), gseq: 0 },
+  logs: {
+    loaded: false, attempt: "latest", attempts: [], files: [], paneFile: {},
+    components: null, view: "merge", maximized: null, buffers: new Map(), gseq: 0,
+  },
   traces: { loaded: false, steps: [], step: null, kind: "train", subset: "effective", page: 0, limit: 5000, total: 0, env: "", errorsOnly: false, sort: "line", order: "asc" },
 };
 
@@ -1005,7 +1008,7 @@ function paneSelectedIds(pane) {
 
 function allSelectedIds() {
   const ids = new Set();
-  for (const pane of LOG_PANES) if (paneFiles(pane).length) for (const id of paneSelectedIds(pane)) ids.add(id);
+  for (const pane of enabledPanes()) for (const id of paneSelectedIds(pane)) ids.add(id);
   return ids;
 }
 
@@ -1020,20 +1023,61 @@ function logFilter() {
   }
 }
 
+function enabledPanes() {
+  return LOG_PANES.filter((p) => paneFiles(p).length && (state.logs.components?.has(p.comp) ?? true));
+}
+
+function renderLogCompMenu() {
+  const available = LOG_PANES.filter((p) => paneFiles(p).length);
+  const menu = $("#log-comp-menu");
+  menu.innerHTML = available
+    .map(
+      (p) =>
+        `<label class="file-item"><input type="checkbox" data-comp="${p.comp}"` +
+        `${state.logs.components?.has(p.comp) ?? true ? " checked" : ""}><span>${p.title}</span></label>`
+    )
+    .join("");
+  const enabled = enabledPanes().length;
+  $("#log-comp-btn").textContent = enabled === available.length ? "components" : `components (${enabled})`;
+  $("#log-comp-btn").classList.toggle("active", enabled !== available.length);
+}
+
 function renderLogPanes() {
   const logs = state.logs;
   $("#attempt-select").innerHTML = logs.attempts
     .map((a) => `<option value="${a}" ${String(a) === String(logs.attempt) ? "selected" : ""}>attempt ${a}</option>`)
     .join("");
+  renderLogCompMenu();
   const container = $("#log-panes");
   container.innerHTML = "";
-  container.classList.toggle("maxed", !!logs.maximized);
-  for (const pane of LOG_PANES) {
+  const panes = enabledPanes();
+  // pick default files for every enabled component (used by both views)
+  for (const pane of panes) {
     const files = paneFiles(pane);
-    if (!files.length) continue;
     const isVirtual = pane.comp === "infer" && logs.paneFile[pane.comp] === "__router__";
     if (!pane.merged && !isVirtual && !files.some((f) => f.id === logs.paneFile[pane.comp]))
       logs.paneFile[pane.comp] = (files.find((f) => f.master) ?? files[0]).id;
+  }
+  if (!panes.length) {
+    container.classList.remove("maxed");
+    container.innerHTML = emptyState("no log files", "this run has no logs or every component is toggled off");
+    return;
+  }
+  if (logs.view === "merge") {
+    container.classList.remove("maxed");
+    const el = document.createElement("div");
+    el.className = "log-pane merged";
+    el.dataset.comp = "__merged__";
+    el.innerHTML =
+      `<div class="log-pane-head"><span class="lp-title">${panes.map((p) => p.title).join(" \u00b7 ")}</span>` +
+      `<span class="lp-count"></span><div class="spacer"></div></div>` +
+      `<div class="log-pane-stream"></div>`;
+    container.appendChild(el);
+    return;
+  }
+  container.classList.toggle("maxed", !!logs.maximized);
+  for (const pane of panes) {
+    const files = paneFiles(pane);
     const el = document.createElement("div");
     el.className = `log-pane${logs.maximized === pane.comp ? " maximized" : ""}`;
     el.dataset.comp = pane.comp;
@@ -1053,18 +1097,12 @@ function renderLogPanes() {
       `<div class="log-pane-stream"></div>`;
     container.appendChild(el);
   }
-  if (!container.children.length) container.innerHTML = emptyState("no log files", "this run has no logs yet");
 }
 
-function renderLogPane(el) {
-  const pane = LOG_PANES.find((p) => p.comp === el.dataset.comp);
-  if (!pane) return;
-  const stream = el.querySelector(".log-pane-stream");
-  const minRank = LEVEL_RANK[$("#log-level").value] ?? 0;
-  const filter = logFilter();
+/* filtered lines for one component, honoring its file selection and the
+   engine/router split of the single-node inference.log */
+function paneLines(pane, minRank, filter) {
   const ids = paneSelectedIds(pane);
-  // single-node inference.log interleaves router and engine lines: show only
-  // engine lines by default, router lines via the virtual "router" file entry
   const selected = state.logs.paneFile[pane.comp];
   const routerOnly = pane.comp === "infer" && selected === "__router__";
   const engineOnly = pane.comp === "infer" && !routerOnly && /(^|\/)inference\.log$/.test(selected ?? "");
@@ -1080,7 +1118,25 @@ function renderLogPane(el) {
       lines.push(line);
     }
   }
-  if (ids.length > 1) lines.sort((a, b) => a.t - b.t || a.gseq - b.gseq);
+  return lines;
+}
+
+function renderLogPane(el) {
+  const stream = el.querySelector(".log-pane-stream");
+  const minRank = LEVEL_RANK[$("#log-level").value] ?? 0;
+  const filter = logFilter();
+  let lines;
+  let multi;
+  if (el.dataset.comp === "__merged__") {
+    lines = enabledPanes().flatMap((pane) => paneLines(pane, minRank, filter));
+    multi = true;
+  } else {
+    const pane = LOG_PANES.find((p) => p.comp === el.dataset.comp);
+    if (!pane) return;
+    lines = paneLines(pane, minRank, filter);
+    multi = paneSelectedIds(pane).length > 1;
+  }
+  if (multi) lines.sort((a, b) => a.t - b.t || a.gseq - b.gseq);
   const shown = lines.slice(-3000);
   // always follow: stick to the bottom unless the user scrolled up to read
   const pinned = !stream.childElementCount || stream.scrollTop + stream.clientHeight >= stream.scrollHeight - 40;
@@ -1288,7 +1344,6 @@ async function loadEpisodes() {
         <td>${ep.output_tokens ?? ""}</td>
         <td>${ep.turns ?? ""}</td>
         <td class="muted">${esc(ep.stop_condition ?? "")}</td>
-        <td class="muted">${ep.dispatch_step != null && ep.dispatch_step !== state.traces.step ? ep.dispatch_step : ""}</td>
         <td class="${ep.ok && !ep.num_errors ? "status-ok" : "status-err"}">${ep.ok && !ep.num_errors ? "ok" : `${ep.num_errors || ""} err`}</td>
       </tr>`
     )
@@ -1691,6 +1746,7 @@ $("#compare-menu").addEventListener("change", (e) => {
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#compare-wrap")) $("#compare-menu").hidden = true;
   if (!e.target.closest("#trace-filter-wrap")) $("#trace-filter-menu").hidden = true;
+  if (!e.target.closest("#log-comp-wrap")) $("#log-comp-menu").hidden = true;
 });
 $("#trace-filter-btn").addEventListener("click", () => {
   const menu = $("#trace-filter-menu");
@@ -1815,6 +1871,29 @@ $("#log-panes").addEventListener("click", (e) => {
   renderLogPanes();
   renderAllLogPanes();
 });
+$("#log-comp-btn").addEventListener("click", () => {
+  const menu = $("#log-comp-menu");
+  menu.hidden = !menu.hidden;
+});
+$("#log-comp-menu").addEventListener("change", async (e) => {
+  const box = e.target.closest("[data-comp]");
+  if (!box) return;
+  const logs = state.logs;
+  logs.components ??= new Set(LOG_PANES.filter((p) => paneFiles(p).length).map((p) => p.comp));
+  if (box.checked) logs.components.add(box.dataset.comp);
+  else logs.components.delete(box.dataset.comp);
+  renderLogPanes();
+  await pollLogs(false);
+  renderAllLogPanes();
+});
+document.querySelectorAll("#log-view button").forEach((b) =>
+  b.addEventListener("click", () => {
+    state.logs.view = b.dataset.view;
+    document.querySelectorAll("#log-view button").forEach((x) => x.classList.toggle("active", x === b));
+    renderLogPanes();
+    renderAllLogPanes();
+  })
+);
 $("#log-level").addEventListener("change", renderAllLogPanes);
 let logSearchDebounce = 0;
 $("#log-search").addEventListener("input", () => {
