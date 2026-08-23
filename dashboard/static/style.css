@@ -99,7 +99,10 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  direction: rtl; /* ellipsis on the left: the tail of a path is the useful part */
+  /* left-side ellipsis (the tail of a path is the useful part) without
+     letting the bidi algorithm shuffle the leading slash */
+  direction: rtl;
+  unicode-bidi: plaintext;
   font-size: 10.5px;
 }
 #topbar .toggle { margin-left: 16px; }
