@@ -460,9 +460,8 @@ class RLConfig(BaseConfig):
                 self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
-                "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
-                "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
-                "have no disk artifact to load from."
+                "LoRA training is not yet supported with in-memory weight broadcast. "
+                "Set weight_broadcast.type = 'filesystem'."
             )
         if self.weight_broadcast.type in ("nccl", "nixl"):
             inference_world_size = (
@@ -568,6 +567,11 @@ class RLConfig(BaseConfig):
 
             if self.orchestrator.model.lora.alpha is None:
                 self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
+
+            if self.orchestrator.model.lora.name is None:
+                self.orchestrator.model.lora.name = (
+                    f"r{self.orchestrator.model.lora.rank}-a{self.orchestrator.model.lora.alpha}"
+                )
 
             if self.inference is not None:
                 self.inference.vllm.enable_lora = True

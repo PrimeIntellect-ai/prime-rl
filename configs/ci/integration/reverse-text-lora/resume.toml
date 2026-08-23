@@ -23,6 +23,7 @@ group_size = 16
 max_inflight = 128
 
 [orchestrator.model.lora]
+name = "r8-1e-4"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128

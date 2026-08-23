@@ -59,6 +59,7 @@ POLL_INTERVAL_S = 2.0
 # Served model name for adapter broadcasts of LoRA runs. Reloading the same name
 # with fresh weights each step is supported (the server forces an in-place
 # reload, see /load_lora_adapter).
+LORA_NAME = "eval-adapter"
 
 
 class Evals:
@@ -352,8 +353,9 @@ class Evals:
             get_logger().info(f"Updating inference weights to broadcast step {step} ({broadcast_dir})")
             # LoRA runs broadcast the raw adapter; load it under a fixed adapter name
             # and serve the evals against that name (mirrors WeightWatcher).
+            lora_name = LORA_NAME if (broadcast_dir / "adapter_config.json").exists() else None
             try:
-                await update_weights(self.admin_clients.clients, broadcast_dir, self.clients.model_name, step=step)
+                await update_weights(self.admin_clients.clients, broadcast_dir, lora_name=lora_name, step=step)
             except Exception as exc:
                 # Skip this step instead of killing the run; drain the queued examples
                 # so they don't leak into a later epoch with the wrong step.
@@ -361,6 +363,9 @@ class Evals:
                     pass
                 get_logger().error(f"Failed to update inference weights to step {step} - skipping evals: {exc!r}")
                 return
+            if lora_name is not None:
+                self.clients.update_model_name(lora_name)
+                self.policy.model_name = lora_name
 
         # The dispatcher only schedules eval in PREFER_EVAL, so nothing dispatches
         # between the trigger above and the weight reload completing.

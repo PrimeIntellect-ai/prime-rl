@@ -63,6 +63,9 @@ class InferenceClient:
         self._scorer = PrefillScorer()
         self.model_name = model_name
 
+    def update_model_name(self, model_name: str) -> None:
+        self.model_name = model_name
+
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this endpoint's model (one logprob
         per token, 0.0 for the leading token)."""
@@ -291,7 +294,7 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
 async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
-    model_name: str,
+    lora_name: str | None = None,
     step: int = 0,
 ) -> None:
     """Update weights on static inference servers.
@@ -308,12 +311,8 @@ async def update_weights(
 
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-    if weight_dir is not None and (weight_dir / "adapter_config.json").exists():
-        # A LoRA run broadcasts the PEFT-shaped adapter; register it under the
-        # base model name - the single adapter shadows it (vLLM resolves
-        # lora_requests before the base-model match), so requests keep
-        # addressing one stable name and no engine pause is needed.
-        await load_lora_adapter(admin_clients, model_name, weight_dir)
+    if lora_name is not None and weight_dir is not None:
+        await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
         # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
         await _pause_engines(admin_clients, step=step)
@@ -394,6 +393,19 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
         response.raise_for_status()
 
     await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
+
+
+async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) -> None:
+    """Make a HTTP post request to the vLLM server to unload a LoRA adapter."""
+    logger = get_logger()
+
+    async def _unload_lora_adapter(admin_client: AsyncClient) -> None:
+        logger.debug(f"Sending request to unload LoRA adapter {lora_name}")
+        await admin_client.post("/v1/unload_lora_adapter", json={"lora_name": lora_name})
+        # TODO: The first one can fail, but subsequent ones should succeed.
+        # response.raise_for_status()
+
+    await asyncio.gather(*[_unload_lora_adapter(admin_client) for admin_client in admin_clients])
 
 
 async def init_nccl_broadcast(

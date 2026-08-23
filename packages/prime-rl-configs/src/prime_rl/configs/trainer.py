@@ -733,15 +733,7 @@ class TrainerConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
         if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
-            raise ValueError(
-                "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
-                "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
-            )
-        if self.model.lora is not None and self.model.lora.modules_to_save and self.data.fake is None:
-            raise ValueError(
-                "model.lora.modules_to_save cannot be served: the weight broadcast ships only the "
-                "adapter tensors, so fully-trained modules would silently diverge from inference."
-            )
+            raise ValueError("In-memory weight broadcast does not support LoRA yet.")
         return self
 
     @model_validator(mode="after")
