@@ -526,6 +526,7 @@ mark.hit {
 .eval-dot { display: inline-block; width: 5px; height: 5px; background: var(--infra); }
 
 #episode-table-wrap { flex: 1; overflow: auto; border: 1px solid var(--hairline); background: var(--grey-1); min-height: 0; }
+#episode-table .vpad td { padding: 0; border: 0; }
 #episode-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
 #episode-table th {
   text-align: left;

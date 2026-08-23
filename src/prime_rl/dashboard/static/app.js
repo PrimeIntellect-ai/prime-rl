@@ -161,7 +161,7 @@ async function selectRun(name) {
   };
   state.config = { loaded: false, files: [], file: null };
   state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], paneFile: {}, maximized: null, buffers: new Map() };
-  state.traces = { ...state.traces, loaded: false, steps: [], step: null, env: "", episodes: [], subset: state.traces.preferred };
+  state.traces = { ...state.traces, loaded: false, steps: [], step: null, env: "", episodes: [], etag: null, subset: state.traces.preferred };
   renderOverview();
   renderCompareMenu();
   updateHash();
@@ -230,7 +230,9 @@ function renderOverview() {
     ["type", `<span class="val">${esc((meta.type ?? "–").toUpperCase())}</span>`],
     ["step", `<span class="val">${stepText}</span>`],
     ["model", `<span class="val" title="${esc(meta.model ?? "")}">${esc(meta.model ?? "–")}</span>`],
-    ["train envs", envListField(meta.train_envs)],
+    meta.type === "sft"
+      ? ["dataset", `<span class="val" title="${esc(meta.dataset ?? "")}">${esc(meta.dataset ?? "–")}</span>`]
+      : ["train envs", envListField(meta.train_envs)],
     ["eval envs", envListField(meta.eval_envs)],
   ];
   const right = [
@@ -1323,7 +1325,7 @@ async function loadRollouts() {
     // default to the newest step that already shipped the preferred subset —
     // the newest step is usually in-flight with only "all" (no advantages yet)
     const preferred = traces.preferred;
-    const shipped = [...data.steps].reverse().find((s) => s.counts[`${traces.kind}/${preferred}`]);
+    const shipped = [...data.steps].reverse().find((s) => s.available[`${traces.kind}/${preferred}`]);
     traces.step = (shipped ?? data.steps[data.steps.length - 1]).step;
     adjustKindSubset();
   } else if (traces.step != null) {
@@ -1342,9 +1344,9 @@ function stepInfo(step) {
 
 function adjustKindSubset() {
   const traces = state.traces;
-  const counts = stepInfo(traces.step)?.counts || {};
-  const hasTrain = counts["train/all"] || counts["train/effective"];
-  const hasEval = counts["eval/all"] || counts["eval/effective"];
+  const available = stepInfo(traces.step)?.available || {};
+  const hasTrain = available["train/all"] || available["train/effective"];
+  const hasEval = available["eval/all"] || available["eval/effective"];
   if (traces.kind === "train" && !hasTrain && hasEval) traces.kind = "eval";
   if (traces.kind === "eval" && !hasEval && hasTrain) traces.kind = "train";
   // fall back when the preferred subset is missing at this step (e.g. the latest
@@ -1352,8 +1354,8 @@ function adjustKindSubset() {
   // it exists again — advantages are only stamped on effective records
   const preferred = traces.preferred;
   const other = preferred === "all" ? "effective" : "all";
-  if (counts[`${traces.kind}/${preferred}`]) traces.subset = preferred;
-  else if (counts[`${traces.kind}/${other}`]) traces.subset = other;
+  if (available[`${traces.kind}/${preferred}`]) traces.subset = preferred;
+  else if (available[`${traces.kind}/${other}`]) traces.subset = other;
   $("#trace-kind [data-kind=train]").disabled = !hasTrain;
   $("#trace-kind [data-kind=eval]").disabled = !hasEval;
   setActive("#trace-kind", "kind", traces.kind);
@@ -1364,23 +1366,28 @@ function renderStepControl() {
   const traces = state.traces;
   const steps = traces.steps;
   const idx = steps.findIndex((s) => s.step === traces.step);
-  const signature =
-    `${traces.step}:` + steps.map((s) => (s.counts["eval/all"] || s.counts["eval/effective"] ? 1 : 0)).join("");
+  // over thousands of steps one block per step floods the DOM — cap the bar and
+  // let each block stand for a bucket of steps (click selects the bucket's last)
+  const perCell = Math.max(1, Math.ceil(steps.length / 240));
+  const cells = [];
+  for (let b = 0; b * perCell < steps.length; b++) {
+    const slice = steps.slice(b * perCell, (b + 1) * perCell);
+    const hasEval = slice.some((s) => s.available["eval/all"] || s.available["eval/effective"]);
+    const last = b * perCell + slice.length - 1;
+    const title = slice.length === 1 ? `step ${slice[0].step}` : `steps ${slice[0].step}–${slice[slice.length - 1].step}`;
+    cells.push(
+      `<span class="sb-cell${idx >= 0 && b * perCell <= idx ? " on" : ""}${hasEval ? " eval" : ""}" data-i="${last}"` +
+        ` title="${title}${hasEval ? " · eval" : ""}"></span>`
+    );
+  }
+  const signature = cells.join("");
   if (signature === traces.stepControlSignature) return;
   traces.stepControlSignature = signature;
-  $("#step-blocks").innerHTML = steps
-    .map((s, i) => {
-      const hasEval = s.counts["eval/all"] || s.counts["eval/effective"];
-      return (
-        `<span class="sb-cell${i <= idx ? " on" : ""}${hasEval ? " eval" : ""}" data-i="${i}"` +
-        ` title="step ${s.step}${hasEval ? " · eval" : ""}"></span>`
-      );
-    })
-    .join("");
+  $("#step-blocks").innerHTML = signature;
   $("#step-prev").disabled = idx <= 0;
   $("#step-next").disabled = idx < 0 || idx >= steps.length - 1;
   const info = stepInfo(traces.step);
-  const hasEval = info && (info.counts["eval/all"] || info.counts["eval/effective"]);
+  const hasEval = info && (info.available["eval/all"] || info.available["eval/effective"]);
   $("#step-label").innerHTML =
     traces.step == null
       ? ""
@@ -1407,7 +1414,6 @@ function showTraceEmpty(title, detail) {
 async function loadEpisodes() {
   const traces = state.traces;
   updateTraceFilterBtn();
-  const tbody = $("#episode-table tbody");
   if (traces.step == null) {
     $("#trace-status").textContent = "";
     showTraceEmpty("no rollouts", "this run has no saved rollouts yet");
@@ -1415,6 +1421,10 @@ async function loadEpisodes() {
   }
   const qs = new URLSearchParams({ sort: traces.sort, order: traces.order, errors_only: traces.errorsOnly });
   if (traces.env) qs.set("env", traces.env);
+  // etag = the file size the client last saw: while the file is unchanged the
+  // poll gets a tiny {unchanged} response instead of thousands of summaries
+  const etagKey = JSON.stringify([state.run, traces.step, traces.kind, traces.subset, traces.env, traces.errorsOnly, traces.sort, traces.order]);
+  if (traces.etagKey === etagKey && traces.etag) qs.set("etag", traces.etag);
   let data;
   try {
     data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}?${qs}`);
@@ -1423,10 +1433,11 @@ async function loadEpisodes() {
     showTraceEmpty("no traces", `no ${traces.kind}/${traces.subset} rollouts at step ${traces.step}`);
     return;
   }
+  if (data.unchanged) return;
+  const fresh = traces.etagKey !== etagKey;
+  traces.etag = data.etag;
+  traces.etagKey = etagKey;
   traces.episodes = data.episodes;
-  const signature = JSON.stringify([traces.step, traces.kind, traces.subset, traces.env, traces.errorsOnly, traces.sort, traces.order, data.total]);
-  if (signature === traces.renderedSignature) return;
-  traces.renderedSignature = signature;
   $("#trace-empty").hidden = true;
   $("#episode-table-wrap").hidden = false;
   const envSel = $("#trace-env");
@@ -1439,9 +1450,12 @@ async function loadEpisodes() {
     showTraceEmpty("no episodes", "nothing matches the current filters");
     return;
   }
-  tbody.innerHTML = data.episodes
-    .map(
-      (ep) => `<tr data-line="${ep.line}">
+  renderEpisodeRows(fresh);
+  $("#trace-status").textContent = `${data.total} episodes`;
+}
+
+function episodeRowHtml(ep) {
+  return `<tr data-line="${ep.line}">
         <td class="muted">${ep.line}</td>
         <td>${esc(ep.env ?? "?")}</td>
         <td class="muted" title="${esc(ep.group ?? "")}">${esc((ep.group ?? "").slice(0, 8))}</td>
@@ -1453,10 +1467,32 @@ async function loadEpisodes() {
         <td>${ep.branches ?? ""}</td>
         <td class="muted">${esc(ep.stop_condition ?? "")}</td>
         <td class="${ep.ok && !ep.num_errors ? "status-ok" : "status-err"}">${ep.ok && !ep.num_errors ? "ok" : `${ep.num_errors || ""} err`}</td>
-      </tr>`
-    )
-    .join("");
-  $("#trace-status").textContent = `${data.total} episodes`;
+      </tr>`;
+}
+
+/* windowed table: only rows in (and around) the viewport exist in the DOM,
+   spacer rows stand in for the rest — thousands of episodes stay instant */
+let episodeRowH = 0;
+
+function renderEpisodeRows(reset = false) {
+  const wrap = $("#episode-table-wrap");
+  const tbody = $("#episode-table tbody");
+  const episodes = state.traces.episodes || [];
+  if (reset) {
+    wrap.scrollTop = 0;
+    episodeRowH = 0;
+  }
+  if (!episodeRowH) {
+    tbody.innerHTML = episodes.length ? episodeRowHtml(episodes[0]) : "";
+    episodeRowH = tbody.firstElementChild?.offsetHeight || 28;
+  }
+  const start = Math.max(0, Math.floor(wrap.scrollTop / episodeRowH) - 20);
+  const end = Math.min(episodes.length, start + Math.ceil(wrap.clientHeight / episodeRowH) + 40);
+  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="11" style="height:${h}px"></td></tr>` : "");
+  tbody.innerHTML =
+    pad(start * episodeRowH) +
+    episodes.slice(start, end).map(episodeRowHtml).join("") +
+    pad((episodes.length - end) * episodeRowH);
 }
 
 async function initTraces() {
@@ -1496,31 +1532,47 @@ function filteredRollouts() {
   );
 }
 
-let rolloutListState = { episodes: null, query: null };
+function tmItemHtml(e) {
+  return (
+    `<div class="tm-item ${e.line === currentLine ? "active" : ""}" data-line="${e.line}">` +
+    `<span>Episode ${e.line}</span><span class="muted">${esc(e.env ?? "")}</span>` +
+    `<span class="tm-reward ${rewardClass(e.reward)}">${fmtReward(e.reward)}</span></div>`
+  );
+}
 
-function renderRolloutList() {
-  const query = $("#tm-search").value;
+/* windowed like the episode table — only the visible slice is in the DOM */
+let tmItemH = 0;
+
+function renderRolloutWindow() {
+  const list = $("#tm-list");
   const episodes = filteredRollouts();
-  if (rolloutListState.episodes === state.traces.episodes && rolloutListState.query === query) {
-    document
-      .querySelectorAll("#tm-list .tm-item")
-      .forEach((el) => el.classList.toggle("active", +el.dataset.line === currentLine));
-    document.querySelector("#tm-list .tm-item.active")?.scrollIntoView({ block: "nearest" });
+  $("#tm-count").textContent = fmtCompact(episodes.length);
+  if (!episodes.length) {
+    list.innerHTML = "";
     return;
   }
-  rolloutListState = { episodes: state.traces.episodes, query };
-  $("#tm-count").textContent = fmtCompact(episodes.length);
-  $("#tm-list").innerHTML = episodes
-    .map((e) => {
-      const cls = rewardClass(e.reward);
-      return (
-        `<div class="tm-item ${e.line === currentLine ? "active" : ""}" data-line="${e.line}">` +
-        `<span>Episode ${e.line}</span><span class="muted">${esc(e.env ?? "")}</span>` +
-        `<span class="tm-reward ${cls}">${fmtReward(e.reward)}</span></div>`
-      );
-    })
-    .join("");
-  $("#tm-list .tm-item.active")?.scrollIntoView({ block: "nearest" });
+  if (!tmItemH) {
+    list.innerHTML = tmItemHtml(episodes[0]);
+    tmItemH = list.firstElementChild?.offsetHeight || 33;
+  }
+  const start = Math.max(0, Math.floor(list.scrollTop / tmItemH) - 20);
+  const end = Math.min(episodes.length, start + Math.ceil(list.clientHeight / tmItemH) + 40);
+  list.innerHTML =
+    `<div style="height:${start * tmItemH}px"></div>` +
+    episodes.slice(start, end).map(tmItemHtml).join("") +
+    `<div style="height:${(episodes.length - end) * tmItemH}px"></div>`;
+}
+
+function renderRolloutList() {
+  const list = $("#tm-list");
+  const episodes = filteredRollouts();
+  const activeIdx = episodes.findIndex((e) => e.line === currentLine);
+  if (activeIdx >= 0 && tmItemH) {
+    const top = activeIdx * tmItemH;
+    if (top < list.scrollTop || top + tmItemH > list.scrollTop + list.clientHeight)
+      list.scrollTop = Math.max(0, top - list.clientHeight / 2);
+  }
+  renderRolloutWindow();
 }
 
 function stepRollout(delta) {
@@ -1563,8 +1615,24 @@ async function modalStep(delta) {
   }
 }
 
-async function openEpisode(line) {
+function fetchEpisode(line, withTokens) {
   const traces = state.traces;
+  const qs = withTokens ? "?tokens=true" : "";
+  return api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}${qs}`);
+}
+
+/* token strings multiply the payload of a big episode, so they are fetched only
+   while a token signal is selected — the plain view ships the raw record */
+async function ensureTokens() {
+  if (!currentEpisode || currentEpisode._hasTokens || !$("#token-signal").value) return;
+  const line = currentLine;
+  const episode = await fetchEpisode(line, true);
+  if (line !== currentLine) return;
+  episode._hasTokens = true;
+  currentEpisode = episode;
+}
+
+async function openEpisode(line) {
   $("#trace-modal").hidden = false;
   $("#drawer-backdrop").hidden = false;
   currentLine = line;
@@ -1572,10 +1640,10 @@ async function openEpisode(line) {
   renderRolloutList();
   $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
   $("#tm-meta").innerHTML = "";
-  const episode = await api(
-    `/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}?tokens=true`
-  );
+  const withTokens = !!$("#token-signal").value;
+  const episode = await fetchEpisode(line, withTokens);
   if (line !== currentLine) return; // user already moved to another rollout
+  episode._hasTokens = withTokens;
   currentEpisode = episode;
   currentTraceIdx = 0;
   currentBranchIdx = 0;
@@ -1662,8 +1730,11 @@ function subBlock(name, content) {
   );
 }
 
+let entriesObserver = null;
+
 function renderMessages(trace, branches) {
   const container = $("#tm-messages");
+  entriesObserver?.disconnect();
   if (!trace) {
     container.innerHTML = emptyState("no traces", "this episode carries no trace data");
     return;
@@ -1674,8 +1745,7 @@ function renderMessages(trace, branches) {
   for (const node of trace.nodes || [])
     for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
   const callsByNode = new Map((trace.calls || []).map((c) => [c.node, c]));
-  const parts = [];
-  path.forEach((idx, i) => {
+  const entryHtml = (idx, i) => {
     const node = trace.nodes[idx];
     const role = node.message?.role ?? "?";
     const call = callsByNode.get(idx);
@@ -1691,19 +1761,41 @@ function renderMessages(trace, branches) {
     if (reasoning) subs.push(subBlock("Reasoning", reasoning));
     for (const toolCall of node.message?.tool_calls || [])
       subs.push(subBlock(`Tool call · ${toolCall.function?.name ?? "?"}`, toolCall.function?.arguments ?? toolCall));
-    parts.push(
+    return (
       `<details class="entry ${esc(role)}"${role === "system" ? "" : " open"}>` +
-        `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
-        `<span class="entry-role">${esc(role)}</span>` +
-        `<span class="entry-preview">${preview(text, 180)}</span>` +
-        chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("") +
-        `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>` +
-        `<span class="entry-chev">›</span></summary>` +
-        subs.join("") +
-        `<div class="entry-body">${body}</div></details>`
+      `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
+      `<span class="entry-role">${esc(role)}</span>` +
+      `<span class="entry-preview">${preview(text, 180)}</span>` +
+      chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("") +
+      `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>` +
+      `<span class="entry-chev">›</span></summary>` +
+      subs.join("") +
+      `<div class="entry-body">${body}</div></details>`
     );
-  });
-  container.innerHTML = parts.join("");
+  };
+  // long traces render in chunks as the reader scrolls — a 1MB episode with
+  // hundreds of turns paints the first screen immediately
+  const CHUNK = 30;
+  let rendered = Math.min(path.length, CHUNK);
+  container.innerHTML =
+    path.slice(0, rendered).map(entryHtml).join("") +
+    (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "");
+  if (rendered < path.length) {
+    const sentinel = container.querySelector("#tm-more");
+    entriesObserver = new IntersectionObserver((hits) => {
+      if (!hits.some((h) => h.isIntersecting)) return;
+      const next = path.slice(rendered, rendered + CHUNK).map((idx, j) => entryHtml(idx, rendered + j)).join("");
+      rendered += CHUNK;
+      sentinel.insertAdjacentHTML("beforebegin", next);
+      if (rendered >= path.length) {
+        entriesObserver.disconnect();
+        sentinel.remove();
+      } else {
+        sentinel.textContent = `scroll for ${path.length - rendered} more entries`;
+      }
+    });
+    entriesObserver.observe(sentinel);
+  }
 }
 
 function metaRow(key, value, asId = false) {
@@ -2091,6 +2183,24 @@ $("#episode-table").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-line]");
   if (row) openEpisode(+row.dataset.line);
 });
+let episodeScrollPending = false;
+$("#episode-table-wrap").addEventListener("scroll", () => {
+  if (episodeScrollPending || !state.traces.episodes?.length) return;
+  episodeScrollPending = true;
+  requestAnimationFrame(() => {
+    episodeScrollPending = false;
+    renderEpisodeRows();
+  });
+});
+let tmScrollPending = false;
+$("#tm-list").addEventListener("scroll", () => {
+  if (tmScrollPending) return;
+  tmScrollPending = true;
+  requestAnimationFrame(() => {
+    tmScrollPending = false;
+    renderRolloutWindow();
+  });
+});
 $("#drawer-close").addEventListener("click", closeDrawer);
 $("#drawer-backdrop").addEventListener("click", closeDrawer);
 document.addEventListener("keydown", (e) => {
@@ -2103,7 +2213,8 @@ document.addEventListener("keydown", (e) => {
 });
 $("#tm-step-prev").addEventListener("click", () => modalStep(-1));
 $("#tm-step-next").addEventListener("click", () => modalStep(1));
-$("#token-signal").addEventListener("change", () => {
+$("#token-signal").addEventListener("change", async () => {
+  await ensureTokens();
   renderEpisode();
   savePrefs();
 });

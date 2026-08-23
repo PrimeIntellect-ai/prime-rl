@@ -16,8 +16,7 @@ rollouts/step_N) — no wandb or network required. Usage:
 
     uv run dashboard [output_dir ...] [--port 7788] [--host 127.0.0.1]
 
-Multiple output directories can be tracked at once. View from another machine
-via an SSH tunnel (``ssh -L 7788:localhost:7788 <host>``).
+Multiple output directories can be tracked at once.
 """
 
 import argparse
@@ -143,6 +142,7 @@ def run_meta(run_dir: Path) -> dict:
         "name": run_dir.name,
         "type": run_type,
         "model": (config.get("model") or {}).get("name"),
+        "dataset": (config.get("data") or {}).get("name"),
         "max_steps": config.get("max_steps"),
         "train_envs": envs("train"),
         "eval_envs": envs("eval"),
@@ -307,18 +307,19 @@ def read_metrics(run: str, offset: int = 0) -> dict:
 
 
 def rollout_steps(run_dir: Path) -> list[dict]:
+    """Presence only — never reads trace files, so it stays cheap over thousands of steps."""
     steps = []
     for step_dir in (run_dir / "rollouts").glob("step_*"):
         if not step_dir.name.removeprefix("step_").isdigit():
             continue
-        counts = {}
+        available = {}
         for kind in ("train", "eval"):
             for subset in ("all", "effective"):
                 path = step_dir / kind / subset / "traces.jsonl"
-                if path.is_file():
-                    counts[f"{kind}/{subset}"] = len(line_offsets(path))
-        if counts:
-            steps.append({"step": int(step_dir.name.removeprefix("step_")), "counts": counts})
+                if path.is_file() and path.stat().st_size > 0:
+                    available[f"{kind}/{subset}"] = True
+        if available:
+            steps.append({"step": int(step_dir.name.removeprefix("step_")), "available": available})
     return sorted(steps, key=lambda s: s["step"])
 
 
@@ -439,8 +440,15 @@ def list_episodes(
     errors_only: bool = False,
     sort: str = "line",
     order: str = "asc",
+    etag: str | None = None,
 ) -> dict:
-    summaries = episode_summaries(traces_path(run, step, kind, subset))
+    path = traces_path(run, step, kind, subset)
+    # summaries are append-only per file, so an unchanged size means an unchanged
+    # response — lets the poll loop skip re-sending thousands of summaries
+    current_etag = str(path.stat().st_size)
+    if etag is not None and etag == current_etag:
+        return {"unchanged": True, "etag": current_etag}
+    summaries = episode_summaries(path)
     envs = sorted({s["env"] for s in summaries if s.get("env")})
     if env:
         summaries = [s for s in summaries if s.get("env") == env]
@@ -448,7 +456,7 @@ def list_episodes(
         summaries = [s for s in summaries if s.get("num_errors") or not s.get("ok")]
     if sort in ("reward", "advantage", "output_tokens", "turns", "group"):
         summaries = sorted(summaries, key=lambda s: (s.get(sort) is None, s.get(sort) or 0), reverse=(order == "desc"))
-    return {"total": len(summaries), "envs": envs, "episodes": summaries[:limit]}
+    return {"total": len(summaries), "etag": current_etag, "envs": envs, "episodes": summaries[:limit]}
 
 
 def get_tokenizer(model: str):
@@ -481,7 +489,7 @@ def decode_pieces(model: str, ids: list[int]) -> list[str] | None:
 
 
 @app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}")
-def get_episode(run: str, step: int, kind: str, subset: str, line: int) -> dict:
+def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: bool = False) -> dict:
     path = traces_path(run, step, kind, subset)
     offsets = line_offsets(path)
     if not 0 <= line < len(offsets):
@@ -489,6 +497,8 @@ def get_episode(run: str, step: int, kind: str, subset: str, line: int) -> dict:
     with path.open("rb") as f:
         f.seek(offsets[line])
         rec = orjson.loads(f.readline())
+    if not tokens:
+        return rec
     fallback_model = (main_config(get_run_dir(run))[1].get("model") or {}).get("name")
     for trace in rec.get("traces") or []:
         client = ((trace.get("agent") or {}).get("config") or {}).get("client") or {}
