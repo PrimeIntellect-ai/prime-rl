@@ -563,7 +563,6 @@ mark.hit {
 
 #episode-table-wrap { flex: 1; overflow: auto; border: 1px solid var(--hairline); background: var(--grey-1); min-height: 0; }
 #episode-table .vpad td { padding: 0; border: 0; }
-#episode-table.no-group th:nth-child(3), #episode-table.no-group td:nth-child(3) { display: none; }
 #episode-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
 #episode-table th {
   text-align: left;

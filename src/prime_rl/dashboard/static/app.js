@@ -162,7 +162,6 @@ function applyRunTypeControls() {
   // rl: train/eval + all/effective per step - sft: eval only - eval: neither, no steps
   $("#trace-kind").hidden = isEval || state.meta?.type === "sft";
   $("#trace-subset").hidden = isEval;
-  $("#episode-table").classList.toggle("no-group", isEval); // groups are a training-only concern
   $("#tm-step-prev").hidden = isEval;
   $("#tm-step-next").hidden = isEval;
 }
@@ -1630,9 +1629,9 @@ function episodeRowHtml(ep) {
   return `<tr data-line="${ep.line}">
         <td class="muted">${ep.line}</td>
         <td>${esc(ep.env ?? "?")}</td>
-        <td class="muted" title="${esc(ep.group ?? "")}">${esc((ep.group ?? "").slice(0, 8))}</td>
+        <td class="muted" title="${esc(ep.group ?? "")}">${ep.group ? esc(ep.group.slice(0, 8)) : "n/a"}</td>
         <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
-        <td class="${rewardClass(ep.advantage)}">${fmtReward(ep.advantage)}</td>
+        <td class="${rewardClass(ep.advantage)}">${ep.advantage != null ? fmtReward(ep.advantage) : "n/a"}</td>
         <td>${
           ep.input_tokens != null || ep.output_tokens != null
             ? `<span class="muted">in</span> ${fmtCompact(ep.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(ep.output_tokens ?? 0)}`
