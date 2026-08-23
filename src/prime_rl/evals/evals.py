@@ -3,7 +3,7 @@
 Standalone (no ``[online]``), it runs one epoch of every configured eval
 source against the weights the inference server currently serves, then exits.
 With ``[online]``, it watches a broadcasts directory for offered weight
-broadcasts through a ``WeightBroadcastReceiver`` (announced by their
+broadcasts through a ``WeightReceiver`` (announced by their
 ``.sender_ready`` marker), moves the inference server onto each of them, and
 runs the configured evals against the updated weights, sequentially per
 broadcast so every epoch measures exactly one policy version. Every offered
@@ -47,7 +47,7 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import EvalBatch, Policy
 from prime_rl.orchestrator.utils import eval_work, intercept_vf_logging, set_default_executor
-from prime_rl.transports.weights.receiver import WeightBroadcastReceiver, setup_weight_receiver
+from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_config_dir, get_log_dir
@@ -120,7 +120,7 @@ class Evals:
         await self.admin_clients.wait_for_ready(config.model)
         get_logger().success("Inference pool ready")
 
-        self.receiver: WeightBroadcastReceiver | None = None
+        self.receiver: WeightReceiver | None = None
         if config.online is not None:
             assert config.online.broadcasts_dir is not None
             # A hand-written online config may omit the transport; broadcasts

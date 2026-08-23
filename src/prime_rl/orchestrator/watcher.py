@@ -8,7 +8,7 @@ import asyncio
 import time
 
 from prime_rl.orchestrator.types import Policy, VersionObserver
-from prime_rl.transports.weights.receiver import WeightBroadcastReceiver
+from prime_rl.transports.weights import WeightReceiver
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.logger import format_time, get_logger
 
@@ -18,7 +18,7 @@ class WeightWatcher:
 
     def __init__(
         self,
-        receiver: WeightBroadcastReceiver,
+        receiver: WeightReceiver,
         *,
         policy: Policy,
         observers: list[VersionObserver],

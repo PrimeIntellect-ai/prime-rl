@@ -11,10 +11,11 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
+from prime_rl.orchestrator.clients import init_nccl_broadcast, update_weights
 from prime_rl.trainer.conversion_utils import get_max_layer_num
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
-from prime_rl.transports.weights.base import WeightBroadcast
+from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 from prime_rl.utils.vlm import get_layer_prefix
@@ -104,7 +105,7 @@ def preprocess_layer_quantized(
     return model.convert_layer_to_vllm_kernel(layer_state_dict, layer_idx, quantize_fp8=True)
 
 
-class NCCLWeightBroadcastSender:
+class NCCLBroadcaster:
     def __init__(
         self,
         host: str,
@@ -162,7 +163,7 @@ class NCCLWeightBroadcastSender:
         return state_dict
 
 
-class NCCLWeightBroadcast(WeightBroadcast):
+class NCCLWeightSender(WeightSender):
     """Broadcast weights into the inference engine using NCCL."""
 
     def __init__(
@@ -172,7 +173,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         device: int | str | torch.device,
     ):
         super().__init__(output_dir, config.timeout)
-        self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
+        self.nccl_broadcast_sender = NCCLBroadcaster(
             config.host,
             config.port,
             0,
@@ -192,3 +193,28 @@ class NCCLWeightBroadcast(WeightBroadcast):
         if self.world.world_size > 1:
             dist.barrier()
         self.nccl_broadcast_sender.send(model)
+
+
+class NCCLWeightReceiver(WeightReceiver):
+    """Joins the trainer's NCCL collective. The receiver pauses the engines,
+    acknowledges, and sends them into the receive RPC — only then does the
+    trainer enter the collective, so the handshake can never race a stale
+    marker."""
+
+    async def initialize(self) -> None:
+        await init_nccl_broadcast(
+            self.admin_clients,
+            self.config.host,
+            self.config.port,
+            self.config.timeout,
+            inference_world_size=self.config.inference_world_size,
+            quantize_in_weight_transfer=self.config.quantize_in_weight_transfer,
+        )
+
+    async def receive(self, step: int) -> None:
+        await update_weights(
+            self.admin_clients,
+            self.step_dir(step),
+            step=step,
+            on_paused=lambda: self._ack(step),
+        )

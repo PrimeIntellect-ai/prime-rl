@@ -21,8 +21,7 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
-from prime_rl.transports.weights import setup_weight_broadcast
-from prime_rl.transports.weights.base import prune_broadcasts_beyond
+from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
@@ -409,11 +408,11 @@ def train(config: SFTConfig):
     def is_online_eval_step(step: int) -> bool:
         return any(step % interval == 0 for interval in online_eval_intervals)
 
-    weight_broadcast = None
+    weight_sender = None
     if online_eval_intervals:
         assert config.weight_broadcast is not None
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        weight_broadcast = setup_weight_broadcast(
+        weight_sender = setup_weight_sender(
             config.run_dir,
             config.weight_broadcast,
             parallel_dims,
@@ -426,7 +425,7 @@ def train(config: SFTConfig):
         if world.is_master:
             prune_broadcasts_beyond(config.run_dir, startup_version)
         logger.info(f"Broadcasting startup policy weights (v{startup_version}) for online evals")
-        weight_broadcast.broadcast(model, startup_version)
+        weight_sender.broadcast(model, startup_version)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
@@ -571,10 +570,10 @@ def train(config: SFTConfig):
             ckpt_manager.maybe_clean()
 
         broadcast_weights_time = 0
-        if weight_broadcast is not None and not is_last_step and is_online_eval_step(progress.step):
+        if weight_sender is not None and not is_last_step and is_online_eval_step(progress.step):
             logger.info(f"Broadcasting weights at step {progress.step}")
             broadcast_start_time = time.perf_counter()
-            weight_broadcast.broadcast(model, step=progress.step)
+            weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_start_time
 
         # Optionally, dump memory snapshot
@@ -706,9 +705,9 @@ def train(config: SFTConfig):
         ckpt_manager.maybe_clean()
 
     # Broadcast the final weights so the evals process can run its forced final epoch
-    if weight_broadcast is not None:
+    if weight_sender is not None:
         logger.info("Broadcasting final weights")
-        weight_broadcast.broadcast(model, step=progress.step)
+        weight_sender.broadcast(model, step=progress.step)
 
     if gradient_manager is not None:
         gradient_manager.close()

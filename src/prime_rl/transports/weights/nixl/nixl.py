@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from collections import defaultdict
@@ -20,9 +21,10 @@ from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
 from prime_rl.configs.trainer import NIXLWeightBroadcastConfig
+from prime_rl.orchestrator.clients import init_nixl_broadcast, update_weights
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.transports.weights.base import WeightBroadcast
+from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.transports.weights.nixl.agent import NixlAgent, make_agent_name, set_ucx_env_defaults
 from prime_rl.transports.weights.nixl.cuda_malloc_memory import (
     size_cuda_buffers,
@@ -66,7 +68,7 @@ class TransferGroupIndex:
     layer_to_group: dict[int, int]
 
 
-class NIXLWeightBroadcast(WeightBroadcast):
+class NIXLWeightSender(WeightSender):
     def __init__(
         self,
         output_dir: Path,
@@ -468,3 +470,49 @@ class NIXLWeightBroadcast(WeightBroadcast):
             self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         dist.barrier()
         self.logger.info(f"NIXL+ModelExpress policy v{step} synchronized in {time.perf_counter() - start:.2f}s")
+
+
+class NIXLWeightReceiver(WeightReceiver):
+    """Drives the orchestrator's side of the ModelExpress rendezvous. Version
+    discovery runs on the shared sentinels; the unversioned ModelExpress
+    statuses only choreograph the transfer itself."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.session = ModelExpressSession(
+            client=MxClient(server_url=f"{self.config.host}:{self.config.port}"),
+            role="orchestrator",
+            rank=0,
+            session_id=self.config.session_id,
+            worker_id="orchestrator",
+        )
+
+    async def initialize(self) -> None:
+        await init_nixl_broadcast(
+            self.admin_clients,
+            self.config.host,
+            self.config.port,
+            self.config.timeout,
+            self.config.inference_world_size,
+            self.config.session_id,
+        )
+        self.session.publish()
+        await self.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+
+    async def set_status(self, status: int) -> None:
+        await asyncio.to_thread(self.session.set_status, status)
+
+    async def receive(self, step: int) -> None:
+        # ACK the trainer (it waits for the orchestrator's READY before the
+        # engines' INITIALIZING), run the transfer, then close the cycle.
+        self._ack(step)
+        await self.set_status(p2p_pb2.SOURCE_STATUS_READY)
+        await update_weights(self.admin_clients, None, step=step)
+        await self.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+        await asyncio.to_thread(
+            self.session.wait_for,
+            "trainer",
+            count=1,
+            status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
+            timeout=self.config.timeout,
+        )

@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
 
     from prime_rl.orchestrator.ckpt import CheckpointManager
-    from prime_rl.transports.rollouts.base import MicroBatchSender
+    from prime_rl.transports.batch.base import BatchSender
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -71,8 +71,8 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
-from prime_rl.transports.rollouts import setup_micro_batch_sender
-from prime_rl.transports.weights.receiver import WeightBroadcastReceiver, setup_weight_receiver
+from prime_rl.transports.batch import setup_batch_sender
+from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
@@ -122,7 +122,7 @@ class Orchestrator:
     tokenizer: PreTrainedTokenizer
     clients: InferenceClient | None
     admin_clients: AdminClients | None
-    sender: MicroBatchSender | None
+    sender: BatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
     train_source: TrainSource
@@ -139,7 +139,7 @@ class Orchestrator:
     eval_envs: EvalEnvs | None
     eval_sink: EvalSink | None
     eval_source: EvalSource | None
-    receiver: WeightBroadcastReceiver
+    receiver: WeightReceiver
     resume_step: int | None
     lag_task: asyncio.Task | None
 
@@ -264,7 +264,7 @@ class Orchestrator:
         # Transports are local setup — initialize them before the env and inference waits.
         self.packer = BatchPacker(config)
         get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
-        self.sender = setup_micro_batch_sender(
+        self.sender = setup_batch_sender(
             config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
         )
 

@@ -9,8 +9,7 @@ from datetime import timedelta
 # ruff: noqa: I001
 
 from prime_rl.trainer.models.layers.attn import substitute_ring_attn
-from prime_rl.transports.weights import setup_weight_broadcast
-from prime_rl.transports.weights.base import prune_broadcasts_beyond
+from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
@@ -173,12 +172,12 @@ def train(config: TrainerConfig):
 
     # Set up weight broadcast (skip when using fake data since there's no inference server)
     if config.data.fake:
-        weight_broadcast = None
+        weight_sender = None
         logger.info("Skipping weight broadcast setup (fake data mode)")
     else:
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
         t0 = time.perf_counter()
-        weight_broadcast = setup_weight_broadcast(
+        weight_sender = setup_weight_sender(
             config.output_dir,
             config.weight_broadcast,
             parallel_dims,
@@ -280,13 +279,13 @@ def train(config: TrainerConfig):
         # rollouts so the trainer and inference pool join the same update lifecycle,
         # and so a broken broadcast path fails at startup instead of after the first
         # optimizer step.
-        if progress.step == start_step and weight_broadcast is not None:
+        if progress.step == start_step and weight_sender is not None:
             startup_version = progress.step - 1
             if world.is_master:
                 prune_broadcasts_beyond(config.output_dir, startup_version)
             logger.info(f"Broadcasting startup policy weights (v{startup_version}) to inference engines")
             t0 = time.perf_counter()
-            weight_broadcast.broadcast(model, startup_version)
+            weight_sender.broadcast(model, startup_version)
             logger.debug(
                 f"Broadcast startup policy weights (v{startup_version}) in {format_time(time.perf_counter() - t0)}"
             )
@@ -591,7 +590,7 @@ def train(config: TrainerConfig):
         # sample its next step from it. Every broadcast is a handshake with the consumer, so
         # versions past the last consumed one are skipped (``final_broadcast_version``:
         # training never samples v{max_steps}, but a configured final eval measures it).
-        if weight_broadcast is None:
+        if weight_sender is None:
             broadcast_weights_time = 0
         else:
             broadcast_unused = config.max_steps is not None and progress.step > final_broadcast_version(
@@ -603,7 +602,7 @@ def train(config: TrainerConfig):
                 # resident weights; release cached blocks (incl. offload-stream
                 # pools) so the broadcast gets the full headroom.
                 torch.cuda.empty_cache()
-                weight_broadcast.broadcast(model, step=progress.step)
+                weight_sender.broadcast(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
             else:
                 broadcast_weights_time = 0

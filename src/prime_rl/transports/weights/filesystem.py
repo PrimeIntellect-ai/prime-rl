@@ -5,8 +5,10 @@ import torch.nn as nn
 from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, LoRAConfig
+from prime_rl.orchestrator.clients import load_lora_adapter, update_weights
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
-from prime_rl.transports.weights.base import WeightBroadcast
+from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
+from prime_rl.utils.pathing import wait_for_path
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -15,7 +17,7 @@ from prime_rl.utils.weights import (
 )
 
 
-class FileSystemWeightBroadcast(WeightBroadcast):
+class FileSystemWeightSender(WeightSender):
     """Broadcast weights by saving a HF-compatible checkpoint (or, for LoRA
     runs, the PEFT-shaped adapter) to a shared filesystem."""
 
@@ -54,3 +56,20 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             state_dict = convert_state_dict_to_hf(model, state_dict)
             self.logger.debug(f"Saving weights to {step_dir}")
             save_state_dict_parallel(state_dict, step_dir)
+
+
+class FileSystemWeightReceiver(WeightReceiver):
+    """Loads broadcasts from the shared filesystem. The acknowledgement lets
+    the trainer start writing; the engines are only touched once the weights
+    are fully on disk. An adapter broadcast (PEFT dir) is hot-swapped under
+    live traffic — an in-place adapter reload is a vLLM-native op that needs
+    no engine pause; a full checkpoint pauses the engines for the load."""
+
+    async def receive(self, step: int) -> None:
+        weights_dir = self.step_dir(step)
+        self._ack(step)
+        await wait_for_path(weights_dir / FINISHED_MARKER)
+        if (weights_dir / "adapter_config.json").exists():
+            await load_lora_adapter(self.admin_clients, self.model_name, weights_dir)
+        else:
+            await update_weights(self.admin_clients, weights_dir, step=step)

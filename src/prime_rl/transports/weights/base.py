@@ -1,11 +1,15 @@
+import asyncio
 import shutil
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from typing import final
 
 import torch.nn as nn
+from httpx import AsyncClient
 
+from prime_rl.configs.trainer import WeightBroadcastConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_broadcast_dir, get_step_path
@@ -32,7 +36,7 @@ def prune_broadcasts_beyond(output_dir: Path, step: int) -> None:
             shutil.rmtree(get_step_path(broadcast_dir, old_step), ignore_errors=True)
 
 
-class WeightBroadcast(ABC):
+class WeightSender(ABC):
     """Trainer-side weight publisher. ``broadcast`` wraps the transport's
     ``_broadcast`` with the shared sentinel handshake: every version is
     offered (``.sender_ready``), acknowledged by the consumer
@@ -92,7 +96,7 @@ class WeightBroadcast(ABC):
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
         """Move v{step}'s weights to the consumer. Rank synchronization is the
         transport's own job — non-master ranks must be held back until the
-        master finished the handshake (see ``NCCLWeightBroadcast._broadcast``)."""
+        master finished the handshake (see ``NCCLWeightSender._broadcast``)."""
 
     def _clean(self, step: int) -> None:
         """Remove old broadcast dirs, keeping ``step`` and ``step - 1`` (a
@@ -102,3 +106,64 @@ class WeightBroadcast(ABC):
         for old_step in get_all_ckpt_steps(broadcast_dir):
             if old_step < step - 1:
                 shutil.rmtree(get_step_path(broadcast_dir, old_step), ignore_errors=True)
+
+
+class WeightReceiver(ABC):
+    """Consumer-side counterpart of ``WeightSender`` — moves the inference
+    engines onto trainer-offered policy versions. It runs in the consumer
+    process (the RL orchestrator, or the SFT evals process): the weight
+    watcher, the orchestrator's startup rendezvous, and the evals process all
+    drive the same object instead of hand-rolling transport branches. The
+    engines' in-process receive hooks are its data plane, reached through the
+    admin clients."""
+
+    def __init__(
+        self,
+        broadcast_dir: Path,
+        config: WeightBroadcastConfig,
+        admin_clients: list[AsyncClient],
+        model_name: str,
+    ) -> None:
+        self.logger = get_logger()
+        self.broadcast_dir = broadcast_dir
+        self.config = config
+        self.admin_clients = admin_clients
+        self.model_name = model_name
+
+    async def initialize(self) -> None:
+        """One-time transport bootstrap (rendezvous groups, sessions)."""
+
+    def step_dir(self, step: int) -> Path:
+        return get_step_path(self.broadcast_dir, step)
+
+    def is_published(self, step: int) -> bool:
+        """Whether the trainer has offered v{step}."""
+        return (self.step_dir(step) / SENDER_READY_MARKER).exists()
+
+    def next_version(self, current: int) -> int:
+        """Newest version offered beyond ``current``; ``current`` if none."""
+        published = [step for step in get_all_ckpt_steps(self.broadcast_dir) if self.is_published(step)]
+        return max(published, default=current)
+
+    async def wait_published(self, step: int, cancelled: Callable[[], bool] | None = None) -> None:
+        """Block until the trainer offers v{step}. Runs before the orchestrator
+        advances ``policy.version`` — the version must never move ahead of a
+        confirmed offer."""
+        sender_ready = self.step_dir(step) / SENDER_READY_MARKER
+        while not sender_ready.exists():
+            if cancelled is not None and cancelled():
+                raise asyncio.CancelledError
+            await asyncio.sleep(0.2)
+
+    def _ack(self, step: int) -> None:
+        """Acknowledge the offered version — unblocks the waiting trainer."""
+        (self.step_dir(step) / RECEIVER_READY_MARKER).touch()
+
+    @abstractmethod
+    async def receive(self, step: int) -> None:
+        """Acknowledge the offered v{step} and move the engines onto it."""
+
+    async def sync_startup(self, step: int, timeout: float) -> None:
+        """Rendezvous with the trainer's startup broadcast of v{step}."""
+        await asyncio.wait_for(self.wait_published(step), timeout=timeout)
+        await self.receive(step)
