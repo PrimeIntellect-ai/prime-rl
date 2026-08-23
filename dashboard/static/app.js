@@ -126,7 +126,6 @@ function renderOverview() {
   const fields = [
     ["status", `<span class="badge st-${status}">${status}</span>`],
     ["duration", `<span class="val">${duration}</span>`],
-    ["objective", `<span class="badge">${esc(meta.type)}</span>`],
     ["model", `<span class="val">${esc(meta.model ?? "–")}</span>`],
     ["created", `<span class="val">${fmtAgo(meta.created)}</span>`],
   ];
@@ -356,7 +355,8 @@ function renderPanelCard(grid, panel, lazy = false) {
   const title = panel.metric || panel.regex;
   card.innerHTML =
     `<div class="chart-head"><div class="chart-title" title="${esc(title)}">${esc(title)}</div><div class="chart-last"></div></div>` +
-    `<div class="resize-grip" title="drag to resize all panes"></div>`;
+    `<div class="rz rz-e" data-rz="x"></div><div class="rz rz-s" data-rz="y"></div>` +
+    `<div class="rz rz-se" data-rz="xy" title="drag to resize all panes"></div>`;
   grid.appendChild(card);
   const entry = { card, panel, u: null, series };
   state.metrics.charts.push(entry);
@@ -497,8 +497,56 @@ async function loadConfig() {
   } catch {
     /* show raw content if not valid JSON */
   }
-  $("#config-view").innerHTML = highlightJson(text);
+  state.config.text = text;
   $("#config-status").textContent = `configs/${data.file}`;
+  applyConfigSearch();
+}
+
+/* re-render the config with syntax highlighting, then mark every search hit
+   by walking text nodes (keeps syntax spans intact) */
+function applyConfigSearch() {
+  const view = $("#config-view");
+  view.innerHTML = highlightJson(state.config.text ?? "");
+  const query = $("#config-search").value.trim();
+  const hitsEl = $("#config-hits");
+  hitsEl.textContent = "";
+  if (!query) return;
+  let re;
+  try {
+    re = new RegExp(query, "gi");
+  } catch {
+    re = new RegExp(escRe(query), "gi");
+  }
+  const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  let hits = 0;
+  for (const node of nodes) {
+    const text = node.nodeValue;
+    re.lastIndex = 0;
+    if (!re.test(text)) continue;
+    re.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let match;
+    while ((match = re.exec(text))) {
+      if (match[0] === "") {
+        re.lastIndex++;
+        continue;
+      }
+      frag.append(text.slice(last, match.index));
+      const mark = document.createElement("mark");
+      mark.className = "hit";
+      mark.textContent = match[0];
+      frag.append(mark);
+      hits++;
+      last = match.index + match[0].length;
+    }
+    frag.append(text.slice(last));
+    node.replaceWith(frag);
+  }
+  hitsEl.textContent = hits ? `${hits} hit${hits === 1 ? "" : "s"}` : "no hits";
+  view.querySelector("mark.hit")?.scrollIntoView({ block: "center" });
 }
 
 async function initConfig() {
@@ -1056,6 +1104,11 @@ $("#config-file").addEventListener("change", (e) => {
   state.config.file = e.target.value;
   loadConfig();
 });
+let configSearchDebounce = 0;
+$("#config-search").addEventListener("input", () => {
+  clearTimeout(configSearchDebounce);
+  configSearchDebounce = setTimeout(applyConfigSearch, 200);
+});
 let searchDebounce = 0;
 $("#metrics-search").addEventListener("input", (e) => {
   state.metrics.search = e.target.value;
@@ -1063,21 +1116,23 @@ $("#metrics-search").addEventListener("input", (e) => {
   searchDebounce = setTimeout(renderMetricsBody, 250);
 });
 
-/* wandb-style corner drag: resizing one pane resizes all of them */
+/* wandb-style resize handles: resizing one pane resizes all of them */
 $("#metrics-body").addEventListener("pointerdown", (e) => {
-  const grip = e.target.closest(".resize-grip");
+  const grip = e.target.closest("[data-rz]");
   if (!grip) return;
   e.preventDefault();
+  const mode = grip.dataset.rz;
   const card = grip.closest(".chart-card");
   const startX = e.clientX;
   const startY = e.clientY;
   const startW = card.clientWidth;
   const startH = state.metrics.paneH;
   document.body.classList.add("resizing");
+  document.body.style.cursor = mode === "x" ? "ew-resize" : mode === "y" ? "ns-resize" : "nwse-resize";
   let raf = 0;
   const move = (ev) => {
-    state.metrics.paneMin = Math.round(Math.max(220, Math.min(900, startW + ev.clientX - startX)));
-    state.metrics.paneH = Math.round(Math.max(90, Math.min(420, startH + ev.clientY - startY)));
+    if (mode !== "y") state.metrics.paneMin = Math.round(Math.max(220, Math.min(900, startW + ev.clientX - startX)));
+    if (mode !== "x") state.metrics.paneH = Math.round(Math.max(90, Math.min(420, startH + ev.clientY - startY)));
     if (!raf)
       raf = requestAnimationFrame(() => {
         raf = 0;
@@ -1088,6 +1143,7 @@ $("#metrics-body").addEventListener("pointerdown", (e) => {
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
     document.body.classList.remove("resizing");
+    document.body.style.cursor = "";
     applyPaneSize();
     savePrefs();
   };
