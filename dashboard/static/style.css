@@ -515,18 +515,29 @@ mark.hit {
 .ll { display: flex; gap: 8px; }
 .ll:hover { background: var(--grey-2); }
 .ll .ltext { flex: 1; min-width: 0; }
-/* merge view: minimal component prefix badge */
+/* merge view: right-aligned component badge column */
 .ll .lgb {
   flex-shrink: 0;
-  width: 34px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-align: right;
-  font-size: 9.5px;
-  letter-spacing: var(--track-mono);
-  color: var(--grey-4);
-  padding-top: 1.5px;
+  width: 112px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  padding-top: 1px;
   user-select: none;
+}
+.ll .lgb-badge {
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--grey-4);
+  background: var(--grey-2);
+  border: 1px solid var(--hairline);
+  padding: 0 5px;
+  line-height: 14px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ANSI — mapped onto the PI palette */

@@ -1188,9 +1188,9 @@ function paneLines(pane, minRank, filter) {
   return lines;
 }
 
-function shortComp(component) {
-  if (component.startsWith("env:")) return component.slice(4, 9);
-  return { trainer: "trn", orch: "orc", infer: "inf", evals: "evl" }[component] ?? component.slice(0, 4);
+function compName(component) {
+  if (component.startsWith("env:")) return component.slice(4);
+  return { trainer: "trainer", orch: "orchestrator", infer: "inference", evals: "evals" }[component] ?? component;
 }
 
 function renderLogPane(el) {
@@ -1216,7 +1216,7 @@ function renderLogPane(el) {
   stream.innerHTML = shown
     .map(
       (line) =>
-        `<div class="ll">${badge ? `<span class="lgb">${esc(shortComp(line.component))}</span>` : ""}` +
+        `<div class="ll">${badge ? `<span class="lgb"><span class="lgb-badge">${esc(compName(line.component))}</span></span>` : ""}` +
         `<span class="ltext">${(line.html ??= ansiToHtml(line.raw))}</span></div>`
     )
     .join("");
