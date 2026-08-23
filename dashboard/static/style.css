@@ -11,10 +11,7 @@
   --grey-5: #bcbcbc;
   --grey-6: #ffffff;
 
-  /* platform violet is the interactive accent (run card, lines, active states);
-     lime stays a semantic color for positive values only */
-  --accent: #7c5cff;
-  --accent-2: #9d85ff;
+  --accent: #b6ff3c;
   --negative: #ff4539;
   --positive: #b6ff3c;
   --infra: #4a9eff;
@@ -152,7 +149,7 @@ select:focus, .search:focus { border-color: var(--grey-6); }
   color: var(--grey-4);
 }
 .ov-field .val { font-size: 13px; color: var(--grey-6); }
-.st-running { color: var(--accent-2); border-color: rgba(124, 92, 255, 0.5); background: rgba(124, 92, 255, 0.12); }
+.st-running { color: var(--accent); border-color: rgba(182, 255, 60, 0.5); background: rgba(182, 255, 60, 0.08); }
 .st-completed { color: var(--chart-1); border-color: rgba(120, 248, 165, 0.4); }
 .st-stopped { color: var(--grey-4); }
 /* fine-grained segmented bar: 6px cells, 3px gaps, drawn with repeating gradients */
@@ -264,27 +261,25 @@ main > section[hidden] { display: none; }
 .u-legend .u-marker { border-radius: 0; }
 .u-legend .u-value { color: var(--grey-5); }
 
-#all-metrics { display: flex; gap: 16px; min-height: 0; height: 100%; }
-#key-list { width: 340px; overflow-y: auto; flex-shrink: 0; border-right: 1px solid var(--hairline); padding-right: 12px; }
-.key-group-name {
-  font-size: 10px;
-  letter-spacing: var(--track-caps);
-  text-transform: uppercase;
-  color: var(--grey-4);
-  margin: 12px 0 4px;
+/* all-metrics regex filter — prominent */
+#metrics-search { flex: 1; max-width: 560px; padding: 8px 12px; font-size: 13px; }
+
+/* wandb-style corner drag on every chart card (resizes all panes together) */
+.chart-card { position: relative; }
+.resize-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  background:
+    linear-gradient(135deg, transparent 0 50%, var(--grey-3) 50% calc(50% + 1px), transparent calc(50% + 1px) 100%) no-repeat 3px 3px / 10px 10px,
+    linear-gradient(135deg, transparent 0 50%, var(--grey-3) 50% calc(50% + 1px), transparent calc(50% + 1px) 100%) no-repeat 7px 7px / 10px 10px;
+  opacity: 0;
 }
-.key-item {
-  font-size: 11px;
-  padding: 3px 8px;
-  cursor: pointer;
-  color: var(--grey-4);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.key-item:hover { background: var(--grey-2); color: var(--grey-6); }
-.key-item.pinned { color: var(--accent); background: var(--grey-2); }
-#pinned-charts { flex: 1; overflow-y: auto; min-width: 0; }
+.chart-card:hover .resize-grip { opacity: 1; }
+body.resizing { user-select: none; cursor: nwse-resize; }
 
 /* ---------------------------------------------------------------- config */
 #config-view {

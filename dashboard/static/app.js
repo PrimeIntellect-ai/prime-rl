@@ -8,10 +8,9 @@ const api = async (path) => {
   return res.json();
 };
 
-/* Platform violet is the default line color; extra series pull from the
-   prime-context chart palette. */
-const PALETTE = ["#9d85ff", "#78f8a5", "#fcdaa4", "#4a9eff", "#ff6b4a", "#bcbcbc", "#7adfff", "#b7a6fa"];
-const SINGLE_SERIES = "#9d85ff";
+/* prime-context line-chart palette, purple first as the default line color */
+const PALETTE = ["#b7a6fa", "#78f8a5", "#fcdaa4", "#4a9eff", "#ff6b4a", "#bcbcbc", "#7adfff"];
+const SINGLE_SERIES = "#b7a6fa";
 const POLL_MS = 3000;
 const prefs = JSON.parse(localStorage.getItem("prl-dash") || "{}");
 
@@ -23,8 +22,8 @@ const state = {
   live: true,
   metrics: {
     loaded: false, offset: 0, byKey: new Map(), mode: "overview", search: "",
-    pinned: [], charts: [], renderedKeys: -1,
-    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 320,
+    charts: [], renderedKeys: -1,
+    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 320, paneH: prefs.paneH ?? 150,
   },
   config: { loaded: false, files: [], file: null },
   logs: { loaded: false, attempt: "latest", attempts: [], files: [], selected: new Set(), buffers: new Map(), gseq: 0 },
@@ -64,7 +63,7 @@ async function selectRun(name) {
   state.run = name;
   $("#run-select").value = name;
   state.meta = await api(`/api/runs/${encodeURIComponent(name)}`);
-  state.metrics = { ...state.metrics, loaded: false, offset: 0, byKey: new Map(), pinned: [], charts: [], renderedKeys: -1 };
+  state.metrics = { ...state.metrics, loaded: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1 };
   state.config = { loaded: false, files: [], file: null };
   state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], selected: new Set(), buffers: new Map() };
   state.traces = { ...state.traces, loaded: false, steps: [], step: null, page: 0, env: "", kind: "train", subset: "effective" };
@@ -302,7 +301,7 @@ function panelData(series) {
 }
 
 function chartHeight() {
-  return Math.max(110, Math.min(260, Math.round(state.metrics.paneMin * 0.42)));
+  return state.metrics.paneH;
 }
 
 function makeChart(el, labels, width) {
@@ -337,25 +336,41 @@ function makeChart(el, labels, width) {
   );
 }
 
-function renderPanelCard(grid, panel) {
+/* Charts below the fold mount only when scrolled into view — the all-metrics
+   mode renders hundreds of panels. */
+let lazyObserver = null;
+
+function mountChart(entry) {
+  if (entry.u || !entry.series.length) return;
+  const plotEl = document.createElement("div");
+  entry.card.appendChild(plotEl);
+  entry.u = makeChart(plotEl, seriesLabels(entry.series), entry.card.clientWidth - 26);
+  updateChart(entry);
+}
+
+function renderPanelCard(grid, panel, lazy = false) {
   const series = resolvePanel(panel);
   if (!series.length && panel.regex) return; // data-dependent panel with no matches yet
   const card = document.createElement("div");
   card.className = "chart-card";
   const title = panel.metric || panel.regex;
-  card.innerHTML = `<div class="chart-head"><div class="chart-title" title="${esc(title)}">${esc(title)}</div><div class="chart-last"></div></div>`;
+  card.innerHTML =
+    `<div class="chart-head"><div class="chart-title" title="${esc(title)}">${esc(title)}</div><div class="chart-last"></div></div>` +
+    `<div class="resize-grip" title="drag to resize all panes"></div>`;
   grid.appendChild(card);
+  const entry = { card, panel, u: null, series };
+  state.metrics.charts.push(entry);
   if (!series.length) {
     card.insertAdjacentHTML("beforeend", `<div class="chart-empty">no data yet</div>`);
-    state.metrics.charts.push({ card, panel, u: null, series: [] });
     return;
   }
-  const plotEl = document.createElement("div");
-  card.appendChild(plotEl);
-  const u = makeChart(plotEl, seriesLabels(series), card.clientWidth - 26);
-  const entry = { card, panel, u, series };
-  state.metrics.charts.push(entry);
-  updateChart(entry);
+  if (lazy) {
+    card.style.minHeight = `${chartHeight() + 40}px`;
+    card.__entry = entry;
+    lazyObserver.observe(card);
+  } else {
+    mountChart(entry);
+  }
 }
 
 function updateChart(entry) {
@@ -373,6 +388,17 @@ function updateCharts() {
   for (const entry of state.metrics.charts) updateChart(entry);
 }
 
+function addSection(body, name, count) {
+  const div = document.createElement("div");
+  div.className = "section";
+  div.innerHTML = `<h2>${esc(name)}${count != null ? ` <span class="muted">${count}</span>` : ""}</h2>`;
+  const grid = document.createElement("div");
+  grid.className = "chart-grid";
+  div.appendChild(grid);
+  body.appendChild(div);
+  return { div, grid };
+}
+
 function renderMetricsBody() {
   const m = state.metrics;
   for (const entry of m.charts) entry.u?.destroy();
@@ -380,54 +406,56 @@ function renderMetricsBody() {
   m.renderedKeys = m.byKey.size;
   const body = $("#metrics-body");
   body.innerHTML = "";
+  lazyObserver?.disconnect();
+  lazyObserver = new IntersectionObserver(
+    (entries) => {
+      for (const en of entries)
+        if (en.isIntersecting) {
+          lazyObserver.unobserve(en.target);
+          mountChart(en.target.__entry);
+        }
+    },
+    { root: body, rootMargin: "400px" }
+  );
   $("#metrics-search").hidden = m.mode !== "all";
   if (!state.meta?.has_metrics && !m.byKey.size) {
     body.innerHTML = `<div class="chart-empty">no metrics.jsonl in this run</div>`;
     $("#metrics-status").textContent = "";
     return;
   }
-  $("#metrics-status").textContent = `${m.byKey.size} keys`;
   if (m.mode === "overview") {
+    $("#metrics-status").textContent = `${m.byKey.size} keys`;
     for (const section of buildSections(state.meta)) {
-      const div = document.createElement("div");
-      div.className = "section";
-      div.innerHTML = `<h2>${esc(section.name)}</h2>`;
-      const grid = document.createElement("div");
-      grid.className = "chart-grid";
-      div.appendChild(grid);
-      body.appendChild(div);
+      const { div, grid } = addSection(body, section.name);
       for (const panel of section.panels) renderPanelCard(grid, panel);
       if (!grid.children.length) div.remove();
     }
-  } else {
-    body.innerHTML = `<div id="all-metrics"><div id="key-list"></div><div id="pinned-charts"><div class="chart-grid"></div></div></div>`;
-    renderKeyList();
-    const grid = body.querySelector("#pinned-charts .chart-grid");
-    for (const key of m.pinned) renderPanelCard(grid, { metric: key });
+    return;
   }
-}
-
-function renderKeyList() {
-  const m = state.metrics;
-  const list = $("#key-list");
-  if (!list) return;
-  const query = m.search.toLowerCase();
+  // all-metrics: every key charted, grouped by top-level namespace, regex-filtered
+  let filter = null;
+  if (m.search.trim()) {
+    try {
+      filter = new RegExp(m.search.trim(), "i");
+    } catch {
+      const needle = m.search.trim().toLowerCase();
+      filter = { test: (k) => k.toLowerCase().includes(needle) };
+    }
+  }
   const groups = new Map();
   for (const key of [...m.byKey.keys()].sort()) {
-    if (query && !key.toLowerCase().includes(query)) continue;
+    if (filter && !filter.test(key)) continue;
     const group = key.split("/")[0];
     if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push(key);
   }
-  list.innerHTML = [...groups]
-    .map(
-      ([group, keys]) =>
-        `<div class="key-group-name">${esc(group)} <span class="muted">(${keys.length})</span></div>` +
-        keys
-          .map((k) => `<div class="key-item ${m.pinned.includes(k) ? "pinned" : ""}" data-key="${esc(k)}">${esc(k)}</div>`)
-          .join("")
-    )
-    .join("");
+  const shown = [...groups.values()].reduce((n, keys) => n + keys.length, 0);
+  $("#metrics-status").textContent = `${shown} / ${m.byKey.size} keys`;
+  for (const [group, keys] of groups) {
+    const { grid } = addSection(body, group, keys.length);
+    for (const key of keys) renderPanelCard(grid, { metric: key }, true);
+  }
+  if (!groups.size) body.innerHTML = `<div class="chart-empty">no keys match the filter</div>`;
 }
 
 async function initMetrics() {
@@ -1028,19 +1056,43 @@ $("#config-file").addEventListener("change", (e) => {
   state.config.file = e.target.value;
   loadConfig();
 });
+let searchDebounce = 0;
 $("#metrics-search").addEventListener("input", (e) => {
   state.metrics.search = e.target.value;
-  renderKeyList();
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(renderMetricsBody, 250);
 });
-$("#metrics-body").addEventListener("click", (e) => {
-  const item = e.target.closest(".key-item");
-  if (!item) return;
-  const key = item.dataset.key;
-  const pinned = state.metrics.pinned;
-  const idx = pinned.indexOf(key);
-  if (idx >= 0) pinned.splice(idx, 1);
-  else pinned.push(key);
-  renderMetricsBody();
+
+/* wandb-style corner drag: resizing one pane resizes all of them */
+$("#metrics-body").addEventListener("pointerdown", (e) => {
+  const grip = e.target.closest(".resize-grip");
+  if (!grip) return;
+  e.preventDefault();
+  const card = grip.closest(".chart-card");
+  const startX = e.clientX;
+  const startY = e.clientY;
+  const startW = card.clientWidth;
+  const startH = state.metrics.paneH;
+  document.body.classList.add("resizing");
+  let raf = 0;
+  const move = (ev) => {
+    state.metrics.paneMin = Math.round(Math.max(220, Math.min(900, startW + ev.clientX - startX)));
+    state.metrics.paneH = Math.round(Math.max(90, Math.min(420, startH + ev.clientY - startY)));
+    if (!raf)
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        applyPaneSize();
+      });
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    document.body.classList.remove("resizing");
+    applyPaneSize();
+    savePrefs();
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
 });
 
 $("#attempt-select").addEventListener("change", async (e) => {
@@ -1117,7 +1169,10 @@ function resizeCharts() {
 window.addEventListener("resize", resizeCharts);
 
 function savePrefs() {
-  localStorage.setItem("prl-dash", JSON.stringify({ smooth: state.metrics.smooth, paneMin: state.metrics.paneMin }));
+  localStorage.setItem(
+    "prl-dash",
+    JSON.stringify({ smooth: state.metrics.smooth, paneMin: state.metrics.paneMin, paneH: state.metrics.paneH })
+  );
 }
 
 function applyPaneSize() {
@@ -1129,11 +1184,6 @@ $("#smooth-range").addEventListener("input", (e) => {
   state.metrics.smooth = +e.target.value;
   $("#smooth-val").textContent = state.metrics.smooth > 1 ? String(state.metrics.smooth) : "off";
   updateCharts();
-  savePrefs();
-});
-$("#pane-range").addEventListener("input", (e) => {
-  state.metrics.paneMin = +e.target.value;
-  applyPaneSize();
   savePrefs();
 });
 
@@ -1158,7 +1208,6 @@ setInterval(async () => {
 (async function init() {
   $("#smooth-range").value = state.metrics.smooth;
   $("#smooth-val").textContent = state.metrics.smooth > 1 ? String(state.metrics.smooth) : "off";
-  $("#pane-range").value = state.metrics.paneMin;
   applyPaneSize();
   const params = new URLSearchParams(location.hash.slice(1));
   state.tab = params.get("tab") || "metrics";

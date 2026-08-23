@@ -33,9 +33,8 @@
         <button data-mode="overview" class="active">Overview</button>
         <button data-mode="all">All metrics</button>
       </div>
-      <input id="metrics-search" class="search" type="search" placeholder="filter keys…" hidden>
+      <input id="metrics-search" class="search" type="search" placeholder="regex filter, e.g. ^entropy/ or reward" hidden>
       <label class="ctl">smooth <input id="smooth-range" type="range" min="1" max="50" value="1"><span id="smooth-val">off</span></label>
-      <label class="ctl">size <input id="pane-range" type="range" min="220" max="560" step="20" value="320"></label>
       <span id="metrics-status" class="muted"></span>
     </div>
     <div id="metrics-body"></div>
