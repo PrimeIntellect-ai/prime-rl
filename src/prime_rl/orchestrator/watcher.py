@@ -30,7 +30,6 @@ class WeightWatcher:
         clients: InferenceClient,
         admin_clients: AdminClients,
         observers: list[VersionObserver],
-        lora_name: str | None,
         ckpt_step: int = 0,
         poll_interval: float = 1.0,
         model_express: ModelExpressSession | None = None,
@@ -40,7 +39,6 @@ class WeightWatcher:
         self.clients = clients
         self.admin_clients = admin_clients
         self.observers = observers
-        self.lora_name = lora_name
         self.ckpt_step = ckpt_step
         self.poll_interval = poll_interval
         self.model_express = model_express
@@ -136,16 +134,12 @@ class WeightWatcher:
 
             get_logger().debug(f"Updating inference weights to policy v{next_step}")
             t1 = time.perf_counter()
-            await update_weights(self.admin_clients.clients, weights_path, lora_name=self.lora_name, step=next_step)
+            await update_weights(self.admin_clients.clients, weights_path, self.clients.model_name, step=next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
             get_logger().debug(
                 f"Updated inference weights to policy v{next_step} in {format_time(self.last_update_weights_time)}"
             )
-
-            if self.lora_name is not None:
-                self.clients.update_model_name(self.lora_name)
-                self.policy.model_name = self.lora_name
 
             for observer in self.observers:
                 try:
