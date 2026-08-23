@@ -79,6 +79,8 @@ async function loadRuns() {
   const data = await api("/api/runs");
   state.runs = data.runs;
   state.outputDir = data.output_dir;
+  $("#output-dir").textContent = data.output_dir;
+  $("#output-dir").title = data.output_dir;
   const sel = $("#run-select");
   const current = state.run;
   sel.disabled = !state.runs.length;
