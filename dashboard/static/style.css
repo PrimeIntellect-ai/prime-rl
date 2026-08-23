@@ -493,9 +493,22 @@ mark.hit {
   font-family: var(--font-mono);
 }
 #log-search { flex: 1; max-width: 460px; }
-.ll { display: flex; }
+.ll { display: flex; gap: 8px; }
 .ll:hover { background: var(--grey-2); }
 .ll .ltext { flex: 1; min-width: 0; }
+/* merge view: minimal component prefix badge */
+.ll .lgb {
+  flex-shrink: 0;
+  width: 34px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-align: right;
+  font-size: 9.5px;
+  letter-spacing: var(--track-mono);
+  color: var(--grey-4);
+  padding-top: 1.5px;
+  user-select: none;
+}
 
 /* ANSI — mapped onto the PI palette */
 .a-bold { font-weight: 500; color: var(--grey-6); }

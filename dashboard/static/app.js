@@ -21,8 +21,10 @@ const state = {
   tab: "metrics",
   live: true,
   metrics: {
-    loaded: false, offset: 0, byKey: new Map(), mode: "overview", search: "",
-    charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null, collapsedSections: new Set(),
+    loaded: false, offset: 0, byKey: new Map(),
+    charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null,
+    collapsedSections: new Set(prefs.collapsedSections ?? []),
+    mode: prefs.metricsMode ?? "overview", search: prefs.metricsSearch ?? "",
     smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 320, paneH: prefs.paneH ?? 150,
     paneOrder: prefs.paneOrder ?? {},
   },
@@ -30,9 +32,18 @@ const state = {
   config: { loaded: false, files: [], file: null },
   logs: {
     loaded: false, attempt: "latest", attempts: [], files: [], paneFile: {},
-    components: null, view: "merge", maximized: null, buffers: new Map(), gseq: 0,
+    components: prefs.logComponents ? new Set(prefs.logComponents) : null,
+    view: prefs.logView ?? "merge", maximized: null, buffers: new Map(), gseq: 0,
   },
-  traces: { loaded: false, steps: [], step: null, kind: "train", subset: "effective", page: 0, limit: 5000, total: 0, env: "", errorsOnly: false, sort: "line", order: "asc" },
+  traces: {
+    loaded: false, steps: [], step: null, page: 0, limit: 5000, total: 0, env: "",
+    kind: prefs.traceKind ?? "train",
+    preferred: prefs.tracePreferred ?? "effective",
+    subset: prefs.tracePreferred ?? "effective",
+    errorsOnly: prefs.traceErrorsOnly ?? false,
+    sort: (prefs.traceSort ?? "line:asc").split(":")[0],
+    order: (prefs.traceSort ?? "line:asc").split(":")[1],
+  },
 };
 
 function fmtNum(v) {
@@ -125,7 +136,7 @@ async function selectRun(name) {
   };
   state.config = { loaded: false, files: [], file: null };
   state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], paneFile: {}, maximized: null, buffers: new Map() };
-  state.traces = { ...state.traces, loaded: false, steps: [], step: null, page: 0, env: "", kind: "train", subset: "effective" };
+  state.traces = { ...state.traces, loaded: false, steps: [], step: null, page: 0, env: "", subset: state.traces.preferred ?? "effective" };
   renderOverview();
   renderCompareMenu();
   updateHash();
@@ -1141,6 +1152,11 @@ function paneLines(pane, minRank, filter) {
   return lines;
 }
 
+function shortComp(component) {
+  if (component.startsWith("env:")) return component.slice(4, 9);
+  return { trainer: "trn", orch: "orc", infer: "inf", evals: "evl" }[component] ?? component.slice(0, 4);
+}
+
 function renderLogPane(el) {
   const stream = el.querySelector(".log-pane-stream");
   const minRank = LEVEL_RANK[$("#log-level").value] ?? 0;
@@ -1158,10 +1174,15 @@ function renderLogPane(el) {
   }
   if (multi) lines.sort((a, b) => a.t - b.t || a.gseq - b.gseq);
   const shown = lines.slice(-3000);
+  const badge = el.dataset.comp === "__merged__"; // merge view: minimal component prefix
   // always follow: stick to the bottom unless the user scrolled up to read
   const pinned = !stream.childElementCount || stream.scrollTop + stream.clientHeight >= stream.scrollHeight - 40;
   stream.innerHTML = shown
-    .map((line) => `<div class="ll"><span class="ltext">${(line.html ??= ansiToHtml(line.raw))}</span></div>`)
+    .map(
+      (line) =>
+        `<div class="ll">${badge ? `<span class="lgb">${esc(shortComp(line.component))}</span>` : ""}` +
+        `<span class="ltext">${(line.html ??= ansiToHtml(line.raw))}</span></div>`
+    )
     .join("");
   el.querySelector(".lp-count").textContent = `${fmtCount(lines.length)} lines`;
   if (pinned) stream.scrollTop = stream.scrollHeight;
@@ -1240,7 +1261,11 @@ async function loadRollouts() {
   const data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts`);
   traces.steps = data.steps;
   if (traces.step == null && data.steps.length) {
-    traces.step = data.steps[data.steps.length - 1].step;
+    // default to the newest step that already shipped the preferred subset —
+    // the newest step is usually in-flight with only "all" (no advantages yet)
+    const preferred = traces.preferred ?? "effective";
+    const shipped = [...data.steps].reverse().find((s) => s.counts[`${traces.kind}/${preferred}`]);
+    traces.step = (shipped ?? data.steps[data.steps.length - 1]).step;
     adjustKindSubset();
   } else if (traces.step != null) {
     // the preferred subset may have shipped since the last poll (a live step's
@@ -1801,6 +1826,7 @@ document.querySelectorAll("#metrics-mode button").forEach((b) =>
     state.metrics.mode = b.dataset.mode;
     document.querySelectorAll("#metrics-mode button").forEach((x) => x.classList.toggle("active", x === b));
     renderMetricsBody();
+    savePrefs();
   })
 );
 $("#config-file").addEventListener("change", (e) => {
@@ -1810,13 +1836,19 @@ $("#config-file").addEventListener("change", (e) => {
 let configSearchDebounce = 0;
 $("#config-search").addEventListener("input", () => {
   clearTimeout(configSearchDebounce);
-  configSearchDebounce = setTimeout(applyConfigSearch, 200);
+  configSearchDebounce = setTimeout(() => {
+    applyConfigSearch();
+    savePrefs();
+  }, 200);
 });
 let searchDebounce = 0;
 $("#metrics-search").addEventListener("input", (e) => {
   state.metrics.search = e.target.value;
   clearTimeout(searchDebounce);
-  searchDebounce = setTimeout(renderMetricsBody, 250);
+  searchDebounce = setTimeout(() => {
+    renderMetricsBody();
+    savePrefs();
+  }, 250);
 });
 
 // remember collapsed sections across re-renders; charts created while hidden
@@ -1832,6 +1864,7 @@ $("#metrics-body").addEventListener(
     } else {
       state.metrics.collapsedSections.add(section.dataset.name);
     }
+    savePrefs();
   },
   true
 );
@@ -1928,6 +1961,7 @@ $("#log-comp-menu").addEventListener("change", async (e) => {
   renderLogPanes();
   await pollLogs(false);
   renderAllLogPanes();
+  savePrefs();
 });
 document.querySelectorAll("#log-view button").forEach((b) =>
   b.addEventListener("click", () => {
@@ -1935,13 +1969,20 @@ document.querySelectorAll("#log-view button").forEach((b) =>
     document.querySelectorAll("#log-view button").forEach((x) => x.classList.toggle("active", x === b));
     renderLogPanes();
     renderAllLogPanes();
+    savePrefs();
   })
 );
-$("#log-level").addEventListener("change", renderAllLogPanes);
+$("#log-level").addEventListener("change", () => {
+  renderAllLogPanes();
+  savePrefs();
+});
 let logSearchDebounce = 0;
 $("#log-search").addEventListener("input", () => {
   clearTimeout(logSearchDebounce);
-  logSearchDebounce = setTimeout(renderAllLogPanes, 200);
+  logSearchDebounce = setTimeout(() => {
+    renderAllLogPanes();
+    savePrefs();
+  }, 200);
 });
 $("#log-older").addEventListener("click", loadOlder);
 
@@ -1970,6 +2011,7 @@ document.querySelectorAll("#trace-kind button").forEach((b) =>
     state.traces.page = 0;
     adjustKindSubset();
     loadEpisodes();
+    savePrefs();
   })
 );
 document.querySelectorAll("#trace-subset button").forEach((b) =>
@@ -1979,14 +2021,16 @@ document.querySelectorAll("#trace-subset button").forEach((b) =>
     state.traces.page = 0;
     adjustKindSubset();
     loadEpisodes();
+    savePrefs();
   })
 );
 $("#trace-env").addEventListener("change", (e) => { state.traces.env = e.target.value; state.traces.page = 0; loadEpisodes(); });
-$("#trace-errors").addEventListener("change", (e) => { state.traces.errorsOnly = e.target.checked; state.traces.page = 0; loadEpisodes(); });
+$("#trace-errors").addEventListener("change", (e) => { state.traces.errorsOnly = e.target.checked; state.traces.page = 0; loadEpisodes(); savePrefs(); });
 $("#trace-sort").addEventListener("change", (e) => {
   [state.traces.sort, state.traces.order] = e.target.value.split(":");
   state.traces.page = 0;
   loadEpisodes();
+  savePrefs();
 });
 $("#episode-table").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-line]");
@@ -2004,7 +2048,10 @@ document.addEventListener("keydown", (e) => {
 });
 $("#tm-step-prev").addEventListener("click", () => modalStep(-1));
 $("#tm-step-next").addEventListener("click", () => modalStep(1));
-$("#token-signal").addEventListener("change", renderEpisode);
+$("#token-signal").addEventListener("change", () => {
+  renderEpisode();
+  savePrefs();
+});
 $("#tm-trace-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-trace]");
   if (btn) { currentTraceIdx = +btn.dataset.trace; currentBranchIdx = 0; renderEpisode(); }
@@ -2053,6 +2100,19 @@ function savePrefs() {
       paneMin: state.metrics.paneMin,
       paneH: state.metrics.paneH,
       paneOrder: state.metrics.paneOrder,
+      metricsMode: state.metrics.mode,
+      metricsSearch: state.metrics.search,
+      collapsedSections: [...state.metrics.collapsedSections],
+      traceKind: state.traces.kind,
+      tracePreferred: state.traces.preferred ?? "effective",
+      traceErrorsOnly: state.traces.errorsOnly,
+      traceSort: `${state.traces.sort}:${state.traces.order}`,
+      logView: state.logs.view,
+      logComponents: state.logs.components ? [...state.logs.components] : null,
+      logLevel: $("#log-level").value,
+      logSearch: $("#log-search").value,
+      configSearch: $("#config-search").value,
+      tokenSignal: $("#token-signal").value,
     })
   );
 }
@@ -2096,6 +2156,15 @@ setInterval(async () => {
 (async function init() {
   $("#smooth-range").value = state.metrics.smooth;
   $("#smooth-val").textContent = state.metrics.smooth > 1 ? String(state.metrics.smooth) : "off";
+  $("#metrics-search").value = state.metrics.search;
+  $("#log-level").value = prefs.logLevel ?? "DEBUG";
+  $("#log-search").value = prefs.logSearch ?? "";
+  $("#config-search").value = prefs.configSearch ?? "";
+  $("#token-signal").value = prefs.tokenSignal ?? "";
+  $("#trace-sort").value = `${state.traces.sort}:${state.traces.order}`;
+  $("#trace-errors").checked = state.traces.errorsOnly;
+  document.querySelectorAll("#metrics-mode button").forEach((b) => b.classList.toggle("active", b.dataset.mode === state.metrics.mode));
+  document.querySelectorAll("#log-view button").forEach((b) => b.classList.toggle("active", b.dataset.view === state.logs.view));
   applyPaneSize();
   const params = new URLSearchParams(location.hash.slice(1));
   state.tab = params.get("tab") || "metrics";
