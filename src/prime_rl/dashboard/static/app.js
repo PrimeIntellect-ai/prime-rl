@@ -299,8 +299,8 @@ async function activateTab(tab, force = false) {
 
 /* ---------------------------------------------------------------- metrics */
 
-const COMMON_METRICS = ["effective/num_total_tokens/mean", "effective/num_turns/mean", "effective/num_branches/mean"];
-const COMMON_REGEXES = ["all/[^/]+/has_error/mean", "effective/[^/]+/is_truncated/mean"];
+const COMMON_METRICS = ["effective/num_turns/mean", "effective/num_total_tokens/mean", "effective/num_branches/mean"];
+const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "all/[^/]+/has_error/mean"];
 const STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"];
 const PERFORMANCE_METRICS = ["perf/mfu", "time/step", "time/wait_for_batch", "time/wait_for_policy"];
 const SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perplexity", "progress/epoch"];
@@ -480,13 +480,14 @@ async function fetchCompares() {
 }
 
 function buildSections(meta) {
+  // panel order: reward (effective, then all) -> turns/tokens/branches -> truncation/error
   const trainSection = (name, scope) => ({
     name,
     panels: [
-      ...COMMON_METRICS.map((m) => ({ metric: `${scope}/${m}` })),
       // one banded plot per agent, not a multi-color overlay
-      { regex: `${escRe(scope)}/all/[^/]+/reward/mean`, split: true },
       { regex: `${escRe(scope)}/effective/[^/]+/reward/mean`, split: true },
+      { regex: `${escRe(scope)}/all/[^/]+/reward/mean`, split: true },
+      ...COMMON_METRICS.map((m) => ({ metric: `${scope}/${m}` })),
       ...COMMON_REGEXES.map((r) => ({ regex: `${escRe(scope)}/${r}` })),
     ],
   });
@@ -495,9 +496,9 @@ function buildSections(meta) {
     panels: [
       { regex: `eval/${envPattern}/all/[^/]+/avg@.*` },
       { regex: `eval/${envPattern}/effective/[^/]+/avg@.*` },
-      ...COMMON_METRICS.map((m) => ({ regex: `eval/${envPattern}/${m}` })),
-      { regex: `eval/${envPattern}/all/[^/]+/reward/mean`, split: true },
       { regex: `eval/${envPattern}/effective/[^/]+/reward/mean`, split: true },
+      { regex: `eval/${envPattern}/all/[^/]+/reward/mean`, split: true },
+      ...COMMON_METRICS.map((m) => ({ regex: `eval/${envPattern}/${m}` })),
       ...COMMON_REGEXES.map((r) => ({ regex: `eval/${envPattern}/${r}` })),
     ],
   });
@@ -898,6 +899,7 @@ function panelTitle(panel, series, sectionName) {
     title = parts.join("/") || keys[0];
   }
   if (sectionName && title.startsWith(`${sectionName}/`)) title = title.slice(sectionName.length + 1);
+  if (title.endsWith("/mean")) title = title.slice(0, -"/mean".length); // a lone mean is implied
   return title;
 }
 
@@ -984,7 +986,9 @@ function addSection(body, name, count, display = name) {
   const div = document.createElement("details");
   div.className = "section";
   div.dataset.name = name;
-  div.open = !state.metrics.collapsedSections.has(name);
+  // an active search auto-expands sections so hits are visible; the persisted
+  // collapse state comes back when the query clears
+  div.open = activeFilter ? true : !state.metrics.collapsedSections.has(name);
   div.innerHTML =
     `<summary>${esc(display)}${count != null ? ` <span class="muted">${count}</span>` : ""}` +
     `<span class="sec-chev">›</span></summary>`;
@@ -2390,12 +2394,11 @@ $("#metrics-body").addEventListener(
   (e) => {
     const section = e.target;
     if (!section.matches?.("details.section")) return;
-    if (section.open) {
-      state.metrics.collapsedSections.delete(section.dataset.name);
-      resizeCharts();
-    } else {
-      state.metrics.collapsedSections.add(section.dataset.name);
-    }
+    if (section.open) resizeCharts();
+    // a search force-opens sections - don't let that overwrite the saved state
+    if (activeFilter) return;
+    if (section.open) state.metrics.collapsedSections.delete(section.dataset.name);
+    else state.metrics.collapsedSections.add(section.dataset.name);
     savePrefs();
   },
   true
