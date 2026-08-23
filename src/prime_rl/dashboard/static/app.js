@@ -25,7 +25,7 @@ const state = {
     charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null, maxStep: null,
     collapsedSections: new Set(prefs.collapsedSections ?? []),
     mode: prefs.metricsMode ?? "overview", search: prefs.metricsSearch ?? "",
-    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 320, paneH: prefs.paneH ?? 150,
+    smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 260, paneH: prefs.paneH ?? 150,
     paneOrder: prefs.paneOrder ?? {},
   },
   compare: { runs: [], data: new Map() },
@@ -540,11 +540,125 @@ function resolvePanel(panel) {
       keys = [...store.byKey.keys()].filter((k) => re.test(k)).sort();
     }
     if (activeFilter) keys = keys.filter((k) => activeFilter.test(k));
-    for (const key of keys)
+    // every charted mean pulls its p10/p90 siblings in as a shaded band
+    const expanded = [];
+    for (const key of keys) {
+      expanded.push(key);
+      if (key.endsWith("/mean"))
+        for (const stat of ["p10", "p90"]) {
+          const sibling = key.slice(0, -"mean".length) + stat;
+          if (store.byKey.has(sibling) && !keys.includes(sibling)) expanded.push(sibling);
+        }
+    }
+    for (const key of expanded)
       for (const [producer, points] of store.byKey.get(key))
         series.push({ key, producer, points, run, time: store.timeKeys.has(key) });
   }
   return series;
+}
+
+/* series in one panel group by (run, key-minus-stat) into a single color: the
+   mean draws solid, p10/p90 (or min/max) draw dashed with a shaded band, other
+   stats draw dashed, and a second producer of the same key draws dashed too */
+const STAT_SUFFIXES = new Set(["mean", "min", "max", "p10", "p90", "sum", "pooled", "std"]);
+const MAIN_STAT_PRIORITY = ["mean", "sum", "pooled"];
+
+function statOf(key) {
+  const suffix = key.split("/").at(-1);
+  return STAT_SUFFIXES.has(suffix) ? suffix : null;
+}
+
+function familyOf(key) {
+  return statOf(key) ? key.split("/").slice(0, -1).join("/") : key;
+}
+
+function panelGroups(seriesList) {
+  const groups = new Map();
+  for (const s of seriesList) {
+    const groupKey = `${s.run}|${familyOf(s.key)}`;
+    if (!groups.has(groupKey)) groups.set(groupKey, { run: s.run, strands: new Map() });
+    const group = groups.get(groupKey);
+    const producer = s.producer ?? "";
+    if (!group.strands.has(producer)) group.strands.set(producer, []);
+    group.strands.get(producer).push(s);
+  }
+  return [...groups.values()].map((group) => ({
+    run: group.run,
+    strands: [...group.strands.values()].map((members) => {
+      const byStat = new Map(members.map((s) => [statOf(s.key), s]));
+      const main = MAIN_STAT_PRIORITY.map((p) => byStat.get(p)).find(Boolean) ?? members[0];
+      let lo = null;
+      let hi = null;
+      if (byStat.has("p10") && byStat.has("p90")) [lo, hi] = [byStat.get("p10"), byStat.get("p90")];
+      else if (byStat.has("min") && byStat.has("max") && !["min", "max"].includes(statOf(main.key)))
+        [lo, hi] = [byStat.get("min"), byStat.get("max")];
+      return { main, lo, hi, overlays: members.filter((s) => s !== main && s !== lo && s !== hi) };
+    }),
+  }));
+}
+
+function groupColors(groups) {
+  if (state.compare.runs.length) {
+    const runs = [state.run, ...state.compare.runs];
+    return groups.map((g) => PALETTE[Math.max(0, runs.indexOf(g.run)) % PALETTE.length]);
+  }
+  return groups.length > 1 ? groups.map((_, i) => PALETTE[i % PALETTE.length]) : [SINGLE_SERIES];
+}
+
+/* flatten groups into uPlot series defs + data columns + tooltip meta */
+function buildChartLayout(entry, timeAxis) {
+  const groups = panelGroups(entry.series);
+  const colors = groupColors(groups);
+  const mains = [];
+  groups.forEach((g, gi) => g.strands.forEach((strand) => mains.push({ strand, color: colors[gi] })));
+  const labels = seriesLabels(mains.map((m) => m.strand.main));
+  const cols = []; // parallel to uPlot series[1..]: {s, role: ghost|main|aux}
+  const uSeries = [{ label: timeAxis ? "time" : "step" }];
+  const bands = [];
+  const meta = [];
+  let mainIdx = 0;
+  for (const [gi, group] of groups.entries()) {
+    const color = colors[gi];
+    for (const [si, strand] of group.strands.entries()) {
+      cols.push({ s: strand.main, role: "ghost" });
+      uSeries.push({ stroke: hexToRgba(color, 0.25), width: 1, spanGaps: true, points: { show: false } });
+      cols.push({ s: strand.main, role: "main" });
+      uSeries.push({
+        label: labels[mainIdx] || "value",
+        stroke: color,
+        width: 1.25,
+        dash: si > 0 ? [6, 4] : undefined,
+        spanGaps: true,
+        points: { show: false },
+      });
+      meta.push({ label: labels[mainIdx] || "value", color, dataIdx: cols.length });
+      mainIdx++;
+      const aux = [strand.lo, strand.hi, ...strand.overlays].filter(Boolean);
+      const bandIdx = {};
+      for (const s of aux) {
+        cols.push({ s, role: "aux" });
+        uSeries.push({ stroke: hexToRgba(color, 0.55), width: 1, dash: [3, 3], spanGaps: true, points: { show: false } });
+        if (s === strand.lo) bandIdx.lo = cols.length;
+        if (s === strand.hi) bandIdx.hi = cols.length;
+      }
+      if (bandIdx.lo && bandIdx.hi) bands.push({ series: [bandIdx.hi, bandIdx.lo], fill: hexToRgba(color, 0.09) });
+    }
+  }
+  return { cols, uSeries, bands, meta };
+}
+
+function layoutData(layout) {
+  const stepSet = new Set();
+  for (const c of layout.cols) for (const step of c.s.points.keys()) stepSet.add(step);
+  const steps = [...stepSet].sort((a, b) => a - b);
+  const window = state.metrics.smooth;
+  const out = [steps];
+  for (const c of layout.cols) {
+    const raw = steps.map((st) => c.s.points.get(st) ?? null);
+    if (c.role === "ghost") out.push(window > 1 ? raw : raw.map(() => null));
+    else out.push(window > 1 ? rollingMean(raw, window) : raw);
+  }
+  return out;
 }
 
 function seriesLabels(series) {
@@ -564,14 +678,6 @@ function seriesLabels(series) {
   });
 }
 
-/* comparing runs: color by run; otherwise color by series */
-function seriesColors(series) {
-  if (state.compare.runs.length) {
-    const runs = [state.run, ...state.compare.runs];
-    return series.map((s) => PALETTE[Math.max(0, runs.indexOf(s.run)) % PALETTE.length]);
-  }
-  return series.length > 1 ? series.map((_, i) => PALETTE[i % PALETTE.length]) : [SINGLE_SERIES];
-}
 
 function rollingMean(values, window) {
   if (window <= 1) return values;
@@ -594,21 +700,6 @@ function rollingMean(values, window) {
   return out;
 }
 
-/* each logical series feeds two uPlot series: a raw ghost (visible only while
-   smoothing) drawn under the smoothed main line */
-function panelData(series) {
-  const stepSet = new Set();
-  for (const s of series) for (const step of s.points.keys()) stepSet.add(step);
-  const steps = [...stepSet].sort((a, b) => a - b);
-  const window = state.metrics.smooth;
-  const out = [steps];
-  for (const s of series) {
-    const raw = steps.map((st) => s.points.get(st) ?? null);
-    out.push(window > 1 ? raw : raw.map(() => null));
-    out.push(window > 1 ? rollingMean(raw, window) : raw);
-  }
-  return out;
-}
 
 function chartHeight() {
   return state.metrics.paneH;
@@ -689,8 +780,8 @@ function tooltipPlugin(meta, timeAxis) {
         const x = u.data[0][idx];
         let rows = `<div class="u-tip-x">${timeAxis ? fmtTickDur(x) : `step ${x}`}</div>`;
         let any = false;
-        meta.forEach((m, i) => {
-          const v = u.data[2 + i * 2][idx]; // the main (smoothed) series
+        meta.forEach((m) => {
+          const v = u.data[m.dataIdx][idx]; // the strand's main (smoothed) series
           if (v == null) return;
           any = true;
           rows +=
@@ -713,7 +804,7 @@ function tooltipPlugin(meta, timeAxis) {
   };
 }
 
-function makeChart(el, labels, colorList, width, timeAxis = false) {
+function makeChart(el, layout, width, timeAxis = false) {
   const axis = {
     stroke: "#767676",
     grid: { stroke: "rgba(255,255,255,0.06)", width: 1 },
@@ -729,25 +820,20 @@ function makeChart(el, labels, colorList, width, timeAxis = false) {
       }
     : // step axis: integer ticks only
       { ...axis, size: 28, incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000] };
-  const meta = labels.map((label, i) => ({ label: label || "value", color: colorList[i % colorList.length] }));
-  const series = [{ label: timeAxis ? "time" : "step" }];
-  for (const m of meta) {
-    series.push({ stroke: hexToRgba(m.color, 0.25), width: 1, spanGaps: true, points: { show: false } });
-    series.push({ label: m.label, stroke: m.color, width: 1.25, spanGaps: true, points: { show: false } });
-  }
   return new uPlot(
     {
       width,
       height: chartHeight(),
       padding: [10, 12, 0, 0],
-      cursor: { points: { size: 5 }, drag: { x: true, y: false } },
+      cursor: { points: { show: false }, drag: { x: true, y: false } },
       scales: { x: { time: false } },
       axes: [xAxis, { ...axis, size: 54, values: (u, vals) => vals.map(fmtAxis) }],
       legend: { show: false },
-      plugins: [tooltipPlugin(meta, timeAxis), unzoomPlugin()],
-      series,
+      bands: layout.bands,
+      plugins: [tooltipPlugin(layout.meta, timeAxis), unzoomPlugin()],
+      series: layout.uSeries,
     },
-    [[], ...meta.flatMap(() => [[], []])],
+    [[], ...layout.cols.map(() => [])],
     el
   );
 }
@@ -761,7 +847,8 @@ function mountChart(entry) {
   const plotEl = document.createElement("div");
   entry.card.appendChild(plotEl);
   const timeAxis = entry.series.every((s) => s.time);
-  entry.u = makeChart(plotEl, seriesLabels(entry.series), seriesColors(entry.series), chartWidth(entry.card), timeAxis);
+  entry.layout = buildChartLayout(entry, timeAxis);
+  entry.u = makeChart(plotEl, entry.layout, chartWidth(entry.card), timeAxis);
   updateChart(entry);
 }
 
@@ -847,8 +934,7 @@ function applyPaneOrder(grid) {
 
 function updateChart(entry) {
   if (!entry.u) return;
-  const data = panelData(entry.series);
-  entry.u.setData(data);
+  entry.u.setData(layoutData(entry.layout));
   const last = entry.series[0]?.points;
   if (last?.size) {
     let maxX = -Infinity;
