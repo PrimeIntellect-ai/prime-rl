@@ -309,8 +309,17 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.stat-value { font-size: 20px; color: var(--grey-6); margin: 6px 0 2px; }
-.stat-n { font-size: 10px; color: var(--grey-4); }
+.stat-value { font-size: 20px; color: var(--grey-6); margin: 6px 0 0; }
+.eval-progress { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.ep-bar { flex: 1; height: 6px; background: var(--grey-2); border: 1px solid var(--hairline); }
+.ep-fill { height: 100%; background: var(--accent); }
+.ep-label {
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--grey-4);
+  white-space: nowrap;
+}
 .chart-card {
   position: relative;
   background: var(--grey-2);
@@ -554,6 +563,7 @@ mark.hit {
 
 #episode-table-wrap { flex: 1; overflow: auto; border: 1px solid var(--hairline); background: var(--grey-1); min-height: 0; }
 #episode-table .vpad td { padding: 0; border: 0; }
+#episode-table.no-group th:nth-child(3), #episode-table.no-group td:nth-child(3) { display: none; }
 #episode-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
 #episode-table th {
   text-align: left;
@@ -717,6 +727,18 @@ details.sub > .entry-body { border-top: 1px solid var(--hairline); }
 details.meta-fold { border: 1px solid var(--hairline); margin: 8px 0; }
 details.meta-fold > summary { padding: 6px 10px; font-size: 10.5px; color: var(--grey-5); }
 details.meta-fold > pre { margin: 0; border: none; border-top: 1px solid var(--hairline); }
+
+/* tool calls: green-terminal block */
+.tool-call {
+  margin: 8px 12px 10px;
+  padding: 7px 10px;
+  background: #0b1403;
+  border: 1px solid rgba(182, 255, 60, 0.22);
+  color: var(--accent);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 .tok { padding: 0 1px; }
 .tok:hover { outline: 1px solid var(--grey-6); }

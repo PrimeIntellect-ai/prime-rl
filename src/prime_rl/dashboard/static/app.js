@@ -162,6 +162,7 @@ function applyRunTypeControls() {
   // rl: train/eval + all/effective per step - sft: eval only - eval: neither, no steps
   $("#trace-kind").hidden = isEval || state.meta?.type === "sft";
   $("#trace-subset").hidden = isEval;
+  $("#episode-table").classList.toggle("no-group", isEval); // groups are a training-only concern
   $("#tm-step-prev").hidden = isEval;
   $("#tm-step-next").hidden = isEval;
 }
@@ -407,6 +408,16 @@ function renderEvalCards(body) {
   const m = state.metrics;
   const series = m.evalSeries || {};
   const filter = makeFilter(m.search.trim());
+  const total = state.meta?.total_episodes;
+  const done = m.evalCount || 0;
+  if (total) {
+    const pct = Math.min(100, (done / total) * 100);
+    body.insertAdjacentHTML(
+      "beforeend",
+      `<div class="eval-progress"><div class="ep-bar"><div class="ep-fill" style="width:${pct}%"></div></div>` +
+        `<span class="ep-label">${done}/${total} episodes · ${Math.round(pct)}%</span></div>`
+    );
+  }
   const fmtVal = (key, v) => {
     if (v == null) return "–";
     if (key === "cost") return fmtCost(v);
@@ -431,13 +442,12 @@ function renderEvalCards(body) {
         const label = /^(rewards|metrics|timing)\//.test(key) ? key.split("/").slice(1).join("/") : key;
         return (
           `<div class="stat-card"><div class="stat-label" title="${esc(key)}">${esc(label)}</div>` +
-          `<div class="stat-value">${fmtVal(key, avg)}</div>` +
-          `<div class="stat-n">avg of ${values.length}</div></div>`
+          `<div class="stat-value">${fmtVal(key, avg)}</div></div>`
         );
       })
       .join("");
   }
-  $("#metrics-status").textContent = m.evalCount ? `running avg over ${m.evalCount} episodes` : "";
+  $("#metrics-status").textContent = total || !m.evalCount ? "" : `running avg over ${m.evalCount} episodes`;
   if (!shown) body.innerHTML = emptyState("no episodes yet", "metrics appear as episodes land");
 }
 
@@ -1902,6 +1912,33 @@ function renderTokenNode(node, signal, maxAbsAdv) {
   return spans.join("");
 }
 
+/* tool calls render directly as python-style calls, e.g. ipython("!ls -la /app") */
+function pyLiteral(value) {
+  if (value === null) return "None";
+  if (value === true) return "True";
+  if (value === false) return "False";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number") return String(value);
+  return JSON.stringify(value);
+}
+
+function toolCallHtml(toolCall) {
+  const name = toolCall.function?.name ?? toolCall.name ?? "?";
+  const raw = toolCall.function?.arguments ?? toolCall.arguments;
+  let args;
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const entries = Object.entries(parsed);
+      // one argument reads best positionally: ipython("!ls -la /app")
+      args = entries.length === 1 ? pyLiteral(entries[0][1]) : entries.map(([k, v]) => `${k}=${pyLiteral(v)}`).join(", ");
+    } else args = pyLiteral(parsed);
+  } catch {
+    args = String(raw ?? "");
+  }
+  return `<div class="tool-call">${esc(name)}(${esc(args)})</div>`;
+}
+
 function subBlock(name, content) {
   const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
   return (
@@ -1942,8 +1979,7 @@ function renderMessages(trace, branches) {
     const subs = [];
     const reasoning = node.message?.reasoning_content ?? node.message?.reasoning;
     if (reasoning) subs.push(subBlock("Reasoning", reasoning));
-    for (const toolCall of node.message?.tool_calls || [])
-      subs.push(subBlock(`Tool call · ${toolCall.function?.name ?? "?"}`, toolCall.function?.arguments ?? toolCall));
+    const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
     return (
       `<details class="entry ${esc(role)}"${role === "system" ? "" : " open"}>` +
       `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
@@ -1953,7 +1989,9 @@ function renderMessages(trace, branches) {
       `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>` +
       `<span class="entry-chev">›</span></summary>` +
       subs.join("") +
-      `<div class="entry-body">${body}</div></details>`
+      `<div class="entry-body">${body}</div>` +
+      toolCalls.join("") +
+      `</details>`
     );
   };
   // long traces render in chunks as the reader scrolls — a 1MB episode with

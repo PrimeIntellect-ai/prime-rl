@@ -160,6 +160,7 @@ def run_meta(run_dir: Path) -> dict:
         "model": model if isinstance(model, str) else (model or {}).get("name"),
         "dataset": (config.get("data") or {}).get("name"),
         "env": ((config.get("env") or {}).get("taskset") or {}).get("id"),
+        "total_episodes": (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None,
         "max_steps": config.get("max_steps"),
         "train_envs": envs("train"),
         "eval_envs": envs("eval"),
