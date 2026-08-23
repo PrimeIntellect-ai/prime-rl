@@ -307,9 +307,6 @@ uv run python tools/converters/dcp_to_hf.py --ckpt-dir outputs/my-run/checkpoint
 
 # multi-rank for faster gathers and models that don't fit one GPU
 uv run torchrun --nproc-per-node 8 tools/converters/dcp_to_hf.py --ckpt-dir outputs/my-run/checkpoints/step_10
-
-# no GPU (default on GPU-less machines): reads the model entries into host RAM
-uv run python tools/converters/dcp_to_hf.py --ckpt-dir outputs/my-run/checkpoints/step_10 --cpu
 ```
 
 The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/converters/bf16_to_fp8.py <dir>`; dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/converters/fp8_to_bf16.py <dir>`.
