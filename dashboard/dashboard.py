@@ -14,7 +14,7 @@
 Reads everything from a run's output directory (metrics.jsonl, logs/attempt_N,
 rollouts/step_N) — no wandb or network required. Usage:
 
-    ./dashboard/dashboard.py [output_dir] [--port 8000] [--host 127.0.0.1]
+    ./dashboard/dashboard.py [output_dir] [--port 7788] [--host 127.0.0.1]
 
 View from another machine via an SSH tunnel (the startup banner prints the command).
 """
@@ -487,7 +487,7 @@ def main() -> None:
     global output_dir
     parser = argparse.ArgumentParser(description="prime-rl run dashboard")
     parser.add_argument("output_dir", nargs="?", default="outputs", type=Path)
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=7788)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
     output_dir = args.output_dir
