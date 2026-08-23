@@ -10,8 +10,6 @@ from typing import Any
 
 import verifiers.v1 as vf
 
-from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
 from prime_rl.utils.utils import (
     get_broadcast_dir,
@@ -70,36 +68,6 @@ def episode_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) ->
     return total, in_flight, in_queue
 
 
-async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
-    """Build the live policy inference pool + matching renderer. Returns
-    ``(renderer, inference_pool)``.
-
-    Training is renderer-only: the renderer object is the canonical
-    messages → token ids path (sft backfill, opsd scoring prefixes, echo role
-    attribution) and is always built. The renderer-client sampling path is
-    wired onto the pool; when no train env samples from the live policy the
-    renderer is still kept for client-side tokenization and the pool's evals
-    use plain chat-completions."""
-    from renderers.base import create_renderer
-
-    client_config = config.model.client
-    model_name = config.model.name
-    renderer = create_renderer(tokenizer, config.renderer)
-    get_logger().info(f"Initialized {type(renderer).__name__} for {model_name}")
-    if config.any_policy_sourced:
-        get_logger().info("Using direct renderer rollout client")
-    else:
-        get_logger().info("No policy-sourced train env — renderer kept for client-side tokenization only")
-    inference_pool = InferencePool(
-        client_config,
-        model_name=model_name,
-        train_client_type="renderer",
-        eval_client_type="openai_chat_completions",
-        renderer_config=config.renderer,
-    )
-    return renderer, inference_pool
-
-
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
     """Intercepts verifiers logging and routes through prime-rl logger with optional prefix."""
     vf_logger = logging.getLogger(logger)
@@ -120,7 +88,7 @@ def setup_env_server_logging(log_level: str, json_logging: bool = False) -> None
 
 def set_default_executor(max_workers: int = 64) -> None:
     """Scale the default asyncio thread pool so asyncio.to_thread has enough capacity."""
-    get_logger().info(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
+    get_logger().debug(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
     asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
 
 

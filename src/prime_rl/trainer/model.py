@@ -595,7 +595,7 @@ def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
     logger = get_logger()
-    logger.info(
+    logger.debug(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
 
@@ -778,7 +778,7 @@ def get_model(
                 trust_remote_code=config.trust_remote_code,
                 **dtype_kwarg,
             )
-        logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
+        logger.debug(f"Loaded model {config.name} in {format_time(time.perf_counter() - load_model_start_time)}")
 
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
@@ -1057,7 +1057,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
             generator = torch.Generator(device="cuda").manual_seed(seed_tensor.item())
         for module in lora_modules:
             module._init_lora_parameters(generator)
-    logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
+    logger.debug(f"Loaded weights using HF DCP in {format_time(time.perf_counter() - load_dcp_start_time)}")
 
 
 def can_reinit_empty_buffers(model: nn.Module):
