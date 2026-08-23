@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
 import verifiers.v1 as vf
 
-from prime_rl.transports.rollouts import TrainingSample
+from prime_rl.transports.batch import TrainingSample
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
