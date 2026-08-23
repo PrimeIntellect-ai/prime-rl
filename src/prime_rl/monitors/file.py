@@ -30,7 +30,9 @@ class FileMonitor(Monitor):
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
         self.logger.info(f"Logging metrics and episodes to the local filesystem ({output_dir})")
 
-    async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
+    async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
+        """``step=None`` logs a time-keyed row (e.g. inference metrics, which are
+        sampled on wall time rather than the training step)."""
         sanitized, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(

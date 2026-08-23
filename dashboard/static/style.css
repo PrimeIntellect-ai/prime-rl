@@ -192,6 +192,15 @@ select:focus, .search:focus { border-color: var(--grey-6); }
 .toggle .dot { width: 10px; height: 10px; border: 1px solid var(--grey-3); background: transparent; }
 .toggle input:checked + .dot { background: var(--accent); border-color: var(--accent); }
 
+/* the LIVE indicator is a pulsing circle */
+#topbar .toggle .dot { border-radius: 50%; }
+#topbar .toggle input:checked + .dot { animation: live-pulse 2s ease-out infinite; }
+@keyframes live-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(182, 255, 60, 0.55); }
+  70% { box-shadow: 0 0 0 7px rgba(182, 255, 60, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(182, 255, 60, 0); }
+}
+
 /* ------------------------------------------------------------------ main */
 main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 main > section { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 16px 20px; gap: 12px; }
@@ -231,11 +240,11 @@ main > section[hidden] { display: none; }
 .chart-card {
   background: var(--grey-2);
   border: 1px solid var(--hairline);
-  padding: 10px 12px 6px;
+  padding: 8px 10px 2px;
   min-width: 0;
 }
 .chart-card:hover { border-color: var(--grey-3); }
-.chart-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.chart-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 2px; }
 .chart-title {
   font-size: 10px;
   letter-spacing: var(--track-mono);
@@ -255,6 +264,35 @@ main > section[hidden] { display: none; }
   font-size: 11px;
   letter-spacing: var(--track-caps);
   text-transform: uppercase;
+}
+
+/* fixed-width empty state, shared by every "nothing here" case */
+.empty-box {
+  width: 420px;
+  max-width: 90%;
+  margin: 64px auto;
+  border: 1px solid var(--hairline);
+  background: var(--grey-2);
+  padding: 40px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  white-space: normal;
+}
+.empty-box img { height: 22px; opacity: 0.3; margin-bottom: 8px; }
+.empty-title {
+  font-size: 11px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--grey-5);
+}
+.empty-detail {
+  font-size: 11px;
+  letter-spacing: var(--track-mono);
+  color: var(--grey-4);
+  word-break: break-word;
 }
 
 .u-legend { font: 10px var(--font-mono) !important; color: var(--grey-4) !important; }

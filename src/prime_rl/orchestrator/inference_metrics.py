@@ -11,6 +11,8 @@ import wandb
 from httpx import AsyncClient
 from prometheus_client.parser import text_string_to_metric_families
 
+from prime_rl import monitors
+from prime_rl.monitors import FileMonitor
 from prime_rl.orchestrator.concurrency import EngineLoadSample
 from prime_rl.utils.logger import get_logger
 
@@ -280,6 +282,7 @@ class InferenceMetricsCollector:
         roles: list[str | None] | None = None,
         on_load: Callable[[list[EngineLoadSample]], None] | None = None,
         log_to_wandb: bool = True,
+        log_to_file: bool = False,
     ):
         self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
         self.previous: dict[tuple[str, str], TimedSnapshot] = {}
@@ -288,6 +291,7 @@ class InferenceMetricsCollector:
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
         self.on_load = on_load
         self.log_to_wandb = log_to_wandb
+        self.log_to_file = log_to_file
         get_logger().info(
             "Collecting inference metrics from "
             + ", ".join(f"{endpoint.name}={endpoint.key}" for endpoint in self.endpoints)
@@ -346,7 +350,7 @@ class InferenceMetricsCollector:
             return
 
         await asyncio.gather(*[self.fetch_max_model_len(endpoint) for endpoint in self.endpoints])
-        metrics = self.build_metrics(samples) if self.log_to_wandb else {}
+        metrics = self.build_metrics(samples) if self.log_to_wandb or self.log_to_file else {}
         load_samples = [self.build_load_sample(sample) for sample in samples]
         for sample in samples:
             self.previous[sample.key] = TimedSnapshot(timestamp=sample.timestamp, snapshot=sample.snapshot)
@@ -356,7 +360,14 @@ class InferenceMetricsCollector:
 
         if metrics:
             metrics["_timestamp"] = time.time()
-            wandb.log(metrics)
+            if self.log_to_wandb:
+                wandb.log(metrics)
+            if self.log_to_file:
+                file_monitor = monitors.get(FileMonitor)
+                if file_monitor is not None:
+                    # Time-keyed row (step=None): inference metrics are sampled on
+                    # wall time, not the training step.
+                    await file_monitor.log_metrics(metrics, step=None)
 
     async def fetch_max_model_len(self, endpoint: MetricsEndpoint) -> None:
         """Cache the engine's max context length from ``/v1/models`` (set

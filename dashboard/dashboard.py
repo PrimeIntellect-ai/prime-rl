@@ -404,7 +404,7 @@ def list_episodes(
     kind: str,
     subset: str,
     page: int = 0,
-    limit: int = Query(default=50, le=500),
+    limit: int = Query(default=50, le=5000),
     env: str | None = None,
     errors_only: bool = False,
     sort: str = "line",

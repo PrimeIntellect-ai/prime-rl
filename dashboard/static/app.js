@@ -22,12 +22,12 @@ const state = {
   live: true,
   metrics: {
     loaded: false, offset: 0, byKey: new Map(), mode: "overview", search: "",
-    charts: [], renderedKeys: -1,
+    charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null,
     smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 320, paneH: prefs.paneH ?? 150,
   },
   config: { loaded: false, files: [], file: null },
   logs: { loaded: false, attempt: "latest", attempts: [], files: [], selected: new Set(), buffers: new Map(), gseq: 0 },
-  traces: { loaded: false, steps: [], step: null, kind: "train", subset: "effective", page: 0, limit: 50, total: 0, env: "", errorsOnly: false, sort: "line", order: "asc" },
+  traces: { loaded: false, steps: [], step: null, kind: "train", subset: "effective", page: 0, limit: 5000, total: 0, env: "", errorsOnly: false, sort: "line", order: "asc" },
 };
 
 function fmtNum(v) {
@@ -41,15 +41,24 @@ function fmtNum(v) {
 }
 const fmtBytes = (n) => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)}M` : n >= 1024 ? `${(n / 1024).toFixed(0)}K` : `${n}B`);
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const emptyState = (title, detail = "") =>
+  `<div class="empty-box"><img src="/static/butterfly-white.svg" alt="">` +
+  `<div class="empty-title">${esc(title)}</div>` +
+  (detail ? `<div class="empty-detail">${esc(detail)}</div>` : "") +
+  `</div>`;
 
 /* ------------------------------------------------------------------- runs */
 
 async function loadRuns() {
   const data = await api("/api/runs");
   state.runs = data.runs;
+  state.outputDir = data.output_dir;
   const sel = $("#run-select");
   const current = state.run;
-  sel.innerHTML = state.runs.map((r) => `<option value="${esc(r.name)}">${esc(r.name)}</option>`).join("");
+  sel.disabled = !state.runs.length;
+  sel.innerHTML = state.runs.length
+    ? state.runs.map((r) => `<option value="${esc(r.name)}">${esc(r.name)}</option>`).join("")
+    : `<option>no runs found</option>`;
   if (current && state.runs.some((r) => r.name === current)) sel.value = current;
   const fresh = state.runs.find((r) => r.name === current);
   if (fresh && state.meta) {
@@ -63,7 +72,11 @@ async function selectRun(name) {
   state.run = name;
   $("#run-select").value = name;
   state.meta = await api(`/api/runs/${encodeURIComponent(name)}`);
-  state.metrics = { ...state.metrics, loaded: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1 };
+  state.metrics = {
+    ...state.metrics,
+    loaded: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
+    timeKeys: new Set(), timeZero: null,
+  };
   state.config = { loaded: false, files: [], file: null };
   state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], selected: new Set(), buffers: new Map() };
   state.traces = { ...state.traces, loaded: false, steps: [], step: null, page: 0, env: "", kind: "train", subset: "effective" };
@@ -98,8 +111,10 @@ function fmtAgo(ts) {
 
 function currentStep() {
   let step = null;
-  for (const producers of state.metrics.byKey.values())
+  for (const [key, producers] of state.metrics.byKey) {
+    if (state.metrics.timeKeys.has(key)) continue; // time-keyed x values are not steps
     for (const series of producers.values()) for (const s of series.keys()) step = Math.max(step ?? 0, s);
+  }
   return step ?? state.meta?.last_step ?? null;
 }
 
@@ -164,6 +179,18 @@ const SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perp
 const SFT_STABILITY_METRICS = ["optim/grad_norm", "optim/lr", "loss/nan_count"];
 const SFT_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memory", "time/step", "time/forward_backward", "time/save_ckpt"];
 
+// Multi-series inference panels (overview.py INFERENCE_PANELS): fleet aggregate
+// paired with the cross-engine tail that flags a single sick engine.
+const INFERENCE_PANELS = [
+  ["inference/agg/kv_cache_usage_perc/mean", "inference/agg/kv_cache_usage_perc/min", "inference/agg/kv_cache_usage_perc/max"],
+  ["inference/agg/num_preemptions_total:rate/sum", "inference/agg/num_preemptions_total:rate/max"],
+  ["inference/agg/num_requests_running/mean", "inference/agg/num_requests_running/min", "inference/agg/num_requests_running/max"],
+  ["inference/agg/num_requests_waiting/mean", "inference/agg/num_requests_waiting/min", "inference/agg/num_requests_waiting/max"],
+  ["inference/agg/prefix_cache_hit_rate/pooled", "inference/agg/prefix_cache_hit_rate/min"],
+  ["inference/agg/generation_tokens_total:rate/sum", "inference/agg/generation_tokens_total:rate/min"],
+  ["inference/agg/prompt_tokens_total:rate/sum", "inference/agg/prompt_tokens_total:rate/max"],
+];
+
 const TRAINER_KEY_RE = /^(perf|optim|loss|entropy|system|mismatch_kl|kl_ent_ratio|is_masked|masked_|unmasked_|max_vio|routing_|ref_kl|val)[/_]?/;
 const ORCH_KEY_RE = /^(train|batch|off_policy|curriculum|eval)\//;
 
@@ -177,17 +204,29 @@ function rowProducer(row) {
 }
 
 function ingestRows(rows) {
-  const byKey = state.metrics.byKey;
+  const m = state.metrics;
   for (const row of rows) {
-    if (typeof row.step !== "number") continue;
-    const producer = rowProducer(row);
+    // step=None rows are time-keyed (inference metrics): x = seconds since run start
+    const isTime = row.step == null;
+    let x;
+    if (isTime) {
+      const t = row.time ?? row._timestamp;
+      if (typeof t !== "number") continue;
+      m.timeZero ??= state.meta?.started ?? t;
+      x = Math.max(0, t - m.timeZero);
+    } else {
+      if (typeof row.step !== "number") continue;
+      x = row.step;
+    }
+    const producer = isTime ? "infer" : rowProducer(row);
     for (const [key, value] of Object.entries(row)) {
-      if (key === "step" || key === "time" || typeof value !== "number") continue;
-      let producers = byKey.get(key);
-      if (!producers) byKey.set(key, (producers = new Map()));
+      if (key === "step" || key === "time" || key === "_timestamp" || typeof value !== "number") continue;
+      let producers = m.byKey.get(key);
+      if (!producers) m.byKey.set(key, (producers = new Map()));
       let series = producers.get(producer);
       if (!series) producers.set(producer, (series = new Map()));
-      series.set(row.step, value);
+      series.set(x, value);
+      if (isTime) m.timeKeys.add(key);
     }
   }
 }
@@ -242,6 +281,7 @@ function buildSections(meta) {
   if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e))));
   else sections.push(evalSection("eval", ".*"));
   sections.push({ name: "stability", panels: STABILITY_METRICS.map((m) => ({ metric: m })) });
+  sections.push({ name: "inference", panels: INFERENCE_PANELS.map((metrics) => ({ metrics })) });
   sections.push({ name: "performance", panels: PERFORMANCE_METRICS.map((m) => ({ metric: m })) });
   return sections;
 }
@@ -250,6 +290,7 @@ function resolvePanel(panel) {
   const byKey = state.metrics.byKey;
   let keys;
   if (panel.metric) keys = byKey.has(panel.metric) ? [panel.metric] : [];
+  else if (panel.metrics) keys = panel.metrics.filter((k) => byKey.has(k));
   else {
     const re = new RegExp(`^(?:${panel.regex})$`);
     keys = [...byKey.keys()].filter((k) => re.test(k)).sort();
@@ -303,24 +344,63 @@ function chartHeight() {
   return state.metrics.paneH;
 }
 
-function makeChart(el, labels, width) {
+/* axis labels get one exponent digit so they fit the 50px gutter */
+function fmtAxis(v) {
+  if (v == null) return "";
+  if (v === 0) return "0";
+  const abs = Math.abs(v);
+  if (abs >= 1e6 || abs < 1e-3) return v.toExponential(1).replace(".0e", "e");
+  return fmtNum(v);
+}
+
+function fmtTickDur(secs) {
+  if (secs == null) return "";
+  if (secs < 60) return `${Math.round(secs)}s`;
+  if (secs < 3600) return `${+(secs / 60).toFixed(secs < 600 ? 1 : 0)}m`;
+  if (secs < 86400) return `${+(secs / 3600).toFixed(secs < 36000 ? 1 : 0)}h`;
+  return `${+(secs / 86400).toFixed(1)}d`;
+}
+
+function makeChart(el, labels, width, timeAxis = false) {
   const axis = {
     stroke: "#767676",
     grid: { stroke: "rgba(255,255,255,0.06)", width: 1 },
     ticks: { stroke: "rgba(255,255,255,0.10)" },
     font: "10px 'ABC Favorit Mono', 'JetBrains Mono', ui-monospace, monospace",
   };
+  const xAxis = timeAxis
+    ? {
+        ...axis,
+        size: 22,
+        values: (u, vals) => vals.map(fmtTickDur),
+        incrs: [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 43200, 86400, 172800],
+      }
+    : // step axis: integer ticks only
+      { ...axis, size: 22, incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000] };
   const colors = labels.length > 1 ? PALETTE : [SINGLE_SERIES];
   return new uPlot(
     {
       width,
       height: chartHeight(),
+      padding: [10, 12, 0, 0],
       cursor: { points: { size: 5 }, drag: { x: true, y: false } },
-      scales: { x: { time: false } },
-      axes: [{ ...axis, size: 26 }, { ...axis, size: 64, values: (u, vals) => vals.map(fmtNum) }],
+      scales: {
+        x: { time: false, range: (u, min, max) => [0, max ?? 1] },
+        y: {
+          range: (u, min, max) => {
+            if (min == null) return [0, 1];
+            let lo = Math.min(0, min);
+            let hi = Math.max(0, max);
+            if (lo === hi) hi = lo + 1;
+            const pad = (hi - lo) * 0.05;
+            return [lo === 0 ? 0 : lo - pad, hi === 0 ? 0 : hi + pad];
+          },
+        },
+      },
+      axes: [xAxis, { ...axis, size: 50, values: (u, vals) => vals.map(fmtAxis) }],
       legend: { show: labels.length > 1 },
       series: [
-        { label: "step" },
+        { label: timeAxis ? "time" : "step", value: timeAxis ? (u, v) => fmtTickDur(v) : (u, v) => v },
         ...labels.map((label, i) => ({
           label: label || "value",
           stroke: colors[i % colors.length],
@@ -343,16 +423,25 @@ function mountChart(entry) {
   if (entry.u || !entry.series.length) return;
   const plotEl = document.createElement("div");
   entry.card.appendChild(plotEl);
-  entry.u = makeChart(plotEl, seriesLabels(entry.series), entry.card.clientWidth - 26);
+  const timeAxis = entry.series.every((s) => state.metrics.timeKeys.has(s.key));
+  entry.u = makeChart(plotEl, seriesLabels(entry.series), entry.card.clientWidth - 22, timeAxis);
   updateChart(entry);
+}
+
+function panelTitle(panel) {
+  if (panel.metric) return panel.metric;
+  if (panel.regex) return panel.regex;
+  const parts = panel.metrics[0].split("/");
+  while (parts.length > 1 && !panel.metrics.every((k) => k.startsWith(parts.join("/")))) parts.pop();
+  return parts.join("/");
 }
 
 function renderPanelCard(grid, panel, lazy = false) {
   const series = resolvePanel(panel);
-  if (!series.length && panel.regex) return; // data-dependent panel with no matches yet
+  if (!series.length && (panel.regex || panel.metrics)) return; // data-dependent panel with no matches yet
   const card = document.createElement("div");
   card.className = "chart-card";
-  const title = panel.metric || panel.regex;
+  const title = panelTitle(panel);
   card.innerHTML =
     `<div class="chart-head"><div class="chart-title" title="${esc(title)}">${esc(title)}</div><div class="chart-last"></div></div>` +
     `<div class="rz rz-e" data-rz="x"></div><div class="rz rz-s" data-rz="y"></div>` +
@@ -419,7 +508,7 @@ function renderMetricsBody() {
   );
   $("#metrics-search").hidden = m.mode !== "all";
   if (!state.meta?.has_metrics && !m.byKey.size) {
-    body.innerHTML = `<div class="chart-empty">no metrics.jsonl in this run</div>`;
+    body.innerHTML = emptyState("no metrics", "this run has no metrics.jsonl yet");
     $("#metrics-status").textContent = "";
     return;
   }
@@ -455,7 +544,7 @@ function renderMetricsBody() {
     const { grid } = addSection(body, group, keys.length);
     for (const key of keys) renderPanelCard(grid, { metric: key }, true);
   }
-  if (!groups.size) body.innerHTML = `<div class="chart-empty">no keys match the filter</div>`;
+  if (!groups.size) body.innerHTML = emptyState("no keys match", `0 of ${m.byKey.size} keys match the filter`);
 }
 
 async function initMetrics() {
@@ -556,10 +645,13 @@ async function initConfig() {
   const sel = $("#config-file");
   sel.innerHTML = data.files.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join("");
   if (!data.files.length) {
-    $("#config-view").textContent = "no configs/ in this run";
+    sel.innerHTML = `<option>no configs</option>`;
+    sel.disabled = true;
+    $("#config-view").innerHTML = emptyState("no configs", "this run has no configs/ directory");
     $("#config-status").textContent = "";
     return;
   }
+  sel.disabled = false;
   if (!data.files.includes(state.config.file)) state.config.file = data.files[0];
   sel.value = state.config.file;
   await loadConfig();
@@ -607,8 +699,8 @@ function parseLines(text, file) {
     if (rawLine === "") continue;
     const raw = rawLine.replace(TEE_RE, "");
     const plain = raw.replace(ANSI_RE, "");
-    const timeMatch = plain.match(/^(\d\d):(\d\d):(\d\d)\b/);
-    const levelMatch = plain.match(/^\d\d:\d\d:\d\d\s+(DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL)\b/);
+    const timeMatch = plain.match(/^(?:\d{4}-\d{2}-\d{2} )?(\d\d):(\d\d):(\d\d)\b/);
+    const levelMatch = plain.match(/^(?:\d{4}-\d{2}-\d{2} )?\d\d:\d\d:\d\d\s+(DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL)\b/);
     entries.push({
       rawTime: timeMatch ? +timeMatch[1] * 3600 + +timeMatch[2] * 60 + +timeMatch[3] : null,
       ownLevel: levelMatch ? levelMatch[1] : null,
@@ -678,6 +770,17 @@ async function pollLogs(render = true) {
 
 function renderLogStream() {
   const logs = state.logs;
+  const stream0 = $("#log-stream");
+  if (!logs.files.length) {
+    stream0.innerHTML = emptyState("no log files", "this run has no logs yet");
+    $("#log-status").textContent = "";
+    return;
+  }
+  if (!logs.selected.size) {
+    stream0.innerHTML = emptyState("no files selected", "enable log files in the sidebar");
+    $("#log-status").textContent = "";
+    return;
+  }
   const minRank = LEVEL_RANK[$("#log-level").value] ?? 0;
   const query = $("#log-search").value.toLowerCase();
   let lines = [];
@@ -811,12 +914,20 @@ function renderStepStrip() {
     .join("");
 }
 
+function showTraceEmpty(title, detail) {
+  $("#episode-table-wrap").hidden = true;
+  $("#episode-pager").innerHTML = "";
+  const el = $("#trace-empty");
+  el.hidden = false;
+  el.innerHTML = emptyState(title, detail);
+}
+
 async function loadEpisodes() {
   const traces = state.traces;
   const tbody = $("#episode-table tbody");
   if (traces.step == null) {
-    tbody.innerHTML = "";
-    $("#trace-status").textContent = "no rollouts";
+    $("#trace-status").textContent = "";
+    showTraceEmpty("no rollouts", "this run has no saved rollouts yet");
     return;
   }
   const qs = new URLSearchParams({
@@ -831,16 +942,23 @@ async function loadEpisodes() {
   try {
     data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}?${qs}`);
   } catch {
-    tbody.innerHTML = "";
-    $("#trace-status").textContent = `no ${traces.kind}/${traces.subset} traces at step ${traces.step}`;
+    $("#trace-status").textContent = "";
+    showTraceEmpty("no traces", `no ${traces.kind}/${traces.subset} rollouts at step ${traces.step}`);
     return;
   }
   traces.total = data.total;
+  $("#trace-empty").hidden = true;
+  $("#episode-table-wrap").hidden = false;
   const envSel = $("#trace-env");
   const currentEnv = traces.env;
   envSel.innerHTML =
     `<option value="">all envs</option>` +
     data.envs.map((e) => `<option value="${esc(e)}" ${e === currentEnv ? "selected" : ""}>${esc(e)}</option>`).join("");
+  if (!data.total) {
+    $("#trace-status").textContent = "";
+    showTraceEmpty("no episodes", "nothing matches the current filters");
+    return;
+  }
   const rewardClass = (v) => (v == null ? "" : v > 0 ? "r-pos" : v < 0 ? "r-neg" : "r-zero");
   tbody.innerHTML = data.episodes
     .map(
@@ -848,7 +966,7 @@ async function loadEpisodes() {
         <td class="muted">${ep.line}</td>
         <td>${esc(ep.env ?? "?")}</td>
         <td class="muted" title="${esc(ep.group ?? "")}">${esc((ep.group ?? "").slice(0, 8))}</td>
-        <td>${fmtNum(ep.reward)}</td>
+        <td class="${rewardClass(ep.reward)}">${fmtNum(ep.reward)}</td>
         <td class="${rewardClass(ep.advantage)}">${fmtNum(ep.advantage)}</td>
         <td class="muted">${ep.input_tokens ?? ""}</td>
         <td>${ep.output_tokens ?? ""}</td>
@@ -860,15 +978,6 @@ async function loadEpisodes() {
     )
     .join("");
   $("#trace-status").textContent = `${data.total} episodes`;
-  const pages = Math.max(1, Math.ceil(data.total / traces.limit));
-  $("#episode-pager").innerHTML =
-    pages > 1
-      ? `<button class="btn" id="pg-prev" ${traces.page === 0 ? "disabled" : ""}>‹ prev</button>
-         <span class="muted">page ${traces.page + 1} / ${pages}</span>
-         <button class="btn" id="pg-next" ${traces.page >= pages - 1 ? "disabled" : ""}>next ›</button>`
-      : "";
-  $("#pg-prev")?.addEventListener("click", () => { traces.page--; loadEpisodes(); });
-  $("#pg-next")?.addEventListener("click", () => { traces.page++; loadEpisodes(); });
 }
 
 async function initTraces() {
@@ -999,7 +1108,7 @@ function renderEpisode() {
     );
 
   if (!trace) {
-    parts.push(`<div class="chart-empty">episode has no traces</div>`);
+    parts.push(emptyState("no traces", "this episode carries no trace data"));
     if (ep.errors?.length) parts.push(`<h3 class="sec">errors</h3><pre class="json">${esc(JSON.stringify(ep.errors, null, 2))}</pre>`);
     $("#drawer-body").innerHTML = parts.join("");
     return;
@@ -1220,7 +1329,7 @@ $("#drawer-body").addEventListener("click", (e) => {
 
 function resizeCharts() {
   for (const entry of state.metrics.charts)
-    if (entry.u) entry.u.setSize({ width: entry.card.clientWidth - 26, height: chartHeight() });
+    if (entry.u) entry.u.setSize({ width: entry.card.clientWidth - 22, height: chartHeight() });
 }
 window.addEventListener("resize", resizeCharts);
 
@@ -1273,5 +1382,5 @@ setInterval(async () => {
   const wanted = params.get("run");
   const run = state.runs.find((r) => r.name === wanted)?.name ?? state.runs[0]?.name;
   if (run) await selectRun(run);
-  else $("#metrics-body").innerHTML = `<div class="chart-empty">no runs found in the output directory</div>`;
+  else $("#metrics-body").innerHTML = emptyState("no runs found", `nothing to show in ${state.outputDir ?? "the output directory"}`);
 })();
