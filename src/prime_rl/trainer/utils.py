@@ -264,19 +264,21 @@ class Tensors(defaultdict):
 
             # Handle empty tensors (can happen when all rollouts in a batch fail)
             if tensors.numel() == 0:
-                metrics[f"{key}/mean"] = float("nan")
-                metrics[f"{key}/median"] = float("nan")
-                metrics[f"{key}/std"] = float("nan")
-                metrics[f"{key}/min"] = float("nan")
-                metrics[f"{key}/max"] = float("nan")
+                for stat in ("mean", "median", "std", "min", "max", "p10", "p90"):
+                    metrics[f"{key}/{stat}"] = float("nan")
                 continue
 
-            # Compute relevant tensor statistics
+            # Compute relevant tensor statistics (sorting once covers the order stats;
+            # torch.quantile is avoided since it caps out on large token counts)
+            sorted_tensors = tensors.sort().values
+            n = sorted_tensors.numel()
             metrics[f"{key}/mean"] = tensors.mean().item()
-            metrics[f"{key}/median"] = torch.median(tensors).item()
+            metrics[f"{key}/median"] = sorted_tensors[(n - 1) // 2].item()
             metrics[f"{key}/std"] = tensors.std().item()
-            metrics[f"{key}/min"] = tensors.min().item()
-            metrics[f"{key}/max"] = tensors.max().item()
+            metrics[f"{key}/min"] = sorted_tensors[0].item()
+            metrics[f"{key}/max"] = sorted_tensors[-1].item()
+            metrics[f"{key}/p10"] = sorted_tensors[int(0.1 * (n - 1))].item()
+            metrics[f"{key}/p90"] = sorted_tensors[int(0.9 * (n - 1))].item()
 
             # Add back all-gathered tensors to self
             self[key].append(tensors.tolist())
@@ -312,13 +314,14 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
             continue
         if any(k.startswith(p) for p in skip_prefixes):
             continue
-        if k.startswith("entropy/") and not _is_env_tensor_stat(k, {"mean", "std", "max"}):
+        distributional = {"mean", "std", "min", "max", "p10", "p90"}
+        if k.startswith("entropy/") and not _is_env_tensor_stat(k, distributional):
             continue
         if any(k.startswith(p) for p in mean_max_only_prefixes):
-            if _is_env_tensor_stat(k, {"mean", "std", "max"}):
+            if _is_env_tensor_stat(k, distributional):
                 out[k] = v
                 continue
-            if not (k.endswith("/mean") or k.endswith("/max")):
+            if not any(k.endswith(f"/{stat}") for stat in distributional):
                 continue
         out[k] = v
     return out

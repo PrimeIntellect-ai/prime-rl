@@ -181,7 +181,7 @@ async function selectRun(name) {
   if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
   state.config = { loaded: false, files: [], file: null, fmt: state.config.fmt };
   state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], paneFile: {}, maximized: null, buffers: new Map() };
-  state.traces = { ...state.traces, loaded: false, steps: [], step: null, env: "", episodes: [], etag: null, subset: state.traces.preferred };
+  state.traces = { ...state.traces, loaded: false, steps: [], step: null, env: "", episodes: [], etag: null, kind: "train", subset: state.traces.preferred };
   applyRunTypeControls();
   renderOverview();
   renderCompareMenu();
@@ -480,8 +480,9 @@ function buildSections(meta) {
     name,
     panels: [
       ...COMMON_METRICS.map((m) => ({ metric: `${scope}/${m}` })),
-      { regex: `${escRe(scope)}/all/[^/]+/reward/mean` },
-      { regex: `${escRe(scope)}/effective/[^/]+/reward/mean` },
+      // one banded plot per agent, not a multi-color overlay
+      { regex: `${escRe(scope)}/all/[^/]+/reward/mean`, split: true },
+      { regex: `${escRe(scope)}/effective/[^/]+/reward/mean`, split: true },
       ...COMMON_REGEXES.map((r) => ({ regex: `${escRe(scope)}/${r}` })),
     ],
   });
@@ -491,6 +492,8 @@ function buildSections(meta) {
       { regex: `eval/${envPattern}/all/[^/]+/avg@.*` },
       { regex: `eval/${envPattern}/effective/[^/]+/avg@.*` },
       ...COMMON_METRICS.map((m) => ({ regex: `eval/${envPattern}/${m}` })),
+      { regex: `eval/${envPattern}/all/[^/]+/reward/mean`, split: true },
+      { regex: `eval/${envPattern}/effective/[^/]+/reward/mean`, split: true },
       ...COMMON_REGEXES.map((r) => ({ regex: `eval/${envPattern}/${r}` })),
     ],
   });
@@ -527,6 +530,15 @@ function compareStores() {
     if (store) stores.push({ run: name, store });
   }
   return stores;
+}
+
+/* split panels fan a regex out into one card per matched key */
+function splitPanelKeys(panel) {
+  const re = new RegExp(`^(?:${panel.regex})$`);
+  const keys = new Set();
+  for (const { store } of compareStores())
+    for (const key of store.byKey.keys()) if (re.test(key) && (!activeFilter || activeFilter.test(key))) keys.add(key);
+  return [...keys].sort();
 }
 
 function resolvePanel(panel) {
@@ -793,7 +805,9 @@ function tooltipPlugin(meta, timeAxis) {
           const lo = m.lo ? u.data[m.lo.dataIdx][idx] : null;
           const hi = m.hi ? u.data[m.hi.dataIdx][idx] : null;
           const row = (swatch, label, value) =>
-            `<div class="u-tip-row"><span class="sw"${swatch ? ` style="background:${m.color}"` : ""}></span>` +
+            `<div class="u-tip-row"><span class="sw${swatch ? "" : " sw-band"}" style="${
+              swatch ? `background:${m.color}` : `border-color:${m.color}`
+            }"></span>` +
             `${label ? `<span class="u-tip-l">${esc(label)}</span>` : ""}<span class="u-tip-v">${fmtNum(value)}</span></div>`;
           if (lo != null && hi != null) {
             // banded: three lines, hi over mean over lo
@@ -1033,7 +1047,10 @@ function renderMetricsBody() {
     $("#metrics-status").textContent = "";
     for (const section of buildSections(state.meta)) {
       const { div, grid } = addSection(body, section.name);
-      for (const panel of section.panels) renderPanelCard(grid, panel);
+      for (const panel of section.panels) {
+        if (panel.split) for (const key of splitPanelKeys(panel)) renderPanelCard(grid, { metric: key });
+        else renderPanelCard(grid, panel);
+      }
       if (!grid.children.length) div.remove();
       else applyPaneOrder(grid);
     }
@@ -1597,7 +1614,10 @@ async function loadRollouts() {
     // default to the newest step that already shipped the preferred subset —
     // the newest step is usually in-flight with only "all" (no advantages yet)
     const preferred = traces.preferred;
-    const shipped = [...data.steps].reverse().find((s) => s.available[`${traces.kind}/${preferred}`]);
+    const newestFirst = [...data.steps].reverse();
+    const shipped =
+      newestFirst.find((s) => s.available[`${traces.kind}/${preferred}`]) ??
+      newestFirst.find((s) => Object.keys(s.available).some((k) => k.endsWith(`/${preferred}`)));
     traces.step = (shipped ?? data.steps[data.steps.length - 1]).step;
     adjustKindSubset();
   } else if (traces.step != null) {

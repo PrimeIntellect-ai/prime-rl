@@ -400,6 +400,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 }
 .u-tip-row { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
 .u-tip-row .sw { width: 7px; height: 7px; flex-shrink: 0; }
+.u-tip-row .sw-band { border: 1px dotted; background: transparent; }
 .u-tip-l { color: var(--grey-4); }
 .u-tip-v { color: var(--grey-6); margin-left: auto; padding-left: 10px; }
 
