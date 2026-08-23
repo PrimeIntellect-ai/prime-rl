@@ -247,13 +247,16 @@ main > section[hidden] { display: none; }
 .chart-head { cursor: grab; }
 .chart-card.dragging { opacity: 0.45; }
 details.section { margin-bottom: 20px; }
+/* collapsed sections stack directly */
+details.section:not([open]) { margin-bottom: 6px; }
+details.section:not([open]) > summary { margin-bottom: 0; }
 /* section headers are full-width bars so the clickable region is obvious */
 details.section > summary {
   font: 400 11px var(--font-mono);
   letter-spacing: var(--track-caps);
   text-transform: uppercase;
   color: var(--grey-5);
-  margin: 4px 0 10px;
+  margin: 0 0 10px;
   padding: 7px 12px;
   background: var(--grey-2);
   border: 1px solid var(--hairline);

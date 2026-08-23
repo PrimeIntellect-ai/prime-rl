@@ -750,6 +750,7 @@ function renderMetricsBody() {
     }
     if (activeFilter && !body.children.length)
       body.innerHTML = emptyState("no keys match", "no overview panels match the filter");
+    updateMetricsFoldBtn();
     return;
   }
   // all: every key charted, grouped by top-level namespace, regex-filtered
@@ -768,6 +769,7 @@ function renderMetricsBody() {
     applyPaneOrder(grid);
   }
   if (!groups.size) body.innerHTML = emptyState("no keys match", `0 of ${m.byKey.size} keys match the filter`);
+  updateMetricsFoldBtn();
 }
 
 async function initMetrics() {
@@ -1404,7 +1406,7 @@ function renderRolloutList() {
       const cls = e.reward > 0 ? "r-pos" : e.reward < 0 ? "r-neg" : "r-zero";
       return (
         `<div class="tm-item ${e.line === currentLine ? "active" : ""}" data-line="${e.line}">` +
-        `<span>Rollout ${e.line}</span><span class="muted">${esc(e.env ?? "")}</span>` +
+        `<span>Episode ${e.line}</span><span class="muted">${esc(e.env ?? "")}</span>` +
         `<span class="tm-reward ${cls}">${fmtReward(e.reward)}</span></div>`
       );
     })
@@ -1594,6 +1596,7 @@ function renderMessages(trace, branches) {
     );
   });
   container.innerHTML = parts.join("");
+  $("#tm-fold").textContent = "collapse";
 }
 
 function metaRow(key, value, asId = false) {
@@ -1791,6 +1794,13 @@ $("#metrics-search").addEventListener("input", (e) => {
   searchDebounce = setTimeout(renderMetricsBody, 250);
 });
 
+function updateMetricsFoldBtn() {
+  const sections = document.querySelectorAll("#metrics-body details.section");
+  const anyOpen = [...sections].some((s) => s.open);
+  $("#metrics-fold").textContent = anyOpen ? "collapse" : "expand";
+  $("#metrics-fold").hidden = !sections.length;
+}
+
 // remember collapsed sections across re-renders; charts created while hidden
 // have zero width, so resize on expand ("toggle" doesn't bubble → capture)
 $("#metrics-body").addEventListener(
@@ -1804,9 +1814,16 @@ $("#metrics-body").addEventListener(
     } else {
       state.metrics.collapsedSections.add(section.dataset.name);
     }
+    updateMetricsFoldBtn();
   },
   true
 );
+
+$("#metrics-fold").addEventListener("click", () => {
+  const sections = [...document.querySelectorAll("#metrics-body details.section")];
+  const anyOpen = sections.some((s) => s.open);
+  sections.forEach((s) => (s.open = !anyOpen)); // toggle events keep state + button in sync
+});
 
 // drag a pane header to reorder within its section (order persisted by title)
 $("#metrics-body").addEventListener("dragover", (e) => {
@@ -1985,12 +2002,13 @@ $("#tm-list").addEventListener("click", (e) => {
 $("#tm-search").addEventListener("input", renderRolloutList);
 $("#tm-prev").addEventListener("click", () => stepRollout(-1));
 $("#tm-next").addEventListener("click", () => stepRollout(1));
-$("#tm-collapse").addEventListener("click", () =>
-  document.querySelectorAll("#tm-messages details.entry").forEach((d) => (d.open = false))
-);
-$("#tm-expand").addEventListener("click", () =>
-  document.querySelectorAll("#tm-messages details").forEach((d) => (d.open = true))
-);
+$("#tm-fold").addEventListener("click", () => {
+  const entries = [...document.querySelectorAll("#tm-messages details.entry")];
+  const anyOpen = entries.some((d) => d.open);
+  entries.forEach((d) => (d.open = !anyOpen));
+  if (!anyOpen) document.querySelectorAll("#tm-messages details.sub").forEach((d) => (d.open = true));
+  $("#tm-fold").textContent = anyOpen ? "expand" : "collapse";
+});
 $("#tm-messages").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-copy]");
   if (!btn) return;
