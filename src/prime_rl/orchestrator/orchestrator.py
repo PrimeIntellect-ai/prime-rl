@@ -1048,10 +1048,11 @@ class Orchestrator:
             if getattr(self, "admin_clients", None) is not None:
                 await self.admin_clients.aclose()
             if self.train_envs is not None:
-                get_logger().debug("Stopping generation source and algorithm pools")
+                get_logger().debug("Stopping generation source and algorithm clients")
                 for env in self.train_envs:
-                    for pool in (*env.generation_source.connected_pools, *env.algorithm.connected_pools):
-                        await pool.stop()
+                    for clients in (env.generation_source.connected, env.algorithm.connected):
+                        if clients is not None:
+                            await clients.aclose()
 
         get_logger().info("Stopping orchestrator components")
         t0 = time.perf_counter()
