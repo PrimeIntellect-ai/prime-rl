@@ -224,8 +224,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 main > section { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 16px 20px; gap: 12px; }
 .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
-.seg { display: inline-flex; border: 1px solid var(--grey-3); }
-.seg { flex-shrink: 0; }
+.seg { display: inline-flex; border: 1px solid var(--grey-3); flex-shrink: 0; }
 /* arrow stepper (log level): ‹ label › */
 .stepper { display: inline-flex; align-items: center; border: 1px solid var(--grey-3); height: 28px; }
 .stepper button { background: none; border: none; color: var(--grey-4); width: 24px; height: 100%; cursor: pointer; font: 400 13px var(--font-mono); }
@@ -406,7 +405,7 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 
 
 /* metrics regex filter (overview + all) */
-#metrics-search { flex: 1; max-width: 460px; }
+#metrics-search, #config-search, #log-search { flex: 1; max-width: 460px; }
 
 /* wandb-style resize handles on every chart card: right edge = width, bottom
    edge = height, corner = both. Resizing one pane resizes all of them. */
@@ -448,7 +447,6 @@ body.resizing { user-select: none; }
 #config-view div.j-line:hover, #config-view summary.j-line:hover { background: rgba(255, 255, 255, 0.05); }
 .j-ellip { color: var(--grey-4); }
 details.j-fold[open] > summary .j-ellip { display: none; }
-#config-search { flex: 1; max-width: 460px; }
 mark.hit {
   background: rgba(182, 255, 60, 0.22);
   color: var(--grey-6);
@@ -508,7 +506,6 @@ mark.hit {
   word-break: break-word;
   font-family: var(--font-mono);
 }
-#log-search { flex: 1; max-width: 460px; }
 .ll { display: flex; gap: 8px; }
 .ll:hover { background: var(--grey-2); }
 .ll .ltext { flex: 1; min-width: 0; }
@@ -708,7 +705,7 @@ details.entry[open] .entry-chev { transform: rotate(90deg); }
 .icon-btn:hover { color: var(--grey-6); }
 .icon-btn.copied { color: var(--accent); }
 
-/* nested sub-blocks (reasoning, tool calls) */
+/* nested sub-blocks (reasoning) */
 details.sub { border: 1px solid var(--hairline); margin: 8px 12px; }
 details.sub > summary {
   display: flex;

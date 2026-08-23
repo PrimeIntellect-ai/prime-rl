@@ -49,6 +49,8 @@ _summaries_cache: dict[Path, tuple[int, list[dict]]] = {}
 _tokenizer_cache: dict[str, object] = {}
 _started_cache: dict[Path, float] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
+_json_cache: dict[Path, tuple[tuple[int, float], dict]] = {}
+_steps_cache: dict[Path, tuple[float, list[int]]] = {}
 
 
 def is_run_dir(path: Path) -> bool:
@@ -92,10 +94,46 @@ def safe_child(base: Path, rel: str, *, suffix: str | None = None) -> Path:
 
 
 def read_json(path: Path) -> dict:
+    """Config reads are cached by (size, mtime) — they sit on every /api/runs poll."""
     try:
-        return orjson.loads(path.read_bytes())
-    except (OSError, ValueError):
+        stat = path.stat()
+    except OSError:
         return {}
+    key = (stat.st_size, stat.st_mtime)
+    with _lock:
+        cached = _json_cache.get(path)
+        if cached and cached[0] == key:
+            return cached[1]
+    try:
+        data = orjson.loads(path.read_bytes())
+    except (OSError, ValueError):
+        data = {}
+    with _lock:
+        _json_cache[path] = (key, data)
+    return data
+
+
+def numbered_dirs(parent: Path, prefix: str) -> list[tuple[int, Path]]:
+    return sorted(
+        (int(p.name.removeprefix(prefix)), p)
+        for p in parent.glob(f"{prefix}*")
+        if p.name.removeprefix(prefix).isdigit()
+    )
+
+
+def size_etag(path: Path, etag: str | None) -> tuple[str, dict | None]:
+    """Etag = file size: the trace files are append-only, so an unchanged size means
+    an unchanged response. Returns (current_etag, short-circuit response or None)."""
+    current = str(path.stat().st_size)
+    if etag is not None and etag == current:
+        return current, {"unchanged": True, "etag": current}
+    return current, None
+
+
+def model_name(config: dict) -> str | None:
+    """`model` is a string on eval configs, a {name} object on rl/sft ones."""
+    model = config.get("model")
+    return model if isinstance(model, str) else (model or {}).get("name")
 
 
 def resolved_config_dir(run_dir: Path) -> Path:
@@ -118,25 +156,36 @@ def main_config(run_dir: Path) -> tuple[str, dict]:
 
 
 def attempt_numbers(run_dir: Path) -> list[int]:
-    return sorted(
-        int(p.name.removeprefix("attempt_"))
-        for p in (run_dir / "logs").glob("attempt_*")
-        if p.name.removeprefix("attempt_").isdigit()
-    )
+    return [n for n, _ in numbered_dirs(run_dir / "logs", "attempt_")]
+
+
+def step_numbers(run_dir: Path) -> list[int]:
+    """Rollout step numbers, cached by the rollouts dir mtime (which changes when a
+    step dir is created) — polled per run on every /api/runs tick."""
+    rollouts = run_dir / "rollouts"
+    try:
+        mtime = rollouts.stat().st_mtime
+    except OSError:
+        return []
+    with _lock:
+        cached = _steps_cache.get(rollouts)
+        if cached and cached[0] == mtime:
+            return cached[1]
+    steps = [n for n, _ in numbered_dirs(rollouts, "step_")]
+    with _lock:
+        _steps_cache[rollouts] = (mtime, steps)
+    return steps
 
 
 def run_meta(run_dir: Path) -> dict:
     configs = run_dir / "configs"
     run_type, config = main_config(run_dir)
+    resolved = resolved_config_dir(run_dir)
 
     def envs(split: str) -> list[str]:
-        return sorted(p.stem for p in (resolved_config_dir(run_dir) / "envs" / split).glob("*.json"))
+        return sorted(p.stem for p in (resolved / "envs" / split).glob("*.json"))
 
-    steps = [
-        int(p.name.removeprefix("step_"))
-        for p in (run_dir / "rollouts").glob("step_*")
-        if p.name.removeprefix("step_").isdigit()
-    ]
+    steps = step_numbers(run_dir)
     metrics_path = run_dir / "metrics.jsonl"
     started = updated = None
     if metrics_path.is_file():
@@ -153,18 +202,16 @@ def run_meta(run_dir: Path) -> dict:
     if updated is None and root_traces.is_file():  # eval runs have no metrics.jsonl
         updated = root_traces.stat().st_mtime
         started = configs.stat().st_mtime if configs.is_dir() else None
-    model = config.get("model")
     return {
         "name": run_dir.name,
         "type": run_type,
-        "model": model if isinstance(model, str) else (model or {}).get("name"),
+        "model": model_name(config),
         "dataset": (config.get("data") or {}).get("name"),
         "env": ((config.get("env") or {}).get("taskset") or {}).get("id"),
         "total_episodes": (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None,
         "max_steps": config.get("max_steps"),
         "train_envs": envs("train"),
         "eval_envs": envs("eval"),
-        "attempts": attempt_numbers(run_dir),
         "has_metrics": metrics_path.exists(),
         "last_step": max(steps, default=None),
         "started": started,
@@ -342,9 +389,7 @@ def read_metrics(run: str, offset: int = 0) -> dict:
 def rollout_steps(run_dir: Path) -> list[dict]:
     """Presence only — never reads trace files, so it stays cheap over thousands of steps."""
     steps = []
-    for step_dir in (run_dir / "rollouts").glob("step_*"):
-        if not step_dir.name.removeprefix("step_").isdigit():
-            continue
+    for number, step_dir in numbered_dirs(run_dir / "rollouts", "step_"):
         available = {}
         for kind in ("train", "eval"):
             for subset in ("all", "effective"):
@@ -352,11 +397,11 @@ def rollout_steps(run_dir: Path) -> list[dict]:
                 if path.is_file() and path.stat().st_size > 0:
                     available[f"{kind}/{subset}"] = True
         if available:
-            steps.append({"step": int(step_dir.name.removeprefix("step_")), "available": available})
+            steps.append({"step": number, "available": available})
     root_traces = run_dir / "traces.jsonl"  # `uv run eval` writes one stepless file
     if not steps and root_traces.is_file() and root_traces.stat().st_size > 0:
         steps.append({"step": 0, "available": {"eval/all": True}})
-    return sorted(steps, key=lambda s: s["step"])
+    return steps
 
 
 def line_offsets(path: Path) -> list[int]:
@@ -367,18 +412,19 @@ def line_offsets(path: Path) -> list[int]:
             cached_size, offsets = 0, []
         if cached_size == size:
             return offsets
+    # re-scan from the last recorded line (it may have been partial) and grow the
+    # cached list strictly by appending — a concurrent reader's indices stay valid
     scan_from = offsets[-1] if offsets else 0
-    new_offsets = offsets[:-1]
     with path.open("rb") as f:
         f.seek(scan_from)
         pos = scan_from
         for line in f:
-            if line.strip():
-                new_offsets.append(pos)
+            if line.strip() and (not offsets or pos > offsets[-1]):
+                offsets.append(pos)
             pos += len(line)
     with _lock:
-        _offsets_cache[path] = (size, new_offsets)
-    return new_offsets
+        _offsets_cache[path] = (size, offsets)
+    return offsets
 
 
 def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
@@ -517,11 +563,9 @@ def list_episodes(
     etag: str | None = None,
 ) -> dict:
     path = traces_path(run, step, kind, subset)
-    # summaries are append-only per file, so an unchanged size means an unchanged
-    # response — lets the poll loop skip re-sending thousands of summaries
-    current_etag = str(path.stat().st_size)
-    if etag is not None and etag == current_etag:
-        return {"unchanged": True, "etag": current_etag}
+    current_etag, unchanged = size_etag(path, etag)
+    if unchanged:
+        return unchanged
     summaries = episode_summaries(path)
     envs = sorted({s["env"] for s in summaries if s.get("env")})
     if env:
@@ -563,13 +607,14 @@ def decode_pieces(model: str, ids: list[int]) -> list[str] | None:
 
 
 @app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/series")
-def episode_series(run: str, step: int, kind: str, subset: str, etag: str | None = None) -> dict:
+def episode_series(run: str, step: int, kind: str, subset: str, etag: str | None = None, after: int = 0) -> dict:
     """Per-episode series over a traces file (x = episode order): reward, shape, and the
-    nested rewards/metrics/timing keys — the metrics view for eval runs."""
+    nested rewards/metrics/timing keys — the metrics view for eval runs. `after` returns
+    only episodes past that index, so a growing file ships increments, not the world."""
     path = traces_path(run, step, kind, subset)
-    current_etag = str(path.stat().st_size)
-    if etag is not None and etag == current_etag:
-        return {"unchanged": True, "etag": current_etag}
+    current_etag, unchanged = size_etag(path, etag)
+    if unchanged:
+        return unchanged
     summaries = episode_summaries(path)
     keys: set[str] = set()
     for s in summaries:
@@ -585,8 +630,9 @@ def episode_series(run: str, step: int, kind: str, subset: str, etag: str | None
         group, _, name = key.partition("/")
         return (s.get(group) or {}).get(name) if name else s.get(key)
 
-    series = {key: [value(s, key) for s in summaries] for key in sorted(keys)}
-    return {"etag": current_etag, "count": len(summaries), "series": series}
+    tail = summaries[max(0, after) :]
+    series = {key: [value(s, key) for s in tail] for key in sorted(keys)}
+    return {"etag": current_etag, "count": len(summaries), "after": max(0, after), "series": series}
 
 
 @app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}")
@@ -600,8 +646,7 @@ def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: 
         rec = orjson.loads(f.readline())
     if not tokens:
         return rec
-    fallback = main_config(get_run_dir(run))[1].get("model")
-    fallback_model = fallback if isinstance(fallback, str) else (fallback or {}).get("name")
+    fallback_model = model_name(main_config(get_run_dir(run))[1])
     for trace in rec.get("traces") or []:
         client = ((trace.get("agent") or {}).get("config") or {}).get("client") or {}
         model = client.get("renderer_model_name") or fallback_model

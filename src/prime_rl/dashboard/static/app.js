@@ -38,7 +38,7 @@ const state = {
   },
   traces: {
     loaded: false, steps: [], step: null, env: "",
-    kind: prefs.traceKind ?? "train",
+    kind: "train",
     preferred: "effective",
     subset: "effective",
     errorsOnly: prefs.traceErrorsOnly ?? false,
@@ -334,6 +334,7 @@ function rowProducer(row, meta) {
 /* store = {byKey, timeKeys, timeZero} — the primary run's is state.metrics,
    compared runs get their own */
 function ingestInto(store, rows, meta) {
+  const touched = new Set();
   for (const row of rows) {
     // step=None rows are time-keyed (inference metrics): x = seconds since run start
     const isTime = row.step == null;
@@ -356,23 +357,28 @@ function ingestInto(store, rows, meta) {
       let series = producers.get(producer);
       if (!series) producers.set(producer, (series = new Map()));
       series.set(x, value);
+      touched.add(key);
       if (isTime) store.timeKeys.add(key);
     }
   }
+  return touched;
 }
 
 async function fetchMetrics() {
   if (state.meta?.type === "eval") return fetchEvalSeries();
-  const data = await api(`/api/runs/${encodeURIComponent(state.run)}/metrics?offset=${state.metrics.offset}`);
+  const [data, compared] = await Promise.all([
+    api(`/api/runs/${encodeURIComponent(state.run)}/metrics?offset=${state.metrics.offset}`),
+    fetchCompares(),
+  ]);
   state.metrics.offset = data.offset;
+  let touched = null;
   if (data.rows.length) {
-    ingestInto(state.metrics, data.rows, state.meta);
+    touched = ingestInto(state.metrics, data.rows, state.meta);
     renderOverview();
   }
-  const grew = await fetchCompares();
-  if (data.rows.length || grew) {
+  if (data.rows.length || compared) {
     if (state.metrics.byKey.size !== state.metrics.renderedKeys) renderMetricsBody();
-    else updateCharts();
+    else updateCharts(compared ? null : touched); // compares may touch any panel
   }
   return data.rows.length;
 }
@@ -383,14 +389,22 @@ async function fetchEvalSeries() {
   const m = state.metrics;
   let data;
   try {
-    const qs = m.evalEtag ? `?etag=${encodeURIComponent(m.evalEtag)}` : "";
-    data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/0/eval/all/series${qs}`);
+    const qs = new URLSearchParams({ after: m.evalCount || 0 });
+    if (m.evalEtag) qs.set("etag", m.evalEtag);
+    data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/0/eval/all/series?${qs}`);
   } catch {
     return 0;
   }
   if (data.unchanged) return 0;
   m.evalEtag = data.etag;
-  m.evalSeries = data.series;
+  // merge the increment: keys new to this batch backfill nulls for earlier episodes
+  m.evalSeries ??= {};
+  for (const [key, values] of Object.entries(data.series)) {
+    const existing = m.evalSeries[key] ?? new Array(data.after).fill(null);
+    existing.length = data.after;
+    existing.push(...values);
+    m.evalSeries[key] = existing;
+  }
   m.evalCount = data.count;
   m.maxStep = data.count; // the overview's episode count
   const costs = (data.series.cost || []).filter((v) => v != null);
@@ -578,7 +592,7 @@ function resolvePanel(panel) {
 /* series in one panel group by (run, key-minus-stat) into a single color: the
    mean draws solid, p10/p90 (or min/max) draw dashed with a shaded band, other
    stats draw dashed, and a second producer of the same key draws dashed too */
-const STAT_SUFFIXES = new Set(["mean", "min", "max", "p10", "p90", "sum", "pooled", "std"]);
+const STAT_SUFFIXES = new Set(["mean", "median", "min", "max", "p10", "p50", "p90", "p99", "sum", "pooled", "std"]);
 const MAIN_STAT_PRIORITY = ["mean", "sum", "pooled"];
 
 function statOf(key) {
@@ -680,7 +694,7 @@ function layoutData(layout) {
   for (const c of layout.cols) {
     const raw = steps.map((st) => c.s.points.get(st) ?? null);
     if (c.role === "ghost") out.push(window > 1 ? raw : raw.map(() => null));
-    else out.push(window > 1 ? rollingMean(raw, window) : raw);
+    else out.push(rollingMean(raw, window));
   }
   return out;
 }
@@ -733,8 +747,6 @@ function chartWidth(card) {
   return card.clientWidth - 22;
 }
 
-/* axis labels stay compact so they fit the gutter: K-notation above 1000,
-   two significant digits below 0.1, one exponent digit outside that */
 /* axis ticks, at most ~5 chars: 1e5 · 1e4 · 1000 · 100 · 10 · 1 · 0.3 · 0.01 ·
    0.001 · 1e-4 — decimals only below 10, exponent form outside [0.001, 10000) */
 function fmtAxis(v) {
@@ -979,8 +991,11 @@ function updateChart(entry) {
   }
 }
 
-function updateCharts() {
-  for (const entry of state.metrics.charts) updateChart(entry);
+function updateCharts(touched = null) {
+  for (const entry of state.metrics.charts) {
+    if (touched && !entry.series.some((s) => touched.has(s.key))) continue;
+    updateChart(entry);
+  }
 }
 
 function addSection(body, name, count, display = name) {
@@ -1236,13 +1251,13 @@ function applyConfigSearch() {
   } catch {
     re = new RegExp(escRe(query), "gi");
   }
+  const noHits = () => {
+    view.innerHTML = emptyState("no hits", "nothing in this config matches the filter");
+    hitsEl.textContent = "no hits";
+  };
   if (parsed !== undefined) {
     const pruned = pruneConfig(parsed, new RegExp(re.source, "i"));
-    if (pruned === undefined) {
-      view.innerHTML = emptyState("no hits", "nothing in this config matches the filter");
-      hitsEl.textContent = "no hits";
-      return;
-    }
+    if (pruned === undefined) return noHits();
     view.innerHTML = renderJsonNode(null, pruned, 0, true);
   } else {
     // TOML (launch config): filter to matching lines, keeping [section] headers
@@ -1253,15 +1268,10 @@ function applyConfigSearch() {
       re.lastIndex = 0;
       if (!re.test(line)) continue;
       if (section !== null && section !== line) kept.push(section);
-      if (/^\s*\[/.test(line)) section = null;
-      else section = null;
+      section = null;
       kept.push(line);
     }
-    if (!kept.length) {
-      view.innerHTML = emptyState("no hits", "nothing in this config matches the filter");
-      hitsEl.textContent = "no hits";
-      return;
-    }
+    if (!kept.length) return noHits();
     view.innerHTML = renderToml(kept.join("\n"));
   }
   const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
@@ -1604,10 +1614,8 @@ async function pollLogs(render = true) {
 /* only re-render the panes whose files actually grew */
 function renderChangedLogPanes(ids) {
   document.querySelectorAll("#log-panes .log-pane").forEach((el) => {
-    const paneIds =
-      el.dataset.comp === "__merged__"
-        ? [...allSelectedIds()]
-        : paneSelectedIds(LOG_PANES.find((p) => p.comp === el.dataset.comp) ?? { comp: "", match: () => false });
+    const pane = LOG_PANES.find((p) => p.comp === el.dataset.comp);
+    const paneIds = el.dataset.comp === "__merged__" ? [...allSelectedIds()] : pane ? paneSelectedIds(pane) : [];
     if (paneIds.some((id) => ids.has(id))) renderLogPane(el);
   });
 }
@@ -2097,10 +2105,10 @@ function toolCallHtml(toolCall) {
   return `<div class="tool-call">${esc(name)}(${esc(args)})</div>`;
 }
 
-function subBlock(name, content) {
+function reasoningBlock(content) {
   const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
   return (
-    `<details class="sub"><summary><span class="sub-name">${esc(name)}</span>` +
+    `<details class="sub"><summary><span class="sub-name">Reasoning</span>` +
     `<span class="entry-preview">${preview(text, 140)}</span>` +
     `<span class="entry-chev">›</span></summary><div class="entry-body">${esc(text)}</div></details>`
   );
@@ -2136,7 +2144,7 @@ function renderMessages(trace, branches) {
     const body = signal && node.token_ids?.length ? renderTokenNode(node, signal, maxAbsAdv) : esc(text);
     const subs = [];
     const reasoning = node.message?.reasoning_content ?? node.message?.reasoning;
-    if (reasoning) subs.push(subBlock("Reasoning", reasoning));
+    if (reasoning) subs.push(reasoningBlock(reasoning));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
     return (
       `<details class="entry ${esc(role)}"${role === "system" ? "" : " open"}>` +
@@ -2599,24 +2607,22 @@ $("#episode-table").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-line]");
   if (row) openEpisode(+row.dataset.line);
 });
-let episodeScrollPending = false;
-$("#episode-table-wrap").addEventListener("scroll", () => {
-  if (episodeScrollPending || !state.traces.episodes?.length) return;
-  episodeScrollPending = true;
-  requestAnimationFrame(() => {
-    episodeScrollPending = false;
-    renderEpisodeRows();
-  });
-});
-let tmScrollPending = false;
-$("#tm-list").addEventListener("scroll", () => {
-  if (tmScrollPending) return;
-  tmScrollPending = true;
-  requestAnimationFrame(() => {
-    tmScrollPending = false;
-    renderRolloutWindow();
-  });
-});
+function rafThrottle(fn) {
+  let pending = false;
+  return () => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => {
+      pending = false;
+      fn();
+    });
+  };
+}
+$("#episode-table-wrap").addEventListener(
+  "scroll",
+  rafThrottle(() => state.traces.episodes?.length && renderEpisodeRows())
+);
+$("#tm-list").addEventListener("scroll", rafThrottle(renderRolloutWindow));
 $("#drawer-close").addEventListener("click", closeDrawer);
 $("#drawer-backdrop").addEventListener("click", closeDrawer);
 document.addEventListener("keydown", (e) => {
@@ -2708,7 +2714,6 @@ function savePrefs() {
       metricsMode: state.metrics.mode,
       metricsSearch: state.metrics.search,
       collapsedSections: [...state.metrics.collapsedSections],
-      traceKind: state.traces.kind,
       traceErrorsOnly: state.traces.errorsOnly,
       traceSort: `${state.traces.sort}:${state.traces.order}`,
       logView: state.logs.view,
@@ -2740,9 +2745,11 @@ setInterval(async () => {
   ticking = true;
   tickCount++;
   try {
-    // keep the run list fresh so new runs register without a page refresh
-    if (tickCount % 3 === 0 || !state.run) await loadRuns();
+    // keep the run list fresh so new runs register without a page refresh;
+    // it runs concurrently with the tab poll (they're independent requests)
+    const runsRefresh = tickCount % 3 === 0 || !state.run ? loadRuns() : null;
     if (!state.run) {
+      await runsRefresh;
       const first = state.runs[0]?.name;
       if (first) await selectRun(first);
       return;
@@ -2754,6 +2761,7 @@ setInterval(async () => {
       await loadRollouts();
       if (tickCount % 5 === 0) await loadEpisodes();
     }
+    await runsRefresh;
   } catch (err) {
     console.warn("poll failed", err);
   } finally {

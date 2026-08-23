@@ -15,6 +15,9 @@ from prime_rl.utils.process import set_proc_title
 def main():
     set_proc_title("Evals")
     config = cli(EvalsConfig)
+    from prime_rl.utils.pathing import write_launch_toml
+
+    write_launch_toml(config.output_dir, "evals")
     from prime_rl.evals.evals import run_evals
 
     asyncio.run(run_evals(config))

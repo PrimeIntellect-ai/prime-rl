@@ -69,12 +69,18 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
                 """() => Object.fromEntries([...document.querySelectorAll('#run-overview .ov-field')]
                     .map(f => [f.querySelector('.lbl').innerText, f.querySelector('.val, .badge').innerText]))"""
             )
-            assert fields.get("TYPE") in ("RL", "SFT"), f"overview type field did not render: {fields!r}"
-            assert "/" in fields.get("STEP", ""), f"overview step field did not render: {fields!r}"
-            charts = page.locator(".chart-card").count()
-            assert charts >= 5, f"expected >=5 metric panels, got {charts}"
-            with_data = page.evaluate("""() => [...document.querySelectorAll('.chart-card .u-wrap')].length""")
-            assert with_data >= 5, f"expected >=5 mounted charts, got {with_data}"
+            run_type = fields.get("TYPE")
+            assert run_type in ("RL", "SFT", "EVAL"), f"overview type field did not render: {fields!r}"
+            if run_type == "EVAL":
+                assert fields.get("EPISODES", "").isdigit(), f"overview episodes field did not render: {fields!r}"
+                cards = page.locator(".stat-card").count()
+                assert cards >= 5, f"expected >=5 stat cards, got {cards}"
+            else:
+                assert "/" in fields.get("STEP", ""), f"overview step field did not render: {fields!r}"
+                charts = page.locator(".chart-card").count()
+                assert charts >= 5, f"expected >=5 metric panels, got {charts}"
+                with_data = page.evaluate("""() => [...document.querySelectorAll('.chart-card .u-wrap')].length""")
+                assert with_data >= 5, f"expected >=5 mounted charts, got {with_data}"
 
             # config: the default view renders (launch TOML on new runs), and the
             # resolved concatenated document renders as a tree

@@ -238,6 +238,10 @@ def flexible_all_gather(tensor: Tensor) -> Tensor:
     return all_tensors_unpadded
 
 
+TENSOR_STATS = ("mean", "median", "std", "min", "max", "p10", "p90")
+DISTRIBUTIONAL_STATS = ("mean", "std", "min", "max", "p10", "p90")
+
+
 class Tensors(defaultdict):
     """A class to accumulate tensors and compute statistics (mean, median, std, min, max) across multiple steps and ranks."""
 
@@ -264,21 +268,27 @@ class Tensors(defaultdict):
 
             # Handle empty tensors (can happen when all rollouts in a batch fail)
             if tensors.numel() == 0:
-                for stat in ("mean", "median", "std", "min", "max", "p10", "p90"):
+                for stat in TENSOR_STATS:
                     metrics[f"{key}/{stat}"] = float("nan")
                 continue
 
             # Compute relevant tensor statistics (sorting once covers the order stats;
-            # torch.quantile is avoided since it caps out on large token counts)
+            # torch.quantile is avoided since it caps out on large token counts).
+            # One stacked .tolist() keeps it to a single host sync per key.
             sorted_tensors = tensors.sort().values
             n = sorted_tensors.numel()
-            metrics[f"{key}/mean"] = tensors.mean().item()
-            metrics[f"{key}/median"] = sorted_tensors[(n - 1) // 2].item()
-            metrics[f"{key}/std"] = tensors.std().item()
-            metrics[f"{key}/min"] = sorted_tensors[0].item()
-            metrics[f"{key}/max"] = sorted_tensors[-1].item()
-            metrics[f"{key}/p10"] = sorted_tensors[int(0.1 * (n - 1))].item()
-            metrics[f"{key}/p90"] = sorted_tensors[int(0.9 * (n - 1))].item()
+            values = torch.stack(
+                [
+                    tensors.mean(),
+                    sorted_tensors[(n - 1) // 2],
+                    tensors.std(),
+                    sorted_tensors[0],
+                    sorted_tensors[-1],
+                    sorted_tensors[int(0.1 * (n - 1))],
+                    sorted_tensors[int(0.9 * (n - 1))],
+                ]
+            ).tolist()
+            metrics.update({f"{key}/{stat}": value for stat, value in zip(TENSOR_STATS, values)})
 
             # Add back all-gathered tensors to self
             self[key].append(tensors.tolist())
@@ -289,6 +299,10 @@ class Tensors(defaultdict):
 def _is_env_tensor_stat(key: str, allowed_stats: set[str]) -> bool:
     parts = key.split("/")
     return len(parts) >= 3 and parts[-1] in allowed_stats
+
+
+DISTRIBUTIONAL = set(DISTRIBUTIONAL_STATS)
+DISTRIBUTIONAL_SUFFIXES = tuple(f"/{stat}" for stat in DISTRIBUTIONAL_STATS)
 
 
 def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) -> dict[str, float | int]:
@@ -314,14 +328,13 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
             continue
         if any(k.startswith(p) for p in skip_prefixes):
             continue
-        distributional = {"mean", "std", "min", "max", "p10", "p90"}
-        if k.startswith("entropy/") and not _is_env_tensor_stat(k, distributional):
+        if k.startswith("entropy/") and not _is_env_tensor_stat(k, DISTRIBUTIONAL):
             continue
         if any(k.startswith(p) for p in mean_max_only_prefixes):
-            if _is_env_tensor_stat(k, distributional):
+            if _is_env_tensor_stat(k, DISTRIBUTIONAL):
                 out[k] = v
                 continue
-            if not any(k.endswith(f"/{stat}") for stat in distributional):
+            if not k.endswith(DISTRIBUTIONAL_SUFFIXES):
                 continue
         out[k] = v
     return out
