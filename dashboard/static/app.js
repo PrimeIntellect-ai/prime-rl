@@ -163,6 +163,14 @@ function runStatus(step) {
   return "stopped";
 }
 
+/* unbounded env lists: show the first two, fold the rest into "+N" (full list
+   in the tooltip) */
+function envListField(envs) {
+  if (!envs?.length) return `<span class="val">–</span>`;
+  const display = envs.length > 2 ? `${envs.slice(0, 2).join(", ")} +${envs.length - 2}` : envs.join(", ");
+  return `<span class="val" title="${esc(envs.join(", "))}">${esc(display)}</span>`;
+}
+
 function renderOverview() {
   const el = $("#run-overview");
   const meta = state.meta;
@@ -173,27 +181,24 @@ function renderOverview() {
   el.hidden = false;
   const step = currentStep();
   const status = runStatus(step);
-  const pct = meta.max_steps && step != null ? Math.min(100, (step / meta.max_steps) * 100) : null;
   const durationEnd = status === "running" ? Date.now() / 1000 : meta.updated;
   const duration = meta.started && durationEnd ? fmtDuration(durationEnd - meta.started) : "–";
+  const resumes = Math.max(0, (meta.attempts?.length ?? 1) - 1);
   const fields = [
     ["status", `<span class="badge st-${status}">${status}</span>`],
     ["duration", `<span class="val">${duration}</span>`],
-    ["model", `<span class="val">${esc(meta.model ?? "–")}</span>`],
+    ["model", `<span class="val" title="${esc(meta.model ?? "")}">${esc(meta.model ?? "–")}</span>`],
+    ["resumes", `<span class="val">${resumes}</span>`],
+    ["train envs", envListField(meta.train_envs)],
+    ["eval envs", envListField(meta.eval_envs)],
     ["created", `<span class="val">${fmtAgo(meta.created)}</span>`],
   ];
   el.innerHTML =
     `<div class="ov-top">` +
-    `<div class="ov-pct"><div class="pct">${pct != null ? `${pct.toFixed(2)}%` : step != null ? `step ${step}` : "–"}</div>` +
-    `<div class="steps">${(step ?? 0).toLocaleString()}${meta.max_steps ? ` / ${meta.max_steps.toLocaleString()}` : ""} Steps</div></div>` +
+    `<div class="ov-pct"><div class="pct">${step != null ? `step ${step.toLocaleString()}` : "–"}</div>` +
+    `${meta.max_steps ? `<div class="steps">of ${meta.max_steps.toLocaleString()}</div>` : ""}</div>` +
     fields.map(([label, value]) => `<div class="ov-field"><span class="lbl">${label}</span>${value}</div>`).join("") +
-    `</div>` +
-    (pct != null
-      ? `<div class="ov-bar"><div class="fill" style="width:${pct.toFixed(2)}%"></div></div>`
-      : step != null
-        ? // unbounded run: no percentage — grey track, lime sweep while running
-          `<div class="ov-bar indeterminate${status === "running" ? " live" : ""}"><div class="sweep"></div></div>`
-        : "");
+    `</div>`;
 }
 
 function updateHash() {
@@ -459,12 +464,14 @@ function chartHeight() {
   return state.metrics.paneH;
 }
 
-/* axis labels get one exponent digit so they fit the 50px gutter */
+/* axis labels stay compact so they fit the 50px gutter: K-notation above
+   1000, one exponent digit outside that */
 function fmtAxis(v) {
   if (v == null) return "";
   if (v === 0) return "0";
   const abs = Math.abs(v);
   if (abs >= 1e6 || abs < 1e-3) return v.toExponential(1).replace(".0e", "e");
+  if (abs >= 1000) return `${+(v / 1000).toFixed(abs >= 10000 ? 0 : 1)}K`;
   return fmtNum(v);
 }
 
