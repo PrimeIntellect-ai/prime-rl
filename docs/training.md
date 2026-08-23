@@ -81,7 +81,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `--run.name <name>` | Run name, also the run directory name under `<output_dir>` (override the directory separately via `--run.dir`). Auto-generated as `<envs>--<model>--<short-id>` when unset, so every launch gets a fresh, readable run directory. Set an explicit name for a predictable path — required to resume the run later. |
 | `--clean` | Wipe the run directory before starting. Useful when re-running a named run during iteration. |
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
-| `--dry-run` | Resolve + validate the full config, write per-process TOMLs to `<run_dir>/configs/`, and exit without launching. The fastest way to debug a misbehaving config. |
+| `--dry-run` | Resolve + validate the full config, write per-process configs to `<run_dir>/configs/resolved/`, and exit without launching. The fastest way to debug a misbehaving config. |
 
 ### Algorithms
 

@@ -91,7 +91,30 @@ def format_log_message(
 
 
 def get_config_dir(output_dir: Path) -> Path:
-    return output_dir / "configs"
+    """Resolved per-component config dumps (JSON). The launch TOML copy lives one
+    level up, at `configs/<entrypoint>.toml`."""
+    return output_dir / "configs" / "resolved"
+
+
+def write_launch_toml(run_dir: Path, name: str) -> None:
+    """Copy the launch `@` TOML file(s) verbatim to `configs/<name>.toml`."""
+    import sys
+
+    argv = sys.argv[1:]
+    paths = []
+    for i, arg in enumerate(argv):
+        if arg == "@" and i + 1 < len(argv):
+            paths.append(Path(argv[i + 1]))
+        elif arg.startswith("@") and len(arg) > 1:
+            paths.append(Path(arg[1:]))
+    texts = [p.read_text() for p in paths if p.is_file()]
+    if not texts:
+        return
+    if len(texts) > 1:
+        texts = [f"# @ {p}\n{t}" for p, t in zip(paths, texts)]
+    config_dir = run_dir / "configs"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / f"{name}.toml").write_text("\n".join(texts))
 
 
 def get_ckpt_dir(output_dir: Path) -> Path:
