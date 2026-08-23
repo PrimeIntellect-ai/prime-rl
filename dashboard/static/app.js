@@ -41,6 +41,7 @@ function fmtNum(v) {
   if (Number.isInteger(v)) return String(v);
   return v.toPrecision(4).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
 }
+const fmtReward = (v) => (v == null || Number.isNaN(v) ? "–" : v.toFixed(3));
 const fmtBytes = (n) => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)}M` : n >= 1024 ? `${(n / 1024).toFixed(0)}K` : `${n}B`);
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const emptyState = (title, detail = "") =>
@@ -1243,8 +1244,8 @@ async function loadEpisodes() {
         <td class="muted">${ep.line}</td>
         <td>${esc(ep.env ?? "?")}</td>
         <td class="muted" title="${esc(ep.group ?? "")}">${esc((ep.group ?? "").slice(0, 8))}</td>
-        <td class="${rewardClass(ep.reward)}">${fmtNum(ep.reward)}</td>
-        <td class="${rewardClass(ep.advantage)}">${fmtNum(ep.advantage)}</td>
+        <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
+        <td class="${rewardClass(ep.advantage)}">${fmtReward(ep.advantage)}</td>
         <td class="muted">${ep.input_tokens ?? ""}</td>
         <td>${ep.output_tokens ?? ""}</td>
         <td>${ep.turns ?? ""}</td>
@@ -1303,7 +1304,7 @@ function renderRolloutList() {
       return (
         `<div class="tm-item ${e.line === currentLine ? "active" : ""}" data-line="${e.line}">` +
         `<span>Rollout ${e.line}</span><span class="muted">${esc(e.env ?? "")}</span>` +
-        `<span class="tm-reward ${cls}">${fmtNum(e.reward)}</span></div>`
+        `<span class="tm-reward ${cls}">${fmtReward(e.reward)}</span></div>`
       );
     })
     .join("");
@@ -1510,14 +1511,14 @@ function renderMeta(ep, trace, branches) {
   if (reward != null)
     parts.push(
       `<div class="meta-row"><span class="k">reward</span>` +
-        `<span class="tm-reward-big${reward < 0 ? " neg" : ""}" style="margin-left:auto">${fmtNum(reward)}</span></div>`
+        `<span class="tm-reward-big${reward < 0 ? " neg" : ""}" style="margin-left:auto">${fmtReward(reward)}</span></div>`
     );
 
   if (trace) {
     const rewards = Object.entries(trace.rewards || {});
     if (rewards.length) {
       parts.push(`<div class="meta-sec">rewards</div>`);
-      for (const [name, r] of rewards) parts.push(metaRow(name, `${fmtNum(r.score)} × ${fmtNum(r.weight ?? 1)}`));
+      for (const [name, r] of rewards) parts.push(metaRow(name, `${fmtReward(r.score)} × ${fmtNum(r.weight ?? 1)}`));
     }
     const metrics = Object.entries(trace.metrics || {});
     if (metrics.length) {
@@ -1571,7 +1572,7 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("stop_condition", trace.stop_condition));
     parts.push(metaRow("is_completed", trace.is_completed));
     parts.push(metaRow("ok", trace.ok));
-    parts.push(metaRow("advantage", trace.info?.advantage != null ? fmtNum(trace.info.advantage) : null));
+    parts.push(metaRow("advantage", trace.info?.advantage != null ? fmtReward(trace.info.advantage) : null));
 
     const durations = [];
     (function walkTiming(obj, prefix) {
