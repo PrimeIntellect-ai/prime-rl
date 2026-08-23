@@ -24,9 +24,11 @@ const state = {
     loaded: false, offset: 0, byKey: new Map(), mode: "overview", search: "",
     charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null, collapsedSections: new Set(),
     smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 320, paneH: prefs.paneH ?? 150,
+    paneOrder: prefs.paneOrder ?? {},
   },
+  compare: { runs: [], data: new Map() },
   config: { loaded: false, files: [], file: null },
-  logs: { loaded: false, attempt: "latest", attempts: [], files: [], selected: new Set(), buffers: new Map(), gseq: 0 },
+  logs: { loaded: false, attempt: "latest", attempts: [], files: [], paneFile: {}, maximized: null, buffers: new Map(), gseq: 0 },
   traces: { loaded: false, steps: [], step: null, kind: "train", subset: "effective", page: 0, limit: 5000, total: 0, env: "", errorsOnly: false, sort: "line", order: "asc" },
 };
 
@@ -67,9 +69,40 @@ async function loadRuns() {
   }
 }
 
+function renderCompareMenu() {
+  const menu = $("#compare-menu");
+  const others = state.runs.filter((r) => r.name !== state.run);
+  menu.innerHTML = others.length
+    ? others
+        .map(
+          (r) =>
+            `<label class="file-item"><input type="checkbox" data-compare="${esc(r.name)}"` +
+            `${state.compare.runs.includes(r.name) ? " checked" : ""}><span>${esc(r.name)}</span></label>`
+        )
+        .join("")
+    : `<div class="muted" style="padding:6px 8px">no other runs</div>`;
+  const btn = $("#compare-btn");
+  const n = state.compare.runs.length;
+  btn.textContent = n ? `compare (${n})` : "compare";
+  btn.classList.toggle("active", n > 0);
+}
+
+async function toggleCompare(name, on) {
+  const runs = state.compare.runs;
+  if (on && !runs.includes(name)) runs.push(name);
+  if (!on) {
+    state.compare.runs = runs.filter((r) => r !== name);
+    state.compare.data.delete(name);
+  }
+  renderCompareMenu();
+  await fetchCompares();
+  renderMetricsBody();
+}
+
 async function selectRun(name) {
   if (!name) return;
   state.run = name;
+  state.compare = { runs: [], data: new Map() };
   $("#run-select").value = name;
   state.meta = await api(`/api/runs/${encodeURIComponent(name)}`);
   state.metrics = {
@@ -78,9 +111,10 @@ async function selectRun(name) {
     timeKeys: new Set(), timeZero: null,
   };
   state.config = { loaded: false, files: [], file: null };
-  state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], selected: new Set(), buffers: new Map() };
+  state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], paneFile: {}, maximized: null, buffers: new Map() };
   state.traces = { ...state.traces, loaded: false, steps: [], step: null, page: 0, env: "", kind: "train", subset: "effective" };
   renderOverview();
+  renderCompareMenu();
   updateHash();
   await activateTab(state.tab, true);
 }
@@ -194,8 +228,8 @@ const INFERENCE_PANELS = [
 const TRAINER_KEY_RE = /^(perf|optim|loss|entropy|system|mismatch_kl|kl_ent_ratio|is_masked|masked_|unmasked_|max_vio|routing_|ref_kl|val)[/_]?/;
 const ORCH_KEY_RE = /^(train|batch|off_policy|curriculum|eval)\//;
 
-function rowProducer(row) {
-  if (state.meta?.type === "sft") return "trainer";
+function rowProducer(row, meta) {
+  if (meta?.type === "sft") return "trainer";
   for (const key of Object.keys(row)) {
     if (TRAINER_KEY_RE.test(key)) return "trainer";
     if (ORCH_KEY_RE.test(key)) return "orch";
@@ -203,8 +237,9 @@ function rowProducer(row) {
   return Object.keys(row).some((k) => k.startsWith("progress/")) ? "orch" : "trainer";
 }
 
-function ingestRows(rows) {
-  const m = state.metrics;
+/* store = {byKey, timeKeys, timeZero} — the primary run's is state.metrics,
+   compared runs get their own */
+function ingestInto(store, rows, meta) {
   for (const row of rows) {
     // step=None rows are time-keyed (inference metrics): x = seconds since run start
     const isTime = row.step == null;
@@ -212,21 +247,21 @@ function ingestRows(rows) {
     if (isTime) {
       const t = row.time ?? row._timestamp;
       if (typeof t !== "number") continue;
-      m.timeZero ??= state.meta?.started ?? t;
-      x = Math.max(0, t - m.timeZero);
+      store.timeZero ??= meta?.started ?? t;
+      x = Math.max(0, t - store.timeZero);
     } else {
       if (typeof row.step !== "number") continue;
       x = row.step;
     }
-    const producer = isTime ? "infer" : rowProducer(row);
+    const producer = isTime ? "infer" : rowProducer(row, meta);
     for (const [key, value] of Object.entries(row)) {
       if (key === "step" || key === "time" || key === "_timestamp" || typeof value !== "number") continue;
-      let producers = m.byKey.get(key);
-      if (!producers) m.byKey.set(key, (producers = new Map()));
+      let producers = store.byKey.get(key);
+      if (!producers) store.byKey.set(key, (producers = new Map()));
       let series = producers.get(producer);
       if (!series) producers.set(producer, (series = new Map()));
       series.set(x, value);
-      if (isTime) m.timeKeys.add(key);
+      if (isTime) store.timeKeys.add(key);
     }
   }
 }
@@ -235,12 +270,38 @@ async function fetchMetrics() {
   const data = await api(`/api/runs/${encodeURIComponent(state.run)}/metrics?offset=${state.metrics.offset}`);
   state.metrics.offset = data.offset;
   if (data.rows.length) {
-    ingestRows(data.rows);
+    ingestInto(state.metrics, data.rows, state.meta);
     renderOverview();
+  }
+  const grew = await fetchCompares();
+  if (data.rows.length || grew) {
     if (state.metrics.byKey.size !== state.metrics.renderedKeys) renderMetricsBody();
     else updateCharts();
   }
   return data.rows.length;
+}
+
+async function fetchCompares() {
+  let grew = false;
+  for (const name of state.compare.runs) {
+    let store = state.compare.data.get(name);
+    if (!store) {
+      store = { offset: 0, byKey: new Map(), timeKeys: new Set(), timeZero: null, meta: null };
+      state.compare.data.set(name, store);
+    }
+    try {
+      store.meta ??= await api(`/api/runs/${encodeURIComponent(name)}`);
+      const data = await api(`/api/runs/${encodeURIComponent(name)}/metrics?offset=${store.offset}`);
+      store.offset = data.offset;
+      if (data.rows.length) {
+        ingestInto(store, data.rows, store.meta);
+        grew = true;
+      }
+    } catch (err) {
+      console.warn(`compare fetch failed for ${name}`, err);
+    }
+  }
+  return grew;
 }
 
 function buildSections(meta) {
@@ -299,32 +360,57 @@ function metricsFilter() {
   }
 }
 
-function resolvePanel(panel) {
-  const byKey = state.metrics.byKey;
-  let keys;
-  if (panel.metric) keys = byKey.has(panel.metric) ? [panel.metric] : [];
-  else if (panel.metrics) keys = panel.metrics.filter((k) => byKey.has(k));
-  else {
-    const re = new RegExp(`^(?:${panel.regex})$`);
-    keys = [...byKey.keys()].filter((k) => re.test(k)).sort();
+function compareStores() {
+  const stores = [{ run: state.run, store: state.metrics }];
+  for (const name of state.compare.runs) {
+    const store = state.compare.data.get(name);
+    if (store) stores.push({ run: name, store });
   }
-  if (activeFilter) keys = keys.filter((k) => activeFilter.test(k));
+  return stores;
+}
+
+function resolvePanel(panel) {
   const series = [];
-  for (const key of keys)
-    for (const [producer, points] of byKey.get(key)) series.push({ key, producer, points });
+  for (const { run, store } of compareStores()) {
+    let keys;
+    if (panel.metric) keys = store.byKey.has(panel.metric) ? [panel.metric] : [];
+    else if (panel.metrics) keys = panel.metrics.filter((k) => store.byKey.has(k));
+    else {
+      const re = new RegExp(`^(?:${panel.regex})$`);
+      keys = [...store.byKey.keys()].filter((k) => re.test(k)).sort();
+    }
+    if (activeFilter) keys = keys.filter((k) => activeFilter.test(k));
+    for (const key of keys)
+      for (const [producer, points] of store.byKey.get(key))
+        series.push({ key, producer, points, run, time: store.timeKeys.has(key) });
+  }
   return series;
 }
 
 function seriesLabels(series) {
-  if (series.length === 1) return [""];
+  const comparing = state.compare.runs.length > 0;
+  if (series.length === 1 && !comparing) return [""];
   const keyParts = series.map((s) => s.key.split("/"));
   let start = 0;
   while (keyParts.every((p) => p.length > start + 1 && p[start] === keyParts[0][start])) start++;
   return series.map((s, i) => {
     const tail = keyParts[i].slice(start).join("/");
-    const dupKey = series.some((o, j) => j !== i && o.key === s.key);
-    return dupKey ? `${tail} (${s.producer})` : tail;
+    const dupKey = series.some((o, j) => j !== i && o.key === s.key && o.run === s.run);
+    const label = dupKey ? `${tail} (${s.producer})` : tail;
+    if (!comparing) return label;
+    const runName = s.run.length > 24 ? `${s.run.slice(0, 22)}…` : s.run;
+    const multiKey = series.some((o) => o.key !== s.key);
+    return multiKey ? `${runName} · ${label}` : runName;
   });
+}
+
+/* comparing runs: color by run; otherwise color by series */
+function seriesColors(series) {
+  if (state.compare.runs.length) {
+    const runs = [state.run, ...state.compare.runs];
+    return series.map((s) => PALETTE[Math.max(0, runs.indexOf(s.run)) % PALETTE.length]);
+  }
+  return series.length > 1 ? series.map((_, i) => PALETTE[i % PALETTE.length]) : [SINGLE_SERIES];
 }
 
 function rollingMean(values, window) {
@@ -386,6 +472,26 @@ function hexToRgba(hex, alpha) {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
 }
 
+/* a plain click (no drag) resets a drag-zoomed chart */
+function unzoomPlugin() {
+  let downX = 0;
+  let downY = 0;
+  return {
+    hooks: {
+      ready: (u) => {
+        u.over.addEventListener("mousedown", (e) => {
+          downX = e.clientX;
+          downY = e.clientY;
+        });
+        u.over.addEventListener("click", (e) => {
+          if (Math.abs(e.clientX - downX) > 3 || Math.abs(e.clientY - downY) > 3) return;
+          u.setData(u.data); // re-autoscales
+        });
+      },
+    },
+  };
+}
+
 /* hover popover with the x value and every series' y value */
 function tooltipPlugin(meta, timeAxis) {
   let tip;
@@ -431,7 +537,7 @@ function tooltipPlugin(meta, timeAxis) {
   };
 }
 
-function makeChart(el, labels, width, timeAxis = false) {
+function makeChart(el, labels, colorList, width, timeAxis = false) {
   const axis = {
     stroke: "#767676",
     grid: { stroke: "rgba(255,255,255,0.06)", width: 1 },
@@ -447,8 +553,7 @@ function makeChart(el, labels, width, timeAxis = false) {
       }
     : // step axis: integer ticks only
       { ...axis, size: 28, incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000] };
-  const colors = labels.length > 1 ? PALETTE : [SINGLE_SERIES];
-  const meta = labels.map((label, i) => ({ label: label || "value", color: colors[i % colors.length] }));
+  const meta = labels.map((label, i) => ({ label: label || "value", color: colorList[i % colorList.length] }));
   const series = [{ label: timeAxis ? "time" : "step" }];
   for (const m of meta) {
     series.push({ stroke: hexToRgba(m.color, 0.25), width: 1, spanGaps: true, points: { show: false } });
@@ -463,7 +568,7 @@ function makeChart(el, labels, width, timeAxis = false) {
       scales: { x: { time: false } },
       axes: [xAxis, { ...axis, size: 50, values: (u, vals) => vals.map(fmtAxis) }],
       legend: { show: false },
-      plugins: [tooltipPlugin(meta, timeAxis)],
+      plugins: [tooltipPlugin(meta, timeAxis), unzoomPlugin()],
       series,
     },
     [[], ...meta.flatMap(() => [[], []])],
@@ -479,30 +584,53 @@ function mountChart(entry) {
   if (entry.u || !entry.series.length) return;
   const plotEl = document.createElement("div");
   entry.card.appendChild(plotEl);
-  const timeAxis = entry.series.every((s) => state.metrics.timeKeys.has(s.key));
-  entry.u = makeChart(plotEl, seriesLabels(entry.series), entry.card.clientWidth - 22, timeAxis);
+  const timeAxis = entry.series.every((s) => s.time);
+  entry.u = makeChart(plotEl, seriesLabels(entry.series), seriesColors(entry.series), entry.card.clientWidth - 22, timeAxis);
   updateChart(entry);
 }
 
-function panelTitle(panel) {
-  if (panel.metric) return panel.metric;
-  if (panel.regex) return panel.regex;
-  const parts = panel.metrics[0].split("/");
-  while (parts.length > 1 && !panel.metrics.every((k) => k.startsWith(parts.join("/")))) parts.pop();
-  return parts.join("/");
+/* panel titles show the matched key(s), never the regex; the section's scope
+   prefix is dropped since the section header already carries it */
+function panelTitle(panel, series, sectionName) {
+  const keys = [...new Set(series.map((s) => s.key))];
+  let title;
+  if (!keys.length) title = panel.metric || panel.metrics?.[0] || panel.regex || "";
+  else if (keys.length === 1) title = keys[0];
+  else {
+    const parts = keys[0].split("/");
+    while (parts.length && !keys.every((k) => `${k}/`.startsWith(`${parts.join("/")}/`))) parts.pop();
+    title = parts.join("/") || keys[0];
+  }
+  if (sectionName && title.startsWith(`${sectionName}/`)) title = title.slice(sectionName.length + 1);
+  return title;
 }
+
+let dragCard = null;
 
 function renderPanelCard(grid, panel, lazy = false) {
   const series = resolvePanel(panel);
   if (!series.length && (panel.regex || panel.metrics || activeFilter)) return; // no matches (yet)
   const card = document.createElement("div");
   card.className = "chart-card";
-  const title = panelTitle(panel);
+  const sectionName = grid.parentElement?.dataset?.name;
+  const title = panelTitle(panel, series, sectionName);
+  card.dataset.title = title;
   card.innerHTML =
-    `<div class="chart-head"><div class="chart-title" title="${esc(title)}">${esc(title)}</div><div class="chart-last"></div></div>` +
+    `<div class="chart-head" draggable="true"><div class="chart-title" title="${esc(title)}">${esc(title)}</div><div class="chart-last"></div></div>` +
     `<div class="rz rz-e" data-rz="x"></div><div class="rz rz-s" data-rz="y"></div>` +
     `<div class="rz rz-se" data-rz="xy" title="drag to resize all panes"></div>`;
   grid.appendChild(card);
+  const head = card.querySelector(".chart-head");
+  head.addEventListener("dragstart", (e) => {
+    dragCard = card;
+    e.dataTransfer.effectAllowed = "move";
+    card.classList.add("dragging");
+  });
+  head.addEventListener("dragend", () => {
+    card.classList.remove("dragging");
+    persistPaneOrder(card.parentElement);
+    dragCard = null;
+  });
   const entry = { card, panel, u: null, series };
   state.metrics.charts.push(entry);
   if (!series.length) {
@@ -516,6 +644,29 @@ function renderPanelCard(grid, panel, lazy = false) {
   } else {
     mountChart(entry);
   }
+}
+
+function paneOrderKey(sectionName) {
+  return `${state.metrics.mode}:${sectionName ?? ""}`;
+}
+
+function persistPaneOrder(grid) {
+  const sectionName = grid?.closest("details.section")?.dataset?.name;
+  if (!sectionName) return;
+  state.metrics.paneOrder[paneOrderKey(sectionName)] = [...grid.querySelectorAll(".chart-card")].map(
+    (c) => c.dataset.title
+  );
+  savePrefs();
+}
+
+function applyPaneOrder(grid) {
+  const sectionName = grid.closest("details.section")?.dataset?.name;
+  const saved = sectionName && state.metrics.paneOrder[paneOrderKey(sectionName)];
+  if (!saved) return;
+  const rank = new Map(saved.map((t, i) => [t, i]));
+  [...grid.children]
+    .sort((a, b) => (rank.get(a.dataset.title) ?? 1e9) - (rank.get(b.dataset.title) ?? 1e9))
+    .forEach((c) => grid.appendChild(c));
 }
 
 function updateChart(entry) {
@@ -578,6 +729,7 @@ function renderMetricsBody() {
       const { div, grid } = addSection(body, section.name);
       for (const panel of section.panels) renderPanelCard(grid, panel);
       if (!grid.children.length) div.remove();
+      else applyPaneOrder(grid);
     }
     if (activeFilter && !body.children.length)
       body.innerHTML = emptyState("no keys match", "no overview panels match the filter");
@@ -596,6 +748,7 @@ function renderMetricsBody() {
   for (const [group, keys] of groups) {
     const { grid } = addSection(body, group, keys.length);
     for (const key of keys) renderPanelCard(grid, { metric: key }, true);
+    applyPaneOrder(grid);
   }
   if (!groups.size) body.innerHTML = emptyState("no keys match", `0 of ${m.byKey.size} keys match the filter`);
 }
@@ -717,11 +870,6 @@ const TEE_RE = /^\[[A-Za-z]+\d*\]:\s?/;
 const LEVEL_RANK = { DEBUG: 0, INFO: 1, SUCCESS: 1, WARNING: 2, ERROR: 3, CRITICAL: 3 };
 const TAIL_BYTES = 262144;
 
-function componentClass(component) {
-  if (component.startsWith("env:")) return "c-env";
-  return { trainer: "c-trainer", orch: "c-orch", infer: "c-infer", evals: "c-evals" }[component] || "c-other";
-}
-
 function ansiToHtml(raw) {
   let out = "", bold = false, dim = false, fg = null, idx = 0, match;
   const re = /\x1b\[([0-9;]*)m/g;
@@ -788,11 +936,111 @@ async function fetchLogChunk(file, params) {
   return api(`/api/runs/${encodeURIComponent(state.run)}/log?${qs}`);
 }
 
+const LOG_PANES = [
+  { comp: "trainer", title: "trainer", match: (f) => f.component === "trainer" },
+  { comp: "orch", title: "orchestrator", match: (f) => f.component === "orch" },
+  { comp: "infer", title: "inference", match: (f) => f.component === "infer" },
+  { comp: "evals", title: "evals", match: (f) => f.component === "evals" },
+  { comp: "envs", title: "envs", match: (f) => f.component.startsWith("env:"), merged: true },
+];
+
+const fmtCount = (n) => (n >= 1000 ? `${Math.floor(n / 1000)}K` : String(n));
+
+function paneFiles(pane) {
+  return state.logs.files.filter(pane.match);
+}
+
+function paneSelectedIds(pane) {
+  if (pane.merged) return paneFiles(pane).map((f) => f.id);
+  const id = state.logs.paneFile[pane.comp];
+  return id ? [id] : [];
+}
+
+function allSelectedIds() {
+  const ids = new Set();
+  for (const pane of LOG_PANES) if (paneFiles(pane).length) for (const id of paneSelectedIds(pane)) ids.add(id);
+  return ids;
+}
+
+function logFilter() {
+  const query = $("#log-search").value.trim();
+  if (!query) return null;
+  try {
+    return new RegExp(query, "i");
+  } catch {
+    const needle = query.toLowerCase();
+    return { test: (s) => s.toLowerCase().includes(needle) };
+  }
+}
+
+function renderLogPanes() {
+  const logs = state.logs;
+  $("#attempt-select").innerHTML = logs.attempts
+    .map((a) => `<option value="${a}" ${String(a) === String(logs.attempt) ? "selected" : ""}>attempt ${a}</option>`)
+    .join("");
+  const container = $("#log-panes");
+  container.innerHTML = "";
+  container.classList.toggle("maxed", !!logs.maximized);
+  for (const pane of LOG_PANES) {
+    const files = paneFiles(pane);
+    if (!files.length) continue;
+    if (!pane.merged && !files.some((f) => f.id === logs.paneFile[pane.comp]))
+      logs.paneFile[pane.comp] = (files.find((f) => f.master) ?? files[0]).id;
+    const el = document.createElement("div");
+    el.className = `log-pane${logs.maximized === pane.comp ? " maximized" : ""}`;
+    el.dataset.comp = pane.comp;
+    el.innerHTML =
+      `<div class="log-pane-head"><span class="lp-title">${pane.title}</span>` +
+      (pane.merged
+        ? `<span class="lp-count muted">${files.length} file${files.length === 1 ? "" : "s"} merged</span>`
+        : `<select class="lp-file">${files
+            .map((f) => `<option value="${esc(f.id)}"${f.id === logs.paneFile[pane.comp] ? " selected" : ""}>${esc(f.label)}</option>`)
+            .join("")}</select>`) +
+      `<span class="lp-count"></span><div class="spacer"></div>` +
+      `<button class="btn lp-max" title="${logs.maximized === pane.comp ? "restore" : "maximize"}">${logs.maximized === pane.comp ? "\u2921" : "\u2922"}</button></div>` +
+      `<div class="log-pane-stream"></div>`;
+    container.appendChild(el);
+  }
+  if (!container.children.length) container.innerHTML = emptyState("no log files", "this run has no logs yet");
+}
+
+function renderLogPane(el) {
+  const pane = LOG_PANES.find((p) => p.comp === el.dataset.comp);
+  if (!pane) return;
+  const stream = el.querySelector(".log-pane-stream");
+  const minRank = LEVEL_RANK[$("#log-level").value] ?? 0;
+  const filter = logFilter();
+  const ids = paneSelectedIds(pane);
+  const lines = [];
+  for (const id of ids) {
+    const buffer = state.logs.buffers.get(id);
+    if (!buffer) continue;
+    for (const line of buffer.lines) {
+      if (minRank && (LEVEL_RANK[line.level] ?? minRank) < minRank) continue;
+      if (filter && !filter.test(line.plain)) continue;
+      lines.push(line);
+    }
+  }
+  if (ids.length > 1) lines.sort((a, b) => a.t - b.t || a.gseq - b.gseq);
+  const shown = lines.slice(-3000);
+  // always follow: stick to the bottom unless the user scrolled up to read
+  const pinned = !stream.childElementCount || stream.scrollTop + stream.clientHeight >= stream.scrollHeight - 40;
+  stream.innerHTML = shown
+    .map((line) => `<div class="ll"><span class="ltext">${(line.html ??= ansiToHtml(line.raw))}</span></div>`)
+    .join("");
+  el.querySelector(".lp-count").textContent = `${fmtCount(lines.length)} lines`;
+  if (pinned) stream.scrollTop = stream.scrollHeight;
+}
+
+function renderAllLogPanes() {
+  document.querySelectorAll("#log-panes .log-pane").forEach(renderLogPane);
+}
+
 async function pollLogs(render = true) {
   const logs = state.logs;
   let changed = false;
   await Promise.all(
-    [...logs.selected].map(async (id) => {
+    [...allSelectedIds()].map(async (id) => {
       const file = logs.files.find((f) => f.id === id);
       if (!file) return;
       let buffer = logs.buffers.get(id);
@@ -818,54 +1066,12 @@ async function pollLogs(render = true) {
       }
     })
   );
-  if (changed && render) renderLogStream();
-}
-
-function renderLogStream() {
-  const logs = state.logs;
-  const stream0 = $("#log-stream");
-  if (!logs.files.length) {
-    stream0.innerHTML = emptyState("no log files", "this run has no logs yet");
-    $("#log-status").textContent = "";
-    return;
-  }
-  if (!logs.selected.size) {
-    stream0.innerHTML = emptyState("no files selected", "enable log files in the sidebar");
-    $("#log-status").textContent = "";
-    return;
-  }
-  const minRank = LEVEL_RANK[$("#log-level").value] ?? 0;
-  const query = $("#log-search").value.toLowerCase();
-  let lines = [];
-  for (const id of logs.selected) {
-    const buffer = logs.buffers.get(id);
-    if (!buffer) continue;
-    for (const line of buffer.lines) {
-      if (minRank && (LEVEL_RANK[line.level] ?? minRank) < minRank) continue;
-      if (query && !line.plain.toLowerCase().includes(query)) continue;
-      lines.push(line);
-    }
-  }
-  lines.sort((a, b) => a.t - b.t || a.gseq - b.gseq);
-  const shown = lines.slice(-4000);
-  const stream = $("#log-stream");
-  const follow = $("#log-follow").checked;
-  const pinned = follow || stream.scrollTop + stream.clientHeight >= stream.scrollHeight - 40;
-  stream.innerHTML = shown
-    .map(
-      (line) =>
-        `<div class="ll"><span class="lbadge ${componentClass(line.component)}">${esc(line.label)}</span>` +
-        `<span class="ltext">${(line.html ??= ansiToHtml(line.raw))}</span></div>`
-    )
-    .join("");
-  $("#log-status").textContent = `${shown.length}${lines.length > shown.length ? ` of ${lines.length}` : ""} lines`;
-  if (pinned) stream.scrollTop = stream.scrollHeight;
+  if (changed && render) renderAllLogPanes();
 }
 
 async function loadOlder() {
-  const logs = state.logs;
   await Promise.all(
-    [...logs.buffers.values()].map(async (buffer) => {
+    [...state.logs.buffers.values()].map(async (buffer) => {
       if (buffer.headStart <= 0) return;
       const start = Math.max(0, buffer.headStart - TAIL_BYTES);
       const chunk = await fetchLogChunk(buffer.file, { start, end: buffer.headStart });
@@ -874,33 +1080,7 @@ async function loadOlder() {
       retime(buffer);
     })
   );
-  renderLogStream();
-}
-
-function renderLogSidebar() {
-  const logs = state.logs;
-  $("#attempt-select").innerHTML = logs.attempts
-    .map((a) => `<option value="${a}" ${String(a) === String(logs.attempt) ? "selected" : ""}>attempt ${a}</option>`)
-    .join("");
-  const groups = new Map();
-  for (const file of logs.files) {
-    const group = file.component.startsWith("env:") ? "envs" : file.component;
-    if (!groups.has(group)) groups.set(group, []);
-    groups.get(group).push(file);
-  }
-  $("#log-files").innerHTML = [...groups]
-    .map(
-      ([group, files]) =>
-        `<div class="file-group-name">${esc(group)}</div>` +
-        files
-          .map(
-            (f) =>
-              `<label class="file-item"><input type="checkbox" data-file="${esc(f.id)}" ${logs.selected.has(f.id) ? "checked" : ""}>` +
-              `<span class="${componentClass(f.component)}">${esc(f.label)}</span><span class="fsize">${fmtBytes(f.size)}</span></label>`
-          )
-          .join("")
-    )
-    .join("");
+  renderAllLogPanes();
 }
 
 async function loadLogfiles() {
@@ -909,8 +1089,7 @@ async function loadLogfiles() {
   logs.attempts = data.attempts;
   logs.attempt = data.attempt;
   logs.files = data.files;
-  if (!logs.selected.size) for (const f of data.files) if (f.master) logs.selected.add(f.id);
-  renderLogSidebar();
+  renderLogPanes();
 }
 
 async function initLogs() {
@@ -992,6 +1171,7 @@ function showTraceEmpty(title, detail) {
 
 async function loadEpisodes() {
   const traces = state.traces;
+  updateTraceFilterBtn();
   const tbody = $("#episode-table tbody");
   if (traces.step == null) {
     $("#trace-status").textContent = "";
@@ -1109,11 +1289,46 @@ function stepRollout(delta) {
   if (next) openEpisode(next.line);
 }
 
+function renderModalStep() {
+  const traces = state.traces;
+  const idx = traces.steps.findIndex((s) => s.step === traces.step);
+  $("#tm-step-label").innerHTML =
+    `step ${traces.step}` +
+    `${traces.steps.length > 1 ? ` <span class="muted">(${idx + 1}/${traces.steps.length})</span>` : ""}` +
+    ` <span class="muted">· ${esc(traces.kind)}/${esc(traces.subset)}</span>`;
+  $("#tm-step-prev").disabled = idx <= 0;
+  $("#tm-step-next").disabled = idx < 0 || idx >= traces.steps.length - 1;
+}
+
+async function modalStep(delta) {
+  const traces = state.traces;
+  const idx = traces.steps.findIndex((s) => s.step === traces.step);
+  const target = traces.steps[idx + delta];
+  if (!target) return;
+  traces.step = target.step;
+  traces.page = 0;
+  adjustKindSubset();
+  renderStepControl();
+  await loadEpisodes();
+  renderModalStep();
+  const first = filteredRollouts()[0];
+  if (first) {
+    openEpisode(first.line);
+  } else {
+    currentLine = null;
+    currentEpisode = null;
+    renderRolloutList();
+    $("#tm-messages").innerHTML = emptyState("no episodes", "this step has no rollouts for the current filters");
+    $("#tm-meta").innerHTML = "";
+  }
+}
+
 async function openEpisode(line) {
   const traces = state.traces;
   $("#trace-modal").hidden = false;
   $("#drawer-backdrop").hidden = false;
   currentLine = line;
+  renderModalStep();
   renderRolloutList();
   $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
   $("#tm-meta").innerHTML = "";
@@ -1270,25 +1485,53 @@ function renderMeta(ep, trace, branches) {
         `<span class="tm-reward-big${reward < 0 ? " neg" : ""}" style="margin-left:auto">${fmtNum(reward)}</span></div>`
     );
 
+  if (trace) {
+    const rewards = Object.entries(trace.rewards || {});
+    if (rewards.length) {
+      parts.push(`<div class="meta-sec">rewards</div>`);
+      for (const [name, r] of rewards) parts.push(metaRow(name, `${fmtNum(r.score)} × ${fmtNum(r.weight ?? 1)}`));
+    }
+    const metrics = Object.entries(trace.metrics || {});
+    if (metrics.length) {
+      parts.push(`<div class="meta-sec">metrics</div>`);
+      for (const [name, value] of metrics)
+        parts.push(metaRow(name, typeof value === "number" ? fmtNum(value) : String(value)));
+    }
+  }
+
   parts.push(`<div class="meta-sec">identity</div>`);
   parts.push(metaRow("episode ID", ep.id, true));
   if (trace?.id) parts.push(metaRow("trace ID", trace.id, true));
   if (ep.group?.id) parts.push(metaRow("group ID", ep.group.id, true));
+  if (trace?.agent?.runtime?.id) parts.push(metaRow("runtime ID", trace.agent.runtime.id, true));
   parts.push(metaRow("env", ep.env?.id ?? ep.env?.name));
   parts.push(metaRow("dispatch step", ep.run?.work?.step ?? ep.run?.metadata?.step));
 
   if (trace) {
     const path = branches[Math.min(currentBranchIdx, branches.length - 1)] || [];
     const nodes = path.map((i) => trace.nodes[i]);
-    const roleCount = (role) => nodes.filter((n) => n.message?.role === role).length;
     parts.push(`<div class="meta-sec">activity</div>`);
-    parts.push(metaRow("total entries", nodes.length));
-    parts.push(metaRow("user messages", roleCount("user")));
-    parts.push(metaRow("model turns", nodes.filter((n) => n.sampled).length));
-    parts.push(metaRow("model calls", (trace.calls || []).length));
+    parts.push(metaRow("turns", nodes.filter((n) => n.sampled).length));
     parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
-    parts.push(metaRow("tool results", roleCount("tool")));
-    if (branches.length > 1) parts.push(metaRow("branches", branches.length));
+
+    const usage = { input: 0, output: 0, reasoning: 0, cached: 0 };
+    let hasUsage = false;
+    for (const call of trace.calls || []) {
+      const u = call.usage || {};
+      if (u.prompt_tokens != null || u.completion_tokens != null) hasUsage = true;
+      usage.input += u.prompt_tokens ?? 0;
+      usage.output += u.completion_tokens ?? 0;
+      usage.reasoning += u.completion_tokens_details?.reasoning_tokens ?? 0;
+      usage.cached += u.prompt_tokens_details?.cached_tokens ?? 0;
+    }
+    if (hasUsage) {
+      parts.push(`<div class="meta-sec">usage</div>`);
+      parts.push(metaRow("input tokens", usage.input.toLocaleString()));
+      parts.push(metaRow("output tokens", usage.output.toLocaleString()));
+      if (usage.reasoning) parts.push(metaRow("reasoning tokens", usage.reasoning.toLocaleString()));
+      if (usage.cached) parts.push(metaRow("cached tokens", usage.cached.toLocaleString()));
+      parts.push(metaRow("total tokens", (usage.input + usage.output).toLocaleString()));
+    }
 
     if (trace.tools?.length)
       parts.push(
@@ -1302,18 +1545,6 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("ok", trace.ok));
     parts.push(metaRow("advantage", trace.info?.advantage != null ? fmtNum(trace.info.advantage) : null));
 
-    const rewards = Object.entries(trace.rewards || {});
-    if (rewards.length) {
-      parts.push(`<div class="meta-sec">rewards</div>`);
-      for (const [name, r] of rewards) parts.push(metaRow(name, `${fmtNum(r.score)} × ${fmtNum(r.weight ?? 1)}`));
-    }
-
-    parts.push(`<div class="meta-sec">sampling</div>`);
-    parts.push(metaRow("model", trace.agent?.config?.model));
-    parts.push(metaRow("renderer", trace.agent?.config?.client?.renderer_model_name));
-    parts.push(metaRow("temperature", trace.agent?.config?.sampling?.temperature));
-    parts.push(metaRow("max_tokens", trace.agent?.config?.sampling?.max_tokens));
-
     const durations = [];
     (function walkTiming(obj, prefix) {
       if (!obj || typeof obj !== "object") return;
@@ -1323,7 +1554,15 @@ function renderMeta(ep, trace, branches) {
     })(trace.timing, "");
     if (durations.length) {
       parts.push(`<div class="meta-sec">timing</div>`);
-      for (const [name, secs] of durations) parts.push(metaRow(name || "total", `${secs.toFixed(2)}s`));
+      for (const [name, secs] of durations) {
+        // nested phases (agent/model, agent/harness) render as a tree under their parent
+        const segments = (name || "total").split("/");
+        const depth = segments.length - 1;
+        const label = depth
+          ? `<span class="tree" style="padding-left:${depth * 12}px">└</span> ${esc(segments[segments.length - 1])}`
+          : esc(name || "total");
+        parts.push(`<div class="meta-row"><span class="k">${label}</span><span class="v">${secs.toFixed(2)}s</span></div>`);
+      }
     }
   }
 
@@ -1373,6 +1612,28 @@ function renderEpisode() {
 
 $("#run-select").addEventListener("change", (e) => selectRun(e.target.value));
 $("#live-toggle").addEventListener("change", (e) => (state.live = e.target.checked));
+$("#compare-btn").addEventListener("click", () => {
+  const menu = $("#compare-menu");
+  menu.hidden = !menu.hidden;
+  if (!menu.hidden) renderCompareMenu();
+});
+$("#compare-menu").addEventListener("change", (e) => {
+  const box = e.target.closest("[data-compare]");
+  if (box) toggleCompare(box.dataset.compare, box.checked);
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#compare-wrap")) $("#compare-menu").hidden = true;
+  if (!e.target.closest("#trace-filter-wrap")) $("#trace-filter-menu").hidden = true;
+});
+$("#trace-filter-btn").addEventListener("click", () => {
+  const menu = $("#trace-filter-menu");
+  menu.hidden = !menu.hidden;
+});
+
+function updateTraceFilterBtn() {
+  const t = state.traces;
+  $("#trace-filter-btn").classList.toggle("active", !!(t.env || t.errorsOnly || t.sort !== "line"));
+}
 
 document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => activateTab(b.dataset.tab)));
 
@@ -1416,6 +1677,19 @@ $("#metrics-body").addEventListener(
   true
 );
 
+// drag a pane header to reorder within its section (order persisted by title)
+$("#metrics-body").addEventListener("dragover", (e) => {
+  if (!dragCard) return;
+  const grid = e.target.closest(".chart-grid");
+  if (!grid || grid !== dragCard.parentElement) return;
+  e.preventDefault();
+  const target = e.target.closest(".chart-card");
+  if (!target || target === dragCard) return;
+  const rect = target.getBoundingClientRect();
+  const after = e.clientX - rect.left > rect.width / 2;
+  grid.insertBefore(dragCard, after ? target.nextSibling : target);
+});
+
 /* wandb-style resize handles: resizing one pane resizes all of them */
 $("#metrics-body").addEventListener("pointerdown", (e) => {
   const grip = e.target.closest("[data-rz]");
@@ -1454,20 +1728,32 @@ $("#metrics-body").addEventListener("pointerdown", (e) => {
 $("#attempt-select").addEventListener("change", async (e) => {
   state.logs.attempt = e.target.value;
   state.logs.buffers = new Map();
-  state.logs.selected = new Set();
+  state.logs.paneFile = {};
   await loadLogfiles();
   await pollLogs();
 });
-$("#log-files").addEventListener("change", async (e) => {
-  const id = e.target.dataset.file;
-  if (!id) return;
-  if (e.target.checked) state.logs.selected.add(id);
-  else { state.logs.selected.delete(id); state.logs.buffers.delete(id); }
+$("#log-panes").addEventListener("change", async (e) => {
+  const select = e.target.closest(".lp-file");
+  if (!select) return;
+  const comp = select.closest(".log-pane").dataset.comp;
+  state.logs.paneFile[comp] = select.value;
   await pollLogs(false);
-  renderLogStream();
+  renderAllLogPanes();
 });
-$("#log-level").addEventListener("change", renderLogStream);
-$("#log-search").addEventListener("input", renderLogStream);
+$("#log-panes").addEventListener("click", (e) => {
+  const btn = e.target.closest(".lp-max");
+  if (!btn) return;
+  const comp = btn.closest(".log-pane").dataset.comp;
+  state.logs.maximized = state.logs.maximized === comp ? null : comp;
+  renderLogPanes();
+  renderAllLogPanes();
+});
+$("#log-level").addEventListener("change", renderAllLogPanes);
+let logSearchDebounce = 0;
+$("#log-search").addEventListener("input", () => {
+  clearTimeout(logSearchDebounce);
+  logSearchDebounce = setTimeout(renderAllLogPanes, 200);
+});
 $("#log-older").addEventListener("click", loadOlder);
 
 $("#step-slider").addEventListener("input", (e) => selectStepByIndex(+e.target.value));
@@ -1514,7 +1800,11 @@ document.addEventListener("keydown", (e) => {
   if ($("#trace-modal").hidden || e.target.matches("input, select, textarea")) return;
   if (e.key === "ArrowDown") { e.preventDefault(); stepRollout(1); }
   if (e.key === "ArrowUp") { e.preventDefault(); stepRollout(-1); }
+  if (e.key === "ArrowLeft") { e.preventDefault(); modalStep(-1); }
+  if (e.key === "ArrowRight") { e.preventDefault(); modalStep(1); }
 });
+$("#tm-step-prev").addEventListener("click", () => modalStep(-1));
+$("#tm-step-next").addEventListener("click", () => modalStep(1));
 $("#token-signal").addEventListener("change", renderEpisode);
 $("#tm-trace-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-trace]");
@@ -1559,7 +1849,12 @@ window.addEventListener("resize", resizeCharts);
 function savePrefs() {
   localStorage.setItem(
     "prl-dash",
-    JSON.stringify({ smooth: state.metrics.smooth, paneMin: state.metrics.paneMin, paneH: state.metrics.paneH })
+    JSON.stringify({
+      smooth: state.metrics.smooth,
+      paneMin: state.metrics.paneMin,
+      paneH: state.metrics.paneH,
+      paneOrder: state.metrics.paneOrder,
+    })
   );
 }
 

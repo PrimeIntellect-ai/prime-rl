@@ -14,6 +14,10 @@
     <img src="/static/butterfly-white.svg" alt="Prime Intellect">
   </div>
   <select id="run-select" title="run"></select>
+  <div id="compare-wrap">
+    <button id="compare-btn" class="btn">compare</button>
+    <div id="compare-menu" hidden></div>
+  </div>
   <nav id="tabs">
     <button data-tab="config">Config</button>
     <button data-tab="metrics" class="active">Metrics</button>
@@ -65,17 +69,28 @@
         <button data-subset="all">All</button>
         <button data-subset="effective" class="active">Effective</button>
       </div>
-      <select id="trace-env"><option value="">all envs</option></select>
-      <label class="toggle"><input type="checkbox" id="trace-errors"><span class="dot"></span>errors only</label>
-      <select id="trace-sort">
-        <option value="line:asc">order: arrival</option>
-        <option value="reward:desc">reward ↓</option>
-        <option value="reward:asc">reward ↑</option>
-        <option value="advantage:desc">advantage ↓</option>
-        <option value="advantage:asc">advantage ↑</option>
-        <option value="output_tokens:desc">tokens ↓</option>
-      </select>
       <span id="trace-status" class="muted"></span>
+      <div class="spacer"></div>
+      <div id="trace-filter-wrap">
+        <button id="trace-filter-btn" class="btn" title="filter & sort">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
+          filter
+        </button>
+        <div id="trace-filter-menu" hidden>
+          <label class="t-label">env</label>
+          <select id="trace-env"><option value="">all envs</option></select>
+          <label class="t-label">sort</label>
+          <select id="trace-sort">
+            <option value="line:asc">order: arrival</option>
+            <option value="reward:desc">reward ↓</option>
+            <option value="reward:asc">reward ↑</option>
+            <option value="advantage:desc">advantage ↓</option>
+            <option value="advantage:asc">advantage ↑</option>
+            <option value="output_tokens:desc">tokens ↓</option>
+          </select>
+          <label class="toggle"><input type="checkbox" id="trace-errors"><span class="dot"></span>errors only</label>
+        </div>
+      </div>
     </div>
     <div id="trace-empty" hidden></div>
     <div id="episode-table-wrap">
@@ -91,42 +106,36 @@
   </section>
 
   <section id="tab-logs" hidden>
-    <div id="logs-layout">
-      <aside id="log-sidebar">
-        <div class="sidebar-head">
-          <label class="t-label">attempt</label>
-          <select id="attempt-select"></select>
-        </div>
-        <div id="log-files"></div>
-      </aside>
-      <div id="log-main">
-        <div class="controls">
-          <label class="toggle"><input type="checkbox" id="log-follow" checked><span class="dot"></span>follow</label>
-          <select id="log-level">
-            <option value="DEBUG">all levels</option>
-            <option value="INFO">info+</option>
-            <option value="WARNING">warn+</option>
-            <option value="ERROR">error+</option>
-          </select>
-          <input id="log-search" class="search" type="search" placeholder="filter lines…">
-          <button id="log-older" class="btn">load older</button>
-          <span id="log-status" class="muted"></span>
-        </div>
-        <div id="log-stream" class="mono"></div>
-      </div>
+    <div class="controls">
+      <label class="t-label">attempt</label>
+      <select id="attempt-select"></select>
+      <select id="log-level">
+        <option value="DEBUG">all levels</option>
+        <option value="INFO">info+</option>
+        <option value="WARNING">warn+</option>
+        <option value="ERROR">error+</option>
+      </select>
+      <input id="log-search" class="search" type="search" placeholder="regex filter, e.g. ERROR|WARN">
+      <button id="log-older" class="btn">load older</button>
     </div>
+    <div id="log-panes"></div>
   </section>
 </main>
 
 <div id="drawer-backdrop" hidden></div>
 <div id="trace-modal" hidden>
   <aside id="tm-left">
+    <div class="tm-head tm-stephead">
+      <button id="tm-step-prev" class="btn tm-nav" title="previous step">‹</button>
+      <span id="tm-step-label"></span>
+      <button id="tm-step-next" class="btn tm-nav" title="next step">›</button>
+    </div>
     <div class="tm-head">
       <span class="t-label">rollouts</span>
       <span id="tm-count" class="badge"></span>
       <div class="spacer"></div>
-      <button id="tm-prev" class="btn tm-nav" title="previous">↑</button>
-      <button id="tm-next" class="btn tm-nav" title="next">↓</button>
+      <button id="tm-prev" class="btn tm-nav" title="previous rollout">↑</button>
+      <button id="tm-next" class="btn tm-nav" title="next rollout">↓</button>
     </div>
     <input id="tm-search" class="search" type="search" placeholder="search…">
     <div id="tm-list"></div>
