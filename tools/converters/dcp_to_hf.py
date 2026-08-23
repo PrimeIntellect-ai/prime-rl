@@ -11,8 +11,8 @@ supported — the script exports full fine-tunes only.
 
 Usage (from the prime-rl repo; more ranks = faster gathers and writes, and
 models too big for one GPU need enough ranks to shard across):
-    uv run python scripts/dcp_to_hf.py --ckpt-dir <run>/checkpoints/step_{n}
-    uv run torchrun --nproc-per-node 8 scripts/dcp_to_hf.py \
+    uv run python tools/converters/dcp_to_hf.py --ckpt-dir <run>/checkpoints/step_{n}
+    uv run torchrun --nproc-per-node 8 tools/converters/dcp_to_hf.py \
         --ckpt-dir <run>/checkpoints/step_{n} --output-dir <out>
 
 ``--cpu`` (the default when no GPU is available) converts without a process

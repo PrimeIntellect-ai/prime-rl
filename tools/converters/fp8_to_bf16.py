@@ -1,12 +1,12 @@
 """Dequantize a blockwise-FP8 HF checkpoint (DeepSeek/GLM format) to bf16.
 
-The inverse of ``scripts/bf16_to_fp8.py``, and works on official fp8-only
+The inverse of ``tools/converters/bf16_to_fp8.py``, and works on official fp8-only
 releases (e.g. GLM-5-FP8): every e4m3 tensor is multiplied by its
 ``<name>_scale_inv`` per-block scales and stored as bf16, scale tensors are
 dropped, and ``quantization_config`` is stripped from ``config.json``.
 
 Usage (from the prime-rl repo):
-    uv run python scripts/fp8_to_bf16.py <model_dir> [output_dir]
+    uv run python tools/converters/fp8_to_bf16.py <model_dir> [output_dir]
 
 Writes to ``<model_dir>-BF16`` by default.
 """
