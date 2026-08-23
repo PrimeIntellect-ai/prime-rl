@@ -24,7 +24,9 @@ from safetensors.torch import save_file
 from prime_rl.trainer.models.fp8 import quantize_to_fp8_blockwise
 
 # Module-name substrings that stay unquantized: norms, embeddings, output head,
-# MoE router gates, GatedDeltaNet low-rank projections, MTP projection, vision tower.
+# MoE router gates, GatedDeltaNet low-rank projections, MTP/indexer projections,
+# vision tower. Mirrors the trainer's _DEFAULT_FP8_IGNORE_PATTERNS
+# (configs/trainer.py), adapted to HF checkpoint names.
 SKIP_SUBSTRINGS = (
     "norm",
     "embed",
@@ -33,6 +35,7 @@ SKIP_SUBSTRINGS = (
     "in_proj_a",
     "in_proj_b",
     "eh_proj",
+    "weights_proj",
     "visual.",
     "router",
 )
