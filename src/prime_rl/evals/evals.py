@@ -30,6 +30,7 @@ from subprocess import Popen
 
 from prime_rl import monitors
 from prime_rl.configs.evals import EvalsConfig
+from prime_rl.orchestrator.clients import AdminClients, InferenceClient, init_nccl_broadcast, update_weights
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
@@ -43,7 +44,6 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import EvalBatch, Policy
 from prime_rl.orchestrator.utils import eval_work, intercept_vf_logging, set_default_executor
-from prime_rl.utils.client import InferencePool, init_nccl_broadcast
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_config_dir, get_log_dir, get_step_path
@@ -95,7 +95,8 @@ class Evals:
         wandb_enabled = monitors.get(monitors.WandbMonitor) is not None
 
         get_logger().info(f"Initializing inference pool (base_url={config.eval.client.base_url}, model={config.model})")
-        self.pool = InferencePool(config.eval.client, model_name=config.model)
+        self.clients = InferenceClient(config.eval.client, model_name=config.model)
+        self.admin_clients = AdminClients(config.eval.client)
 
         self.spawn_env_servers()
 
@@ -105,14 +106,14 @@ class Evals:
         get_logger().success(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
         get_logger().info("Waiting for inference pool to be ready")
-        await self.pool.wait_for_ready(config.model)
+        await self.admin_clients.wait_for_ready(config.model)
         get_logger().success("Inference pool ready")
 
         weight_broadcast = config.weight_broadcast
         if weight_broadcast is not None and weight_broadcast.type == "nccl":
             get_logger().info(f"Initializing weight broadcast ({weight_broadcast})")
             await init_nccl_broadcast(
-                self.pool.admin_clients,
+                self.admin_clients.clients,
                 weight_broadcast.host,
                 weight_broadcast.port,
                 weight_broadcast.timeout,
@@ -134,7 +135,7 @@ class Evals:
             eval_envs=self.eval_envs,
             train_source=None,
             eval_source=self.eval_source,
-            policy_pool=self.pool,
+            policy_clients=self.clients,
             policy=self.policy,
             progress=None,
             initial_max_inflight=self.concurrency.max_inflight,
@@ -154,7 +155,7 @@ class Evals:
         # The collector always polls — it feeds the concurrency controller;
         # W&B mirroring is gated on the registered monitor.
         self.inference_metrics = InferenceMetricsCollector(
-            self.pool.admin_clients,
+            self.admin_clients.clients,
             on_load=self.concurrency.observe,
             log_to_wandb=wandb_enabled,
         )
@@ -166,7 +167,7 @@ class Evals:
         if not await self.inference_metrics.probe():
             concurrency = config.eval.concurrency
             if concurrency.min_inflight != concurrency.max_inflight:
-                urls = ", ".join(str(client.base_url) for client in self.pool.admin_clients)
+                urls = ", ".join(str(client.base_url) for client in self.admin_clients.clients)
                 raise ValueError(
                     f"No engine metrics at {urls} - adaptive concurrency has no load signal. "
                     "The endpoint does not expose vLLM /metrics (e.g. an external inference API); "
@@ -354,7 +355,7 @@ class Evals:
             # and serve the evals against that name (mirrors WeightWatcher).
             lora_name = LORA_NAME if (broadcast_dir / "adapter_config.json").exists() else None
             try:
-                await self.pool.update_weights(broadcast_dir, lora_name=lora_name, step=step)
+                await update_weights(self.admin_clients.clients, broadcast_dir, lora_name=lora_name, step=step)
             except Exception as exc:
                 # Skip this step instead of killing the run; drain the queued examples
                 # so they don't leak into a later epoch with the wrong step.
@@ -363,7 +364,7 @@ class Evals:
                 get_logger().error(f"Failed to update inference weights to step {step} - skipping evals: {exc!r}")
                 return
             if lora_name is not None:
-                self.pool.update_model_name(lora_name)
+                self.clients.update_model_name(lora_name)
                 self.policy.model_name = lora_name
 
         # The dispatcher only schedules eval in PREFER_EVAL, so nothing dispatches
@@ -447,9 +448,12 @@ class Evals:
         dispatcher: Dispatcher | None = getattr(self, "dispatcher", None)
         if dispatcher is not None:
             await dispatcher.stop()
-        pool: InferencePool | None = getattr(self, "pool", None)
-        if pool is not None:
-            await pool.stop()
+        clients: InferenceClient | None = getattr(self, "clients", None)
+        if clients is not None:
+            await clients.aclose()
+        admin_clients: AdminClients | None = getattr(self, "admin_clients", None)
+        if admin_clients is not None:
+            await admin_clients.aclose()
         cleanup_processes(self.env_server_procs)
 
 

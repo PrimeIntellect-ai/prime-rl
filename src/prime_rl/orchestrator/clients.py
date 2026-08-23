@@ -40,8 +40,9 @@ class PrefillScorer:
             await self._client.close()
 
 
-class InferencePool:
-    """Inference pool with a single data-plane endpoint and one admin client per server."""
+class InferenceClient:
+    """Data-plane clients for one inference endpoint (the router of the policy
+    deployment, or an external API for frozen models)."""
 
     def __init__(
         self,
@@ -59,7 +60,34 @@ class InferencePool:
             renderer_model_name=renderer_model_name,
         )
         self.eval_client = setup_client(client_config, client_type=eval_client_type)
-        self._admin_clients = setup_admin_clients(client_config)
+        self._scorer = PrefillScorer()
+        self.model_name = model_name
+
+    def update_model_name(self, model_name: str) -> None:
+        self.model_name = model_name
+
+    async def score(self, token_ids: list[int]) -> list[float]:
+        """Prefill-score ``token_ids`` under this endpoint's model (one logprob
+        per token, 0.0 for the leading token)."""
+        return await self._scorer.score(self.train_client, self.model_name, token_ids)
+
+    async def aclose(self) -> None:
+        await self._scorer.aclose()
+
+
+class AdminClients:
+    """Admin plane of the policy inference deployment: one httpx client per
+    engine process. The router serves no admin routes (pause/resume,
+    update_weights, init_broadcaster, load_lora_adapter live on the engines),
+    so these clients bypass it via ``admin_base_url``.
+
+    The client order is load-bearing: ``admin_base_url`` order must match the
+    GPU rank order — the ``rank_offset`` math in ``init_nccl_broadcast`` /
+    ``init_nixl_broadcast`` and the metrics collector's role list index into
+    it."""
+
+    def __init__(self, client_config: ClientConfig):
+        self.clients = setup_admin_clients(client_config)
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
         self._router_clients = (
@@ -69,33 +97,25 @@ class InferencePool:
         )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
-        self._scorer = PrefillScorer()
-        self.model_name = model_name
 
-    @property
-    def admin_clients(self) -> list[AsyncClient]:
-        return self._admin_clients
+    async def wait_for_ready(self, model_name: str) -> None:
+        await check_health(self.clients + self._router_clients, timeout=self._wait_for_ready_timeout)
+        await maybe_check_has_model(self.clients, model_name, skip_model_check=self._skip_model_check)
 
-    def update_model_name(self, model_name: str) -> None:
-        self.model_name = model_name
+    async def aclose(self) -> None:
+        for client in self.clients + self._router_clients:
+            await client.aclose()
 
-    async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
-        await check_health(
-            self._admin_clients + self._router_clients,
-            timeout=timeout if timeout is not None else self._wait_for_ready_timeout,
-        )
-        await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
-
-    async def score(self, token_ids: list[int]) -> list[float]:
-        """Prefill-score ``token_ids`` under this pool's model (one logprob per
-        token, 0.0 for the leading token). Delegates to the shared scorer."""
-        return await self._scorer.score(self.train_client, self.model_name, token_ids)
-
-    async def stop(self) -> None:
-        await self._scorer.aclose()
+async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
+    """One-shot readiness check of an inference endpoint (health + model
+    listing) with transient clients — for frozen endpoints that never need a
+    persistent admin plane."""
+    admin = AdminClients(client_config)
+    try:
+        await admin.wait_for_ready(model_name)
+    finally:
+        await admin.aclose()
 
 
 def setup_client(
@@ -203,9 +223,6 @@ async def check_health(
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
 
 
-NCCL_READY_MARKER = "NCCL_READY"
-
-
 def _is_retryable_admin_error(exception: BaseException) -> bool:
     """Check if an exception should trigger a retry for an admin op (pause/resume/update_weights)."""
     if isinstance(exception, httpx.HTTPStatusError):
@@ -219,6 +236,8 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
         return True
     return False
 
+
+NCCL_READY_MARKER = "NCCL_READY"
 
 # Per-attempt read timeout for admin ops, overridable per call. The admin
 # AsyncClient uses `timeout=None`, so without this a stuck server would hang the
@@ -394,7 +413,7 @@ async def init_nccl_broadcast(
     host: str,
     port: int,
     timeout: int,
-    inference_world_size: int | None = None,
+    inference_world_size: int,
     quantize_in_weight_transfer: bool = False,
 ) -> None:
     """Initialize NCCL broadcast on all inference servers.
@@ -404,12 +423,6 @@ async def init_nccl_broadcast(
     gets a unique rank in the NCCL broadcast group.
     """
     logger = get_logger()
-
-    if inference_world_size is None:
-        inference_world_size = len(admin_clients)
-        logger.warning(
-            f"inference_world_size not provided, defaulting to {inference_world_size} (one GPU per admin client)"
-        )
 
     gpus_per_server = inference_world_size // len(admin_clients)
 

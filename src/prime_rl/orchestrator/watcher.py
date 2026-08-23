@@ -10,10 +10,10 @@ import time
 from modelexpress import p2p_pb2
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.clients import AdminClients, InferenceClient, update_weights
 from prime_rl.orchestrator.types import Policy, VersionObserver
 from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
 from prime_rl.utils.async_utils import safe_cancel
-from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_step_path, wait_for_path
 from prime_rl.utils.utils import get_latest_ckpt_step
@@ -27,7 +27,8 @@ class WeightWatcher:
         config: OrchestratorConfig,
         *,
         policy: Policy,
-        inference: InferencePool,
+        clients: InferenceClient,
+        admin_clients: AdminClients,
         observers: list[VersionObserver],
         lora_name: str | None,
         ckpt_step: int = 0,
@@ -36,7 +37,8 @@ class WeightWatcher:
     ) -> None:
         self.config = config
         self.policy = policy
-        self.inference = inference
+        self.clients = clients
+        self.admin_clients = admin_clients
         self.observers = observers
         self.lora_name = lora_name
         self.ckpt_step = ckpt_step
@@ -134,7 +136,7 @@ class WeightWatcher:
 
             get_logger().debug(f"Updating inference weights to policy v{next_step}")
             t1 = time.perf_counter()
-            await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
+            await update_weights(self.admin_clients.clients, weights_path, lora_name=self.lora_name, step=next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
             get_logger().debug(
@@ -142,7 +144,7 @@ class WeightWatcher:
             )
 
             if self.lora_name is not None:
-                self.inference.update_model_name(self.lora_name)
+                self.clients.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
 
             for observer in self.observers:

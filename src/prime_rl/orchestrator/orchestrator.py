@@ -40,6 +40,13 @@ from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
+from prime_rl.orchestrator.clients import (
+    AdminClients,
+    InferenceClient,
+    init_nccl_broadcast,
+    init_nixl_broadcast,
+    update_weights,
+)
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -76,7 +83,6 @@ from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transports.batch import setup_batch_sender
 from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
-from prime_rl.utils.client import InferencePool, init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.utils import (
@@ -121,7 +127,8 @@ class Orchestrator:
 
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
-    policy_inference: InferencePool
+    clients: InferenceClient
+    admin_clients: AdminClients
     sender: BatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
@@ -199,13 +206,14 @@ class Orchestrator:
         # references are external endpoints — each env's Algorithm builds its
         # own pools in ``setup()`` below.
         get_logger().info(f"Initializing policy inference pool ({config.model})")
-        self.policy_inference = InferencePool(
+        self.clients = InferenceClient(
             config.model.client,
             model_name=config.model.name,
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
             renderer_config=config.renderer,
         )
+        self.admin_clients = AdminClients(config.model.client)
 
         await monitors.setup(
             wandb=config.monitors.wandb,
@@ -230,7 +238,7 @@ class Orchestrator:
         self.train_envs = TrainEnvs(
             config.train.source,
             config.env_addresses,
-            policy_pool=self.policy_inference,
+            clients=self.clients,
             renderer_config=config.renderer,
         )
         if config.eval is not None:
@@ -245,7 +253,7 @@ class Orchestrator:
                     self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
 
         # Resume below may bump ``policy.version`` and the LoRA model name
-        self.policy.model_name = self.policy_inference.model_name
+        self.policy.model_name = self.clients.model_name
         self.lora_name = config.model.lora.name if config.model.lora else None
 
         # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
@@ -290,7 +298,7 @@ class Orchestrator:
 
         get_logger().info("Waiting for policy inference pool to be ready")
         t0 = time.perf_counter()
-        await self.policy_inference.wait_for_ready(config.model.name)
+        await self.admin_clients.wait_for_ready(config.model.name)
         get_logger().success(f"Policy inference pool ready after {format_time(time.perf_counter() - t0)}")
         # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
@@ -306,7 +314,7 @@ class Orchestrator:
             t0 = time.perf_counter()
             if config.weight_broadcast.type == "nccl":
                 await init_nccl_broadcast(
-                    self.policy_inference.admin_clients,
+                    self.admin_clients.clients,
                     config.weight_broadcast.host,
                     config.weight_broadcast.port,
                     config.weight_broadcast.timeout,
@@ -315,7 +323,7 @@ class Orchestrator:
                 )
             else:
                 await init_nixl_broadcast(
-                    self.policy_inference.admin_clients,
+                    self.admin_clients.clients,
                     config.weight_broadcast.host,
                     config.weight_broadcast.port,
                     config.weight_broadcast.timeout,
@@ -353,7 +361,7 @@ class Orchestrator:
             )
         if self.model_express is not None:
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
-        await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
+        await update_weights(self.admin_clients.clients, weights_path, lora_name=self.lora_name, step=sync_version)
         if self.model_express is not None:
             await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
             # Complete the startup rendezvous before the watcher begins its next cycle.
@@ -365,7 +373,7 @@ class Orchestrator:
                 timeout=config.weight_broadcast.timeout,
             )
         if self.lora_name is not None:
-            self.policy_inference.update_model_name(self.lora_name)
+            self.clients.update_model_name(self.lora_name)
             self.policy.model_name = self.lora_name
         self.policy.version = sync_version
         get_logger().debug(f"Synced inference to policy v{sync_version} in {format_time(time.perf_counter() - t0)}")
@@ -389,7 +397,7 @@ class Orchestrator:
             eval_envs=self.eval_envs,
             train_source=self.train_source,
             eval_source=self.eval_source,
-            policy_pool=self.policy_inference,
+            policy_clients=self.clients,
             policy=self.policy,
             progress=self.progress,
             initial_max_inflight=self.concurrency.max_inflight,
@@ -409,7 +417,7 @@ class Orchestrator:
         # W&B mirroring is gated on the registered monitor (the collector logs
         # to the global W&B session, which only exists when init succeeded).
         self.inference_metrics = InferenceMetricsCollector(
-            self.policy_inference.admin_clients,
+            self.admin_clients.clients,
             roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
             log_to_wandb=wandb_enabled and config.collect_inference_metrics,
@@ -432,7 +440,8 @@ class Orchestrator:
         self.watcher = WeightWatcher(
             config,
             policy=self.policy,
-            inference=self.policy_inference,
+            clients=self.clients,
+            admin_clients=self.admin_clients,
             observers=[self.dispatcher, self],
             lora_name=self.lora_name,
             ckpt_step=self.policy.version,
@@ -1041,9 +1050,10 @@ class Orchestrator:
             if self.inference_metrics is not None:
                 get_logger().debug("Stopping inference metrics collector")
                 await self.inference_metrics.stop()
-            if getattr(self, "policy_inference", None) is not None:
-                get_logger().debug("Stopping policy inference pool")
-                await self.policy_inference.stop()
+            if getattr(self, "clients", None) is not None:
+                await self.clients.aclose()
+            if getattr(self, "admin_clients", None) is not None:
+                await self.admin_clients.aclose()
             if self.train_envs is not None:
                 get_logger().debug("Stopping generation source and algorithm pools")
                 for env in self.train_envs:
