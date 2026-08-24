@@ -2895,8 +2895,6 @@ $("#tm-list").addEventListener("click", (e) => {
   const item = e.target.closest("[data-line]");
   if (item) openEpisode(+item.dataset.line);
 });
-$("#tm-prev").addEventListener("click", () => stepRollout(-1));
-$("#tm-next").addEventListener("click", () => stepRollout(1));
 $("#tm-collapse").addEventListener("click", () =>
   document.querySelectorAll("#tm-messages details.entry").forEach((d) => (d.open = false))
 );
