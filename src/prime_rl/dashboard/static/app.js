@@ -399,7 +399,6 @@ async function fetchMetrics() {
       if (data.offset >= (data.size ?? data.offset)) break;
       showedProgress = true;
       $("#metrics-status").textContent = `loading metrics · ${Math.round((data.offset / data.size) * 100)}%`;
-      await new Promise((resolve) => setTimeout(resolve, 0));
     }
     if (showedProgress && m.mode === "overview") $("#metrics-status").textContent = "";
   } finally {
