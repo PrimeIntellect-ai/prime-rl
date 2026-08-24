@@ -191,3 +191,61 @@ def test_non_list_raises():
     algo = TurnCreditAlgorithm(TurnCreditAlgoConfig(), clients=None)
     with pytest.raises(ValueError, match="one entry per sampled turn"):
         asyncio.run(algo.score_group(group))
+
+
+# --------------------------------------------------------------------------
+# Forked traces: progress follows each branch's own ancestor chain.
+# --------------------------------------------------------------------------
+
+
+def _build_forked_episode(reward: float, scores: list[float]) -> vf.Episode:
+    """A trace that forks after the prompt: two sampled turns that are BOTH
+    children of the prompt node (two branches of one turn each), e.g. a subagent
+    split. ``scores`` gives each sampled turn's state score, in node order."""
+    prompt = vf.MessageNode(
+        message=vf.UserMessage(content="q"),
+        token_ids=[0],
+        mask=[False],
+        logprobs=[0.0],
+        sampled=False,
+        parent=None,
+    )
+    turns = [
+        vf.MessageNode(
+            message=vf.AssistantMessage(content="a"),
+            token_ids=[10 + i],
+            mask=[True],
+            logprobs=[-0.1],
+            sampled=True,
+            parent=0,
+        )
+        for i in range(len(scores))
+    ]
+    trace = vf.Trace[vf.TaskData](
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        nodes=[prompt, *turns],
+        calls=[vf.ModelCall(node=1, usage=vf.Usage(prompt_tokens=1, completion_tokens=len(scores)))],
+        rewards={"reward": vf.Reward(score=reward)},
+        ok=True,
+    )
+    trace.info["turn_rewards"] = list(scores)
+    return vf.Episode(
+        env=vf.EnvInfo(id="test", name="test"),
+        task=trace.task,
+        group=vf.GroupInfo(id="group"),
+        traces=[trace],
+    )
+
+
+def test_forked_progress_follows_ancestor_chains():
+    """On a fork, each turn's progress is measured against its own ancestor —
+    both fork children are first scored turns of their chains (progress 0), so
+    net progress is 0. A flat telescope over node order would read 5 - 3 = 2."""
+    forked = _build_forked_episode(0.0, scores=[3.0, 5.0])
+    flat = _build_forked_episode(0.0, scores=[0.0, 0.0])
+    group = [forked, flat]
+    algo = TurnCreditAlgorithm(TurnCreditAlgoConfig(), clients=None)
+    asyncio.run(algo.score_group(group))
+    # Equal net progress (both 0) and equal rewards -> equal levels.
+    assert _level(group[0]) == pytest.approx(_level(group[1]), abs=1e-6)

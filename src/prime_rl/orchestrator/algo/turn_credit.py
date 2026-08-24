@@ -81,19 +81,23 @@ class TurnCreditAlgorithm(Algorithm):
         self._warned_missing = False
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
-        pairs = list(iter_trainable_traces(episodes))
-        scored = [(episode, trace, self._turn_scores(episode, trace)) for episode, trace in pairs]
+        scored: list[tuple[vf.Trace, dict[int, float] | None]] = []
+        for episode, trace in iter_trainable_traces(episodes):
+            scores = self._turn_scores(episode, trace)
+            progress = self._chain_progress(trace, scores) if scores is not None else None
+            scored.append((trace, progress))
+        rewards = self._shaped_rewards([trace for trace, _ in scored])
         returns = [
-            reward + (sum(deltas(scores)) if scores is not None else 0.0)
-            for (_, _, scores), reward in zip(scored, self._shaped_rewards([trace for _, trace in pairs]))
+            reward + (sum(progress.values()) if progress is not None else 0.0)
+            for (_, progress), reward in zip(scored, rewards)
         ]
         baseline = sum(returns) / len(returns) if returns else 0.0
-        for (_, trace, scores), ret in zip(scored, returns):
+        for (trace, progress), ret in zip(scored, returns):
             level = ret - baseline
-            if scores is None or self.beta == 0.0:
+            if progress is None or self.beta == 0.0:
                 assign_advantages(trace, level)
             else:
-                assign_advantages(trace, self._token_advantages(trace, scores, level))
+                assign_advantages(trace, self._token_advantages(trace, progress, level))
 
     def _shaped_rewards(self, traces: list[vf.Trace]) -> list[float]:
         """Each trace's final reward, less the GRPO length penalty when configured."""
@@ -147,17 +151,30 @@ class TurnCreditAlgorithm(Algorithm):
             scores.append(float(entry))
         return scores
 
-    def _token_advantages(self, trace: vf.Trace, scores: list[float | None], level: float) -> list[float]:
+    def _chain_progress(self, trace: vf.Trace, scores: list[float | None]) -> dict[int, float]:
+        """Each sampled turn's progress (``id(node) -> delta``), computed along its
+        own branch's chain of sampled ancestors — so on a forked trace a turn's
+        progress is measured against its actual predecessor, not whatever turn
+        precedes it in node order. A turn on several branches keeps its first
+        branch's value; net progress is the sum over turns."""
+        turn_index = {id(node): i for i, node in enumerate(node for node in trace.nodes if node.sampled)}
+        progress: dict[int, float] = {}
+        for branch in trace.branches:
+            chain = [node for node in branch.nodes if node.sampled]
+            chain_progress = deltas([scores[turn_index[id(node)]] for node in chain])
+            for node, value in zip(chain, chain_progress):
+                progress.setdefault(id(node), value)
+        return progress
+
+    def _token_advantages(self, trace: vf.Trace, progress: dict[int, float], level: float) -> list[float]:
         """The trace's per-sampled-token advantages, in compact node order (what
         ``assign_advantages`` takes): ``level`` plus the turn's centered credit on
-        every sampled token. Credit is computed per branch along its own chain of
-        sampled ancestors; a turn on several branches keeps its first branch's
-        credit."""
-        turn_index = {id(node): i for i, node in enumerate(node for node in trace.nodes if node.sampled)}
+        every sampled token. Each branch smears its own chain's progress; a turn
+        on several branches keeps its first branch's credit."""
         credits: dict[int, float] = {}
         for branch in trace.branches:
             chain = [node for node in branch.nodes if node.sampled]
-            chain_credits = smear(deltas([scores[turn_index[id(node)]] for node in chain]), self.gamma)
+            chain_credits = smear([progress[id(node)] for node in chain], self.gamma)
             for node, credit in zip(chain, chain_credits):
                 credits.setdefault(id(node), credit)
 
