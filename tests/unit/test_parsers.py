@@ -89,6 +89,13 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("Qwen/Qwen3.5-35B-A3B", "qwen3_coder", "qwen3"),
     ("Qwen/Qwen3.5-122B-A10B", "qwen3_coder", "qwen3"),
     ("Qwen/Qwen3.5-397B-A17B", "qwen3_coder", "qwen3"),
+    # Qwen3.6
+    ("Qwen/Qwen3.6-35B-A3B", "qwen3_coder", "qwen3"),
+    # Qwen3.8
+    ("Qwen/Qwen3.8-27B", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.8-27B-FP8", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.8-2.4T-A95B", "qwen3_coder", "qwen3"),
+    ("Qwen/Qwen3.8-2.4T-A95B-FP8", "qwen3_coder", "qwen3"),
     # Unknown model
     ("some/unknown-model", None, None),
 ]

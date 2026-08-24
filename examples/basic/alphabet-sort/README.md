@@ -94,15 +94,11 @@ We train with LoRA (rank 32, alpha 64) for 100 steps.
 # In the `Trainer` pane
 uv run rl @ examples/basic/alphabet-sort/rl.toml \
   --run.name rl \
-  --wandb.project ... \
-  --wandb.name ...
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ...
 ```
 
-This will write a weight checkpoint in `outputs/rl/weights/step_100`. Upload it to HF to be able to use it as the final model for evaluation.
-
-```bash
-uv run hf upload <user>/Qwen3-4B-Instruct-AlphabetSort-RL outputs/rl/weights/step_100
-```
+This will write a DCP checkpoint in `outputs/rl/checkpoints/step_100`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL`](https://huggingface.co/PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL).
 

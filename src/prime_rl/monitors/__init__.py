@@ -9,8 +9,9 @@ down training.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig, WandbMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
@@ -18,7 +19,7 @@ from prime_rl.monitors.file import FileMonitor
 from prime_rl.monitors.prime import PrimeMonitor
 from prime_rl.monitors.wandb import WandbMonitor
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 
 if TYPE_CHECKING:
     import verifiers.v1 as vf
@@ -47,6 +48,7 @@ async def setup(
     run_config: BaseConfig | None = None,
     train_env_names: list[str] | None = None,
     eval_env_names: list[str] | None = None,
+    overview_flavor: Literal["rl", "sft"] = "rl",
 ) -> None:
     """Construct, initialize, and register one monitor per non-None config.
 
@@ -59,27 +61,35 @@ async def setup(
     if rank != 0:
         return
 
-    monitors: list[tuple[Monitor, dict[str, Any]]] = []
+    monitors: list[tuple[str, Monitor, dict[str, Any]]] = []
     if prime is not None:
-        monitors.append((PrimeMonitor(prime), dict(config=run_config)))
+        monitors.append(("prime", PrimeMonitor(prime), dict(config=run_config)))
     if wandb is not None:
         monitors.append(
             (
+                "wandb",
                 WandbMonitor(wandb),
                 dict(
                     output_dir=output_dir,
                     config=run_config,
                     train_env_names=train_env_names,
                     eval_env_names=eval_env_names,
+                    overview_flavor=overview_flavor,
                 ),
             )
         )
     if file is not None:
-        monitors.append((FileMonitor(file), dict(output_dir=output_dir)))
+        monitors.append(("file", FileMonitor(file), dict(output_dir=output_dir)))
+    if not monitors:
+        return
 
-    for monitor, init_kwargs in monitors:
+    get_logger().info(f"Initializing monitors ({', '.join(name for name, _, _ in monitors)})")
+    t0 = time.perf_counter()
+    for name, monitor, init_kwargs in monitors:
+        get_logger().info(f"Initializing {name} monitor ({monitor.config})")
         await monitor.init(**init_kwargs)
         MONITORS.append(monitor)
+    get_logger().debug(f"Initialized monitors in {format_time(time.perf_counter() - t0)}")
 
 
 def get(monitor_cls: type[Monitor]) -> Monitor | None:

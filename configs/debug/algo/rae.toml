@@ -23,21 +23,11 @@ max_completion_tokens = 512
 
 [[orchestrator.train.source]]
 name = "kuhn-poker"
-
-[orchestrator.train.source.env.taskset]
-id = "kuhn-poker"
-
-[orchestrator.train.source.env.player0.harness]
-id = "null"
-
-[orchestrator.train.source.env.player0.runtime]
-type = "subprocess"
-
-[orchestrator.train.source.env.player1.harness]
-id = "null"
-
-[orchestrator.train.source.env.player1.runtime]
-type = "subprocess"
+env.taskset.id = "kuhn-poker"
+env.player0.harness.id = "null"
+env.player0.runtime.type = "subprocess"
+env.player1.harness.id = "null"
+env.player1.runtime.type = "subprocess"
 
 [orchestrator.eval]
 interval = 1
@@ -48,21 +38,11 @@ max_completion_tokens = 512
 
 [[orchestrator.eval.source]]
 name = "kuhn-poker"
-
-[orchestrator.eval.source.env.taskset]
-id = "kuhn-poker"
-
-[orchestrator.eval.source.env.player0.harness]
-id = "null"
-
-[orchestrator.eval.source.env.player0.runtime]
-type = "subprocess"
-
-[orchestrator.eval.source.env.player1.harness]
-id = "null"
-
-[orchestrator.eval.source.env.player1.runtime]
-type = "subprocess"
+env.taskset.id = "kuhn-poker"
+env.player0.harness.id = "null"
+env.player0.runtime.type = "subprocess"
+env.player1.harness.id = "null"
+env.player1.runtime.type = "subprocess"
 
 [trainer.optim]
 lr = 3e-6

@@ -28,8 +28,8 @@ def setup_optimizer(
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
     if cpu_offload and full_offload_config is not None:
         raise ValueError("State-only and full optimizer CPU offload cannot both be enabled")
-    if full_offload_config is not None and config.type != "adamw":
-        raise ValueError("Full optimizer offload only supports AdamW")
+    if full_offload_config is not None and config.type not in ("adamw", "sign_sgd"):
+        raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
     if full_offload_config is not None and config.max_norm is not None:
         get_logger().warning("Disabling gradient clipping because CPU optimizer offload updates during backward")
         config.max_norm = None
@@ -43,7 +43,9 @@ def setup_optimizer(
         optimizer_named_params, master_weights = _create_cpu_master_weights(
             model,
             named_params,
-            pin_memory=not (config.type == "adamw" and full_offload_config.cpu_optimizer_backend == "native"),
+            pin_memory=not (
+                config.type in ("adamw", "sign_sgd") and full_offload_config.cpu_optimizer_backend == "native"
+            ),
             dtype_policy=full_offload_dtype_policy,
         )
 
@@ -51,7 +53,7 @@ def setup_optimizer(
         config,
         optimizer_named_params,
         parallel_dims,
-        fused_adamw=full_offload_config is not None and config.type == "adamw",
+        fused_adamw=config.type == "adamw" and not cpu_offload,
     )
 
     if full_offload_config is not None:

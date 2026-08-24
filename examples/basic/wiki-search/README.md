@@ -94,8 +94,8 @@ Train with the unified config file:
 # In the `Trainer` pane
 uv run rl @ examples/basic/wiki-search/rl.toml \
   --run.name rl \
-  --wandb.project your-project-name \
-  --wandb.name your-run-name
+  --monitors.wandb.project your-project-name \
+  --monitors.wandb.name your-run-name
 ```
 
 The unified config file automatically configures:
@@ -103,11 +103,7 @@ The unified config file automatically configures:
 - **Orchestrator**: Rollout generation with tool calling enabled
 - **Inference**: vLLM server for Qwen3-4B-Instruct-2507 with tool parsing enabled
 
-This will write weight checkpoints in `outputs/rl/weights/step_*`. Upload the final checkpoint to HuggingFace:
-
-```bash
-uv run hf upload <user>/Qwen3-4B-Instruct-WikiSearch-RL outputs/rl/weights/step_500
-```
+This will write DCP checkpoints in `outputs/rl/checkpoints/step_*`.
 
 ## Evaluation
 

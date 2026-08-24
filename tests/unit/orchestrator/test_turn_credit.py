@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig, TurnCreditAlgoConfig
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
@@ -8,27 +9,30 @@ from prime_rl.orchestrator.algo.turn_credit import TurnCreditAlgorithm, deltas, 
 from tests.unit.orchestrator.test_advantage import _make_group, _scalar
 
 
-def _run(group, *, turn_rewards, gamma=0.9, beta=1.0):
-    """Attach per-rollout ``turn_rewards`` and drive ``score_group``."""
-    for rollout, scores in zip(group, turn_rewards):
+def _run(group: list[vf.Episode], *, turn_rewards, gamma=0.9, beta=1.0) -> list[vf.Episode]:
+    """Attach per-trace ``turn_rewards`` and drive ``score_group``."""
+    for episode, scores in zip(group, turn_rewards):
         if scores is not None:
-            rollout.info["turn_rewards"] = scores
-    algo = TurnCreditAlgorithm(TurnCreditAlgoConfig(gamma=gamma, beta=beta), policy_pool=None)
+            episode.traces[0].info["turn_rewards"] = scores
+    algo = TurnCreditAlgorithm(TurnCreditAlgoConfig(gamma=gamma, beta=beta), clients=None)
     asyncio.run(algo.score_group(group))
     return group
 
 
-def _per_turn(rollout) -> list[float]:
-    """The advantage each sampled turn's first token carries, in turn order —
-    read by walking the branch's nodes against the flat advantage stream."""
-    out = []
-    offset = 0
-    for branch in rollout.branches:
-        for node in branch.nodes:
-            if node.sampled and node.token_ids:
-                out.append(rollout.advantages[offset])
-            offset += len(node.token_ids)
-    return out
+def _advantages(episode: vf.Episode) -> list[float]:
+    """The trace's per-sampled-token advantages, in node order."""
+    return [value for node in episode.traces[0].nodes for value in node.advantages or []]
+
+
+def _per_turn(episode: vf.Episode) -> list[float]:
+    """The advantage each sampled turn's first token carries, in turn order."""
+    return [node.advantages[0] for node in episode.traces[0].nodes if node.advantages]
+
+
+def _level(episode: vf.Episode) -> float:
+    """The trace's level: total advantage over its sampled tokens."""
+    advantages = _advantages(episode)
+    return sum(advantages) / len(advantages)
 
 
 # --------------------------------------------------------------------------
@@ -86,50 +90,50 @@ def test_beta_zero_is_level_only():
         turn_rewards=[[0.0, 0.5, 1.0], [0.0, 0.2, 0.0]],
         beta=0.0,
     )
-    assert [_scalar(r) for r in group] == pytest.approx([1.0, -1.0])
+    assert [_scalar(episode) for episode in group] == pytest.approx([1.0, -1.0])
 
 
 def test_missing_turn_rewards_is_grpo():
     group = _run(_make_group(rewards=[1.0, 0.0]), turn_rewards=[None, None])
     plain = _make_group(rewards=[1.0, 0.0])
-    asyncio.run(GRPOAlgorithm(GRPOAlgoConfig(), policy_pool=None).score_group(plain))
-    assert [_scalar(r) for r in group] == pytest.approx([_scalar(r) for r in plain])
+    asyncio.run(GRPOAlgorithm(GRPOAlgoConfig(), clients=None).score_group(plain))
+    assert [_scalar(episode) for episode in group] == pytest.approx([_scalar(episode) for episode in plain])
 
 
 def test_total_advantage_is_the_level():
-    """The shaping shift is zero-sum over trainable tokens: each rollout's summed
-    advantage equals its level times its trainable-token count."""
+    """The shaping shift is zero-sum over sampled tokens: each trace's summed
+    advantage equals its level times its sampled-token count."""
     group = _make_group(rewards=[1.0, 0.0], completion_lengths=[6, 6], num_turns=[3, 3])
     _run(group, turn_rewards=[[0.0, 1.0, 0.5], [0.5, 0.5, 0.5]])
     returns = [1.0 + 0.5, 0.0 + 0.0]
     baseline = sum(returns) / 2
-    for rollout, ret in zip(group, returns):
-        n = sum(m for s in rollout.samples for m in s.mask)
-        assert sum(rollout.advantages) == pytest.approx((ret - baseline) * n, abs=1e-6)
+    for episode, ret in zip(group, returns):
+        advantages = _advantages(episode)
+        assert sum(advantages) == pytest.approx((ret - baseline) * len(advantages), abs=1e-6)
 
 
 def test_shaping_orders_turns_by_progress():
     """Within a rollout, the turn that made the progress carries more credit than
     the turns that made none (gamma < 1 keeps most credit on the making turn)."""
-    (rollout,) = _run(
+    (episode,) = _run(
         _make_group(rewards=[0.0], num_turns=[3]),
         turn_rewards=[[0.0, 0.0, 1.0]],
         gamma=0.5,
     )
-    turns = _per_turn(rollout)
+    turns = _per_turn(episode)
     assert turns[2] > turns[1] > turns[0]
 
 
 def test_group_of_one_trains_on_shaping():
-    """gs=1: the level is 0 but progress still orders the turns — the rollout
+    """gs=1: the level is 0 but progress still orders the turns — the trace
     carries a nonzero advantage stream (trainable where GRPO would be all-zero)."""
-    (rollout,) = _run(
+    (episode,) = _run(
         _make_group(rewards=[1.0], num_turns=[2]),
         turn_rewards=[[0.0, 1.0]],
     )
-    turns = _per_turn(rollout)
+    turns = _per_turn(episode)
     assert turns[1] > 0.0 > turns[0]
-    assert sum(rollout.advantages) == pytest.approx(0.0, abs=1e-6)
+    assert sum(_advantages(episode)) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_uniform_reward_group_still_trains():
@@ -137,7 +141,7 @@ def test_uniform_reward_group_still_trains():
     within-rollout signal from turn progress when net progress differs."""
     group = _make_group(rewards=[1.0, 1.0], num_turns=[2, 2])
     _run(group, turn_rewards=[[0.0, 1.0], [0.0, 0.0]])
-    assert any(a != 0.0 for a in group[0].advantages)
+    assert any(value != 0.0 for value in _advantages(group[0]))
 
 
 def test_loitering_earns_nothing():
@@ -147,12 +151,6 @@ def test_loitering_earns_nothing():
     _run(group, turn_rewards=[[1.0, 1.0, 1.0], [0.0, 0.0, 1.0]])
     # Net progress is 0 vs 1 -> the mover gets the higher level.
     assert _level(group[1]) > _level(group[0])
-
-
-def _level(rollout) -> float:
-    """The rollout's level: total advantage over trainable tokens."""
-    n = sum(m for s in rollout.samples for m in s.mask)
-    return sum(rollout.advantages) / n
 
 
 def test_transient_spike_nets_zero():
@@ -189,7 +187,7 @@ def test_non_finite_raises():
 
 def test_non_list_raises():
     group = _make_group(rewards=[1.0], num_turns=[2])
-    group[0].info["turn_rewards"] = {"0": 1.0}
-    algo = TurnCreditAlgorithm(TurnCreditAlgoConfig(), policy_pool=None)
+    group[0].traces[0].info["turn_rewards"] = {"0": 1.0}
+    algo = TurnCreditAlgorithm(TurnCreditAlgoConfig(), clients=None)
     with pytest.raises(ValueError, match="one entry per sampled turn"):
         asyncio.run(algo.score_group(group))

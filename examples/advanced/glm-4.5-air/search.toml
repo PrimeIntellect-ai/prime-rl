@@ -25,6 +25,8 @@ num_infer_replicas = 4
 project = "search-ablations"
 name = "glm45air-search"
 
+[monitors.prime]
+
 [weight_broadcast]
 type = "nccl"
 timeout = 3600
@@ -59,7 +61,6 @@ max_inflight_activations = 1
 [trainer.model.compile]
 
 [trainer.ckpt]
-skip_gather_master_weights = true
 skip_optimizer = true
 
 [trainer.optim]
@@ -71,7 +72,10 @@ type = "muon"
 batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
-max_inflight_episodes = 512
+
+[orchestrator.concurrency]
+initial_inflight = 256
+max_inflight = 512
 
 [orchestrator.renderer]
 name = "glm-4.5"
@@ -86,8 +90,6 @@ num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1
 num_turns_weight = 0.0
 
-[monitors.prime]
-
 # --- Train: the search envs with usable training data (rlm `search` skill, prime sandbox) ---
 
 # openseeker/redsearcher pre-plug a `reference` judge; declaring `judges` here replaces that
@@ -95,18 +97,12 @@ num_turns_weight = 0.0
 # the plugged BC-style prompt is replaced by the reference judge's stock prompt).
 [[orchestrator.train.source]]
 name = "openseeker"
-
-[orchestrator.train.source.env.agent.harness]
-id = "rlm"
-skills = ["search"]
-forward_env = ["SERPER_API_KEY"]
-summarize_at_tokens = [65536, 131072]
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["glm45air-search"]
-
-[orchestrator.train.source.env.taskset]
-id = "openseeker"
+env.agent.harness.id = "rlm"
+env.agent.harness.skills = ["search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.summarize_at_tokens = [65536, 131072]
+env.agent.runtime.labels = ["glm45air-search"]
+env.taskset.id = "openseeker"
 
 [[orchestrator.train.source.env.taskset.task.judges]]
 id = "reference"
@@ -125,18 +121,12 @@ choices = ["A", "B"]
 
 [[orchestrator.train.source]]
 name = "redsearcher"
-
-[orchestrator.train.source.env.agent.harness]
-id = "rlm"
-skills = ["search"]
-forward_env = ["SERPER_API_KEY"]
-summarize_at_tokens = [65536, 131072]
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["glm45air-search"]
-
-[orchestrator.train.source.env.taskset]
-id = "redsearcher" # optional `difficulty` filter (easy/medium/hard)
+env.agent.harness.id = "rlm"
+env.agent.harness.skills = ["search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.summarize_at_tokens = [65536, 131072]
+env.agent.runtime.labels = ["glm45air-search"]
+env.taskset.id = "redsearcher" # optional `difficulty` filter (easy/medium/hard)
 
 [[orchestrator.train.source.env.taskset.task.judges]]
 id = "reference"
@@ -161,24 +151,14 @@ interval = 20
 [[orchestrator.eval.source]]
 name = "browsecomp"
 num_examples = 500 # full set is 1266; cap eval at 500
-
-[orchestrator.eval.source.env.agent.harness]
-id = "rlm"
-skills = ["search"]
-forward_env = ["SERPER_API_KEY"]
-summarize_at_tokens = 98304
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["glm45air-search"]
-
-[orchestrator.eval.source.env.agent.timeout]
-rollout = 3600
-
-[orchestrator.eval.source.env.taskset]
-id = "browsecomp"
-
-[orchestrator.eval.source.env.taskset.task.judge]
-model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+env.agent.harness.id = "rlm"
+env.agent.harness.skills = ["search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["glm45air-search"]
+env.agent.timeout.rollout = 3600
+env.taskset.id = "browsecomp"
+env.taskset.task.judge.model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 
 # # Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
 # [[orchestrator.eval.source.env.taskset.task.judges]]

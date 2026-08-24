@@ -18,22 +18,17 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 batch_size = 512
 group_size = 16
 
+[orchestrator.concurrency]
+max_inflight = 128
+
 [[orchestrator.train.source]]
 name = "alphabet-sort"
-
-[orchestrator.train.source.env.taskset]
-id = "alphabet-sort"
-min_turns = 3
-max_turns = 5
-
-[orchestrator.train.source.env.taskset.task]
-power_per_turn = false
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "alphabet-sort"
+env.taskset.min_turns = 3
+env.taskset.max_turns = 5
+env.taskset.task.power_per_turn = false
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 768

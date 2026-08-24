@@ -109,7 +109,7 @@ uv run sft \
   --data.name PrimeIntellect/Reverse-Text-SFT \
   --max_steps 200 \
   --optim.lr 1e-4 \
-  --ckpt.weights
+  --ckpt
 ```
 
 Then run the full RL stack on reverse-text:

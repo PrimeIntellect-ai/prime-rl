@@ -12,6 +12,6 @@ Schedule training locally on a node with 8 GPUs
 
 ```bash
 uv run rl @ examples/basic/hendrycks-sanity/rl.toml \
-  --wandb.project your-project \
-  --wandb.name your-run
+  --monitors.wandb.project your-project \
+  --monitors.wandb.name your-run
 ```

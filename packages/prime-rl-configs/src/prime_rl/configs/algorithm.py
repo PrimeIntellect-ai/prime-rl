@@ -261,8 +261,7 @@ class MaxRLAlgoConfig(BaseAlgoConfig):
     objective: low-pass-rate examples get ~1/p weight, and ``group_size`` is
     the truncation order interpolating REINFORCE (1) → exact maximum
     likelihood (∞). Designed for non-negative (canonically binary) rewards;
-    a group with mean reward 0 carries zero advantages everywhere (the
-    zero-advantage filter drops it, matching the paper's K=0 convention)."""
+    a group with mean reward 0 carries zero advantages everywhere."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
@@ -327,8 +326,8 @@ class OPDAlgoConfig(BaseAlgoConfig):
     a reference model, evaluated in the trainer from reference prefill
     logprobs scored over each sample's own context (``ref_logprobs`` on the
     wire, ``ref_kl`` loss component). No scalar advantage is assigned —
-    rollouts keep ``advantages=None`` (advantage-based filters never fire) and
-    samples ship no advantage stream. ``group_size`` only fans out sampling."""
+    rollouts keep ``advantages=None`` and samples ship no advantage stream.
+    ``group_size`` only fans out sampling."""
 
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
 
@@ -349,8 +348,7 @@ class OPSDAlgoConfig(BaseAlgoConfig):
     prepended as a leading system message. The sample is scored verbatim (no
     re-rendering), so it's robust to tool/multimodal prompts and works for any
     number of turns. No scalar advantage is assigned — rollouts keep
-    ``advantages=None`` (advantage-based filters never fire) and samples ship no
-    advantage stream."""
+    ``advantages=None`` and samples ship no advantage stream."""
 
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
 
@@ -374,8 +372,8 @@ class SFTAlgoConfig(BaseAlgoConfig):
     type: Literal["sft"] = "sft"
     """SFT distillation: cross-entropy on the sampled tokens. The ``ce`` loss
     ignores advantages and SFT assigns none — it trains on every sampled token.
-    Reward-based filtering, if wanted, is an explicit filter, not smuggled
-    through an unused advantage stream."""
+    A curriculum can reject results using reward or any other finalized
+    rollout data."""
 
     action_loss_type: ClassVar[ActionLossType] = "ce"
 

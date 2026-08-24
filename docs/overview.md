@@ -32,7 +32,7 @@ Train an SFT-warmed `Qwen3-0.6B` on the `reverse-text` task — the env is bundl
 uv run rl @ examples/basic/reverse-text/rl.toml
 ```
 
-The `rl` entrypoint reads `examples/basic/reverse-text/rl.toml`, splits it into per-process sub-configs, picks GPU 0 for inference and GPU 1 for the trainer, launches all three processes, and tees their stdout into the run directory at `outputs/<run_name>/logs/{trainer,orchestrator,inference}.log` (`run.name` auto-generates as `<envs>--<model>--<short-id>`; pass `--run.name <name>` for a predictable path). Within a minute the trainer should log `step 1` and a reward sample; after 20 steps the run completes and final HF-compatible weights land at `outputs/<run_name>/weights/step_20`.
+The `rl` entrypoint reads `examples/basic/reverse-text/rl.toml`, splits it into per-process sub-configs, picks GPU 0 for inference and GPU 1 for the trainer, launches all three processes, and tees their stdout into the run directory at `outputs/<run_name>/logs/{trainer,orchestrator,inference}.log` (`run.name` auto-generates as `<envs>--<model>--<short-id>`; pass `--run.name <name>` for a predictable path). Within a minute the trainer should log `step 1` and a reward sample; after 20 steps the run completes with a final DCP checkpoint at `outputs/<run_name>/checkpoints/step_20`.
 
 ## Documentation
 

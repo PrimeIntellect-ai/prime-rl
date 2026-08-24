@@ -46,8 +46,8 @@ To train on a single GPU, run
 # In the `Trainer` pane
 uv run sft @ examples/basic/wordle/sft.toml \
   --run.name sft \
-  --wandb.project ... \
-  --wandb.name ...
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ...
 ```
 
 To train on multiple GPUs, run
@@ -58,15 +58,11 @@ uv run torchrun \
   --local-ranks-filter 0 \
   --nproc-per-node ... \
   src/prime_rl/trainer/sft/train.py @ examples/basic/wordle/sft.toml \
-  --wandb.project ... \
-  --wandb.name ... 
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ... 
 ```
 
-After training completes, you will find the final weight checkpoint in `outputs/sft/weights/step_20`. Upload it to HF to be able to use it as the base model for RL we will do in the next section.
-
-```bash
-uv run hf upload <user>/Qwen3-1.7B-Wordle-SFT outputs/sft/weights/step_20
-```
+After training completes, you will find the final DCP checkpoint in `outputs/sft/checkpoints/step_20`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-1.7B-Wordle-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-SFT).
 
@@ -82,15 +78,11 @@ Finally, we will do multi-turn RL against the `wordle` environment using the mod
 uv run rl @ examples/basic/wordle/rl.toml \
   --model.name ... \
   --run.name rl \
-  --wandb.project ... \
-  --wandb.name ... 
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ... 
 ```
 
-This will write a weight checkpoint in `outputs/rl/weights/step_100`. As before, let's upload it to HF.
-
-```bash
-uv run hf upload <user>/Qwen3-1.7B-Wordle-RL outputs/rl/weights/step_100
-```
+This will write a DCP checkpoint in `outputs/rl/checkpoints/step_100`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-1.7B-Wordle-RL`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-RL).
 

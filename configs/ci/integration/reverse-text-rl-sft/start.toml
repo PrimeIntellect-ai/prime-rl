@@ -24,6 +24,9 @@ name = "ci-rl-sft"
 batch_size = 128
 group_size = 16
 
+[orchestrator.concurrency]
+max_inflight = 128
+
 [orchestrator.algo]
 type = "sft"
 
@@ -45,15 +48,9 @@ max_completion_tokens = 128
 
 [[orchestrator.train.source]]
 name = "reverse-text"
-
-[orchestrator.train.source.env.taskset]
-id = "reverse-text"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [orchestrator.eval]
 interval = 1
@@ -64,15 +61,9 @@ max_completion_tokens = 128
 
 [[orchestrator.eval.source]]
 name = "reverse-text"
-
-[orchestrator.eval.source.env.taskset]
-id = "reverse-text"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "null"
-
-[orchestrator.eval.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [trainer.optim]
 lr = 3e-6

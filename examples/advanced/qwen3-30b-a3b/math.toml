@@ -42,38 +42,28 @@ lr = 1e-6
 
 [orchestrator]
 batch_size = 512
-oversampling_factor = 2
 max_off_policy_steps = 8
+
+[orchestrator.concurrency]
+initial_inflight = 1024
 
 [orchestrator.train.sampling]
 max_completion_tokens = 32768
 
 [[orchestrator.train.source]]
 name = "math"
-
-[orchestrator.train.source.env.taskset]
-id = "i3_math"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "i3_math"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [orchestrator.eval]
 interval = 25
 
 [[orchestrator.eval.source]]
 name = "aime2025"
-
-[orchestrator.eval.source.env.taskset]
-id = "aime25"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "null"
-
-[orchestrator.eval.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "aime25"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [inference.vllm]
 tensor_parallel_size = 8

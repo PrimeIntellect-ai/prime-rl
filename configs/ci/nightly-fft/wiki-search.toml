@@ -17,23 +17,16 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 [orchestrator]
 batch_size = 512
 group_size = 16
-oversampling_factor = 2.0
 
-[[orchestrator.pre_batch_filters]]
-type = "zero_advantage"
-enforce = true
+[orchestrator.concurrency]
+initial_inflight = 128
+max_inflight = 128
 
 [[orchestrator.train.source]]
 name = "wiki-search"
-
-[orchestrator.train.source.env.taskset]
-id = "wiki-search"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "wiki-search"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 512

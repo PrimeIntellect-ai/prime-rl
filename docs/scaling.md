@@ -87,7 +87,7 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 | `trainer.model.reshard_after_forward` | If `true` (default), parameters are resharded after the forward pass to free memory; the backward pass re-gathers. Set `false` to keep params resident — faster but more memory. |
 | `trainer.model.fsdp_cpu_offload` | Offload params + grads + optimizer state to CPU. Big memory win, large throughput hit. |
 | `trainer.model.optim_cpu_offload` | Offload optimizer state to CPU between steps. Enabled by default. |
-| `trainer.model.full_offload` | Offload gradients, FP32 masters, and optimizer state and run AdamW on CPU during backward. Disabled by default. |
+| `trainer.model.full_offload` | Offload gradients, FP32 masters, and optimizer state and run the optimizer (AdamW or SignSGD) on CPU during backward. Disabled by default. |
 
 ### Expert Parallelism
 
@@ -138,7 +138,7 @@ targets = ["norm", "attn_proj"]  # see Reference for the full list per architect
 
 ### Optimizer Offloading
 
-State-only optimizer offload remains enabled by default with `model.optim_cpu_offload = true`. For full offload, set `model.optim_cpu_offload = false` and `model.full_offload = true`; this keeps BF16 compute weights on GPU and runs CPU AdamW chunks as gradients become ready during backward. Full offload only supports AdamW and disables gradient clipping.
+State-only optimizer offload remains enabled by default with `model.optim_cpu_offload = true`. For full offload, set `model.optim_cpu_offload = false` and `model.full_offload = true`; this keeps BF16 compute weights on GPU and runs CPU optimizer chunks as gradients become ready during backward. Full offload only supports AdamW and SignSGD (`optim.type = "sign_sgd"`) and disables gradient clipping. SignSGD is stateless, so it halves the host RAM footprint versus AdamW (8 instead of 16 bytes per parameter: FP32 master + FP32 accumulated gradient, no moments).
 
 ### LM Head Chunking
 
@@ -249,4 +249,4 @@ uv run sft @ sft.toml --data.type fake --max-steps 4
 uv run trainer @ train.toml --data.fake --max-steps 4
 ```
 
-Every step logs `Throughput`, `MFU`, and `Peak Mem.` to the console. For machine-readable numbers, enable the file monitor (`--file-monitor.filename metrics.jsonl`) and aggregate `perf/throughput`, `perf/mfu`, `time/step`, and `perf/peak_memory` from the run's `metrics.jsonl` — skip the first step, it is warmup. [`benchmarks/scripts/run_single_benchmark.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/benchmarks/scripts/run_single_benchmark.py) does exactly this and is what the CI benchmark matrix runs.
+Every step logs `Throughput`, `MFU`, and `Peak Mem.` to the console. For machine-readable numbers, the file monitor writes `metrics.jsonl` to the run's output directory by default (`monitors.file`); aggregate `perf/throughput`, `perf/mfu`, `time/step`, and `perf/peak_memory` from the run's `metrics.jsonl` — skip the first step, it is warmup. [`benchmarks/scripts/run_single_benchmark.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/benchmarks/scripts/run_single_benchmark.py) does exactly this and is what the CI benchmark matrix runs.

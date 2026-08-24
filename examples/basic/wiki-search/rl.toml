@@ -32,29 +32,21 @@ target_modules = [
 [orchestrator]
 batch_size = 512
 group_size = 16
-oversampling_factor = 2.0
+
+[orchestrator.concurrency]
+initial_inflight = 1024
 
 [orchestrator.model.lora]
-name = "qwen3-4b-wiki-search"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 512
 
 [[orchestrator.train.source]]
 name = "wiki-search"
-
-[orchestrator.train.source.env.taskset]
-id = "wiki-search"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
-
-[[orchestrator.pre_batch_filters]]
-type = "zero_advantage"
-enforce = true
+curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
+env.taskset.id = "wiki-search"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [ckpt] # Checkpoint at the end of training
 

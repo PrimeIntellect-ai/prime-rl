@@ -11,7 +11,16 @@ from prime_rl.utils.config import BaseConfig
 # and the single shared W&B run. The launcher always sets these last, so allowing them in
 # `env_vars` would be a silent no-op (or, on multi-node, a footgun) — reject them instead.
 PROTECTED_ENV_VARS = frozenset(
-    {"CUDA_VISIBLE_DEVICES", "PRL_RUN_ID", "PRL_RUN_NAME", "WANDB_RUN_ID", "WANDB_SHARED_MODE", "WANDB_SHARED_LABEL"}
+    {
+        "CUDA_VISIBLE_DEVICES",
+        "PRL_RUN_ID",
+        "PRL_RUN_NAME",
+        "WANDB_RUN_ID",
+        "WANDB_SHARED_MODE",
+        "WANDB_SHARED_LABEL",
+        "WANDB_SHARED_PRIMARY",
+        "WANDB_SHARED_FINISHER",
+    }
 )
 
 
@@ -26,6 +35,18 @@ def reject_protected_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
 
 EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_env_vars)]
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
+
+
+class BaseWeightBroadcastConfig(BaseConfig):
+    timeout: int = 1200
+    """Timeout in seconds for the broadcast handshake and transfer. The trainer
+    fails the run when no consumer acknowledges an offered version in time."""
+
+    broadcast_final: bool = True
+    """Internal - stamped by the RL/SFT launcher, never set by users: whether the
+    trainer broadcasts the final version v{max_steps}. True iff something consumes
+    it (a configured final eval) - training itself never samples from the final
+    version."""
 
 
 class RunConfig(BaseConfig):
@@ -159,9 +180,6 @@ class ClientConfig(BaseConfig):
 
     headers_from_env: dict[str, str] = {}
     """Maps HTTP header names to environment variable names; each entry is resolved via ``os.getenv`` and merged into request headers. e.g. ``{"X-Prime-Team-ID": "PRIME_TEAM_ID"}``."""
-
-    extra_headers_from_state: dict[str, str] = {}
-    """Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "trajectory_id"}`` enables sticky routing at the inference router."""
 
     skip_model_check: bool = False
     """Skip checking that the model is available in the inference pool. Useful for external APIs or keys that do not expose ``/models``."""
