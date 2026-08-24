@@ -15,10 +15,13 @@ from transformers.generation import GenerationMixin
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.models.gpt_oss.modeling_gpt_oss import (
     GptOssAttention,
     GptOssRMSNorm,
-    GptOssRotaryEmbedding,
+)
+from transformers.models.gpt_oss.modeling_gpt_oss import (
+    GptOssRotaryEmbedding as HFGptOssRotaryEmbedding,
 )
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
@@ -32,6 +35,18 @@ from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import GptOssGroupedExperts
+
+
+class GptOssRotaryEmbedding(HFGptOssRotaryEmbedding):
+    """HF's GptOssRotaryEmbedding, plus the buffer-reinit hook it doesn't define upstream."""
+
+    def init_buffers_post_meta(self) -> None:
+        rope_init_fn = (
+            self.compute_default_rope_parameters if self.rope_type == "default" else ROPE_INIT_FUNCTIONS[self.rope_type]
+        )
+        inv_freq, self.attention_scaling = rope_init_fn(self.config, self.inv_freq.device)
+        self.inv_freq.copy_(inv_freq)
+        self.original_inv_freq.copy_(inv_freq)
 
 
 class GptOssTopKRouter(nn.Module):
@@ -335,22 +350,6 @@ class GptOssForCausalLM(GptOssPreTrainedModel, GenerationMixin):
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature,
         )
-
-    def init_buffers_post_meta(self):
-        buffer_names = [name for name, _ in self.named_buffers()]
-        if "model.rotary_emb.inv_freq" in buffer_names:
-            rotary_emb = self.model.rotary_emb
-            from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
-
-            rope_init_fn = (
-                ROPE_INIT_FUNCTIONS[rotary_emb.rope_type]
-                if rotary_emb.rope_type != "default"
-                else rotary_emb.compute_default_rope_parameters
-            )
-            inv_freq, rotary_emb.attention_scaling = rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
-            rotary_emb.inv_freq.copy_(inv_freq)
-            if "model.rotary_emb.original_inv_freq" in buffer_names:
-                rotary_emb.original_inv_freq.copy_(inv_freq)
 
 
 __all__ = [

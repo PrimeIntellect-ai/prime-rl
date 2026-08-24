@@ -82,6 +82,20 @@ class LagunaRotaryEmbedding(nn.Module):
             sin = emb.sin() * attention_scaling
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
+    def init_buffers_post_meta(self) -> None:
+        for layer_type in self.layer_types:
+            rope_init_fn = self.compute_default_rope_parameters
+            if self.rope_type[layer_type] != "default":
+                rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type[layer_type]]
+            inv_freq, attention_scaling = rope_init_fn(
+                self.config,
+                getattr(self, f"{layer_type}_inv_freq").device,
+                layer_type=layer_type,
+            )
+            getattr(self, f"{layer_type}_inv_freq").copy_(inv_freq)
+            getattr(self, f"{layer_type}_original_inv_freq").copy_(inv_freq)
+            setattr(self, f"{layer_type}_attention_scaling", attention_scaling)
+
 
 def _laguna_attention_config(config: LagunaConfig, num_heads: int) -> AttentionConfig:
     return AttentionConfig(
@@ -383,27 +397,6 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature,
         )
-
-    def init_buffers_post_meta(self) -> None:
-        rotary_emb = self.model.rotary_emb
-        for layer_type in rotary_emb.layer_types:
-            rope_init_fn = rotary_emb.compute_default_rope_parameters
-            if rotary_emb.rope_type[layer_type] != "default":
-                rope_init_fn = ROPE_INIT_FUNCTIONS[rotary_emb.rope_type[layer_type]]
-            inv_freq, attention_scaling = rope_init_fn(
-                rotary_emb.config,
-                getattr(rotary_emb, f"{layer_type}_inv_freq").device,
-                layer_type=layer_type,
-            )
-            getattr(rotary_emb, f"{layer_type}_inv_freq").copy_(inv_freq)
-            getattr(rotary_emb, f"{layer_type}_original_inv_freq").copy_(inv_freq)
-            setattr(rotary_emb, f"{layer_type}_attention_scaling", attention_scaling)
-
-        for module in self.modules():
-            if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
-                module.tokens_per_expert.zero_()
-                if module.expert_bias is not None:
-                    module.expert_bias.zero_()
 
 
 __all__ = [

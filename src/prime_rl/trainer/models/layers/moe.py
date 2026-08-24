@@ -1069,6 +1069,12 @@ class MoE(nn.Module):
             if self.load_balance_coeff is not None:
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
 
+    def init_buffers_post_meta(self) -> None:
+        self.tokens_per_expert.zero_()
+        self.routing_confidence_sum.zero_()
+        if self.expert_bias is not None:
+            self.expert_bias.zero_()
+
 
 @torch.compile(dynamic=True)
 def relu2(x: torch.Tensor) -> torch.Tensor:
@@ -1286,6 +1292,9 @@ class NemotronHRouter(nn.Module):
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate, mean=0.0, std=init_std)
+
+    def init_buffers_post_meta(self) -> None:
+        self.e_score_correction_bias.zero_()
 
 
 class BCNonGatedFeedForward(nn.Module):
@@ -1514,3 +1523,9 @@ class LatentMoE(nn.Module):
             self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
             if self.load_balance_coeff is not None:
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
+
+    def init_buffers_post_meta(self) -> None:
+        self.tokens_per_expert.zero_()
+        self.routing_confidence_sum.zero_()
+        if self.expert_bias is not None:
+            self.expert_bias.zero_()

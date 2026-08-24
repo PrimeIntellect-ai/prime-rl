@@ -12,7 +12,7 @@ from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import (
     Qwen3_5PreTrainedModel as HFQwen3_5PreTrainedModel,
 )
-from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel, Qwen3_5VisionRotaryEmbedding
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 
@@ -128,6 +128,9 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
     config_class = Qwen3_5TextConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
+    # Vision-tower rope belongs to upstream transformers' Qwen3_5VisionModel; we can't add
+    # init_buffers_post_meta to it, so it's exempted and reinitialized explicitly below instead.
+    _init_buffers_post_meta_exempt = (Qwen3_5VisionRotaryEmbedding,)
     _no_split_modules = ["Qwen3_5DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
@@ -452,25 +455,16 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
             temperature=temperature,
         )
 
-    def init_buffers_post_meta(self):
-        if self._is_vlm:
-            lm_rope = self.model.language_model.rotary_emb
-        else:
-            lm_rope = self.model.rotary_emb
-
-        if hasattr(lm_rope, "rope_init_fn"):
-            inv_freq, lm_rope.attention_scaling = lm_rope.rope_init_fn(lm_rope.config, lm_rope.inv_freq.device)
-            lm_rope.inv_freq.copy_(inv_freq)
-
+    def init_buffers_post_meta(self) -> None:
+        super().init_buffers_post_meta()
         if self._is_vlm:
             vis_rope = self.model.visual.rotary_pos_emb
-            if hasattr(vis_rope, "inv_freq"):
-                dim = vis_rope.inv_freq.shape[0]
-                inv_freq = 1.0 / (
-                    10000.0
-                    ** (torch.arange(0, dim * 2, 2, dtype=torch.float32, device=vis_rope.inv_freq.device) / (dim * 2))
-                )
-                vis_rope.inv_freq.copy_(inv_freq)
+            dim = vis_rope.inv_freq.shape[0]
+            inv_freq = 1.0 / (
+                10000.0
+                ** (torch.arange(0, dim * 2, 2, dtype=torch.float32, device=vis_rope.inv_freq.device) / (dim * 2))
+            )
+            vis_rope.inv_freq.copy_(inv_freq)
 
 
 __all__ = [

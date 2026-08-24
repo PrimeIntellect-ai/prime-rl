@@ -70,6 +70,8 @@ Bringing up a new model family is three steps: implement the modeling code, regi
 
 Drop the modeling code under `src/prime_rl/trainer/models/<arch>/` (HF-compatible config, modeling, and weight conversion). Mirror the layout of an existing family — `glm4_moe/` or `qwen3_moe/` are good starting points.
 
+**Buffer contract.** Models are constructed on the meta device, so any module that registers a buffer (`register_buffer`) must implement `init_buffers_post_meta()` giving it a reasonable value. Modules without this method will cause a runtime failure.
+
 ### Register a Mini Preset
 
 Add an entry to [`scripts/mini_moe.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/mini_moe.py) so the smoke-test workflow can build a ~0.5B test model in your architecture. The preset names the config class, picks small dimensions, and wires up the HF + prime-rl model classes plus a tokenizer source:
@@ -135,6 +137,7 @@ Don't expect reward to climb meaningfully in 20 steps on a random model.
 Before merging a new model, you need to ensure the following:
 
 - The model is correctly registered and defines and all the required methods - such as `convert_hf_layer_to_tt` and `convert_tt_layer_to_hf`.
+- Every buffer-owning module the new model introduces implements `init_buffers_post_meta()` (see above).
 - The small smoke test passes.
 
 In the PR that adds the new model, you also need to provide a table covering the KL mismatch across 20 steps on `math` environment with `batch_size=64`. All the entries in the table must lower than 0.015. If this is not met, the PR will not be merged (unless reasonable justification is provided). This is to ensure all our models are consistent and their implementations match the implementations in the inference framework.

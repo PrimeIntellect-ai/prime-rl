@@ -1,5 +1,35 @@
+from typing import Protocol, runtime_checkable
+
+import torch.nn as nn
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
+
+
+@runtime_checkable
+class _PostMetaBufferInitModule(Protocol):
+    def init_buffers_post_meta(self) -> None: ...
+
+
+def _run_init_buffers_post_meta(module: nn.Module, exempt: tuple[type[nn.Module], ...] = ()) -> None:
+    """Walk every submodule of `module` (module itself excluded) and either call its
+    `init_buffers_post_meta()` hook or, if it owns buffers but doesn't implement the hook, raise.
+
+    Standalone so it's usable both as the real post-meta-init dispatch (called from
+    `PreTrainedModelPrimeRL.init_buffers_post_meta`) and directly in tests, against either a real
+    model or a plain `nn.Module` tree with no HF/PreTrainedModel machinery involved.
+    """
+    for submodule in module.modules():
+        if submodule is module or isinstance(submodule, exempt):
+            continue
+        if isinstance(submodule, _PostMetaBufferInitModule):
+            submodule.init_buffers_post_meta()
+        elif next(submodule.buffers(recurse=False), None) is not None:
+            raise TypeError(
+                f"{type(submodule).__name__} owns buffers "
+                f"{[n for n, _ in submodule.named_buffers(recurse=False)]} but doesn't implement "
+                "init_buffers_post_meta() -- implement it (even a documented no-op) so these "
+                "buffers don't silently hold undefined values after meta-device materialization."
+            )
 
 
 class PreTrainedModelPrimeRL(PreTrainedModel):
@@ -132,17 +162,21 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         raise NotImplementedError(f"convert_layer_to_vllm_kernel is not implemented for {cls.__name__}")
 
+    _init_buffers_post_meta_exempt: tuple[type[nn.Module], ...] = ()
+
     def init_buffers_post_meta(self) -> None:
         """
         Initialize buffers that are not in the state dict after loading with meta device.
 
         Some models have buffers (non-trainable tensors) that are not saved in the state dict
         but need to be properly initialized after loading the model on meta device and then
-        moving to the actual device. This method should initialize such buffers.
+        moving to the actual device. Dispatches to each submodule's own `init_buffers_post_meta`
+        so every layer owns the reinitialization of the buffers it registers; submodules that own
+        buffers but don't implement the hook cause this to raise (see `_run_init_buffers_post_meta`).
 
         This is called after loading the model from a checkpoint with meta device.
         """
-        raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
+        _run_init_buffers_post_meta(self, exempt=self._init_buffers_post_meta_exempt)
 
 
 __all__ = ["PreTrainedModelPrimeRL"]

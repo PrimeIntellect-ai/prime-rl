@@ -15,7 +15,10 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
-from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeVisionModel
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
+    Qwen3_5MoeVisionModel,
+    Qwen3_5MoeVisionRotaryEmbedding,
+)
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, logging
 
@@ -601,6 +604,10 @@ class Qwen3_5MoeRotaryEmbedding(nn.Module):
             freqs_t[..., idx] = freqs[dim, ..., idx]
         return freqs_t
 
+    def init_buffers_post_meta(self) -> None:
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, self.inv_freq.device)
+        self.inv_freq.copy_(inv_freq)
+
 
 def _create_rotary_emb(config: Qwen3_5MoeConfig) -> Qwen3_5MoeRotaryEmbedding:
     return Qwen3_5MoeRotaryEmbedding(config)
@@ -615,6 +622,9 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
     config_class = Qwen3_5MoeConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
+    # Vision-tower rope belongs to upstream transformers' Qwen3_5MoeVisionModel; we can't add
+    # init_buffers_post_meta to it, so it's exempted and reinitialized explicitly below instead.
+    _init_buffers_post_meta_exempt = (Qwen3_5MoeVisionRotaryEmbedding,)
     _no_split_modules = ["Qwen3_5MoeDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
@@ -998,25 +1008,16 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
     # Buffer init after meta-device loading
     # ------------------------------------------------------------------
 
-    def init_buffers_post_meta(self):
-        if self._is_vlm:
-            lm_rope = self.model.language_model.rotary_emb
-        else:
-            lm_rope = self.model.rotary_emb
-
-        if hasattr(lm_rope, "rope_init_fn"):
-            inv_freq, lm_rope.attention_scaling = lm_rope.rope_init_fn(lm_rope.config, lm_rope.inv_freq.device)
-            lm_rope.inv_freq.copy_(inv_freq)
-
+    def init_buffers_post_meta(self) -> None:
+        super().init_buffers_post_meta()
         if self._is_vlm:
             vis_rope = self.model.visual.rotary_pos_emb
-            if hasattr(vis_rope, "inv_freq"):
-                dim = vis_rope.inv_freq.shape[0]
-                inv_freq = 1.0 / (
-                    10000.0
-                    ** (torch.arange(0, dim * 2, 2, dtype=torch.float32, device=vis_rope.inv_freq.device) / (dim * 2))
-                )
-                vis_rope.inv_freq.copy_(inv_freq)
+            dim = vis_rope.inv_freq.shape[0]
+            inv_freq = 1.0 / (
+                10000.0
+                ** (torch.arange(0, dim * 2, 2, dtype=torch.float32, device=vis_rope.inv_freq.device) / (dim * 2))
+            )
+            vis_rope.inv_freq.copy_(inv_freq)
 
 
 __all__ = [
