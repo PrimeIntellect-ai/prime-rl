@@ -259,7 +259,7 @@ function renderOverview() {
   // rollout dirs can run one step past max_steps (the final ship drains late
   // arrivals), so the headline caps at the configured horizon
   const shownStep = step != null && meta.max_steps ? Math.min(step, meta.max_steps) : step;
-  const stepText = `${shownStep != null ? shownStep.toLocaleString() : "n/a"}/${meta.max_steps ? meta.max_steps.toLocaleString() : "∞"}`;
+  const stepText = `${shownStep != null ? shownStep.toLocaleString() : "–"}/${meta.max_steps ? meta.max_steps.toLocaleString() : "∞"}`;
   const left = [
     ["status", `<span class="badge st-${status}">${status}</span>`],
     ["type", `<span class="val">${esc((meta.type ?? "n/a").toUpperCase())}</span>`],
