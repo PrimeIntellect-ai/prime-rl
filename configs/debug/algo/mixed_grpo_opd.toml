@@ -33,34 +33,18 @@ max_completion_tokens = 128
 
 [[orchestrator.train.source]]
 name = "reverse-text-grpo"
-
-[orchestrator.train.source.env.taskset]
-id = "reverse-text"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [[orchestrator.train.source]]
 name = "reverse-text-opd"
-
-[orchestrator.train.source.env.taskset]
-id = "reverse-text"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
-
-[orchestrator.train.source.algo]
-type = "opd"
-
-[orchestrator.train.source.algo.teacher]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
-base_url = "http://localhost:8001/v1"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+algo.type = "opd"
+algo.teacher.name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+algo.teacher.base_url = "http://localhost:8001/v1"
 
 [orchestrator.eval]
 interval = 5
@@ -71,15 +55,9 @@ max_completion_tokens = 128
 
 [[orchestrator.eval.source]]
 name = "reverse-text"
-
-[orchestrator.eval.source.env.taskset]
-id = "reverse-text"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "null"
-
-[orchestrator.eval.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [trainer.optim]
 lr = 3e-6

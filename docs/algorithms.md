@@ -124,36 +124,22 @@ type = "grpo"
 
 [[orchestrator.train.source]]
 name = "math"  # inherits the top-level grpo
-
-[orchestrator.train.source.env.taskset]
-id = "math"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "math"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [[orchestrator.train.source]]
 name = "terminal"
-
-[orchestrator.train.source.env.taskset]
-id = "terminal"
-
-[orchestrator.train.source.env.agent.harness]
-id = "bash"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
-
+env.taskset.id = "terminal"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "subprocess"
 # this env runs its own algorithm
-[orchestrator.train.source.algo]
-type = "echo"
+algo.type = "echo"
 ```
 
 ### The Algorithm Classes
 
-At runtime, each env's resolved config builds two objects: a `Sampler` (`prime_rl.orchestrator.sampler`) from the `sampling` component — the pool rollouts are generated from, and the home of future sampling strategies like replay buffers or branching — and one of the named algorithm classes in `prime_rl.orchestrator.algo` (one module per algorithm: `algo/grpo.py`, `algo/opd.py`, …) from the algorithm config. Algorithm dispatch is keyed on `algo.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
+At runtime, each env's resolved config builds two objects: a `GenerationSource` (`prime_rl.orchestrator.generation_source`) that resolves the `sampling.source` model into the inference pool used for train episodes, and one of the named algorithm classes in `prime_rl.orchestrator.algo` (one module per algorithm: `algo/grpo.py`, `algo/opd.py`, …) from the algorithm config. Algorithm dispatch is keyed on `algo.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
 
 | `algo.type` | Class | hook(s) — stage |
 |---|---|---|
@@ -173,7 +159,7 @@ Algorithms operate on native verifier artifacts and annotate their message graph
 
 The pipeline drives these through `finalize_episode` and `finalize_group`. Advantages, reference logprobs, and named loss weights stay on verifier nodes through admission. Only admitted traces are flattened into `TrainingSample`s.
 
-Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy pool (`self.policy_pool`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint (tokenizer is always the live policy's — self-distillation has no separate model). The pipeline only ever calls the two `finalize_*` methods — writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)). Shared math (efficiency shaping, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
+Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy clients (`self.clients`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint (tokenizer is always the live policy's — self-distillation has no separate model). The pipeline only ever calls the two `finalize_*` methods — writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)). Shared math (efficiency shaping, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
 
 ## Async / Off-Policy Training
 
@@ -365,21 +351,11 @@ episode_agents = ["solver"]
 name = "proposer-solver"
 group_size = 4  # proposed problems per source task
 env.n = 4  # solver attempts per proposed problem
-
-[orchestrator.train.source.env.taskset]
-id = "proposer-solver"
-
-[orchestrator.train.source.env.proposer.harness]
-id = "null"
-
-[orchestrator.train.source.env.proposer.runtime]
-type = "subprocess"
-
-[orchestrator.train.source.env.solver.harness]
-id = "null"
-
-[orchestrator.train.source.env.solver.runtime]
-type = "subprocess"
+env.taskset.id = "proposer-solver"
+env.proposer.harness.id = "null"
+env.proposer.runtime.type = "subprocess"
+env.solver.harness.id = "null"
+env.solver.runtime.type = "subprocess"
 ```
 
 `group_size` controls how many problems are proposed from each source task. `env.n` controls how many solvers attempt each proposed problem. If a comparison contains only one trace—for example, a solver when `env.n = 1`—its advantage is zero.
@@ -399,21 +375,11 @@ decay = 0.95
 
 [[orchestrator.train.source]]
 name = "kuhn-poker"
-
-[orchestrator.train.source.env.taskset]
-id = "kuhn-poker"
-
-[orchestrator.train.source.env.player0.harness]
-id = "null"
-
-[orchestrator.train.source.env.player0.runtime]
-type = "subprocess"
-
-[orchestrator.train.source.env.player1.harness]
-id = "null"
-
-[orchestrator.train.source.env.player1.runtime]
-type = "subprocess"
+env.taskset.id = "kuhn-poker"
+env.player0.harness.id = "null"
+env.player0.runtime.type = "subprocess"
+env.player1.harness.id = "null"
+env.player1.runtime.type = "subprocess"
 ```
 
 Both of `kuhn-poker`'s agents late-bind to the run's own model — shared-policy self-play against a continuously improving opponent. Pin one agent to a frozen endpoint (`env.player1.model = ...`) for asymmetric play; its traces are marked untrainable by the env and never reach the advantage computation. A single-agent env under `rae` degrades to REINFORCE with an EMA baseline.

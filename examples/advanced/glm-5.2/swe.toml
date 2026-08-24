@@ -55,7 +55,6 @@ max_inflight_activations = 1
 
 [trainer.ckpt]
 skip_optimizer = true
-skip_gather_master_weights = true
 
 [trainer.optim]
 type = "adamw"
@@ -79,15 +78,9 @@ interval = 20
 
 [[orchestrator.eval.source]]
 name = "swe-bench-verified"
-
-[orchestrator.eval.source.env.taskset]
-id = "swebench-verified"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "bash"
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["glm5-pd-disag", "swe-bench-verified"]
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["glm5-pd-disag", "swe-bench-verified"]
 
 [inference]
 # we need <0.85 bc glm5 layers are too large for 0.85

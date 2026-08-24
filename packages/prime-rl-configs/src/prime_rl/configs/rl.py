@@ -136,7 +136,7 @@ class SharedInMemoryWeightBroadcastConfig(BaseConfig):
     """Weight transfer port."""
 
     timeout: int = 1200
-    """Timeout in seconds for in-memory weight transfer."""
+    """Timeout in seconds for the broadcast handshake and transfer."""
 
 
 class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
@@ -161,6 +161,9 @@ class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
 
 class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
+
+    timeout: int = 1200
+    """Timeout in seconds for the broadcast handshake and transfer."""
 
 
 SharedWeightBroadcastConfig: TypeAlias = Annotated[
@@ -460,9 +463,13 @@ class RLConfig(BaseConfig):
                 self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
-                "LoRA training is not yet supported with in-memory weight broadcast. "
-                "Set weight_broadcast.type = 'filesystem'."
+                "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
+                "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
+                "have no disk artifact to load from."
             )
+        # The final version v{max_steps} is broadcast iff something consumes it:
+        # training never samples from it, but a configured final eval measures it.
+        broadcast_final = self.orchestrator.eval is not None
         if self.weight_broadcast.type in ("nccl", "nixl"):
             inference_world_size = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
@@ -474,6 +481,7 @@ class RLConfig(BaseConfig):
                 port=self.weight_broadcast.port,
                 timeout=self.weight_broadcast.timeout,
                 inference_world_size=inference_world_size,
+                broadcast_final=broadcast_final,
             )
             if self.weight_broadcast.type == "nccl":
                 transport_config = dict(
@@ -488,8 +496,12 @@ class RLConfig(BaseConfig):
             self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
             self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
         elif self.weight_broadcast.type == "filesystem":
-            self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
-            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
+            self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
+                timeout=self.weight_broadcast.timeout, broadcast_final=broadcast_final
+            )
+            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
+                timeout=self.weight_broadcast.timeout, broadcast_final=broadcast_final
+            )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
@@ -567,11 +579,6 @@ class RLConfig(BaseConfig):
 
             if self.orchestrator.model.lora.alpha is None:
                 self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
-
-            if self.orchestrator.model.lora.name is None:
-                self.orchestrator.model.lora.name = (
-                    f"r{self.orchestrator.model.lora.rank}-a{self.orchestrator.model.lora.alpha}"
-                )
 
             if self.inference is not None:
                 self.inference.vllm.enable_lora = True

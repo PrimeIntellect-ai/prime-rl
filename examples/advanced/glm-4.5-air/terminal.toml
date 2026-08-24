@@ -26,6 +26,8 @@ num_infer_replicas = 4
 project = "terminal-ablations"
 name = "glm45air-terminal"
 
+[monitors.prime]
+
 [weight_broadcast]
 type = "nccl"
 timeout = 3600
@@ -60,7 +62,6 @@ max_inflight_activations = 1
 [trainer.model.compile]
 
 [trainer.ckpt]
-skip_gather_master_weights = true
 skip_optimizer = true
 
 [trainer.optim]
@@ -90,22 +91,14 @@ num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1
 num_turns_weight = 0.1
 
-[monitors.prime]
-
 # --- Train: tmax (per-task Docker image in a prime sandbox, rlm ipython) ---
 
 [[orchestrator.train.source]]
 name = "tmax"
-
-[orchestrator.train.source.env.agent.harness]
-id = "rlm"
-summarize_at_tokens = [65536, 131072]
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["glm45air-terminal"]
-
-[orchestrator.train.source.env.taskset]
-id = "tmax"
+env.agent.harness.id = "rlm"
+env.agent.harness.summarize_at_tokens = [65536, 131072]
+env.agent.runtime.labels = ["glm45air-terminal"]
+env.taskset.id = "tmax"
 
 # # Metric-only monitors (weight 0): rlm harness-mechanics + swe code-usage rubrics, judged by GLM-5.2.
 # [[orchestrator.train.source.env.taskset.judges]]
@@ -129,27 +122,17 @@ interval = 20
 
 [[orchestrator.eval.source]]
 name = "swebench-verified"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "rlm"
-summarize_at_tokens = 98304
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["glm45air-terminal"]
-
-[orchestrator.eval.source.env.agent.timeout]
-rollout = 3600
-
-[orchestrator.eval.source.env.taskset]
-id = "swebench-verified"
-
+env.agent.harness.id = "rlm"
+env.agent.harness.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["glm45air-terminal"]
+env.agent.timeout.rollout = 3600
+env.taskset.id = "swebench-verified"
 # [[orchestrator.eval.source.env.taskset.judges]]
 # id = "rubric"
 # name = "rlm"
 # path = "deps/prime-envs/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
-
 # [[orchestrator.eval.source.env.taskset.judges]]
 # id = "rubric"
 # name = "swe"
@@ -160,19 +143,11 @@ id = "swebench-verified"
 [[orchestrator.eval.source]]
 name = "terminal-bench-2"
 group_size = 4 # avg@4
-
-[orchestrator.eval.source.env.agent.harness]
-id = "rlm"
-summarize_at_tokens = 98304
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["glm45air-terminal"]
-
-[orchestrator.eval.source.env.agent.timeout]
-rollout = 3600
-
-[orchestrator.eval.source.env.taskset]
-id = "terminal-bench-2"
+env.agent.harness.id = "rlm"
+env.agent.harness.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["glm45air-terminal"]
+env.agent.timeout.rollout = 3600
+env.taskset.id = "terminal-bench-2"
 
 # [[orchestrator.eval.source.env.taskset.judges]]
 # id = "rubric"

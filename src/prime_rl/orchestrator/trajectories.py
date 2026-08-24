@@ -19,8 +19,8 @@ from collections.abc import Iterator
 import numpy as np
 import verifiers.v1 as vf
 
-from prime_rl.transports.rollouts import MMImageRef, MMRefs, TrainingSample
-from prime_rl.transports.rollouts.types import RoutedExperts
+from prime_rl.transports.batch import MMImageRef, MMRefs, TrainingSample
+from prime_rl.transports.batch.types import RoutedExperts
 from prime_rl.utils.logger import get_logger
 
 
@@ -122,12 +122,7 @@ def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> list
     return weights if any(weights) else None
 
 
-def trace_to_samples(
-    trace: vf.Trace,
-    *,
-    env_name: str = "",
-    mm_token_type_ids_mapping: dict[int, int] | None = None,
-) -> list[TrainingSample]:
+def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
     Each `trace.branches` entry is already a flat token sequence (`branch.token_ids` /
@@ -145,8 +140,9 @@ def trace_to_samples(
         mm_refs: MMRefs | None = None
         image_urls = _image_urls(branch)
         if image_urls:
-            mapping = mm_token_type_ids_mapping or {}
-            mm_token_type_ids = [mapping.get(t, 0) for t in token_ids]
+            mm_token_type_ids = branch.mm_token_type_ids
+            if mm_token_type_ids is None:
+                raise ValueError("Inline images have no expanded multimodal prompt tokens")
             mm_refs = _build_mm_refs(image_urls, mm_token_type_ids)
         samples.append(
             TrainingSample(

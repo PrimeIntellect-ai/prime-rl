@@ -3,7 +3,6 @@ from typing import Callable
 
 import pytest
 
-from prime_rl.trainer.weights import load_state_dict
 from tests.conftest import ProcessResult
 from tests.utils import check_loss_goes_down, strip_escape_codes
 
@@ -18,15 +17,6 @@ def run_dir(output_dir: Path) -> Path:
 
 
 TIMEOUT = 300  # 5 minutes
-
-
-def assert_adapter_checkpoint(adapter_dir: Path) -> None:
-    assert (adapter_dir / "adapter_config.json").exists()
-    state_dict = load_state_dict(adapter_dir)
-    assert state_dict
-    assert all(".0.weight" not in key for key in state_dict)
-    assert any(key.endswith("lora_A.weight") for key in state_dict)
-    assert all(key.startswith("base_model.model.") for key in state_dict)
 
 
 @pytest.fixture(scope="module")
@@ -110,12 +100,6 @@ def test_loss_goes_down(sft_lora_process: ProcessResult, run_dir: Path):
     check_loss_goes_down(trainer_stdout)
 
 
-def test_adapter_checkpoint_written(sft_lora_process: ProcessResult, run_dir: Path):
-    """Tests that the adapter checkpoint is written with valid PEFT-compatible keys."""
-    adapter_dir = run_dir / "weights" / "step_5" / "lora_adapters"
-    assert_adapter_checkpoint(adapter_dir)
-
-
 def test_no_error_resume(sft_lora_resume_process: ProcessResult):
     """Tests that the SFT LoRA resume process does not fail."""
     assert sft_lora_resume_process.returncode == 0, f"Process has non-zero return code ({sft_lora_resume_process})"
@@ -128,9 +112,3 @@ def test_loss_goes_down_resume(sft_lora_resume_process: ProcessResult, run_dir: 
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_loss_goes_down(trainer_stdout)
-
-
-def test_adapter_checkpoint_written_resume(sft_lora_resume_process: ProcessResult, run_dir: Path):
-    """Tests that the adapter checkpoint is written after resuming with valid PEFT-compatible keys."""
-    adapter_dir = run_dir / "weights" / "step_10" / "lora_adapters"
-    assert_adapter_checkpoint(adapter_dir)

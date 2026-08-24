@@ -16,18 +16,22 @@ Subset = Literal["all", "effective"]
 
 @dataclass(frozen=True)
 class TraceRecord:
-    """A trace joined with its episode and training selection state."""
+    """A trace joined with its episode and training selection state.
+    ``cancelled`` marks episodes the pipeline voided (stale drop) — a
+    selection verdict disjoint from trace errors."""
 
     episode: vf.Episode
     trace: vf.Trace
     sampled: bool
     admitted: bool
+    cancelled: bool
 
 
 def _records(
     episodes: list[vf.Episode],
     sampled_trace_ids: set[str],
     admitted: set[str],
+    cancelled: set[str],
 ) -> list[TraceRecord]:
     return [
         TraceRecord(
@@ -35,6 +39,7 @@ def _records(
             trace=trace,
             sampled=trace.id in sampled_trace_ids,
             admitted=episode.id in admitted,
+            cancelled=episode.id in cancelled,
         )
         for episode in episodes
         for trace in episode.traces
@@ -202,6 +207,11 @@ class TraceMetrics(StatGroup):
     def has_error(self) -> Stat:
         return Stat([float(trace.has_error) for trace in self.traces])
 
+    @property
+    def cancelled(self) -> Stat:
+        """Pipeline cancellations (stale drop) — disjoint from errors."""
+        return Stat([float(record.cancelled) for record in self.records])
+
     def stop_conditions(self) -> dict[str, float]:
         out = {
             "generation_truncated": sum(
@@ -243,6 +253,7 @@ class TraceMetrics(StatGroup):
         out |= self.rewards.to_dict(f"{prefix}/rewards")
         if subset == "all":
             out[f"{prefix}/has_error/mean"] = self.has_error.mean()
+            out[f"{prefix}/cancelled/mean"] = self.cancelled.mean()
             out |= {f"{prefix}/error/{key}": float(value) for key, value in self.error_types().items()}
             out |= {f"{prefix}/{key}": value for key, value in self.solve_rates().items()}
         out |= {f"{prefix}/stop_condition/{key}": value for key, value in self.stop_conditions().items()}
@@ -250,9 +261,15 @@ class TraceMetrics(StatGroup):
 
 
 class EpisodeMetrics:
-    def __init__(self, episodes: list[vf.Episode], records: list[TraceRecord]) -> None:
+    def __init__(
+        self,
+        episodes: list[vf.Episode],
+        records: list[TraceRecord],
+        cancelled: set[str] | None = None,
+    ) -> None:
         self.episodes = episodes
         self.records = records
+        self.cancelled_ids = cancelled if cancelled is not None else set()
 
     def by_agent(self) -> dict[str, TraceMetrics]:
         per_agent: dict[str, list[TraceRecord]] = {}
@@ -296,6 +313,14 @@ class EpisodeMetrics:
             [float(not episode.ok or any(trace.has_error for trace in episode.traces)) for episode in self.episodes]
         )
 
+    @property
+    def cancelled(self) -> Stat:
+        """Per-episode pipeline-cancellation rate — same denominator as
+        ``has_error``. Read from the id-set, not the trace records, so
+        trace-less episodes (synthetic error episodes inside a voided group)
+        still count."""
+        return Stat([float(episode.id in self.cancelled_ids) for episode in self.episodes])
+
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         if not self.episodes:
             return {}
@@ -305,6 +330,7 @@ class EpisodeMetrics:
             out |= getattr(self, name).to_dict(f"{metric_prefix}/{name}")
         if subset == "all":
             out[f"{metric_prefix}/has_error/mean"] = self.has_error.mean()
+            out[f"{metric_prefix}/cancelled/mean"] = self.cancelled.mean()
         for agent, metrics in self.by_agent().items():
             out |= metrics.to_dict(f"{metric_prefix}/{agent}", subset=subset)
         return out
@@ -368,16 +394,18 @@ class EpisodeCollection:
         episodes: list[vf.Episode] | None = None,
         sampled_trace_ids: set[str] | None = None,
         admitted: set[str] | None = None,
+        cancelled: set[str] | None = None,
         predicate: Callable[[TraceRecord], bool] | None = None,
     ) -> None:
         self.episodes = episodes if episodes is not None else []
         self.sampled_trace_ids = sampled_trace_ids if sampled_trace_ids is not None else set()
         self.admitted = admitted if admitted is not None else {episode.id for episode in self.episodes}
+        self.cancelled = cancelled if cancelled is not None else set()
         self._predicate = predicate
 
     @property
     def records(self) -> list[TraceRecord]:
-        records = _records(self.episodes, self.sampled_trace_ids, self.admitted)
+        records = _records(self.episodes, self.sampled_trace_ids, self.admitted, self.cancelled)
         if self._predicate is None:
             return records
         return [record for record in records if self._predicate(record)]
@@ -420,11 +448,14 @@ class EpisodeCollection:
         *,
         sampled_trace_ids: set[str] | None = None,
         admitted: bool = True,
+        cancelled: bool = False,
     ) -> None:
         self.episodes.append(episode)
         self.sampled_trace_ids.update(sampled_trace_ids or set())
         if admitted:
             self.admitted.add(episode.id)
+        if cancelled:
+            self.cancelled.add(episode.id)
 
     def extend(
         self,
@@ -432,11 +463,14 @@ class EpisodeCollection:
         *,
         sampled_trace_ids: set[str] | None = None,
         admitted: bool = True,
+        cancelled: bool = False,
     ) -> None:
         self.episodes.extend(episodes)
         self.sampled_trace_ids.update(sampled_trace_ids or set())
         if admitted:
             self.admitted.update(episode.id for episode in episodes)
+        if cancelled:
+            self.cancelled.update(episode.id for episode in episodes)
 
     def __len__(self) -> int:
         return len(self.selected_episodes)
@@ -452,8 +486,13 @@ class TrainEpisodes(EpisodeCollection):
             self.episodes,
             self.sampled_trace_ids,
             self.admitted,
+            self.cancelled,
             predicate=lambda record: (
-                record.admitted and record.sampled and not record.trace.has_error and record.trace.agent.trainable
+                record.admitted
+                and record.sampled
+                and not record.cancelled
+                and not record.trace.has_error
+                and record.trace.agent.trainable
             ),
         )
 
@@ -462,42 +501,31 @@ class TrainEpisodes(EpisodeCollection):
         for episode in self.selected_episodes:
             grouped.setdefault(episode_env_name(episode), []).append(episode)
         return {
-            env_name: TrainEpisodes(episodes, self.sampled_trace_ids, self.admitted, self._predicate)
+            env_name: TrainEpisodes(episodes, self.sampled_trace_ids, self.admitted, self.cancelled, self._predicate)
             for env_name, episodes in grouped.items()
         }
 
     @property
     def metrics(self) -> TrainMetrics:
-        return TrainMetrics(self.selected_episodes, self.records)
+        return TrainMetrics(self.selected_episodes, self.records, self.cancelled)
 
 
 class EvalEpisodes(EpisodeCollection):
     def __init__(
         self,
-        episodes: list[vf.Episode] | None = None,
+        episodes: list[vf.Episode],
+        group_size: int,
         predicate: Callable[[TraceRecord], bool] | None = None,
-        group_size: int | None = None,
     ) -> None:
         super().__init__(episodes, predicate=predicate)
-        self._group_size = group_size
-
-    @property
-    def group_size(self) -> int:
-        if self._group_size is not None:
-            return self._group_size
-        counts: dict = {}
-        for record in self.records:
-            if record.trace.agent.trainable:
-                group_id = episode_group_id(record.episode)
-                counts[group_id] = counts.get(group_id, 0) + 1
-        return max(counts.values(), default=0)
+        self.group_size = group_size
 
     @property
     def effective(self) -> EvalEpisodes:
         return EvalEpisodes(
             self.episodes,
+            self.group_size,
             predicate=lambda record: not record.trace.has_error and record.trace.agent.trainable,
-            group_size=self.group_size,
         )
 
     @property

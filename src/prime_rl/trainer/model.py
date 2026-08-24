@@ -32,6 +32,7 @@ from prime_rl.configs.trainer import (
     FP8Config,
     ModelConfig,
     MXFP8Config,
+    QuantizationConfig,
     TokenizerConfig,
 )
 from prime_rl.multimodal import ForwardPolicy
@@ -53,20 +54,20 @@ from prime_rl.trainer.models.layers.checkpointing import (
 )
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRouter, _load_fused_moe_kernel
 from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.weights import (
-    load_state_dict,
-    load_state_dict_keys,
-    save_state_dict,
-)
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
+from prime_rl.utils.weights import (
+    load_state_dict,
+    load_state_dict_keys,
+    save_state_dict,
+)
 
 
 def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
@@ -443,6 +444,39 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
         logger.info(f"Running {num_routers} MoE router gates in fp32")
 
 
+def apply_fused_moe_kernel(model: nn.Module, quantization: QuantizationConfig | None) -> None:
+    """
+    Route MoE routed-expert compute through the our fused bf16/mxfp8 MoE CUDA kernel.
+    Forward runs the kernel, backward recomputes the reference grouped-mm path.
+    """
+    logger = get_logger()
+    language_model = get_language_model(model)
+    num_moe_layers = 0
+
+    # MXFP8 with grouped GEMM is the one setting that quantizes the experts themselves, so this also picks the MXFP8 kernel."""
+    dtype = "mxfp8" if isinstance(quantization, MXFP8Config) and quantization.enable_grouped_gemm else "bf16"
+    kernel = _load_fused_moe_kernel()
+
+    for layer in language_model.layers:
+        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
+        if isinstance(mlp, MoE):
+            if mlp.score_before_experts:
+                raise ValueError(
+                    "model.moe_fused_kernel=true requires MoE layers with score_before_experts=false, because the fused kernel applies the routing scores to the expert outputs."
+                )
+            _, hidden_dim, dim = mlp.experts.w1.shape
+            reason = kernel.unsupported_shape_reason(dim, hidden_dim, mxfp8=dtype == "mxfp8")
+            if reason is not None:
+                raise ValueError(f"model.moe_fused_kernel=true does not support this model: {reason}")
+            mlp.fused_kernel = dtype
+            num_moe_layers += 1
+
+    if num_moe_layers == 0:
+        raise ValueError("model.moe_fused_kernel=true but no MoE layers found. Is this a custom-impl MoE model?")
+
+    logger.info(f"Using the fused {dtype} MoE kernel for {num_moe_layers} MoE layers")
+
+
 def get_full_offload_dtype_policy(
     model: nn.Module,
     config: ModelConfig,
@@ -562,16 +596,11 @@ def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
     logger = get_logger()
-    logger.info(
+    logger.debug(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
 
     is_vlm_training = config.vlm is not None
-
-    if "Qwen3.5" in config.name or "qwen3_5" in config.name.lower():
-        _patch_qwen3_5_text_position_ids()
-        _patch_qwen3_5_moe_conversion_mapping()
-        _patch_qwen3_5_linear_attn_varlen()
 
     model_config = cast(
         PretrainedConfig,
@@ -603,8 +632,8 @@ def get_model(
 
         _hub_kernels._kernels_enabled = True
 
-    # Fallback Qwen3.5 patch detection from loaded config model_type
-    if getattr(model_config, "model_type", "").startswith("qwen3_5_moe"):
+    # Qwen3.6 and Qwen3.8 reuse the Qwen3.5 architecture, so match on model_type, not repo name.
+    if getattr(model_config, "model_type", "").startswith("qwen3_5"):
         _patch_qwen3_5_text_position_ids()
         _patch_qwen3_5_moe_conversion_mapping()
         _patch_qwen3_5_linear_attn_varlen()
@@ -750,7 +779,7 @@ def get_model(
                 trust_remote_code=config.trust_remote_code,
                 **dtype_kwarg,
             )
-        logger.debug(f"Loaded model {config.name} in {time.perf_counter() - load_model_start_time:.2f} seconds")
+        logger.debug(f"Loaded model {config.name} in {format_time(time.perf_counter() - load_model_start_time)}")
 
     assert model.lm_head.weight.dtype == dtype, (
         f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
@@ -937,16 +966,15 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     model.to_empty(device=device)
     torch.distributed.barrier()
 
-    def _init_buffers_post_meta():
-        if isinstance(model, PreTrainedModelPrimeRL):
-            model.init_buffers_post_meta()
-        else:
-            fix_model_post_empty(model)
+    # Must run before any weight loading: reinit can zero persistent buffers that ship in checkpoints
+    if isinstance(model, PreTrainedModelPrimeRL):
+        model.init_buffers_post_meta()
+    else:
+        fix_model_post_empty(model)
 
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
-        _init_buffers_post_meta()
         _move_buffers_to_cuda(model, config)
         return
 
@@ -1014,7 +1042,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     # Restore weight tying broken by to_empty() for HF models
     if not isinstance(model, PreTrainedModelPrimeRL) and model.config.tie_word_embeddings:
         model.tie_weights()
-    _init_buffers_post_meta()
 
     _move_buffers_to_cuda(model, config)
 
@@ -1031,7 +1058,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
             generator = torch.Generator(device="cuda").manual_seed(seed_tensor.item())
         for module in lora_modules:
             module._init_lora_parameters(generator)
-    logger.debug(f"Loaded weights using HF DCP in {time.perf_counter() - load_dcp_start_time:.2f} seconds")
+    logger.debug(f"Loaded weights using HF DCP in {format_time(time.perf_counter() - load_dcp_start_time)}")
 
 
 def can_reinit_empty_buffers(model: nn.Module):
@@ -1334,6 +1361,14 @@ def setup_model(
 
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
+
+    if config.moe_fused_kernel:
+        if parallel_dims.ep_enabled:
+            raise ValueError(
+                "model.moe_fused_kernel=true requires ep=1: the fused kernel bypasses the EP "
+                "all-to-all and indexes experts with global ids."
+            )
+        apply_fused_moe_kernel(model, config.quantization)
 
     # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
     # never trainable. Freeze it so optimizer state stays symmetric across checkpoint

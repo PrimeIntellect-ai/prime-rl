@@ -7,7 +7,7 @@ from typing import Any
 from PIL import Image
 
 from prime_rl.multimodal import MaterializedMM, MultimodalAdapter
-from prime_rl.transports.rollouts import MMRefs
+from prime_rl.transports.batch import MMRefs
 
 
 def _load_image(data_url: str) -> Image.Image:

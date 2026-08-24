@@ -5,6 +5,7 @@ from pydantic import Field, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalConfig
 from prime_rl.configs.shared import ClientConfig, LogConfig
+from prime_rl.configs.trainer import WeightBroadcastConfig
 from prime_rl.utils.config import BaseConfig
 
 
@@ -40,14 +41,14 @@ class EvalsEvalConfig(EvalConfig):
 
 
 class OnlineConfig(BaseConfig):
-    """Checkpoint-driven online evals: watch a weights directory for new HF checkpoints
-    and evaluate each eligible one. Without this block the evals process runs every eval
-    source once against the weights the inference server currently serves, then exits."""
+    """Broadcast-driven online evals: watch a broadcasts directory for new weight
+    broadcasts and evaluate each eligible one. Without this block the evals process runs
+    every eval source once against the weights the inference server currently serves,
+    then exits."""
 
-    weights_dir: Path | None = None
-    """Directory to watch for ``step_{n}`` HF weight checkpoints. The ``sft`` launcher
-    fills it from ``ckpt.output_dir`` when checkpoints are redirected to another volume;
-    defaults to ``<output_dir>/weights``."""
+    broadcasts_dir: Path | None = None
+    """Directory to watch for ``step_{n}`` weight broadcasts. Defaults to
+    ``<output_dir>/broadcasts``."""
 
     max_steps: int | None = None
     """Trainer step at which the run ends. The final checkpoint always fires every
@@ -64,15 +65,15 @@ class EvalsConfig(BaseConfig):
     """``uv run evals``: run the configured evals against a live inference server.
     Standalone (no ``[online]``), one epoch of every eval source runs against the
     served weights and the evals process exits. With ``[online]``, the evals process watches a
-    weights directory for new HF checkpoints, points the inference server at each one
-    (``/update_weights`` from disk), and runs the configured evals against the updated
-    weights — the ``sft`` launcher writes this config; it also works standalone against
-    any trainer that writes ``weights/step_{n}`` HF checkpoints with ``STABLE`` markers."""
+    broadcasts directory for new weight broadcasts, updates the inference server through
+    the configured transport, and runs the configured evals against the updated weights.
+    The ``sft`` launcher writes this config; filesystem mode also works standalone against
+    any trainer that writes ``broadcasts/step_{n}`` directories with ``STABLE`` markers."""
 
     model: str = "Qwen/Qwen3-0.6B"
     """Name the inference server serves the model under — the ``model`` field of every
     eval request and the startup model check. Auto-filled from ``model.name`` by the
-    ``sft`` launcher; the name stays fixed across checkpoint reloads (weights are
+    ``sft`` launcher; the name stays fixed across weight updates (weights are
     swapped in place), so per-step results are told apart by ``eval/{env}/policy_version``."""
 
     eval: EvalsEvalConfig
@@ -80,6 +81,10 @@ class EvalsConfig(BaseConfig):
 
     online: OnlineConfig | None = None
     """Checkpoint watching (``[online]``). None runs the evals once and exits."""
+
+    weight_broadcast: WeightBroadcastConfig | None = None
+    """Weight transport for online evals. The ``sft`` launcher fills this from its
+    resolved trainer transport. None uses filesystem reloads."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — rollout traces and logs are written as
@@ -91,9 +96,9 @@ class EvalsConfig(BaseConfig):
     """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
 
     @model_validator(mode="after")
-    def auto_setup_weights_dir(self):
-        if self.online is not None and self.online.weights_dir is None:
-            self.online.weights_dir = self.output_dir / "weights"
+    def auto_setup_broadcasts_dir(self):
+        if self.online is not None and self.online.broadcasts_dir is None:
+            self.online.broadcasts_dir = self.output_dir / "broadcasts"
         return self
 
     @model_validator(mode="after")

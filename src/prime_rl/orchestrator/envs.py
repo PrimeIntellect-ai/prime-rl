@@ -20,6 +20,7 @@ keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Iterator, Sequence
 from itertools import islice
 from typing import Generic, TypeVar
@@ -29,8 +30,8 @@ from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
-from prime_rl.orchestrator.sampler import Sampler
-from prime_rl.utils.logger import get_logger
+from prime_rl.orchestrator.generation_source import GenerationSource
+from prime_rl.utils.logger import format_time, get_logger
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
 # servers concurrently with the orchestrator, and a server imports its env package
@@ -68,21 +69,22 @@ class Env:
     async def start(self) -> None:
         """Connect to the env server and load the taskset client-side."""
         get_logger().debug(f"Connecting {self.name} to env server {self.address}")
+        t0 = time.perf_counter()
         self._env_client = EnvClient(address=self.address)
         # The server may still be coming up (the launcher spawns it concurrently with
         # the orchestrator), so poll until it answers.
         await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
         taskset = vf.load_taskset(self.config.env.taskset)
         if type(taskset).INFINITE:
-            self.tasks = iter(taskset.load())
+            self.tasks = iter(taskset)
             self.num_tasks = None
         else:
-            # Materialize off the event loop — load() may pull a dataset.
-            materialized = await asyncio.to_thread(lambda: list(taskset.load()))
+            # Materialize off the event loop — iterating may pull a dataset.
+            materialized = await asyncio.to_thread(lambda: list(taskset))
             self.tasks = iter(materialized)
             self.num_tasks = len(materialized)
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
-        get_logger().info(f"Env {self.name} ready: num_tasks={num_tasks}")
+        get_logger().info(f"Env {self.name} ready in {format_time(time.perf_counter() - t0)} (num_tasks={num_tasks})")
 
     def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
         sampling = {**self.sampling_args}
@@ -118,11 +120,17 @@ class Env:
 class TrainEnv(Env):
     config: TrainSourceConfig
 
-    def __init__(self, config: TrainSourceConfig, address: str, sampler: Sampler, algorithm: Algorithm):
+    def __init__(
+        self,
+        config: TrainSourceConfig,
+        address: str,
+        generation_source: GenerationSource,
+        algorithm: Algorithm,
+    ):
         super().__init__(config, address)
-        self.sampler = sampler
+        self.generation_source = generation_source
         self.algorithm = algorithm
-        self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
+        self.sampling_args = generation_source.sampling_args(config.sampling.to_sampling_args())
 
 
 class EvalEnv(Env):
@@ -131,7 +139,7 @@ class EvalEnv(Env):
     def __init__(self, config: EvalSourceConfig, address: str):
         super().__init__(config, address)
         self.sampling_args = config.sampling.to_sampling_args()
-        self.examples: list[dict] = []
+        self.examples: list[vf.Task] = []
 
     async def start(self) -> None:
         await super().start()
@@ -140,7 +148,7 @@ class EvalEnv(Env):
             raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
         # A fixed eval set, pulled off the tasks once and reused every epoch.
         tasks = list(self.tasks) if n < 0 else list(islice(self.tasks, n))
-        self.examples = [{"task": task} for task in tasks]
+        self.examples = tasks
 
 
 EnvT = TypeVar("EnvT", bound=Env)
@@ -175,8 +183,8 @@ class Envs(Generic[EnvT]):
 
 
 class TrainEnvs(Envs[TrainEnv]):
-    """Collection of training environments, each paired with its rollout
-    :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
+    """Collection of training environments, each paired with its
+    :class:`GenerationSource` and runtime :class:`Algorithm`, built from the env's
     resolved algorithm config."""
 
     def __init__(
@@ -184,17 +192,18 @@ class TrainEnvs(Envs[TrainEnv]):
         configs: Sequence[TrainSourceConfig],
         addresses: dict[tuple[str, str], str],
         *,
-        policy_pool,
+        clients,
         renderer_config=None,
     ):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainSourceConfig.algo must be resolved before env construction"
+            get_logger().info(f"Initializing {config.algo.type} algorithm for {config.resolved_name}")
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],
-                Sampler(config.algo.sampling, policy_pool, renderer_config),
-                build_algorithm(config.algo, policy_pool),
+                GenerationSource(config.algo.sampling, clients, renderer_config),
+                build_algorithm(config.algo, clients),
             )
             self._envs[env.name] = env
 

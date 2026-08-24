@@ -3,11 +3,11 @@ from pathlib import Path
 
 import msgspec
 
-from prime_rl.transports.rollouts.types import MicroBatch
+from prime_rl.transports.batch.types import MicroBatch
 from prime_rl.utils.logger import get_logger
 
 
-class MicroBatchSender(ABC):
+class BatchSender(ABC):
     """Base class for sending micro batches from the orchestrator to the train workers."""
 
     def __init__(self, output_dir: Path, data_world_size: int):
@@ -26,7 +26,7 @@ class MicroBatchSender(ABC):
         pass
 
 
-class MicroBatchReceiver(ABC):
+class BatchReceiver(ABC):
     """Base class for receiving micro batches from the orchestrator."""
 
     def __init__(self, output_dir: Path, data_rank: int):

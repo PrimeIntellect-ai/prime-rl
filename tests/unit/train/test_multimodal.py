@@ -7,7 +7,7 @@ from prime_rl.multimodal import get_multimodal_adapter
 from prime_rl.multimodal.kimi_k25 import KimiK25Adapter
 from prime_rl.multimodal.qwen_vl import QwenVLAdapter
 from prime_rl.trainer.multimodal import materialize_mm_refs
-from prime_rl.transports.rollouts import MMImageRef, MMRefs
+from prime_rl.transports.batch import MMImageRef, MMRefs
 
 _IMAGE_URL = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="

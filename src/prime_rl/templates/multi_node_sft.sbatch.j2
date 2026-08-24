@@ -62,6 +62,11 @@ export MASTER_ADDR="${HOSTNAMES[0]}"
 export MASTER_PORT=29500
 echo "MASTER_ADDR=${MASTER_ADDR}"
 echo "MASTER_PORT=${MASTER_PORT}"
+{% if use_nccl_broadcast %}
+# The eval job has a separate allocation. Publish the trainer's NCCL host through
+# the shared run directory under this job ID.
+printf '%s\n' "$MASTER_ADDR" > "$OUTPUT_DIR/.sft_nccl_host_$SLURM_JOB_ID"
+{% endif %}
 
 # Install environment
 [ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
@@ -155,5 +160,8 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.sft.train \
         @ $CONFIG_PATH \
+{%- if use_nccl_broadcast %}
+        --weight-broadcast.host 0.0.0.0 \
+{%- endif %}
         2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
 LAUNCH_SH

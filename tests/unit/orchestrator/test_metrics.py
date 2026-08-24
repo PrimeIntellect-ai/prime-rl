@@ -270,21 +270,33 @@ def test_train_only_metrics_absent_from_eval():
     assert out["train/agg/all/agent/is_trainable/mean"] == 0.5
     assert out["train/agg/all/agent/is_admitted/mean"] == 0.5
     assert "train/agg/all/is_trainable/mean" not in out  # pipeline verdicts are per-trace
-    eval_out = EvalEpisodes(rollouts).metrics.to_wandb(prefix="eval/x", subset="all")
+    eval_out = EvalEpisodes(rollouts, group_size=2).metrics.to_wandb(prefix="eval/x", subset="all")
     assert not any("is_trainable" in key or "is_admitted" in key for key in eval_out)
 
 
 def test_eval_avg_at_k_and_pass_k():
-    binary = EvalEpisodes([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")])
+    binary = EvalEpisodes([mk(reward=1.0, group_id="g0"), mk(reward=0.0, group_id="g0")], group_size=2)
     eff = binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
-    assert eff["eval/x/effective/agent/avg@2"] == 0.5  # mean reward under avg@<k> (k from the groups)
+    assert eff["eval/x/effective/agent/avg@2"] == 0.5  # k is the configured episode group size
     assert "eval/x/effective/avg@2" not in eff  # scores are per-agent, never pooled
     assert eff["eval/x/effective/agent/pass@1"] == 0.5 and eff["eval/x/effective/agent/pass^2"] == 0.0
     all_out = binary.metrics.to_wandb(prefix="eval/x", subset="all")
     assert all_out["eval/x/all/agent/avg@2"] == 0.5
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
-    non_binary = EvalEpisodes([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")])
+    non_binary = EvalEpisodes([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")], group_size=2)
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
+
+    multi_agent = EvalEpisodes(
+        [
+            combine(mk(agent_name="proposer"), mk(agent_name="solver"), mk(agent_name="solver")),
+            combine(mk(agent_name="proposer"), mk(agent_name="solver"), mk(agent_name="solver")),
+        ],
+        group_size=2,
+    )
+    multi_agent_out = multi_agent.metrics.to_wandb(prefix="eval/x", subset="all")
+    assert "eval/x/all/proposer/avg@2" in multi_agent_out
+    assert "eval/x/all/solver/avg@2" in multi_agent_out
+    assert not any("avg@4" in key for key in multi_agent_out)
 
 
 def test_compute_pass_metrics_matches_closed_form():

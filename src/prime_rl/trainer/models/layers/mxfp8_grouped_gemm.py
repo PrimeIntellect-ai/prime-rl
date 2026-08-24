@@ -20,6 +20,10 @@ _MXFP8_TOKEN_GROUP_ALIGN: int = 32
 # the Triton variant has no such cap and produces the same swizzled layout, so fall back to it for wider MoEs
 _CUDA_REARRANGE_MAX_GROUPS: int = 32
 
+# torchao's dim0 quantize Triton kernel indexes with int32 and corrupts mem when numel >= INT_MAX=2^31
+_QUANT_NUMEL_LIMIT: int = 1 << 31
+_QUANT_CHUNK_NUMEL: int = 1 << 30
+
 
 def _fallback_to_triton_rearrange_for_wide_moes() -> None:
     if getattr(tao_mxfp8_gmm.mx_block_rearrange_2d_M_groups_cuda, "_prime_rl_wide_moe", False):
@@ -35,6 +39,27 @@ def _fallback_to_triton_rearrange_for_wide_moes() -> None:
 
     mx_block_rearrange_2d_M_groups._prime_rl_wide_moe = True
     tao_mxfp8_gmm.mx_block_rearrange_2d_M_groups_cuda = mx_block_rearrange_2d_M_groups
+
+
+def _chunk_dim0_quantize_for_large_inputs() -> None:
+    if getattr(tao_mxfp8_gmm.triton_to_mxfp8_dim0, "_prime_rl_chunked", False):
+        return
+    original = tao_mxfp8_gmm.triton_to_mxfp8_dim0
+
+    def triton_to_mxfp8_dim0(x: torch.Tensor, inner_block_size: int = 32, scaling_mode: str = "rceil") -> torch.Tensor:
+        if x.ndim != 2 or x.numel() < _QUANT_NUMEL_LIMIT:
+            return original(x, inner_block_size=inner_block_size, scaling_mode=scaling_mode)
+        rows_per_chunk = max(1, _QUANT_CHUNK_NUMEL // x.shape[1])
+        outs, scales = zip(
+            *(
+                original(chunk, inner_block_size=inner_block_size, scaling_mode=scaling_mode)
+                for chunk in x.split(rows_per_chunk, dim=0)
+            )
+        )
+        return torch.cat(outs, dim=0), torch.cat(scales, dim=0)
+
+    triton_to_mxfp8_dim0._prime_rl_chunked = True
+    tao_mxfp8_gmm.triton_to_mxfp8_dim0 = triton_to_mxfp8_dim0
 
 
 def _relax_torchao_mxfp8_version_gate() -> None:
@@ -75,6 +100,7 @@ def apply_mxfp8_moe_grouped_gemm(model: nn.Module, recipe: MXFP8Recipe) -> None:
     _relax_torchao_mxfp8_version_gate()
     _align_permute_indices_buffer()
     _fallback_to_triton_rearrange_for_wide_moes()
+    _chunk_dim0_quantize_for_large_inputs()
     set_token_group_alignment_size_m(_MXFP8_TOKEN_GROUP_ALIGN)
     op_config = MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe(recipe))
 

@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from prime_rl.transports.rollouts.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
+from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -593,8 +593,8 @@ def packed_samples_into_micro_bs(
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
-    Multimodal samples pack with text spans and with compatible eager
-    raw-image samples. Packed batches preserve sample boundaries in ``seq_lens``.
+    Multimodal samples pack with text spans and other raw-image samples. Packed
+    batches preserve sample boundaries in ``seq_lens``.
     """
     # Sort by decreasing length for packing efficiency
     samples.sort(key=lambda sample: -len(sample.input_ids))

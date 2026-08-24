@@ -12,24 +12,24 @@ from prime_rl.utils.logger import get_logger
 if TYPE_CHECKING:
     from renderers import RendererConfig
 
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.orchestrator.clients import InferenceClient
 
 
-async def connect_frozen_pool(
+async def connect_frozen_client(
     config: FrozenModelConfig, *, renderer_config: RendererConfig | None = None
-) -> InferencePool:
+) -> InferenceClient:
     """Connect to an externally hosted frozen model and wait for it."""
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.orchestrator.clients import InferenceClient, check_inference_ready
 
     get_logger().info(f"Initializing frozen model pool (model={config.name}, base_url={config.base_url})")
     if renderer_config is not None:
-        pool = InferencePool(
+        clients = InferenceClient(
             config, model_name=config.name, train_client_type="renderer", renderer_config=renderer_config
         )
     else:
-        pool = InferencePool(config, model_name=config.name)
-    await pool.wait_for_ready(config.name)
-    return pool
+        clients = InferenceClient(config, model_name=config.name)
+    await check_inference_ready(config, config.name)
+    return clients
 
 
 def iter_trainable_traces(episodes: list[vf.Episode]):
@@ -52,18 +52,17 @@ class Algorithm:
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
-    def __init__(self, config: AlgoConfig, policy_pool: InferencePool):
-        self.policy_pool = policy_pool
-        self.connected_pools: list[InferencePool] = []
+    def __init__(self, config: AlgoConfig, clients: InferenceClient):
+        self.clients = clients
+        self.connected: InferenceClient | None = None
 
     async def setup(self) -> None:
         """Connect resources owned by the algorithm."""
 
-    async def connect(self, reference: FrozenModelConfig) -> InferencePool:
-        """Connect and track a frozen model pool owned by this algorithm."""
-        pool = await connect_frozen_pool(reference)
-        self.connected_pools.append(pool)
-        return pool
+    async def connect(self, reference: FrozenModelConfig) -> InferenceClient:
+        """Connect and track the frozen model pool owned by this algorithm."""
+        self.connected = await connect_frozen_client(reference)
+        return self.connected
 
     async def score_episode(self, episode: vf.Episode) -> None:
         """Assign rollout-local annotations to one finalized episode."""

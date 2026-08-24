@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from prime_rl.inference.vllm.worker.nccl import NCCLWeightBroadcastReceiver
-from prime_rl.transports.weights.nccl import NCCLWeightBroadcastSender
+from prime_rl.transports.weights.nccl import NCCLBroadcaster
 
 pytestmark = [pytest.mark.gpu]
 
@@ -16,9 +16,7 @@ def test_nccl_broadcast(free_port):
 
     def send():
         device = torch.device(f"cuda:{0}")
-        nccl_broadcast = NCCLWeightBroadcastSender(
-            host=host, port=free_port, rank=0, world_size=2, device=device, timeout=10
-        )
+        nccl_broadcast = NCCLBroadcaster(host=host, port=free_port, rank=0, world_size=2, device=device, timeout=10)
 
         class SubModel(torch.nn.Module):
             def __init__(self):
@@ -43,7 +41,7 @@ def test_nccl_broadcast(free_port):
         for param in model.parameters():
             param.data = torch.ones_like(param.data)
 
-        nccl_broadcast.broadcast_weights(model, step=0)
+        nccl_broadcast.send(model)
 
     def receive():
         device = torch.device(f"cuda:{1}")

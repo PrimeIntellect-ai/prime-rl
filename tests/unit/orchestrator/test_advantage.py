@@ -153,14 +153,14 @@ def _scalar(episode: vf.Episode) -> float:
 
 def _grpo(group: list[vf.Episode], length_penalty=None) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
-    algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), policy_pool=None)
+    algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), clients=None)
     asyncio.run(algo.score_group(group))
     return [_scalar(episode) for episode in group]
 
 
 def _max_rl(group: list[vf.Episode]) -> list[float]:
     """Drive ``MaxRLAlgorithm.score_group`` and read back each per-rollout scalar."""
-    algo = MaxRLAlgorithm(MaxRLAlgoConfig(), policy_pool=None)
+    algo = MaxRLAlgorithm(MaxRLAlgoConfig(), clients=None)
     asyncio.run(algo.score_group(group))
     return [_scalar(episode) for episode in group]
 
@@ -223,7 +223,7 @@ def test_linear_context_term_penalizes_more_context():
         _build_episode(1.0, sampled_lengths=[10], obs_lengths=[]),
         _build_episode(1.0, sampled_lengths=[10], obs_lengths=[100]),
     ]
-    asyncio.run(GRPOAlgorithm(GRPOAlgoConfig(length_penalty=cfg), policy_pool=None).score_group(group))
+    asyncio.run(GRPOAlgorithm(GRPOAlgoConfig(length_penalty=cfg), clients=None).score_group(group))
     advs = [_scalar(episode) for episode in group]
     assert advs[0] > advs[1]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)

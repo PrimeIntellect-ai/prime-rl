@@ -58,7 +58,7 @@ After a restart, verify all processes are back up and progress resumed before th
 - `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the run dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
 - `{run_dir}/configs/` — resolved configs, written as JSON so explicit None settings round-trip (`rl.json` has the full picture).
 - `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
-- `{run_dir}/rollouts/step_N/{train,eval}/` — saved rollout traces (see Traces below).
+- `{run_dir}/rollouts/step_N/{train,eval}/` — saved episodes (see Episodes below).
 
 ### Logs
 
@@ -130,7 +130,8 @@ All metrics print to the console log (and W&B when configured).
 | trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU % |
 | orchestrator | `time/step`, `time/save_ckpt` | phase timings |
 | orchestrator | `time/wait_for_policy` | **high → trainer is bottleneck** |
-| orchestrator | `dispatcher/off_policy_level/{mean,max}`, `dispatcher/inflight/{train,eval}`, `dispatcher/queued/eval` | dispatcher / async state |
+| orchestrator | `dispatcher/off_policy/{mean,max}`, `dispatcher/inflight/{train,eval}`, `dispatcher/queued/eval` | dispatcher / async state |
+| orchestrator | `off_policy/{mean,max}`, `off_policy/{in_flight,in_queue}/{mean,max}`, `off_policy/dropped` | per-step staleness of trained rollouts |
 | env server | event loop lag (min/mean/p90/p99/max), active task distribution | periodic |
 
 For live vLLM stats, query Prometheus directly:
@@ -152,7 +153,7 @@ JSONL files of native `vf.Episode` records (training tensors excluded), one line
 curriculum-rejected work, and work that never enters a batch — so it is crash-durable.
 `effective` contains the admitted clean trainable traces grouped into their original episodes
 (eval: the non-errored trainable epoch cohort). Each record carries its provenance at the
-episode level: `env` (`id` plus the orchestrator's `name`), full `task`, `group_id`,
+episode level: `env` (`id` plus the orchestrator's `name`), full `task`, `group` (`id`),
 and `run`. Training-run records discriminate train/eval work and include dispatch
 step plus an optional live-policy version span. Traces retain their own task,
 verifiers, agent, and runtime fields.

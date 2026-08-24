@@ -1,5 +1,5 @@
 import re
-from typing import Callable, Dict, List
+from typing import Callable, List
 
 import torch
 import torch.nn as nn
@@ -54,14 +54,6 @@ class LoRAState:
     def register_module(self, prefix: str, module: MultiLoRAModule) -> None:
         """Register an adapted module with its FQN prefix (e.g. "model.layers.0.self_attn.q_proj")."""
         self._modules.append((prefix, module))
-
-    def named_adapter_parameters(self) -> list[tuple[str, nn.Parameter]]:
-        """Named parameters of the adapter across all registered modules."""
-        params = []
-        for prefix, module in self._modules:
-            for name, param in module.named_parameters_for_adapter(0):
-                params.append((f"{prefix}.{name}.weight", param))
-        return params
 
     def adapter_state_dict(self) -> dict[str, torch.Tensor]:
         """Adapter-only state dict, converted for HF compatibility when a converter is registered."""
@@ -241,7 +233,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         )
         raise RuntimeError("Cannot apply LoRA to FSDP-wrapped model. Apply LoRA before setup_fsdp().")
 
-    logger.debug(f"Applying LoRA to model: {model} for {config.target_modules}")
+    logger.debug(f"Applying LoRA to {type(model).__name__} (target_modules={config.target_modules})")
     target_modules = _find_target_modules(model, config.target_modules)
     logger.debug(
         f"Found {len(target_modules)} target modules for LoRA: {target_modules[:10]} ... {target_modules[-10:]}"
@@ -326,23 +318,6 @@ def has_lora_layers(model: nn.Module) -> bool:
         if isinstance(module, MultiLoRAModule):
             return True
     return False
-
-
-def clean_lora_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-    """Remove LoRA parameters and fix LoRA base layer key names for HF compatibility."""
-    clean_state_dict = {}
-
-    for key, value in state_dict.items():
-        if "lora_A" in key or "lora_B" in key:
-            continue
-
-        if ".base_layer." in key:
-            new_key = key.replace(".base_layer.", ".")
-            clean_state_dict[new_key] = value
-        else:
-            clean_state_dict[key] = value
-
-    return clean_state_dict
 
 
 def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropout: float) -> None:

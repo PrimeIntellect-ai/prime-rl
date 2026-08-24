@@ -12,6 +12,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.monitors import OrchestratorMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    BaseWeightBroadcastConfig,
     ClientConfig,
     EnvVars,
     HeartbeatConfig,
@@ -25,9 +26,6 @@ from prime_rl.utils.config import BaseConfig
 
 
 class LoRAConfig(BaseConfig):
-    name: str | None = None
-    """LoRA adapter name. If None, auto-generated from rank and alpha."""
-
     rank: int | None = Field(None, ge=1)
     """LoRA rank for this run. Must be ≤ trainer's max rank. If None, uses the trainer's rank."""
 
@@ -376,19 +374,16 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the progress from checkpoint."""
 
 
-class FileSystemWeightBroadcastConfig(BaseConfig):
+class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
 
-class InMemoryWeightBroadcastConfig(BaseConfig):
+class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"
     """Weight transfer host."""
 
     port: int
     """Weight transfer port."""
-
-    timeout: int = 1200
-    """Weight transfer timeout in seconds."""
 
     inference_world_size: int = Field(1, ge=1)
     """Total inference workers across all servers."""
@@ -530,7 +525,7 @@ class OrchestratorConfig(BaseConfig):
     """Maximum training steps. If None, runs indefinitely."""
 
     max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
+    """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
@@ -541,12 +536,6 @@ class OrchestratorConfig(BaseConfig):
             self.tokenizer.name = self.model.name
         if self.tokenizer.trust_remote_code is None:
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_session_headers(self):
-        """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
-        self.model.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
         return self
 
     @model_validator(mode="after")
