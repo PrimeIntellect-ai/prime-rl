@@ -6,9 +6,8 @@ description: Find, start, use, and stop the local run dashboard — the web UI f
 # Run dashboard
 
 `uv run dashboard [output_dir ...]` (default `outputs/`; needs the `dashboard`
-extra) serves a web UI at `http://localhost:7788` with four views per run:
-metrics, resolved configs, a rollout trace viewer, and merged component logs.
-It only reads run dirs — safe against live runs.
+extra) serves a web UI at `http://localhost:7788`. It only reads run dirs —
+safe against live runs.
 
 ## One dashboard per host per user
 
