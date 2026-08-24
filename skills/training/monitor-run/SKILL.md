@@ -66,8 +66,8 @@ without the training stack (e.g. on a head node).
 
 **Daemon (auto-start)**: launchers auto-start one dashboard per host per user and a
 live one absorbs each new run's output dir automatically — see the `dashboard` skill
-for discovery, kill/restart commands, and `--isolated`. The short version: to find it,
-never probe port 7788 (ports spill over) — read the discovery file:
+for discovery, kill/restart commands, and `--isolated`. The short version: the live
+port can differ from 7788 (a taken port bumps), so read the discovery file:
 
 ```bash
 cat ~/.cache/prime-rl/dashboard/daemon.json   # {"pid": ..., "url": "http://localhost:<actual port>"}

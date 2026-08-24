@@ -6,8 +6,7 @@ registry (re-read live), so each new run shows up on one URL - one dashboard
 per host per user. If a live daemon already exists, its URL is reused instead
 of starting another. Discovery goes through
 ``~/.cache/prime-rl/dashboard/daemon.json`` (pid + actual url), which survives
-port spillover — never probe port 7788 directly. The daemon also carries the
-process title ``PRL::Dashboard``.
+port spillover. The daemon also carries the process title ``PRL::Dashboard``.
 
 Kept free of ``dashboard``-extra imports on purpose: the launcher must work
 without the extra (then it registers the dir and points at the missing extra
