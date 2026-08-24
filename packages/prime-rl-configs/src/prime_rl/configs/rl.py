@@ -299,6 +299,10 @@ class RLConfig(BaseConfig):
     slurm: SlurmConfig | None = None
     """SLURM configuration. If None, runs locally."""
 
+    dashboard: bool = True
+    """Make sure a local dashboard daemon serves this run's output dir (started on
+    demand in interactive sessions; an already-running daemon's URL is logged)."""
+
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
 

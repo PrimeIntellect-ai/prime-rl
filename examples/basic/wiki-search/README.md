@@ -25,10 +25,10 @@ Set up the credentials for the configured reference judge:
 export OPENAI_API_KEY=your_api_key_here
 ```
 
-Start the tmux session:
+We'll use two terminals: one for the inference server, one for everything else. To watch the run while it trains — metrics, resolved configs, rollout traces, and logs in one place — start the local dashboard and open http://localhost:7788:
 
 ```bash
-bash scripts/tmux.sh
+uv run dashboard
 ```
 
 ## Task
@@ -69,14 +69,14 @@ Key configuration highlights:
 Start the inference server:
 
 ```bash
-# In the `Inference` pane
+# Run this in the inference terminal
 uv run inference --vllm.enable-lora --vllm.model Qwen/Qwen3-4B-Instruct-2507 --vllm.tool-call-parser hermes
 ```
 
 Evaluate the base model:
 
 ```bash
-# In the `Trainer` pane
+# Run this in the other terminal
 uv run eval wiki-search --harness.id null \
   -m Qwen/Qwen3-4B-Instruct-2507 \
   --client.base-url http://localhost:8000/v1 \
@@ -91,7 +91,7 @@ uv run eval wiki-search --harness.id null \
 Train with the unified config file:
 
 ```bash
-# In the `Trainer` pane
+# Run this in the other terminal
 uv run rl @ examples/basic/wiki-search/rl.toml \
   --run.name rl \
   --monitors.wandb.project your-project-name \
@@ -110,12 +110,12 @@ This will write DCP checkpoints in `outputs/rl/checkpoints/step_*`.
 Evaluate your trained model:
 
 ```bash
-# In the `Inference` pane
+# Run this in the inference terminal
 uv run inference --vllm.enable-lora --vllm.model <user>/Qwen3-4B-Instruct-WikiSearch-RL --vllm.tool-call-parser hermes
 ```
 
 ```bash
-# In the `Trainer` pane
+# Run this in the other terminal
 uv run eval wiki-search --harness.id null \
   -m <user>/Qwen3-4B-Instruct-WikiSearch-RL \
   --client.base-url http://localhost:8000/v1 \

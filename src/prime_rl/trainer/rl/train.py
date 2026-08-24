@@ -87,7 +87,11 @@ def train(config: TrainerConfig):
     # Setup the monitors
     asyncio.run(
         monitors.setup(
-            wandb=config.monitors.wandb, file=config.monitors.file, output_dir=config.output_dir, run_config=config
+            producer="trainer",
+            wandb=config.monitors.wandb,
+            file=config.monitors.file,
+            output_dir=config.output_dir,
+            run_config=config,
         )
     )
 

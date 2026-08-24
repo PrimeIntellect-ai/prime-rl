@@ -45,7 +45,7 @@ from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.metrics import TrainEpisodes
+from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.packing import BatchPacker
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
@@ -55,6 +55,7 @@ from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
+    DispatchFailure,
     EvalBatch,
     GroupCancellation,
     Policy,
@@ -212,6 +213,7 @@ class Orchestrator:
         self.admin_clients = AdminClients(config.model.client)
 
         await monitors.setup(
+            producer="orch",
             wandb=config.monitors.wandb,
             prime=config.monitors.prime,
             file=config.monitors.file,
@@ -363,13 +365,12 @@ class Orchestrator:
             on_overload=self.dispatcher.cancel_inflight,
         )
         # The collector always polls — it feeds the concurrency controller;
-        # W&B mirroring is gated on the registered monitor (the collector logs
-        # to the global W&B session, which only exists when init succeeded).
+        # metrics fan out to every registered monitor when collection is on.
         self.inference_metrics = InferenceMetricsCollector(
             self.admin_clients.clients,
             roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
-            log_to_wandb=wandb_enabled and config.collect_inference_metrics,
+            log_metrics=config.collect_inference_metrics,
         )
         await self.inference_metrics.start()
         # One awaited scrape so the concurrency controller derives (and logs) its
@@ -524,9 +525,13 @@ class Orchestrator:
         await self.wait_for_version(self.final_version, reason="before shutdown")
 
     async def main_loop(self) -> None:
-        """Consume completed episodes and ``GroupCancellation`` events from the
-        dispatcher and route them to the train / eval sink. The sinks return a
-        finalized batch (or ``None``); we just dispatch on the result."""
+        """Consume dispatcher results and route them to the train / eval sink.
+
+        Native episodes are persisted as verifier artifacts. Dispatch failures
+        and group cancellations remain internal accounting events.
+
+        The sinks return a finalized batch (or ``None``); we just dispatch on
+        the result."""
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
             if self.draining and self.dispatcher.is_idle:
@@ -545,6 +550,17 @@ class Orchestrator:
                 train_batch = await self.train_sink.cancel(item)
                 if train_batch is not None and not self.draining and not self.stopped.is_set():
                     await self.finalize_train_batch(train_batch)
+                continue
+            if isinstance(item, DispatchFailure):
+                if item.kind == "eval":
+                    assert self.eval_sink is not None
+                    eval_batch = self.eval_sink.fail(item)
+                    if eval_batch is not None:
+                        await self.finalize_eval_batch(eval_batch)
+                else:
+                    train_batch = await self.train_sink.fail(item)
+                    if train_batch is not None and not self.draining and not self.stopped.is_set():
+                        await self.finalize_train_batch(train_batch)
                 continue
             episode = item
 
@@ -669,6 +685,20 @@ class Orchestrator:
             metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
             for env_name, env_pool in pool.by_env().items():
                 metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
+        total_attempts = len(batch.episodes) + len(batch.failures)
+        metrics |= dispatch_failure_metrics(batch.failures, prefix="train/agg/all", total_attempts=total_attempts)
+        failures_by_env: dict[str, list[DispatchFailure]] = {}
+        for failure in batch.failures:
+            failures_by_env.setdefault(failure.env_name, []).append(failure)
+        episodes_by_env = batch.episodes.by_env()
+        for env_name in set(episodes_by_env) | set(failures_by_env):
+            env_failures = failures_by_env.get(env_name, [])
+            env_attempts = len(episodes_by_env.get(env_name, TrainEpisodes())) + len(env_failures)
+            metrics |= dispatch_failure_metrics(
+                env_failures,
+                prefix=f"train/{env_name}/all",
+                total_attempts=env_attempts,
+            )
 
         # Progress / timing / env-share accounting (assembled here, not in the metrics
         # objects). ``num_tokens`` is over the full arrival window; the input/output breakdown is over
@@ -678,7 +708,9 @@ class Orchestrator:
         num_input = sum(record.trace.num_input_tokens for record in effective.records)
         num_output = sum(record.trace.num_output_tokens for record in effective.records)
         num_rollouts = batch.episodes.num_traces
-        num_unique_examples = len({episode_group_id(episode) for episode in batch.episodes})
+        group_ids = {episode_group_id(episode) for episode in batch.episodes}
+        group_ids.update(failure.group_id for failure in batch.failures)
+        num_unique_examples = len(group_ids)
         metrics |= {
             "progress/tokens": num_tokens,
             "progress/input_tokens": num_input,
@@ -839,10 +871,10 @@ class Orchestrator:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
         Every quality metric (Reward, Trainable, Turns, Branches, Max Off-Policy, Truncation) is
         computed over exactly the traces shipped to the trainer this step (``batch.cohort``).
-        ``Error``, ``Cancelled``, and ``Ratio`` are rates over the step's full arrival window —
+        ``Error``, ``Dispatch Failure``, ``Cancelled``, and ``Ratio`` describe the step's full arrival window —
         over the shipped set they are 0/0/share-of-shipped by construction, so the window is the
         only scope where they carry signal (and they stay disjoint: a cancellation is a pipeline
-        decision, not a rollout failure)."""
+        decision, an episode error came from the environment, and a dispatch failure produced no episode)."""
         episodes = batch.episodes
         effective = batch.cohort.effective
         eff = effective.metrics
@@ -851,13 +883,16 @@ class Orchestrator:
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
         max_off_policy_steps = max((episode_staleness(episode, step)[0] for episode in effective), default=0)
+        num_attempts = len(episodes) + len(batch.failures)
+        dispatch_failure_rate = len(batch.failures) / num_attempts if num_attempts else 0.0
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
             f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Max Off-Policy {max_off_policy_steps} | "
-            f"Error {episodes.metrics.has_error.mean():.1%} | Cancelled {episodes.metrics.cancelled.mean():.1%} | "
+            f"Error {episodes.metrics.has_error.mean():.1%} | Dispatch Failure {dispatch_failure_rate:.1%} | "
+            f"Cancelled {episodes.metrics.cancelled.mean():.1%} | "
             f"Truncation {eff.is_truncated.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
@@ -866,7 +901,10 @@ class Orchestrator:
 
         window_by_env = episodes.by_env()
         shipped_by_env = effective.by_env()
-        env_names = sorted(set(window_by_env) | set(shipped_by_env))
+        failures_by_env: dict[str, list[DispatchFailure]] = {}
+        for failure in batch.failures:
+            failures_by_env.setdefault(failure.env_name, []).append(failure)
+        env_names = sorted(set(window_by_env) | set(shipped_by_env) | set(failures_by_env))
         name_width = max((len(name) for name in env_names), default=0)
         lines = [head]
         for env_name in env_names:
@@ -874,29 +912,35 @@ class Orchestrator:
             env_eff_pool = shipped_by_env.get(env_name, TrainEpisodes())
             env_eff = env_eff_pool.metrics
             ratio = (pool.num_traces / n_generated) if n_generated else 0.0
+            env_failures = failures_by_env.get(env_name, [])
+            env_attempts = len(pool) + len(env_failures)
+            env_failure_rate = len(env_failures) / env_attempts if env_attempts else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
                 f"Max Off-Policy {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
-                f"Error {pool.metrics.has_error.mean():.1%} | Cancelled {pool.metrics.cancelled.mean():.1%} | "
+                f"Error {pool.metrics.has_error.mean():.1%} | Dispatch Failure {env_failure_rate:.1%} | "
+                f"Cancelled {pool.metrics.cancelled.mean():.1%} | "
                 f"Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors."""
-        if not batch.episodes:
-            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no episodes returned, skipping log")
+        if not batch.episodes and not batch.failures:
+            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
         # The non-errored subset is logged on epoch completion (multiple eval envs share the
         # step's trace file — each epoch appends its cohort once, and every record carries
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
-        await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
+        if batch.episodes.effective:
+            await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
         policy_spans = [eval_work(episode).policy for episode in batch.episodes]
         if any(span is None for span in policy_spans):
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")
         policy_versions = {span.start for span in policy_spans if span is not None}
+        policy_versions.update(failure.policy_version for failure in batch.failures)
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:
             get_logger().warning(
@@ -909,6 +953,12 @@ class Orchestrator:
         metrics: dict[str, float] = {}
         for subset, pool in (("all", episodes), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
+        total_attempts = len(episodes) + len(batch.failures)
+        metrics |= dispatch_failure_metrics(
+            batch.failures,
+            prefix=f"eval/{batch.env_name}/all",
+            total_attempts=total_attempts,
+        )
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
         await monitors.log(metrics, step=batch.step)

@@ -22,12 +22,14 @@ git submodule update --init --recursive
 ## Sync
 
 ```bash
-uv sync                                    # core only
+uv sync                                    # slim
 uv sync --group dev                        # + pytest, ruff, pre-commit
 uv sync --all-extras                       # + extras (flash-attn, flash-attn-cute, …)
 uv sync --all-extras --all-packages        # + all env packages (needed to train on them)
 uv sync --package prime-rl --package gsm8k  # core + just one env
 ```
+
+`uv sync --group dev` installs the `pre-commit` package but leaves the git hook inert until it's wired up — run `uv run pre-commit install` once per clone (see `README.md`'s Development section).
 
 Environment packages are uv **workspace members**. Those under `deps/prime-envs/environments/*/*` are auto-discovered — adding a new env there needs no `pyproject.toml` change. verifiers' example envs are enumerated explicitly in `[tool.uv.workspace].members` (only the ones prime-rl trains or tests on) — to use another, add its path to the list. Members are opt-in: a plain `uv sync` / `--all-extras` does not install them (and would remove them if already present — re-run with `--all-packages`, or `--inexact` to keep them). Install all with `--all-packages`, or a subset with repeated `--package <env>` (include `--package prime-rl` to keep the core). If two envs pin conflicting transitive versions (all members share one lock), add the loser to `[tool.uv.workspace].exclude`.
 
