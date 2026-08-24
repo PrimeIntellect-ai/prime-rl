@@ -47,10 +47,6 @@ dashboard = "prime_rl.dashboard.server:main"
 prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
 
 [project.optional-dependencies]
-# The training/inference stack: CUDA wheels and linux-only packages. A bare
-# `uv sync` gives a slim, cross-platform install (configs, monitors, dashboard,
-# CLI tooling) that works on e.g. a MacBook; `uv sync --all-extras` — the
-# recommended install on GPU machines — pulls everything.
 gpu = [
     "torch>=2.9.0 ; sys_platform == 'linux'",
     "torchvision ; sys_platform == 'linux'",
