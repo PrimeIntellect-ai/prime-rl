@@ -7,7 +7,7 @@ per host per user. If a live daemon already
 exists, its URL is logged instead of starting another. Discovery goes through
 ``~/.cache/prime-rl/dashboard/daemon.json`` (pid + actual url), which survives
 port spillover — never probe port 7788 directly. The daemon also carries the
-process title ``PRIME-RL::Dashboard``.
+process title ``PRL::Dashboard``.
 
 Stdlib-only on purpose: the launcher must work without the ``dashboard`` extra
 (then it registers the dir and points at the missing extra instead of spawning).

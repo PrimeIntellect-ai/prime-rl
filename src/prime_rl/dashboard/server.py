@@ -944,7 +944,7 @@ def main() -> None:
         try:
             from setproctitle import setproctitle
 
-            setproctitle("PRIME-RL::Dashboard")
+            setproctitle("PRL::Dashboard")
         except ImportError:
             pass
     port = free_port(args.host, args.port)

@@ -31,7 +31,7 @@ Ports spill over (a taken 7788 bumps to 7789, ...), so **never probe port
 ```bash
 cat ~/.cache/prime-rl/dashboard/daemon.json   # {"pid": ..., "url": "http://localhost:<actual port>"}
 curl -sf $(jq -r .url ~/.cache/prime-rl/dashboard/daemon.json)/api/runs > /dev/null && echo live
-ps aux | grep PRIME-RL::Dashboard             # process title
+ps aux | grep PRL::Dashboard             # process title
 ```
 
 Hand the researcher the `url` from `daemon.json`. Launcher logs also print it:
@@ -42,7 +42,7 @@ instance logs to `~/.cache/prime-rl/dashboard/daemon.log`.
 
 ```bash
 kill $(jq -r .pid ~/.cache/prime-rl/dashboard/daemon.json)   # the discovered instance
-pkill -f PRIME-RL::Dashboard                                 # every dashboard on the host
+pkill -f PRL::Dashboard                                 # every dashboard on the host
 ```
 
 A clean exit releases `daemon.json`; a stale file from a dead process is taken

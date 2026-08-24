@@ -71,7 +71,7 @@ spill over) — read the discovery file:
 
 ```bash
 cat ~/.cache/prime-rl/dashboard/daemon.json   # {"pid": ..., "url": "http://localhost:<actual port>"}
-ps aux | grep PRIME-RL::Dashboard             # the daemon's process title
+ps aux | grep PRL::Dashboard             # the daemon's process title
 ```
 
 Verify liveness with `curl -sf <url>/api/runs` and hand the researcher the `url`.
@@ -196,13 +196,13 @@ A few warnings are normal. Escalate when errors are persistent, growing, or hit 
 All processes use `setproctitle` so they're visible in `ps`/`htop`/`pstree`:
 
 ```
-PRIME-RL::Launcher
-├── PRIME-RL::Inference          (vLLM server, GPU 0)
-├── PRIME-RL::EnvServer          (verifiers' ZMQ env server, run in-process; one per train/eval source)
+PRL::Launcher
+├── PRL::Inference          (vLLM server, GPU 0)
+├── PRL::EnvServer          (verifiers' ZMQ env server, run in-process; one per train/eval source)
 │   └── Verifiers::EnvWorker0..N
-├── PRIME-RL::Orchestrator       (CPU-only; connects to each env server)
+├── PRL::Orchestrator       (CPU-only; connects to each env server)
 ├── torchrun
-│   └── PRIME-RL::Trainer        (GPU 1+)
+│   └── PRL::Trainer        (GPU 1+)
 └── tail trainer.log
 ```
 
