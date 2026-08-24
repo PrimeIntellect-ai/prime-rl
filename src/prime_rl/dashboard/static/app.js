@@ -1741,7 +1741,7 @@ function renderStepControl() {
   $("#step-label").innerHTML =
     traces.step == null
       ? ""
-      : `step ${traces.step}${steps.length > 1 ? ` <span class="muted">(${idx + 1}/${steps.length})</span>` : ""}` +
+      : `step ${traces.step}${steps.length > 1 ? `<span class="muted">/${steps[steps.length - 1].step}</span>` : ""}` +
         (hasEval ? ' <span class="eval-dot" title="eval rollouts"></span>' : "");
 }
 
@@ -1889,7 +1889,7 @@ function filteredRollouts() {
 function tmItemHtml(e) {
   return (
     `<div class="tm-item ${e.line === currentLine ? "active" : ""}" data-line="${e.line}">` +
-    `<span>Episode ${e.line}</span><span class="muted">${esc(e.env ?? "")}</span>` +
+    `<span class="tm-num">#${e.line}</span><span class="tm-env muted" title="${esc(e.env ?? "")}">${esc(e.env ?? "")}</span>` +
     `<span class="tm-reward ${rewardClass(e.reward)}">${fmtReward(e.reward)}</span></div>`
   );
 }
@@ -1943,9 +1943,9 @@ function renderModalStep() {
     return;
   }
   const idx = traces.steps.findIndex((s) => s.step === traces.step);
+  const last = traces.steps[traces.steps.length - 1]?.step;
   $("#tm-step-label").innerHTML =
-    `step ${traces.step}` +
-    `${traces.steps.length > 1 ? ` <span class="muted">(${idx + 1}/${traces.steps.length})</span>` : ""}` +
+    `step ${traces.step}${traces.steps.length > 1 ? `<span class="muted">/${last}</span>` : ""}` +
     ` <span class="muted">· ${esc(traces.kind)}/${esc(traces.subset)}</span>`;
   $("#tm-step-prev").disabled = idx <= 0;
   $("#tm-step-next").disabled = idx < 0 || idx >= traces.steps.length - 1;

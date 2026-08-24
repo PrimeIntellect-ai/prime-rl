@@ -627,12 +627,17 @@ mark.hit {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
+  padding: 5px 10px;
   cursor: pointer;
+  white-space: nowrap;
   font-size: 11.5px;
   color: var(--grey-5);
   border: 1px solid transparent;
 }
+.tm-item .tm-num { flex-shrink: 0; }
+/* env names never wrap - they clip with an ellipsis so every row is one line */
+.tm-item .tm-env { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tm-item .tm-reward { flex-shrink: 0; }
 .tm-item:hover { background: var(--grey-2); }
 .tm-item.active { background: var(--grey-2); border-color: var(--grey-3); color: var(--grey-6); }
 .tm-item .tm-reward { margin-left: auto; }
