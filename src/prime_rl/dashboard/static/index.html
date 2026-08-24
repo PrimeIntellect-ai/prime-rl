@@ -71,16 +71,6 @@
       <span id="step-label" class="t-label"></span>
     </div>
     <div class="controls">
-      <div class="seg" id="trace-kind">
-        <button data-kind="train" class="active">Train</button>
-        <button data-kind="eval">Eval</button>
-      </div>
-      <div class="seg" id="trace-subset">
-        <button data-subset="all">All</button>
-        <button data-subset="effective" class="active">Effective</button>
-      </div>
-      <span id="trace-status" class="muted"></span>
-      <div class="spacer"></div>
       <div id="trace-filter-wrap" class="dd-wrap">
         <button id="trace-filter-btn" class="btn dd-btn" title="filter &amp; sort">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
@@ -102,6 +92,15 @@
           <label class="toggle"><input type="checkbox" id="trace-errors"><span class="dot"></span>errors only</label>
         </div>
       </div>
+      <div class="seg" id="trace-kind">
+        <button data-kind="train" class="active">Train</button>
+        <button data-kind="eval">Eval</button>
+      </div>
+      <div class="seg" id="trace-subset">
+        <button data-subset="all">All</button>
+        <button data-subset="effective" class="active">Effective</button>
+      </div>
+      <span id="trace-status" class="muted"></span>
     </div>
     <div id="episode-table-wrap">
       <table id="episode-table">
@@ -146,20 +145,7 @@
       <span id="tm-step-label"></span>
       <button id="tm-step-next" class="btn tm-nav" title="next step">›</button>
     </div>
-    <div class="tm-head tm-filterhead">
-      <div class="seg" id="tm-kind">
-        <button data-kind="train">Train</button>
-        <button data-kind="eval">Eval</button>
-      </div>
-      <div class="seg" id="tm-subset">
-        <button data-subset="all">All</button>
-        <button data-subset="effective">Effective</button>
-      </div>
-    </div>
-    <div class="tm-head">
-      <span class="t-label">episodes</span>
-      <span id="tm-count" class="badge"></span>
-      <div class="spacer"></div>
+    <div class="tm-head tm-ctlrow">
       <div id="tm-filter-wrap" class="dd-wrap">
         <button id="tm-filter-btn" class="btn dd-btn" title="filter &amp; sort">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
@@ -181,6 +167,22 @@
           <label class="toggle"><input type="checkbox" id="tm-errors"><span class="dot"></span>errors only</label>
         </div>
       </div>
+    </div>
+    <div class="tm-head tm-ctlrow" id="tm-kind-row">
+      <div class="seg" id="tm-kind">
+        <button data-kind="train">Train</button>
+        <button data-kind="eval">Eval</button>
+      </div>
+    </div>
+    <div class="tm-head tm-ctlrow" id="tm-subset-row">
+      <div class="seg" id="tm-subset">
+        <button data-subset="all">All</button>
+        <button data-subset="effective">Effective</button>
+      </div>
+    </div>
+    <div class="tm-head">
+      <span class="t-label">episodes</span>
+      <span id="tm-count" class="badge"></span>
     </div>
     <div id="tm-list"></div>
   </aside>

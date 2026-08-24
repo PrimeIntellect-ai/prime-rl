@@ -167,9 +167,8 @@ function applyRunTypeControls() {
   $("#trace-subset").hidden = isEval;
   $("#tm-step-prev").hidden = isEval;
   $("#tm-step-next").hidden = isEval;
-  $("#tm-kind").hidden = isEval || state.meta?.type === "sft";
-  $("#tm-subset").hidden = isEval;
-  $(".tm-filterhead").hidden = isEval;
+  $("#tm-kind-row").hidden = isEval || state.meta?.type === "sft";
+  $("#tm-subset-row").hidden = isEval;
 }
 
 async function selectRun(name) {

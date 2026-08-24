@@ -671,10 +671,7 @@ mark.hit {
 .tm-stephead { justify-content: space-between; background: var(--grey-2); min-height: 40px; }
 #step-label, #tm-step-label { white-space: nowrap; }
 #tm-step-label { color: var(--grey-6); }
-.tm-filterhead { gap: 8px; }
-.tm-filterhead .seg button { height: 22px; padding: 0 9px; font-size: 10px; }
-#tm-filter-btn { height: 22px; padding: 0 9px; font-size: 10px; }
-#tm-filter-wrap .dd-menu { top: 28px; right: 0; }
+.tm-ctlrow { min-height: 0; padding: 8px 14px; }
 #tm-step-label {
   font-size: 11px;
   letter-spacing: var(--track-caps);
