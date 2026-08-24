@@ -40,12 +40,13 @@ from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
+from prime_rl.orchestrator.metrics import dispatch_failure_metrics
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
-from prime_rl.orchestrator.types import EvalBatch, Policy
+from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation, Policy
 from prime_rl.orchestrator.utils import eval_work, intercept_vf_logging, set_default_executor
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.config import dump_resolved_config
@@ -375,10 +376,15 @@ class Evals:
         # An env with no examples emits no episodes, so its epoch can never finalize.
         pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) > 0}
         while pending:
-            episode = await self.dispatcher.out_q.get()
-            step = eval_work(episode).step
-            await monitors.log([episode], step, "eval", "all")
-            eval_batch = self.eval_sink.add(episode)
+            item = await self.dispatcher.out_q.get()
+            if isinstance(item, GroupCancellation):
+                raise RuntimeError("Eval dispatcher emitted a group cancellation")
+            if isinstance(item, DispatchFailure):
+                eval_batch = self.eval_sink.fail(item)
+            else:
+                step = eval_work(item).step
+                await monitors.log([item], step, "eval", "all")
+                eval_batch = self.eval_sink.add(item)
             if eval_batch is not None:
                 await self.finalize_eval_batch(eval_batch)
                 pending.discard(eval_batch.env_name)
@@ -386,17 +392,24 @@ class Evals:
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the
         orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict."""
-        if not batch.episodes:
-            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no episodes returned, skipping log")
+        if not batch.episodes and not batch.failures:
+            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
-        await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
+        if batch.episodes.effective:
+            await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
 
         episodes = batch.episodes
         effective = episodes.effective
         metrics: dict[str, float] = {}
         for subset, pool in (("all", episodes), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
+        total_attempts = len(episodes) + len(batch.failures)
+        metrics |= dispatch_failure_metrics(
+            batch.failures,
+            prefix=f"eval/{batch.env_name}/all",
+            total_attempts=total_attempts,
+        )
         metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
         metrics["step"] = float(batch.step)
         await monitors.log(metrics, step=batch.step)
@@ -404,11 +417,13 @@ class Evals:
         eff, full = effective.metrics, episodes.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
+        dispatch_failure_rate = len(batch.failures) / total_attempts
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
+            f"Error {full.has_error.mean():.1%} | Dispatch Failure {dispatch_failure_rate:.1%} | "
+            f"Truncation {eff.is_truncated.mean():.1%}"
         )
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:

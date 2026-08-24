@@ -29,6 +29,7 @@ OVERVIEW_NAME = "overview"
 # agent. Only the score metric differs — train scores with "reward/mean", eval with "avg@k" (its k
 # dynamic, so also a regex) — and each section builder prepends its own.
 COMMON_METRICS = [
+    "all/dispatch_failure/mean",
     "effective/num_total_tokens/mean",
     "effective/num_turns/mean",
     "effective/num_branches/mean",

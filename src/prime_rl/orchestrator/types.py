@@ -52,7 +52,27 @@ class GroupCancellation:
     reason: CancelReason
 
 
-DispatchResult: TypeAlias = vf.WireEpisode | GroupCancellation
+@dataclass(frozen=True)
+class DispatchFailure:
+    """An environment request that failed before producing an episode.
+
+    This is dispatcher accounting, not a verifier artifact: sinks count it
+    toward group completion without exposing it to algorithms, curricula, or
+    episode monitors.
+    """
+
+    kind: WorkKind
+    env_name: str
+    group_id: str
+    step: int
+    policy_version: int
+    task_type: str
+    task_key: str
+    task_hash: str
+    error: vf.Error
+
+
+DispatchResult: TypeAlias = vf.WireEpisode | DispatchFailure | GroupCancellation
 
 
 @dataclass(frozen=True)
@@ -96,21 +116,26 @@ class GroupState:
 
 @dataclass
 class TrainBatch:
-    """Observation and shipped-cohort reports plus the trainer payload."""
+    """Returned episodes, dispatch failures, shipped cohort, and trainer payload."""
 
     episodes: TrainEpisodes
     cohort: TrainEpisodes
     samples: list[TrainingSample]
+    failures: list[DispatchFailure]
 
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch. ``episodes`` is the full returned cohort (errored included); its
-    ``.effective`` / ``.metrics`` views drive logging."""
+    """One env's eval epoch.
+
+    ``episodes`` is the full returned cohort (errored included), while
+    ``failures`` accounts for requests that returned no verifier artifact.
+    """
 
     env_name: str
     step: int
     episodes: EvalEpisodes
+    failures: list[DispatchFailure]
 
 
 class VersionObserver(Protocol):
