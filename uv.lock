@@ -50,8 +50,10 @@ members = [
     "charxiv",
     "clbench",
     "color-codeword",
+    "deep-swe",
     "deepdive",
     "deepseek-prover",
+    "deshuffle-papers",
     "drug-discovery-bench",
     "enterprise-ops-gym",
     "forth-lang",
@@ -1306,6 +1308,17 @@ wheels = [
 ]
 
 [[package]]
+name = "deep-swe"
+version = "0.1.0"
+source = { editable = "deps/prime-envs/environments/swe/deep_swe" }
+dependencies = [
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.0" }]
+
+[[package]]
 name = "deepdiff"
 version = "9.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1373,6 +1386,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/88/35/83fb0178212279aa0af031031905804c6de5618435d229f41ed21bb9ad2c/depyf-0.20.0.tar.gz", hash = "sha256:fb7683bd72c44f67b56029df2c47721e9a02ffa4d7b19095f1c54c4ebf797a98", size = 6168761, upload-time = "2025-10-13T12:33:38.589Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cf/65/4df6936130b56e1429114e663e7c1576cf845f3aef1b2dd200c0a5d19dba/depyf-0.20.0-py3-none-any.whl", hash = "sha256:d31effad4261cebecb58955d832e448ace88f432328f95f82fd99c30fd9308d4", size = 39381, upload-time = "2025-10-13T12:33:33.647Z" },
+]
+
+[[package]]
+name = "deshuffle-papers"
+version = "0.1.0"
+source = { editable = "deps/prime-envs/environments/reasoning/deshuffle_papers" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "huggingface-hub", specifier = ">=0.20" },
+    { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
 [[package]]
@@ -3365,7 +3393,7 @@ wheels = [
 
 [[package]]
 name = "mcp-atlas"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "deps/prime-envs/environments/tool_use/mcp_atlas" }
 dependencies = [
     { name = "datasets" },
@@ -3378,7 +3406,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "httpx" },
-    { name = "prime-sandboxes", specifier = ">=0.2.19" },
+    { name = "prime-sandboxes", specifier = ">=0.2.37" },
     { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
@@ -6610,7 +6638,7 @@ source = { git = "https://github.com/SWE-bench/SWE-smith.git?rev=9b74ac0#9b74ac0
 
 [[package]]
 name = "swesmith-env"
-version = "0.1.2"
+version = "0.1.3"
 source = { editable = "deps/prime-envs/environments/swe/swesmith_env" }
 dependencies = [
     { name = "datasets" },
@@ -6622,7 +6650,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "swebench" },
+    { name = "swebench", specifier = ">=4.1.0,<5" },
     { name = "swesmith", git = "https://github.com/SWE-bench/SWE-smith.git?rev=9b74ac0" },
     { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
