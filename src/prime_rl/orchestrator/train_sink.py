@@ -22,7 +22,7 @@ from prime_rl.orchestrator.metrics import TrainEpisodes
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
-from prime_rl.transports.rollouts import TrainingSample
+from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
 
 MAX_CONSECUTIVE_ZERO_OUTPUT_BATCH_EQUIVALENTS = 10

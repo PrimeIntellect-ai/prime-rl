@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
 import verifiers.v1 as vf
 
-from prime_rl.transports.rollouts import TrainingSample
+from prime_rl.transports.batch import TrainingSample
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
@@ -81,7 +81,7 @@ class InflightEpisode:
 
 @dataclass
 class GroupState:
-    """Per-group dispatcher state with pinned run context and client."""
+    """Per-group dispatcher state with its pinned run step."""
 
     kind: WorkKind
     env_name: str
@@ -91,7 +91,6 @@ class GroupState:
     episodes_to_schedule: int
     target_episodes: int
     emitted: int = 0
-    pinned_client: vf.ClientConfig | None = None
     policy_version_at_start: int = 0
 
 

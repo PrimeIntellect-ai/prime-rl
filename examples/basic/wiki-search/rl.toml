@@ -37,7 +37,6 @@ group_size = 16
 initial_inflight = 1024
 
 [orchestrator.model.lora]
-name = "qwen3-4b-wiki-search"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 512

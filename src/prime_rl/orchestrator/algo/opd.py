@@ -11,7 +11,7 @@ from prime_rl.orchestrator.algo.routing import assign_reference_logprobs
 from prime_rl.orchestrator.trajectories import iter_trainable_branches
 
 if TYPE_CHECKING:
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.orchestrator.clients import InferenceClient
 
 
 class OPDAlgorithm(Algorithm):
@@ -26,20 +26,20 @@ class OPDAlgorithm(Algorithm):
 
     action_loss_type = "ref_kl"
 
-    def __init__(self, config: OPDAlgoConfig, policy_pool: InferencePool):
-        super().__init__(config, policy_pool)
+    def __init__(self, config: OPDAlgoConfig, clients: InferenceClient):
+        super().__init__(config, clients)
         self.teacher = config.teacher
-        self.teacher_pool: InferencePool | None = None  # frozen teacher endpoint, connected in setup()
+        self.teacher_clients: InferenceClient | None = None  # frozen teacher endpoint, connected in setup()
 
     async def setup(self) -> None:
-        self.teacher_pool = await self.connect(self.teacher)
+        self.teacher_clients = await self.connect(self.teacher)
 
     async def score_episode(self, episode: vf.Episode) -> None:
-        pool = self.teacher_pool
-        assert pool is not None, "teacher pool not connected — Algorithm.setup() must run first"
+        teacher = self.teacher_clients
+        assert teacher is not None, "teacher not connected — Algorithm.setup() must run first"
         branches = [
             branch for _, trace in iter_trainable_traces([episode]) for branch, _ in iter_trainable_branches(trace)
         ]
-        scores = await asyncio.gather(*(pool.score(branch.token_ids) for branch in branches))
+        scores = await asyncio.gather(*(teacher.score(branch.token_ids) for branch in branches))
         for branch, logprobs in zip(branches, scores, strict=True):
             assign_reference_logprobs(branch, logprobs)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -40,8 +41,9 @@ class PrefillScorer:
             await self._client.close()
 
 
-class InferencePool:
-    """Inference pool with a single data-plane endpoint and one admin client per server."""
+class InferenceClient:
+    """Data-plane clients for one inference endpoint (the router of the policy
+    deployment, or an external API for frozen models)."""
 
     def __init__(
         self,
@@ -59,7 +61,31 @@ class InferencePool:
             renderer_model_name=renderer_model_name,
         )
         self.eval_client = setup_client(client_config, client_type=eval_client_type)
-        self._admin_clients = setup_admin_clients(client_config)
+        self._scorer = PrefillScorer()
+        self.model_name = model_name
+
+    async def score(self, token_ids: list[int]) -> list[float]:
+        """Prefill-score ``token_ids`` under this endpoint's model (one logprob
+        per token, 0.0 for the leading token)."""
+        return await self._scorer.score(self.train_client, self.model_name, token_ids)
+
+    async def aclose(self) -> None:
+        await self._scorer.aclose()
+
+
+class AdminClients:
+    """Admin plane of the policy inference deployment: one httpx client per
+    engine process. The router serves no admin routes (pause/resume,
+    update_weights, init_broadcaster, load_lora_adapter live on the engines),
+    so these clients bypass it via ``admin_base_url``.
+
+    The client order is load-bearing: ``admin_base_url`` order must match the
+    GPU rank order — the ``rank_offset`` math in ``init_nccl_broadcast`` /
+    ``init_nixl_broadcast`` and the metrics collector's role list index into
+    it."""
+
+    def __init__(self, client_config: ClientConfig):
+        self.clients = setup_admin_clients(client_config)
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
         self._router_clients = (
@@ -69,33 +95,32 @@ class InferencePool:
         )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
-        self._scorer = PrefillScorer()
-        self.model_name = model_name
 
-    @property
-    def admin_clients(self) -> list[AsyncClient]:
-        return self._admin_clients
-
-    def update_model_name(self, model_name: str) -> None:
-        self.model_name = model_name
-
-    async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
-        await check_health(
-            self._admin_clients + self._router_clients,
-            timeout=timeout if timeout is not None else self._wait_for_ready_timeout,
+    async def wait_for_ready(self, model_name: str) -> None:
+        # The engines are waited on even when a router fronts them: the llm-d
+        # router (Envoy) 404s /health, which check_health treats as "no health
+        # route", so the router alone is not a readiness signal. The router
+        # owns the info-level waiting log; the per-engine waits log at debug.
+        await asyncio.gather(
+            check_health(self.clients, timeout=self._wait_for_ready_timeout, quiet=bool(self._router_clients)),
+            check_health(self._router_clients, timeout=self._wait_for_ready_timeout),
         )
-        await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
+        await maybe_check_has_model(self.clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+    async def aclose(self) -> None:
+        for client in self.clients + self._router_clients:
+            await client.aclose()
 
-    async def score(self, token_ids: list[int]) -> list[float]:
-        """Prefill-score ``token_ids`` under this pool's model (one logprob per
-        token, 0.0 for the leading token). Delegates to the shared scorer."""
-        return await self._scorer.score(self.train_client, self.model_name, token_ids)
 
-    async def stop(self) -> None:
-        await self._scorer.aclose()
+async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
+    """One-shot readiness check of an inference endpoint (health + model
+    listing) with transient clients — for frozen endpoints that never need a
+    persistent admin plane."""
+    admin = AdminClients(client_config)
+    try:
+        await admin.wait_for_ready(model_name)
+    finally:
+        await admin.aclose()
 
 
 def setup_client(
@@ -172,8 +197,15 @@ async def maybe_check_has_model(
 
 
 async def check_health(
-    admin_clients: list[AsyncClient], interval: int = 1, log_interval: int = 30, timeout: int = 1800
+    admin_clients: list[AsyncClient],
+    interval: int = 1,
+    log_interval: int = 30,
+    timeout: int = 1800,
+    quiet: bool = False,
 ) -> None:
+    """Wait until every client's /health responds. With ``quiet``, the periodic
+    waiting lines log at debug instead of info - used for engines fronted by a
+    router, so startup logs one waiting line instead of one per engine."""
     logger = get_logger()
 
     async def _check_health(admin_client: AsyncClient) -> None:
@@ -190,9 +222,8 @@ async def check_health(
                 return
             except Exception as e:
                 if wait_time % log_interval == 0 and wait_time > 0:
-                    logger.info(
-                        f"Waiting for inference server at {admin_client.base_url} to start up ({wait_time}s elapsed)"
-                    )
+                    log = logger.debug if quiet else logger.info
+                    log(f"Waiting for inference server at {admin_client.base_url} to start up ({wait_time}s elapsed)")
                     logger.debug(f"Inference server at {admin_client.base_url} not reachable: {e!r}")
                 await asyncio.sleep(interval)
                 wait_time += interval
@@ -201,9 +232,6 @@ async def check_health(
         raise TimeoutError(msg)
 
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
-
-
-NCCL_READY_MARKER = "NCCL_READY"
 
 
 def _is_retryable_admin_error(exception: BaseException) -> bool:
@@ -275,50 +303,39 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
 async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
-    lora_name: str | None = None,
     step: int = 0,
+    on_paused: Callable[[], None] | None = None,
 ) -> None:
     """Update weights on static inference servers.
 
     Pauses all engines first to drain in-flight requests, then performs the
     weight update, then resumes. This ensures all DP workers are idle and can
-    participate in the collective weight transfer.
+    participate in the collective weight transfer. ``on_paused`` runs between
+    the pause and the update RPC — the NCCL receiver signals the trainer there.
 
     Note: the prefix cache is intentionally not reset on weight update. The orchestrator
     salts the prefix cache per weight version (``cache_salt`` in the sampling request, see
     ``orchestrator/envs.py``), so KV computed under old weights is never reused.
     """
-    logger = get_logger()
-
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-    if lora_name is not None and weight_dir is not None:
-        await load_lora_adapter(admin_clients, lora_name, weight_dir)
-    else:
-        # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
-        await _pause_engines(admin_clients, step=step)
-
-        try:
-            # Create ready marker before servers enter receive path (used by NCCL broadcast)
-            if weight_dir is not None:
-                nccl_ready_file = weight_dir / NCCL_READY_MARKER
-                nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
-                nccl_ready_file.touch()
-                logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
-
-            await asyncio.gather(
-                *[
-                    _admin_post(
-                        admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
-                        timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-                    )
-                    for admin_client in admin_clients
-                ]
-            )
-        finally:
-            await _resume_engines(admin_clients)
+    await _pause_engines(admin_clients, step=step)
+    try:
+        if on_paused is not None:
+            on_paused()
+        await asyncio.gather(
+            *[
+                _admin_post(
+                    admin_client,
+                    "/update_weights",
+                    json={"weight_dir": weight_dir_posix},
+                    timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                )
+                for admin_client in admin_clients
+            ]
+        )
+    finally:
+        await _resume_engines(admin_clients)
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
@@ -376,25 +393,12 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
 
 
-async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) -> None:
-    """Make a HTTP post request to the vLLM server to unload a LoRA adapter."""
-    logger = get_logger()
-
-    async def _unload_lora_adapter(admin_client: AsyncClient) -> None:
-        logger.debug(f"Sending request to unload LoRA adapter {lora_name}")
-        await admin_client.post("/v1/unload_lora_adapter", json={"lora_name": lora_name})
-        # TODO: The first one can fail, but subsequent ones should succeed.
-        # response.raise_for_status()
-
-    await asyncio.gather(*[_unload_lora_adapter(admin_client) for admin_client in admin_clients])
-
-
 async def init_nccl_broadcast(
     admin_clients: list[AsyncClient],
     host: str,
     port: int,
     timeout: int,
-    inference_world_size: int | None = None,
+    inference_world_size: int,
     quantize_in_weight_transfer: bool = False,
 ) -> None:
     """Initialize NCCL broadcast on all inference servers.
@@ -404,12 +408,6 @@ async def init_nccl_broadcast(
     gets a unique rank in the NCCL broadcast group.
     """
     logger = get_logger()
-
-    if inference_world_size is None:
-        inference_world_size = len(admin_clients)
-        logger.warning(
-            f"inference_world_size not provided, defaulting to {inference_world_size} (one GPU per admin client)"
-        )
 
     gpus_per_server = inference_world_size // len(admin_clients)
 
