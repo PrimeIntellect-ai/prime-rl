@@ -570,6 +570,8 @@ mark.hit {
 #step-blocks { flex: 1; display: flex; gap: 2px; height: 16px; min-width: 0; margin-bottom: 4px; }
 .sb-cell { position: relative; flex: 1; min-width: 0; background: var(--grey-2); border: 1px solid var(--hairline); cursor: pointer; }
 .sb-cell:hover { border-color: var(--grey-6); }
+.sb-cell.placeholder { cursor: default; }
+.sb-cell.placeholder:hover { border-color: var(--hairline); }
 .sb-cell.on { background: var(--accent); border-color: var(--accent); }
 /* eval steps carry a small dot under the block (same mark as the step label) */
 .sb-cell.eval::after {
@@ -613,6 +615,9 @@ mark.hit {
 #episode-table td { padding: 5px 10px; border-bottom: 1px solid var(--hairline-faint); white-space: nowrap; }
 #episode-table tbody tr { cursor: pointer; }
 #episode-table tbody tr:hover { background: var(--grey-2); }
+#episode-table tr.empty { cursor: default; }
+#episode-table tr.empty:hover { background: none; }
+#episode-table tr.empty td { border-bottom: 0; }
 .r-pos { color: var(--positive); }
 .r-neg { color: var(--negative); }
 .r-zero { color: var(--grey-4); }
@@ -668,6 +673,8 @@ mark.hit {
 #tm-step-label { color: var(--grey-6); }
 .tm-filterhead { gap: 8px; }
 .tm-filterhead .seg button { height: 22px; padding: 0 9px; font-size: 10px; }
+#tm-filter-btn { height: 22px; padding: 0 9px; font-size: 10px; }
+#tm-filter-wrap .dd-menu { top: 28px; right: 0; }
 #tm-step-label {
   font-size: 11px;
   letter-spacing: var(--track-caps);

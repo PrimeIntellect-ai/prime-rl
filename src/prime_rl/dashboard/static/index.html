@@ -103,7 +103,6 @@
         </div>
       </div>
     </div>
-    <div id="trace-empty" hidden></div>
     <div id="episode-table-wrap">
       <table id="episode-table">
         <thead><tr>
@@ -161,6 +160,27 @@
       <span class="t-label">episodes</span>
       <span id="tm-count" class="badge"></span>
       <div class="spacer"></div>
+      <div id="tm-filter-wrap" class="dd-wrap">
+        <button id="tm-filter-btn" class="btn dd-btn" title="filter &amp; sort">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
+          filter
+        </button>
+        <div id="tm-filter-menu" class="dd-menu" hidden>
+          <label class="t-label">env</label>
+          <select id="tm-env"><option value="">all envs</option></select>
+          <label class="t-label">sort</label>
+          <select id="tm-sort">
+            <option value="line:asc">order: arrival</option>
+            <option value="reward:desc">reward ↓</option>
+            <option value="reward:asc">reward ↑</option>
+            <option value="advantage:desc">advantage ↓</option>
+            <option value="advantage:asc">advantage ↑</option>
+            <option value="output_tokens:desc">tokens ↓</option>
+            <option value="group:asc">group</option>
+          </select>
+          <label class="toggle"><input type="checkbox" id="tm-errors"><span class="dot"></span>errors only</label>
+        </div>
+      </div>
       <button id="tm-prev" class="btn tm-nav" title="previous episode">↑</button>
       <button id="tm-next" class="btn tm-nav" title="next episode">↓</button>
     </div>

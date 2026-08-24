@@ -12,7 +12,7 @@ const api = async (path) => {
 /* accent-first line palette, then the prime-context chart palette */
 const PALETTE = ["#b6ff3c", "#b7a6fa", "#78f8a5", "#fcdaa4", "#4a9eff", "#ff6b4a", "#bcbcbc"];
 const SINGLE_SERIES = "#b6ff3c";
-const POLL_MS = 3000;
+const POLL_MS = 5000;
 const prefs = JSON.parse(localStorage.getItem("prl-dash") || "{}");
 
 const state = {
@@ -1121,7 +1121,7 @@ function renderMetricsBody() {
   if (state.meta?.type === "eval") return renderEvalCards(body);
   activeFilter = makeFilter(state.metrics.search.trim());
   if (!state.meta?.has_metrics && !m.byKey.size) {
-    body.innerHTML = emptyState("no metrics", "this run has no metrics.jsonl yet");
+    body.innerHTML = emptyState("no metrics yet");
     $("#metrics-status").textContent = "";
     return;
   }
@@ -1806,6 +1806,7 @@ function renderStepControl() {
         ` title="${title}${hasEval ? " · eval" : ""}"></span>`
     );
   }
+  if (!cells.length) cells.push(`<span class="sb-cell placeholder"></span>`);
   const signature = cells.join("");
   if (signature === traces.stepControlSignature) return;
   traces.stepControlSignature = signature;
@@ -1816,7 +1817,7 @@ function renderStepControl() {
   const hasEval = info && (info.available["eval/all"] || info.available["eval/effective"]);
   $("#step-label").innerHTML =
     traces.step == null
-      ? ""
+      ? `<span class="muted">no steps yet</span>`
       : `step ${traces.step}${steps.length > 1 ? `<span class="muted">/${steps[steps.length - 1].step}</span>` : ""}` +
         (hasEval ? ' <span class="eval-dot" title="eval rollouts"></span>' : "");
 }
@@ -1830,19 +1831,18 @@ function selectStepByIndex(index) {
   loadEpisodes();
 }
 
+// the table chrome stays in place; the message renders as a spanning row so
+// arriving traces cause no layout shift
 function showTraceEmpty(title, detail) {
-  $("#episode-table-wrap").hidden = true;
-  const el = $("#trace-empty");
-  el.hidden = false;
-  el.innerHTML = emptyState(title, detail);
+  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="10">${emptyState(title, detail)}</td></tr>`;
 }
 
 async function loadEpisodes() {
   const traces = state.traces;
-  updateTraceFilterBtn();
+  syncTraceFilterControls();
   if (traces.step == null) {
     $("#trace-status").textContent = "";
-    showTraceEmpty("no traces", "this run has no saved traces yet");
+    showTraceEmpty("no traces yet");
     return;
   }
   const qs = new URLSearchParams({ sort: traces.sort, order: traces.order, errors_only: traces.errorsOnly });
@@ -1864,13 +1864,12 @@ async function loadEpisodes() {
   traces.etag = data.etag;
   traces.etagKey = etagKey;
   traces.episodes = data.episodes;
-  $("#trace-empty").hidden = true;
-  $("#episode-table-wrap").hidden = false;
-  const envSel = $("#trace-env");
   const currentEnv = traces.env;
-  envSel.innerHTML =
-    `<option value="">all envs</option>` +
-    data.envs.map((e) => `<option value="${esc(e)}" ${e === currentEnv ? "selected" : ""}>${esc(e)}</option>`).join("");
+  for (const sel of ["#trace-env", "#tm-env"])
+    $(sel).innerHTML =
+      `<option value="">all envs</option>` +
+      data.envs.map((e) => `<option value="${esc(e)}" ${e === currentEnv ? "selected" : ""}>${esc(e)}</option>`).join("");
+  syncDressedSelects();
   if (!data.total) {
     $("#trace-status").textContent = "";
     showTraceEmpty("no episodes", "nothing matches the current filters");
@@ -2531,9 +2530,16 @@ function dressSelect(select) {
   dressedSelects.add(select);
   syncDressedSelects();
 }
-function updateTraceFilterBtn() {
+/* the table and the trace viewer carry the same filter dropdown over one
+   shared state — a change in either view shows up in both */
+function syncTraceFilterControls() {
   const t = state.traces;
-  $("#trace-filter-btn").classList.toggle("active", !!(t.env || t.errorsOnly || t.sort !== "line"));
+  for (const sel of ["#trace-env", "#tm-env"]) $(sel).value = t.env;
+  for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = `${t.sort}:${t.order}`;
+  for (const sel of ["#trace-errors", "#tm-errors"]) $(sel).checked = t.errorsOnly;
+  for (const sel of ["#trace-filter-btn", "#tm-filter-btn"])
+    $(sel).classList.toggle("active", !!(t.env || t.errorsOnly || t.sort !== "line"));
+  syncDressedSelects();
 }
 
 document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => activateTab(b.dataset.tab)));
@@ -2768,6 +2774,14 @@ async function setTraceSubset(subset, inModal = false) {
   if (inModal) await reopenFirstEpisode();
 }
 
+/* filter changes keep the open viewer in sync: hold the current episode when
+   it survives the filter, land on the first one otherwise */
+async function refreshModalList() {
+  if ($("#trace-modal").hidden) return;
+  if (filteredRollouts().some((e) => e.line === currentLine)) renderRolloutList();
+  else await reopenFirstEpisode();
+}
+
 /* after a filter change inside the viewer, land on the first episode of the
    new subset (line numbers don't correspond across files) */
 async function reopenFirstEpisode() {
@@ -2795,13 +2809,26 @@ for (const [sel, inModal] of [["#trace-subset", false], ["#tm-subset", true]])
       setTraceSubset(b.dataset.subset, inModal);
     })
   );
-$("#trace-env").addEventListener("change", (e) => { state.traces.env = e.target.value; loadEpisodes(); });
-$("#trace-errors").addEventListener("change", (e) => { state.traces.errorsOnly = e.target.checked; loadEpisodes(); savePrefs(); });
-$("#trace-sort").addEventListener("change", (e) => {
-  [state.traces.sort, state.traces.order] = e.target.value.split(":");
-  loadEpisodes();
-  savePrefs();
-});
+for (const sel of ["#trace-env", "#tm-env"])
+  $(sel).addEventListener("change", async (e) => {
+    state.traces.env = e.target.value;
+    await loadEpisodes();
+    await refreshModalList();
+  });
+for (const sel of ["#trace-errors", "#tm-errors"])
+  $(sel).addEventListener("change", async (e) => {
+    state.traces.errorsOnly = e.target.checked;
+    await loadEpisodes();
+    savePrefs();
+    await refreshModalList();
+  });
+for (const sel of ["#trace-sort", "#tm-sort"])
+  $(sel).addEventListener("change", async (e) => {
+    [state.traces.sort, state.traces.order] = e.target.value.split(":");
+    await loadEpisodes();
+    savePrefs();
+    await refreshModalList();
+  });
 $("#episode-table").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-line]");
   if (row) openEpisode(+row.dataset.line);
@@ -2977,10 +3004,9 @@ document.addEventListener("visibilitychange", () => {
   $("#log-search").value = prefs.logSearch ?? "";
   $("#config-search").value = prefs.configSearch ?? "";
   $("#token-signal").value = prefs.tokenSignal ?? "";
-  for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#attempt-select", "#token-signal"])
+  for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#attempt-select", "#token-signal"])
     dressSelect($(sel));
-  $("#trace-sort").value = `${state.traces.sort}:${state.traces.order}`;
-  $("#trace-errors").checked = state.traces.errorsOnly;
+  syncTraceFilterControls();
   setActive("#metrics-mode", "mode", state.metrics.mode);
   setActive("#all-layout", "layout", state.metrics.allLayout);
   $("#all-layout").hidden = state.metrics.mode !== "all";
