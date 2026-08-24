@@ -323,6 +323,8 @@ def sft_slurm(config: SFTConfig):
         logger.success(f"Dry run complete. To submit manually:\n\n{submit}{note}\n\n{log_message}")
         return
 
+    dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
+
     submitted_job_ids: list[str] = []
     for path in script_paths:
         # --parsable prints ``<job_id>[;<cluster>]`` — the human-readable format varies
@@ -347,6 +349,7 @@ def sft_slurm(config: SFTConfig):
         logger.success(f"Submitted batch job {job_id}")
 
     logger.success(log_message)
+    log_dashboard_url(logger, dashboard_url)
 
 
 def sft_local(config: SFTConfig):
