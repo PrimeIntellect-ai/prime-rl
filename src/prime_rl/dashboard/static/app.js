@@ -822,7 +822,7 @@ function tooltipPlugin(meta, timeAxis) {
         u.over.addEventListener("mouseleave", () => (tip.style.display = "none"));
       },
       setCursor: (u) => {
-        const { left, top, idx } = u.cursor;
+        const { left, idx } = u.cursor;
         if (idx == null || left == null || left < 0) {
           tip.style.display = "none";
           return;
@@ -856,9 +856,20 @@ function tooltipPlugin(meta, timeAxis) {
         }
         tip.innerHTML = rows;
         tip.style.display = "block";
-        let tx = left + 14;
-        if (tx + tip.offsetWidth > u.over.clientWidth) tx = left - tip.offsetWidth - 14;
-        const ty = Math.max(0, Math.min(u.over.clientHeight - tip.offsetHeight, top - tip.offsetHeight / 2));
+        // anchor to the snapped data point (nearest x), not the mouse cursor
+        const xPos = u.valToPos(x, "x");
+        let yPos = null;
+        for (const m of meta) {
+          const v = u.data[m.dataIdx][idx];
+          if (v != null) {
+            yPos = u.valToPos(v, "y");
+            break;
+          }
+        }
+        if (yPos == null) yPos = u.over.clientHeight / 2;
+        let tx = xPos + 12;
+        if (tx + tip.offsetWidth > u.over.clientWidth) tx = xPos - tip.offsetWidth - 12;
+        const ty = Math.max(0, Math.min(u.over.clientHeight - tip.offsetHeight, yPos - tip.offsetHeight / 2));
         tip.style.transform = `translate(${Math.round(tx)}px, ${Math.round(ty)}px)`;
       },
     },
