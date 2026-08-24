@@ -659,6 +659,8 @@ mark.hit {
 .tm-item .tm-reward { flex-shrink: 0; }
 .tm-item:hover { background: var(--grey-2); }
 .tm-item.active { background: var(--grey-2); border-color: var(--grey-3); color: var(--grey-6); }
+.tm-item.err { background: rgba(255, 69, 57, 0.08); border-color: var(--negative); }
+.tm-item.err:hover, .tm-item.err.active { background: rgba(255, 69, 57, 0.16); }
 .tm-item .tm-reward { margin-left: auto; }
 .tm-nav { padding: 0 8px; height: 24px; }
 .tm-stephead { justify-content: space-between; background: var(--grey-2); min-height: 40px; }

@@ -1969,7 +1969,7 @@ function filteredRollouts() {
 
 function tmItemHtml(e) {
   return (
-    `<div class="tm-item ${e.line === currentLine ? "active" : ""}" data-line="${e.line}">` +
+    `<div class="tm-item ${e.line === currentLine ? "active" : ""}${e.num_errors || !e.ok ? " err" : ""}" data-line="${e.line}">` +
     `<span class="tm-num">#${e.line}</span><span class="tm-env muted" title="${esc(e.env ?? "")}">${esc(e.env ?? "")}</span>` +
     `<span class="tm-reward ${rewardClass(e.reward)}">${fmtReward(e.reward)}</span></div>`
   );
