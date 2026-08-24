@@ -3,7 +3,7 @@
 Every launcher registers its output dir in a shared registry and makes sure one
 dashboard is running: every dashboard instance serves its own dirs plus the
 registry (re-read live), so each new run shows up on one URL - one dashboard
-per host per user. If a live daemon already exists, its URL is logged instead
+per host per user. If a live daemon already exists, its URL is reused instead
 of starting another. Discovery goes through
 ``~/.cache/prime-rl/dashboard/daemon.json`` (pid + actual url), which survives
 port spillover — never probe port 7788 directly. The daemon also carries the
@@ -66,13 +66,13 @@ def find_daemon(timeout: float = 1.0) -> dict | None:
 def ensure_dashboard(output_dir: Path, logger) -> str | None:
     """Register the run's output dir and make sure one dashboard daemon serves it.
 
-    Returns the dashboard URL, or None when no daemon could be found or started
-    (missing extra, non-interactive session, or startup failure).
+    Returns the dashboard URL (log it with ``log_dashboard_url``), or None when no
+    daemon could be found or started (missing extra, non-interactive session, or
+    startup failure).
     """
     register_output_dir(output_dir)
     daemon = find_daemon()
     if daemon is not None:
-        logger.info(f"Dashboard running at {daemon['url']}")
         return daemon["url"]
     if not sys.stdout.isatty():
         return None  # never spawn daemons from CI or scripted launches
@@ -87,11 +87,17 @@ def ensure_dashboard(output_dir: Path, logger) -> str | None:
     while time.monotonic() < deadline:
         daemon = find_daemon()
         if daemon is not None:
-            logger.info(f"Dashboard started at {daemon['url']}")
             return daemon["url"]
         time.sleep(0.25)
     logger.warning(f"Dashboard daemon did not come up - see {DAEMON_LOG}")
     return None
+
+
+def log_dashboard_url(logger, url: str | None) -> None:
+    """Banner pointing at the dashboard - meant as the launcher's last startup log."""
+    if url is None:
+        return
+    logger.opt(raw=True, colors=True).info(f"\n  <b>Dashboard</b> · <green><u>{url}</u></green>\n\n")
 
 
 def main() -> None:

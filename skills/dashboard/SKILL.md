@@ -37,8 +37,8 @@ ps aux | grep PRL::Dashboard             # process title
 ```
 
 Hand the researcher the `url` from `daemon.json`. Launcher logs also print it:
-`Dashboard running at <url>` / `Dashboard started at <url>`. The auto-started
-instance logs to `~/.cache/prime-rl/dashboard/daemon.log`.
+startup ends with a `Dashboard · <url>` banner. The auto-started instance logs
+to `~/.cache/prime-rl/dashboard/daemon.log`.
 
 ## Stopping / restarting
 

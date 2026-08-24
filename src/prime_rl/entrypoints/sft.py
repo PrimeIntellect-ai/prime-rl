@@ -12,7 +12,7 @@ from prime_rl.configs.evals import EvalsConfig, OnlineConfig
 from prime_rl.configs.orchestrator import EvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
-from prime_rl.entrypoints.dashboard import ensure_dashboard
+from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
@@ -369,8 +369,7 @@ def sft_local(config: SFTConfig):
         logger.success("Dry run complete. To start an SFT run locally, remove --dry-run from your command.")
         return
 
-    if config.dashboard:
-        ensure_dashboard(config.output_dir, logger)
+    dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
     log_dir = create_attempt_log_dir(config.run_dir)
 
@@ -510,12 +509,8 @@ def sft_local(config: SFTConfig):
             trainer_env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, trainer_gpu_ids))
         trainer_process = start_process("trainer", trainer_cmd, env=trainer_env, log_path=log_dir / "trainer.log")
 
-        logger.success("Startup complete. Showing trainer logs...")
-        tail_process = Popen(
-            f"tail -F '{log_dir / 'trainer.log'}' | sed -u 's/^\\[[a-zA-Z]*[0-9]*\\]://'",
-            shell=True,
-        )
-        processes.append(tail_process)
+        logger.success("Launcher complete")
+        log_dashboard_url(logger, dashboard_url)
 
         # Wait for the trainer (and the evals process, which drains its final evals after
         # the trainer's last checkpoint) while surfacing any process failure.

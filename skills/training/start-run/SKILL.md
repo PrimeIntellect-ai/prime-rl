@@ -143,7 +143,7 @@ env.agent.runtime.type = "subprocess"
 ## Dashboard
 
 Interactive launches auto-start one shared dashboard daemon per user (process title
-`PRL::Dashboard`) and log its URL (`Dashboard running/started at <url>`). Relay
+`PRL::Dashboard`) and end startup with a `Dashboard · <url>` banner. Relay
 that URL to the researcher. Discovery: `~/.cache/prime-rl/dashboard/daemon.json` holds
 the live `url` (the port can differ from 7788 when it was taken). `--no-dashboard`
 opts a run out.
