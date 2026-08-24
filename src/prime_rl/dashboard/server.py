@@ -732,24 +732,34 @@ def main() -> None:
         print(f"port {args.port} is taken - serving on {port}", file=sys.stderr)
     args.port = port
     url = f"http://localhost:{args.port}"
+    live = None
+    stop = threading.Event()
     if sys.stdout.isatty():
         # live console: re-scan every few seconds so new runs show up as tracked
-        import time
-
         from rich.console import Console
         from rich.live import Live
 
+        live = Live(render_status(url), console=Console(), refresh_per_second=1)
+        live.start()
+
         def watch() -> None:
-            with Live(render_status(url), console=Console(), refresh_per_second=1) as live:
-                while True:
-                    time.sleep(3)
-                    live.update(render_status(url))
+            while not stop.wait(3):
+                live.update(render_status(url))
 
         threading.Thread(target=watch, daemon=True).start()
     else:
         dirs = ", ".join(str(d.resolve()) for d in output_dirs)
         print(f"\n  prime-rl dashboard · {dirs}\n  {url}\n", flush=True)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    try:
+        # short graceful-shutdown window: a Ctrl-C must not hang on the browser's
+        # open keep-alive connections
+        uvicorn.run(app, host=args.host, port=args.port, log_level="warning", timeout_graceful_shutdown=2)
+    finally:
+        # always unwind the Live display - it hides the terminal cursor, and an
+        # interrupt that skips its exit path would leave the shell cursorless
+        stop.set()
+        if live is not None:
+            live.stop()
 
 
 if __name__ == "__main__":
