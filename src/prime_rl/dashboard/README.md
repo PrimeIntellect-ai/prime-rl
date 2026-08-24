@@ -2,7 +2,11 @@
 
 `uv run dashboard [output_dir ...]` — a local web dashboard for run output
 directories (metrics, resolved configs, rollout traces, component logs) at
-http://localhost:7788. Needs the `dashboard` extra.
+http://localhost:7788. Needs the `dashboard` extra. Every instance also serves
+the dirs registered by launchers in `~/.cache/prime-rl/dashboard/dirs.json`
+(one dashboard per host per user); `--isolated` serves only the given dirs and
+skips the registry. See `skills/dashboard/SKILL.md` for discovery and
+kill/restart commands.
 
 To run it without resolving the project's GPU dependencies (a cluster head
 node, a laptop against a mounted outputs dir), use the standalone script form —

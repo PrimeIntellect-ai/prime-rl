@@ -104,13 +104,13 @@ CACHE_DIR = home_dir() / ".cache" / "prime-rl"
 STATE_DIR = CACHE_DIR / "dashboard"
 DAEMON_FILE = STATE_DIR / "daemon.json"
 DIRS_FILE = STATE_DIR / "dirs.json"
-daemon_mode = False
 _dirs_file_state: tuple[float, list[Path]] = (0.0, [])
 
 
 def registered_dirs() -> list[Path]:
-    """Output dirs registered by launchers in dirs.json (daemon mode only),
-    re-read when the file changes so new runs' dirs appear without a restart."""
+    """Output dirs registered in dirs.json (by launchers and by every dashboard's
+    own CLI dirs), re-read when the file changes so a run in a new output dir
+    appears on the one live dashboard without a restart."""
     global _dirs_file_state
     try:
         mtime = DIRS_FILE.stat().st_mtime
@@ -125,11 +125,33 @@ def registered_dirs() -> list[Path]:
     return _dirs_file_state[1]
 
 
+def register_dirs(dirs: list[Path]) -> None:
+    """Add dirs to the shared registry (idempotent, atomic)."""
+    try:
+        known = list(orjson.loads(DIRS_FILE.read_bytes()))
+    except (OSError, ValueError):
+        known = []
+    fresh = [str(d.resolve()) for d in dirs if str(d.resolve()) not in known]
+    if not fresh:
+        return
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = DIRS_FILE.with_suffix(".tmp")
+    tmp.write_bytes(orjson.dumps(known + fresh))
+    tmp.replace(DIRS_FILE)
+
+
+isolated = False
+
+
 def tracked_dirs() -> list[Path]:
+    """One dashboard per user serves everything: the dirs it was started with
+    plus every dir any launcher (or other dashboard start) has registered.
+    --isolated opts out: only the CLI dirs, no registry."""
     dirs = list(output_dirs)
-    if daemon_mode:
-        known = {d.resolve() for d in dirs}
-        dirs.extend(d for d in registered_dirs() if d.resolve() not in known and d.is_dir())
+    if isolated:
+        return dirs
+    known = {d.resolve() for d in dirs}
+    dirs.extend(d for d in registered_dirs() if d.resolve() not in known and d.is_dir())
     return dirs
 
 
@@ -889,25 +911,29 @@ def release_daemon() -> None:
 
 
 def main() -> None:
-    global output_dirs, daemon_mode
+    global output_dirs, isolated
     parser = argparse.ArgumentParser(description="prime-rl run dashboard")
     parser.add_argument("output_dirs", nargs="*", default=None, type=Path, metavar="output_dir")
     parser.add_argument("--port", type=int, default=7788)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
-        "--daemon",
+        "--isolated",
         action="store_true",
-        help="track every output dir launchers register in ~/.cache/prime-rl/dashboard/dirs.json "
-        "and record this instance's url for them to find",
+        help="serve only the given dirs: don't join the per-user registry, don't remember "
+        "these dirs, and don't claim discovery (launchers will ignore this instance)",
     )
     args = parser.parse_args()
-    daemon_mode = args.daemon
-    requested = args.output_dirs if args.output_dirs is not None else ([] if daemon_mode else [Path("outputs")])
+    isolated = args.isolated
+    requested = args.output_dirs if args.output_dirs is not None else [Path("outputs")]
     output_dirs = [d for d in requested if d.is_dir()]
     for missing in set(requested) - set(output_dirs):
         print(f"warning: output dir {missing} does not exist", file=sys.stderr)
-    if not output_dirs and not daemon_mode:
-        raise SystemExit("no existing output dir given")
+    if not isolated:
+        # this instance's dirs join the per-user registry, and it serves the union -
+        # one dashboard per host per user covers every run
+        register_dirs(output_dirs)
+    if not tracked_dirs():
+        raise SystemExit("no existing output dir given" + ("" if isolated else " (and none registered)"))
     try:
         # the shared prl proc-title util; the standalone script falls back to
         # setproctitle directly (it can't import prime_rl)
@@ -926,8 +952,8 @@ def main() -> None:
         print(f"port {args.port} is taken - serving on {port}", file=sys.stderr)
     args.port = port
     url = f"http://localhost:{args.port}"
-    if daemon_mode and not claim_daemon(url):
-        raise SystemExit(1)
+    # first non-isolated instance owns discovery; extras and --isolated still serve
+    claimed = False if isolated else claim_daemon(url)
     live = None
     stop = threading.Event()
     if sys.stdout.isatty():
@@ -956,7 +982,7 @@ def main() -> None:
         stop.set()
         if live is not None:
             live.stop()
-        if daemon_mode:
+        if claimed:
             release_daemon()
 
 

@@ -1,8 +1,9 @@
 """Launcher-side dashboard auto-start.
 
 Every launcher registers its output dir in a shared registry and makes sure one
-dashboard daemon is running (``dashboard --daemon``): the daemon tracks every
-registered dir, so each new run shows up on one URL. If a live daemon already
+dashboard is running: every dashboard instance serves its own dirs plus the
+registry (re-read live), so each new run shows up on one URL - one dashboard
+per host per user. If a live daemon already
 exists, its URL is logged instead of starting another. Discovery goes through
 ``~/.cache/prime-rl/dashboard/daemon.json`` (pid + actual url), which survives
 port spillover — never probe port 7788 directly. The daemon also carries the
@@ -79,7 +80,7 @@ def ensure_dashboard(output_dir: Path, logger) -> str | None:
         return None
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     with open(DAEMON_LOG, "ab") as log_file:
-        subprocess.Popen([binary, "--daemon"], stdout=log_file, stderr=log_file, start_new_session=True)
+        subprocess.Popen([binary], stdout=log_file, stderr=log_file, start_new_session=True)
     deadline = time.monotonic() + SPAWN_TIMEOUT_S
     while time.monotonic() < deadline:
         daemon = find_daemon()
