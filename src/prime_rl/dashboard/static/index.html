@@ -147,6 +147,16 @@
       <span id="tm-step-label"></span>
       <button id="tm-step-next" class="btn tm-nav" title="next step">›</button>
     </div>
+    <div class="tm-head tm-filterhead">
+      <div class="seg" id="tm-kind">
+        <button data-kind="train">Train</button>
+        <button data-kind="eval">Eval</button>
+      </div>
+      <div class="seg" id="tm-subset">
+        <button data-subset="all">All</button>
+        <button data-subset="effective">Effective</button>
+      </div>
+    </div>
     <div class="tm-head">
       <span class="t-label">episodes</span>
       <span id="tm-count" class="badge"></span>
@@ -154,7 +164,6 @@
       <button id="tm-prev" class="btn tm-nav" title="previous episode">↑</button>
       <button id="tm-next" class="btn tm-nav" title="next episode">↓</button>
     </div>
-    <input id="tm-search" class="search" type="search" placeholder="search…">
     <div id="tm-list"></div>
   </aside>
   <section id="tm-main">

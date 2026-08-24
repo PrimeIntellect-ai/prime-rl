@@ -643,6 +643,9 @@ mark.hit {
 .tm-item .tm-reward { margin-left: auto; }
 .tm-nav { padding: 0 8px; height: 24px; }
 .tm-stephead { justify-content: space-between; background: var(--grey-2); min-height: 40px; }
+#step-label, #tm-step-label { white-space: nowrap; }
+.tm-filterhead { gap: 8px; }
+.tm-filterhead .seg button { height: 22px; padding: 0 9px; font-size: 10px; }
 #tm-step-label {
   font-size: 11px;
   letter-spacing: var(--track-caps);

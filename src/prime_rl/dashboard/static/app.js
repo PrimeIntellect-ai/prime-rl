@@ -166,6 +166,9 @@ function applyRunTypeControls() {
   $("#trace-subset").hidden = isEval;
   $("#tm-step-prev").hidden = isEval;
   $("#tm-step-next").hidden = isEval;
+  $("#tm-kind").hidden = isEval || state.meta?.type === "sft";
+  $("#tm-subset").hidden = isEval;
+  $(".tm-filterhead").hidden = isEval;
 }
 
 async function selectRun(name) {
@@ -1706,10 +1709,13 @@ function adjustKindSubset() {
   const other = preferred === "all" ? "effective" : "all";
   if (available[`${traces.kind}/${preferred}`]) traces.subset = preferred;
   else if (available[`${traces.kind}/${other}`]) traces.subset = other;
-  $("#trace-kind [data-kind=train]").disabled = !hasTrain;
-  $("#trace-kind [data-kind=eval]").disabled = !hasEval;
-  setActive("#trace-kind", "kind", traces.kind);
+  for (const sel of ["#trace-kind", "#tm-kind"]) {
+    $(`${sel} [data-kind=train]`).disabled = !hasTrain;
+    $(`${sel} [data-kind=eval]`).disabled = !hasEval;
+    setActive(sel, "kind", traces.kind);
+  }
   setActive("#trace-subset", "subset", traces.subset);
+  setActive("#tm-subset", "subset", traces.subset);
 }
 
 function renderStepControl() {
@@ -1878,12 +1884,7 @@ function copyText(text, el) {
 }
 
 function filteredRollouts() {
-  const query = $("#tm-search").value.trim().toLowerCase();
-  const episodes = state.traces.episodes || [];
-  if (!query) return episodes;
-  return episodes.filter((e) =>
-    `${e.line} ${e.id ?? ""} ${e.group ?? ""} ${e.env ?? ""} ${e.stop_condition ?? ""}`.toLowerCase().includes(query)
-  );
+  return state.traces.episodes || [];
 }
 
 function tmItemHtml(e) {
@@ -2591,24 +2592,50 @@ $("#step-next").addEventListener("click", () => {
   const idx = state.traces.steps.findIndex((s) => s.step === state.traces.step);
   selectStepByIndex(idx + 1);
 });
-document.querySelectorAll("#trace-kind button").forEach((b) =>
-  b.addEventListener("click", () => {
-    if (b.disabled) return;
-    state.traces.kind = b.dataset.kind;
-    adjustKindSubset();
-    loadEpisodes();
-    savePrefs();
-  })
-);
-document.querySelectorAll("#trace-subset button").forEach((b) =>
-  b.addEventListener("click", () => {
-    state.traces.preferred = b.dataset.subset;
-    state.traces.subset = b.dataset.subset;
-    adjustKindSubset();
-    loadEpisodes();
-    savePrefs();
-  })
-);
+async function setTraceKind(kind, inModal = false) {
+  state.traces.kind = kind;
+  adjustKindSubset();
+  await loadEpisodes();
+  savePrefs();
+  if (inModal) await reopenFirstEpisode();
+}
+
+async function setTraceSubset(subset, inModal = false) {
+  state.traces.preferred = subset;
+  state.traces.subset = subset;
+  adjustKindSubset();
+  await loadEpisodes();
+  savePrefs();
+  if (inModal) await reopenFirstEpisode();
+}
+
+/* after a filter change inside the viewer, land on the first episode of the
+   new subset (line numbers don't correspond across files) */
+async function reopenFirstEpisode() {
+  renderModalStep();
+  const first = filteredRollouts()[0];
+  if (first) return openEpisode(first.line);
+  currentLine = null;
+  currentEpisode = null;
+  renderRolloutList();
+  $("#tm-messages").innerHTML = emptyState("no episodes", "nothing here for the current filters");
+  $("#tm-meta").innerHTML = "";
+}
+
+for (const [sel, inModal] of [["#trace-kind", false], ["#tm-kind", true]])
+  document.querySelectorAll(`${sel} button`).forEach((b) =>
+    b.addEventListener("click", () => {
+      if (b.disabled || b.dataset.kind === state.traces.kind) return;
+      setTraceKind(b.dataset.kind, inModal);
+    })
+  );
+for (const [sel, inModal] of [["#trace-subset", false], ["#tm-subset", true]])
+  document.querySelectorAll(`${sel} button`).forEach((b) =>
+    b.addEventListener("click", () => {
+      if (b.dataset.subset === state.traces.subset) return;
+      setTraceSubset(b.dataset.subset, inModal);
+    })
+  );
 $("#trace-env").addEventListener("change", (e) => { state.traces.env = e.target.value; loadEpisodes(); });
 $("#trace-errors").addEventListener("change", (e) => { state.traces.errorsOnly = e.target.checked; loadEpisodes(); savePrefs(); });
 $("#trace-sort").addEventListener("change", (e) => {
@@ -2682,7 +2709,6 @@ $("#tm-list").addEventListener("click", (e) => {
   const item = e.target.closest("[data-line]");
   if (item) openEpisode(+item.dataset.line);
 });
-$("#tm-search").addEventListener("input", renderRolloutList);
 $("#tm-prev").addEventListener("click", () => stepRollout(-1));
 $("#tm-next").addEventListener("click", () => stepRollout(1));
 $("#tm-collapse").addEventListener("click", () =>
