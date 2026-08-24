@@ -69,7 +69,7 @@ type = "grpo"  # the default
 | `type` | Sampling | Loss | What it is |
 |---|---|---|---|
 | `grpo` | policy | `rl` on actions | Standard group-relative RL. |
-| `turn_credit` | policy | `rl` on actions | GRPO plus within-rollout credit from per-turn state-of-the-world scores (`info["turn_rewards"]`): scores become per-turn progress (deltas), progress is smeared backward over the turns that led to it (`gamma`), and each turn's tokens are shifted by `beta` times the turn's centered credit on top of the group level. Zero-sum within the rollout; `beta = 0` or an env without `turn_rewards` is exactly `grpo`; works at `group_size = 1`. |
+| `turn_credit` | policy | `rl` on actions | GRPO plus within-rollout credit from per-turn state scores (`info["turn_rewards"]`): scores become per-turn progress (deltas), progress is smeared backward over the turns that led to it (`gamma`), and each turn's tokens are shifted by `beta` times the turn's centered credit on top of the group level. Zero-sum within the rollout; an env without `turn_rewards` trains exactly as `grpo`; works at `group_size = 1`. |
 | `max_rl` | policy | `rl` on actions | MaxRL ([arXiv:2602.02710](https://arxiv.org/abs/2602.02710)): GRPO's centered reward normalized by the group **mean** instead of the standard deviation — the gradient is unbiased for the order-`group_size` truncation of the maximum-likelihood objective, upweighting hard examples like `1/p`. |
 | `rae` | policy | `rl` on actions | RAE (SPIRAL, [arXiv:2506.24119](https://arxiv.org/abs/2506.24119)): reward minus a per-agent EMA baseline of that agent's own rewards — the estimator for multi-agent self-play envs, where the group mean would mix the agents' opposite reward scales. See [Self-Play Advantage](#self-play-advantage-rae). |
 | `hierarchical_grpo` | policy | `rl` on actions | GRPO for proposer-solver envs. Solvers are compared only with attempts on the same proposed problem; proposers are compared with the other proposals in the group. See [Hierarchical GRPO](#hierarchical-grpo). |
@@ -396,7 +396,7 @@ A single terminal reward gives every turn of a long rollout the same credit. `tu
 
 The algorithm turns the scores into credit in three steps, per rollout:
 
-1. **Progress, not position.** Scores become per-turn deltas — a turn earns for *changing* the state, not for sitting in a good one, so stalling earns nothing and a transient spike that reverts nets zero. Unscored (`None`) turns pass their progress to the next scored turn, making judge density a pure compute dial. The deltas telescope: net progress = final score − first score.
+1. **Progress, not position.** Scores become per-turn deltas — a turn earns for *changing* the state, not for sitting in a good one, so stalling earns nothing and a transient spike that reverts nets zero. Unscored (`None`) turns pass their progress to the next scored turn, so an env may score every few turns to spend less judge compute without changing the math. The deltas telescope: net progress = final score − first score.
 2. **Backward smear.** A good state at turn `t` may have been set up many turns earlier, so turn `t`'s progress is distributed over turns `t, t−1, …` with weights `gamma^d`, normalized to sum to 1 (effective reach ~`1/(1 − gamma)` turns; `gamma = 0` credits only the scoring turn, `1` spreads evenly).
 3. **Level + shape.** Every token of turn `τ` gets
 
@@ -404,9 +404,9 @@ The algorithm turns the scores into credit in three steps, per rollout:
    a = A + beta * (c_τ − c̄)
    ```
 
-   where `A` is the GRPO baseline over the *shaped return* (final reward + net progress) and `c̄` is the token-weighted mean of the turn credits. The shape term is zero-sum within the rollout — the total advantage stays exactly `A`, shaping only moves credit between turns, and a turn can only gain relative credit at its siblings' expense (reward on the group level stays decided by outcomes).
+   where `A` is the rollout's *shaped return* (final reward + net progress) minus the group mean — GRPO's baseline, over the shaped return — and `c̄` is the token-weighted mean of the turn credits. The shape term is zero-sum within the rollout: the total advantage stays exactly `A`, shaping only moves credit between turns, and a turn can only gain credit at the other turns' expense — how well a rollout does overall stays decided by outcomes, at the group level.
 
-Because the level baselines reward *plus* net progress, envs with no final reward still train (the level becomes GRPO on final state quality), and `group_size = 1` degrades to pure within-rollout shaping (`A = 0`) instead of the all-zero advantages plain GRPO produces. Uniform-reward groups — all-solved or all-failed — keep their within-rollout signal too, where GRPO's zero-advantage filter would drop them. `beta = 0`, or an env that writes no `turn_rewards`, is bit-for-bit `grpo`, which makes the plain-GRPO control of a `beta` sweep the same config with one number changed.
+Because the level baselines reward *plus* net progress, envs with no final reward still train (the level becomes GRPO on net progress), and `group_size = 1` degrades to pure within-rollout shaping (`A = 0`) instead of the all-zero advantages plain GRPO produces. Uniform-reward groups — all-solved or all-failed — keep their within-rollout signal too, where GRPO's zero-advantage filter would drop them. An env that writes no `turn_rewards` trains bit-for-bit as `grpo`; `beta = 0` keeps the level but drops the shaping, so a `beta` sweep isolates the shaping term with one number changed.
 
 ```toml
 [orchestrator.algo]

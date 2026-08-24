@@ -211,15 +211,15 @@ class GRPOAlgoConfig(BaseAlgoConfig):
 class TurnCreditAlgoConfig(GRPOAlgoConfig):
     type: Literal["turn_credit"] = "turn_credit"  # type: ignore[assignment]
     """Turn-credit shaping: GRPO whose within-rollout credit follows per-turn
-    state-of-the-world scores. The env scores the state after each turn
+    state scores. The env scores the state of the world after each turn
     (``trace.info["turn_rewards"]``, one ``float | None`` per sampled turn);
     scores become per-turn progress (deltas), progress is smeared backward over
     the turns that led to it (``gamma``), and each turn's tokens are shifted by
     ``beta`` times the turn's centered credit on top of the group-relative
     level. The shift is zero-sum within the rollout, so the total advantage
-    stays at the GRPO level; ``beta = 0`` (or an env without ``turn_rewards``)
-    is exactly ``grpo``. The level baselines the shaped return (final reward +
-    net progress), so envs without a final reward — and groups of one — still
+    stays at the level; an env without ``turn_rewards`` trains exactly as
+    ``grpo``. The level baselines the shaped return (final reward + net
+    progress), so envs without a final reward — and groups of one — still
     train."""
 
     gamma: float = Field(0.9, ge=0.0, le=1.0)
@@ -231,8 +231,8 @@ class TurnCreditAlgoConfig(GRPOAlgoConfig):
 
     beta: float = Field(1.0, ge=0.0)
     """Shaping strength: how strongly within-rollout credit follows the turn
-    credits, relative to the group-relative level. 0 disables shaping
-    (plain GRPO)."""
+    credits, relative to the group-relative level. 0 disables shaping — every
+    token carries the level alone (GRPO on the shaped return)."""
 
 
 class EchoAlgoConfig(GRPOAlgoConfig):

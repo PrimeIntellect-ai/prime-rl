@@ -1,4 +1,4 @@
-"""Turn-credit shaping: state-of-the-world rewards, smeared backward over turns."""
+"""Turn-credit shaping: per-turn state scores turned into per-token credit."""
 
 from __future__ import annotations
 
@@ -17,9 +17,9 @@ if TYPE_CHECKING:
 
 def deltas(phis: list[float | None]) -> list[float]:
     """Per-turn progress from per-turn state scores: each scored turn's score minus
-    the previous scored one. The first scored turn gets 0 (the starting state is
-    taken as already there), and unscored (``None``) turns get 0 — their progress
-    lands on the next scored turn."""
+    the previous scored one. The first scored turn gets 0 — it sets the starting
+    point, since the world's initial quality is not the model's doing. Unscored
+    (``None``) turns get 0; their progress lands on the next scored turn."""
     out = [0.0] * len(phis)
     last: float | None = None
     for i, phi in enumerate(phis):

@@ -78,13 +78,14 @@ def test_smear_decays_backward():
 # --------------------------------------------------------------------------
 
 
-def test_beta_zero_is_grpo():
+def test_beta_zero_is_level_only():
+    """beta=0 drops the shaping but keeps the level over the shaped return:
+    net progress still moves the baseline (returns are 1+1 and 0+0)."""
     group = _run(
         _make_group(rewards=[1.0, 0.0], num_turns=[3, 3]),
         turn_rewards=[[0.0, 0.5, 1.0], [0.0, 0.2, 0.0]],
         beta=0.0,
     )
-    # beta=0 still shifts the level by net progress: returns are 1+1 and 0+0.
     assert [_scalar(r) for r in group] == pytest.approx([1.0, -1.0])
 
 
