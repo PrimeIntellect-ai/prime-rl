@@ -170,7 +170,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --extra gpu
       - name: Download all benchmark artifacts
         uses: actions/download-artifact@v8
         with:

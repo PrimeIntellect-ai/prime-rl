@@ -1,6 +1,7 @@
 import asyncio
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -88,6 +89,18 @@ def format_log_message(
                 short = name if len(name) <= max_name else name[: max_name - 3] + "..."
                 log_lines.append(f"{i3}{f'{short}:':<{col - 2}}tail -F {env_log_dir}/eval/{name}.log")
     return "Logs:\n" + "\n".join(log_lines)
+
+
+def home_dir() -> Path:
+    """Best-effort home directory; fall back to the temp dir so import never fails."""
+    try:
+        return Path.home()
+    except RuntimeError:
+        return Path(tempfile.gettempdir())
+
+
+CACHE_DIR = home_dir() / ".cache" / "prime-rl"
+"""User-scoped cache root."""
 
 
 def get_config_dir(output_dir: Path) -> Path:

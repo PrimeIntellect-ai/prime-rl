@@ -1,15 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.11"
-# dependencies = [
-#   "fastapi>=0.115",
-#   "uvicorn>=0.30",
-#   "orjson>=3.10",
-#   "tokenizers>=0.20",
-#   "huggingface_hub>=0.25",
-#   "rich>=14.0",
-# ]
-# ///
 """Local dashboard for prime-rl runs: logs, metrics, and rollout traces.
 
 This package is fully AI-generated and maintained by agents - it is not meant to be read or edited by humans. Change it by asking an agent, and verify through the browser smoke tests.
@@ -32,16 +20,15 @@ from pathlib import Path
 
 import orjson
 
+from prime_rl.utils.pathing import CACHE_DIR
+
 try:
     import uvicorn
     from fastapi import FastAPI, HTTPException, Query
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
 except ModuleNotFoundError as error:  # the dashboard ships as an extra
-    raise SystemExit(
-        "the dashboard needs the 'dashboard' extra - install with `uv sync --extra dashboard` "
-        "(or run the standalone script: `uv run --script src/prime_rl/dashboard/server.py`)"
-    ) from error
+    raise SystemExit("the dashboard needs the 'dashboard' extra - install with `uv sync --extra dashboard`") from error
 
 STATIC_DIR = Path(__file__).parent / "static"
 MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "evals.log"}
@@ -615,7 +602,7 @@ def episode_summaries(path: Path) -> list[dict]:
 # Parsing a step's traces file for the table can mean reading gigabytes; the
 # result is persisted outside the run dir (the dashboard never writes there),
 # so a revisit — or a dashboard restart — skips the parse entirely.
-SIDECAR_DIR = Path.home() / ".cache" / "prime-rl" / "dashboard"
+SIDECAR_DIR = CACHE_DIR / "dashboard"
 SIDECAR_WRITE_INTERVAL_S = 20.0
 _sidecar_written: dict[Path, tuple[float, int]] = {}  # path -> (last write time, count)
 
