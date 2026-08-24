@@ -64,6 +64,24 @@ free one, so several dashboards run side by side without coordination. Without t
 project's GPU deps (e.g. a head node), run it standalone:
 `uv run --script src/prime_rl/dashboard/server.py [output_dir ...]`.
 
+**Daemon (auto-start)**: launchers (`rl`, `sft`, `evals`) auto-start one shared
+dashboard daemon per user in interactive sessions and register their output dir with
+it, so every new run appears on one URL. To find it, never probe port 7788 (ports
+spill over) — read the discovery file:
+
+```bash
+cat ~/.cache/prime-rl/dashboard/daemon.json   # {"pid": ..., "url": "http://localhost:<actual port>"}
+ps aux | grep PRIME-RL::Dashboard             # the daemon's process title
+```
+
+Verify liveness with `curl -sf <url>/api/runs` and hand the researcher the `url` from
+the file. Tracked output dirs live in `~/.cache/prime-rl/dashboard/dirs.json` (the
+daemon re-reads it, so appending a dir there is enough to track it). The launcher
+logs `Dashboard running at <url>` / `Dashboard started at <url>` on every run start;
+`--no-dashboard` disables the auto-start, and non-interactive launches (CI, nohup)
+register their dir but never spawn. The daemon's own log is
+`~/.cache/prime-rl/dashboard/daemon.log`.
+
 ### Logs
 
 ```

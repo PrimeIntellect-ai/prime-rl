@@ -16,6 +16,7 @@ from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.inference import vllm_overrides_fragment
 from prime_rl.utils.config import cli, dump_resolved_config
+from prime_rl.utils.dashboard_daemon import ensure_dashboard
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -128,6 +129,9 @@ def rl_local(config: RLConfig):
     if config.dry_run:
         logger.success("Dry run complete. To start an RL run locally, remove --dry-run from your command.")
         return
+
+    if config.dashboard:
+        ensure_dashboard(config.output_dir, logger)
 
     # Derive launcher-local GPU IDs from deployment config
     gpu_offset = 0
@@ -603,6 +607,9 @@ def rl_slurm(config: RLConfig):
     if config.dry_run:
         logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
         return
+
+    if config.dashboard:
+        ensure_dashboard(config.output_dir, logger)
 
     logger.info(f"Submitting: sbatch {script_path}")
     result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True)

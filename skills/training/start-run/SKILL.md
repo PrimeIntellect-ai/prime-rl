@@ -139,3 +139,12 @@ env.agent.runtime.type = "subprocess"
 - `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
 - `configs/debug/` — minimal debug configs
 - `examples/` — full example configs (e.g. `reverse-text/`)
+
+## Dashboard
+
+Interactive launches auto-start one shared dashboard daemon per user (process title
+`PRIME-RL::Dashboard`) and log its URL (`Dashboard running/started at <url>`). Relay
+that URL to the researcher. Discovery: `~/.cache/prime-rl/dashboard/daemon.json` holds
+the live `url` (the port can differ from 7788 when it was taken). `--no-dashboard`
+opts a run out.
+
