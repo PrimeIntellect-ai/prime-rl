@@ -104,7 +104,7 @@ def scan_runs() -> dict[str, Path]:
             registry[name] = dirs[0]
         else:
             for run_dir in dirs:
-                registry[f"{run_dir.parent.name}/{name}"] = run_dir
+                registry[f"{run_dir.parent.name}:{name}"] = run_dir  # ":" survives a URL path segment, "/" does not
     _run_registry = registry
     return registry
 
@@ -475,19 +475,28 @@ def line_offsets(path: Path) -> list[int]:
             cached_size, offsets = 0, []
         if cached_size == size:
             return offsets
-    # re-scan from the last recorded line (it may have been partial) and grow the
-    # cached list strictly by appending — a concurrent reader's indices stay valid
+    # re-scan from the last recorded line (it may have been partial) into a local
+    # list, then merge under the lock: the shared list only ever grows by strictly
+    # increasing appends, so concurrent readers' indices stay valid and concurrent
+    # growers can't double-append the same line start
     scan_from = offsets[-1] if offsets else 0
+    found = []
     with path.open("rb") as f:
         f.seek(scan_from)
         pos = scan_from
         for line in f:
-            if line.strip() and (not offsets or pos > offsets[-1]):
-                offsets.append(pos)
+            if line.strip():
+                found.append(pos)
             pos += len(line)
     with _lock:
-        _lru_put(_offsets_cache, path, (size, offsets))
-    return offsets
+        cached_size, current = _lru_get(_offsets_cache, path) or (0, offsets)
+        if cached_size > size:
+            current = []
+        for offset in found:
+            if not current or offset > current[-1]:
+                current.append(offset)
+        _lru_put(_offsets_cache, path, (max(size, cached_size), current))
+    return current
 
 
 def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:

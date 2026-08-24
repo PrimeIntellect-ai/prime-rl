@@ -435,7 +435,7 @@ async function fetchEvalSeries() {
   }
   m.evalCount = data.count;
   m.maxStep = data.count; // the overview's episode count
-  const costs = (data.series.cost || []).filter((v) => v != null);
+  const costs = (m.evalSeries.cost || []).filter((v) => v != null); // merged, not just the increment
   m.evalCost = costs.length ? costs.reduce((a, b) => a + b, 0) : null;
   renderOverview();
   if (m.loaded) renderMetricsBody();
