@@ -682,6 +682,33 @@ mark.hit {
 #tm-right { border-left: 1px solid var(--hairline); overflow-y: auto; min-height: 0; }
 #tm-meta { padding: 12px 14px; }
 
+.trace-error-banner {
+  border: 1px solid var(--negative);
+  background: rgba(255, 69, 57, 0.08);
+  margin-bottom: 12px;
+  color: var(--grey-6);
+}
+.trace-error-head {
+  display: flex;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid rgba(255, 69, 57, 0.35);
+  color: var(--negative);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+}
+.trace-error-message { padding: 10px 12px; white-space: pre-wrap; word-break: break-word; }
+.trace-error-banner pre {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(255, 69, 57, 0.2);
+  color: var(--grey-5);
+  font: 400 11px/1.5 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* numbered collapsible message entries */
 details.entry { border: 1px solid var(--hairline); margin-bottom: 8px; }
 details.entry > summary {

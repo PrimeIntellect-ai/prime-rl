@@ -120,7 +120,7 @@ async function loadRuns() {
   syncDressedSelects();
   const fresh = state.runs.find((r) => r.name === current);
   if (fresh && state.meta) {
-    Object.assign(state.meta, { updated: fresh.updated, started: fresh.started, last_step: fresh.last_step });
+    Object.assign(state.meta, fresh);
     renderOverview();
   }
 }
@@ -181,14 +181,18 @@ async function selectRun(name) {
   state.meta = state.runs.find((r) => r.name === name) ?? (await api(`/api/runs/${encodeURIComponent(name)}`));
   state.metrics = {
     ...state.metrics,
-    loaded: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
+    loaded: false, fetching: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
     timeKeys: new Set(), timeZero: null, maxStep: null,
     evalEtag: null, evalCount: 0, evalCost: null,
   };
   if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
   state.config = { loaded: false, files: [], file: null, fmt: state.config.fmt, cache: new Map() };
   state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], paneFile: {}, maximized: null, buffers: new Map() };
-  state.traces = { ...state.traces, loaded: false, steps: [], step: null, env: "", episodes: [], etag: null, kind: "train", subset: state.traces.preferred };
+  state.traces = {
+    ...state.traces,
+    loaded: false, fetching: false, steps: [], step: null, env: "", episodes: [], etag: null,
+    kind: "train", subset: state.traces.preferred,
+  };
   applyRunTypeControls();
   renderOverview();
   renderCompareMenu();
@@ -297,10 +301,16 @@ async function activateTab(tab, force = false) {
   setActive("#tabs", "tab", tab);
   document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
   updateHash();
-  if (tab === "metrics" && !state.metrics.loaded) await initMetrics();
+  if (tab === "metrics") {
+    if (!state.metrics.loaded) await initMetrics();
+    else if (state.live) await fetchMetrics();
+  }
   if (tab === "config" && !state.config.loaded) await initConfig();
   if (tab === "logs" && !state.logs.loaded) await initLogs();
-  if (tab === "traces" && !state.traces.loaded) await initTraces();
+  if (tab === "traces") {
+    if (!state.traces.loaded) await initTraces();
+    else if (state.live) await refreshTraces();
+  }
 }
 
 /* ---------------------------------------------------------------- metrics */
@@ -384,6 +394,7 @@ async function fetchMetrics() {
   let showedProgress = false;
   try {
     for (let first = true; ; first = false) {
+      const requestedOffset = m.offset;
       const [data, compared] = await Promise.all([
         api(`/api/runs/${encodeURIComponent(state.run)}/metrics?offset=${m.offset}`),
         first ? fetchCompares() : false,
@@ -400,7 +411,9 @@ async function fetchMetrics() {
         if (m.byKey.size !== m.renderedKeys) renderMetricsBody();
         else updateCharts(compared ? null : touched); // compares may touch any panel
       }
-      if (data.offset >= (data.size ?? data.offset)) break;
+      // A writer can leave one incomplete JSONL record at EOF. Wait for the
+      // next poll instead of repeatedly requesting the same partial record.
+      if (data.offset >= (data.size ?? data.offset) || data.offset === requestedOffset) break;
       showedProgress = true;
       $("#metrics-status").textContent = `loading metrics · ${Math.round((data.offset / data.size) * 100)}%`;
     }
@@ -1121,7 +1134,7 @@ function renderMetricsBody() {
       }
       if (!grid.children.length) {
         // a configured eval env stays visible before its first eval fires
-        if (section.configured && !activeFilter) grid.innerHTML = `<div class="chart-empty">no eval data yet</div>`;
+        if (section.configured && !activeFilter) grid.innerHTML = `<div class="chart-empty">no data yet</div>`;
         else div.remove();
       } else applyPaneOrder(grid);
     }
@@ -1726,26 +1739,25 @@ async function initLogs() {
 
 async function loadRollouts() {
   const traces = state.traces;
+  const previousTarget = latestPreferredStep(traces.steps, traces.kind, traces.preferred);
+  const wasFollowing = traces.step == null || traces.step === previousTarget?.step;
   const data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts`);
   traces.steps = data.steps;
-  if (traces.step == null && data.steps.length) {
-    // default to the newest step that already shipped the preferred subset —
-    // the newest step is usually in-flight with only "all" (no advantages yet)
-    const preferred = traces.preferred;
-    const newestFirst = [...data.steps].reverse();
-    const shipped =
-      newestFirst.find((s) => s.available[`${traces.kind}/${preferred}`]) ??
-      newestFirst.find((s) => Object.keys(s.available).some((k) => k.endsWith(`/${preferred}`)));
-    traces.step = (shipped ?? data.steps[data.steps.length - 1]).step;
-    adjustKindSubset();
-  } else if (traces.step != null) {
-    // the preferred subset may have shipped since the last poll (a live step's
-    // effective file lands late) — re-adjust and reload when it changes
-    const before = `${traces.kind}/${traces.subset}`;
-    adjustKindSubset();
-    if (`${traces.kind}/${traces.subset}` !== before) await loadEpisodes();
-  }
+  const target = latestPreferredStep(data.steps, traces.kind, traces.preferred);
+  // Follow new work while the user is on the latest preferred step. Keep a
+  // manually selected historical step stable, especially while its modal is open.
+  if (target && wasFollowing && $("#trace-modal").hidden) traces.step = target.step;
+  adjustKindSubset();
   renderStepControl();
+}
+
+function latestPreferredStep(steps, kind, preferred) {
+  const newestFirst = [...steps].reverse();
+  return (
+    newestFirst.find((s) => s.available[`${kind}/${preferred}`]) ??
+    newestFirst.find((s) => Object.keys(s.available).some((key) => key.endsWith(`/${preferred}`))) ??
+    newestFirst[0]
+  );
 }
 
 function stepInfo(step) {
@@ -1914,9 +1926,20 @@ function renderEpisodeRows(reset = false) {
 
 async function initTraces() {
   state.traces.loaded = true;
-  await loadRollouts();
-  adjustKindSubset();
-  await loadEpisodes();
+  await refreshTraces();
+}
+
+async function refreshTraces() {
+  const traces = state.traces;
+  if (traces.fetching) return;
+  traces.fetching = true;
+  try {
+    await loadRollouts();
+    if (state.traces !== traces) return;
+    await loadEpisodes();
+  } finally {
+    traces.fetching = false;
+  }
 }
 
 /* ----------------------------------------------------------- episode view */
@@ -2185,11 +2208,33 @@ function reasoningBlock(content) {
 
 let entriesObserver = null;
 
-function renderMessages(trace, branches) {
+function episodeErrors(ep, trace) {
+  return [...(ep.errors || []), ...(trace?.errors || [])];
+}
+
+function errorBannersHtml(errors) {
+  return errors
+    .map((error) => {
+      const record = error && typeof error === "object" ? error : { message: String(error) };
+      const type = record.type ?? "Error";
+      const message = record.message ?? "No error message";
+      const traceback = Array.isArray(record.traceback) ? record.traceback.join("") : record.traceback;
+      return (
+        `<section class="trace-error-banner"><div class="trace-error-head"><span>error</span><span>${esc(type)}</span></div>` +
+        `<div class="trace-error-message">${esc(message)}</div>` +
+        (traceback ? `<pre>${esc(traceback)}</pre>` : "") +
+        `</section>`
+      );
+    })
+    .join("");
+}
+
+function renderMessages(ep, trace, branches) {
   const container = $("#tm-messages");
   entriesObserver?.disconnect();
+  const errorsHtml = errorBannersHtml(episodeErrors(ep, trace));
   if (!trace) {
-    container.innerHTML = emptyState("no traces", "this episode carries no trace data");
+    container.innerHTML = errorsHtml + emptyState("no traces", "this episode carries no trace data");
     return;
   }
   const signal = $("#token-signal").value;
@@ -2234,6 +2279,7 @@ function renderMessages(trace, branches) {
   const CHUNK = 30;
   let rendered = Math.min(path.length, CHUNK);
   container.innerHTML =
+    errorsHtml +
     path.slice(0, rendered).map(entryHtml).join("") +
     (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "");
   if (rendered < path.length) {
@@ -2363,7 +2409,7 @@ function renderMeta(ep, trace, branches) {
   if (ep.group?.id) parts.push(metaRow("group ID", ep.group.id, true));
   if (trace?.agent?.runtime?.id) parts.push(metaRow("runtime ID", trace.agent.runtime.id, true));
 
-  const errors = [...(ep.errors || []), ...(trace?.errors || [])];
+  const errors = episodeErrors(ep, trace);
   if (errors.length)
     parts.push(
       `<details class="meta-fold" open><summary>errors (${errors.length})</summary>` +
@@ -2404,14 +2450,17 @@ function renderEpisode() {
       : "";
   $("#tm-tabs-row").hidden = traceTabs.hidden && branchTabs.hidden;
   renderRolloutList();
-  renderMessages(trace, branches);
+  renderMessages(ep, trace, branches);
   renderMeta(ep, trace, branches);
 }
 
 /* ---------------------------------------------------------------- wiring */
 
 $("#run-select").addEventListener("change", (e) => selectRun(e.target.value));
-$("#live-toggle").addEventListener("change", (e) => (state.live = e.target.checked));
+$("#live-toggle").addEventListener("change", async (e) => {
+  state.live = e.target.checked;
+  if (state.live) await pollDashboard();
+});
 $("#compare-menu").addEventListener("change", (e) => {
   const box = e.target.closest("[data-compare]");
   if (box) toggleCompare(box.dataset.compare, box.checked);
@@ -2885,12 +2934,10 @@ $("#smooth-range").addEventListener("input", (e) => {
   savePrefs();
 });
 
-let tickCount = 0;
 let ticking = false;
-setInterval(async () => {
+async function pollDashboard() {
   if (!state.live || ticking) return;
   ticking = true;
-  tickCount++;
   try {
     // keep the run list fresh so new runs register without a page refresh;
     // it runs concurrently with the tab poll (they're independent requests)
@@ -2905,17 +2952,19 @@ setInterval(async () => {
     syncDressedSelects();
     if (state.tab === "metrics" && state.metrics.loaded) await fetchMetrics();
     else if (state.tab === "logs" && state.logs.loaded) await pollLogs();
-    else if (state.tab === "traces" && state.traces.loaded) {
-      await loadRollouts();
-      if (tickCount % 5 === 0) await loadEpisodes();
-    }
+    else if (state.tab === "traces" && state.traces.loaded) await refreshTraces();
     await runsRefresh;
   } catch (err) {
     console.warn("poll failed", err);
   } finally {
     ticking = false;
   }
-}, POLL_MS);
+}
+
+setInterval(pollDashboard, POLL_MS);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) pollDashboard();
+});
 
 (async function init() {
   $("#smooth-range").value = state.metrics.smooth;
