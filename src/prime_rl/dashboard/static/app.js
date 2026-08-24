@@ -535,7 +535,7 @@ function buildSections(meta) {
   } else sections.push(trainSection("train", "train/agg"));
   if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true)));
   else sections.push(evalSection("eval", ".*"));
-  sections.push({ name: "stability", panels: STABILITY_METRICS.map((m) => ({ metric: m, band: true })) });
+  sections.push({ name: "stability", panels: STABILITY_METRICS.map((m) => ({ metric: m })) });
   sections.push({ name: "inference", panels: INFERENCE_PANELS.map((metrics) => ({ metrics })) });
   sections.push({ name: "performance", panels: PERFORMANCE_METRICS.map((m) => ({ metric: m })) });
   return sections;
@@ -572,17 +572,7 @@ function resolvePanel(panel) {
       keys = [...store.byKey.keys()].filter((k) => re.test(k)).sort();
     }
     if (activeFilter) keys = keys.filter((k) => activeFilter.test(k));
-    // banded panels (band: true) pull their p10/p90 siblings in as a shaded band
-    const expanded = [];
-    for (const key of keys) {
-      expanded.push(key);
-      if (panel.band && key.endsWith("/mean"))
-        for (const stat of ["p10", "p90"]) {
-          const sibling = key.slice(0, -"mean".length) + stat;
-          if (store.byKey.has(sibling) && !keys.includes(sibling)) expanded.push(sibling);
-        }
-    }
-    for (const key of expanded)
+    for (const key of keys)
       for (const [producer, points] of store.byKey.get(key))
         series.push({ key, producer, points, run, time: store.timeKeys.has(key) });
   }

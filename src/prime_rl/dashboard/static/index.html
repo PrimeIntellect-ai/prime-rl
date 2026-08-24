@@ -36,14 +36,14 @@
         <button data-mode="overview" class="active">Overview</button>
         <button data-mode="all">All</button>
       </div>
-      <div class="seg" id="all-layout" hidden>
-        <button data-layout="flat">Flat</button>
-        <button data-layout="nested">Nested</button>
-      </div>
       <input id="metrics-search" class="search" type="search" placeholder="regex filter, e.g. ^entropy/ or reward">
       <label class="ctl">smooth <input id="smooth-range" type="range" min="1" max="50" value="1"><span id="smooth-val">off</span></label>
       <span id="metrics-status" class="muted"></span>
       <div class="spacer"></div>
+      <div class="seg" id="all-layout" hidden>
+        <button data-layout="flat">Flat</button>
+        <button data-layout="nested">Nested</button>
+      </div>
       <button id="metrics-collapse" class="btn">collapse</button>
       <button id="metrics-expand" class="btn">expand</button>
     </div>
