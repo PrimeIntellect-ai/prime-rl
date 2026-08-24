@@ -13,7 +13,7 @@ safe against live runs.
 
 Every dashboard instance serves the dirs it was started with **plus** every dir
 in the per-user registry (`~/.cache/prime-rl/dashboard/dirs.json`, re-read
-live). Launchers (`rl`, `sft`, `evals`) register their output dir on every
+live). Launchers (`rl`, `sft`) register their output dir on every
 start and, in interactive sessions, auto-start a dashboard only when none is
 live — an already-running one absorbs the new dir automatically, whatever port
 it is on. `--no-dashboard` opts a run out; non-interactive launches (CI, nohup)
