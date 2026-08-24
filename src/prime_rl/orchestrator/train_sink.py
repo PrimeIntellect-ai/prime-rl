@@ -115,7 +115,9 @@ class TrainSink:
         return self.pending_tokens, self.token_batch_size, "tokens"
 
     def buffered_count(self) -> int:
-        return sum(len(group) for group in self.pending_groups.values())
+        episodes = sum(len(group) for group in self.pending_groups.values())
+        failures = sum(len(group) for group in self.pending_group_failures.values())
+        return episodes + failures
 
     def pending_batch_by_env(self) -> dict[str, int]:
         counts: dict[str, int] = defaultdict(int)
