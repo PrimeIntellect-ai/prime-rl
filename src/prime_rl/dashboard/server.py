@@ -23,8 +23,11 @@ Multiple output directories can be tracked at once.
 """
 
 import argparse
+import hashlib
 import sys
 import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 
 import orjson
@@ -52,9 +55,28 @@ output_dirs: list[Path] = [Path("outputs")]
 _run_registry: dict[str, Path] = {}
 
 _lock = threading.Lock()
+MAX_CACHED_FILES = 64
+"""Per-cache LRU bound: paging through thousands of steps must not grow the
+server without limit (each entry holds one traces file's offsets/summaries)."""
+
+
+def _lru_get(cache: OrderedDict, key):
+    value = cache.get(key)
+    if value is not None:
+        cache.move_to_end(key)
+    return value
+
+
+def _lru_put(cache: OrderedDict, key, value) -> None:
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > MAX_CACHED_FILES:
+        cache.popitem(last=False)
+
+
 # Append-only file caches keyed by absolute path: line-start offsets and per-episode summaries.
-_offsets_cache: dict[Path, tuple[int, list[int]]] = {}
-_summaries_cache: dict[Path, tuple[int, list[dict]]] = {}
+_offsets_cache: OrderedDict[Path, tuple[int, list[int]]] = OrderedDict()
+_summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
 _json_cache: dict[Path, tuple[tuple[int, float], dict]] = {}
@@ -400,16 +422,33 @@ def read_metrics(run: str, offset: int = 0) -> dict:
 # ------------------------------------------------------------------------ rollouts
 
 
+RECENT_STEPS = 64
+_avail_cache: dict[Path, dict[str, bool]] = {}  # step dir -> known-present subsets
+_avail_scan_counter = 0
+
+
 def rollout_steps(run_dir: Path) -> list[dict]:
-    """Presence only — never reads trace files, so it stays cheap over thousands of steps."""
+    """Presence only — never reads trace files. Presence is monotonic (files only
+    appear), so known-present subsets are cached forever; absent ones re-stat every
+    poll only for the newest steps — older gaps (an eval landing late at its trigger
+    step) are picked up by a full rescan every 10th call."""
+    global _avail_scan_counter
+    _avail_scan_counter += 1
+    full_rescan = _avail_scan_counter % 10 == 1
+    numbered = numbered_dirs(run_dir / "rollouts", "step_")
+    recent_cutoff = numbered[-1][0] - RECENT_STEPS if numbered else 0
     steps = []
-    for number, step_dir in numbered_dirs(run_dir / "rollouts", "step_"):
-        available = {}
-        for kind in ("train", "eval"):
-            for subset in ("all", "effective"):
-                path = step_dir / kind / subset / "traces.jsonl"
-                if path.is_file() and path.stat().st_size > 0:
-                    available[f"{kind}/{subset}"] = True
+    for number, step_dir in numbered:
+        available = _avail_cache.setdefault(step_dir, {})
+        if len(available) < 4 and (full_rescan or number >= recent_cutoff):
+            for kind in ("train", "eval"):
+                for subset in ("all", "effective"):
+                    key = f"{kind}/{subset}"
+                    if key in available:
+                        continue
+                    path = step_dir / kind / subset / "traces.jsonl"
+                    if path.is_file() and path.stat().st_size > 0:
+                        available[key] = True
         if available:
             steps.append({"step": number, "available": available})
     root_traces = run_dir / "traces.jsonl"  # `uv run eval` writes one stepless file
@@ -421,7 +460,7 @@ def rollout_steps(run_dir: Path) -> list[dict]:
 def line_offsets(path: Path) -> list[int]:
     size = path.stat().st_size
     with _lock:
-        cached_size, offsets = _offsets_cache.get(path, (0, []))
+        cached_size, offsets = _lru_get(_offsets_cache, path) or (0, [])
         if cached_size > size:  # rewritten (e.g. resume cleanup): rebuild
             cached_size, offsets = 0, []
         if cached_size == size:
@@ -437,7 +476,7 @@ def line_offsets(path: Path) -> list[int]:
                 offsets.append(pos)
             pos += len(line)
     with _lock:
-        _offsets_cache[path] = (size, offsets)
+        _lru_put(_offsets_cache, path, (size, offsets))
     return offsets
 
 
@@ -526,12 +565,19 @@ def summarize_episode(line: int, rec: dict) -> dict:
 def episode_summaries(path: Path) -> list[dict]:
     offsets = line_offsets(path)
     with _lock:
-        cached_count, summaries = _summaries_cache.get(path, (0, []))
+        cached_count, summaries = _lru_get(_summaries_cache, path) or (0, [])
         if cached_count > len(offsets):
             cached_count, summaries = 0, []
+    if cached_count == 0:
+        loaded = load_sidecar(path)
+        if loaded is not None:
+            cached_count, summaries = len(loaded), loaded
+            cached_count = min(cached_count, len(offsets))
     if cached_count == len(offsets):
-        return summaries
-    summaries = list(summaries)
+        with _lock:
+            _lru_put(_summaries_cache, path, (cached_count, summaries))
+        return summaries[:cached_count] if len(summaries) != cached_count else summaries
+    summaries = list(summaries[:cached_count])
     with path.open("rb") as f:
         f.seek(offsets[cached_count])
         for line_no in range(cached_count, len(offsets)):
@@ -541,8 +587,48 @@ def episode_summaries(path: Path) -> list[dict]:
             except orjson.JSONDecodeError:
                 summaries.append({"line": line_no, "id": None, "error": "unparseable"})
     with _lock:
-        _summaries_cache[path] = (len(offsets), summaries)
+        _lru_put(_summaries_cache, path, (len(offsets), summaries))
+    write_sidecar(path, offsets, summaries)
     return summaries
+
+
+# ------------------------------------------------------- summary sidecars
+# Parsing a step's traces file for the table can mean reading gigabytes; the
+# result is persisted outside the run dir (the dashboard never writes there),
+# so a revisit — or a dashboard restart — skips the parse entirely.
+SIDECAR_DIR = Path.home() / ".cache" / "prime-rl" / "dashboard"
+SIDECAR_WRITE_INTERVAL_S = 20.0
+_sidecar_written: dict[Path, tuple[float, int]] = {}  # path -> (last write time, count)
+
+
+def sidecar_path(path: Path) -> Path:
+    digest = hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:24]
+    return SIDECAR_DIR / f"{digest}.json"
+
+
+def load_sidecar(path: Path) -> list[dict] | None:
+    data = read_json(sidecar_path(path))
+    try:
+        if data.get("path") != str(path.resolve()) or path.stat().st_size < data["size"]:
+            return None  # different file, or rewritten smaller (relaunch)
+        return data["summaries"]
+    except (KeyError, OSError):
+        return None
+
+
+def write_sidecar(path: Path, offsets: list[int], summaries: list[dict]) -> None:
+    now = time.monotonic()
+    last_time, last_count = _sidecar_written.get(path, (0.0, -1))
+    if len(summaries) == last_count or now - last_time < SIDECAR_WRITE_INTERVAL_S:
+        return
+    _sidecar_written[path] = (now, len(summaries))
+    SIDECAR_DIR.mkdir(parents=True, exist_ok=True)
+    consumed = offsets[len(summaries) - 1] if summaries else 0
+    payload = {"path": str(path.resolve()), "size": consumed, "summaries": summaries}
+    target = sidecar_path(path)
+    tmp = target.with_suffix(".tmp")
+    tmp.write_bytes(orjson.dumps(payload))
+    tmp.replace(target)
 
 
 def traces_path(run: str, step: int, kind: str, subset: str) -> Path:
