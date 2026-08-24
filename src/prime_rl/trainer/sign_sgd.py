@@ -1,6 +1,7 @@
 from typing import Callable
 
 import torch
+from torch.distributed.tensor import DTensor
 from torch.optim import Optimizer
 
 
@@ -39,10 +40,9 @@ class SignSGD(Optimizer):
                 loss = closure()
 
         for group in self.param_groups:
-            # Batch per (device, dtype): foreach ops need homogeneous lists,
-            # and a few fused launches (vs thousands of per-param kernels)
-            # keep the step's kernel tail from overlapping the grad frees and
-            # collectives that follow it
+            # Batch per (device, dtype): a few fused launches (vs thousands of
+            # per-param kernels) keep the step's kernel tail from overlapping
+            # the grad frees and collectives that follow it
             buckets: dict[tuple, list] = {}
             for p in group["params"]:
                 if p.grad is None:
@@ -50,10 +50,16 @@ class SignSGD(Optimizer):
                 buckets.setdefault((p.device, p.dtype), []).append(p)
 
             for params in buckets.values():
-                grads = [p.grad for p in params]
+                # Update the local shards directly: every op below is
+                # pointwise and grads share the param's placement at step
+                # time, so the update commutes with sharding — and plain
+                # tensors keep foreach dispatch available
+                # (aten._foreach_sign has no DTensor sharding strategy)
+                local_params = [p.to_local() if isinstance(p, DTensor) else p for p in params]
+                local_grads = [p.grad.to_local() if isinstance(p.grad, DTensor) else p.grad for p in params]
                 if group["weight_decay"] > 0.0:
-                    torch._foreach_mul_(params, 1 - group["lr"] * group["weight_decay"])
-                signs = torch._foreach_sign(grads)
-                torch._foreach_add_(params, signs, alpha=-group["lr"])
+                    torch._foreach_mul_(local_params, 1 - group["lr"] * group["weight_decay"])
+                signs = torch._foreach_sign(local_grads)
+                torch._foreach_add_(local_params, signs, alpha=-group["lr"])
 
         return loss
