@@ -968,13 +968,11 @@ class Orchestrator:
         eff, full = effective.metrics, episodes.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
-        dispatch_failure_rate = len(batch.failures) / total_attempts
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Error {full.has_error.mean():.1%} | Dispatch Failure {dispatch_failure_rate:.1%} | "
-            f"Truncation {eff.is_truncated.mean():.1%}"
+            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:
