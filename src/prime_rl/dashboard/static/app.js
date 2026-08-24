@@ -117,6 +117,7 @@ async function loadRuns() {
     ? state.runs.map((r) => `<option value="${esc(r.name)}">${esc(r.name)}</option>`).join("")
     : `<option>no runs found</option>`;
   if (current && state.runs.some((r) => r.name === current)) sel.value = current;
+  syncDressedSelects();
   const fresh = state.runs.find((r) => r.name === current);
   if (fresh && state.meta) {
     Object.assign(state.meta, { updated: fresh.updated, started: fresh.started, last_step: fresh.last_step });
@@ -176,6 +177,7 @@ async function selectRun(name) {
   state.run = name;
   state.compare = { runs: [], data: new Map() };
   $("#run-select").value = name;
+  syncDressedSelects();
   state.meta = state.runs.find((r) => r.name === name) ?? (await api(`/api/runs/${encodeURIComponent(name)}`));
   state.metrics = {
     ...state.metrics,
@@ -2890,7 +2892,7 @@ setInterval(async () => {
   try {
     // keep the run list fresh so new runs register without a page refresh;
     // it runs concurrently with the tab poll (they're independent requests)
-    const runsRefresh = tickCount % 3 === 0 || !state.run ? loadRuns() : null;
+    const runsRefresh = loadRuns();
     if (!state.run) {
       await runsRefresh;
       const first = state.runs[0]?.name;
