@@ -237,8 +237,8 @@ function runStatus(step) {
 
 /* unbounded env lists: show the first two, fold the rest into "+N" (full list
    in the tooltip) */
-function envListField(envs) {
-  if (!envs?.length) return `<span class="val">n/a</span>`;
+function envListField(envs, empty = "n/a") {
+  if (!envs?.length) return `<span class="val">${empty}</span>`;
   const display = envs.length > 2 ? `${envs.slice(0, 2).join(", ")} +${envs.length - 2}` : envs.join(", ");
   return `<span class="val" title="${esc(envs.join(", "))}">${esc(display)}</span>`;
 }
@@ -273,7 +273,8 @@ function renderOverview() {
           meta.type === "sft"
             ? ["dataset", `<span class="val" title="${esc(meta.dataset ?? "")}">${esc(meta.dataset ?? "n/a")}</span>`]
             : ["train envs", envListField(meta.train_envs)],
-          ["eval envs", envListField(meta.eval_envs)],
+          // an empty eval env list is a known "none", not missing data
+          ["eval envs", envListField(meta.eval_envs, "–")],
         ]),
   ];
   const right = [
