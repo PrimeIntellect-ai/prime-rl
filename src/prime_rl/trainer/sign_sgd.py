@@ -39,15 +39,21 @@ class SignSGD(Optimizer):
                 loss = closure()
 
         for group in self.param_groups:
+            # Batch per (device, dtype): foreach ops need homogeneous lists,
+            # and a few fused launches (vs thousands of per-param kernels)
+            # keep the step's kernel tail from overlapping the grad frees and
+            # collectives that follow it
+            buckets: dict[tuple, list] = {}
             for p in group["params"]:
                 if p.grad is None:
                     continue
+                buckets.setdefault((p.device, p.dtype), []).append(p)
 
-                sign_grad = torch.sign(p.grad)
-
+            for params in buckets.values():
+                grads = [p.grad for p in params]
                 if group["weight_decay"] > 0.0:
-                    p.add_(p, alpha=-group["lr"] * group["weight_decay"])
-
-                p.add_(sign_grad, alpha=-group["lr"])
+                    torch._foreach_mul_(params, 1 - group["lr"] * group["weight_decay"])
+                signs = torch._foreach_sign(grads)
+                torch._foreach_add_(params, signs, alpha=-group["lr"])
 
         return loss
