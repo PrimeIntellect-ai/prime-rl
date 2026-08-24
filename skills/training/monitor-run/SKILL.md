@@ -64,6 +64,18 @@ free one, so several dashboards run side by side without coordination. GPU deps 
 behind the `gpu` extra, so `uv sync --extra dashboard && uv run dashboard` works
 without the training stack (e.g. on a head node).
 
+**Daemon (auto-start)**: launchers auto-start one dashboard per host per user and a
+live one absorbs each new run's output dir automatically — see the `dashboard` skill
+for discovery, kill/restart commands, and `--isolated`. The short version: to find it,
+never probe port 7788 (ports spill over) — read the discovery file:
+
+```bash
+cat ~/.cache/prime-rl/dashboard/daemon.json   # {"pid": ..., "url": "http://localhost:<actual port>"}
+ps aux | grep PRL::Dashboard                  # the daemon's process title
+```
+
+Verify liveness with `curl -sf <url>/api/runs` and hand the researcher the `url`.
+
 ### Logs
 
 ```

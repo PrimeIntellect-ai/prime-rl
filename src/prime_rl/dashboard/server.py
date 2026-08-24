@@ -12,6 +12,7 @@ Multiple output directories can be tracked at once.
 
 import argparse
 import hashlib
+import os
 import sys
 import threading
 import time
@@ -21,6 +22,7 @@ from pathlib import Path
 import orjson
 
 from prime_rl.utils.pathing import CACHE_DIR
+from prime_rl.utils.process import set_proc_title
 
 try:
     import uvicorn
@@ -76,10 +78,64 @@ def is_run_dir(path: Path) -> bool:
     return any((path / marker).exists() for marker in ("configs", "logs", "metrics.jsonl", "rollouts"))
 
 
+STATE_DIR = CACHE_DIR / "dashboard"
+DAEMON_FILE = STATE_DIR / "daemon.json"
+DIRS_FILE = STATE_DIR / "dirs.json"
+_dirs_file_state: tuple[float, list[Path]] = (0.0, [])
+
+
+def registered_dirs() -> list[Path]:
+    """Output dirs registered in dirs.json (by launchers and by every dashboard's
+    own CLI dirs), re-read when the file changes so a run in a new output dir
+    appears on the one live dashboard without a restart."""
+    global _dirs_file_state
+    try:
+        mtime = DIRS_FILE.stat().st_mtime
+    except OSError:
+        return []
+    if mtime != _dirs_file_state[0]:
+        try:
+            dirs = [Path(d) for d in orjson.loads(DIRS_FILE.read_bytes())]
+        except (OSError, ValueError):
+            dirs = []
+        _dirs_file_state = (mtime, dirs)
+    return _dirs_file_state[1]
+
+
+def register_dirs(dirs: list[Path]) -> None:
+    """Add dirs to the shared registry (idempotent, atomic)."""
+    try:
+        known = list(orjson.loads(DIRS_FILE.read_bytes()))
+    except (OSError, ValueError):
+        known = []
+    fresh = [str(d.resolve()) for d in dirs if str(d.resolve()) not in known]
+    if not fresh:
+        return
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = DIRS_FILE.with_suffix(".tmp")
+    tmp.write_bytes(orjson.dumps(known + fresh))
+    tmp.replace(DIRS_FILE)
+
+
+isolated = False
+
+
+def tracked_dirs() -> list[Path]:
+    """One dashboard per user serves everything: the dirs it was started with
+    plus every dir any launcher (or other dashboard start) has registered.
+    --isolated opts out: only the CLI dirs, no registry."""
+    dirs = list(output_dirs)
+    if isolated:
+        return dirs
+    known = {d.resolve() for d in dirs}
+    dirs.extend(d for d in registered_dirs() if d.resolve() not in known and d.is_dir())
+    return dirs
+
+
 def scan_runs() -> dict[str, Path]:
     global _run_registry
     by_name: dict[str, list[Path]] = {}
-    for base in output_dirs:
+    for base in tracked_dirs():
         if not base.is_dir():
             continue
         for run_dir in sorted(base.iterdir()):
@@ -602,7 +658,7 @@ def episode_summaries(path: Path) -> list[dict]:
 # Parsing a step's traces file for the table can mean reading gigabytes; the
 # result is persisted outside the run dir (the dashboard never writes there),
 # so a revisit — or a dashboard restart — skips the parse entirely.
-SIDECAR_DIR = CACHE_DIR / "dashboard"
+SIDECAR_DIR = STATE_DIR
 SIDECAR_WRITE_INTERVAL_S = 20.0
 _sidecar_written: dict[Path, tuple[float, int]] = {}  # path -> (last write time, count)
 
@@ -784,7 +840,7 @@ def render_status(url: str):
     text.append(" · ", style="dim")
     text.append(url + "\n", style="underline #B6FF3C")
     runs = scan_runs()
-    for base in output_dirs:
+    for base in tracked_dirs():
         text.append(f"\n  {base.resolve()}/\n", style="dim")
         names = sorted(name for name, run_dir in runs.items() if run_dir.parent == base) or ["(no runs yet)"]
         for i, name in enumerate(names):
@@ -808,23 +864,60 @@ def free_port(host: str, start: int) -> int:
     raise SystemExit(f"no free port in [{start}, {start + 100})")
 
 
+def claim_daemon(url: str) -> bool:
+    """Record this process as THE dashboard daemon (pid + actual url, port
+    spillover included) so launchers can find it instead of starting another."""
+    existing = read_json(DAEMON_FILE)
+    if existing.get("pid") and existing.get("pid") != os.getpid():
+        try:
+            os.kill(existing["pid"], 0)
+            print(f"another dashboard daemon is already running at {existing.get('url')}", file=sys.stderr)
+            return False
+        except OSError:
+            pass  # stale file from a dead daemon
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = DAEMON_FILE.with_suffix(".tmp")
+    tmp.write_bytes(orjson.dumps({"pid": os.getpid(), "url": url, "started": time.time()}))
+    tmp.replace(DAEMON_FILE)
+    return True
+
+
+def release_daemon() -> None:
+    if read_json(DAEMON_FILE).get("pid") == os.getpid():
+        DAEMON_FILE.unlink(missing_ok=True)
+
+
 def main() -> None:
-    global output_dirs
+    global output_dirs, isolated
     parser = argparse.ArgumentParser(description="prime-rl run dashboard")
     parser.add_argument("output_dirs", nargs="*", default=[Path("outputs")], type=Path, metavar="output_dir")
     parser.add_argument("--port", type=int, default=7788)
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument(
+        "--isolated",
+        action="store_true",
+        help="serve only the given dirs: don't join the per-user registry, don't remember "
+        "these dirs, and don't claim discovery (launchers will ignore this instance)",
+    )
     args = parser.parse_args()
+    isolated = args.isolated
     output_dirs = [d for d in args.output_dirs if d.is_dir()]
     for missing in set(args.output_dirs) - set(output_dirs):
         print(f"warning: output dir {missing} does not exist", file=sys.stderr)
-    if not output_dirs:
-        raise SystemExit("no existing output dir given")
+    if not isolated:
+        # this instance's dirs join the per-user registry, and it serves the union -
+        # one dashboard per host per user covers every run
+        register_dirs(output_dirs)
+    if not tracked_dirs():
+        raise SystemExit("no existing output dir given" + ("" if isolated else " (and none registered)"))
+    set_proc_title("Dashboard")
     port = free_port(args.host, args.port)
     if port != args.port:
         print(f"port {args.port} is taken - serving on {port}", file=sys.stderr)
     args.port = port
     url = f"http://localhost:{args.port}"
+    # first non-isolated instance owns discovery; extras and --isolated still serve
+    claimed = False if isolated else claim_daemon(url)
     live = None
     stop = threading.Event()
     if sys.stdout.isatty():
@@ -853,6 +946,8 @@ def main() -> None:
         stop.set()
         if live is not None:
             live.stop()
+        if claimed:
+            release_daemon()
 
 
 if __name__ == "__main__":

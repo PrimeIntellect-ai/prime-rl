@@ -12,6 +12,7 @@ from prime_rl.configs.evals import EvalsConfig, OnlineConfig
 from prime_rl.configs.orchestrator import EvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
+from prime_rl.entrypoints.dashboard import ensure_dashboard
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
@@ -367,6 +368,9 @@ def sft_local(config: SFTConfig):
     if config.dry_run:
         logger.success("Dry run complete. To start an SFT run locally, remove --dry-run from your command.")
         return
+
+    if config.dashboard:
+        ensure_dashboard(config.output_dir, logger)
 
     log_dir = create_attempt_log_dir(config.run_dir)
 

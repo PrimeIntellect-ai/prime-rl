@@ -86,6 +86,10 @@ class EvalsConfig(BaseConfig):
     """Weight transport for online evals. The ``sft`` launcher fills this from its
     resolved trainer transport. None uses filesystem reloads."""
 
+    dashboard: bool = True
+    """Make sure a local dashboard daemon serves this run's output dir (started on
+    demand in interactive sessions; an already-running daemon's URL is logged)."""
+
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — rollout traces and logs are written as
     subdirectories. Shared with the trainer for online evals."""
