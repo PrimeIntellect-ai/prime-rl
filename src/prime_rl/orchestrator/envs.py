@@ -31,6 +31,7 @@ from verifiers.v1.serve import EnvClient
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.generation_source import GenerationSource
+from prime_rl.orchestrator.reward_shaping import RewardShaper, build_reward_shapers
 from prime_rl.utils.logger import format_time, get_logger
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
@@ -126,10 +127,12 @@ class TrainEnv(Env):
         address: str,
         generation_source: GenerationSource,
         algorithm: Algorithm,
+        reward_shapers: list[RewardShaper],
     ):
         super().__init__(config, address)
         self.generation_source = generation_source
         self.algorithm = algorithm
+        self.reward_shapers = reward_shapers
         self.sampling_args = generation_source.sampling_args(config.sampling.to_sampling_args())
 
 
@@ -198,12 +201,16 @@ class TrainEnvs(Envs[TrainEnv]):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainSourceConfig.algo must be resolved before env construction"
+            assert config.reward_shaping is not None, (
+                "TrainSourceConfig.reward_shaping must be resolved before env construction"
+            )
             get_logger().info(f"Initializing {config.algo.type} algorithm for {config.resolved_name}")
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],
                 GenerationSource(config.algo.sampling, clients, renderer_config),
                 build_algorithm(config.algo, clients),
+                build_reward_shapers(config.reward_shaping),
             )
             self._envs[env.name] = env
 

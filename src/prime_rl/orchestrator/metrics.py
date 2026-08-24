@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -153,21 +153,21 @@ class CustomMetrics(StatGroup):
     def __init__(
         self,
         records: list[TraceRecord],
-        attr: str,
+        source: Callable[[vf.Trace], Mapping[str, Any]],
         value: Callable[[Any], float] = float,
     ) -> None:
         super().__init__(records)
-        self.attr = attr
+        self.source = source
         self.value = value
 
     def stats(self) -> dict[str, Stat]:
-        names = sorted({name for trace in self.traces for name in getattr(trace, self.attr)})
+        names = sorted({name for trace in self.traces for name in self.source(trace)})
         return {
             name: Stat(
                 [
                     self.value(scores[name]) if scores[name] is not None else 0.0
                     for trace in self.traces
-                    if name in (scores := getattr(trace, self.attr))
+                    if name in (scores := self.source(trace))
                 ]
             )
             for name in names
@@ -197,11 +197,15 @@ class TraceMetrics(StatGroup):
 
     @property
     def metrics(self) -> CustomMetrics:
-        return CustomMetrics(self.records, "metrics")
+        return CustomMetrics(self.records, lambda trace: trace.metrics)
 
     @property
     def rewards(self) -> CustomMetrics:
-        return CustomMetrics(self.records, "rewards", value=lambda reward: reward.value)
+        return CustomMetrics(self.records, lambda trace: trace.rewards, value=lambda reward: reward.value)
+
+    @property
+    def reward_shaping(self) -> CustomMetrics:
+        return CustomMetrics(self.records, lambda trace: trace.reward_shaping)
 
     @property
     def has_error(self) -> Stat:
@@ -251,6 +255,7 @@ class TraceMetrics(StatGroup):
         out |= self.timing.to_dict(f"{prefix}/timing")
         out |= self.metrics.to_dict(f"{prefix}/metrics")
         out |= self.rewards.to_dict(f"{prefix}/rewards")
+        out |= self.reward_shaping.to_dict(f"{prefix}/reward_shaping")
         if subset == "all":
             out[f"{prefix}/has_error/mean"] = self.has_error.mean()
             out[f"{prefix}/cancelled/mean"] = self.cancelled.mean()

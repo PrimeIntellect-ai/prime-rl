@@ -56,6 +56,7 @@ def mk(
         last_error=SimpleNamespace(type=error_type) if has_error else None,
         stop_condition=stop_condition,
         metrics=metrics or {},
+        reward_shaping={},
         agent=SimpleNamespace(trainable=trainable, name=agent_name),
         nodes=[SimpleNamespace(advantages=[1.0] if is_trainable else [0.0])],
         timing=SimpleNamespace(

@@ -143,7 +143,7 @@ At runtime, each env's resolved config builds two objects: a `GenerationSource` 
 
 | `algo.type` | Class | hook(s) — stage |
 |---|---|---|
-| `grpo` | `GRPOAlgorithm` | `score_group`: group-norm credit (optional length penalty) |
+| `grpo` | `GRPOAlgorithm` | `score_group`: group-norm credit |
 | `echo` | `EchoAlgorithm` | `score_episode`: weighted ce on observation tokens; `score_group`: group-norm credit (inherited) |
 | `max_rl` | `MaxRLAlgorithm` | `score_group`: mean-normalized group credit |
 | `rae` | `RAEAlgorithm` | `score_group`: per-agent EMA-baseline credit |
@@ -159,7 +159,7 @@ Algorithms operate on native verifier artifacts and annotate their message graph
 
 The pipeline drives these through `finalize_episode` and `finalize_group`. Advantages, reference logprobs, and named loss weights stay on verifier nodes through admission. Only admitted traces are flattened into `TrainingSample`s.
 
-Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy clients (`self.clients`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint (tokenizer is always the live policy's — self-distillation has no separate model). The pipeline only ever calls the two `finalize_*` methods — writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)). Shared math (efficiency shaping, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
+Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy clients (`self.clients`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint (tokenizer is always the live policy's — self-distillation has no separate model). The pipeline only ever calls the two `finalize_*` methods — writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)). Reward shaping (e.g. the length penalty) is not an algorithm concern — it runs before the algorithm, see [Reward Shaping](#reward-shaping).
 
 ## Async / Off-Policy Training
 
@@ -286,7 +286,7 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 
 | Type | Component | Effect |
 |---|---|---|
-| `grpo` | `rl` | Group-norm: reward minus per-group baseline, optional length penalty. |
+| `grpo` | `rl` | Group-norm: reward minus per-group baseline. |
 | `max_rl` | `rl` | Mean-normalized group credit (maximum-likelihood RL). |
 | `rae` | `rl` | Reward minus a per-agent EMA baseline (SPIRAL's role-conditioned advantage estimation) — for multi-agent self-play envs. |
 | `hierarchical_grpo` | `rl` | GRPO for proposer-solver envs: solvers are compared within one proposed problem, while proposers are compared across proposals. |
@@ -301,15 +301,19 @@ The default advantage is per-group reward minus per-group baseline (DR-GRPO with
 
 This is intentionally simple — it does the right thing for most envs. Write a named algorithm class when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …) — see [Authoring an Algorithm](#authoring-an-algorithm).
 
-A **length penalty** (`length_penalty` on the `grpo`-family algorithms) can be layered on top to discourage rambling. The `linear` penalty subtracts a single `pass_rate`-scaled penalty from each reward before the GRPO baseline, combining output tokens (`num_output_tokens_weight`), input / context tokens (`num_input_tokens_weight`), and turns (`num_turns_weight`) — each normalized by the group's own max for that quantity, with `num_input_tokens_weight` and `num_turns_weight` defaulting to `0.1`.
+### Reward Shaping
+
+Reward shaping changes *what* is rewarded; the algorithm decides how that reward becomes per-token credit. Shapers are configured as a list under `[[orchestrator.reward_shaping]]` (per-env override: `reward_shaping` on the source, `[]` to disable) and run on every finalized group before the env's algorithm scores it. Each shaper records an additive term on every trainable trace in `trace.reward_shaping[<type>]`; algorithms score against `training_reward(trace)` — the env reward plus those terms — while `trace.reward` stays the env's verdict, so metrics, curricula and evals keep reading task success. Every algorithm that reads rewards (`grpo`, `echo`, `max_rl`, `rae`, `hierarchical_grpo`) sees shaped rewards. Each shaper's term is logged under `reward_shaping/<type>`.
+
+The **length penalty** (`type = "length_penalty"`) discourages rambling: it subtracts a single `pass_rate`-scaled penalty (where `pass_rate` is the group's mean reward) combining output tokens (`num_output_tokens_weight`, default `0.25`), input / context tokens (`num_input_tokens_weight`, default `0.1`), and turns (`num_turns_weight`, default `0.1`) — each normalized by the group's own max for that quantity. Only rollouts with `reward >= success_threshold` (default `1.0`) pay it: a wrong answer is not improved by being shorter, and penalizing failed long rollouts would teach the policy to give up early. Lower the threshold for envs with partial-credit rewards.
 
 ```toml
-[orchestrator.algo]
-type = "grpo"
-
-[orchestrator.algo.length_penalty]
-type = "linear"
+[[orchestrator.reward_shaping]]
+type = "length_penalty"
+num_output_tokens_weight = 0.0   # penalize context and turns only
 ```
+
+A new shaper is a named class in `prime_rl.orchestrator.reward_shaping` (subclass `RewardShaper`, implement `shape_group`, register it in `SHAPER_CLASSES`) with a `type`-keyed config in `prime_rl.configs.reward_shaping`.
 
 ### Hierarchical GRPO
 

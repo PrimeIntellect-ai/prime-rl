@@ -88,26 +88,8 @@ class SamplingConfig(BaseConfig):
 
 
 # ---------------------------------------------------------------------------
-# Shared sub-configs (length penalty, echo roles)
+# Shared sub-configs (echo roles)
 # ---------------------------------------------------------------------------
-
-
-class LinearLengthPenaltyConfig(BaseConfig):
-    """Linear ``pass_rate``-scaled penalty subtracted from each reward before the GRPO baseline — the sum of three terms (completion tokens, input tokens, turns), each normalized by the group's own max for that quantity and disabled by setting its coefficient to 0."""
-
-    type: Literal["linear"] = "linear"
-
-    num_output_tokens_weight: float = Field(0.25, ge=0, allow_inf_nan=False)
-    """Scale on the output-token term. Each reward is reduced by ``num_output_tokens_weight * pass_rate * (rollout num_output_tokens / group's max num_output_tokens)`` — where ``pass_rate`` is the group's mean reward — before the GRPO baseline subtraction. Finite and non-negative; 0 disables the term."""
-
-    num_input_tokens_weight: float = Field(0.1, ge=0, allow_inf_nan=False)
-    """Scale on the input-token term — tokens the model conditioned on but did not generate (``num_total_tokens - num_output_tokens``: prompts, tool responses), as a fraction of the group's max input tokens. 0 disables the term."""
-
-    num_turns_weight: float = Field(0.1, ge=0, allow_inf_nan=False)
-    """Scale on the turns term (``pass_rate * (rollout num_turns / group's max num_turns)``). 0 disables the term."""
-
-
-LengthPenaltyConfig: TypeAlias = LinearLengthPenaltyConfig
 
 
 class EchoRoleConfig(BaseConfig):
@@ -203,9 +185,6 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     consumed by the ``rl`` loss component on the rollout's action tokens."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
-
-    length_penalty: LengthPenaltyConfig | None = None
-    """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
 
 
 class EchoAlgoConfig(GRPOAlgoConfig):

@@ -237,6 +237,8 @@ class TrainSink:
 
         survivors = [trace for _, trace in iter_trainable_traces(group)]
         if survivors:
+            for shaper in env.reward_shapers:
+                shaper.shape_group(group)
             await env.algorithm.finalize_group(group)
         admitted = self._admit(group) if group else False
         if not survivors or not admitted:

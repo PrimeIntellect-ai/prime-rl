@@ -85,8 +85,8 @@ thinking_retention = "all"
 [orchestrator.algo]
 type = "grpo"
 
-[orchestrator.algo.length_penalty]
-type = "linear"
+[[orchestrator.reward_shaping]]
+type = "length_penalty"
 num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1
 num_turns_weight = 0.1

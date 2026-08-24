@@ -10,6 +10,7 @@ from prime_rl.configs.algorithm import (
     GRPOAlgoConfig,
 )
 from prime_rl.configs.monitors import OrchestratorMonitorsConfig
+from prime_rl.configs.reward_shaping import RewardShaperConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     BaseWeightBroadcastConfig,
@@ -239,6 +240,12 @@ class TrainSourceConfig(EnvConfig):
     ``orchestrator.algo`` when unset; set ``type`` (and its params) to give
     this env its own algorithm."""
 
+    reward_shaping: list[RewardShaperConfig] | None = None
+    """Reward shapers for this env, applied to the env reward before the
+    algorithm assigns credit. Inherits from the top-level
+    ``orchestrator.reward_shaping`` when unset; ``[]`` disables shaping for
+    this env."""
+
     curriculum: CurriculumConfig | None = None
     """User-authored task sampler and admission gates. The default cycles
     through the taskset and admits every finalized group."""
@@ -446,6 +453,12 @@ class OrchestratorConfig(BaseConfig):
     Defaults to ``grpo``. Override per source via ``[[orchestrator.train.source]]``'s
     ``algo``."""
 
+    reward_shaping: list[RewardShaperConfig] = Field(default_factory=list)
+    """Reward shapers applied to every finalized group before the algorithm
+    assigns credit — additive terms on the env reward (``type`` names the
+    shaper, e.g. ``length_penalty``). Empty by default. Override per source via
+    ``[[orchestrator.train.source]]``'s ``reward_shaping``."""
+
     model: ModelConfig = ModelConfig()
     """The model being trained: its model fields plus the client of the live
     vLLM deployment (``[orchestrator.model] name = ...`` with
@@ -555,6 +568,14 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.source:
             if env_cfg.algo is None:
                 env_cfg.algo = self.algo.model_copy(deep=True)
+        return self
+
+    @model_validator(mode="after")
+    def inherit_env_reward_shaping(self):
+        """Envs without their own reward shaping inherit the top-level list."""
+        for env_cfg in self.train.source:
+            if env_cfg.reward_shaping is None:
+                env_cfg.reward_shaping = [shaper.model_copy(deep=True) for shaper in self.reward_shaping]
         return self
 
     @model_validator(mode="after")

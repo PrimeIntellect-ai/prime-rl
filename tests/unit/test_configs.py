@@ -248,9 +248,10 @@ def test_env_algo_overrides_top_level():
         {
             "renderer": {"name": "qwen3"},  # echo needs the renderer's role attribution
             "algo": {"type": "echo"},
+            "reward_shaping": [{"type": "length_penalty", "num_output_tokens_weight": 0.0}],
             "train": {
                 "source": [
-                    {"env": {"taskset": {"id": "reverse-text"}}, "algo": {"type": "grpo"}},
+                    {"env": {"taskset": {"id": "reverse-text"}}, "algo": {"type": "grpo"}, "reward_shaping": []},
                     {"env": {"taskset": {"id": "reverse-text"}}, "name": "b"},
                 ]
             },
@@ -260,6 +261,10 @@ def test_env_algo_overrides_top_level():
     # Env a sets its own algorithm; only env b inherits the top-level echo algorithm.
     assert env_a.algo is not None and env_a.algo.type == "grpo"
     assert env_b.algo is not None and env_b.algo.type == "echo"
+    # Same rule for reward shaping: an explicit [] disables it, unset inherits the top-level list.
+    assert env_a.reward_shaping == []
+    assert env_b.reward_shaping is not None and [s.type for s in env_b.reward_shaping] == ["length_penalty"]
+    assert env_b.reward_shaping[0].num_output_tokens_weight == 0.0
 
     # Resolved configs round-trip.
     dumped = config.model_dump(exclude_none=True)

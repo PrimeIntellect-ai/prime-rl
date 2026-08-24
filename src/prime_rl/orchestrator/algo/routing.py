@@ -50,6 +50,15 @@ def assign_reference_logprobs(branch: vf.Branch, values: list[float]) -> None:
         offset = end
 
 
+def record_shaping(trace: vf.Trace, name: str, value: float) -> None:
+    trace.reward_shaping[name] = float(value)
+
+
+def training_reward(trace: vf.Trace) -> float:
+    """The reward an algorithm assigns credit against: env reward plus every shaping term."""
+    return trace.reward + sum(trace.reward_shaping.values())
+
+
 def scalar_advantage(trace: vf.Trace) -> float | None:
     """Mean nonzero token advantage, or zero for an assigned-zero trace."""
     advantages = [value for node in trace.nodes for value in node.advantages or []]

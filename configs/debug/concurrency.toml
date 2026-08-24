@@ -14,8 +14,8 @@
 # skip-optimizer checkpointing. Router replay is enabled — GLM-4.5-Air is a
 # glm4_moe model, which supports routed_experts.
 #
-# GRPO uses the linear length penalty with the input-token and turns
-# coefficients set to 0.1.
+# Reward shaping: the linear length penalty with the output-token term off
+# and the input-token and turns coefficients set to 0.1.
 
 max_steps = 1000
 seq_len = 131072
@@ -94,8 +94,8 @@ max_off_policy_steps = 32
 [orchestrator.algo]
 type = "grpo"
 
-[orchestrator.algo.length_penalty]
-type = "linear"
+[[orchestrator.reward_shaping]]
+type = "length_penalty"
 num_output_tokens_weight = 0.0
 num_input_tokens_weight = 0.1
 num_turns_weight = 0.1

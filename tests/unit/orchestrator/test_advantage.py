@@ -3,14 +3,12 @@ import asyncio
 import pytest
 import verifiers.v1 as vf
 
-from prime_rl.configs.algorithm import (
-    GRPOAlgoConfig,
-    LinearLengthPenaltyConfig,
-    MaxRLAlgoConfig,
-)
+from prime_rl.configs.algorithm import GRPOAlgoConfig, MaxRLAlgoConfig
+from prime_rl.configs.reward_shaping import LengthPenaltyConfig
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
-from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.algo.routing import assign_advantages, training_reward
+from prime_rl.orchestrator.reward_shaping import LengthPenalty
 from prime_rl.orchestrator.trajectories import trace_to_samples
 
 
@@ -151,9 +149,12 @@ def _scalar(episode: vf.Episode) -> float:
     raise AssertionError("episode has no trainable token")
 
 
-def _grpo(group: list[vf.Episode], length_penalty=None) -> list[float]:
-    """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
-    algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), clients=None)
+def _grpo(group: list[vf.Episode], length_penalty: LengthPenaltyConfig | None = None) -> list[float]:
+    """Shape the group (if asked), drive ``GRPOAlgorithm.score_group`` and read back
+    each per-rollout scalar — the sink's order: shapers first, then credit."""
+    if length_penalty is not None:
+        LengthPenalty(length_penalty).shape_group(group)
+    algo = GRPOAlgorithm(GRPOAlgoConfig(), clients=None)
     asyncio.run(algo.score_group(group))
     return [_scalar(episode) for episode in group]
 
@@ -191,53 +192,73 @@ def test_max_rl_mean_normalized():
 
 
 # --------------------------------------------------------------------------
-# GRPO linear length penalty: pass_rate-scaled penalty before the baseline.
+# Length penalty reward shaping: success-gated, pass_rate-scaled term recorded
+# before the baseline; the env reward itself is untouched.
 # --------------------------------------------------------------------------
 
 
-def test_linear_equal_lengths_reduce_to_plain_grpo():
-    """Equal completion length and turns → every rollout takes the same penalty
-    fraction, so subtracting it leaves the centered advantages unchanged."""
-    penalized = _grpo(
-        _make_group(rewards=[1.0, 0.0, 1.0], completion_lengths=[10, 10, 10], num_turns=[2, 2, 2]),
-        length_penalty=LinearLengthPenaltyConfig(),
-    )
-    plain = _grpo(_make_group(rewards=[1.0, 0.0, 1.0], completion_lengths=[10, 10, 10], num_turns=[2, 2, 2]))
+def test_length_penalty_equal_lengths_reduce_to_plain_grpo():
+    """Equal completion length and turns → every successful rollout takes the same
+    penalty fraction, so subtracting it leaves the centered advantages unchanged."""
+    group = _make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 10, 10], num_turns=[2, 2, 2])
+    penalized = _grpo(group, length_penalty=LengthPenaltyConfig())
+    plain = _grpo(_make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 10, 10], num_turns=[2, 2, 2]))
     assert penalized == pytest.approx(plain, abs=1e-6)
+    # shaping lands on the trace as a term, not on the env reward
+    trace = group[0].traces[0]
+    assert trace.reward == 1.0
+    assert trace.reward_shaping["length_penalty"] < 0
+    assert training_reward(trace) == pytest.approx(1.0 + trace.reward_shaping["length_penalty"])
 
 
-def test_linear_completion_term_penalizes_longer():
+def test_length_penalty_completion_term_penalizes_longer():
     """With only the completion term, longer completions get a larger penalty and a
     lower advantage; advantages stay zero-mean."""
-    cfg = LinearLengthPenaltyConfig(num_output_tokens_weight=0.25, num_input_tokens_weight=0.0, num_turns_weight=0.0)
+    cfg = LengthPenaltyConfig(num_output_tokens_weight=0.25, num_input_tokens_weight=0.0, num_turns_weight=0.0)
     advs = _grpo(_make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 20, 30]), length_penalty=cfg)
     assert advs[0] > advs[1] > advs[2]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
 
-def test_linear_context_term_penalizes_more_context():
+def test_length_penalty_context_term_penalizes_more_context():
     """The context term penalizes non-completion (prompt / tool-response) tokens: at
     equal completion length, more context tokens yields a lower advantage."""
-    cfg = LinearLengthPenaltyConfig(num_output_tokens_weight=0.0, num_input_tokens_weight=0.25, num_turns_weight=0.0)
+    cfg = LengthPenaltyConfig(num_output_tokens_weight=0.0, num_input_tokens_weight=0.25, num_turns_weight=0.0)
     group = [
         _build_episode(1.0, sampled_lengths=[10], obs_lengths=[]),
         _build_episode(1.0, sampled_lengths=[10], obs_lengths=[100]),
     ]
-    asyncio.run(GRPOAlgorithm(GRPOAlgoConfig(length_penalty=cfg), clients=None).score_group(group))
-    advs = [_scalar(episode) for episode in group]
+    advs = _grpo(group, length_penalty=cfg)
     assert advs[0] > advs[1]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
 
-def test_linear_turns_term_penalizes_more_turns():
+def test_length_penalty_turns_term_penalizes_more_turns():
     """The turns term penalizes higher turn counts at equal token lengths."""
-    cfg = LinearLengthPenaltyConfig(num_output_tokens_weight=0.0, num_input_tokens_weight=0.0, num_turns_weight=0.25)
+    cfg = LengthPenaltyConfig(num_output_tokens_weight=0.0, num_input_tokens_weight=0.0, num_turns_weight=0.25)
     advs = _grpo(
         _make_group(rewards=[1.0, 1.0], completion_lengths=[100, 100], num_turns=[1, 4]),
         length_penalty=cfg,
     )
     assert advs[0] > advs[1]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_length_penalty_gates_on_success():
+    """Failed rollouts pay no penalty: at the default threshold a long wrong answer
+    and a short wrong answer get the same advantage, while a long right answer is
+    penalized relative to a short right one. Lowering the threshold admits
+    partial-credit rollouts to the penalty."""
+    cfg = LengthPenaltyConfig(num_output_tokens_weight=0.25, num_input_tokens_weight=0.0, num_turns_weight=0.0)
+    advs = _grpo(_make_group(rewards=[0.0, 0.0, 1.0, 1.0], completion_lengths=[10, 100, 10, 100]), length_penalty=cfg)
+    assert advs[0] == pytest.approx(advs[1])
+    assert advs[2] > advs[3]
+
+    group = _make_group(rewards=[0.5, 0.5], completion_lengths=[10, 100])
+    assert _grpo(group, length_penalty=cfg) == pytest.approx([0.0, 0.0])
+    group = _make_group(rewards=[0.5, 0.5], completion_lengths=[10, 100])
+    advs = _grpo(group, length_penalty=cfg.model_copy(update={"success_threshold": 0.5}))
+    assert advs[0] > advs[1]
 
 
 # --------------------------------------------------------------------------
