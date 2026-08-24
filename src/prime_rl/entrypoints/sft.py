@@ -12,8 +12,8 @@ from prime_rl.configs.evals import EvalsConfig, OnlineConfig
 from prime_rl.configs.orchestrator import EvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
+from prime_rl.entrypoints.dashboard import ensure_dashboard
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
-from prime_rl.utils.dashboard_daemon import ensure_dashboard
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,

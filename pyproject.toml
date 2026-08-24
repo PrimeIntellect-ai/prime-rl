@@ -55,7 +55,7 @@ trainer = "prime_rl.entrypoints.trainer:main"
 orchestrator = "prime_rl.entrypoints.orchestrator:main"
 evals = "prime_rl.entrypoints.evals:main"
 env-server = "prime_rl.entrypoints.env_server:main"
-dashboard = "prime_rl.dashboard.server:main"
+dashboard = "prime_rl.entrypoints.dashboard:main"
 
 [project.entry-points."vllm.general_plugins"]
 prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"

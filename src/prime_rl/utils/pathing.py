@@ -100,7 +100,7 @@ def home_dir() -> Path:
 
 
 CACHE_DIR = home_dir() / ".cache" / "prime-rl"
-"""User-scoped cache root (mirrors verifiers' CACHE_DIR convention)."""
+"""User-scoped cache root."""
 
 
 def get_config_dir(output_dir: Path) -> Path:

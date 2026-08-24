@@ -19,8 +19,10 @@ live — an already-running one absorbs the new dir automatically, whatever port
 it is on. `--no-dashboard` opts a run out; non-interactive launches (CI, nohup)
 register their dir but never spawn.
 
-`--isolated` opts an instance out of all of this: it serves only the given
-dirs, registers nothing, and launchers ignore it. Use it for focused views
+## Isolated mode
+
+`--isolated` serves only the given dirs: no registry read or write, no
+discovery claim, and launchers ignore the instance. Use it for focused views
 (demos, debugging one run dir) or to keep a scratch dir out of the registry.
 
 ## Finding the live dashboard
@@ -50,7 +52,7 @@ over by the next start. Killing a dashboard never affects runs (it only reads),
 and killing a run never takes the dashboard down (it runs in its own session).
 Restart by launching any run, or directly: `uv run dashboard`.
 
-## Without the training deps
+## Dependency-free dashboard
 
 On a machine that should not resolve GPU dependencies (cluster head node,
 laptop against a mounted outputs dir), run the standalone script — an isolated

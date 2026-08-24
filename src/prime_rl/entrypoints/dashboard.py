@@ -11,6 +11,7 @@ process title ``PRL::Dashboard``.
 
 Stdlib-only on purpose: the launcher must work without the ``dashboard`` extra
 (then it registers the dir and points at the missing extra instead of spawning).
+``main`` is the ``dashboard`` console script, delegating to the actual server.
 """
 
 import json
@@ -90,3 +91,9 @@ def ensure_dashboard(output_dir: Path, logger) -> str | None:
         time.sleep(0.25)
     logger.warning(f"Dashboard daemon did not come up - see {DAEMON_LOG}")
     return None
+
+
+def main() -> None:
+    from prime_rl.dashboard.server import main as server_main
+
+    server_main()
