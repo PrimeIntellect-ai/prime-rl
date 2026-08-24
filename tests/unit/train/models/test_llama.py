@@ -127,5 +127,25 @@ def test_llama():
     assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=1000), f"Max grad diff: {grad_diff.abs().max()}"
 
 
+def test_llama_init_buffers_post_meta():
+    config = LlamaConfig(
+        pad_token_id=0,
+        hidden_size=32,
+        intermediate_size=64,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        num_hidden_layers=2,
+        vocab_size=64,
+    )
+    with torch.device("meta"):
+        model = PrimeRLLlamaForCausalLM(config)
+    model.to_empty(device="cuda")
+
+    model.init_buffers_post_meta()
+
+    for name, buffer in model.named_buffers():
+        assert torch.isfinite(buffer).all(), f"buffer {name} is not finite after init_buffers_post_meta"
+
+
 if __name__ == "__main__":
     test_llama_mlp_only()

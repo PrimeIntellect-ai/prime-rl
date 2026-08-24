@@ -124,5 +124,35 @@ def test_glm4_moe() -> None:
     assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=1000), f"Max grad diff: {grad_diff.abs().max()}"
 
 
+def test_glm4_moe_init_buffers_post_meta():
+    config = Glm4MoeConfig(
+        pad_token_id=0,
+        hidden_size=32,
+        intermediate_size=64,
+        max_position_embeddings=128,
+        moe_intermediate_size=32,
+        norm_topk_prob=True,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        n_routed_experts=4,
+        num_experts_per_tok=2,
+        n_shared_experts=1,
+        num_hidden_layers=2,
+        rope_theta=1000000.0,
+        first_k_dense_replace=1,
+        partial_rotary_factor=0.5,
+        use_grouped_mm=False,
+        vocab_size=64,
+    )
+    with torch.device("meta"):
+        model = PrimeRLGlm4MoeForCausalLM(config)
+    model.to_empty(device="cuda")
+
+    model.init_buffers_post_meta()
+
+    for name, buffer in model.named_buffers():
+        assert torch.isfinite(buffer).all(), f"buffer {name} is not finite after init_buffers_post_meta"
+
+
 if __name__ == "__main__":
     test_glm4_moe_mlp_only()

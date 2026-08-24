@@ -93,6 +93,19 @@ def test_qwen3_5_dense_matches_hf_state_keys_on_meta():
         assert tensor.shape == hf_model.state_dict()[name].shape, name
 
 
+@pytest.mark.gpu
+def test_qwen3_5_init_buffers_post_meta():
+    config = _tiny_text_config()
+    with torch.device("meta"):
+        model = Qwen3_5ForCausalLM(config)
+    model.to_empty(device="cuda")
+
+    model.init_buffers_post_meta()
+
+    for name, buffer in model.named_buffers():
+        assert torch.isfinite(buffer).all(), f"buffer {name} is not finite after init_buffers_post_meta"
+
+
 @pytest.mark.parametrize("attn_impl", ["flash_attention_3", "kernels-community/vllm-flash-attn3"])
 def test_qwen3_5_full_attention_uses_custom_class(attn_impl: str):
     config = _tiny_text_config(attn_impl=attn_impl)

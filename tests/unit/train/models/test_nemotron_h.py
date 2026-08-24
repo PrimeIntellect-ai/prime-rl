@@ -268,3 +268,19 @@ def test_nemotron_h_no_latent_projection():
     for name, p in model.named_parameters():
         if "experts.w1" in name and p.numel() > 0:
             assert p.grad is not None and p.grad.norm().item() > 0, f"Zero grad for {name}"
+
+
+def test_nemotron_h_init_buffers_post_meta():
+    config = NemotronHConfig(
+        **_BASE,
+        layers_block_type=["mamba", "moe", "attention", "moe"],
+        use_grouped_mm=False,
+    )
+    with torch.device("meta"):
+        model = NemotronHForCausalLM(config)
+    model.to_empty(device="cuda")
+
+    model.init_buffers_post_meta()
+
+    for name, buffer in model.named_buffers():
+        assert torch.isfinite(buffer).all(), f"buffer {name} is not finite after init_buffers_post_meta"
