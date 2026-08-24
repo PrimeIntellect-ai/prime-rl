@@ -49,7 +49,7 @@ const state = {
 };
 
 function fmtNum(v) {
-  if (v == null || Number.isNaN(v)) return "–";
+  if (v == null || Number.isNaN(v)) return "n/a";
   if (v === 0) return "0";
   const abs = Math.abs(v);
   if (abs >= 1e6 || abs < 1e-3) return v.toExponential(2);
@@ -57,10 +57,10 @@ function fmtNum(v) {
   if (Number.isInteger(v)) return String(v);
   return v.toPrecision(4).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
 }
-const fmtReward = (v) => (v == null || Number.isNaN(v) ? "–" : v.toFixed(3));
+const fmtReward = (v) => (v == null || Number.isNaN(v) ? "n/a" : v.toFixed(3));
 /* compact human counts that never overflow: 1.1K, 2.2M, 3.3B */
 function fmtCompact(n) {
-  if (n == null || Number.isNaN(n)) return "–";
+  if (n == null || Number.isNaN(n)) return "n/a";
   const abs = Math.abs(n);
   if (abs >= 1e9) return `${+(n / 1e9).toFixed(abs >= 1e10 ? 0 : 1)}B`;
   if (abs >= 1e6) return `${+(n / 1e6).toFixed(abs >= 1e7 ? 0 : 1)}M`;
@@ -68,7 +68,7 @@ function fmtCompact(n) {
   return String(n);
 }
 function fmtCost(v) {
-  if (v == null || Number.isNaN(v)) return "–";
+  if (v == null || Number.isNaN(v)) return "n/a";
   return `$${v >= 1 ? v.toFixed(2) : v.toFixed(4)}`;
 }
 
@@ -201,7 +201,7 @@ async function selectRun(name) {
 }
 
 function fmtDuration(secs) {
-  if (secs == null || !isFinite(secs) || secs < 0) return "–";
+  if (secs == null || !isFinite(secs) || secs < 0) return "n/a";
   const d = Math.floor(secs / 86400);
   const h = Math.floor((secs % 86400) / 3600);
   const m = Math.floor((secs % 3600) / 60);
@@ -215,7 +215,7 @@ function fmtDuration(secs) {
 }
 
 function fmtAgo(ts) {
-  if (!ts) return "–";
+  if (!ts) return "n/a";
   const secs = Date.now() / 1000 - ts;
   if (secs < 90) return "just now";
   if (secs < 3600) return `${Math.round(secs / 60)} min ago`;
@@ -238,7 +238,7 @@ function runStatus(step) {
 /* unbounded env lists: show the first two, fold the rest into "+N" (full list
    in the tooltip) */
 function envListField(envs) {
-  if (!envs?.length) return `<span class="val">–</span>`;
+  if (!envs?.length) return `<span class="val">n/a</span>`;
   const display = envs.length > 2 ? `${envs.slice(0, 2).join(", ")} +${envs.length - 2}` : envs.join(", ");
   return `<span class="val" title="${esc(envs.join(", "))}">${esc(display)}</span>`;
 }
@@ -254,24 +254,24 @@ function renderOverview() {
   const step = currentStep();
   const status = runStatus(step);
   const durationEnd = status === "running" ? Date.now() / 1000 : meta.updated;
-  const duration = meta.started && durationEnd ? fmtDuration(durationEnd - meta.started) : "–";
+  const duration = meta.started && durationEnd ? fmtDuration(durationEnd - meta.started) : "n/a";
   const field = ([label, value]) => `<div class="ov-field"><span class="lbl">${label}</span>${value}</div>`;
   // rollout dirs can run one step past max_steps (the final ship drains late
   // arrivals), so the headline caps at the configured horizon
   const shownStep = step != null && meta.max_steps ? Math.min(step, meta.max_steps) : step;
-  const stepText = `${shownStep != null ? shownStep.toLocaleString() : "–"}/${meta.max_steps ? meta.max_steps.toLocaleString() : "∞"}`;
+  const stepText = `${shownStep != null ? shownStep.toLocaleString() : "n/a"}/${meta.max_steps ? meta.max_steps.toLocaleString() : "∞"}`;
   const left = [
     ["status", `<span class="badge st-${status}">${status}</span>`],
-    ["type", `<span class="val">${esc((meta.type ?? "–").toUpperCase())}</span>`],
+    ["type", `<span class="val">${esc((meta.type ?? "n/a").toUpperCase())}</span>`],
     meta.type === "eval"
-      ? ["episodes", `<span class="val">${step != null ? step.toLocaleString() : "–"}</span>`]
+      ? ["episodes", `<span class="val">${step != null ? step.toLocaleString() : "n/a"}</span>`]
       : ["step", `<span class="val">${stepText}</span>`],
-    ["model", `<span class="val" title="${esc(meta.model ?? "")}">${esc(meta.model ?? "–")}</span>`],
+    ["model", `<span class="val" title="${esc(meta.model ?? "")}">${esc(meta.model ?? "n/a")}</span>`],
     ...(meta.type === "eval"
-      ? [["env", `<span class="val" title="${esc(meta.env ?? "")}">${esc(meta.env ?? "–")}</span>`]]
+      ? [["env", `<span class="val" title="${esc(meta.env ?? "")}">${esc(meta.env ?? "n/a")}</span>`]]
       : [
           meta.type === "sft"
-            ? ["dataset", `<span class="val" title="${esc(meta.dataset ?? "")}">${esc(meta.dataset ?? "–")}</span>`]
+            ? ["dataset", `<span class="val" title="${esc(meta.dataset ?? "")}">${esc(meta.dataset ?? "n/a")}</span>`]
             : ["train envs", envListField(meta.train_envs)],
           ["eval envs", envListField(meta.eval_envs)],
         ]),
@@ -477,7 +477,7 @@ function renderEvalCards(body) {
     );
   }
   const fmtVal = (key, v) => {
-    if (v == null) return "–";
+    if (v == null) return "n/a";
     if (key === "cost") return fmtCost(v);
     if (key.startsWith("timing/")) return fmtDuration(v);
     if (key.endsWith("tokens")) return fmtCompact(Math.round(v));
@@ -2223,9 +2223,11 @@ function errorBannersHtml(errors) {
         const message = record.message ?? "No error message";
         const traceback = Array.isArray(record.traceback) ? record.traceback.join("") : record.traceback;
         return (
-          `<section class="trace-error-banner"><div class="trace-error-head"><span>error</span><span>${esc(type)}</span></div>` +
-          `<div class="trace-error-message">${esc(message)}</div>` +
-          (traceback ? `<pre>${esc(traceback)}</pre>` : "") +
+          `<section class="trace-error-banner">` +
+          `<div class="trace-error-message"><span class="trace-error-type">${esc(type)}</span> ${esc(message)}</div>` +
+          (traceback
+            ? `<details class="trace-error-tb"><summary><span>traceback</span><span class="entry-chev">›</span></summary><pre>${esc(traceback)}</pre></details>`
+            : "") +
           `</section>`
         );
       })
@@ -2412,6 +2414,7 @@ function renderMeta(ep, trace, branches) {
   parts.push(metaRow("episode ID", ep.id, true));
   if (trace?.id) parts.push(metaRow("trace ID", trace.id, true));
   if (ep.group?.id) parts.push(metaRow("group ID", ep.group.id, true));
+  if (ep.task?.key) parts.push(metaRow("task ID", ep.task.key, true));
   if (trace?.agent?.runtime?.id) parts.push(metaRow("runtime ID", trace.agent.runtime.id, true));
 
   $("#tm-meta").innerHTML = parts.join("");
