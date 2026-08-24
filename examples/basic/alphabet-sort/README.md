@@ -12,9 +12,10 @@ The taskset is included through the Verifiers workspace. After syncing the repos
 uv run python -c "import alphabet_sort"
 ```
 
-Start the tmux session:
+We'll use two terminals: one for the inference server, one for everything else. To watch the run while it trains — metrics, resolved configs, rollout traces, and logs in one place — start the local dashboard and open http://localhost:7788:
+
 ```bash
-bash scripts/tmux.sh
+uv run dashboard
 ```
 
 ## Task
@@ -31,13 +32,13 @@ We use non-default settings to balance the difficulty: 3 fixed turns (instead of
 
 Start the inference server:
 ```bash
-# In the `Inference` pane
+# Run this in the inference terminal
 uv run inference --vllm.enable-lora --vllm.model Qwen/Qwen3-4B-Instruct-2507
 ```
 
 Evaluate the base model:
 ```bash
-# In the `Trainer` pane
+# Run this in the other terminal
 uv run eval alphabet-sort --harness.id null \
   -m Qwen/Qwen3-4B-Instruct-2507 \
   --client.base-url http://localhost:8000/v1 \
@@ -91,7 +92,7 @@ We train with LoRA (rank 32, alpha 64) for 100 steps.
 
 *Check out the logs on [W&B](https://wandb.ai/primeintellect/alphabet-sort-4b-lora/workspace?nw=nwuserandrewpi).*
 ```bash
-# In the `Trainer` pane
+# Run this in the other terminal
 uv run rl @ examples/basic/alphabet-sort/rl.toml \
   --run.name rl \
   --monitors.wandb.project ... \
@@ -106,12 +107,12 @@ We have uploaded the final model as [`PrimeIntellect/Qwen3-4B-Instruct-AlphabetS
 
 Let's see how our final RL checkpoint performs on the eval set.
 ```bash
-# In the `Inference` pane
+# Run this in the inference terminal
 uv run inference --vllm.enable-lora --vllm.model PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL
 ```
 
 ```bash
-# In the `Trainer` pane
+# Run this in the other terminal
 uv run eval alphabet-sort --harness.id null \
   -m PrimeIntellect/Qwen3-4B-Instruct-AlphabetSort-RL \
   --client.base-url http://localhost:8000/v1 \

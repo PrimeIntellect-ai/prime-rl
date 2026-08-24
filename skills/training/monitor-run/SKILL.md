@@ -40,14 +40,7 @@ In W&B, each project auto-gets an **"overview" saved view** (train / eval / stab
 
 **Never restart unless the researcher explicitly asked.** Confirm the exact restart command and the conditions that warrant one.
 
-**Never** run kill or launch commands from your own shell. Dispatch them to the tmux **Launcher** window so the researcher sees what was executed:
-
-```bash
-SESSION=$(tmux display-message -p '#S')
-tmux send-keys -t "$SESSION:Launcher" 'your command here' Enter
-```
-
-After a restart, verify all processes are back up and progress resumed before the next check-in.
+**Never** run kill or launch commands yourself. Hand the researcher the exact command and let them run it; after a restart, verify all processes are back up and progress resumed before the next check-in.
 
 ---
 
@@ -55,7 +48,6 @@ After a restart, verify all processes are back up and progress resumed before th
 
 ### Where to find things
 
-- `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the run dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
 - `{run_dir}/configs/` — the launch TOML copied verbatim (`rl.toml`/`sft.toml`), plus `resolved/` with the per-component resolved configs, written as JSON so explicit None settings round-trip.
 - `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
 - `{run_dir}/rollouts/step_N/{train,eval}/` — saved episodes (see Episodes below).
