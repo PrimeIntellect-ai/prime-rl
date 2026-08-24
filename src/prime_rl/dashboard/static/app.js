@@ -329,6 +329,8 @@ const TRAINER_KEY_RE = /^(perf|optim|loss|entropy|system|mismatch_kl|kl_ent_rati
 const ORCH_KEY_RE = /^(train|batch|off_policy|curriculum|eval)\//;
 
 function rowProducer(row, meta) {
+  if (typeof row.producer === "string") return row.producer; // stamped by FileMonitor
+  // legacy files predate the producer stamp: infer from key namespaces
   if (meta?.type === "sft") return "trainer";
   for (const key of Object.keys(row)) {
     if (TRAINER_KEY_RE.test(key)) return "trainer";
@@ -357,7 +359,7 @@ function ingestInto(store, rows, meta) {
     }
     const producer = isTime ? "infer" : rowProducer(row, meta);
     for (const [key, value] of Object.entries(row)) {
-      if (key === "step" || key === "time" || key === "_timestamp" || typeof value !== "number") continue;
+      if (key === "step" || key === "time" || key === "_timestamp" || key === "producer" || typeof value !== "number") continue;
       let producers = store.byKey.get(key);
       if (!producers) store.byKey.set(key, (producers = new Map()));
       let series = producers.get(producer);

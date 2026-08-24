@@ -22,8 +22,9 @@ class FileMonitor(Monitor):
     config: FileMonitorConfig
     file: TextIO
 
-    async def init(self, output_dir: Path) -> None:
+    async def init(self, output_dir: Path, producer: str | None = None) -> None:
         self.output_dir = output_dir
+        self.producer = producer
         self.path = output_dir / self.config.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Line-buffered append so a concurrently-running dashboard can tail the file.
@@ -40,6 +41,8 @@ class FileMonitor(Monitor):
             )
 
         row = {"step": step, "time": time.time(), **sanitized}
+        if self.producer is not None:
+            row["producer"] = self.producer
         self.file.write(json.dumps(row) + "\n")
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:

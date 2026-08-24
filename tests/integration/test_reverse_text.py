@@ -4,7 +4,7 @@ from typing import Callable
 import pytest
 
 from tests.conftest import ProcessResult
-from tests.integration.dashboard_smoke import check_dashboard_smoke
+from tests.integration.dashboard_smoke import make_dashboard_test
 from tests.utils import (
     check_avg_mismatch_kl_in_range,
     check_no_error,
@@ -129,5 +129,4 @@ def test_reward_in_range_resume(rl_resume_process: ProcessResult, test_no_error_
     check_reward_in_range(orchestrator_stdout, min_threshold=0.6)
 
 
-def test_dashboard(rl_process: ProcessResult, test_no_error, output_dir: Path):
-    check_dashboard_smoke(output_dir, RUN_NAME)
+test_dashboard = make_dashboard_test("rl_process", RUN_NAME)

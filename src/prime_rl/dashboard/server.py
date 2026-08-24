@@ -427,6 +427,16 @@ _avail_cache: dict[Path, dict[str, bool]] = {}  # step dir -> known-present subs
 _avail_scan_counter = 0
 
 
+EVAL_ROOT_STEP = (0, "eval", "all")
+"""The virtual address of a stepless `uv run eval` run's root traces.jsonl —
+the one convention shared by the step listing and traces_path."""
+
+
+def eval_root_traces(run_dir: Path) -> Path | None:
+    root = run_dir / "traces.jsonl"
+    return root if root.is_file() and root.stat().st_size > 0 else None
+
+
 def rollout_steps(run_dir: Path) -> list[dict]:
     """Presence only — never reads trace files. Presence is monotonic (files only
     appear), so known-present subsets are cached forever; absent ones re-stat every
@@ -451,9 +461,9 @@ def rollout_steps(run_dir: Path) -> list[dict]:
                         available[key] = True
         if available:
             steps.append({"step": number, "available": available})
-    root_traces = run_dir / "traces.jsonl"  # `uv run eval` writes one stepless file
-    if not steps and root_traces.is_file() and root_traces.stat().st_size > 0:
-        steps.append({"step": 0, "available": {"eval/all": True}})
+    root = eval_root_traces(run_dir)
+    if not steps and root is not None:
+        steps.append({"step": EVAL_ROOT_STEP[0], "available": {f"{EVAL_ROOT_STEP[1]}/{EVAL_ROOT_STEP[2]}": True}})
     return steps
 
 
@@ -638,9 +648,10 @@ def traces_path(run: str, step: int, kind: str, subset: str) -> Path:
     path = run_dir / "rollouts" / f"step_{step}" / kind / subset / "traces.jsonl"
     if path.is_file():
         return path
-    root = run_dir / "traces.jsonl"
-    if (step, kind, subset) == (0, "eval", "all") and root.is_file():
-        return root
+    if (step, kind, subset) == EVAL_ROOT_STEP:
+        root = eval_root_traces(run_dir)
+        if root is not None:
+            return root
     raise HTTPException(404, "no traces for this step/kind/subset")
 
 

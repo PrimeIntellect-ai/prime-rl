@@ -124,3 +124,16 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
         except subprocess.TimeoutExpired:
             server.kill()
     print(f"Dashboard smoke passed for {run_name} ({output_dir})", file=sys.stderr)
+
+
+def make_dashboard_test(process_fixture: str, run_name: str):
+    """The per-file dashboard smoke: `test_dashboard = make_dashboard_test("rl_process", RUN_NAME)`.
+    Depends on the module's (module-scoped) training-process fixture, so it runs
+    against the artifacts that run just produced."""
+    import pytest
+
+    @pytest.mark.usefixtures(process_fixture)
+    def test_dashboard(output_dir: Path) -> None:
+        check_dashboard_smoke(output_dir, run_name)
+
+    return test_dashboard

@@ -45,6 +45,7 @@ async def setup(
     file: FileMonitorConfig | None = None,
     *,
     output_dir: Path,
+    producer: str | None = None,
     run_config: BaseConfig | None = None,
     train_env_names: list[str] | None = None,
     eval_env_names: list[str] | None = None,
@@ -79,7 +80,7 @@ async def setup(
             )
         )
     if file is not None:
-        monitors.append(("file", FileMonitor(file), dict(output_dir=output_dir)))
+        monitors.append(("file", FileMonitor(file), dict(output_dir=output_dir, producer=producer)))
     if not monitors:
         return
 

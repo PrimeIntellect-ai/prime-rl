@@ -353,8 +353,8 @@ class InferenceMetricsCollector:
 
         if metrics:
             # Time-keyed rows (step=None): inference metrics are sampled on wall
-            # time, not the training step. Fans out to every registered monitor.
-            metrics["_timestamp"] = time.time()
+            # time, not the training step. Fans out to every registered monitor;
+            # each monitor stamps its own timestamp.
             await monitors.log(metrics, step=None)
 
     async def fetch_max_model_len(self, endpoint: MetricsEndpoint) -> None:

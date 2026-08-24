@@ -93,6 +93,7 @@ class Evals:
 
         get_logger().info(f"Initializing monitors ({config.monitors})")
         await monitors.setup(
+            producer="evals",
             wandb=config.monitors.wandb,
             file=config.monitors.file,
             output_dir=config.output_dir,

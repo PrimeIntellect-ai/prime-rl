@@ -76,6 +76,7 @@ def train(config: SFTConfig):
     # Setup the monitors
     asyncio.run(
         monitors.setup(
+            producer="trainer",
             wandb=config.monitors.wandb,
             file=config.monitors.file,
             output_dir=config.run_dir,

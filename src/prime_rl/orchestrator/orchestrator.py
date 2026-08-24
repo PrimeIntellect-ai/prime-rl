@@ -212,6 +212,7 @@ class Orchestrator:
         self.admin_clients = AdminClients(config.model.client)
 
         await monitors.setup(
+            producer="orch",
             wandb=config.monitors.wandb,
             prime=config.monitors.prime,
             file=config.monitors.file,

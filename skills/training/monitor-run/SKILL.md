@@ -60,7 +60,9 @@ metrics (the W&B overview sections, read from `metrics.jsonl`), the resolved con
 files, a rollout trace viewer with a per-token advantage/logprob view, and merged
 component logs. It only reads the run dirs — safe to run against a live run.
 `--port`/`--host` pick the bind address; a taken port automatically bumps to the next
-free one, so several dashboards run side by side without coordination.
+free one, so several dashboards run side by side without coordination. Without the
+project's GPU deps (e.g. a head node), run it standalone:
+`uv run --script src/prime_rl/dashboard/server.py [output_dir ...]`.
 
 ### Logs
 
