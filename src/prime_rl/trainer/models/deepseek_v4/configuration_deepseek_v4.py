@@ -1,5 +1,6 @@
 from typing import Any
 
+from huggingface_hub.dataclasses import strict
 from transformers.configuration_utils import PretrainedConfig
 
 DEEPSEEK_V4_LAYER_TYPES = (
@@ -11,6 +12,7 @@ DEEPSEEK_V4_LAYER_TYPES = (
 DEEPSEEK_V4_MLP_LAYER_TYPES = ("hash_moe", "moe")
 
 
+@strict
 class DeepseekV4Config(PretrainedConfig):
     """Configuration for DeepSeek-V4 (Flash / Pro) models.
 
@@ -272,11 +274,26 @@ class DeepseekV4Config(PretrainedConfig):
         return kwargs
 
     def validate_architecture(self) -> None:
-        for name, allowed in (
-            ("layer_types", DEEPSEEK_V4_LAYER_TYPES),
-            ("mlp_layer_types", DEEPSEEK_V4_MLP_LAYER_TYPES),
+        """Compress_rates completeness: every non-sliding layer type needs a rate."""
+        for layer_type in set(self.layer_types) - {"sliding_attention"}:
+            if layer_type not in self.compress_rates:
+                raise ValueError(f"compress_rates is missing a rate for layer type {layer_type!r}.")
+
+    def validate_layer_type(self) -> None:
+        """Narrow `@strict`'s generic layer-type check to V4's own vocabularies.
+
+        Re-decorating this class with `@strict` (matching upstream HF's own
+        `DeepseekV4Config`) makes `@strict` rediscover validators scoped to this
+        class, so this override is what actually runs — unlike a plain method
+        override on an undecorated subclass, whose `validate()` closure would
+        keep calling the base `PretrainedConfig.validate_layer_type`, which only
+        allows `mlp_layer_types` entries of `("sparse", "dense")`, not V4's
+        `hash_moe` / `moe`.
+        """
+        for name, types, allowed in (
+            ("layer_types", self.layer_types, DEEPSEEK_V4_LAYER_TYPES),
+            ("mlp_layer_types", self.mlp_layer_types, DEEPSEEK_V4_MLP_LAYER_TYPES),
         ):
-            types = getattr(self, name)
             if len(types) != self.num_hidden_layers:
                 raise ValueError(
                     f"{name} length ({len(types)}) must equal num_hidden_layers ({self.num_hidden_layers})."
@@ -284,9 +301,6 @@ class DeepseekV4Config(PretrainedConfig):
             unknown = sorted({layer_type for layer_type in types if layer_type not in allowed})
             if unknown:
                 raise ValueError(f"{name} entries must be one of {allowed}; got {unknown}.")
-        for layer_type in set(self.layer_types) - {"sliding_attention"}:
-            if layer_type not in self.compress_rates:
-                raise ValueError(f"compress_rates is missing a rate for layer type {layer_type!r}.")
 
 
 __all__ = ["DeepseekV4Config"]
