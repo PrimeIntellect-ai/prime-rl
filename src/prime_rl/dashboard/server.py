@@ -362,25 +362,32 @@ def read_config(run: str, file: str) -> dict:
 # ------------------------------------------------------------------------- metrics
 
 
+MAX_METRICS_CHUNK = 4 * 1024 * 1024
+"""Per-response cap on /metrics: huge runs stream in chunks the client loops over,
+so the first charts paint long before a 100MB metrics.jsonl finishes loading."""
+
+
 @app.get("/api/runs/{run}/metrics")
 def read_metrics(run: str, offset: int = 0) -> dict:
     path = get_run_dir(run) / "metrics.jsonl"
     if not path.is_file():
-        return {"rows": [], "offset": 0}
+        return {"rows": [], "offset": 0, "size": 0}
     size = path.stat().st_size
     if offset > size:  # file was truncated/replaced
         offset = 0
     rows = []
     with path.open("rb") as f:
         f.seek(offset)
-        data = f.read()
+        data = f.read(MAX_METRICS_CHUNK)
+        if data and b"\n" not in data:  # a single line larger than the chunk
+            data += f.readline()
     consumed = data.rfind(b"\n") + 1  # leave a partially-written last line for the next poll
     for line in data[:consumed].splitlines():
         try:
             rows.append(orjson.loads(line))
         except orjson.JSONDecodeError:
             continue
-    return {"rows": rows, "offset": offset + consumed}
+    return {"rows": rows, "offset": offset + consumed, "size": size}
 
 
 # ------------------------------------------------------------------------ rollouts
@@ -686,6 +693,21 @@ def render_status(url: str):
     return text
 
 
+def free_port(host: str, start: int) -> int:
+    """The first free port at or above `start`, so several dashboards on one node
+    (e.g. a cluster head node) never collide."""
+    import socket
+
+    for port in range(start, start + 100):
+        with socket.socket() as sock:
+            try:
+                sock.bind((host, port))
+            except OSError:
+                continue
+            return port
+    raise SystemExit(f"no free port in [{start}, {start + 100})")
+
+
 def main() -> None:
     global output_dirs
     parser = argparse.ArgumentParser(description="prime-rl run dashboard")
@@ -698,6 +720,10 @@ def main() -> None:
         print(f"warning: output dir {missing} does not exist", file=sys.stderr)
     if not output_dirs:
         raise SystemExit("no existing output dir given")
+    port = free_port(args.host, args.port)
+    if port != args.port:
+        print(f"port {args.port} is taken - serving on {port}", file=sys.stderr)
+    args.port = port
     url = f"http://localhost:{args.port}"
     if sys.stdout.isatty():
         # live console: re-scan every few seconds so new runs show up as tracked

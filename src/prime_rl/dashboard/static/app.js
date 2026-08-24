@@ -364,23 +364,44 @@ function ingestInto(store, rows, meta) {
   return touched;
 }
 
+/* the server caps each /metrics response, so a huge run streams in chunks: the
+   first charts paint immediately and a progress readout ticks up while the rest
+   loads, with the main thread yielding between chunks */
 async function fetchMetrics() {
   if (state.meta?.type === "eval") return fetchEvalSeries();
-  const [data, compared] = await Promise.all([
-    api(`/api/runs/${encodeURIComponent(state.run)}/metrics?offset=${state.metrics.offset}`),
-    fetchCompares(),
-  ]);
-  state.metrics.offset = data.offset;
-  let touched = null;
-  if (data.rows.length) {
-    touched = ingestInto(state.metrics, data.rows, state.meta);
-    renderOverview();
+  const m = state.metrics;
+  if (m.fetching) return 0;
+  m.fetching = true;
+  let total = 0;
+  let showedProgress = false;
+  try {
+    for (let first = true; ; first = false) {
+      const [data, compared] = await Promise.all([
+        api(`/api/runs/${encodeURIComponent(state.run)}/metrics?offset=${m.offset}`),
+        first ? fetchCompares() : false,
+      ]);
+      if (state.metrics !== m) return total; // the run changed mid-load
+      m.offset = data.offset;
+      total += data.rows.length;
+      let touched = null;
+      if (data.rows.length) {
+        touched = ingestInto(m, data.rows, state.meta);
+        renderOverview();
+      }
+      if (data.rows.length || compared) {
+        if (m.byKey.size !== m.renderedKeys) renderMetricsBody();
+        else updateCharts(compared ? null : touched); // compares may touch any panel
+      }
+      if (data.offset >= (data.size ?? data.offset)) break;
+      showedProgress = true;
+      $("#metrics-status").textContent = `loading metrics · ${Math.round((data.offset / data.size) * 100)}%`;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    if (showedProgress && m.mode === "overview") $("#metrics-status").textContent = "";
+  } finally {
+    m.fetching = false;
   }
-  if (data.rows.length || compared) {
-    if (state.metrics.byKey.size !== state.metrics.renderedKeys) renderMetricsBody();
-    else updateCharts(compared ? null : touched); // compares may touch any panel
-  }
-  return data.rows.length;
+  return total;
 }
 
 /* eval runs have no metrics.jsonl and no step axis — their metrics view is a

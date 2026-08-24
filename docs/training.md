@@ -329,7 +329,7 @@ tail -F <run_dir>/logs/latest/inference/router.log # multi-node only
 
 ### Dashboard
 
-`uv run dashboard [output_dir ...]` (default `outputs/`) serves a local web dashboard at `http://localhost:7788` with four views per run: metrics (the W&B overview sections, read from `metrics.jsonl`), the resolved configs, a rollout trace viewer with a per-token advantage/logprob view, and merged component logs. It only reads the run dirs, so it is safe to point at a live run; pass several output directories to track parallel experiments, and `--port`/`--host` to serve more than one dashboard.
+`uv run dashboard [output_dir ...]` (default `outputs/`) serves a local web dashboard at `http://localhost:7788` with four views per run: metrics (the W&B overview sections, read from `metrics.jsonl`), the resolved configs, a rollout trace viewer with a per-token advantage/logprob view, and merged component logs. It only reads the run dirs, so it is safe to point at a live run; pass several output directories to track parallel experiments. A taken port automatically bumps to the next free one, so several dashboards coexist on one node.
 
 ### Weights & Biases
 
