@@ -22,6 +22,7 @@ from pathlib import Path
 import orjson
 
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
+from prime_rl.utils.config import default_output_dir
 from prime_rl.utils.process import set_proc_title
 
 try:
@@ -37,7 +38,7 @@ MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "evals.log"}
 MAX_LOG_CHUNK = 2_000_000
 
 app = FastAPI()
-output_dirs: list[Path] = [Path("outputs")]
+output_dirs: list[Path] = [default_output_dir()]
 
 # run id -> run dir, rebuilt on every /api/runs poll; ids are the run name,
 # qualified with the output dir's basename when two dirs hold the same name
@@ -888,7 +889,7 @@ def release_daemon() -> None:
 def main() -> None:
     global output_dirs, isolated
     parser = argparse.ArgumentParser(description="prime-rl run dashboard")
-    parser.add_argument("output_dirs", nargs="*", default=[Path("outputs")], type=Path, metavar="output_dir")
+    parser.add_argument("output_dirs", nargs="*", default=[default_output_dir()], type=Path, metavar="output_dir")
     parser.add_argument("--port", type=int, default=7788)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(

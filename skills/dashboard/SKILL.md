@@ -6,7 +6,7 @@ description: Find, start, use, and stop the local run dashboard — the web UI f
 # Run dashboard
 
 `uv sync --extra dashboard && uv run dashboard [output_dir ...]` (default
-`outputs/`) serves a web UI at `http://localhost:7788`. It only reads run
+`outputs/`, or `$PRL_OUTPUT_DIR` if set) serves a web UI at `http://localhost:7788`. It only reads run
 dirs — safe against live runs — and installs anywhere (cluster head node,
 laptop against a mounted outputs dir): GPU dependencies live behind the
 `gpu` extra.

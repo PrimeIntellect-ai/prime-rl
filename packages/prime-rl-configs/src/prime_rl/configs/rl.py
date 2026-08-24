@@ -41,7 +41,7 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
     TrainerConfig,
 )
-from prime_rl.utils.config import BaseConfig, find_package_resource
+from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
     validate_shared_ckpt_config,
@@ -243,8 +243,8 @@ class RLConfig(BaseConfig):
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
 
-    output_dir: Path = Path("outputs")
-    """Directory that groups related runs. Each run writes its artifacts to ``output_dir / run.name``."""
+    output_dir: Path = Field(default_factory=default_output_dir)
+    """Directory that groups related runs. Each run writes its artifacts to ``output_dir / run.name``. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
     clean: bool = False
     """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""

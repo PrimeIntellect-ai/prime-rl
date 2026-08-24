@@ -54,7 +54,7 @@ In W&B, each project auto-gets an **"overview" saved view** (train / eval / stab
 
 ### Dashboard
 
-`uv run dashboard [output_dir ...]` (default `outputs/`; several dirs can be tracked at
+`uv run dashboard [output_dir ...]` (default `outputs/`, or `$PRL_OUTPUT_DIR` if set; several dirs can be tracked at
 once) serves a local web dashboard at `http://localhost:7788` with four views per run:
 metrics (the W&B overview sections, read from `metrics.jsonl`), the resolved config
 files, a rollout trace viewer with a per-token advantage/logprob view, and merged
