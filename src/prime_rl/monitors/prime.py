@@ -5,6 +5,7 @@ import atexit
 import io
 import json
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Coroutine
 
@@ -91,6 +92,9 @@ class PrimeMonitor(Monitor):
         metrics, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
+        # every monitor stamps its own wall time; without it, step=None rows
+        # (e.g. inference metrics) reach the platform with no time anchor
+        metrics["_timestamp"] = time.time()
         self.run.submit("metrics upload", self.run.log_metrics(metrics))
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
