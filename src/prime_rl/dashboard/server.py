@@ -26,10 +26,17 @@ import threading
 from pathlib import Path
 
 import orjson
-import uvicorn
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+
+try:
+    import uvicorn
+    from fastapi import FastAPI, HTTPException, Query
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+except ModuleNotFoundError as error:  # the dashboard ships as an extra
+    raise SystemExit(
+        "the dashboard needs the 'dashboard' extra - install with `uv sync --extra dashboard` "
+        "(or run the standalone script: `uv run --script src/prime_rl/dashboard/server.py`)"
+    ) from error
 
 STATIC_DIR = Path(__file__).parent / "static"
 MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "evals.log"}

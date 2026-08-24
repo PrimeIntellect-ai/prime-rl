@@ -4876,7 +4876,6 @@ dependencies = [
     { name = "beartype" },
     { name = "datasets" },
     { name = "dion" },
-    { name = "fastapi" },
     { name = "flash-linear-attention" },
     { name = "jaxtyping" },
     { name = "loguru" },
@@ -4908,7 +4907,6 @@ dependencies = [
     { name = "torchtitan" },
     { name = "torchvision" },
     { name = "transformers" },
-    { name = "uvicorn" },
     { name = "uvloop" },
     { name = "verifiers", extra = ["harbor"] },
     { name = "vllm", version = "0.26.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.26.0/vllm-0.26.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
@@ -4932,6 +4930,10 @@ all = [
     { name = "quack-kernels" },
     { name = "vllm-router", version = "0.2.0", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
     { name = "vllm-router", version = "0.2.0", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64'" },
+]
+dashboard = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
 ]
 disagg = [
     { name = "deep-ep", version = "1.1.0+1fd57b0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64'" },
@@ -4989,7 +4991,7 @@ requires-dist = [
     { name = "deep-gemm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'disagg'" },
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
-    { name = "fastapi", specifier = ">=0.115" },
+    { name = "fastapi", marker = "extra == 'dashboard'", specifier = ">=0.115" },
     { name = "flash-attn", marker = "platform_machine == 'aarch64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.22/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_aarch64.whl" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu128" },
@@ -5038,7 +5040,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=23e4dfc" },
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", specifier = "==5.6.2" },
-    { name = "uvicorn", specifier = ">=0.30" },
+    { name = "uvicorn", marker = "extra == 'dashboard'", specifier = ">=0.30" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", extras = ["harbor"], editable = "deps/verifiers" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.26.0" },
@@ -5050,7 +5052,7 @@ requires-dist = [
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wandb-workspaces", specifier = ">=0.4.3" },
 ]
-provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "gpt-oss", "quack", "kernels", "all"]
+provides-extras = ["dashboard", "flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "gpt-oss", "quack", "kernels", "all"]
 
 [package.metadata.requires-dev]
 dev = [
