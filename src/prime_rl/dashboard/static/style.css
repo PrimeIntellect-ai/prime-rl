@@ -678,16 +678,18 @@ mark.hit {
 #tm-step-label .muted { text-transform: none; letter-spacing: var(--track-mono); }
 
 #tm-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-#tm-messages { flex: 1; overflow-y: auto; padding: 14px 16px; }
+#tm-messages { display: flex; flex: 1; flex-direction: column; overflow-y: auto; padding: 14px 16px; }
+#tm-messages > * { flex-shrink: 0; }
 #tm-right { border-left: 1px solid var(--hairline); overflow-y: auto; min-height: 0; }
 #tm-meta { padding: 12px 14px; }
 
+.trace-errors { margin-top: auto; padding-top: 12px; }
 .trace-error-banner {
   border: 1px solid var(--negative);
   background: rgba(255, 69, 57, 0.08);
-  margin-bottom: 12px;
   color: var(--grey-6);
 }
+.trace-error-banner + .trace-error-banner { margin-top: 8px; }
 .trace-error-head {
   display: flex;
   gap: 10px;

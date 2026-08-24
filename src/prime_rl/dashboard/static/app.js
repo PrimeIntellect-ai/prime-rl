@@ -2213,20 +2213,25 @@ function episodeErrors(ep, trace) {
 }
 
 function errorBannersHtml(errors) {
-  return errors
-    .map((error) => {
-      const record = error && typeof error === "object" ? error : { message: String(error) };
-      const type = record.type ?? "Error";
-      const message = record.message ?? "No error message";
-      const traceback = Array.isArray(record.traceback) ? record.traceback.join("") : record.traceback;
-      return (
-        `<section class="trace-error-banner"><div class="trace-error-head"><span>error</span><span>${esc(type)}</span></div>` +
-        `<div class="trace-error-message">${esc(message)}</div>` +
-        (traceback ? `<pre>${esc(traceback)}</pre>` : "") +
-        `</section>`
-      );
-    })
-    .join("");
+  if (!errors.length) return "";
+  return (
+    `<div class="trace-errors">` +
+    errors
+      .map((error) => {
+        const record = error && typeof error === "object" ? error : { message: String(error) };
+        const type = record.type ?? "Error";
+        const message = record.message ?? "No error message";
+        const traceback = Array.isArray(record.traceback) ? record.traceback.join("") : record.traceback;
+        return (
+          `<section class="trace-error-banner"><div class="trace-error-head"><span>error</span><span>${esc(type)}</span></div>` +
+          `<div class="trace-error-message">${esc(message)}</div>` +
+          (traceback ? `<pre>${esc(traceback)}</pre>` : "") +
+          `</section>`
+        );
+      })
+      .join("") +
+    `</div>`
+  );
 }
 
 function renderMessages(ep, trace, branches) {
@@ -2234,7 +2239,7 @@ function renderMessages(ep, trace, branches) {
   entriesObserver?.disconnect();
   const errorsHtml = errorBannersHtml(episodeErrors(ep, trace));
   if (!trace) {
-    container.innerHTML = errorsHtml + emptyState("no traces", "this episode carries no trace data");
+    container.innerHTML = emptyState("no traces", "this episode carries no trace data") + errorsHtml;
     return;
   }
   const signal = $("#token-signal").value;
@@ -2279,9 +2284,9 @@ function renderMessages(ep, trace, branches) {
   const CHUNK = 30;
   let rendered = Math.min(path.length, CHUNK);
   container.innerHTML =
-    errorsHtml +
     path.slice(0, rendered).map(entryHtml).join("") +
-    (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "");
+    (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
+    errorsHtml;
   if (rendered < path.length) {
     const sentinel = container.querySelector("#tm-more");
     entriesObserver = new IntersectionObserver((hits) => {
@@ -2408,13 +2413,6 @@ function renderMeta(ep, trace, branches) {
   if (trace?.id) parts.push(metaRow("trace ID", trace.id, true));
   if (ep.group?.id) parts.push(metaRow("group ID", ep.group.id, true));
   if (trace?.agent?.runtime?.id) parts.push(metaRow("runtime ID", trace.agent.runtime.id, true));
-
-  const errors = episodeErrors(ep, trace);
-  if (errors.length)
-    parts.push(
-      `<details class="meta-fold" open><summary>errors (${errors.length})</summary>` +
-        `<pre class="json">${esc(JSON.stringify(errors, null, 2))}</pre></details>`
-    );
 
   $("#tm-meta").innerHTML = parts.join("");
 }
