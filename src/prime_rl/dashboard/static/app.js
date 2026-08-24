@@ -902,7 +902,8 @@ function panelTitle(panel, series, sectionName) {
     title = parts.join("/") || keys[0];
   }
   if (sectionName && title.startsWith(`${sectionName}/`)) title = title.slice(sectionName.length + 1);
-  if (title.endsWith("/mean")) title = title.slice(0, -"/mean".length); // a lone mean is implied
+  // overview: a lone mean is implied - all mode keeps the stat next to its /min//p10 siblings
+  if (state.metrics.mode === "overview" && title.endsWith("/mean")) title = title.slice(0, -"/mean".length);
   return title;
 }
 
@@ -1006,8 +1007,8 @@ function addSection(body, name, count, display = name) {
 }
 
 /* all-mode: fully recursive sections along family path segments (train → agg →
-   all → agent → …). A leaf card charts one metric family: the mean as the main
-   line with its band, every other logged stat as a dashed overlay. */
+   all → agent → …). Every logged key gets its own pane — stats are never
+   overlaid, so min/p10/median/... show as raw separate plots. */
 function renderKeyTree(parent, name, families, depth) {
   const display = depth === 1 ? name : name.split("/").pop();
   const { div, grid } = addSection(parent, name, families.length, display);
@@ -1022,7 +1023,7 @@ function renderKeyTree(parent, name, families, depth) {
       children.get(segment).push(f);
     }
   }
-  for (const f of leaves) renderPanelCard(grid, { metrics: f.keys }, true);
+  for (const f of leaves) for (const key of f.keys) renderPanelCard(grid, { metric: key }, true);
   if (grid.children.length) applyPaneOrder(grid);
   else grid.remove();
   for (const [segment, childFamilies] of children) renderKeyTree(div, `${name}/${segment}`, childFamilies, depth + 1);
