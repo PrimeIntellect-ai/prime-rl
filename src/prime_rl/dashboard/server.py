@@ -56,7 +56,6 @@ _lock = threading.Lock()
 _offsets_cache: dict[Path, tuple[int, list[int]]] = {}
 _summaries_cache: dict[Path, tuple[int, list[dict]]] = {}
 _tokenizer_cache: dict[str, object] = {}
-_started_cache: dict[Path, float] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
 _json_cache: dict[Path, tuple[tuple[int, float], dict]] = {}
 _steps_cache: dict[Path, tuple[float, list[int]]] = {}
@@ -199,14 +198,13 @@ def run_meta(run_dir: Path) -> dict:
     started = updated = None
     if metrics_path.is_file():
         updated = metrics_path.stat().st_mtime
-        started = _started_cache.get(metrics_path)
-        if started is None:
-            with metrics_path.open("rb") as f:
-                try:
-                    started = orjson.loads(f.readline()).get("time")
-                    _started_cache[metrics_path] = started
-                except orjson.JSONDecodeError:
-                    pass
+        # read fresh every time: a relaunch replaces the file, and a cached
+        # first-row time from the previous run makes the duration absurd
+        with metrics_path.open("rb") as f:
+            try:
+                started = orjson.loads(f.readline()).get("time")
+            except orjson.JSONDecodeError:
+                started = None
     root_traces = run_dir / "traces.jsonl"
     if updated is None and root_traces.is_file():  # eval runs have no metrics.jsonl
         updated = root_traces.stat().st_mtime

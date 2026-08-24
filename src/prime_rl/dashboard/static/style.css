@@ -127,6 +127,14 @@ select:focus, .search:focus { border-color: var(--grey-6); }
 }
 .dd-wrap { position: relative; }
 .dd-btn.active { color: var(--accent); border-color: var(--accent); }
+/* selects dressed as dropdowns: lowercase label with ellipsis, scrollable options */
+.dd-select .dd-btn { text-transform: none; letter-spacing: var(--track-mono); font-size: 12px; max-width: 340px; }
+.dd-select .dd-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dd-optlist { min-width: 100%; max-height: 320px; overflow-y: auto; padding: 4px 0; white-space: nowrap; }
+.dd-opt { padding: 5px 12px; font-size: 12px; cursor: pointer; color: var(--grey-5); }
+.dd-opt:hover { background: var(--grey-2); color: var(--grey-6); }
+.dd-opt.active { color: var(--accent); }
+.dd-opt.disabled { color: var(--grey-3); cursor: default; }
 .dd-menu {
   position: absolute;
   top: 34px;
@@ -375,6 +383,17 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 }
 
 .u-cursor-pt { display: none !important; }
+/* hover highlight dot on the snapped data point */
+.u-dot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  pointer-events: none;
+  will-change: transform;
+}
 /* drag-to-zoom selection highlight */
 .u-select { background: rgba(182, 255, 60, 0.1); outline: 1px solid rgba(182, 255, 60, 0.35); }
 

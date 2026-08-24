@@ -812,6 +812,7 @@ function unzoomPlugin() {
 /* hover popover with the x value and every series' y value */
 function tooltipPlugin(meta, timeAxis) {
   let tip;
+  let dots;
   return {
     hooks: {
       init: (u) => {
@@ -819,12 +820,24 @@ function tooltipPlugin(meta, timeAxis) {
         tip.className = "u-tip";
         tip.style.display = "none";
         u.over.appendChild(tip);
-        u.over.addEventListener("mouseleave", () => (tip.style.display = "none"));
+        dots = meta.map((m) => {
+          const dot = document.createElement("div");
+          dot.className = "u-dot";
+          dot.style.background = m.color;
+          dot.style.display = "none";
+          u.over.appendChild(dot);
+          return dot;
+        });
+        u.over.addEventListener("mouseleave", () => {
+          tip.style.display = "none";
+          for (const dot of dots) dot.style.display = "none";
+        });
       },
       setCursor: (u) => {
         const { left, idx } = u.cursor;
         if (idx == null || left == null || left < 0) {
           tip.style.display = "none";
+          for (const dot of dots) dot.style.display = "none";
           return;
         }
         const x = u.data[0][idx];
@@ -856,16 +869,21 @@ function tooltipPlugin(meta, timeAxis) {
         }
         tip.innerHTML = rows;
         tip.style.display = "block";
-        // anchor to the snapped data point (nearest x), not the mouse cursor
+        // anchor to the snapped data point (nearest x), not the mouse cursor,
+        // with a highlight dot on each series' point
         const xPos = u.valToPos(x, "x");
         let yPos = null;
-        for (const m of meta) {
+        meta.forEach((m, i) => {
           const v = u.data[m.dataIdx][idx];
-          if (v != null) {
-            yPos = u.valToPos(v, "y");
-            break;
+          if (v == null) {
+            dots[i].style.display = "none";
+            return;
           }
-        }
+          const py = u.valToPos(v, "y");
+          if (yPos == null) yPos = py;
+          dots[i].style.display = "block";
+          dots[i].style.transform = `translate(${Math.round(xPos - 3)}px, ${Math.round(py - 3)}px)`;
+        });
         if (yPos == null) yPos = u.over.clientHeight / 2;
         let tx = xPos + 12;
         if (tx + tip.offsetWidth > u.over.clientWidth) tx = xPos - tip.offsetWidth - 12;
@@ -1504,6 +1522,11 @@ function renderLogCompMenu() {
   $("#log-comp-btn").classList.toggle("active", enabled !== available.length);
 }
 
+function dressLogPaneSelects() {
+  for (const select of dressedSelects) if (!select.isConnected) dressedSelects.delete(select);
+  document.querySelectorAll("#log-panes select.lp-file").forEach(dressSelect);
+}
+
 function renderLogPanes() {
   const logs = state.logs;
   $("#attempt-select").innerHTML = logs.attempts
@@ -1686,6 +1709,7 @@ async function loadLogfiles() {
   logs.attempt = data.attempt;
   logs.files = data.files;
   renderLogPanes();
+  dressLogPaneSelects();
 }
 
 async function initLogs() {
@@ -2389,19 +2413,69 @@ $("#compare-menu").addEventListener("change", (e) => {
   if (box) toggleCompare(box.dataset.compare, box.checked);
 });
 // one delegated handler for every .dd-wrap dropdown: button toggles its menu,
-// clicking anywhere else closes them all
+// clicking anywhere else closes them all (a dropdown nested inside another
+// menu, e.g. the env select in the trace filter, keeps its ancestors open)
 document.addEventListener("click", (e) => {
   const wrap = e.target.closest(".dd-wrap");
   document.querySelectorAll(".dd-menu").forEach((menu) => {
-    if (!wrap || !wrap.contains(menu)) menu.hidden = true;
+    if (!wrap || !(wrap.contains(menu) || menu.contains(wrap))) menu.hidden = true;
   });
   const btn = e.target.closest(".dd-btn");
   if (btn && wrap) {
     const menu = wrap.querySelector(".dd-menu");
+    if (wrap.classList.contains("dd-select")) rebuildSelectMenu(wrap);
     menu.hidden = !menu.hidden;
     if (!menu.hidden && menu.id === "compare-menu") renderCompareMenu();
   }
 });
+
+/* native selects wear the compare-dropdown look: the hidden <select> stays the
+   source of truth (existing change listeners keep working), the .dd-menu lists
+   its live options each time it opens */
+const dressedSelects = new Set();
+
+function rebuildSelectMenu(wrap) {
+  const select = wrap.querySelector("select");
+  wrap.querySelector(".dd-menu").innerHTML = [...select.options]
+    .map((o, i) => `<div class="dd-opt${o.selected ? " active" : ""}${o.disabled ? " disabled" : ""}" data-i="${i}">${esc(o.textContent)}</div>`)
+    .join("");
+}
+
+function syncDressedSelects() {
+  for (const select of dressedSelects) {
+    const wrap = select.closest(".dd-wrap");
+    if (!wrap) continue;
+    wrap.querySelector(".dd-btn span").textContent = select.selectedOptions[0]?.textContent ?? "";
+    wrap.querySelector(".dd-btn").disabled = select.disabled;
+  }
+}
+
+function dressSelect(select) {
+  if (!select || select.closest(".dd-wrap")) return;
+  const wrap = document.createElement("div");
+  wrap.className = "dd-wrap dd-select";
+  if (select.title) wrap.title = select.title;
+  select.parentNode.insertBefore(wrap, select);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn dd-btn";
+  btn.appendChild(document.createElement("span"));
+  const menu = document.createElement("div");
+  menu.className = "dd-menu dd-optlist";
+  menu.hidden = true;
+  menu.addEventListener("click", (e) => {
+    const opt = e.target.closest(".dd-opt");
+    if (!opt || opt.classList.contains("disabled")) return;
+    select.selectedIndex = +opt.dataset.i;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    menu.hidden = true;
+    syncDressedSelects();
+  });
+  wrap.append(btn, menu, select);
+  select.hidden = true;
+  dressedSelects.add(select);
+  syncDressedSelects();
+}
 function updateTraceFilterBtn() {
   const t = state.traces;
   $("#trace-filter-btn").classList.toggle("active", !!(t.env || t.errorsOnly || t.sort !== "line"));
@@ -2543,6 +2617,7 @@ $("#log-panes").addEventListener("click", (e) => {
   const comp = btn.closest(".log-pane").dataset.comp;
   state.logs.maximized = state.logs.maximized === comp ? null : comp;
   renderLogPanes();
+  dressLogPaneSelects();
   renderAllLogPanes();
 });
 $("#log-comp-menu").addEventListener("change", async (e) => {
@@ -2553,6 +2628,7 @@ $("#log-comp-menu").addEventListener("change", async (e) => {
   if (box.checked) logs.components.add(box.dataset.comp);
   else logs.components.delete(box.dataset.comp);
   renderLogPanes();
+  dressLogPaneSelects();
   await pollLogs(false);
   renderAllLogPanes();
   savePrefs();
@@ -2562,6 +2638,7 @@ document.querySelectorAll("#log-view button").forEach((b) =>
     state.logs.view = b.dataset.view;
     setActive("#log-view", "view", b.dataset.view);
     renderLogPanes();
+  dressLogPaneSelects();
     renderAllLogPanes();
     savePrefs();
   })
@@ -2821,6 +2898,7 @@ setInterval(async () => {
       return;
     }
     renderOverview(); // keeps the duration field ticking
+    syncDressedSelects();
     if (state.tab === "metrics" && state.metrics.loaded) await fetchMetrics();
     else if (state.tab === "logs" && state.logs.loaded) await pollLogs();
     else if (state.tab === "traces" && state.traces.loaded) {
@@ -2844,6 +2922,8 @@ setInterval(async () => {
   $("#log-search").value = prefs.logSearch ?? "";
   $("#config-search").value = prefs.configSearch ?? "";
   $("#token-signal").value = prefs.tokenSignal ?? "";
+  for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#attempt-select", "#token-signal"])
+    dressSelect($(sel));
   $("#trace-sort").value = `${state.traces.sort}:${state.traces.order}`;
   $("#trace-errors").checked = state.traces.errorsOnly;
   setActive("#metrics-mode", "mode", state.metrics.mode);
