@@ -25,7 +25,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install dependencies
-        run: uv sync --extra gpu --extra flash-attn --all-packages --locked
+        run: uv sync --all-extras --all-packages --locked
       - name: Run tests
         env:
           USERNAME_CI: CI_RUNNER
