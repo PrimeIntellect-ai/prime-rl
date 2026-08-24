@@ -211,14 +211,6 @@ def _load_hf_model(preset, model_dir, config):
     return AutoModelForCausalLM.from_pretrained(str(model_dir), config=config, trust_remote_code=True)
 
 
-def _create_hf_model_from_config(preset, config):
-    """Create an empty HF model from config (for roundtrip verification)."""
-    hf_cls = preset["hf_model_class"]
-    if hf_cls is not None:
-        return hf_cls._from_config(config)
-    return AutoModelForCausalLM.from_config(config, trust_remote_code=True)
-
-
 def _build_config(preset):
     """Build model config from preset (handles both config_class and config_fn styles)."""
     if "config_fn" in preset:
