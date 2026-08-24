@@ -767,6 +767,56 @@ def decode_pieces(model: str, ids: list[int]) -> list[str] | None:
     return pieces
 
 
+def trace_node_paths(trace: dict) -> list[list[int]]:
+    """Root-to-leaf node indexes in the same order as the trace viewer."""
+    nodes = trace.get("nodes") or []
+    has_child = {node.get("parent") for node in nodes if isinstance(node, dict) and isinstance(node.get("parent"), int)}
+    paths = []
+    for leaf in (index for index in range(len(nodes)) if index not in has_child):
+        path = []
+        seen = set()
+        index = leaf
+        while isinstance(index, int) and 0 <= index < len(nodes) and index not in seen:
+            seen.add(index)
+            path.append(index)
+            parent = nodes[index].get("parent") if isinstance(nodes[index], dict) else None
+            index = parent if isinstance(parent, int) else None
+        paths.append(list(reversed(path)))
+    return paths
+
+
+def rendered_token_text(trace: dict, model: str | None) -> dict:
+    """Decode recorded post-renderer IDs as full branch sequences."""
+    nodes = trace.get("nodes") or []
+    paths = trace_node_paths(trace)
+    if not any(isinstance(node, dict) and node.get("token_ids") for node in nodes):
+        return {"status": "missing_token_ids", "model": model, "paths": []}
+    if not model:
+        return {"status": "missing_model", "model": None, "paths": []}
+    tokenizer = get_tokenizer(model)
+    if tokenizer is None:
+        return {"status": "tokenizer_unavailable", "model": model, "paths": []}
+
+    def decode_path(path: list[int]) -> dict:
+        ids = [token_id for index in path for token_id in (nodes[index].get("token_ids") or [])]
+        try:
+            text = tokenizer.decode(ids, skip_special_tokens=False)
+        except Exception:
+            text = None
+        return {"nodes": path, "token_count": len(ids), "text": text}
+
+    rendered_paths = [decode_path(path) for path in paths]
+    all_nodes = list(range(len(nodes)))
+    all_nodes_rendered = decode_path(all_nodes)
+    status = "ok" if all(path["text"] is not None for path in rendered_paths + [all_nodes_rendered]) else "decode_error"
+    return {
+        "status": status,
+        "model": model,
+        "paths": rendered_paths,
+        "all_nodes": all_nodes_rendered,
+    }
+
+
 @app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/series")
 def episode_series(run: str, step: int, kind: str, subset: str, etag: str | None = None, after: int = 0) -> dict:
     """Per-episode series over a traces file (x = episode order): reward, shape, and the
@@ -797,7 +847,15 @@ def episode_series(run: str, step: int, kind: str, subset: str, etag: str | None
 
 
 @app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}")
-def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: bool = False) -> dict:
+def get_episode(
+    run: str,
+    step: int,
+    kind: str,
+    subset: str,
+    line: int,
+    tokens: bool = False,
+    rendered: bool = False,
+) -> dict:
     path = traces_path(run, step, kind, subset)
     offsets = line_offsets(path)
     if not 0 <= line < len(offsets):
@@ -805,17 +863,18 @@ def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: 
     with path.open("rb") as f:
         f.seek(offsets[line])
         rec = orjson.loads(f.readline())
-    if not tokens:
+    if not tokens and not rendered:
         return rec
     fallback_model = model_name(main_config(get_run_dir(run))[1])
     for trace in rec.get("traces") or []:
         client = ((trace.get("agent") or {}).get("config") or {}).get("client") or {}
         model = client.get("renderer_model_name") or fallback_model
-        if not model:
-            continue
-        for node in trace.get("nodes") or []:
-            if node.get("token_ids"):
-                node["token_strs"] = decode_pieces(model, node["token_ids"])
+        if tokens and model:
+            for node in trace.get("nodes") or []:
+                if node.get("token_ids"):
+                    node["token_strs"] = decode_pieces(model, node["token_ids"])
+        if rendered:
+            trace["rendered_tokens"] = rendered_token_text(trace, model)
     return rec
 
 

@@ -788,6 +788,52 @@ details.sub > summary {
 details.sub .sub-name { font-weight: 500; color: var(--grey-6); }
 details.sub > .entry-body { border-top: 1px solid var(--hairline); }
 
+/* tool definitions are model context, but deliberately sit outside numbered messages */
+details.tool-definitions, details.rendered-transcript {
+  border: 1px solid var(--grey-3);
+  margin-bottom: 12px;
+  background: rgba(183, 166, 250, 0.025);
+}
+details.tool-definitions > summary, details.rendered-transcript > summary,
+details.tool-definition > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 12px;
+  background: var(--grey-2);
+}
+details.tool-definitions[open] > summary, details.rendered-transcript[open] > summary,
+details.tool-definition[open] > summary { border-bottom: 1px solid var(--hairline); }
+details.tool-definitions[open] > summary .entry-chev,
+details.rendered-transcript[open] > summary .entry-chev,
+details.tool-definition[open] > summary .entry-chev { transform: rotate(90deg); }
+.context-label, .tool-def-name { color: var(--chart-2); font-size: 10px; font-weight: 500; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.context-note, .rendered-provenance {
+  padding: 8px 12px;
+  color: var(--grey-4);
+  font-size: 10.5px;
+  line-height: 1.5;
+  border-bottom: 1px solid var(--hairline);
+}
+.context-note code, .rendered-provenance code { color: var(--grey-5); font-family: var(--font-mono); }
+details.tool-definition { margin: 8px 12px; border: 1px solid var(--hairline); }
+.tool-description { padding: 10px 12px; color: var(--grey-5); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.schema-head { display: flex; align-items: center; padding: 6px 12px; border-top: 1px solid var(--hairline); color: var(--grey-4); font-size: 10px; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.schema-head .icon-btn { margin-left: auto; }
+.tool-schema, .rendered-text {
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  color: var(--grey-5);
+  font: 400 11px/1.55 var(--font-mono);
+  tab-size: 2;
+}
+.tool-schema { max-height: 380px; border-top: 1px solid var(--hairline); white-space: pre; }
+.rendered-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+#trace-view-mode button { white-space: nowrap; }
+#token-signal:disabled { opacity: 0.45; }
+
 /* right pane: overview metadata */
 .tm-reward-big { color: var(--positive); }
 .tm-reward-big.neg { color: var(--negative); }
