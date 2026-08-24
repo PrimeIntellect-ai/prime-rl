@@ -10,7 +10,7 @@ import setproctitle
 
 from prime_rl.utils.logger import get_logger
 
-PRIME_RL_PROC_PREFIX = "PRIME-RL"
+PRIME_RL_PROC_PREFIX = "PRL"
 
 
 # Applied to every launched component (trainer, orchestrator, inference).
