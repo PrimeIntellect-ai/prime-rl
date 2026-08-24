@@ -2451,7 +2451,7 @@ function syncDressedSelects() {
 }
 
 function dressSelect(select) {
-  if (!select || select.closest(".dd-wrap")) return;
+  if (!select || select.parentElement?.classList.contains("dd-select")) return;
   const wrap = document.createElement("div");
   wrap.className = "dd-wrap dd-select";
   if (select.title) wrap.title = select.title;
