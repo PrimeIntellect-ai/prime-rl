@@ -23,7 +23,9 @@ def main():
         from prime_rl.utils.logger import get_logger, setup_logger
 
         logger = get_logger() or setup_logger(config.log.level)
-        log_dashboard_url(logger, ensure_dashboard(config.output_dir, logger))
+        # evals writes logs/configs into output_dir itself (it IS the run dir),
+        # and the dashboard scans a registered dir's children for runs
+        log_dashboard_url(logger, ensure_dashboard(config.output_dir.parent, logger))
     from prime_rl.evals.evals import run_evals
 
     asyncio.run(run_evals(config))

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import orjson
 
-from prime_rl.utils.pathing import CACHE_DIR
+from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
 from prime_rl.utils.process import set_proc_title
 
 try:
@@ -78,9 +78,6 @@ def is_run_dir(path: Path) -> bool:
     return any((path / marker).exists() for marker in ("configs", "logs", "metrics.jsonl", "rollouts"))
 
 
-STATE_DIR = CACHE_DIR / "dashboard"
-DAEMON_FILE = STATE_DIR / "daemon.json"
-DIRS_FILE = STATE_DIR / "dirs.json"
 _dirs_file_state: tuple[float, list[Path]] = (0.0, [])
 
 
@@ -104,17 +101,17 @@ def registered_dirs() -> list[Path]:
 
 def register_dirs(dirs: list[Path]) -> None:
     """Add dirs to the shared registry (idempotent, atomic)."""
-    try:
-        known = list(orjson.loads(DIRS_FILE.read_bytes()))
-    except (OSError, ValueError):
-        known = []
-    fresh = [str(d.resolve()) for d in dirs if str(d.resolve()) not in known]
-    if not fresh:
-        return
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = DIRS_FILE.with_suffix(".tmp")
-    tmp.write_bytes(orjson.dumps(known + fresh))
-    tmp.replace(DIRS_FILE)
+    with registry_lock():
+        try:
+            known = list(orjson.loads(DIRS_FILE.read_bytes()))
+        except (OSError, ValueError):
+            known = []
+        fresh = [str(d.resolve()) for d in dirs if str(d.resolve()) not in known]
+        if not fresh:
+            return
+        tmp = DIRS_FILE.with_suffix(".tmp")
+        tmp.write_bytes(orjson.dumps(known + fresh))
+        tmp.replace(DIRS_FILE)
 
 
 isolated = False
@@ -867,24 +864,25 @@ def free_port(host: str, start: int) -> int:
 def claim_daemon(url: str) -> bool:
     """Record this process as THE dashboard daemon (pid + actual url, port
     spillover included) so launchers can find it instead of starting another."""
-    existing = read_json(DAEMON_FILE)
-    if existing.get("pid") and existing.get("pid") != os.getpid():
-        try:
-            os.kill(existing["pid"], 0)
-            print(f"another dashboard daemon is already running at {existing.get('url')}", file=sys.stderr)
-            return False
-        except OSError:
-            pass  # stale file from a dead daemon
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = DAEMON_FILE.with_suffix(".tmp")
-    tmp.write_bytes(orjson.dumps({"pid": os.getpid(), "url": url, "started": time.time()}))
-    tmp.replace(DAEMON_FILE)
-    return True
+    with registry_lock():
+        existing = read_json(DAEMON_FILE)
+        if existing.get("pid") and existing.get("pid") != os.getpid():
+            try:
+                os.kill(existing["pid"], 0)
+                print(f"another dashboard daemon is already running at {existing.get('url')}", file=sys.stderr)
+                return False
+            except OSError:
+                pass  # stale file from a dead daemon
+        tmp = DAEMON_FILE.with_suffix(".tmp")
+        tmp.write_bytes(orjson.dumps({"pid": os.getpid(), "url": url, "started": time.time()}))
+        tmp.replace(DAEMON_FILE)
+        return True
 
 
 def release_daemon() -> None:
-    if read_json(DAEMON_FILE).get("pid") == os.getpid():
-        DAEMON_FILE.unlink(missing_ok=True)
+    with registry_lock():
+        if read_json(DAEMON_FILE).get("pid") == os.getpid():
+            DAEMON_FILE.unlink(missing_ok=True)
 
 
 def main() -> None:
