@@ -1275,16 +1275,35 @@ function applyConfigSearch() {
     if (pruned === undefined) return noHits();
     view.innerHTML = renderJsonNode(null, pruned, 0, true);
   } else {
-    // TOML (launch config): filter to matching lines, keeping [section] headers
-    const kept = [];
-    let section = null;
-    for (const line of (state.config.text ?? "").split("\n")) {
-      if (/^\s*\[/.test(line)) section = line;
+    // TOML (launch config): a matching line keeps itself (plus its [section]
+    // header for context); a matching [section] header keeps the whole section
+    const lines = (state.config.text ?? "").split("\n");
+    const test = (line) => {
       re.lastIndex = 0;
-      if (!re.test(line)) continue;
-      if (section !== null && section !== line) kept.push(section);
-      section = null;
-      kept.push(line);
+      return re.test(line);
+    };
+    const kept = [];
+    let header = null;
+    let headerKept = false;
+    let sectionMatched = false;
+    for (const line of lines) {
+      if (/^\s*\[/.test(line)) {
+        header = line;
+        headerKept = false;
+        sectionMatched = test(line);
+        if (sectionMatched) {
+          kept.push(line);
+          headerKept = true;
+        }
+        continue;
+      }
+      if (sectionMatched || test(line)) {
+        if (header !== null && !headerKept) {
+          kept.push(header);
+          headerKept = true;
+        }
+        kept.push(line);
+      }
     }
     if (!kept.length) return noHits();
     view.innerHTML = renderToml(kept.join("\n"));
@@ -1944,9 +1963,7 @@ function renderModalStep() {
   }
   const idx = traces.steps.findIndex((s) => s.step === traces.step);
   const last = traces.steps[traces.steps.length - 1]?.step;
-  $("#tm-step-label").innerHTML =
-    `step ${traces.step}${traces.steps.length > 1 ? `<span class="muted">/${last}</span>` : ""}` +
-    ` <span class="muted">· ${esc(traces.kind)}/${esc(traces.subset)}</span>`;
+  $("#tm-step-label").textContent = `step ${traces.step}${traces.steps.length > 1 ? `/${last}` : ""}`;
   $("#tm-step-prev").disabled = idx <= 0;
   $("#tm-step-next").disabled = idx < 0 || idx >= traces.steps.length - 1;
 }
