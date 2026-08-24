@@ -54,12 +54,7 @@ class GroupCancellation:
 
 @dataclass(frozen=True)
 class DispatchFailure:
-    """An environment request that failed before producing an episode.
-
-    This is dispatcher accounting, not a verifier artifact: sinks count it
-    toward group completion without exposing it to algorithms, curricula, or
-    episode monitors.
-    """
+    """An environment request that failed before producing an episode."""
 
     kind: WorkKind
     env_name: str
