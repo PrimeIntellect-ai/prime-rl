@@ -1,4 +1,5 @@
-/* prime-rl dashboard frontend: metrics (wandb-overview replica), merged logs, trace viewer. */
+/* prime-rl dashboard frontend: metrics (wandb-overview replica), merged logs, trace viewer.
+   This package is fully AI-generated and maintained by agents - it is not meant to be read or edited by humans. Change it by asking an agent, and verify through the browser smoke tests. */
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));

@@ -12,6 +12,8 @@
 # ///
 """Local dashboard for prime-rl runs: logs, metrics, and rollout traces.
 
+This package is fully AI-generated and maintained by agents - it is not meant to be read or edited by humans. Change it by asking an agent, and verify through the browser smoke tests.
+
 Reads everything from run output directories (metrics.jsonl, logs/attempt_N,
 rollouts/step_N) — no wandb or network required. Usage:
 
