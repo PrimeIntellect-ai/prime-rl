@@ -729,21 +729,29 @@ _MOE = dict(
 _MOE_TOKENS = _BATCH * _SEQ
 
 # prime-rl's `MoE` owns the router and the load-balancing bias, so both sit one level up
-# from where HF keeps them, and its shared expert is singular. The routed experts' fused
-# `gate_up_proj` / `down_proj` need no mapping at all.
+# from where HF keeps them, and its shared expert is singular. HF's fused routed-expert
+# `gate_up_proj` splits into prime's `w1`/`w3`; `down_proj` renames to `w2`.
 _HF_TO_PRIME_MOE_KEYS = {
     "gate.weight": "router.gate.weight",
     "gate.e_score_correction_bias": "expert_bias",
     "gate.tid2eid": "tid2eid",
+    "experts.down_proj": "experts.w2",
 }
 
 
-def _to_prime_moe_key(hf_key: str) -> str:
-    return _HF_TO_PRIME_MOE_KEYS.get(hf_key, hf_key.replace("shared_experts.", "shared_expert.", 1))
+def _to_prime_moe_items(hf_key: str, value: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Map one HF MoE key/value onto the one or two prime-rl key/value pairs it becomes."""
+    if hf_key == "experts.gate_up_proj":
+        gate, up = value.chunk(2, dim=1)
+        return {"experts.w1": gate, "experts.w3": up}
+    key = _HF_TO_PRIME_MOE_KEYS.get(hf_key, hf_key.replace("shared_experts.", "shared_expert.", 1))
+    return {key: value}
 
 
 def _sync_moe(hf_module: nn.Module, prime_module: nn.Module) -> None:
-    hf_state = {_to_prime_moe_key(key): value for key, value in hf_module.state_dict().items()}
+    hf_state: dict[str, torch.Tensor] = {}
+    for key, value in hf_module.state_dict().items():
+        hf_state.update(_to_prime_moe_items(key, value))
     assert set(hf_state) == set(prime_module.state_dict()), "the HF key set must map onto prime-rl's exactly"
     prime_module.load_state_dict(hf_state)
 
@@ -751,10 +759,13 @@ def _sync_moe(hf_module: nn.Module, prime_module: nn.Module) -> None:
 def _compare_moe_grads(hf_module: nn.Module, prime_module: nn.Module, rtol: float, atol: float) -> None:
     prime_params = dict(prime_module.named_parameters())
     for name, hf_param in hf_module.named_parameters():
-        prime_grad = prime_params[_to_prime_moe_key(name)].grad
-        assert prime_grad is not None, f"{name} received no gradient"
         assert hf_param.grad is not None, f"{name} received no gradient in HF"
-        torch.testing.assert_close(prime_grad, hf_param.grad, rtol=rtol, atol=atol, msg=lambda m, n=name: f"{n}: {m}")
+        for prime_name, expected_grad in _to_prime_moe_items(name, hf_param.grad).items():
+            prime_grad = prime_params[prime_name].grad
+            assert prime_grad is not None, f"{prime_name} received no gradient"
+            torch.testing.assert_close(
+                prime_grad, expected_grad, rtol=rtol, atol=atol, msg=lambda m, n=prime_name: f"{n}: {m}"
+            )
 
 
 def _moe_pair() -> tuple[nn.Module, nn.Module]:
@@ -908,8 +919,9 @@ def test_moe_init_weights():
     # The gated branches keep the shared `MoE`'s fixed 0.02, the rest scales with init_std.
     expected_std = {
         "router.gate.weight": 0.5,
-        "experts.gate_up_proj": 0.02,
-        "experts.down_proj": 0.5,
+        "experts.w1": 0.02,
+        "experts.w3": 0.02,
+        "experts.w2": 0.5,
         "shared_expert.gate_proj.weight": 0.02,
         "shared_expert.up_proj.weight": 0.5,
         "shared_expert.down_proj.weight": 0.5,

@@ -17,8 +17,10 @@ in-memory `state_dict()` parity test alone, which only ever exercised the HF-nat
 The genuinely PrimeRL-specific delta, once on HF-native names, is small: PrimeRL's shared
 `MoE` owns the router and the aux-loss-free load-balancing bias one level above where HF hangs
 them (off the router itself), and names its shared expert in the singular. Attention and its
-compressors, the hyper-connections, and the routed experts' fused `gate_up_proj` / `down_proj`
-already match HF-native shapes exactly once the on-disk step above has run.
+compressors and the hyper-connections already match HF-native shapes exactly once the on-disk
+step above has run. The routed experts are the one place PrimeRL diverges from HF-native on
+purpose: HF fuses `w1`/`w3` into `gate_up_proj` in memory, but PrimeRL's `DeepseekV4Experts`
+keeps them split, matching the on-disk layout directly, so no fusing step is needed at all.
 
 The two MoE layer types have different key sets: a hash layer carries `mlp.tid2eid` and no
 `mlp.expert_bias`, a standard one the other way round. Every op is present-guarded, so the
@@ -27,7 +29,14 @@ same list is emitted for both.
 
 from __future__ import annotations
 
-from prime_rl.trainer.models.conversion_ops import Concatenate, ConvOp, Drop, PrefixRename, Rename, Stack, StateDict
+from prime_rl.trainer.models.conversion_ops import (
+    ConvOp,
+    Drop,
+    PrefixRename,
+    Rename,
+    StateDict,
+    routed_experts_op,
+)
 
 
 def to_on_disk_naming(state_dict: StateDict) -> StateDict:
@@ -106,11 +115,13 @@ def _on_disk_attn_ops(layer_idx: int, layer_type: str) -> list[ConvOp]:
 
 
 def _on_disk_moe_ops(layer_idx: int) -> list[ConvOp]:
-    """DeepSeek's on-disk `ffn.*` naming -> `transformers`-native `mlp.*`, including fusing
-    the on-disk per-expert `w1`/`w2`/`w3` into PrimeRL's (and HF-native's) fused
-    `gate_up_proj` / `down_proj`."""
+    """DeepSeek's on-disk `ffn.*` naming -> `transformers`-native `mlp.*`.
+
+    The routed experts' per-expert `w1`/`w2`/`w3` are already prime's own names, so the only
+    conversion they need is stacking into prime's per-expert-batched tensors, same as every
+    other prime-rl MoE model.
+    """
     p = f"layers.{layer_idx}"
-    experts = f"{p}.mlp.experts"
     shared = f"{p}.mlp.shared_experts"
     return [
         PrefixRename(f"{p}.ffn.", f"{p}.mlp."),
@@ -118,14 +129,12 @@ def _on_disk_moe_ops(layer_idx: int) -> list[ConvOp]:
         Rename(f"{shared}.w1.weight", f"{shared}.gate_proj.weight"),
         Rename(f"{shared}.w2.weight", f"{shared}.down_proj.weight"),
         Rename(f"{shared}.w3.weight", f"{shared}.up_proj.weight"),
-        Stack(stacked=f"{experts}._gate_stack", item=f"{experts}.{{e}}.w1.weight"),
-        Stack(stacked=f"{experts}._up_stack", item=f"{experts}.{{e}}.w3.weight"),
-        Concatenate(
-            combined=f"{experts}.gate_up_proj",
-            parts=[f"{experts}._gate_stack", f"{experts}._up_stack"],
-            dim=1,
+        routed_experts_op(
+            p,
+            hf_experts="mlp.experts",
+            prime_experts="mlp.experts",
+            proj_order=(("w1", "w1"), ("w2", "w2"), ("w3", "w3")),
         ),
-        Stack(stacked=f"{experts}.down_proj", item=f"{experts}.{{e}}.w2.weight"),
     ]
 
 

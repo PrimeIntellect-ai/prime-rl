@@ -214,42 +214,6 @@ class SplitConcat(ConvOp):
 
 
 @dataclass
-class Concatenate(ConvOp):
-    """Concatenate fixed parts along an EXISTING dim, and split back.
-
-    The mirror image of :class:`SplitConcat`: forward (HF -> prime) is the
-    concat, backward (prime -> HF) is the split. Used when the *prime* side
-    is the single fused tensor and the *HF* side is the group of parts to be
-    combined (e.g. DeepSeek V4's on-disk per-expert ``w1``/``w3`` merging into
-    prime's fused ``gate_up_proj``) -- the opposite direction from
-    :class:`SplitConcat`'s transformers-v5 fused-checkpoint use case.
-    """
-
-    combined: str
-    parts: list[str]
-    dim: int = 0
-
-    def hf_to_prime(self, sd: StateDict) -> None:
-        if not all(key in sd for key in self.parts):
-            return
-        tensors = [sd.pop(key) for key in self.parts]
-        sd[self.combined] = torch.cat(tensors, dim=self.dim)
-
-    def prime_to_hf(self, sd: StateDict) -> None:
-        if self.combined not in sd:
-            return
-        t = sd.pop(self.combined)
-        assert t.shape[self.dim] % len(self.parts) == 0, (
-            f"{self.combined}: dim {self.dim} size {t.shape[self.dim]} not divisible by {len(self.parts)} parts"
-        )
-        size = t.shape[self.dim] // len(self.parts)
-        offset = 0
-        for key in self.parts:
-            sd[key] = t.narrow(self.dim, offset, size)
-            offset += size
-
-
-@dataclass
 class MapValue(ConvOp):
     """Apply a value transform to one key. ``forward`` runs HF->prime,
     ``backward`` runs prime->HF. Use for genuinely non-structural conversions

@@ -85,18 +85,17 @@ class DeepseekV4Router(TokenChoiceTopKRouter):
         return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
 
 
-def _apply_swiglu_clamp(gate_up: torch.Tensor, limit: float) -> torch.Tensor:
-    """SwiGLU over a fused gate/up pair, both clamped as in HF's `DeepseekV4Experts`."""
-    gate, up = gate_up.chunk(2, dim=-1)
+def _clamped_swiglu(gate: torch.Tensor, up: torch.Tensor, limit: float) -> torch.Tensor:
+    """SwiGLU with both branches clamped, as in HF's `DeepseekV4Experts`."""
     gate = gate.clamp(max=limit)
     up = up.clamp(min=-limit, max=limit)
     return F.silu(gate) * up
 
 
 def _run_deepseek_v4_experts_for_loop_impl(
-    gate_up_proj: torch.Tensor,
-    down_proj: torch.Tensor,
-    _unused: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     limit: float,
@@ -114,8 +113,10 @@ def _run_deepseek_v4_experts_for_loop_impl(
     )
     out_experts_splits = []
     for expert_idx, x_expert in enumerate(x):
-        h = _apply_swiglu_clamp(torch.matmul(x_expert, gate_up_proj[expert_idx].transpose(-2, -1)), limit)
-        h = torch.matmul(h, down_proj[expert_idx].transpose(-2, -1))
+        gate = torch.matmul(x_expert, w1[expert_idx].transpose(-2, -1))
+        up = torch.matmul(x_expert, w3[expert_idx].transpose(-2, -1))
+        h = _clamped_swiglu(gate, up, limit)
+        h = torch.matmul(h, w2[expert_idx].transpose(-2, -1))
         out_experts_splits.append(h)
     out = torch.cat(out_experts_splits, dim=0)
 
@@ -124,9 +125,9 @@ def _run_deepseek_v4_experts_for_loop_impl(
 
 
 def _run_deepseek_v4_experts_grouped_mm_impl(
-    gate_up_proj: torch.Tensor,
-    down_proj: torch.Tensor,
-    _unused: torch.Tensor,
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     limit: float,
@@ -134,19 +135,23 @@ def _run_deepseek_v4_experts_grouped_mm_impl(
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
     assert x.dim() == 2
 
-    gate_up = torch._grouped_mm(x.bfloat16(), gate_up_proj.bfloat16().transpose(-2, -1), offs=offsets)
-    h = _apply_swiglu_clamp(gate_up, limit)
-    return torch._grouped_mm(h, down_proj.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
+    x_bf16 = x.bfloat16()
+    gate = torch._grouped_mm(x_bf16, w1.bfloat16().transpose(-2, -1), offs=offsets)
+    up = torch._grouped_mm(x_bf16, w3.bfloat16().transpose(-2, -1), offs=offsets)
+    h = _clamped_swiglu(gate, up, limit)
+    return torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
 
 
 class DeepseekV4Experts(nn.Module):
-    """Routed experts holding HF's fused `gate_up_proj` / `down_proj` weights.
+    """Routed experts holding split `w1`/`w2`/`w3` weights, matching the real on-disk
+    checkpoint's per-expert layout directly (HF's own `DeepseekV4Experts` fuses `w1`/`w3`
+    into `gate_up_proj` in memory, but that fusion never touches disk, so mirroring it here
+    would only add a conversion step for no benefit).
 
     HF's `DeepseekV4Experts.forward` takes unsorted per-token expert indices and builds a
     one-hot mask itself. prime-rl's `MoE` hands its experts tokens already sorted into
     contiguous per-expert blocks, so the signature here is `(x, num_tokens_per_expert)`
-    like every other prime-rl expert module. Parameter names and shapes are HF's, so
-    checkpoint expert weights need no conversion.
+    like every other prime-rl expert module.
     """
 
     def __init__(
@@ -159,13 +164,12 @@ class DeepseekV4Experts(nn.Module):
     ):
         super().__init__()
         self.num_experts = num_experts
-        self.gate_up_proj = nn.Parameter(torch.empty(num_experts, 2 * hidden_dim, dim))
-        self.down_proj = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
+        self.w1 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
+        self.w2 = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
+        self.w3 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
         self.use_grouped_mm = use_grouped_mm
+        self.swiglu_limit = swiglu_limit
         self.ep_comm_backend: EPCommBackend = "torch"
-        # `expert_parallel` pins the wrapped signature to (w1, w2, w3, x, counts), so the
-        # clamp limit is bound here instead of being passed per call, and `down_proj`
-        # stands in for the unused third weight slot.
         self._for_loop_impl = partial(_run_deepseek_v4_experts_for_loop_impl, limit=swiglu_limit)
         self._grouped_mm_impl = partial(_run_deepseek_v4_experts_grouped_mm_impl, limit=swiglu_limit)
         self._run_for_loop = expert_parallel(self._for_loop_impl)
@@ -175,21 +179,23 @@ class DeepseekV4Experts(nn.Module):
         self.ep_comm_backend = backend
 
     def _forward_deepep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
-        gate_up_proj = self.gate_up_proj.to_local()
-        down_proj = self.down_proj.to_local()
+        w1, w2, w3 = self.w1.to_local(), self.w2.to_local(), self.w3.to_local()
         impl = self._grouped_mm_impl if self.use_grouped_mm else self._for_loop_impl
-        return impl(gate_up_proj, down_proj, down_proj, x, num_tokens_per_expert)
+        return impl(w1, w2, w3, x, num_tokens_per_expert)
 
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         if self.ep_comm_backend == "deepep":
             return self._forward_deepep(x, num_tokens_per_expert)
 
         run = self._run_grouped_mm if self.use_grouped_mm else self._run_for_loop
-        return run(self.gate_up_proj, self.down_proj, self.down_proj, x, num_tokens_per_expert)
+        return run(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
 
     def init_weights(self, init_std: float):
-        nn.init.trunc_normal_(self.gate_up_proj, mean=0.0, std=0.02)
-        nn.init.trunc_normal_(self.down_proj, mean=0.0, std=init_std)
+        # Both halves of HF's fused gate_up_proj are drawn from the same std=0.02
+        # distribution, so w1 (gate) and w3 (up) match that here despite the split.
+        nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
+        nn.init.trunc_normal_(self.w3, mean=0.0, std=0.02)
+        nn.init.trunc_normal_(self.w2, mean=0.0, std=init_std)
 
 
 class DeepseekV4MLP(MLP):
