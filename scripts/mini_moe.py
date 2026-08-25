@@ -24,6 +24,7 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4ForCausalLM as PrimeRLDeepseekV4ForCausalLM
+from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import to_on_disk_naming
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
 from prime_rl.trainer.models.laguna import LagunaConfig
@@ -34,6 +35,7 @@ from prime_rl.trainer.models.minimax_m2 import MiniMaxM2ForCausalLM as PrimeRLMi
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeVLM
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.utils import default_dtype
+from prime_rl.utils.weights import load_state_dict
 
 setup_logger("info")
 
@@ -309,40 +311,20 @@ def create(arch: str, output_dir: Path) -> None:
 
 
 def _fixup_deepseek_v4_checkpoint(output_dir: Path) -> None:
-    """Work around `transformers`' incomplete DeepSeek V4 reverse-conversion.
+    """Bring a locally saved DeepSeek V4 checkpoint in line with the real on-disk format.
 
-    `transformers.DeepseekV4ForCausalLM.save_pretrained()` is supposed to write the real,
-    flat, no-``model.``-prefix on-disk key format DeepSeek's own checkpoints use (confirmed
-    against the real `deepseek-ai/DeepSeek-V4-Flash-0731` `model.safetensors.index.json`:
-    keys like ``embed.weight``, ``layers.0.hc_attn_base``, never ``model.*``). Its own
-    `transformers.conversion_mapping` "deepseek_v4" entry has the leaf-renaming rules for
-    this (``attn`` <-> ``self_attn``, ``ffn`` <-> ``mlp``, etc. -- confirmed correctly applied
-    for every *per-layer* key), but its top-level, one-off renames don't survive the round
-    trip: it doesn't strip the ``model.`` prefix at all, never applies its own
-    ``embed.weight`` <-> ``embed_tokens.weight`` rename, and leaves the final hyper-head
-    nested (``hc_head.hc_fn``/``hc_base``/``hc_scale``) instead of flat
-    (``hc_head_fn``/``hc_head_base``/``hc_head_scale``, the same flat-vs-nested split already
-    fixed per-layer for ``hc_attn_*``/``hc_ffn_*``). vLLM's own
-    `DeepseekV4ForCausalLM.hf_to_vllm_mapper` (`vllm/models/deepseek_v4/nvidia/model.py`)
-    assumes the correct flat format and fails to find weights otherwise
-    (``KeyError: 'hc_head.hc_base'``). Only affects locally-generated test checkpoints from
-    this script -- the real checkpoint is already correctly formatted upstream.
+    Two separate gaps in what `save_pretrained` leaves behind. The key naming is corrected by
+    `to_on_disk_naming` (see its docstring for what transformers gets wrong and how that was
+    established); vLLM's own `hf_to_vllm_mapper` assumes the real format and fails with
+    `KeyError: 'hc_head.hc_base'` otherwise, and this repo's own `conversion_chain` targets the
+    real format too. The config needs a `topk_method` backfill, below.
     """
     import json
 
     from safetensors.torch import load_file, save_file
 
     path = output_dir / "model.safetensors"
-    tensors = load_file(path)
-    fixed = {}
-    for key, tensor in tensors.items():
-        new_key = key.removeprefix("model.")
-        new_key = new_key.replace("embed_tokens.weight", "embed.weight")
-        new_key = new_key.replace("hc_head.hc_fn", "hc_head_fn")
-        new_key = new_key.replace("hc_head.hc_base", "hc_head_base")
-        new_key = new_key.replace("hc_head.hc_scale", "hc_head_scale")
-        fixed[new_key] = tensor
-    save_file(fixed, path, metadata={"format": "pt"})
+    save_file(to_on_disk_naming(load_file(path)), path, metadata={"format": "pt"})
 
     # `topk_method` is a real DeepSeek V4 config field (the real checkpoint sets it to
     # "noaux_tc") that this repo's `DeepseekV4Config` doesn't model at all -- prime-rl's own
@@ -376,8 +358,14 @@ def verify(arch: str, model_dir: Path) -> None:
     with torch.device("cuda"), default_dtype(torch.float32):
         prime_model = preset["prime_model_class"]._from_config(config)
 
+    # Convert from the *on-disk* checkpoint, not from `hf_model.state_dict()`, because those
+    # are two different key namings for any model that transformers carries a conversion
+    # registry entry for (DeepSeek V4 does). The trainer reads raw on-disk state dicts in
+    # `load_dcp_from_hf`, so this is the naming `conversion_chain` has to handle, and feeding
+    # it the in-memory names instead hid a conversion chain that was a complete no-op.
+    disk_state_dict = load_state_dict(model_dir)
     with torch.no_grad():
-        state_dict = hf_model.state_dict()
+        state_dict = {k: v.to(device="cuda", dtype=torch.float32) for k, v in disk_state_dict.items()}
         prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
 
@@ -403,18 +391,18 @@ def verify(arch: str, model_dir: Path) -> None:
         print(f"  HF vs PrimeRL max logits diff: {max_diff:.6f}")
         assert max_diff < 0.1, f"HF vs PrimeRL logits mismatch: max diff {max_diff}"
 
-    # Roundtrip weight conversion: HF -> PrimeRL -> HF
-    # Normalize both through the same roundtrip to handle expert format differences
+    # Roundtrip weight conversion: on-disk -> PrimeRL -> on-disk. Compared against the real
+    # on-disk keys rather than against the same dict pushed through the same conversion, which
+    # a no-op chain satisfies trivially.
     with torch.no_grad():
         roundtrip_sd = prime_model.convert_to_hf(dict(prime_model.state_dict()))
-        orig_sd = dict(hf_model.state_dict())
-        prime_model.convert_to_prime(orig_sd)
-        prime_model.convert_to_hf(orig_sd)
 
-    for key in orig_sd:
+    extra = sorted(set(roundtrip_sd) - set(disk_state_dict))
+    assert not extra, f"Roundtrip produced keys absent from the checkpoint: {extra[:5]}"
+    for key, value in disk_state_dict.items():
         assert key in roundtrip_sd, f"Missing key after roundtrip: {key}"
-        assert torch.equal(orig_sd[key], roundtrip_sd[key]), f"Roundtrip mismatch at {key}"
-    print("  HF -> PrimeRL -> HF weight roundtrip verified")
+        assert torch.equal(roundtrip_sd[key].cpu(), value), f"Roundtrip mismatch at {key}"
+    print(f"  on-disk -> PrimeRL -> on-disk weight roundtrip verified ({len(disk_state_dict)} keys)")
 
     print("  Verification passed.")
 

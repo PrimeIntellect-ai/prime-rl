@@ -205,6 +205,77 @@ returns output in a permuted channel order and never permutes back, which is saf
 also rotates the value stream and feeds the result straight into `o_a_proj`/`o_b_proj` expecting
 true HF channel order.
 
+## DeepSeek V4: blockers for the real cluster run
+
+Found while getting the local 4-GPU validation working against a mini checkpoint with real
+config values. None of these are visible from the test suite; all of them are on the path of
+`examples/advanced/deepseek-v4-flash/{rl,kl-check}.toml`.
+
+- **The trainer cannot load the real checkpoint.** `deepseek-ai/DeepSeek-V4-Flash-0731` ships
+  `quantization_config: {quant_method: "fp8", fmt: "e4m3", weight_block_size: [128, 128],
+  scale_fmt: "ue8m0", activation_scheme: "dynamic"}`, i.e. FP8 weights plus `*.weight_scale_inv`
+  tensors on disk (verified by fetching the config directly from the Hub). `load_dcp_from_hf`
+  (`trainer/model.py:963`) has no dequantization step anywhere in the conversion chain, and
+  `DeepseekV4MoE` rejects `fp8` outright. Both `rl.toml` and `kl-check.toml` name that
+  checkpoint, so they would fail at weight load. Needs an fp8-plus-block-scales to bf16
+  dequantizing load path; `trainer/models/glm_moe_dsa/converting_glm_moe_dsa.py` is the nearest
+  precedent but goes the other direction (bf16 to fp8, for weight transfer).
+- **vLLM's CuTeDSL `fmax` wrapper is broken against the pinned `nvidia_cutlass_dsl`.**
+  `vllm/vllm_flash_attn/cute/utils.py:352` calls `nvvm.fmax(a, b, c=...)`; version 4.5.2 declares
+  that MLIR builder as `fmax(res, a, b, ...)`, so the arguments shift and tracing the CuTeDSL
+  Lightning Indexer dies with `TypeError: fmax() missing 1 required positional argument: 'b'`.
+  Hardware-independent version skew, reached whenever the `cutlass` package is importable, which
+  it is here. Worked around by `monkey_patch_cutedsl_fmax_result_type()` in
+  `inference/patches.py`; the escape hatch if more skew appears is
+  `vllm.utils.import_utils.has_cutedsl`, since every DeepSeek V4 CuTeDSL entry point is gated on
+  it and falls back to Triton.
+- **`--use-deep-gemm` is mandatory, not an optimization, at least on SM120.**
+  `InferenceConfig.use_deep_gemm` defaults to False, which sets `VLLM_USE_DEEP_GEMM=0`, which
+  makes `is_deep_gemm_supported()` False, which makes `mhc_pre_tilelang` take
+  `_tilelang_hc_prenorm_gemm`. That function's `x.shape[0] >= 1024` branch,
+  `hc_prenorm_gemm_block_m_tilelang`, is numerically wrong on SM120: measured against a torch
+  reference at `hidden_size=4096` it agrees to a relative 3e-7 for every token count below 1024
+  and returns garbage (relative error about 1.0, `sqrsum` left at zero) from exactly 1024 up. So
+  without the flag, any forward pass with 1024 or more tokens gets silently corrupt mHC
+  activations. Not yet checked on Hopper.
+- **Filesystem weight broadcast cannot feed an FP8-served vLLM.**
+  `gather_weights_parallel` (`utils/weights.py:153`) casts every DTensor parameter to bf16, and
+  no `config.json` is written into the broadcast directory, so a broadcast contains no
+  `*.weight_scale_inv` at all. Pushing that into a checkpoint-quantized FP8 vLLM model has
+  nothing to load. The compatible combination is vLLM-side online quantization
+  (`[inference.vllm] quantization`), which `finalize_layerwise_reload` re-applies on every
+  broadcast; the `quantize_in_weight_transfer` route needs `convert_layer_to_vllm_kernel`, which
+  DeepSeek V4 does not implement.
+- **The real checkpoint's `config.json` is in the legacy flat format.** It carries a
+  46-element `compress_ratios` list and no `layer_types` / `mlp_layer_types` / `rope_parameters`,
+  while anything written by `save_pretrained` (including every filesystem broadcast directory) is
+  in the new format. That asymmetry decides which of the vLLM compatibility patches in
+  `inference/patches.py` actually fire: `monkey_patch_deepseek_v4_compress_ratios` is a no-op on
+  the real checkpoint and load-bearing on a broadcast one.
+
+## The pinned `deep_gemm` wheel is built against CUDA 13, the rest of the stack is CUDA 12
+
+`pyproject.toml:243` pins prime-rl's own `deep_gemm-2.5.0+891d57b` wheel, whose `_C` extension
+declares `NEEDED libcudart.so.13` and `libnvrtc.so.13` (checked with `readelf -d`), while
+`pyproject.toml:236` pins `vllm-0.26.0+cu129` and torch is CUDA 12.x. On any CUDA 12 box a plain
+`uv sync --all-extras` therefore yields a `deep_gemm` that cannot import:
+
+```
+ImportError: libcudart.so.13: cannot open shared object file: No such file or directory
+```
+
+vLLM notices and silently falls back to its own vendored copy ("deep_gemm not found in
+site-packages, trying vendored vllm.third_party.deep_gemm"), so nothing breaks loudly, but the
+pinned wheel is dead weight and every FP8 kernel path in this repo quietly runs on the vendored
+build instead of the pinned one: `InferenceConfig.use_deep_gemm`, the
+`examples/advanced/glm-5.2/` GLM-5-FP8 configs, and `[trainer.model.quantization] type = "fp8"`
+with `enable_grouped_gemm`. Worth deciding deliberately: either build the wheel against CUDA 12,
+add the CUDA 13 runtime as a dependency alongside it, or drop the pin and rely on the vendored
+copy. Note that forcing the pinned build to load (by putting a CUDA 13 runtime on
+`LD_LIBRARY_PATH`) is actively worse on Blackwell consumer parts: that build has no SM120
+kernels for the block-scaled FP8 GEMMs, the UE8M0 scale-layout transform, the hyper-connection
+GEMM, or the paged MQA logits, all of which the vendored copy handles.
+
 ## `GptOssGroupedExperts` crashes with `use_grouped_mm=False`
 
 Found by accident while porting DeepSeek V4's experts (which hit the same constraint and worked

@@ -27,12 +27,39 @@ same list is emitted for both.
 
 from __future__ import annotations
 
-from prime_rl.trainer.models.conversion_ops import Concatenate, ConvOp, Drop, PrefixRename, Rename, Stack
+from prime_rl.trainer.models.conversion_ops import Concatenate, ConvOp, Drop, PrefixRename, Rename, Stack, StateDict
+
+
+def to_on_disk_naming(state_dict: StateDict) -> StateDict:
+    """`save_pretrained`'s key naming -> the naming a real DeepSeek V4 checkpoint ships.
+
+    `transformers`' reverse conversion (`core_model_loading.revert_weight_conversion`, what
+    `save_pretrained` applies) gets every per-layer key right but three top-level ones wrong,
+    measured against the real `deepseek-ai/DeepSeek-V4-Flash-0731`
+    `model.safetensors.index.json`: 0 of its 72317 keys carry a `model.` prefix, its embedding
+    is `embed.weight`, and its final hyper-connection head is flat (`hc_head_fn`,
+    `hc_head_base`, `hc_head_scale`), matching the per-layer `hc_attn_*` / `hc_ffn_*` pattern
+    that does convert correctly. `save_pretrained` leaves the prefix on, keeps
+    `embed_tokens.weight`, and leaves the head nested as `hc_head.hc_*`.
+
+    Applied to locally generated checkpoints so they match the real format, and to in-memory
+    state dicts in the tests so `conversion_chain` is exercised against the naming it actually
+    has to handle.
+    """
+    renamed: StateDict = {}
+    for key, tensor in state_dict.items():
+        new_key = key.removeprefix("model.")
+        new_key = new_key.replace("embed_tokens.weight", "embed.weight")
+        new_key = new_key.replace("hc_head.hc_fn", "hc_head_fn")
+        new_key = new_key.replace("hc_head.hc_base", "hc_head_base")
+        new_key = new_key.replace("hc_head.hc_scale", "hc_head_scale")
+        renamed[new_key] = tensor
+    return renamed
 
 
 def _on_disk_attn_ops(layer_idx: int, layer_type: str) -> list[ConvOp]:
     """DeepSeek's on-disk attention naming -> `transformers`-native `self_attn.*`."""
-    p = f"model.layers.{layer_idx}"
+    p = f"layers.{layer_idx}"
     ops: list[ConvOp] = [
         PrefixRename(f"{p}.attn.", f"{p}.self_attn."),
         Rename(f"{p}.self_attn.wkv.weight", f"{p}.self_attn.kv_proj.weight"),
@@ -82,7 +109,7 @@ def _on_disk_moe_ops(layer_idx: int) -> list[ConvOp]:
     """DeepSeek's on-disk `ffn.*` naming -> `transformers`-native `mlp.*`, including fusing
     the on-disk per-expert `w1`/`w2`/`w3` into PrimeRL's (and HF-native's) fused
     `gate_up_proj` / `down_proj`."""
-    p = f"model.layers.{layer_idx}"
+    p = f"layers.{layer_idx}"
     experts = f"{p}.mlp.experts"
     shared = f"{p}.mlp.shared_experts"
     return [
@@ -103,7 +130,7 @@ def _on_disk_moe_ops(layer_idx: int) -> list[ConvOp]:
 
 
 def _layer_ops(layer_idx: int, layer_type: str) -> list[ConvOp]:
-    prefix = f"model.layers.{layer_idx}.mlp"
+    prefix = f"layers.{layer_idx}.mlp"
     ops = _on_disk_attn_ops(layer_idx, layer_type) + _on_disk_moe_ops(layer_idx)
     ops += [
         Rename(f"{prefix}.gate.weight", f"{prefix}.router.gate.weight"),
@@ -116,13 +143,24 @@ def _layer_ops(layer_idx: int, layer_type: str) -> list[ConvOp]:
 
 def conversion_chain(config) -> list[ConvOp]:
     # Neither HF nor prime-rl instantiates the multi-token-prediction heads a V4 checkpoint
-    # ships. HF drops them with `_keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]`,
-    # which matches at either nesting depth, hence the two prefixes.
+    # ships; HF drops them via `_keys_to_ignore_on_load_unexpected`. They sit at the top level
+    # (`mtp.0.hc_attn_base`, ...), never nested inside a layer, on the real checkpoint.
     ops: list[ConvOp] = [
         Drop("mtp.", is_prefix=True),
-        Drop("model.mtp.", is_prefix=True),
         Rename("head.weight", "lm_head.weight"),
     ]
     for layer_idx in range(config.num_hidden_layers):
         ops.extend(_layer_ops(layer_idx, config.layer_types[layer_idx]))
+    # Nothing on disk carries the `model.` prefix that prime-rl's module tree does (verified
+    # against the real checkpoint's index: 0 of its 72317 keys start with `model.`), so the
+    # non-layer parameters are renamed individually and everything under `layers.` is reparented
+    # in one pass, last, once the per-layer ops above have run on the bare names.
+    ops += [
+        Rename("embed.weight", "model.embed_tokens.weight"),
+        Rename("norm.weight", "model.norm.weight"),
+        Rename("hc_head_fn", "model.hc_head.hc_fn"),
+        Rename("hc_head_base", "model.hc_head.hc_base"),
+        Rename("hc_head_scale", "model.hc_head.hc_scale"),
+        PrefixRename("layers.", "model.layers."),
+    ]
     return ops

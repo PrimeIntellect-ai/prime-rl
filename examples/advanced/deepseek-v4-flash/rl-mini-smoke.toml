@@ -1,14 +1,15 @@
 # Local reverse-text RL smoke test on the mini deepseek_v4 preset -- proves the rollout +
 # training loop runs end to end on this port's current (naive/eager) attention. Not a
-# performance or convergence test; ep is left at its default (1) since this only needs to
-# prove the loop moves, not exercise expert parallelism (see sft-mini-ep-check.toml for that).
-# Generate the checkpoint first:
+# performance or convergence test: the mini checkpoint is freshly initialized, so completions
+# are incoherent and rewards stay near zero by construction. Generate the checkpoint first:
 #
 #   uv run python scripts/mini_moe.py --arch deepseek_v4 --output-dir /tmp/deepseek-v4-mini
 #
-# Then, on a single node with at least 4 GPUs:
+# Then, on a single node with at least 4 GPUs. The CUDA_HOME/PATH override is required: the
+# system default nvcc is 11.5 and the TileLang kernel JIT needs 12.3 or newer.
 #
-#   uv run rl @ examples/advanced/deepseek-v4-flash/rl-mini-smoke.toml
+#   CUDA_HOME=/usr/local/cuda-12.9 PATH=/usr/local/cuda-12.9/bin:$PATH \
+#     uv run rl @ examples/advanced/deepseek-v4-flash/rl-mini-smoke.toml
 
 max_steps = 20
 
@@ -38,7 +39,17 @@ env.agent.runtime.type = "subprocess"
 name = "default"
 
 [inference]
+# Mandatory for DeepSeek V4, not an optimization. Without it VLLM_USE_DEEP_GEMM=0, and
+# vLLM's mHC pre-norm GEMM then takes a TileLang kernel that is numerically wrong above
+# 1024 tokens per forward pass on SM120, silently. See DeepGEMM notes in TODO.md.
+use_deep_gemm = true
+
+[inference.vllm]
+# Attention on this hardware only supports an fp8 KV cache, not the `auto` default.
+kv_cache_dtype = "fp8"
+enforce_eager = true
+max_model_len = 4096
 
 [deployment]
-num_train_gpus = 1
-num_infer_gpus = 1
+num_train_gpus = 2
+num_infer_gpus = 2

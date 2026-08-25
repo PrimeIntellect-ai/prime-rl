@@ -1,10 +1,12 @@
 import pytest
 import torch
 from torch import nn
+from transformers.core_model_loading import revert_weight_conversion
 from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config as HFDeepseekV4Config
 from transformers.models.deepseek_v4.modeling_deepseek_v4 import DeepseekV4ForCausalLM as HFDeepseekV4ForCausalLM
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
+from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import to_on_disk_naming
 from prime_rl.trainer.models.layers import norms
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
@@ -121,6 +123,23 @@ def _configs() -> tuple[HFDeepseekV4Config, DeepseekV4Config]:
     return hf_config, DeepseekV4Config(**_BASE, use_grouped_mm=False)
 
 
+def _on_disk_state_dict(hf_model: nn.Module) -> dict[str, torch.Tensor]:
+    """An HF model's weights under the key naming a real DeepSeek V4 checkpoint uses.
+
+    `conversion_chain` converts *on-disk* names, which for this model are not the names
+    `hf_model.state_dict()` returns: transformers carries a conversion registry entry for
+    deepseek_v4 and applies it inside `from_pretrained` / `save_pretrained`, so the on-disk
+    names are the compact DeepSeek-native ones (`attn`, `ffn`, `wkv`, per-expert `w1`/`w2`/`w3`,
+    no `model.` prefix). The trainer reads raw on-disk state dicts in `load_dcp_from_hf` and
+    never goes through `from_pretrained`, so that is the naming the chain has to handle.
+
+    `revert_weight_conversion` is transformers' own reverse pass, the one `save_pretrained`
+    runs, so this stays authoritative rather than restating the mapping here.
+    """
+    reverted = revert_weight_conversion(hf_model, dict(hf_model.state_dict()))
+    return to_on_disk_naming(reverted)
+
+
 def get_model_pairs(dtype: torch.dtype = torch.bfloat16) -> tuple[nn.Module, nn.Module]:
     """Build an HF and a prime-rl model carrying identical weights."""
     hf_config, prime_config = _configs()
@@ -130,7 +149,7 @@ def get_model_pairs(dtype: torch.dtype = torch.bfloat16) -> tuple[nn.Module, nn.
     _randomize(hf_model)
 
     with torch.no_grad():
-        state_dict = hf_model.state_dict()
+        state_dict = _on_disk_state_dict(hf_model)
         prime_state_keys = set(prime_model.state_dict())
         prime_model.convert_to_prime(state_dict)
         assert set(state_dict) == prime_state_keys, "the converted HF key set must equal prime-rl's exactly"
@@ -326,11 +345,10 @@ def test_deepseek_v4_conversion_matches_the_hf_key_set():
         hf_model = HFDeepseekV4ForCausalLM._from_config(hf_config)
         prime_model = DeepseekV4ForCausalLM._from_config(prime_config)
 
-    state_dict = dict(hf_model.state_dict())
-    # A real checkpoint ships multi-token-prediction heads that neither side instantiates.
-    # HF ignores them at either nesting depth, so both spellings have to be dropped.
-    state_dict["mtp.layers.0.embed_tokens.weight"] = torch.empty(0, device="meta")
-    state_dict["model.mtp.layers.0.embed_tokens.weight"] = torch.empty(0, device="meta")
+    state_dict = _on_disk_state_dict(hf_model)
+    # A real checkpoint ships multi-token-prediction heads that neither side instantiates,
+    # at the top level (`mtp.0.hc_attn_base`, ...) rather than nested inside a layer.
+    state_dict["mtp.0.embed.weight"] = torch.empty(0, device="meta")
     prime_model.convert_to_prime(state_dict)
 
     assert set(state_dict) == set(prime_model.state_dict())
