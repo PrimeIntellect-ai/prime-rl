@@ -208,6 +208,17 @@ The controller's idea is to treat the engines as ground truth and probe, instead
 
 The cap starts from a safe bound derived from the engines (KV capacity divided by the maximum context length), or from `initial_inflight` when a good value is known, and always stays within `[min_inflight, max_inflight]`.
 
+Configure it via `[orchestrator.concurrency]` (training episodes) or `[eval.concurrency]` (eval episodes):
+
+```toml
+[orchestrator.concurrency]
+initial_inflight = 512  # skip the ramp when a good value is known; omit to auto-derive one
+min_inflight = 1
+max_inflight = 1024     # hard ceiling, e.g. to bound external resources like sandboxes; default 1024, "None" removes it
+```
+
+Set `min_inflight = max_inflight` to pin a fixed concurrency instead of adapting.
+
 ## Advanced Configuration
 
 ### KV Cache Offload
