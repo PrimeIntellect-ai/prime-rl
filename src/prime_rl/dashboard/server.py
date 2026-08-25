@@ -861,17 +861,6 @@ def token_usage(usage: dict) -> tuple[int | None, int | None, int | None]:
 
 def activity_spans(trace: dict, node_indexes: set[int], *, include_unlinked: bool = False) -> list[dict]:
     nodes = trace.get("nodes") or []
-    timing = trace.get("timing") or {}
-    known_starts = [
-        timestamp
-        for timestamp in (
-            timing.get("start"),
-            (timing.get("agent") or {}).get("start"),
-            *(node.get("timestamp") for node in nodes),
-        )
-        if timestamp is not None
-    ]
-    fallback_started = min(known_starts, default=None)
     spans = []
     for call_index, call in enumerate(trace.get("calls") or []):
         node_index = call.get("node")
@@ -884,7 +873,7 @@ def activity_spans(trace: dict, node_indexes: set[int], *, include_unlinked: boo
         else:
             node = nodes[node_index]
         call_time = call.get("time") or {}
-        started = call_time.get("start") or node.get("timestamp") or fallback_started
+        started = call_time.get("start") or node.get("timestamp")
         ended = call_time.get("end") or node.get("timestamp")
         if ended is None and started is not None and trace.get("is_completed"):
             ended = started
