@@ -1948,7 +1948,8 @@ let currentEpisode = null;
 let currentLine = null;
 let currentTraceIdx = 0;
 let currentBranchIdx = 0;
-let episodeFetchVersion = 0;
+let episodeOpenVersion = 0;
+let episodeEnrichmentVersion = 0;
 
 const COPY_SVG =
   `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">` +
@@ -2072,19 +2073,21 @@ async function ensureTokens() {
   const line = currentLine;
   const withTokens = wantsPieces || !!currentEpisode._hasTokens;
   const withRendered = wantsRendered || !!currentEpisode._hasRendered;
-  const requestVersion = ++episodeFetchVersion;
+  const requestVersion = ++episodeEnrichmentVersion;
   const episode = await fetchEpisode(line, withTokens, withRendered);
-  if (line !== currentLine || requestVersion !== episodeFetchVersion) return;
+  if (line !== currentLine || requestVersion !== episodeEnrichmentVersion) return;
   episode._hasTokens = withTokens;
   episode._hasRendered = withRendered;
   currentEpisode = episode;
 }
 
 async function openEpisode(line) {
-  const requestVersion = ++episodeFetchVersion;
+  const requestVersion = ++episodeOpenVersion;
+  episodeEnrichmentVersion++;
   $("#trace-modal").hidden = false;
   $("#drawer-backdrop").hidden = false;
   currentLine = line;
+  currentEpisode = null;
   renderModalStep();
   renderRolloutList();
   $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
@@ -2092,17 +2095,20 @@ async function openEpisode(line) {
   const withTokens = !!$("#token-signal").value;
   const withRendered = state.traces.viewMode === "rendered";
   const episode = await fetchEpisode(line, withTokens, withRendered);
-  if (line !== currentLine || requestVersion !== episodeFetchVersion) return;
+  if (line !== currentLine || requestVersion !== episodeOpenVersion) return;
   episode._hasTokens = withTokens;
   episode._hasRendered = withRendered;
   currentEpisode = episode;
   currentTraceIdx = 0;
   currentBranchIdx = 0;
   renderEpisode();
+  await ensureTokens();
+  if (line === currentLine && requestVersion === episodeOpenVersion) renderEpisode();
 }
 
 function closeDrawer() {
-  episodeFetchVersion++;
+  episodeOpenVersion++;
+  episodeEnrichmentVersion++;
   $("#trace-modal").hidden = true;
   $("#drawer-backdrop").hidden = true;
   currentEpisode = null;
