@@ -22,6 +22,9 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_rope_unhashable_cache_key()
     monkey_patch_deepseek_v4_kv_norm_weight_mapper()
     monkey_patch_deepseek_v4_rope_force_fp32_cache()
+    monkey_patch_deepseek_v4_hc_prenorm_gemm_arch_fallback()
+    monkey_patch_deepseek_v4_bf16_o_proj()
+    monkey_patch_cutedsl_fmax_result_type()
 
 
 def monkey_patch_online_fp8_parameter_cast():
@@ -273,6 +276,248 @@ def monkey_patch_deepseek_v4_rope_force_fp32_cache():
     from vllm.models.deepseek_v4.common import rope as dsv4_rope
 
     dsv4_rope.get_rope = _patched_get_rope
+
+
+def monkey_patch_deepseek_v4_hc_prenorm_gemm_arch_fallback():
+    """Fall back to torch for the mHC pre-norm GEMM on GPUs DeepGEMM does not cover.
+
+    DeepSeek V4's manifold-constrained hyper-connections need a fused
+    "project the residual streams and accumulate their squared norms" GEMM. Every
+    call site in ``vllm/model_executor/kernels/mhc/tilelang.py`` (lines 195, 374,
+    598) routes it to DeepGEMM's ``tf32_hc_prenorm_gemm``, which raises
+
+        RuntimeError: Assertion error (csrc/apis/hyperconnection.hpp:56):
+        Unsupported architecture
+
+    on any GPU its hyper-connection kernels were not built for (observed on SM120
+    / RTX PRO 6000 Blackwell, where DeepGEMM's *other* kernels, including the FP8
+    GEMMs, are supported and work). Whether it fires is a property of the DeepGEMM
+    build, not of the model or the checkpoint, so probe once on the first call and
+    switch permanently rather than guessing an architecture allowlist: a DeepGEMM
+    build that grows SM120 support silently stops triggering this.
+
+    vLLM does ship its own non-DeepGEMM path (``_tilelang_hc_prenorm_gemm``), but
+    it is not usable as the fallback here for two independent reasons. It is only
+    reachable when ``is_deep_gemm_supported()`` is False, which is the wrong
+    condition (DeepGEMM is supported here, just not this one kernel), and the
+    ``mhc_pre_broadcast_tilelang`` path does not consult that flag at all. More
+    importantly its ``x.shape[0] >= 1024`` branch,
+    ``hc_prenorm_gemm_block_m_tilelang``, is itself wrong on SM120: measured
+    against a torch reference at hidden_size=4096 it agrees to a relative 3e-7 for
+    every token count below 1024 and returns garbage (relative error ~1.0, with
+    ``sqrsum`` left at zero) from exactly 1024 up. That is a second,
+    architecture-specific vLLM bug, and 1024 is well below any real training
+    sequence length.
+
+    The op's contract is fully specified by its own docstring
+    (``vllm/utils/deep_gemm.py:618``):
+
+        out = x.float() @ fn.T
+        sqrsum = x.float().square().sum(-1)
+
+    ``out`` and ``sqrsum`` carry a leading split-K axis whose entries the consuming
+    TileLang kernel simply sums over (``tilelang_kernels.py:407-414``), so writing
+    the whole result into split 0 and zeroing the rest is exact. Verified against
+    the correct sub-1024 TileLang kernel: relative 5e-7 on ``out``, and 2e-4 on
+    ``sqrsum`` in the direction of *more* accuracy, since this accumulates a
+    4096-term sum of squares in fp32 rather than the kernel's narrower type.
+    """
+    from vllm.logger import init_logger
+    from vllm.utils import deep_gemm as vllm_deep_gemm
+
+    original_prenorm_gemm = vllm_deep_gemm.tf32_hc_prenorm_gemm
+    if getattr(original_prenorm_gemm, "_prime_rl_has_torch_fallback", False):
+        return
+
+    logger = init_logger(__name__)
+    use_torch = False
+
+    def _torch_prenorm_gemm(x, fn, out, sqrsum, num_split):
+        x_fp32 = x.float()
+        torch.matmul(x_fp32, fn.transpose(0, 1), out=out[0])
+        torch.sum(x_fp32.square(), dim=-1, out=sqrsum[0])
+        if num_split > 1:
+            out[1:].zero_()
+            sqrsum[1:].zero_()
+        return out
+
+    def _patched_prenorm_gemm(x, fn, out, sqrsum, num_split):
+        nonlocal use_torch
+        if use_torch:
+            return _torch_prenorm_gemm(x, fn, out, sqrsum, num_split)
+        try:
+            return original_prenorm_gemm(x, fn, out, sqrsum, num_split)
+        except RuntimeError as e:
+            if "Unsupported architecture" not in str(e):
+                raise
+            use_torch = True
+            logger.warning(
+                "DeepGEMM has no hyper-connection kernel for this GPU (%s); "
+                "using prime-rl's torch mHC pre-norm GEMM for the rest of this process.",
+                torch.cuda.get_device_name() if torch.cuda.is_available() else "unknown",
+            )
+            return _torch_prenorm_gemm(x, fn, out, sqrsum, num_split)
+
+    _patched_prenorm_gemm._prime_rl_has_torch_fallback = True
+    vllm_deep_gemm.tf32_hc_prenorm_gemm = _patched_prenorm_gemm
+
+
+def monkey_patch_cutedsl_fmax_result_type():
+    """Pass the missing result type to NVVM's ``fmax`` builder.
+
+    ``vllm/vllm_flash_attn/cute/utils.py:352`` calls
+    ``nvvm.fmax(a, b, c=...)``, but the installed ``nvidia_cutlass_dsl`` (4.5.2)
+    declares that MLIR op builder as ``fmax(res, a, b, *, c=None, ...)``, taking
+    the result type first. The positional arguments therefore shift by one and the
+    call dies while the kernel is being traced:
+
+        TypeError: fmax() missing 1 required positional argument: 'b'
+
+    This is a plain version skew between vLLM 0.26.0 and the CuTeDSL package it
+    resolves to, not anything model- or hardware-specific. DeepSeek V4 reaches it
+    through the CuTeDSL Lightning Indexer
+    (``fused_indexer_q_cutedsl.py:520``), which is taken whenever
+    ``has_cutedsl()`` is true, i.e. whenever the ``cutlass`` package is importable
+    at all. Since that package ships in this repo's environment, any hardware
+    running DeepSeek V4 through vLLM here hits this, including the cluster.
+
+    Note ``vllm.utils.import_utils.has_cutedsl`` is the escape hatch if further
+    CuTeDSL skew turns up: every DeepSeek V4 CuTeDSL entry point is gated on it
+    (``fused_indexer_q.py:353,410``, ``cache_utils.py:403``,
+    ``sparse_attn_indexer.py:57``) and falls back to a maintained Triton kernel,
+    so forcing it False trades throughput for avoiding the CuTeDSL path entirely.
+    Fixing the one broken signature is preferred: it keeps vLLM's intended kernels.
+
+    Importing ``vllm.vllm_flash_attn.cute.utils`` here costs about a second of
+    process startup, which this file's DeepSeek V4 patches already dwarf (they
+    import the full DeepSeek V4 model module, about five seconds).
+    """
+    from cutlass import Float32
+    from cutlass._mlir.dialects import nvvm
+    from cutlass.cutlass_dsl import T, dsl_user_op
+    from vllm.vllm_flash_attn.cute import utils as cute_utils
+
+    if getattr(cute_utils.fmax, "_prime_rl_passes_result_type", False):
+        return
+
+    @dsl_user_op
+    def _fmax(a, b, c=None, *, loc=None, ip=None):
+        return Float32(
+            nvvm.fmax(
+                T.f32(),
+                Float32(a).ir_value(loc=loc, ip=ip),
+                Float32(b).ir_value(loc=loc, ip=ip),
+                c=Float32(c).ir_value(loc=loc, ip=ip) if c is not None else None,
+                loc=loc,
+                ip=ip,
+            )
+        )
+
+    _fmax._prime_rl_passes_result_type = True
+    cute_utils.fmax = _fmax
+
+
+def monkey_patch_deepseek_v4_bf16_o_proj():
+    """Run DeepSeek V4's output projection in bf16 when the weights are not FP8.
+
+    vLLM's DeepSeek V4 output projection is FP8-only. All three CUDA attention
+    classes (``DeepseekV4FlashMLAAttention``,
+    ``DeepseekV4FlashInferMLAAttention``, ``DeepseekV4FlashInferSM120Attention``)
+    implement ``_o_proj`` by calling ``deep_gemm_fp8_o_proj``
+    (``vllm/models/deepseek_v4/nvidia/ops/o_proj.py``), which dereferences
+    ``wo_a.weight_scale_inv`` and hands the result to DeepGEMM's ``fp8_einsum``.
+    There is no branch on quant config or weight dtype, and ``_o_proj`` is an
+    ``@abstractmethod`` dispatched purely by platform subclass, so no attention
+    backend routes around it. A bf16 checkpoint therefore fails with
+    ``AttributeError: 'ColumnParallelLinear' object has no attribute
+    'weight_scale_inv'``.
+
+    The FP8 path is genuinely unreachable on some supported hardware. On SM120
+    (RTX PRO 6000 Blackwell) DeepGEMM 2.5.0 has no block-scaled FP8 kernels at
+    all, even though vLLM's ``support_deep_gemm()`` claims capability family 120
+    (``vllm/platforms/cuda.py:665-671``). Measured directly: ``fp8_gemm_nt``
+    fails in DeepGEMM's layout dispatch, ``transform_sf_into_required_layout``
+    fails for the UE8M0 scale format that the same GPU's
+    ``is_deep_gemm_e8m0_used()`` selects, and ``fp8_einsum`` fails on the exact
+    tensors this op builds. So online block quantization
+    (``--quantization fp8_per_block``, which does produce a correct
+    ``weight_scale_inv``) still cannot make the FP8 kernel run there.
+
+    Only the unquantized case is redirected: an FP8 weight keeps using vLLM's own
+    kernel, so a real FP8-serialized checkpoint behaves exactly as before. The
+    condition is the weight dtype rather than the presence of
+    ``weight_scale_inv``, so a checkpoint that *is* quantized but whose scales
+    ended up in the wrong layout still fails loudly instead of being silently
+    rerouted.
+
+    The replacement mirrors the Triton kernel's arithmetic
+    (``vllm/models/deepseek_v4/common/ops/fused_inv_rope_fp8_quant.py:95-105``)
+    without the quantization step. The trailing ``rope_dim`` channels of each head
+    carry an inverse RoPE over interleaved pairs, with ``cos_sin_cache`` holding
+    ``rope_dim // 2`` cosines followed by the matching sines:
+
+        y[even] = x[even] * cos + x[odd] * sin
+        y[odd]  = x[odd]  * cos - x[even] * sin
+
+    The remaining ``nope_dim`` channels pass through. The projection is the same
+    grouped contraction ``fp8_einsum`` performs, with the group axis recovered by
+    reshaping: head ``g * heads_per_group + i`` belongs to group ``g`` at offset
+    ``i * head_dim``, matching the kernel's own
+    ``g = pid_gh // heads_per_group`` indexing.
+
+    Rotation is computed in fp32 and the contraction runs in bf16, whose CUDA
+    matmuls accumulate in fp32. That is strictly more accurate than the FP8 path
+    it replaces, and it avoids materializing an fp32 copy of the attention output.
+    """
+    from vllm.models.deepseek_v4.nvidia import flashinfer_sparse, flashmla
+    from vllm.models.deepseek_v4.nvidia.ops import o_proj as o_proj_module
+
+    original_o_proj = o_proj_module.deep_gemm_fp8_o_proj
+    if getattr(original_o_proj, "_prime_rl_has_bf16_fallback", False):
+        return
+
+    def _inverse_rope(o, positions, cos_sin_cache, rope_dim):
+        num_tokens, num_heads, head_dim = o.shape
+        half_rope = rope_dim // 2
+        cos_sin = cos_sin_cache[positions].float()
+        cos = cos_sin[:, :half_rope].view(num_tokens, 1, half_rope)
+        sin = cos_sin[:, half_rope:].view(num_tokens, 1, half_rope)
+
+        rotated = o[:, :, head_dim - rope_dim :].float().reshape(num_tokens, num_heads, half_rope, 2)
+        even, odd = rotated[..., 0], rotated[..., 1]
+        pairs = torch.stack((even * cos + odd * sin, odd * cos - even * sin), dim=-1)
+
+        out = o.clone()
+        out[:, :, head_dim - rope_dim :] = pairs.reshape(num_tokens, num_heads, rope_dim).to(o.dtype)
+        return out
+
+    def _patched_o_proj(o, positions, cos_sin_cache, wo_a, wo_b, *, n_groups, heads_per_group, **kwargs):
+        if wo_a.weight.dtype == torch.float8_e4m3fn:
+            return original_o_proj(
+                o,
+                positions,
+                cos_sin_cache,
+                wo_a,
+                wo_b,
+                n_groups=n_groups,
+                heads_per_group=heads_per_group,
+                **kwargs,
+            )
+
+        x = _inverse_rope(o, positions, cos_sin_cache, kwargs["rope_dim"])
+        x = x.reshape(o.shape[0], n_groups, heads_per_group * o.shape[-1])
+        weight = wo_a.weight.view(n_groups, kwargs["o_lora_rank"], -1)
+        z = torch.einsum("tgr,gdr->tgd", x, weight)
+        return wo_b(z.flatten(1))
+
+    _patched_o_proj._prime_rl_has_bf16_fallback = True
+    o_proj_module.deep_gemm_fp8_o_proj = _patched_o_proj
+
+    # Both attention modules did `from ...ops.o_proj import deep_gemm_fp8_o_proj` at
+    # import time, so patching the defining module alone would not reach the names
+    # their `_o_proj` methods actually call.
+    flashmla.deep_gemm_fp8_o_proj = _patched_o_proj
+    flashinfer_sparse.deep_gemm_fp8_o_proj = _patched_o_proj
 
 
 def monkey_patch_nano_v3_reasoning_parser():
