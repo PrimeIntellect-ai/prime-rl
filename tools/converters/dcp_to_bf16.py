@@ -6,7 +6,7 @@ the checkpoint's model state, gather rank-parallel, convert to HF format, and
 write sharded safetensors plus config/tokenizer assets.
 
 The model and tokenizer configs are read from the run's resolved config
-(``<run>/configs/trainer.json`` or ``sft.json``). LoRA checkpoints are not
+(``<run>/configs/resolved/trainer.json`` or ``sft.json``). LoRA checkpoints are not
 supported — the script exports full fine-tunes only.
 
 Usage (from the prime-rl repo; more ranks = faster gathers and writes, and
@@ -38,6 +38,7 @@ from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.utils import setup_torch_distributed
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger, setup_logger
+from prime_rl.utils.pathing import get_config_dir
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -64,15 +65,16 @@ def resolve_dcp_dir(ckpt_dir: Path) -> Path:
 def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
     """Model/tokenizer configs from the run's resolved config."""
     logger = get_logger()
+    config_dir = get_config_dir(step_dir.parent.parent)
     for name in RUN_CONFIG_NAMES:
-        path = step_dir.parent.parent / "configs" / name
+        path = config_dir / name
         if path.exists():
             logger.info(f"Reading model config from {path}")
             run_config = json.loads(path.read_text())
             break
     else:
         raise FileNotFoundError(
-            f"No resolved run config ({' or '.join(RUN_CONFIG_NAMES)}) found under {step_dir.parent.parent / 'configs'} "
+            f"No resolved run config ({' or '.join(RUN_CONFIG_NAMES)}) found under {config_dir} "
             "- the checkpoint must live in its run directory"
         )
 

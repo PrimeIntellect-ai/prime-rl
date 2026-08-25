@@ -223,3 +223,23 @@ def check_mismatch_kl_in_range(
         min_threshold=min_threshold,
         max_threshold=max_threshold,
     )
+
+
+def convert_checkpoint(converter: str, *args: Path) -> None:
+    """Helper to run a checkpoint converter (tools/converters/<converter>.py) on a checkpoint"""
+    import subprocess
+
+    cmd = ["uv", "run", "python", f"tools/converters/{converter}.py", *[str(arg) for arg in args]]
+    subprocess.run(cmd, check=True, timeout=600)
+
+
+def check_hf_load(weights_dir: Path) -> None:
+    """Helper to assert that an exported checkpoint loads as an HF model with no missing/unexpected tensors"""
+    import torch
+    from transformers import AutoModelForCausalLM
+
+    model, loading_info = AutoModelForCausalLM.from_pretrained(weights_dir, output_loading_info=True)
+    assert not loading_info["missing_keys"], f"missing keys: {loading_info['missing_keys'][:5]}"
+    assert not loading_info["unexpected_keys"], f"unexpected keys: {loading_info['unexpected_keys'][:5]}"
+    assert not loading_info["mismatched_keys"], f"mismatched keys: {loading_info['mismatched_keys'][:5]}"
+    assert all(torch.isfinite(param).all() for param in model.parameters())
