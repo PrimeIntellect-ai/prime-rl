@@ -1066,9 +1066,7 @@ def timeline_lane(
     reasoning_tokens = total("reasoning_tokens")
     total_input_tokens = input_tokens + (cached_tokens or 0) if input_tokens is not None else None
     total_tokens = (
-        total_input_tokens + output_tokens
-        if total_input_tokens is not None and output_tokens is not None
-        else None
+        total_input_tokens + output_tokens if total_input_tokens is not None and output_tokens is not None else None
     )
     context_lengths = [
         (span.get("input_tokens") or 0) + (span.get("cached_tokens") or 0)
