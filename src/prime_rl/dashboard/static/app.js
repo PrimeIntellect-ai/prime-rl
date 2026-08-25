@@ -2087,8 +2087,9 @@ function fetchEpisodeTimeline(line) {
 async function ensureTimeline() {
   if (currentTimeline || currentLine == null) return;
   const line = currentLine;
+  const requestVersion = episodeOpenVersion;
   const timeline = await fetchEpisodeTimeline(line);
-  if (line !== currentLine) return;
+  if (line !== currentLine || requestVersion !== episodeOpenVersion) return;
   currentTimeline = timeline;
 }
 
@@ -2392,6 +2393,22 @@ function errorBannersHtml(errors) {
   );
 }
 
+function normalizedCallUsage(usage = {}) {
+  let input = usage.prompt_tokens;
+  let cached = usage.cached_input_tokens;
+  if (cached == null) {
+    cached = usage.prompt_tokens_details?.cached_tokens;
+    if (input != null && cached) input = Math.max(0, input - cached);
+  }
+  return {
+    input,
+    cached,
+    output: usage.completion_tokens,
+    reasoning: usage.reasoning_tokens ?? usage.completion_tokens_details?.reasoning_tokens,
+    cost: usage.cost,
+  };
+}
+
 function renderMessages(ep, trace, branches) {
   const container = $("#tm-messages");
   entriesObserver?.disconnect();
@@ -2422,16 +2439,10 @@ function renderMessages(ep, trace, branches) {
   const callChipHtml = ({ call, index }) => {
     const fields = [`call ${index + 1}`];
     if (call.finish_reason) fields.push(call.finish_reason);
-    const usage = call.usage || {};
-    let input = usage.prompt_tokens;
-    let cached = usage.cached_input_tokens;
-    if (cached == null) {
-      cached = usage.prompt_tokens_details?.cached_tokens;
-      if (input != null && cached) input = Math.max(0, input - cached);
-    }
+    const { input, cached, output } = normalizedCallUsage(call.usage);
     if (input != null) fields.push(`${fmtCompact(input)} in`);
     if (cached != null) fields.push(`${fmtCompact(cached)} cache`);
-    if (usage.completion_tokens != null) fields.push(`${fmtCompact(usage.completion_tokens)} out`);
+    if (output != null) fields.push(`${fmtCompact(output)} out`);
     return `<span class="chip" data-call-index="${index}">${esc(fields.join(" · "))}</span>`;
   };
   // agent highlights (sticky until the next view command or drawer close)
@@ -2594,28 +2605,35 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("branches", branches.length));
     parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
 
-    const usage = { input: 0, output: 0, reasoning: 0, cached: 0 };
-    let hasUsage = false;
+    const usage = { input: null, output: null, reasoning: null, cached: null, maxContext: null, cost: null };
+    const addUsage = (field, value) => {
+      if (value != null) usage[field] = (usage[field] ?? 0) + value;
+    };
     for (const call of trace.calls || []) {
-      const u = call.usage || {};
-      if (u.prompt_tokens != null || u.completion_tokens != null) hasUsage = true;
-      usage.input += u.prompt_tokens ?? 0;
-      usage.output += u.completion_tokens ?? 0;
-      usage.reasoning += u.completion_tokens_details?.reasoning_tokens ?? 0;
-      usage.cached += u.prompt_tokens_details?.cached_tokens ?? 0;
+      const current = normalizedCallUsage(call.usage);
+      addUsage("input", current.input);
+      addUsage("cached", current.cached);
+      addUsage("output", current.output);
+      addUsage("reasoning", current.reasoning);
+      addUsage("cost", current.cost);
+      if (current.input != null) {
+        const context = current.input + (current.cached ?? 0);
+        usage.maxContext = Math.max(usage.maxContext ?? 0, context);
+      }
     }
+    const totalInput = usage.input == null ? null : usage.input + (usage.cached ?? 0);
+    const totalTokens = totalInput == null || usage.output == null ? null : totalInput + usage.output;
+    const hasUsage = usage.input != null || usage.cached != null || usage.output != null;
     if (hasUsage) {
       parts.push(`<div class="meta-sec">usage</div>`);
-      parts.push(metaRow("input tokens", fmtCompact(usage.input)));
-      parts.push(metaRow("output tokens", fmtCompact(usage.output)));
-      if (usage.reasoning) parts.push(metaRow("reasoning tokens", fmtCompact(usage.reasoning)));
-      if (usage.cached) parts.push(metaRow("cached tokens", fmtCompact(usage.cached)));
-      // API-priced runs report per-call cost; local deployments usually don't
-      const traceCost = (t) => (t.calls || []).reduce((acc, c) => acc + (c.usage?.cost ?? 0), 0);
-      const allTraces = ep.traces || [];
-      if (allTraces.some((t) => (t.calls || []).some((c) => c.usage?.cost != null)))
-        parts.push(metaRow("cost", fmtCost(allTraces.reduce((acc, t) => acc + traceCost(t), 0))));
-      parts.push(metaRow("total tokens", fmtCompact(usage.input + usage.output)));
+      if (usage.input != null) parts.push(metaRow("input tokens", fmtCompact(usage.input)));
+      if (usage.cached != null) parts.push(metaRow("cached input", fmtCompact(usage.cached)));
+      if (totalInput != null) parts.push(metaRow("total input", fmtCompact(totalInput)));
+      if (usage.output != null) parts.push(metaRow("output tokens", fmtCompact(usage.output)));
+      if (usage.reasoning != null) parts.push(metaRow("reasoning tokens", fmtCompact(usage.reasoning)));
+      if (usage.maxContext != null) parts.push(metaRow("max context length", fmtCompact(usage.maxContext)));
+      if (usage.cost != null) parts.push(metaRow("cost", fmtCost(usage.cost)));
+      if (totalTokens != null) parts.push(metaRow("total tokens", fmtCompact(totalTokens)));
     }
 
     parts.push(`<div class="meta-sec">state</div>`);
@@ -2664,6 +2682,19 @@ function timelineTipAttr(payload) {
   return ` data-timeline-tip="${esc(JSON.stringify(payload))}"`;
 }
 
+function appendTimelineUsage(rows, usage, aggregate = false) {
+  if (!usage) return;
+  if (aggregate && usage.model_calls != null) rows.push(["model calls", fmtNum(usage.model_calls)]);
+  if (usage.input_tokens != null) rows.push(["input tokens", fmtCompact(usage.input_tokens)]);
+  if (usage.cached_tokens != null) rows.push(["cached input", fmtCompact(usage.cached_tokens)]);
+  if (usage.total_input_tokens != null) rows.push(["total input", fmtCompact(usage.total_input_tokens)]);
+  if (usage.output_tokens != null) rows.push(["output tokens", fmtCompact(usage.output_tokens)]);
+  if (usage.reasoning_tokens != null) rows.push(["reasoning tokens", fmtCompact(usage.reasoning_tokens)]);
+  if (usage.max_context_tokens != null) rows.push(["max context length", fmtCompact(usage.max_context_tokens)]);
+  if (usage.total_tokens != null) rows.push(["total tokens", fmtCompact(usage.total_tokens)]);
+  if (usage.cost != null) rows.push(["cost", fmtCost(usage.cost)]);
+}
+
 function timelineSpanHtml(lane, span, start, total) {
   const partial = span.started_at == null || span.ended_at == null;
   const left = span.started_at == null ? 0 : Math.max(0, Math.min(100, ((span.started_at - start) / total) * 100));
@@ -2674,10 +2705,19 @@ function timelineSpanHtml(lane, span, start, total) {
     ["duration", partial ? "—" : fmtDuration(span.ended_at - span.started_at)],
   ];
   if (span.track === "activity") {
-    if (span.input_tokens != null) rows.push(["input tokens", fmtCompact(span.input_tokens)]);
-    if (span.cached_tokens != null) rows.push(["cached tokens", fmtCompact(span.cached_tokens)]);
-    if (span.output_tokens != null) rows.push(["output tokens", fmtCompact(span.output_tokens)]);
-    if (span.cost != null) rows.push(["cost", fmtCost(span.cost)]);
+    const totalInput = span.input_tokens == null ? null : span.input_tokens + (span.cached_tokens || 0);
+    appendTimelineUsage(rows, {
+      input_tokens: span.input_tokens,
+      cached_tokens: span.cached_tokens,
+      total_input_tokens: totalInput,
+      output_tokens: span.output_tokens,
+      reasoning_tokens: span.reasoning_tokens,
+      max_context_tokens: totalInput,
+      total_tokens: totalInput == null || span.output_tokens == null ? null : totalInput + span.output_tokens,
+      cost: span.cost,
+    });
+  } else {
+    appendTimelineUsage(rows, lane.usage, true);
   }
   const tip = timelineTipAttr({
     kind: span.track === "activity" ? "activity" : "lifecycle",

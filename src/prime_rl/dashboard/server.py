@@ -980,6 +980,9 @@ def activity_spans(trace: dict, node_indexes: set[int], *, include_unlinked: boo
         ended = call_time.get("end")
         usage = call.get("usage") or {}
         input_tokens, cached_tokens, output_tokens = token_usage(usage)
+        reasoning_tokens = usage.get("reasoning_tokens")
+        if reasoning_tokens is None:
+            reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
         text = " ".join(message_text(node.get("message") or {}).split())
         spans.append(
             {
@@ -995,6 +998,7 @@ def activity_spans(trace: dict, node_indexes: set[int], *, include_unlinked: boo
                 "input_tokens": input_tokens,
                 "cached_tokens": cached_tokens,
                 "output_tokens": output_tokens,
+                "reasoning_tokens": reasoning_tokens,
                 "cost": usage.get("cost"),
             }
         )
@@ -1021,7 +1025,7 @@ def lifecycle_spans(trace: dict) -> list[dict]:
                 "track": "lifecycle",
                 "started_at": span["start"],
                 "ended_at": span.get("end") or None,
-                "status": "completed" if span.get("end") else "running",
+                "status": "completed" if span.get("end") or trace.get("is_completed") else "running",
             }
         )
     return spans
@@ -1051,6 +1055,26 @@ def timeline_lane(
     agent = trace.get("agent") or {}
     config = agent.get("config") or {}
     client = config.get("client") or {}
+
+    def total(field: str) -> int | float | None:
+        values = [span[field] for span in activities if isinstance(span.get(field), (int, float))]
+        return sum(values) if values else None
+
+    input_tokens = total("input_tokens")
+    cached_tokens = total("cached_tokens")
+    output_tokens = total("output_tokens")
+    reasoning_tokens = total("reasoning_tokens")
+    total_input_tokens = input_tokens + (cached_tokens or 0) if input_tokens is not None else None
+    total_tokens = (
+        total_input_tokens + output_tokens
+        if total_input_tokens is not None and output_tokens is not None
+        else None
+    )
+    context_lengths = [
+        (span.get("input_tokens") or 0) + (span.get("cached_tokens") or 0)
+        for span in activities
+        if span.get("input_tokens") is not None
+    ]
     return {
         "trace_index": trace_index,
         "label": label,
@@ -1061,6 +1085,17 @@ def timeline_lane(
         "status": status,
         "outcome": status if subagent else (trace.get("stop_condition") or status),
         "reward": None if subagent else timeline_reward(trace),
+        "usage": {
+            "model_calls": len(activities),
+            "input_tokens": input_tokens,
+            "cached_tokens": cached_tokens,
+            "total_input_tokens": total_input_tokens,
+            "output_tokens": output_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "max_context_tokens": max(context_lengths, default=None),
+            "total_tokens": total_tokens,
+            "cost": total("cost"),
+        },
         "spans": spans,
     }
 
