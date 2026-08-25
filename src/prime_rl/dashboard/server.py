@@ -1050,7 +1050,7 @@ def project_episode_timeline(episode: dict) -> dict:
                 [
                     {
                         "kind": "agent",
-                        "label": "branch",
+                        "label": "segment",
                         "track": "lifecycle",
                         "started_at": branch_start,
                         "ended_at": branch_end if branch_completed else None,
@@ -1064,7 +1064,7 @@ def project_episode_timeline(episode: dict) -> dict:
             branch_lanes[group_index] = timeline_lane(
                 trace,
                 trace_index,
-                label="branch",
+                label="segment",
                 depth=1,
                 branch=True,
                 lifecycle=branch_lifecycle,
@@ -1089,9 +1089,11 @@ def project_episode_timeline(episode: dict) -> dict:
         for group_index in children_by_group.get(0, []):
             subtree_start(group_index)
 
-        branches = []
+        segments = []
+        segment_number = 0
 
-        def append_branches(parent_group: int, parent_path: tuple[int, ...] = ()) -> None:
+        def append_segments(parent_group: int, depth: int = 1) -> None:
+            nonlocal segment_number
             children = children_by_group.get(parent_group, [])
             children.sort(
                 key=lambda group_index: (
@@ -1100,19 +1102,19 @@ def project_episode_timeline(episode: dict) -> dict:
                     else float("inf")
                 )
             )
-            for branch_number, group_index in enumerate(children, start=1):
-                path = (*parent_path, branch_number)
+            for group_index in children:
+                segment_number += 1
                 lane = branch_lanes[group_index]
-                lane["label"] = f"branch {'.'.join(map(str, path))}"
-                lane["depth"] = len(path)
+                lane["label"] = f"segment {segment_number}"
+                lane["depth"] = depth
                 for span in lane["spans"]:
                     if span["track"] == "lifecycle":
                         span["label"] = lane["label"]
-                branches.append(lane)
-                append_branches(group_index, path)
+                segments.append(lane)
+                append_segments(group_index, depth + 1)
 
-        append_branches(0)
-        lane_groups.append((parent, branches))
+        append_segments(0)
+        lane_groups.append((parent, segments))
     lane_groups.sort(key=lambda group: group[0]["started_at"] if group[0]["started_at"] is not None else float("inf"))
     lanes = [lane for parent, children in lane_groups for lane in (parent, *children)]
     return {"lanes": lanes}

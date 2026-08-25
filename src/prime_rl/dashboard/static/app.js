@@ -2775,7 +2775,7 @@ function renderTimeline() {
     .map((fraction) => `<span style="left:${fraction * 100}%">${fraction ? fmtDuration(total * fraction) : "0"}</span>`)
     .join("");
   target.innerHTML =
-    `<div class="tl-shell"><div class="tl-head"><span>execution branches</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
+    `<div class="tl-shell"><div class="tl-head"><span>execution segments</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
     timeline.lanes.map((lane) => timelineLaneHtml(lane, start, total)).join("") +
     `</div>`;
 }
