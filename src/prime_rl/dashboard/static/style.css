@@ -809,14 +809,6 @@ details.tool-definitions[open] > summary .entry-chev,
 details.rendered-transcript[open] > summary .entry-chev,
 details.tool-definition[open] > summary .entry-chev { transform: rotate(90deg); }
 .context-label, .tool-def-name { color: var(--chart-2); font-size: 10px; font-weight: 500; letter-spacing: var(--track-caps); text-transform: uppercase; }
-.context-note, .rendered-provenance {
-  padding: 8px 12px;
-  color: var(--grey-4);
-  font-size: 10.5px;
-  line-height: 1.5;
-  border-bottom: 1px solid var(--hairline);
-}
-.context-note code, .rendered-provenance code { color: var(--grey-5); font-family: var(--font-mono); }
 details.tool-definition { margin: 8px 12px; border: 1px solid var(--hairline); }
 .tool-description { padding: 10px 12px; color: var(--grey-5); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 .schema-head { display: flex; align-items: center; padding: 6px 12px; border-top: 1px solid var(--hairline); color: var(--grey-4); font-size: 10px; letter-spacing: var(--track-caps); text-transform: uppercase; }

@@ -2256,7 +2256,6 @@ function toolDefinitionsHtml(trace) {
     `<span class="entry-preview">${esc(names.join(", "))}</span>` +
     `<button class="icon-btn" data-copy-tools title="copy all tool definitions">${COPY_SVG}</button>` +
     `<span class="entry-chev">›</span></summary>` +
-    `<div class="context-note">Recorded in <code>trace.tools</code>; model context, separate from literal message content.</div>` +
     body + `</details>`
   );
 }
@@ -2276,9 +2275,6 @@ function renderedTokensHtml(trace, branches) {
     const [title, detail] = unavailable[rendered.status] ?? ["rendered text unavailable", "The recorded token sequence could not be decoded."];
     return emptyState(title, detail) + errors;
   }
-  const orderNote = currentBranchIdx === -1
-    ? "All branches: node token spans decoded in recorded write order. This is a debug ordering, not one model input."
-    : `Branch ${currentBranchIdx}: one full root-to-leaf recorded token sequence.`;
   return (
     `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
     `<span class="chip">${fmtCompact(selected.token_count)} tokens</span>` +
@@ -2286,9 +2282,6 @@ function renderedTokensHtml(trace, branches) {
     `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` +
     `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button>` +
     `<span class="entry-chev">›</span></summary>` +
-    `<div class="rendered-provenance"><strong>Decoded from recorded post-renderer token IDs.</strong> ` +
-    `Full-sequence decode with special tokens retained; IDs are authoritative. ${esc(orderNote)} ` +
-    (rendered.model ? `Tokenizer: <code>${esc(rendered.model)}</code>.` : "") + `</div>` +
     `<pre class="rendered-text">${esc(selected.text)}</pre></details>` + errors
   );
 }
