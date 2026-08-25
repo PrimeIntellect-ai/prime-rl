@@ -17,6 +17,11 @@ def apply_shared_vllm_patches():
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
+    monkey_patch_deepseek_v4_hash_moe_layer_types()
+    monkey_patch_deepseek_v4_compress_ratios()
+    monkey_patch_deepseek_v4_rope_unhashable_cache_key()
+    monkey_patch_deepseek_v4_kv_norm_weight_mapper()
+    monkey_patch_deepseek_v4_rope_force_fp32_cache()
 
 
 def monkey_patch_online_fp8_parameter_cast():
@@ -102,6 +107,172 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     _update_from_kv_xfer_finished._prime_rl_tolerates_freed = True
     Scheduler._update_from_kv_xfer_finished = _update_from_kv_xfer_finished
     logger.warning("Patched Scheduler._update_from_kv_xfer_finished to tolerate freed (aborted) KV-transfer reqs.")
+
+
+def monkey_patch_deepseek_v4_hash_moe_layer_types():
+    """Accept DeepSeek V4's real `hash_moe`/`moe` values for `mlp_layer_types`.
+
+    vLLM ships its own `DeepseekV4Config` (`vllm/transformers_utils/configs/deepseek_v4.py`)
+    that shadows and pre-empts transformers' real `DeepseekV4Config` in the global `AutoConfig`
+    registry, but never inherits its narrowed `validate_layer_type` override -- it falls through
+    to the generic base-class check, which only allows `sparse`/`dense`. DeepSeek V4's real
+    architecture uses `hash_moe` (hash-routed bootstrap layers) and `moe` (score-routed layers)
+    instead, confirmed against the real `deepseek-ai/DeepSeek-V4-Flash-Base` checkpoint
+    (`num_hash_layers: 3`) -- not a value this repo invented. `validate_layer_type`
+    (`transformers/configuration_utils.py`) looks up `ALLOWED_MLP_LAYER_TYPES`/
+    `ALLOWED_LAYER_TYPES` as module globals at call time, so extending them here is sufficient;
+    no need to subclass or replace vLLM's shadow class. Confirmed present, unfixed, on vLLM
+    0.26.0 (installed), 0.27.1 (latest release), and current main.
+    """
+    from transformers import configuration_utils
+
+    if "hash_moe" in configuration_utils.ALLOWED_MLP_LAYER_TYPES:
+        return
+
+    configuration_utils.ALLOWED_MLP_LAYER_TYPES = configuration_utils.ALLOWED_MLP_LAYER_TYPES + (
+        "hash_moe",
+        "moe",
+    )
+    configuration_utils.ALLOWED_LAYER_TYPES = (
+        configuration_utils.ALLOWED_ATTN_LAYER_TYPES + configuration_utils.ALLOWED_MLP_LAYER_TYPES
+    )
+
+
+def monkey_patch_deepseek_v4_compress_ratios():
+    """Backfill vLLM's expected legacy `compress_ratios` attribute from `compress_rates`.
+
+    `vllm/models/deepseek_v4/attention.py` reads `config.compress_ratios[layer_id]` (a flat,
+    one-entry-per-layer list), matching an older transformers schema. Current transformers
+    (and this repo's own port, `configuration_deepseek_v4.py`) instead expose `compress_rates`,
+    a `{layer_type: rate}` dict. `max(1, config.compress_ratios[layer_id])` in that vLLM code
+    treats any value `<= 1` as "no compression", so `1` is a safe default for layer types with
+    no entry (e.g. `sliding_attention`). Tracks the still-open, unmerged
+    vllm-project/vllm#42741 ("DeepSeek V4 model fails to load with transformers >= 4.57 --
+    compress_ratios attribute removed").
+    """
+    from vllm.transformers_utils.configs.deepseek_v4 import DeepseekV4Config as VllmDeepseekV4Config
+
+    if hasattr(VllmDeepseekV4Config, "compress_ratios"):
+        return
+
+    def _compress_ratios(self):
+        return [self.compress_rates.get(layer_type, 1) for layer_type in self.layer_types]
+
+    VllmDeepseekV4Config.compress_ratios = property(_compress_ratios)
+
+
+class _TolerantRopeCache(dict):
+    """dict that treats unhashable keys as cache-misses/no-ops instead of raising.
+
+    Used by `monkey_patch_deepseek_v4_rope_unhashable_cache_key` below.
+    """
+
+    def __contains__(self, key):
+        try:
+            return super().__contains__(key)
+        except TypeError:
+            return False
+
+    def __setitem__(self, key, value):
+        try:
+            hash(key)
+        except TypeError:
+            return
+        super().__setitem__(key, value)
+
+
+def monkey_patch_deepseek_v4_rope_unhashable_cache_key():
+    """Make vLLM's RoPE module cache tolerate DeepSeek V4's nested-dict `rope_parameters`.
+
+    `get_rope`'s cache-key builder (`vllm/model_executor/layers/rotary_embedding/__init__.py`)
+    only converts top-level list-typed `rope_parameters` values into tuples before hashing; it
+    doesn't recurse into nested dicts. This repo's DeepSeek V4 port structures
+    `rope_parameters` as a dict-of-dicts (keyed by rope type, `main`/`compress`), so the cache
+    key vLLM builds for it ends up containing an unhashable dict, crashing with
+    `TypeError: unhashable type: 'dict'` on `if key in _ROPE_DICT`. `_ROPE_DICT` is a pure
+    memoization cache (only skips rebuilding an identical `RotaryEmbedding`, never read for
+    correctness), so it's safe to just skip caching when the key isn't hashable rather than
+    reimplementing `get_rope`'s ~300-line body to deep-freeze the key.
+    """
+    from vllm.model_executor.layers import rotary_embedding
+
+    if isinstance(rotary_embedding._ROPE_DICT, _TolerantRopeCache):
+        return
+
+    rotary_embedding._ROPE_DICT = _TolerantRopeCache(rotary_embedding._ROPE_DICT)
+
+
+def monkey_patch_deepseek_v4_kv_norm_weight_mapper():
+    """Add the missing `attn.norm` -> `attn.kv_norm` rename to vLLM's weight mapper.
+
+    vLLM's `DeepseekV4ForCausalLM.hf_to_vllm_mapper` (`vllm/models/deepseek_v4/nvidia/model.py`,
+    `_make_deepseek_v4_weights_mapper`) renames the real on-disk `q_norm` correctly (vLLM's own
+    attention module also calls this attribute `q_norm`, so no rename is needed there), but has
+    no rule at all for the real on-disk `norm` (kv norm) leaf, which vLLM's own model calls
+    `kv_norm` (matching this repo's port, confirmed via `self.kv_norm = RMSNorm(...)` in
+    `vllm/models/deepseek_v4/attention.py`). Without it, loading fails with
+    `KeyError: 'layers.N.attn.norm.weight'` for any real DeepSeek V4 checkpoint, not just a
+    locally-built one.
+    """
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original_factory = dsv4_model._make_deepseek_v4_weights_mapper
+
+    if getattr(original_factory, "_prime_rl_adds_kv_norm", False):
+        return
+
+    def _patched_factory(expert_dtype: str):
+        mapper = original_factory(expert_dtype)
+        mapper.orig_to_new_substr[".attn.norm."] = ".attn.kv_norm."
+        return mapper
+
+    _patched_factory._prime_rl_adds_kv_norm = True
+    dsv4_model._make_deepseek_v4_weights_mapper = _patched_factory
+    # The class attribute was already evaluated at class-definition time with the original
+    # (unpatched) factory; recompute it. Per-instance overrides in `__init__` call the
+    # module-level name directly, so they pick up the patch automatically.
+    dsv4_model.DeepseekV4ForCausalLM.hf_to_vllm_mapper = _patched_factory("fp4")
+
+
+def monkey_patch_deepseek_v4_rope_force_fp32_cache():
+    """Force an fp32 `cos_sin_cache` for every DeepSeek V4 RoPE variant, not just YaRN.
+
+    `vllm/models/deepseek_v4/common/ops/fused_inv_rope_fp8_quant.py` unconditionally asserts
+    `cos_sin_cache.dtype == torch.float32`. vLLM's `DeepseekV4ScalingRotaryEmbedding`
+    (`vllm/model_executor/layers/rotary_embedding/deepseek_scaling_rope.py`) already forces
+    fp32 for the YaRN-scaled path (`rope_type` in `deepseek_yarn`/`deepseek_llama_scaling`),
+    but DeepSeek V4's "main" (sliding-window) attention legitimately has `rope_type="default"`
+    -- it only ever attends within a short local window, so it needs no YaRN extrapolation --
+    and `get_rope`'s "default"-scaling-type branch builds a plain `RotaryEmbedding` using
+    whatever the ambient default dtype is (bf16 during normal model loading), which fails the
+    same fp32 assertion. Force fp32 for any `rope_parameters` carrying the `is_deepseek_v4`
+    marker (set by `vllm/models/deepseek_v4/common/rope.py`'s `build_deepseek_v4_rope`),
+    regardless of scaling type.
+    """
+    from vllm.model_executor.layers import rotary_embedding
+
+    original_get_rope = rotary_embedding.get_rope
+
+    if getattr(original_get_rope, "_prime_rl_forces_deepseek_v4_fp32", False):
+        return
+
+    def _patched_get_rope(*args, **kwargs):
+        rope_parameters = kwargs.get("rope_parameters")
+        if rope_parameters is None and len(args) >= 4:
+            rope_parameters = args[3]
+        if rope_parameters is not None and rope_parameters.get("is_deepseek_v4"):
+            kwargs["dtype"] = torch.float32
+        return original_get_rope(*args, **kwargs)
+
+    _patched_get_rope._prime_rl_forces_deepseek_v4_fp32 = True
+    rotary_embedding.get_rope = _patched_get_rope
+
+    # `build_deepseek_v4_rope` (vllm/models/deepseek_v4/common/rope.py) imports `get_rope`
+    # directly into its own module namespace, so patching the defining module alone won't
+    # reach that already-bound reference; patch it there too.
+    from vllm.models.deepseek_v4.common import rope as dsv4_rope
+
+    dsv4_rope.get_rope = _patched_get_rope
 
 
 def monkey_patch_nano_v3_reasoning_parser():
