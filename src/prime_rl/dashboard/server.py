@@ -860,38 +860,11 @@ def tool_call_code(tool_call: dict) -> str:
     return str(parsed.get("code") or "") if isinstance(parsed, dict) else arguments
 
 
-def component_session_lineage(nodes: list[dict], components: list[tuple[int, set[int]]]) -> dict[int, int]:
-    session_roots = {}
-    parent_sessions = {}
-    for root, indexes in components:
-        for index in sorted(indexes):
-            message = nodes[index].get("message") or {}
-            if message.get("role") != "system":
-                continue
-            text = message_text(message)
-            marker = "Conversation log:"
-            if marker not in text:
-                continue
-            path = Path(text.rsplit(marker, 1)[-1].splitlines()[0].strip().strip("`"))
-            session_roots[path.stem] = root
-            parts = path.parts
-            markers = [position for position, part in enumerate(parts) if part == "session-artifacts"]
-            if markers and markers[-1] + 1 < len(parts):
-                parent_sessions[root] = parts[markers[-1] + 1]
-            break
-    return {
-        root: session_roots[parent_session]
-        for root, parent_session in parent_sessions.items()
-        if parent_session in session_roots and session_roots[parent_session] < root
-    }
-
-
 def component_parent_roots(trace: dict, components: list[tuple[int, set[int]]]) -> dict[int, int]:
-    """Recover recursive RLM ownership from session lineage or call windows."""
+    """Infer recursive RLM ownership from nested ``rlm()`` call windows."""
     if len(components) <= 1:
         return {}
     nodes = trace.get("nodes") or []
-    session_parents = component_session_lineage(nodes, components)
     root_by_node = {node_index: root for root, indexes in components for node_index in indexes}
     calls_by_node: dict[int, list[dict]] = {}
     for call in trace.get("calls") or []:
@@ -956,9 +929,6 @@ def component_parent_roots(trace: dict, components: list[tuple[int, set[int]]]) 
     main_root = components[0][0]
     parents = {}
     for root, _indexes in components[1:]:
-        if root in session_parents:
-            parents[root] = session_parents[root]
-            continue
         child_start = starts[root]
         candidates = [
             window
@@ -1066,10 +1036,9 @@ def timeline_lane(
     trace: dict,
     trace_index: int,
     *,
-    lane_id: str,
-    parent_id: str | None,
     label: str,
     depth: int,
+    subagent: bool,
     lifecycle: list[dict],
     activities: list[dict],
     started_at: float | None = None,
@@ -1082,19 +1051,15 @@ def timeline_lane(
     ]
     started = started_at if started_at is not None else min(timestamps, default=None)
     status = (
-        timeline_status(trace)
-        if not parent_id
-        else ("completed" if all(span["status"] == "completed" for span in activities) else "running")
+        ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running")
+        if subagent
+        else timeline_status(trace)
     )
     ended = max(timestamps, default=None) if status != "running" else None
     agent = trace.get("agent") or {}
     config = agent.get("config") or {}
     client = config.get("client") or {}
-    errors = trace.get("errors") or []
-    error = errors[-1] if errors else None
     return {
-        "id": lane_id,
-        "parent_id": parent_id,
         "trace_index": trace_index,
         "label": label,
         "role": agent.get("name") or "agent",
@@ -1104,10 +1069,8 @@ def timeline_lane(
         "ended_at": ended,
         "duration": ended - started if started is not None and ended is not None else None,
         "status": status,
-        "outcome": status if parent_id else (trace.get("stop_condition") or status),
-        "reward": None if parent_id else timeline_reward(trace),
-        "error": (error.get("message") if isinstance(error, dict) else str(error)) if error else "",
-        "turns": len(activities),
+        "outcome": status if subagent else (trace.get("stop_condition") or status),
+        "reward": None if subagent else timeline_reward(trace),
         "spans": lifecycle + activities,
     }
 
@@ -1119,15 +1082,13 @@ def project_episode_timeline(episode: dict) -> dict:
         components = trace_components(nodes)
         main_root, main_indexes = components[0] if components else (0, set(range(len(nodes))))
         role = (trace.get("agent") or {}).get("name") or "agent"
-        lane_id = f"trace-{trace_index}"
         activities = activity_spans(trace, main_indexes, include_unlinked=True)
         parent = timeline_lane(
             trace,
             trace_index,
-            lane_id=lane_id,
-            parent_id=None,
             label=role,
             depth=0,
+            subagent=False,
             lifecycle=lifecycle_spans(trace),
             activities=activities,
             started_at=(trace.get("timing") or {}).get("start"),
@@ -1150,6 +1111,9 @@ def project_episode_timeline(episode: dict) -> dict:
                 [(span.get("ended_at") or span["started_at"]) for span in timed_activities] or component_timestamps,
                 default=None,
             )
+            child_completed = trace.get("is_completed") or bool(
+                activities and all(span["status"] == "completed" for span in activities)
+            )
             child_lifecycle = (
                 [
                     {
@@ -1158,23 +1122,20 @@ def project_episode_timeline(episode: dict) -> dict:
                         "label": "subagent",
                         "track": "lifecycle",
                         "started_at": component_start,
-                        "ended_at": component_end,
-                        "status": "completed",
+                        "ended_at": component_end if child_completed else None,
+                        "status": "completed" if child_completed else "running",
+                        "node_index": root,
                     }
                 ]
                 if component_start is not None
                 else []
             )
-            component_lane_id = f"{lane_id}-subagent-{root}"
-            inferred_parent_root = parent_roots.get(root, main_root)
-            inferred_parent_id = lane_by_root.get(inferred_parent_root, parent)["id"]
             lane_by_root[root] = timeline_lane(
                 trace,
                 trace_index,
-                lane_id=component_lane_id,
-                parent_id=inferred_parent_id,
                 label="subagent",
                 depth=1,
+                subagent=True,
                 lifecycle=child_lifecycle,
                 activities=activities,
             )
@@ -1200,7 +1161,6 @@ def project_episode_timeline(episode: dict) -> dict:
             )
             for child_root in child_roots:
                 lane = lane_by_root[child_root]
-                lane["parent_id"] = lane_by_root[root]["id"]
                 lane["depth"] = depth
                 descendants.append(lane)
                 append_descendants(child_root, depth + 1)
