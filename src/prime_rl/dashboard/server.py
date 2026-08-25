@@ -949,7 +949,7 @@ def project_episode_timeline(rec: dict) -> dict:
         nodes = trace.get("nodes") or []
         components = trace_components(nodes)
         main_indexes = components[0][1] if components else set(range(len(nodes)))
-        role = ((trace.get("agent") or {}).get("name") or "agent").replace("_", " ").title()
+        role = (trace.get("agent") or {}).get("name") or "agent"
         lane_id = f"trace-{trace_index}"
         parent = timeline_lane(
             trace,
