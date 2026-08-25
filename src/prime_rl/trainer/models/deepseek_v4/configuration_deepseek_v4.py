@@ -262,8 +262,15 @@ class DeepseekV4Config(PretrainedConfig):
             "rope_theta": self.compress_rope_theta,
             "partial_rotary_factor": self.partial_rotary_factor,
         }
-        # TODO(deepseek_v4): wire up YaRN for the compress rope type - deferred from step 1
-        compress["rope_type"] = "default"
+        # Real checkpoints store the compress branch's YaRN scaling under the legacy flat
+        # `rope_scaling` key, which only ever carries `"type"`, never `"rope_type"` -- HF's
+        # own config gets that renamed for free via a generic mixin method that runs before
+        # its DS4-specific post-init logic, but our manual __init__ never goes through it.
+        compress["rope_type"] = scaling.get("rope_type", scaling.get("type", "default"))
+        if compress["rope_type"] == "yarn":
+            # The V4 reference does not scale cos/sin by YaRN's computed mscale; leaving the
+            # key unset lets `_compute_yarn_parameters` derive `0.1*log(factor)+1 != 1.0`.
+            compress.setdefault("attention_factor", 1.0)
         return {"main": main, "compress": compress}
 
     def convert_rope_params_to_dict(self, **kwargs):
@@ -278,6 +285,32 @@ class DeepseekV4Config(PretrainedConfig):
         for layer_type in set(self.layer_types) - {"sliding_attention"}:
             if layer_type not in self.compress_rates:
                 raise ValueError(f"compress_rates is missing a rate for layer type {layer_type!r}.")
+
+    def validate_rope(self) -> None:
+        """Validate the `main`/`compress` rope-type-keyed sub-dicts directly.
+
+        The base `RotaryEmbeddingConfigMixin.validate_rope` checks `keys ⊆ layer_types`
+        against the *attention* layer types and falls back to treating the whole
+        `rope_parameters` dict as one rope type's params when that fails -- which is always,
+        for V4, since it's keyed by `main`/`compress` rope-type labels instead. Iterate
+        those labels directly, matching upstream HF's own `DeepseekV4Config.validate_rope`.
+        """
+        rope_parameters_dict = self.rope_parameters or {}
+        ignore_keys = self.ignore_keys_at_rope_validation
+        for rope_type_label in self._rope_type_labels:
+            rope_parameters = rope_parameters_dict.get(rope_type_label)
+            if not isinstance(rope_parameters, dict):
+                continue
+            rope_type = rope_parameters.get("rope_type", rope_parameters.get("type", "default"))
+            rope_parameters["rope_type"] = rope_type
+            validation_fn = getattr(self, f"_validate_{rope_type}_rope_parameters", None)
+            if validation_fn is None:
+                continue
+            self.rope_parameters = rope_parameters
+            try:
+                validation_fn(rope_parameters, ignore_keys=ignore_keys)
+            finally:
+                self.rope_parameters = rope_parameters_dict
 
     def validate_layer_type(self) -> None:
         """Narrow `@strict`'s generic layer-type check to V4's own vocabularies.

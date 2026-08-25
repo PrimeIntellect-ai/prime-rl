@@ -78,12 +78,6 @@ to land in this worktree once ready.
 
 Open items:
 
-- **YaRN on the compress RoPE branch is not wired up.** `DeepseekV4Config._nest_rope_parameters`
-  forces `rope_type="default"` for both `main` and `compress`. Real checkpoints use YaRN
-  (`factor=16`, `attention_factor=1.0`, `rope_theta=160000.0`) for `compress`. Wiring it up also
-  needs HF's `validate_rope` override (the base validator keys off `layer_types`, not the
-  `main`/`compress` labels). This is the one open item that changes the numbers a real
-  checkpoint produces, so it blocks any run against real V4 weights.
 - **No MTP.** `num_nextn_predict_layers` is not carried over and no multi-token-prediction head is
   built (HF does not build one either). The conversion chain drops `mtp.*` keys at either nesting
   depth, mirroring HF's `_keys_to_ignore_on_load_unexpected`.

@@ -329,6 +329,37 @@ def test_rotary_matches_hf():
     assert not torch.equal(prime_rotary.main_inv_freq, prime_rotary.compress_inv_freq)
 
 
+def test_rotary_matches_hf_yarn():
+    """Real checkpoints YaRN-scale the compress branch via a legacy flat `rope_scaling` dict."""
+    attn_yarn = _ATTN | {
+        "rope_scaling": {
+            "beta_fast": 32,
+            "beta_slow": 1,
+            "factor": 16,
+            "original_max_position_embeddings": 65536,
+            "type": "yarn",
+        }
+    }
+    hf_config = HFDeepseekV4Config(**attn_yarn)
+    prime_config = DeepseekV4Config(**attn_yarn)
+
+    assert prime_config.rope_parameters["compress"]["rope_type"] == "yarn"
+    assert prime_config.rope_parameters["compress"]["attention_factor"] == 1.0
+    assert prime_config.rope_parameters["main"]["rope_type"] == "default"
+
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        hf_rotary = HFDeepseekV4RotaryEmbedding(hf_config)
+        prime_rotary = DeepseekV4RotaryEmbedding(prime_config)
+        probe = torch.zeros(_BATCH, _SEQ, _ATTN["hidden_size"])
+    position_ids = _position_ids()
+
+    for rope_type in ("main", "compress"):
+        hf_cos, hf_sin = hf_rotary(probe, position_ids, rope_type)
+        prime_cos, prime_sin = prime_rotary(probe, position_ids, rope_type)
+        torch.testing.assert_close(prime_cos, hf_cos, rtol=0, atol=0)
+        torch.testing.assert_close(prime_sin, hf_sin, rtol=0, atol=0)
+
+
 def test_sliding_window_mask_matches_hf():
     hf_config, _ = _attention_configs()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
