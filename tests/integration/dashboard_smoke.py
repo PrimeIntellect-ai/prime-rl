@@ -108,6 +108,23 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
                 assert reward not in ("", "n/a"), f"episode reward did not render: {reward!r}"
                 page.keyboard.press("Escape")
 
+                # view command: the agent-facing POST must drive the connected tab
+                status = page.evaluate(
+                    f"""async () => {{
+                        const steps = (await (await fetch('{base}/api/runs/{run_name}/rollouts')).json()).steps;
+                        const step = steps[steps.length - 1];
+                        const [kind, subset] = Object.keys(step.available)[0].split('/');
+                        const res = await fetch('{base}/api/view', {{method: 'POST',
+                            headers: {{'content-type': 'application/json'}},
+                            body: JSON.stringify({{run: '{run_name}', tab: 'traces', step: step.step, kind, subset, line: 0}})}});
+                        return res.status;
+                    }}"""
+                )
+                assert status == 200, f"POST /api/view returned {status}"
+                page.wait_for_timeout(3000)
+                assert page.locator("#trace-modal").is_visible(), "view command did not open the trace viewer"
+                page.keyboard.press("Escape")
+
             # logs: the merged pane shows lines
             page.click("#tabs [data-tab=logs]")
             page.wait_for_timeout(PAGE_SETTLE_MS)

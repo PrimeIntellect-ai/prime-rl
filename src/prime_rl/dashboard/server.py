@@ -11,6 +11,7 @@ Multiple output directories can be tracked at once.
 """
 
 import argparse
+import asyncio
 import hashlib
 import os
 import sys
@@ -28,7 +29,7 @@ from prime_rl.utils.process import set_proc_title
 try:
     import uvicorn
     from fastapi import FastAPI, HTTPException, Query
-    from fastapi.responses import FileResponse
+    from fastapi.responses import FileResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
 except ModuleNotFoundError as error:  # the dashboard ships as an extra
     raise SystemExit("the dashboard needs the 'dashboard' extra - install with `uv sync --extra dashboard`") from error
@@ -429,6 +430,49 @@ def read_config(run: str, file: str) -> dict:
     return {"file": file, "content": path.read_text()}
 
 
+# ------------------------------------------------------------------------- reports
+
+
+def report_title(path: Path) -> str | None:
+    """`title:` from the frontmatter block, scanning only the first bytes of the file."""
+    try:
+        with path.open("r", errors="replace") as f:
+            head = f.read(4096)
+    except OSError:
+        return None
+    if not head.startswith("---"):
+        return None
+    for line in head.splitlines()[1:]:
+        if line.strip() == "---":
+            break
+        key, _, value = line.partition(":")
+        if key.strip() == "title":
+            return value.strip().strip("\"'") or None
+    return None
+
+
+@app.get("/api/runs/{run}/reports")
+def list_reports(run: str) -> dict:
+    """Agent-written markdown reports under <run>/reports/, newest first."""
+    reports_dir = get_run_dir(run) / "reports"
+    rows = []
+    for path in reports_dir.glob("*.md") if reports_dir.is_dir() else []:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        rows.append({"file": path.name, "title": report_title(path), "mtime": stat.st_mtime, "size": stat.st_size})
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
+    return {"reports": rows}
+
+
+@app.get("/api/runs/{run}/report")
+def read_report(run: str, file: str) -> dict:
+    path = safe_child(get_run_dir(run) / "reports", file, suffix=".md")
+    stat = path.stat()
+    return {"file": file, "text": path.read_text(errors="replace"), "mtime": stat.st_mtime, "size": stat.st_size}
+
+
 # ------------------------------------------------------------------------- metrics
 
 
@@ -819,6 +863,125 @@ def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: 
     return rec
 
 
+# --------------------------------------------------------------------- view command
+#
+# The agent-facing control plane: a local agent that already knows the on-disk
+# address of what it wants shown POSTs that address here, and every connected
+# browser tab navigates there. One-way fan-out over SSE — no WebSocket dependency,
+# and the browser's EventSource reconnects on its own. The dashboard stays a
+# filesystem reader: commands carry addresses (and highlight anchors), never content.
+
+VIEW_TABS = {"metrics", "config", "traces", "logs", "report"}
+VIEW_KEYS = {"run", "tab", "step", "kind", "subset", "episode", "line", "trace", "branch", "report", "highlight"}
+HIGHLIGHT_KEYS = {"node", "tokens", "quote", "reason"}
+
+_view_command: dict | None = None
+_view_seq = 0
+_view_clients: set["asyncio.Queue"] = set()
+_view_url = ""  # actual serve url, stamped by main() for the 409 body
+
+
+def validate_view_command(cmd: dict) -> dict:
+    """Check the command against the filesystem so the agent cannot point at nothing.
+    Returns the command with an episode id resolved to its line number."""
+    unknown = set(cmd) - VIEW_KEYS
+    if unknown:
+        raise HTTPException(400, f"unknown fields: {sorted(unknown)} (known: {sorted(VIEW_KEYS)})")
+    run = cmd.get("run")
+    if not run:
+        raise HTTPException(400, "run is required")
+    run_dir = get_run_dir(run)
+    tab = cmd.get("tab")
+    if tab is not None and tab not in VIEW_TABS:
+        raise HTTPException(400, f"tab must be one of {sorted(VIEW_TABS)}")
+    report = cmd.get("report")
+    if report is not None:
+        name = report if str(report).endswith(".md") else f"{report}.md"
+        safe_child(run_dir / "reports", name, suffix=".md")
+        cmd["report"] = name
+    episode, line = cmd.get("episode"), cmd.get("line")
+    if episode is not None or line is not None:
+        step, kind, subset = cmd.get("step"), cmd.get("kind"), cmd.get("subset")
+        if step is None or kind is None or subset is None:
+            raise HTTPException(400, "episode addressing needs step, kind, and subset")
+        path = traces_path(run, int(step), kind, subset)
+        if episode is not None:
+            matches = [s["line"] for s in episode_summaries(path) if s.get("id") == episode]
+            if not matches:
+                raise HTTPException(404, f"episode id {episode!r} not found in {kind}/{subset} at step {step}")
+            cmd["line"] = matches[0]
+        elif not 0 <= int(line) < len(line_offsets(path)):
+            raise HTTPException(404, "episode line out of range")
+    highlight = cmd.get("highlight")
+    if highlight is not None:
+        if not isinstance(highlight, list) or not all(isinstance(h, dict) for h in highlight):
+            raise HTTPException(400, "highlight must be a list of objects")
+        for h in highlight:
+            unknown = set(h) - HIGHLIGHT_KEYS
+            if unknown:
+                raise HTTPException(
+                    400, f"unknown highlight fields: {sorted(unknown)} (known: {sorted(HIGHLIGHT_KEYS)})"
+                )
+    return cmd
+
+
+def _view_event(cmd: dict) -> str:
+    return f"data: {orjson.dumps(cmd).decode()}\n\n"
+
+
+@app.post("/api/view")
+async def post_view(cmd: dict) -> dict:
+    global _view_command, _view_seq
+    # validation walks the filesystem (and may summarize a traces file on first
+    # touch) — keep it off the event loop so open SSE streams never stall
+    cmd = await asyncio.to_thread(validate_view_command, cmd)
+    _view_seq += 1
+    cmd["seq"] = _view_seq
+    cmd["ts"] = time.time()
+    _view_command = cmd
+    for queue in _view_clients:
+        queue.put_nowait(cmd)
+    if not _view_clients:
+        # stored for late-joining tabs, but the agent must not pretend it pointed
+        # at something a human saw
+        raise HTTPException(
+            409, {"error": "no dashboard tab is connected", "url": _view_url, "stored": True, "seq": _view_seq}
+        )
+    return {"ok": True, "seq": _view_seq, "clients": len(_view_clients), "line": cmd.get("line")}
+
+
+@app.get("/api/view")
+def get_view() -> dict:
+    return {"command": _view_command, "clients": len(_view_clients)}
+
+
+@app.get("/api/view/events")
+async def view_events() -> "StreamingResponse":
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def stream():
+        _view_clients.add(queue)
+        try:
+            yield "retry: 2000\n\n"
+            if _view_command is not None:
+                # catch-up for a late tab: flagged so the client can decide whether
+                # a stored command is still worth replaying
+                yield _view_event({**_view_command, "replay": True})
+            while True:
+                try:
+                    yield _view_event(await asyncio.wait_for(queue.get(), timeout=15))
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"  # flushes dead connections out of the client count
+        finally:
+            _view_clients.discard(queue)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+    )
+
+
 # -------------------------------------------------------------------------- static
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -887,7 +1050,7 @@ def release_daemon() -> None:
 
 
 def main() -> None:
-    global output_dirs, isolated
+    global output_dirs, isolated, _view_url
     parser = argparse.ArgumentParser(description="prime-rl run dashboard")
     parser.add_argument("output_dirs", nargs="*", default=[default_output_dir()], type=Path, metavar="output_dir")
     parser.add_argument("--port", type=int, default=7788)
@@ -915,6 +1078,7 @@ def main() -> None:
         print(f"port {args.port} is taken - serving on {port}", file=sys.stderr)
     args.port = port
     url = f"http://localhost:{args.port}"
+    _view_url = url
     # first non-isolated instance owns discovery; extras and --isolated still serve
     claimed = False if isolated else claim_daemon(url)
     live = None
