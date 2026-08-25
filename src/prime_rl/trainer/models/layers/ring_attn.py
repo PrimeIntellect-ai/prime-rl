@@ -7,7 +7,7 @@ import torch
 import torch.distributed as dist
 from ring_flash_attn.utils import AllGatherComm
 
-from .flash_varlen import VARLEN_BACKWARD, VARLEN_FORWARD, apply_sink
+from .flash_varlen import VARLEN_BACKWARD, VARLEN_FORWARD, apply_sink, sink_grad
 
 
 def _resolve_group(group_name: str) -> dist.ProcessGroup:
@@ -107,7 +107,7 @@ class _RingVarlen(torch.autograd.Function):
         out = torch.cat(out_list, dim=1)
         lse = torch.cat(lse_list, dim=-2)
 
-        ctx.save_for_backward(q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k)
+        ctx.save_for_backward(q, k, v, sink, out, lse, cu_seqlens_q, cu_seqlens_k)
         ctx.softmax_scale = softmax_scale
         ctx.max_seqlen_q = max_seqlen_q
         ctx.max_seqlen_k = max_seqlen_k
@@ -121,7 +121,7 @@ class _RingVarlen(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dout: torch.Tensor):
-        q, k, v, out, softmax_lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
+        q, k, v, sink, out, softmax_lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
         heads_k_stride = ctx.heads_k_stride
         local_k_slice = ctx.local_k_slice
         causal = ctx.causal
@@ -144,6 +144,7 @@ class _RingVarlen(torch.autograd.Function):
         dq = torch.empty_like(q)
         dk = torch.empty_like(k)
         dv = torch.empty_like(v)
+        dsink = None if sink is None else torch.empty_like(sink)
 
         comm = AllGatherComm(group)
         comm.all_gather(kv_buffer_copy[0], k[:, :heads_k_stride].contiguous())
@@ -190,6 +191,11 @@ class _RingVarlen(torch.autograd.Function):
                 window_size=ctx.window_size,
             )
 
+            if sink is not None:
+                # This rank's queries only. The sink is replicated across the CP group, so the
+                # gradient reduction that FSDP already does over dp_shard_cp completes the sum.
+                dsink[q_slice] = sink_grad(out_i, lse_i, dout_i, sink[q_slice])
+
             if heads_k_stride != nheads_k:
                 dk_i = kv_contiguous_buffer[0]
                 dv_i = kv_contiguous_buffer[1]
@@ -206,7 +212,7 @@ class _RingVarlen(torch.autograd.Function):
         # Grads for: q, k, v, sink, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,
         #            local_k_slice_start, local_k_slice_stop, heads_k_stride, causal, group_name,
         #            flash_attn_version, window_size_left, window_size_right
-        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None
+        return dq, dk, dv, dsink, None, None, None, None, None, None, None, None, None, None, None, None
 
 
 def ring_flash_attn_varlen_func(
