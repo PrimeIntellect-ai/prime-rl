@@ -9,7 +9,7 @@ as `reward`, `stop_condition`, `has_error`, and `is_truncated` stay as top-level
 so later scripts can filter them directly. Metadata with variable schemas stays as JSON.
 
 Usage (from the prime-rl repo):
-    uv run python tools/sft/traces_to_hf.py <traces.jsonl> --name <dir-or-repo-id>
+    uv run python tools/convert_traces_to_hf_dataset.py <traces.jsonl> --name <dir-or-repo-id>
         [--subset default] [--split train] [--push]
 
 Without `--push`, the tool writes `<name>/<subset>/<split>.parquet` and registers it in
