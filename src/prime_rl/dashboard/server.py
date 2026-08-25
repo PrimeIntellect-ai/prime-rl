@@ -817,44 +817,65 @@ def timeline_reward(trace: dict) -> float | None:
     )
 
 
-def trace_branch_node_sets(nodes: list[dict]) -> list[set[int]]:
-    """Partition a message graph into one node set per root-to-leaf branch."""
+def trace_branch_node_sets(nodes: list[dict]) -> list[tuple[set[int], int | None]]:
+    """Partition a message graph into continuation lanes and their parent lanes."""
     if not nodes:
-        return [set()]
-    parents = {node.get("parent") for node in nodes if isinstance(node.get("parent"), int)}
-    leaves = [index for index in range(len(nodes)) if index not in parents]
-    paths = []
-    for leaf in leaves:
-        path = []
-        seen = set()
-        node_index: int | None = leaf
-        while isinstance(node_index, int) and 0 <= node_index < len(nodes) and node_index not in seen:
-            seen.add(node_index)
-            path.append(node_index)
-            node_index = nodes[node_index].get("parent")
-        paths.append(list(reversed(path)))
+        return [(set(), None)]
 
-    if not paths:
-        return [set(range(len(nodes)))]
+    children = {index: [] for index in range(len(nodes))}
+    roots = []
+    for index, node in enumerate(nodes):
+        parent = node.get("parent")
+        if isinstance(parent, int) and 0 <= parent < len(nodes) and parent != index:
+            children[parent].append(index)
+        else:
+            roots.append(index)
 
-    primary = paths[-1]
-    claimed = set(primary)
+    if not roots:
+        return [(set(range(len(nodes))), None)]
 
-    def branch_start(path: list[int]) -> float:
-        timestamps = [
-            nodes[index].get("timestamp")
-            for index in path
-            if index not in claimed and nodes[index].get("timestamp") is not None
-        ]
-        return min(timestamps, default=float("inf"))
+    subtree_end_cache = {}
 
-    groups = [claimed.copy()]
-    for path in sorted(paths[:-1], key=branch_start):
-        unique = set(path) - claimed
-        if unique:
-            groups.append(unique)
-            claimed.update(unique)
-    groups[0].update(set(range(len(nodes))) - claimed)
+    def subtree_end(index: int, ancestors: set[int] | None = None) -> int:
+        if index in subtree_end_cache:
+            return subtree_end_cache[index]
+        ancestors = ancestors or set()
+        if index in ancestors:
+            return index
+        end = max(
+            (subtree_end(child, ancestors | {index}) for child in children[index]),
+            default=index,
+        )
+        subtree_end_cache[index] = max(index, end)
+        return subtree_end_cache[index]
+
+    groups: list[tuple[set[int], int | None]] = []
+    claimed = set()
+
+    def append_lane(start: int, parent_group: int | None) -> int:
+        group_index = len(groups)
+        node_indexes: set[int] = set()
+        groups.append((node_indexes, parent_group))
+        current = start
+        while current not in claimed:
+            claimed.add(current)
+            node_indexes.add(current)
+            available = [child for child in children[current] if child not in claimed]
+            if not available:
+                break
+            continuation = max(available, key=subtree_end)
+            for branch in available:
+                if branch != continuation:
+                    append_lane(branch, group_index)
+            current = continuation
+        return group_index
+
+    main_root = max(roots, key=subtree_end)
+    append_lane(main_root, None)
+    for root in roots:
+        if root != main_root:
+            append_lane(root, 0)
+    groups[0][0].update(set(range(len(nodes))) - claimed)
     return groups
 
 
@@ -1010,8 +1031,8 @@ def project_episode_timeline(episode: dict) -> dict:
     lane_groups = []
     for trace_index, trace in enumerate(episode.get("traces") or []):
         nodes = trace.get("nodes") or []
-        branch_node_sets = trace_branch_node_sets(nodes)
-        main_indexes = branch_node_sets[0]
+        branch_groups = trace_branch_node_sets(nodes)
+        main_indexes = branch_groups[0][0]
         role = (trace.get("agent") or {}).get("name") or "agent"
         activities = activity_spans(trace, main_indexes, include_unlinked=True)
         parent = timeline_lane(
@@ -1024,15 +1045,14 @@ def project_episode_timeline(episode: dict) -> dict:
             activities=activities,
             started_at=(trace.get("timing") or {}).get("start"),
         )
-        branches = []
-        for branch_number, node_indexes in enumerate(branch_node_sets[1:], start=1):
+        branch_lanes = {}
+        children_by_group: dict[int, list[int]] = {}
+        for group_index, (node_indexes, parent_group) in enumerate(branch_groups[1:], start=1):
             activities = activity_spans(trace, node_indexes)
             branch_timestamps = [
                 nodes[index].get("timestamp") for index in node_indexes if nodes[index].get("timestamp") is not None
             ]
             timed_activities = [span for span in activities if span["started_at"] is not None]
-            if not activities and not branch_timestamps:
-                continue
             branch_start = min(
                 [span["started_at"] for span in timed_activities] or branch_timestamps,
                 default=None,
@@ -1046,7 +1066,7 @@ def project_episode_timeline(episode: dict) -> dict:
                 [
                     {
                         "kind": "agent",
-                        "label": f"branch {branch_number}",
+                        "label": "branch",
                         "track": "lifecycle",
                         "started_at": branch_start,
                         "ended_at": branch_end if branch_completed else None,
@@ -1057,23 +1077,40 @@ def project_episode_timeline(episode: dict) -> dict:
                 if branch_start is not None
                 else []
             )
-            branches.append(
-                timeline_lane(
-                    trace,
-                    trace_index,
-                    label=f"branch {branch_number}",
-                    depth=1,
-                    branch=True,
-                    lifecycle=branch_lifecycle,
-                    activities=activities,
+            branch_lanes[group_index] = timeline_lane(
+                trace,
+                trace_index,
+                label="branch",
+                depth=1,
+                branch=True,
+                lifecycle=branch_lifecycle,
+                activities=activities,
+            )
+            children_by_group.setdefault(parent_group or 0, []).append(group_index)
+
+        branches = []
+
+        def append_branches(parent_group: int, parent_path: tuple[int, ...] = ()) -> None:
+            children = children_by_group.get(parent_group, [])
+            children.sort(
+                key=lambda group_index: (
+                    branch_lanes[group_index]["started_at"]
+                    if branch_lanes[group_index]["started_at"] is not None
+                    else float("inf")
                 )
             )
-        branches.sort(key=lambda lane: lane["started_at"] if lane["started_at"] is not None else float("inf"))
-        for branch_number, lane in enumerate(branches, start=1):
-            lane["label"] = f"branch {branch_number}"
-            for span in lane["spans"]:
-                if span["track"] == "lifecycle":
-                    span["label"] = lane["label"]
+            for branch_number, group_index in enumerate(children, start=1):
+                path = (*parent_path, branch_number)
+                lane = branch_lanes[group_index]
+                lane["label"] = f"branch {'.'.join(map(str, path))}"
+                lane["depth"] = len(path)
+                for span in lane["spans"]:
+                    if span["track"] == "lifecycle":
+                        span["label"] = lane["label"]
+                branches.append(lane)
+                append_branches(group_index, path)
+
+        append_branches(0)
         lane_groups.append((parent, branches))
     lane_groups.sort(key=lambda group: group[0]["started_at"] if group[0]["started_at"] is not None else float("inf"))
     lanes = [lane for parent, children in lane_groups for lane in (parent, *children)]
