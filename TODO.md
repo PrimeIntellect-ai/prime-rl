@@ -139,6 +139,52 @@ Open items:
   structure, indexer selection, grouped-mm experts). `test_deepseek_v4.py` covers the assembled
   model. Fold the still-useful half of the scratch file into it and delete the rest.
 
+Investigated whether the eager-only attention above (`modeling_deepseek_v4.py:128-133`: head_dim
+512 exceeds FlashAttention's 256 cap, no SDPA equivalent for the per-head sink logit,
+FlexAttention's `BlockMask` can't cover the compressed-KV entries CSA/HCA concatenate onto the KV
+axis) has a real fix available. Short answer: not yet, and the gap is ecosystem-wide, not specific
+to this port: DeepSeek-V4 GA'd 2026-08-13, and torchtitan's own in-flight port (PR #3634) ships
+the same "small operators" attention today, for the same three reasons. DeepSeek's own FlashMLA
+(`deepseek-ai/FlashMLA` @ `15f13e5`) is a dead end for training this: `ValueError("SM100 bwd
+doesn't support GQA now")` still blocks any backward at `num_kv_heads=1`, and no kernel there
+exposes a differentiable `attn_sink` (only the forward-only decode/sparse-prefill paths have one).
+Two live OSS candidates exist, neither drop-in: `meta-pytorch/attention-gym`'s `selected_attention`
+(Triton backend) has a correct, hand-verified `attn_sink` backward and native shared-KV support,
+but explicitly raises `NotImplementedError` for backward at `head_dim=512` (this port's exact head
+dim) as a real Blackwell shared-memory/register wall, not unwritten code (PR #240: "existing
+backward shared-memory OOR"), so forward-only there today, with no committed timeline to close it
+despite an explicit "DSV4-like" benchmark in the same PR. NVIDIA-NeMo/Automodel's TileLang
+sparse-MLA kernel (`nemo_automodel/components/models/deepseek_v4/kernels/tilelang_sparse_mla_
+{fwd,bwd}.py`) does have a correct sink backward and reuses the same TileLang toolchain already
+vendored here for `glm_moe_dsa`, but it's a distinct sibling kernel (not a patch to the existing
+vendored file), needs a real mask-to-top-k-indices conversion to replace the current concat-and-mask
+design, and has its own already-hit Blackwell TileLang codegen bug distinct from the NaN bug the
+existing vendored kernel already works around.
+
+Even a perfect kernel swap for the main attention op would not remove every `O(seqlen²)` term.
+Per-layer naive quadratic-memory components (`B`=batch, `H`=64=`num_attention_heads`,
+`H_idx`=64=`index_n_heads`, `r_csa`=4, `r_hca`=128):
+
+| Component | Layers | Scaling | Notes |
+|---|---|---|---|
+| Main local attention scores | all | `B·H·S²` | dominant term; hits even sliding-window layers since eager code never physically truncates K |
+| Main compressed/remote scores | CSA, HCA | `B·H·S²/r` | CSA: `B·16·S²`; HCA: `B·0.5·S²` |
+| Lightning Indexer scoring | CSA only | `B·H_idx·S²/r_csa` | `B·16·S²`, the same order as CSA's compressed-attention term, since `index_n_heads`=`num_attention_heads`=64 by default; only FLOPs are cheaper (narrower `index_head_dim`), not memory |
+| CSA/HCA `block_bias` construction | CSA, HCA | `B·S²/r` | no head multiplier; eliminated entirely by passing indices directly to a fused kernel instead |
+| Sliding-window mask construction | all | `S²` | no `B`/`H` factor; smallest term |
+
+Confirmed directly against `tilelang_indexer_fwd.py`: it tiles away the per-head intermediate (a
+real ~64x memory win over the naive PyTorch scoring path) but still materializes the final dense
+`[seq_len, seq_len_kv]` score tensor before `torch.topk` (`layers.py:839`). Exact top-k selection
+fundamentally requires scoring every candidate, so the indexer's forward memory stays genuinely
+quadratic in `seq_len` no matter how the kernel is engineered; only its backward is linear (touches
+only the selected top-k entries). Getting the indexer to true linear memory would need an
+approximate or hierarchical top-k, which nothing surveyed implements. Fine at `seq_len=2048` (this
+port's current validation target, see `RUNS.md`), but will matter at the million-token context
+lengths DeepSeek-V4's own paper targets. Revisit attention-gym's Triton backend if/when D=512
+backward lands upstream (no tracking issue exists there to watch instead); the NeMo-Automodel
+TileLang path is usable sooner at the cost of writing the mask-to-indices conversion.
+
 State-dict deltas, all forced by prime-rl's own `MoE`/router naming and all implemented in
 `converting_deepseek_v4.py`: `mlp.gate.weight` -> `mlp.router.gate.weight`,
 `mlp.gate.e_score_correction_bias` -> `mlp.expert_bias`, `mlp.shared_experts.*` ->
