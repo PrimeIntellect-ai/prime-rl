@@ -818,7 +818,7 @@ def timeline_reward(trace: dict) -> float | None:
 
 
 def trace_branch_node_sets(nodes: list[dict]) -> list[tuple[set[int], int | None]]:
-    """Partition a message graph into continuation lanes and their parent lanes."""
+    """Partition a message graph into linear segments between symmetric forks."""
     if not nodes:
         return [(set(), None)]
 
@@ -834,25 +834,10 @@ def trace_branch_node_sets(nodes: list[dict]) -> list[tuple[set[int], int | None
     if not roots:
         return [(set(range(len(nodes))), None)]
 
-    subtree_end_cache = {}
-
-    def subtree_end(index: int, ancestors: set[int] | None = None) -> int:
-        if index in subtree_end_cache:
-            return subtree_end_cache[index]
-        ancestors = ancestors or set()
-        if index in ancestors:
-            return index
-        end = max(
-            (subtree_end(child, ancestors | {index}) for child in children[index]),
-            default=index,
-        )
-        subtree_end_cache[index] = max(index, end)
-        return subtree_end_cache[index]
-
     groups: list[tuple[set[int], int | None]] = []
     claimed = set()
 
-    def append_lane(start: int, parent_group: int | None) -> int:
+    def append_segment(start: int, parent_group: int | None) -> int:
         group_index = len(groups)
         node_indexes: set[int] = set()
         groups.append((node_indexes, parent_group))
@@ -861,20 +846,19 @@ def trace_branch_node_sets(nodes: list[dict]) -> list[tuple[set[int], int | None
             claimed.add(current)
             node_indexes.add(current)
             available = [child for child in children[current] if child not in claimed]
-            if not available:
+            if len(available) != 1:
+                for branch in available:
+                    append_segment(branch, group_index)
                 break
-            continuation = max(available, key=subtree_end)
-            for branch in available:
-                if branch != continuation:
-                    append_lane(branch, group_index)
-            current = continuation
+            current = available[0]
         return group_index
 
-    main_root = max(roots, key=subtree_end)
-    append_lane(main_root, None)
-    for root in roots:
-        if root != main_root:
-            append_lane(root, 0)
+    if len(roots) == 1:
+        append_segment(roots[0], None)
+    else:
+        groups.append((set(), None))
+        for root in roots:
+            append_segment(root, 0)
     groups[0][0].update(set(range(len(nodes))) - claimed)
     return groups
 
@@ -1087,6 +1071,23 @@ def project_episode_timeline(episode: dict) -> dict:
                 activities=activities,
             )
             children_by_group.setdefault(parent_group or 0, []).append(group_index)
+
+        def subtree_start(group_index: int) -> float | None:
+            lane = branch_lanes[group_index]
+            starts = [lane["started_at"]] if lane["started_at"] is not None else []
+            starts.extend(
+                start for child in children_by_group.get(group_index, []) if (start := subtree_start(child)) is not None
+            )
+            started_at = min(starts, default=None)
+            if started_at is not None and started_at != lane["started_at"]:
+                lane["started_at"] = started_at
+                for span in lane["spans"]:
+                    if span["track"] == "lifecycle":
+                        span["started_at"] = started_at
+            return started_at
+
+        for group_index in children_by_group.get(0, []):
+            subtree_start(group_index)
 
         branches = []
 
