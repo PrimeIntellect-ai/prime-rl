@@ -1098,7 +1098,7 @@ def project_episode_timeline(episode: dict) -> dict:
                 default=None,
             )
             component_end = max(
-                [(span.get("ended_at") or span["started_at"]) for span in timed_activities] or component_timestamps,
+                [span["ended_at"] for span in activities if span.get("ended_at") is not None] + component_timestamps,
                 default=None,
             )
             child_completed = bool(trace.get("is_completed"))
