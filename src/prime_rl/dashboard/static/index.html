@@ -190,13 +190,16 @@
     <div class="tm-head">
       <span class="tm-title">Trace Viewer</span>
       <div class="spacer"></div>
-      <select id="token-signal" title="Choose trace display. Text shows structured messages; Advantage, Logprob, Mask, and Content color recorded tokens; Rendered decodes the recorded full token sequence.">
+      <div class="seg" id="trace-view-mode">
+        <button data-mode="messages" class="active">Messages</button>
+        <button data-mode="rendered">Rendered</button>
+      </div>
+      <select id="token-signal" title="Choose token display. Text shows structured message content; other options color recorded tokens by advantage, log probability, training mask, or message-content membership.">
         <option value="">Text</option>
-        <option value="advantage">Advantage</option>
-        <option value="logprob">Logprob</option>
-        <option value="mask">Mask</option>
-        <option value="is_content">Content</option>
-        <option value="rendered">Rendered</option>
+        <option value="advantage">tokens: advantage</option>
+        <option value="logprob">tokens: logprob</option>
+        <option value="mask">tokens: mask</option>
+        <option value="is_content">tokens: is_content</option>
       </select>
       <button id="tm-collapse" class="btn">collapse</button>
       <button id="tm-expand" class="btn">expand</button>
