@@ -62,6 +62,20 @@ non-persistent buffer, never in a checkpoint) is still correctly reset. The same
 `laguna/modeling_laguna.py` (copied from there) and is tracked/fixed on its own branch
 (`fix/laguna-expert-biases`), independent of this port.
 
+End-to-end verified via a real `uv run sft` run against a tiny local `DeepseekV4Config`-only
+checkpoint (no weights, `model.debug.random_init=true`, all scratch under `/tmp`, nothing
+committed): FSDP, activation checkpointing, the fused chunked LM head, hash-routed MoE, standard
+MoE, and all three attention layer types all run cleanly with finite, varying loss and nonzero,
+varying gradient norms. Along the way, found (not DeepSeek-V4-specific): `debug.random_init=True`
+never actually randomizes weights, it only fixes a few named buffers via `init_buffers_post_meta`
+and then skips checkpoint loading (`trainer/model.py::load_dcp_from_hf`); parameters are left as
+whatever `model.to_empty(device=...)` happens to leave in memory, which was all-zero for this tiny
+model in a fresh CUDA process and produced exactly-zero gradients and constant loss end to end.
+Confirmed by direct diagnostic: manually re-randomizing weights after `load_dcp_from_hf` restores
+correct gradients (128/140 nonzero; the 12 dead ones are the Lightning Indexer's, expected). Being
+fixed separately (shared `trainer/model.py` code, affects every model's random-init debug path),
+to land in this worktree once ready.
+
 Open items:
 
 - **YaRN on the compress RoPE branch is not wired up.** `DeepseekV4Config._nest_rope_parameters`
