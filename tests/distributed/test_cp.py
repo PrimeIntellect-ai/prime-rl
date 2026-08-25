@@ -11,6 +11,7 @@ from tests.dtest import DTest
 
 from ring_flash_attn.llama3_flash_attn_varlen import llama3_flash_attn_prepare_cu_seqlens
 
+from prime_rl.trainer.models.layers.flash_varlen import sink_flash_attn_varlen_func
 from prime_rl.trainer.models.layers.ring_attn import ring_flash_attn_varlen_func
 from prime_rl.trainer.models.layers.ulysses_attn import ulysses_flash_attn_varlen_func
 
@@ -47,6 +48,12 @@ def _build_inputs(
     v = torch.randn(total, nheads_k, HEAD_DIM, device=device, dtype=torch.bfloat16)
 
     return q, k, v, cu_seqlens, max_seqlen
+
+
+def _build_sink(device: torch.device) -> torch.Tensor:
+    """A per-head additive sink logit, standing in for GPT-OSS's `GptOssAttention.sinks`."""
+    torch.manual_seed(7)
+    return torch.randn(NHEADS, device=device, dtype=torch.bfloat16)
 
 
 def _build_dout(q: torch.Tensor) -> torch.Tensor:
@@ -111,6 +118,19 @@ def _assert_shard_matches_reference(
             )
         else:
             assert torch.equal(got.grad, expected), f"{name} is not bitwise equal to the reference"
+
+
+def _assert_sink_grad_matches_reference(ref_sink: torch.Tensor, cp_sink: torch.Tensor) -> None:
+    assert cp_sink.grad is not None, "the sink received no gradient"
+    # The sink is replicated, not sharded, and its gradient sums over queries (ring) or over a
+    # head slice (ulysses), so each rank holds a partial. FSDP shards parameters over dp_shard_cp,
+    # which includes the CP dimension, so its gradient reduction already sums these; emulate that
+    # here rather than making the attention wrapper communicate.
+    dsink = cp_sink.grad.clone()
+    dist.all_reduce(dsink)
+    torch.testing.assert_close(
+        dsink, ref_sink.grad, rtol=2e-2, atol=_bf16_ulp(ref_sink.grad), msg=lambda m: f"dsink: {m}"
+    )
 
 
 class TestRingAttnCP(DTest):
@@ -180,6 +200,62 @@ class TestRingAttnCP(DTest):
 
         self._check(flash_attn_varlen_func, flash_attn_version=4)
 
+    def _check_sink(self, flash_attn_version: int) -> None:
+        q, k, v, cu_seqlens, max_seqlen = _build_inputs(self.device)
+        sink = _build_sink(self.device)
+        dout = _build_dout(q)
+        cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, local_k_slice = llama3_flash_attn_prepare_cu_seqlens(
+            cu_seqlens, causal=True, rank=self.rank, world_size=self.world_size
+        )
+
+        *ref_qkv, ref_sink = _leaves(q, k, v, sink)
+        ref_out = sink_flash_attn_varlen_func(
+            *ref_qkv,
+            ref_sink,
+            cu_seqlens,
+            cu_seqlens,
+            max_seqlen,
+            max_seqlen,
+            causal=True,
+            flash_attn_version=flash_attn_version,
+        )
+        ref_out.backward(dout)
+
+        *cp_qkv, cp_sink = _leaves(*(_shard(t, self.rank, self.world_size) for t in (q, k, v)), sink)
+        out = ring_flash_attn_varlen_func(
+            *cp_qkv,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            max_seqlen_q,
+            max_seqlen_k,
+            local_k_slice,
+            causal=True,
+            heads_k_stride=1,
+            group=dist.group.WORLD,
+            flash_attn_version=flash_attn_version,
+            sink=cp_sink,
+        )
+        out.backward(_shard(dout, self.rank, self.world_size))
+
+        _assert_shard_matches_reference(
+            ref_out, out, ref_qkv, cp_qkv, self.rank, self.world_size, summed_across_ranks=("dk", "dv")
+        )
+        _assert_sink_grad_matches_reference(ref_sink, cp_sink)
+
+    @pytest.mark.skipif(not _HAS_FLASH_ATTN, reason="flash_attn not installed")
+    def test_fa2_sink_correctness(self) -> None:
+        self._check_sink(flash_attn_version=2)
+
+    @pytest.mark.skipif(_NOT_HOPPER, reason=f"FA3 requires Hopper (SM90); found SM{_SM_MAJOR}{_SM_MINOR}")
+    @pytest.mark.skipif(not _HAS_FLASH_ATTN_3, reason="flash_attn_interface not installed")
+    def test_fa3_sink_correctness(self) -> None:
+        self._check_sink(flash_attn_version=3)
+
+    @pytest.mark.skipif(_NOT_SM100, reason=f"FA4 requires SM100 (datacenter Blackwell); found SM{_SM_MAJOR}{_SM_MINOR}")
+    @pytest.mark.skipif(not _HAS_FLASH_ATTN_4, reason="flash_attn.cute not installed")
+    def test_fa4_sink_correctness(self) -> None:
+        self._check_sink(flash_attn_version=4)
+
 
 class TestUlyssesCP(DTest):
     """Ulysses CP must match the single-GPU reference bit for bit.
@@ -244,6 +320,63 @@ class TestUlyssesCP(DTest):
         from flash_attn.cute import flash_attn_varlen_func
 
         self._check(flash_attn_varlen_func, flash_attn_version=4)
+
+    def _check_sink(self, flash_fn, flash_attn_version: int) -> None:
+        q, k, v, cu_seqlens, max_seqlen = _build_inputs(self.device)
+        sink = _build_sink(self.device)
+        dout = _build_dout(q)
+
+        *ref_qkv, ref_sink = _leaves(q, k, v, sink)
+        ref_out = sink_flash_attn_varlen_func(
+            *ref_qkv,
+            ref_sink,
+            cu_seqlens,
+            cu_seqlens,
+            max_seqlen,
+            max_seqlen,
+            causal=True,
+            flash_attn_version=flash_attn_version,
+        )
+        ref_out.backward(dout)
+
+        *cp_qkv, cp_sink = _leaves(*(_shard(t, self.rank, self.world_size) for t in (q, k, v)), sink)
+        out = ulysses_flash_attn_varlen_func(
+            flash_fn,
+            *cp_qkv,
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
+            causal=True,
+            cp_group=dist.group.WORLD,
+            cp_size=self.world_size,
+            flash_attn_version=flash_attn_version,
+            sink=cp_sink,
+        )
+        out.backward(_shard(dout, self.rank, self.world_size))
+
+        _assert_shard_matches_reference(ref_out, out, ref_qkv, cp_qkv, self.rank, self.world_size)
+        _assert_sink_grad_matches_reference(ref_sink, cp_sink)
+
+    @pytest.mark.skipif(not _HAS_FLASH_ATTN, reason="flash_attn not installed")
+    def test_fa2_sink_correctness(self) -> None:
+        from flash_attn import flash_attn_varlen_func
+
+        self._check_sink(flash_attn_varlen_func, flash_attn_version=2)
+
+    @pytest.mark.skipif(_NOT_HOPPER, reason=f"FA3 requires Hopper (SM90); found SM{_SM_MAJOR}{_SM_MINOR}")
+    @pytest.mark.skipif(not _HAS_FLASH_ATTN_3, reason="flash_attn_interface not installed")
+    def test_fa3_sink_correctness(self) -> None:
+        from flash_attn_interface import flash_attn_varlen_func
+
+        self._check_sink(flash_attn_varlen_func, flash_attn_version=3)
+
+    @pytest.mark.skipif(_NOT_SM100, reason=f"FA4 requires SM100 (datacenter Blackwell); found SM{_SM_MAJOR}{_SM_MINOR}")
+    @pytest.mark.skipif(not _HAS_FLASH_ATTN_4, reason="flash_attn.cute not installed")
+    def test_fa4_sink_correctness(self) -> None:
+        from flash_attn.cute import flash_attn_varlen_func
+
+        self._check_sink(flash_attn_varlen_func, flash_attn_version=4)
 
     @pytest.mark.skipif(not _HAS_FLASH_ATTN, reason="flash_attn not installed")
     def test_fa2_gqa_kv_head_replication_correctness(self) -> None:
