@@ -944,25 +944,24 @@ def timeline_lane(
 
 
 def project_episode_timeline(rec: dict) -> dict:
-    lanes = []
+    lane_groups = []
     for trace_index, trace in enumerate(rec.get("traces") or []):
         nodes = trace.get("nodes") or []
         components = trace_components(nodes)
         main_indexes = components[0][1] if components else set(range(len(nodes)))
         role = ((trace.get("agent") or {}).get("name") or "agent").replace("_", " ").title()
         lane_id = f"trace-{trace_index}"
-        lanes.append(
-            timeline_lane(
-                trace,
-                trace_index,
-                main_indexes,
-                lane_id=lane_id,
-                parent_id=None,
-                label=role,
-                depth=0,
-                lifecycle=lifecycle_spans(trace),
-            )
+        parent = timeline_lane(
+            trace,
+            trace_index,
+            main_indexes,
+            lane_id=lane_id,
+            parent_id=None,
+            label=role,
+            depth=0,
+            lifecycle=lifecycle_spans(trace),
         )
+        children = []
         for child_number, (_root, node_indexes) in enumerate(components[1:], 1):
             prompt = next(
                 (
@@ -987,7 +986,7 @@ def project_episode_timeline(rec: dict) -> dict:
                     "status": "completed",
                 }
             ]
-            lanes.append(
+            children.append(
                 timeline_lane(
                     trace,
                     trace_index,
@@ -999,6 +998,10 @@ def project_episode_timeline(rec: dict) -> dict:
                     lifecycle=child_lifecycle,
                 )
             )
+        children.sort(key=lambda lane: lane["started_at"] if lane["started_at"] is not None else float("inf"))
+        lane_groups.append((parent, children))
+    lane_groups.sort(key=lambda group: group[0]["started_at"] if group[0]["started_at"] is not None else float("inf"))
+    lanes = [lane for parent, children in lane_groups for lane in (parent, *children)]
     starts = [lane["started_at"] for lane in lanes if lane.get("started_at")]
     ends = [lane["ended_at"] for lane in lanes if lane.get("ended_at")]
     return {
