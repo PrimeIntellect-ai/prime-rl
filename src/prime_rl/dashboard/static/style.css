@@ -643,6 +643,12 @@ mark.hit {
   border-bottom: 1px solid var(--hairline);
   min-height: 48px;
 }
+.tm-tabs-row {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
 .tm-title { font-size: 12px; font-weight: 500; color: var(--grey-6); white-space: nowrap; }
 #tm-left { border-right: 1px solid var(--hairline); display: flex; flex-direction: column; min-height: 0; }
 #tm-left .search { margin: 10px 14px 6px; }
