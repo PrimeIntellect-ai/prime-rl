@@ -817,137 +817,45 @@ def timeline_reward(trace: dict) -> float | None:
     )
 
 
-def trace_components(nodes: list[dict]) -> list[tuple[int, set[int]]]:
-    """Group nodes by disconnected graph root. Shared-root leaves remain branches;
-    additional roots are independent sessions and render as generic subagents."""
-    node_roots: dict[int, int] = {}
-    for node_index in range(len(nodes)):
-        cursor = node_index
+def trace_branch_node_sets(nodes: list[dict]) -> list[set[int]]:
+    """Partition a message graph into one node set per root-to-leaf branch."""
+    if not nodes:
+        return [set()]
+    parents = {node.get("parent") for node in nodes if isinstance(node.get("parent"), int)}
+    leaves = [index for index in range(len(nodes)) if index not in parents]
+    paths = []
+    for leaf in leaves:
         path = []
-        positions = {}
-        while True:
-            if cursor in node_roots:
-                root = node_roots[cursor]
-                break
-            if cursor in positions:
-                root = min(path[positions[cursor] :])
-                break
-            positions[cursor] = len(path)
-            path.append(cursor)
-            parent = nodes[cursor].get("parent")
-            if parent is None or not isinstance(parent, int) or not 0 <= parent < len(nodes):
-                root = cursor
-                break
-            cursor = parent
-        for index in path:
-            node_roots[index] = root
-    roots: dict[int, set[int]] = {}
-    for node_index, root in node_roots.items():
-        roots.setdefault(root, set()).add(node_index)
-    return sorted(roots.items())
+        seen = set()
+        node_index: int | None = leaf
+        while isinstance(node_index, int) and 0 <= node_index < len(nodes) and node_index not in seen:
+            seen.add(node_index)
+            path.append(node_index)
+            node_index = nodes[node_index].get("parent")
+        paths.append(list(reversed(path)))
 
+    if not paths:
+        return [set(range(len(nodes)))]
 
-def tool_call_code(tool_call: dict) -> str:
-    arguments = tool_call.get("arguments")
-    if isinstance(arguments, dict):
-        return str(arguments.get("code") or "")
-    if not isinstance(arguments, str):
-        return ""
-    try:
-        parsed = orjson.loads(arguments)
-    except orjson.JSONDecodeError:
-        return arguments
-    return str(parsed.get("code") or "") if isinstance(parsed, dict) else arguments
+    primary = paths[-1]
+    claimed = set(primary)
 
-
-def component_parent_roots(trace: dict, components: list[tuple[int, set[int]]]) -> dict[int, int]:
-    """Infer recursive RLM ownership from nested ``rlm()`` call windows."""
-    if len(components) <= 1:
-        return {}
-    nodes = trace.get("nodes") or []
-    root_by_node = {node_index: root for root, indexes in components for node_index in indexes}
-    calls_by_node: dict[int, list[dict]] = {}
-    for call in trace.get("calls") or []:
-        node_index = call.get("node")
-        if isinstance(node_index, int):
-            calls_by_node.setdefault(node_index, []).append(call)
-
-    results: dict[tuple[int, str], float] = {}
-    prompts: dict[int, str] = {}
-    starts: dict[int, float | None] = {}
-    for root, indexes in components:
-        timestamps = [nodes[index].get("timestamp") for index in indexes if nodes[index].get("timestamp") is not None]
-        call_starts = [
-            (call.get("time") or {}).get("start")
-            for index in indexes
-            for call in calls_by_node.get(index, [])
-            if (call.get("time") or {}).get("start") is not None
+    def branch_start(path: list[int]) -> float:
+        timestamps = [
+            nodes[index].get("timestamp")
+            for index in path
+            if index not in claimed and nodes[index].get("timestamp") is not None
         ]
-        starts[root] = min(call_starts or timestamps, default=None)
-        prompts[root] = next(
-            (
-                message_text(nodes[index].get("message") or {})
-                for index in sorted(indexes)
-                if (nodes[index].get("message") or {}).get("role") == "user"
-            ),
-            "",
-        )
-        for index in indexes:
-            message = nodes[index].get("message") or {}
-            tool_call_id = message.get("tool_call_id")
-            timestamp = nodes[index].get("timestamp")
-            if message.get("role") == "tool" and tool_call_id and timestamp is not None:
-                results[(root, tool_call_id)] = timestamp
+        return min(timestamps, default=float("inf"))
 
-    windows = []
-    for node_index, node in enumerate(nodes):
-        root = root_by_node.get(node_index)
-        if root is None:
-            continue
-        message = node.get("message") or {}
-        for tool_call in message.get("tool_calls") or []:
-            code = tool_call_code(tool_call)
-            if "rlm(" not in "".join(code.lower().split()):
-                continue
-            call_ends = [
-                (call.get("time") or {}).get("end")
-                for call in calls_by_node.get(node_index, [])
-                if (call.get("time") or {}).get("end") is not None
-            ]
-            started_at = max(call_ends, default=node.get("timestamp"))
-            if started_at is None:
-                continue
-            windows.append(
-                {
-                    "root": root,
-                    "started_at": started_at,
-                    "ended_at": results.get((root, tool_call.get("id"))),
-                    "code": code,
-                }
-            )
-
-    main_root = components[0][0]
-    parents = {}
-    for root, _indexes in components[1:]:
-        child_start = starts[root]
-        candidates = [
-            window
-            for window in windows
-            if window["root"] < root
-            and child_start is not None
-            and window["started_at"] <= child_start
-            and (window["ended_at"] is None or child_start <= window["ended_at"])
-        ]
-        if candidates:
-            prompt = prompts[root]
-            parent = max(
-                candidates,
-                key=lambda window: (bool(prompt and prompt in window["code"]), window["started_at"]),
-            )["root"]
-        else:
-            parent = main_root
-        parents[root] = parent
-    return parents
+    groups = [claimed.copy()]
+    for path in sorted(paths[:-1], key=branch_start):
+        unique = set(path) - claimed
+        if unique:
+            groups.append(unique)
+            claimed.update(unique)
+    groups[0].update(set(range(len(nodes))) - claimed)
+    return groups
 
 
 def token_usage(usage: dict) -> tuple[int | None, int | None, int | None]:
@@ -1037,7 +945,7 @@ def timeline_lane(
     *,
     label: str,
     depth: int,
-    subagent: bool,
+    branch: bool,
     lifecycle: list[dict],
     activities: list[dict],
     started_at: float | None = None,
@@ -1048,7 +956,7 @@ def timeline_lane(
     started = started_at if started_at is not None else min(starts or ends, default=None)
     status = (
         ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running")
-        if subagent
+        if branch
         else timeline_status(trace)
     )
     ended = max(ends, default=None) if status != "running" else None
@@ -1081,8 +989,8 @@ def timeline_lane(
         "started_at": started,
         "ended_at": ended,
         "status": status,
-        "outcome": status if subagent else (trace.get("stop_condition") or status),
-        "reward": None if subagent else timeline_reward(trace),
+        "outcome": status if branch else (trace.get("stop_condition") or status),
+        "reward": None if branch else timeline_reward(trace),
         "usage": {
             "model_calls": len(activities),
             "input_tokens": input_tokens,
@@ -1102,8 +1010,8 @@ def project_episode_timeline(episode: dict) -> dict:
     lane_groups = []
     for trace_index, trace in enumerate(episode.get("traces") or []):
         nodes = trace.get("nodes") or []
-        components = trace_components(nodes)
-        main_root, main_indexes = components[0] if components else (0, set(range(len(nodes))))
+        branch_node_sets = trace_branch_node_sets(nodes)
+        main_indexes = branch_node_sets[0]
         role = (trace.get("agent") or {}).get("name") or "agent"
         activities = activity_spans(trace, main_indexes, include_unlinked=True)
         parent = timeline_lane(
@@ -1111,82 +1019,62 @@ def project_episode_timeline(episode: dict) -> dict:
             trace_index,
             label=role,
             depth=0,
-            subagent=False,
+            branch=False,
             lifecycle=lifecycle_spans(trace),
             activities=activities,
             started_at=(trace.get("timing") or {}).get("start"),
         )
-        lane_by_root = {main_root: parent}
-        parent_roots = component_parent_roots(trace, components)
-        for root, node_indexes in components[1:]:
+        branches = []
+        for branch_number, node_indexes in enumerate(branch_node_sets[1:], start=1):
             activities = activity_spans(trace, node_indexes)
-            component_timestamps = [
+            branch_timestamps = [
                 nodes[index].get("timestamp") for index in node_indexes if nodes[index].get("timestamp") is not None
             ]
             timed_activities = [span for span in activities if span["started_at"] is not None]
-            if not activities and not component_timestamps:
+            if not activities and not branch_timestamps:
                 continue
-            component_start = min(
-                [span["started_at"] for span in timed_activities] or component_timestamps,
+            branch_start = min(
+                [span["started_at"] for span in timed_activities] or branch_timestamps,
                 default=None,
             )
-            component_end = max(
-                [span["ended_at"] for span in activities if span.get("ended_at") is not None] + component_timestamps,
+            branch_end = max(
+                [span["ended_at"] for span in activities if span.get("ended_at") is not None] + branch_timestamps,
                 default=None,
             )
-            child_completed = bool(trace.get("is_completed"))
-            child_lifecycle = (
+            branch_completed = bool(trace.get("is_completed"))
+            branch_lifecycle = (
                 [
                     {
                         "kind": "agent",
-                        "label": "subagent",
+                        "label": f"branch {branch_number}",
                         "track": "lifecycle",
-                        "started_at": component_start,
-                        "ended_at": component_end if child_completed else None,
-                        "status": "completed" if child_completed else "running",
-                        "node_index": root,
+                        "started_at": branch_start,
+                        "ended_at": branch_end if branch_completed else None,
+                        "status": "completed" if branch_completed else "running",
+                        "node_index": min(node_indexes),
                     }
                 ]
-                if component_start is not None
+                if branch_start is not None
                 else []
             )
-            lane_by_root[root] = timeline_lane(
-                trace,
-                trace_index,
-                label="subagent",
-                depth=1,
-                subagent=True,
-                lifecycle=child_lifecycle,
-                activities=activities,
-            )
-        children_by_root: dict[int, list[int]] = {}
-        for root in lane_by_root:
-            if root == main_root:
-                continue
-            parent_root = parent_roots.get(root, main_root)
-            while parent_root not in lane_by_root and parent_root != main_root:
-                parent_root = parent_roots.get(parent_root, main_root)
-            children_by_root.setdefault(parent_root, []).append(root)
-
-        descendants = []
-
-        def append_descendants(root: int, depth: int) -> None:
-            child_roots = children_by_root.get(root, [])
-            child_roots.sort(
-                key=lambda child_root: (
-                    lane_by_root[child_root]["started_at"]
-                    if lane_by_root[child_root]["started_at"] is not None
-                    else float("inf")
+            branches.append(
+                timeline_lane(
+                    trace,
+                    trace_index,
+                    label=f"branch {branch_number}",
+                    depth=1,
+                    branch=True,
+                    lifecycle=branch_lifecycle,
+                    activities=activities,
                 )
             )
-            for child_root in child_roots:
-                lane = lane_by_root[child_root]
-                lane["depth"] = depth
-                descendants.append(lane)
-                append_descendants(child_root, depth + 1)
-
-        append_descendants(main_root, 1)
-        lane_groups.append((parent, descendants))
+        branches.sort(key=lambda lane: lane["started_at"] if lane["started_at"] is not None else float("inf"))
+        for branch_number, lane in enumerate(branches, start=1):
+            lane["label"] = f"branch {branch_number}"
+            for span in lane["spans"]:
+                if span["track"] == "lifecycle":
+                    span["label"] = lane["label"]
+        lane_groups.append((parent, branches))
     lane_groups.sort(key=lambda group: group[0]["started_at"] if group[0]["started_at"] is not None else float("inf"))
     lanes = [lane for parent, children in lane_groups for lane in (parent, *children)]
     return {"lanes": lanes}

@@ -2724,7 +2724,7 @@ function timelineSpanHtml(lane, span, start, total) {
     title: `${lane.label} — ${span.label}`,
     snippet: span.snippet || "",
     rows,
-    hint: span.track === "activity" ? "Click to open this call in the transcript." : "Click to open this agent transcript.",
+    hint: span.track === "activity" ? "Click to open this call in the transcript." : "Click to open this trace transcript.",
   });
   const node = span.node_index == null ? "" : ` data-tl-node="${span.node_index}"`;
   const call = span.call_index == null ? "" : ` data-tl-call="${span.call_index}"`;
@@ -2775,7 +2775,7 @@ function renderTimeline() {
     .map((fraction) => `<span style="left:${fraction * 100}%">${fraction ? fmtDuration(total * fraction) : "0"}</span>`)
     .join("");
   target.innerHTML =
-    `<div class="tl-shell"><div class="tl-head"><span>execution tree</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
+    `<div class="tl-shell"><div class="tl-head"><span>execution branches</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
     timeline.lanes.map((lane) => timelineLaneHtml(lane, start, total)).join("") +
     `</div>`;
 }
