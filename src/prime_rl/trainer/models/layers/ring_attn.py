@@ -7,7 +7,7 @@ import torch
 import torch.distributed as dist
 from ring_flash_attn.utils import AllGatherComm
 
-from .flash_varlen import VARLEN_BACKWARD, VARLEN_FORWARD
+from .flash_varlen import VARLEN_BACKWARD, VARLEN_FORWARD, apply_sink
 
 
 def _resolve_group(group_name: str) -> dist.ProcessGroup:
@@ -35,6 +35,7 @@ class _RingVarlen(torch.autograd.Function):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
+        sink: torch.Tensor | None,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_k: torch.Tensor,
         max_seqlen_q: int,
@@ -78,7 +79,8 @@ class _RingVarlen(torch.autograd.Function):
                 comm.all_gather(kv_buffer_copy[0], k[:, left:right].contiguous())
                 comm.all_gather(kv_buffer_copy[1], v[:, left:right].contiguous())
 
-            q_i = q[:, i * nheads // nheads_k : (i + heads_k_stride) * nheads // nheads_k]
+            q_slice = slice(i * nheads // nheads_k, (i + heads_k_stride) * nheads // nheads_k)
+            q_i = q[:, q_slice]
             k_i = kv_buffer[0][local_k_slice]
             v_i = kv_buffer[1][local_k_slice]
             out_i, lse_i = flash_forward(
@@ -93,6 +95,12 @@ class _RingVarlen(torch.autograd.Function):
                 causal=causal,
                 window_size=window_size,
             )
+            if sink is not None:
+                # Every head is visited by exactly one iteration, so the sink lands on each query
+                # exactly once. This is also the only place it can land: the all-gathered key range
+                # makes each rank's softmax complete over its queries, so there is no partial
+                # denominator for a sink term to be folded into later.
+                out_i, lse_i = apply_sink(out_i, lse_i, sink[q_slice])
             out_list.append(out_i)
             lse_list.append(lse_i)
 
@@ -195,10 +203,10 @@ class _RingVarlen(torch.autograd.Function):
                 dk[:, i : i + heads_k_stride] = dk_i
                 dv[:, i : i + heads_k_stride] = dv_i
 
-        # Grads for: q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,
+        # Grads for: q, k, v, sink, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,
         #            local_k_slice_start, local_k_slice_stop, heads_k_stride, causal, group_name,
         #            flash_attn_version, window_size_left, window_size_right
-        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 
 def ring_flash_attn_varlen_func(
@@ -214,12 +222,14 @@ def ring_flash_attn_varlen_func(
     heads_k_stride: int,
     group: dist.ProcessGroup,
     flash_attn_version: int,
+    sink: torch.Tensor | None = None,
     window_size: tuple[int, int] = (-1, -1),
 ) -> torch.Tensor:
     return _RingVarlen.apply(
         q,
         k,
         v,
+        sink,
         cu_seqlens_q,
         cu_seqlens_k,
         max_seqlen_q,
