@@ -4,8 +4,8 @@ Same gather as ``dcp_to_bf16``, but each rank quantizes its slice on GPU and
 only the fp8 shards are written — no intermediate bf16 export on disk.
 
 Usage (from the prime-rl repo; more ranks = faster gathers, quantization and writes):
-    uv run python tools/converters/dcp_to_fp8.py <run>/checkpoints/step_{n} [output_dir]
-    uv run torchrun --nproc-per-node 8 tools/converters/dcp_to_fp8.py \
+    uv run python tools/convert_dcp_to_fp8.py <run>/checkpoints/step_{n} [output_dir]
+    uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_fp8.py \
         <run>/checkpoints/step_{n} [output_dir]
 
 Writes to ``<ckpt_dir>/weights-FP8`` by default.
@@ -17,8 +17,8 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from bf16_to_fp8 import quantization_config, quantize_state_dict
-from dcp_to_bf16 import load_and_convert, save_model_assets
+from convert_bf16_to_fp8 import quantization_config, quantize_state_dict
+from convert_dcp_to_bf16 import load_and_convert, save_model_assets
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger

@@ -7,7 +7,7 @@ the quantized shards, a rewritten index, all non-weight assets, and a
 ``quantization_config`` block in ``config.json`` that vLLM loads natively.
 
 Usage (from the prime-rl repo):
-    uv run python tools/converters/bf16_to_fp8.py <model_dir> [output_dir] [--block-size 128]
+    uv run python tools/convert_bf16_to_fp8.py <model_dir> [output_dir] [--block-size 128]
 
 Writes to ``<model_dir>-FP8`` by default.
 """

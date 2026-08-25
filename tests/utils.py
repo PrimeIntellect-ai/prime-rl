@@ -226,10 +226,10 @@ def check_mismatch_kl_in_range(
 
 
 def convert_checkpoint(converter: str, *args: Path) -> None:
-    """Helper to run a checkpoint converter (tools/converters/<converter>.py) on a checkpoint"""
+    """Run ``tools/convert_<converter>.py`` on a checkpoint."""
     import subprocess
 
-    cmd = ["uv", "run", "python", f"tools/converters/{converter}.py", *[str(arg) for arg in args]]
+    cmd = ["uv", "run", "python", f"tools/convert_{converter}.py", *[str(arg) for arg in args]]
     subprocess.run(cmd, check=True, timeout=600)
 
 

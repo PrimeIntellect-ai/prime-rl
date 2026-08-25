@@ -11,8 +11,8 @@ supported — the script exports full fine-tunes only.
 
 Usage (from the prime-rl repo; more ranks = faster gathers and writes, and
 models too big for one GPU need enough ranks to shard across):
-    uv run python tools/converters/dcp_to_bf16.py <run>/checkpoints/step_{n} [output_dir]
-    uv run torchrun --nproc-per-node 8 tools/converters/dcp_to_bf16.py \
+    uv run python tools/convert_dcp_to_bf16.py <run>/checkpoints/step_{n} [output_dir]
+    uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py \
         <run>/checkpoints/step_{n} [output_dir]
 
 Writes to ``<ckpt_dir>/weights`` by default.
