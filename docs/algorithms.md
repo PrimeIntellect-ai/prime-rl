@@ -298,6 +298,30 @@ Two properties distinguish it from the token-level trust regions above. The mask
 
 Reported metrics: `masked_mismatch_kl` / `unmasked_mismatch_kl` (trainer/inference mismatch KL over dropped and kept tokens), `is_masked` (fraction of trainable tokens in rejected rollouts), and `geo_log_ratio` (the per-rollout mean log-ratio, $\log \rho_{\text{geo}}$).
 
+### Seq-IS Loss
+
+`[trainer.loss] type = "seq_is"` replaces the `rl` component with sequence-level importance sampling: the rollout's full product importance ratio, detached, weights the score function of every token. This is the unbiased off-policy gradient — [the estimator that scales with batch size under policy lag](https://luk-huang.github.io/personal-website/blog/is-frontier-asynchronous-rl-solved.html) — whose price is a weight variance that compounds with length:
+
+$$
+w^{(j)} = \prod_t \rho_t^{(j)}, \qquad
+\mathcal{L} = -\sum_{j,t} \mathbb{I}\big(C_{\text{low}} \le (w^{(j)})^{1/|y^{(j)}|} \le C_{\text{high}}\big)\, \min\big(w^{(j)}, C_{\text{seq}}\big)\, \hat{A}_t^{(j)} \log \pi(y_t^{(j)}),
+$$
+
+with the weight and mask detached. Two independent, composable controls trade bias for variance in different ways:
+
+- `seq_clip` truncates the weight from above (Seq-TIS): a small one-sided bias in exchange for a bounded weight. On by default — plain Seq-IS leans entirely on batch size to average its variance down, so drop the clip (`seq_clip = "None"`) only at large batch.
+- `geo_mask_low` / `geo_mask_high` put a trust region on the *geometric mean* of the per-token ratios and drop the rollout wholesale outside it. Unlike masking on the product (whose threshold rejects by cumulative divergence and so rejects long rollouts systematically), the geometric criterion is length-invariant; unlike the `geo_mask` loss type, accepted rollouts here keep their untempered product weight, so the estimator stays exactly unbiased on the accepted region. Off by default.
+
+The 2×2 of these knobs spans plain Seq-IS, Seq-TIS, geo-masked Seq-IS, and geo-masked Seq-TIS.
+
+| Knob | Default | What it does |
+|---|---|---|
+| `seq_clip` | 2.0 | Ceiling $C_{\text{seq}}$ on the sequence weight. None disables truncation (up to a numerics guard at $e^{40}$). |
+| `geo_mask_low` / `geo_mask_high` | None | Trust-region bounds on the geometric-mean importance ratio; each side is optional. |
+| `adv_tau` | 1.0 | Temperature on the advantage term. |
+
+Reported metrics: `masked_mismatch_kl` / `unmasked_mismatch_kl`, `is_masked` (fraction of trainable tokens in geo-rejected rollouts), `is_clipped` (fraction of rollouts at the weight ceiling), `seq_log_ratio` ($\log w$), `geo_log_ratio` ($\frac{1}{T}\log w$), and `seq_weight` (the applied weight, post-clip).
+
 ### Custom Loss
 
 `[trainer.loss] type = "custom"` replaces the `rl` component. The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates. `inputs.loss_mask` selects exactly the rl member tokens (for a plain GRPO run, all trainable tokens).

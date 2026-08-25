@@ -580,6 +580,28 @@ class GeoMaskLossConfig(BaseConfig):
     function with no importance weighting."""
 
 
+class SeqISLossConfig(BaseConfig):
+    type: Literal["seq_is"] = "seq_is"
+
+    seq_clip: float | None = Field(2.0, gt=0)
+    """Ceiling on the sequence-level importance weight (Seq-TIS). None disables
+    truncation, leaving the unbiased Seq-IS weight (up to a numerics guard at
+    ``exp(40)``)."""
+
+    geo_mask_low: float | None = Field(None, gt=0)
+    """Optional lower bound of a trust region on the geometric-mean importance
+    ratio: rollouts whose ratio falls below it contribute no gradient. None
+    (the default) disables the bound."""
+
+    geo_mask_high: float | None = Field(None, gt=0)
+    """Optional upper bound of a trust region on the geometric-mean importance
+    ratio: rollouts whose ratio rises above it contribute no gradient. None
+    (the default) disables the bound."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -597,6 +619,7 @@ LossConfig: TypeAlias = Annotated[
     | KimiK15LossConfig
     | PMDMeanLossConfig
     | GeoMaskLossConfig
+    | SeqISLossConfig
     | CustomLossConfig,
     Field(discriminator="type"),
 ]
