@@ -33,6 +33,16 @@ lr = 3e-6
 batch_size = 8
 group_size = 4
 
+# The mini checkpoint is untrained, and reverse-text's reward is gated on an <answer> tag it
+# never emits, so every episode scores exactly 0. Every group then has zero advantage and would
+# be filtered, leaving the trainer with nothing: "empty train batch after N finalized episodes"
+# ten times over, and the run aborts. Letting them through is what makes this a mechanics test.
+# Consequence to keep in mind when reading the output: with all advantages zero the policy
+# gradient is zero too, so this config cannot demonstrate a nonzero gradient. Use
+# sft-mini-ep-check.toml for that.
+[orchestrator.train]
+filter_zero_advantages = false
+
 [orchestrator.train.sampling]
 max_completion_tokens = 32
 
