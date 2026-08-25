@@ -1965,6 +1965,7 @@ let episodeEnrichmentVersion = 0;
 let currentTimeline = null;
 let traceView = prefs.traceView === "timeline" ? "timeline" : "transcript";
 let pendingTimelineNode = null;
+let pendingTimelineCall = null;
 
 const COPY_SVG =
   `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">` +
@@ -2122,6 +2123,8 @@ async function openEpisode(line, target = {}) {
   $("#tm-timeline").innerHTML = `<div class="chart-empty">loading timeline…</div>`;
   $("#tm-meta").innerHTML = "";
   currentTimeline = null;
+  pendingTimelineNode = null;
+  pendingTimelineCall = null;
   const withTokens = !!$("#token-signal").value;
   const withRendered = state.traces.viewMode === "rendered";
   const episode = await fetchEpisode(line, withTokens, withRendered);
@@ -2145,6 +2148,8 @@ function closeDrawer() {
   $("#tm-back").hidden = true;
   currentEpisode = null;
   currentTimeline = null;
+  pendingTimelineNode = null;
+  pendingTimelineCall = null;
   currentLine = null;
   pendingHighlight = null;
 }
@@ -2407,7 +2412,28 @@ function renderMessages(ep, trace, branches) {
   let maxAbsAdv = 0;
   for (const node of trace.nodes || [])
     for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
-  const callsByNode = new Map((trace.calls || []).map((c) => [c.node, c]));
+  const indexedCalls = (trace.calls || []).map((call, index) => ({ call, index }));
+  const callsByNode = new Map();
+  for (const item of indexedCalls) {
+    const calls = callsByNode.get(item.call.node) || [];
+    calls.push(item);
+    callsByNode.set(item.call.node, calls);
+  }
+  const callChipHtml = ({ call, index }) => {
+    const fields = [`call ${index + 1}`];
+    if (call.finish_reason) fields.push(call.finish_reason);
+    const usage = call.usage || {};
+    let input = usage.prompt_tokens;
+    let cached = usage.cached_input_tokens;
+    if (cached == null) {
+      cached = usage.prompt_tokens_details?.cached_tokens;
+      if (input != null && cached) input = Math.max(0, input - cached);
+    }
+    if (input != null) fields.push(`${fmtCompact(input)} in`);
+    if (cached != null) fields.push(`${fmtCompact(cached)} cache`);
+    if (usage.completion_tokens != null) fields.push(`${fmtCompact(usage.completion_tokens)} out`);
+    return `<span class="chip" data-call-index="${index}">${esc(fields.join(" · "))}</span>`;
+  };
   // agent highlights (sticky until the next view command or drawer close)
   const hl =
     pendingHighlight &&
@@ -2427,14 +2453,12 @@ function renderMessages(ep, trace, branches) {
   const entryHtml = (idx, i) => {
     const node = trace.nodes[idx];
     const role = node.message?.role ?? "?";
-    const call = callsByNode.get(idx);
     const marks = hlByNode.get(idx) || [];
     const chips = [];
     if (concatenated && node.parent != null && node.parent !== idx - 1) chips.push(`↳ branches from ${node.parent + 1}`);
     if (node.sampled) chips.push("sampled");
-    if (call?.finish_reason) chips.push(call.finish_reason);
-    if (call?.usage) chips.push(`${call.usage.prompt_tokens ?? "?"}→${call.usage.completion_tokens ?? "?"} tok`);
-    else if (node.token_ids?.length) chips.push(`${node.token_ids.length} tok`);
+    const nodeCalls = callsByNode.get(idx) || [];
+    if (!nodeCalls.length && node.token_ids?.length) chips.push(`${node.token_ids.length} tok`);
     const text = messageText(node.message);
     const contentMarks = marks.filter((h) => !h.field || h.field === "content");
     const contentMarked = contentMarks.some((h) => h.quote && findQuote(text, h.quote, h.prefix, h.suffix));
@@ -2456,6 +2480,7 @@ function renderMessages(ep, trace, branches) {
       `<span class="entry-role">${esc(role)}</span>` +
       `<span class="entry-preview">${preview(text, 180)}</span>` +
       chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("") +
+      nodeCalls.map(callChipHtml).join("") +
       `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>` +
       `<span class="entry-chev">›</span></summary>` +
       subs.join("") +
@@ -2471,10 +2496,21 @@ function renderMessages(ep, trace, branches) {
   const lastMark = Math.max(-1, ...[...hlByNode.keys()].map((n) => path.indexOf(n)));
   const targetPosition = pendingTimelineNode == null ? -1 : path.indexOf(pendingTimelineNode);
   let rendered = Math.min(path.length, Math.max(CHUNK, lastMark + 3, targetPosition + 1));
+  const unlinkedCallsHtml = indexedCalls
+    .filter(({ call }) => !Number.isInteger(call.node) || call.node < 0 || call.node >= (trace.nodes || []).length)
+    .map(
+      (item) =>
+        `<details class="entry model-call" data-call-index="${item.index}" open>` +
+        `<summary><span class="entry-num">C${String(item.index + 1).padStart(2, "0")}</span>` +
+        `<span class="entry-role">model call</span><span class="entry-preview">${esc(item.call.model || "unlinked call")}</span>` +
+        `${callChipHtml(item)}<span class="entry-chev">›</span></summary></details>`,
+    )
+    .join("");
   container.innerHTML =
     (systemPosition === -1 ? toolsHtml : "") +
     path.slice(0, rendered).map(entryHtml).join("") +
     (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
+    unlinkedCallsHtml +
     errorsHtml;
   if (hl && !hl.scrolled) {
     const first = container.querySelector(".hl-entry");
@@ -2652,9 +2688,10 @@ function timelineSpanHtml(lane, span, start, total) {
     hint: span.track === "activity" ? "Click to open this call in the transcript." : "Click to open this agent transcript.",
   });
   const node = span.node_index == null ? "" : ` data-tl-node="${span.node_index}"`;
+  const call = span.call_index == null ? "" : ` data-tl-call="${span.call_index}"`;
   return (
     `<button class="tl-span ${esc(span.track)} ${esc(span.kind)} ${span.status === "running" ? "running" : ""}"` +
-    ` style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%" data-tl-trace="${lane.trace_index}"${node}${tip}></button>`
+    ` style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%" data-tl-trace="${lane.trace_index}"${node}${call}${tip}></button>`
   );
 }
 
@@ -2717,14 +2754,10 @@ function renderEpisode() {
   if (currentBranchIdx >= branches.length) currentBranchIdx = 0;
   const traceTabs = $("#tm-trace-tabs");
   traceTabs.hidden = traces.length <= 1;
-  // multi-agent episodes: label each trace by its agent name (seat), index only
-  // as a tiebreak when names repeat or are missing
-  const names = traces.map((t) => t.agent?.name);
-  const label = (i) => (names[i] && names.indexOf(names[i]) === names.lastIndexOf(names[i]) ? names[i] : `${names[i] ?? "trace"} ${i}`);
   traceTabs.innerHTML =
     traces.length > 1
       ? traces
-          .map((_, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(label(i))}</button>`)
+          .map((trace, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(trace.agent?.name || "agent")}</button>`)
           .join("")
       : "";
   const branchTabs = $("#tm-branch-tabs");
@@ -3781,22 +3814,34 @@ $("#tm-timeline").addEventListener("click", async (e) => {
   e.stopPropagation();
   currentTraceIdx = +target.dataset.tlTrace;
   const node = target.dataset.tlNode == null ? null : +target.dataset.tlNode;
+  const call = target.dataset.tlCall == null ? null : +target.dataset.tlCall;
   if (node != null) {
     const trace = currentEpisode?.traces?.[currentTraceIdx];
     const branches = trace ? traceBranches(trace) : [];
     const branch = branches.findIndex((path) => path.includes(node));
     currentBranchIdx = branch >= 0 ? branch : -1;
     pendingTimelineNode = node;
+    pendingTimelineCall = call;
+    state.traces.viewMode = "messages";
   } else {
     currentBranchIdx = 0;
     pendingTimelineNode = null;
+    pendingTimelineCall = call;
+    if (call != null) state.traces.viewMode = "messages";
   }
   await setTraceView("transcript");
   requestAnimationFrame(() => {
-    const entry = pendingTimelineNode == null ? null : $(`#tm-messages [data-node="${pendingTimelineNode}"]`);
+    const entry =
+      pendingTimelineCall == null
+        ? pendingTimelineNode == null
+          ? null
+          : $(`#tm-messages [data-node="${pendingTimelineNode}"]`)
+        : $(`#tm-messages [data-call-index="${pendingTimelineCall}"]`);
     entry?.scrollIntoView({ block: "center" });
-    if (entry) entry.open = true;
+    const details = entry?.closest("details");
+    if (details) details.open = true;
     pendingTimelineNode = null;
+    pendingTimelineCall = null;
   });
 });
 const timelineTip = document.createElement("div");

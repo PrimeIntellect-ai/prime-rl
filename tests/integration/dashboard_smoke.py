@@ -114,11 +114,28 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
                 assert lifecycle > 0, "episode timeline rendered no lifecycle spans"
                 activity = page.locator("#tm-timeline .tl-span.activity")
                 if activity.count():
+                    call_index = activity.first.get_attribute("data-tl-call")
                     activity.first.click()
                     page.wait_for_timeout(500)
                     assert page.locator("#tm-view [data-view=transcript].active").count(), (
                         "timeline activity did not return to the transcript"
                     )
+                    assert (
+                        call_index is None or page.locator(f'#tm-messages [data-call-index="{call_index}"]').count()
+                    ), "timeline activity did not open its exact model call"
+                tab_overflow = page.eval_on_selector(
+                    "#tm-tabs-row",
+                    """row => {
+                        const tabs = row.querySelector('#tm-trace-tabs');
+                        row.hidden = false;
+                        tabs.hidden = false;
+                        while (row.scrollWidth <= row.clientWidth)
+                            tabs.append(tabs.querySelector('button')?.cloneNode(true) || document.createElement('button'));
+                        row.scrollLeft = row.scrollWidth;
+                        return row.scrollWidth > row.clientWidth && row.scrollLeft > 0;
+                    }""",
+                )
+                assert tab_overflow, "agent tabs did not scroll horizontally when overflowing"
                 page.keyboard.press("Escape")
 
             # logs: the merged pane shows lines
