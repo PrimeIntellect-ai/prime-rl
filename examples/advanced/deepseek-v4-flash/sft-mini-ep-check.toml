@@ -1,0 +1,35 @@
+# Expert-parallelism correctness pre-flight for DeepSeek V4's fused expert weight layout
+# (gate_up_proj/down_proj), flagged in TODO.md as mechanically plausible but unverified under
+# ep>1. Pure trainer forward+backward check on the mini deepseek_v4 preset -- no inference
+# needed, so all GPUs go to training. Generate the checkpoint first:
+#
+#   uv run python scripts/mini_moe.py --arch deepseek_v4 --output-dir /tmp/deepseek-v4-mini
+#
+# On a single allocated 8xH200 node, run as-is (ep=8, matching
+# examples/advanced/deepseek-v4-flash/rl.toml):
+#
+#   uv run sft @ examples/advanced/deepseek-v4-flash/sft-mini-ep-check.toml
+#
+# Locally on fewer GPUs, override both the GPU count and ep to match:
+#
+#   uv run sft @ examples/advanced/deepseek-v4-flash/sft-mini-ep-check.toml \
+#     --deployment.num-train-gpus 4 --deployment.num-infer-gpus 0 --model.ep 4
+
+max_steps = 20
+
+[model]
+name = "/tmp/deepseek-v4-mini"
+impl = "custom"
+ep = 8
+
+[data]
+type = "fake"
+seq_len = 2048
+batch_size = 8
+
+[optim]
+lr = 3e-6
+
+[deployment]
+num_train_gpus = 8
+num_infer_gpus = 0

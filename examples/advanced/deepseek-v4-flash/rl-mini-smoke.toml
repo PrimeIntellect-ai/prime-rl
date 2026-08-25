@@ -1,0 +1,44 @@
+# Local reverse-text RL smoke test on the mini deepseek_v4 preset -- proves the rollout +
+# training loop runs end to end on this port's current (naive/eager) attention. Not a
+# performance or convergence test; ep is left at its default (1) since this only needs to
+# prove the loop moves, not exercise expert parallelism (see sft-mini-ep-check.toml for that).
+# Generate the checkpoint first:
+#
+#   uv run python scripts/mini_moe.py --arch deepseek_v4 --output-dir /tmp/deepseek-v4-mini
+#
+# Then, on a single node with at least 4 GPUs:
+#
+#   uv run rl @ examples/advanced/deepseek-v4-flash/rl-mini-smoke.toml
+
+max_steps = 20
+
+[model]
+name = "/tmp/deepseek-v4-mini"
+
+[trainer.model]
+impl = "custom"
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator]
+batch_size = 8
+group_size = 4
+
+[orchestrator.train.sampling]
+max_completion_tokens = 32
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[orchestrator.renderer]
+name = "default"
+
+[inference]
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
