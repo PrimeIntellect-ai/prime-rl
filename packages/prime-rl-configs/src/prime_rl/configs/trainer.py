@@ -169,7 +169,7 @@ class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
     recipe: MXFP8Recipe = "mxfp8_rceil"
     enable_grouped_gemm: bool = True
-    enable_a2a: bool = True
+    enable_a2a: bool = False
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
 
 
