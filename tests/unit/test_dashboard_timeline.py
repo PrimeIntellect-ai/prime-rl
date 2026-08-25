@@ -91,7 +91,13 @@ def test_timeline_infers_recursive_rlm_hierarchy_with_concurrent_siblings():
 
     lanes = project_episode_timeline({"traces": [trace, concurrent_trace]})["lanes"]
 
-    assert [lane["started_at"] for lane in lanes] == sorted(lane["started_at"] for lane in lanes)
+    assert [lane["id"] for lane in lanes] == [
+        "trace-0",
+        "trace-0-subagent-3",
+        "trace-0-subagent-6",
+        "trace-0-subagent-10",
+        "trace-1",
+    ]
     lanes_by_id = {lane["id"]: lane for lane in lanes}
     assert lanes_by_id["trace-0-subagent-3"]["parent_id"] == "trace-0"
     assert lanes_by_id["trace-0-subagent-3"]["depth"] == 1

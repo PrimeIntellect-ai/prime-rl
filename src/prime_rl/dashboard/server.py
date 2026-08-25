@@ -1209,7 +1209,6 @@ def project_episode_timeline(episode: dict) -> dict:
         lane_groups.append((parent, descendants))
     lane_groups.sort(key=lambda group: group[0]["started_at"] if group[0]["started_at"] is not None else float("inf"))
     lanes = [lane for parent, children in lane_groups for lane in (parent, *children)]
-    lanes.sort(key=lambda lane: lane["started_at"] if lane["started_at"] is not None else float("inf"))
     starts = [lane["started_at"] for lane in lanes if lane.get("started_at") is not None]
     ends = [lane["ended_at"] for lane in lanes if lane.get("ended_at") is not None]
     return {
