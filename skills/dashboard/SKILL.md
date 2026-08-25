@@ -69,7 +69,7 @@ curl -sS -X POST $(jq -r .url ~/.cache/prime-rl/dashboard/daemon.json)/api/view 
 ```
 
 Fields (all optional except `run`; missing fields leave that part of the UI
-alone):
+alone). Supply `step`, `kind`, and `subset` together:
 
 | field | meaning |
 |---|---|
@@ -79,12 +79,13 @@ alone):
 | `episode` | episode `id` from the traces file (`line` is a positional fallback) |
 | `trace`, `branch` | multi-agent seat index and branch leaf (`-1` = concatenated) |
 | `report` | report file under `<run>/reports/` to open on the report tab |
-| `highlight` | list of `{node, quote, reason}`: node index into `trace.nodes`, verbatim quote to mark, optional callout text |
+| `highlight` | list of `{node, quote, reason, field?}`: node index, verbatim quote, optional hover note; `field` is `content` or `reasoning` only when the same quote occurs in both |
 
-The server validates the address against the filesystem (unknown run/episode →
-404, so you cannot point at nothing). `409` means the command was stored but no
-tab is connected — tell the user to open the `url` from the response body and
-the command applies when they do. `GET /api/view` returns the last command.
+The server validates the address and trace/node indices against the filesystem
+(unknown run/episode → 404, so you cannot point at nothing). `409` means the
+command was stored but no tab is connected — tell the user to open the `url`
+from the response body and the command applies when they do. `GET /api/view`
+returns the last command.
 Errors and broken episodes usually live only in the `all` subset (`effective`
 drops them).
 
@@ -92,8 +93,8 @@ drops them).
 
 For a question that deserves a written answer, put it in
 `<run>/reports/<slug>.md` and POST `{"run": ..., "tab": "report", "report":
-"<slug>"}`. The dashboard renders it live (poll-based — appending while you
-write streams to the reader). Format: markdown with a `title:` frontmatter
+"<slug>"}`. The dashboard refreshes it every five seconds while live mode is
+on. Format: markdown with a `title:` frontmatter
 line, citing evidence with `[^id]` markers defined anywhere in the file as one
 JSON object per line:
 
@@ -117,14 +118,18 @@ A citation is a view command plus a verbatim quote. Fields on top of the
   sentence), not a paragraph.
 - `prefix` / `suffix` — optional, only when the quote appears more than once in
   the node: a few words copied verbatim from immediately before/after the
-  instance you mean.
+  instance you mean. Ambiguous quotes stay broken until they identify one
+  passage.
+- `field` — optional `content` or `reasoning`, only when the same quote occurs
+  in both parts of one node and surrounding text cannot disambiguate it.
 - `note` — **required**: 1–2 sentences max saying why this passage matters to
   your claim. It appears when the reader hovers the highlighted text inside
   the trace, so write it as a caption for the highlight, not a restatement of
   the quote.
 
-Clicking a chip jumps straight to the trace viewer with the quote highlighted
-(a "← report" button leads back). Cite by episode `id`, never by position:
+Clicking a verified chip jumps straight to the trace viewer with the quote
+highlighted (a "← report" button leads back); a broken chip refuses with an
+explanation. Cite by episode `id`, never by position:
 traces files grow continuously during a run and ids are the only stable
 address. Supported markdown: headings, lists, tables, fenced code, blockquotes,
 bold/italic/code, links; several citations can sit adjacent (`[^a] [^b]`). Raw

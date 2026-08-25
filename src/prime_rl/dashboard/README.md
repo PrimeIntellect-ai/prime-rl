@@ -1,12 +1,13 @@
 # Dashboard
 
 `uv run dashboard [output_dir ...]` — a local web dashboard for run output
-directories (metrics, resolved configs, rollout traces, component logs) at
+directories (metrics, resolved configs, rollout traces, cited agent reports,
+component logs) at
 http://localhost:7788. Needs the `dashboard` extra. Every instance also serves
 the dirs registered by launchers in `~/.cache/prime-rl/dashboard/dirs.json`
 (one dashboard per host per user); `--isolated` serves only the given dirs and
-skips the registry. See `skills/dashboard/SKILL.md` for discovery and
-kill/restart commands.
+skips the registry. See `skills/dashboard/SKILL.md` for discovery,
+kill/restart commands, and the local view-command/report contract.
 
 GPU dependencies live behind the `gpu` extra, so this works anywhere — a
 cluster head node, a laptop against a mounted outputs dir:

@@ -1,4 +1,4 @@
-/* prime-rl dashboard frontend: metrics (wandb-overview replica), merged logs, trace viewer.
+/* prime-rl dashboard frontend: metrics, configs, merged logs, traces, and cited reports.
    This package is fully AI-generated and maintained by agents - it is not meant to be read or edited by humans. Change it by asking an agent, and verify through the browser smoke tests. */
 
 const $ = (sel) => document.querySelector(sel);
@@ -173,7 +173,7 @@ function applyRunTypeControls() {
   $("#tm-subset-row").hidden = isEval;
 }
 
-async function selectRun(name) {
+async function selectRun(name, deferTab = false) {
   if (!name) return;
   state.run = name;
   state.compare = { runs: [], data: new Map() };
@@ -202,7 +202,7 @@ async function selectRun(name) {
   renderOverview();
   renderCompareMenu();
   updateHash();
-  await activateTab(state.tab, true);
+  if (!deferTab) await activateTab(state.tab, true);
 }
 
 function fmtDuration(secs) {
@@ -2080,7 +2080,7 @@ async function ensureTokens() {
   currentEpisode = episode;
 }
 
-async function openEpisode(line) {
+async function openEpisode(line, target = {}) {
   $("#trace-modal").hidden = false;
   $("#drawer-backdrop").hidden = false;
   currentLine = line;
@@ -2093,8 +2093,8 @@ async function openEpisode(line) {
   if (line !== currentLine) return; // user already moved to another rollout
   episode._hasTokens = withTokens;
   currentEpisode = episode;
-  currentTraceIdx = 0;
-  currentBranchIdx = 0;
+  currentTraceIdx = target.trace ?? 0;
+  currentBranchIdx = target.branch ?? 0;
   renderEpisode();
 }
 
@@ -2138,6 +2138,10 @@ function messageText(message) {
   if (Array.isArray(content))
     return content.map((part) => (part.type === "text" ? part.text : `[${part.type}]`)).join("");
   return content == null ? "" : JSON.stringify(content);
+}
+
+function reasoningText(content) {
+  return typeof content === "string" ? content : content == null ? "" : JSON.stringify(content, null, 2);
 }
 
 /* logprobs may cover only masked positions; map token index -> logprob index */
@@ -2211,7 +2215,7 @@ function toolCallHtml(toolCall) {
 }
 
 function reasoningBlock(content, marks = null) {
-  const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+  const text = reasoningText(content);
   // a highlight whose quote lives in the reasoning marks it and opens the block
   const marked = (marks || []).some((h) => h.quote && findQuote(text, h.quote, h.prefix, h.suffix));
   return (
@@ -2268,7 +2272,16 @@ function renderMessages(ep, trace, branches) {
     for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
   const callsByNode = new Map((trace.calls || []).map((c) => [c.node, c]));
   // agent highlights (sticky until the next view command or drawer close)
-  const hl = pendingHighlight && pendingHighlight.line === currentLine ? pendingHighlight : null;
+  const hl =
+    pendingHighlight &&
+    pendingHighlight.run === state.run &&
+    pendingHighlight.step === state.traces.step &&
+    pendingHighlight.kind === state.traces.kind &&
+    pendingHighlight.subset === state.traces.subset &&
+    pendingHighlight.line === currentLine &&
+    pendingHighlight.trace === currentTraceIdx
+      ? pendingHighlight
+      : null;
   const hlByNode = new Map();
   for (const h of hl?.highlights || []) {
     if (!hlByNode.has(h.node)) hlByNode.set(h.node, []);
@@ -2278,7 +2291,7 @@ function renderMessages(ep, trace, branches) {
     const node = trace.nodes[idx];
     const role = node.message?.role ?? "?";
     const call = callsByNode.get(idx);
-    const marks = hlByNode.get(idx);
+    const marks = hlByNode.get(idx) || [];
     const chips = [];
     if (concatenated && node.parent != null && node.parent !== idx - 1) chips.push(`↳ branches from ${node.parent + 1}`);
     if (node.sampled) chips.push("sampled");
@@ -2286,15 +2299,22 @@ function renderMessages(ep, trace, branches) {
     if (call?.usage) chips.push(`${call.usage.prompt_tokens ?? "?"}→${call.usage.completion_tokens ?? "?"} tok`);
     else if (node.token_ids?.length) chips.push(`${node.token_ids.length} tok`);
     const text = messageText(node.message);
-    const body = signal && node.token_ids?.length
-      ? renderTokenNode(node, signal, maxAbsAdv)
-      : marks ? quoteMarkedHtml(text, marks) : esc(text);
-    const subs = [];
+    const contentMarks = marks.filter((h) => !h.field || h.field === "content");
+    const contentMarked = contentMarks.some((h) => h.quote && findQuote(text, h.quote, h.prefix, h.suffix));
+    const reasoningMarks = marks.filter((h) => !h.field || h.field === "reasoning");
     const reasoning = node.message?.reasoning_content ?? node.message?.reasoning;
-    if (reasoning) subs.push(reasoningBlock(reasoning, marks));
+    const reasoningMarked = reasoningMarks.some(
+      (h) => h.quote && findQuote(reasoningText(reasoning), h.quote, h.prefix, h.suffix)
+    );
+    const marked = contentMarked || reasoningMarked;
+    const body = contentMarked
+      ? quoteMarkedHtml(text, contentMarks)
+      : signal && node.token_ids?.length ? renderTokenNode(node, signal, maxAbsAdv) : esc(text);
+    const subs = [];
+    if (reasoning) subs.push(reasoningBlock(reasoning, reasoningMarks));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
     return (
-      `<details class="entry ${esc(role)}${marks ? " hl-entry" : ""}"${role === "system" && !marks ? "" : " open"}>` +
+      `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}"${role === "system" && !marked ? "" : " open"}>` +
       `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
       `<span class="entry-role">${esc(role)}</span>` +
       `<span class="entry-preview">${preview(text, 180)}</span>` +
@@ -2553,6 +2573,7 @@ function renderReport() {
   const { title, body, citations } = parseReport(rep.text || "");
   rep.citations = citations;
   rep.verify = new Map();
+  rep.lookup = { summaries: new Map(), episodes: new Map() };
   const ctx = { citations, order: [] };
   const html = mdToHtml(body, ctx);
   rep.order = ctx.order;
@@ -2703,38 +2724,41 @@ function renderInline(text, ctx) {
 }
 
 function citeChipHtml(id, ctx) {
-  if (!ctx.citations[id])
-    return `<sup class="cite-chip missing" data-cite="${esc(id)}" title="[^${esc(id)}] has no citation definition">?</sup>`;
   let n = ctx.order.indexOf(id) + 1;
   if (!n) n = ctx.order.push(id);
+  if (!ctx.citations[id])
+    return `<sup class="cite-chip missing" data-cite="${esc(id)}" title="[^${esc(id)}] has no citation definition">?</sup>`;
   return `<sup class="cite-chip" data-cite="${esc(id)}" title="citation ${esc(id)}">${n}</sup>`;
 }
 
-/* whitespace-insensitive, case-insensitive quote search; returns [start, end) in
+/* Whitespace-insensitive exact quote search; returns [start, end) ranges in
    the original text so highlights survive reflowed whitespace. When the quote
    repeats inside the text, optional prefix/suffix (verbatim adjacent text) pick
    the right occurrence. */
-function findQuote(text, quote, prefix = "", suffix = "") {
+function findQuotes(text, quote, prefix = "", suffix = "") {
   const map = [];
   let normed = "";
   for (let i = 0; i < text.length; i++) {
     const ws = /\s/.test(text[i]);
     if (ws && (!normed || normed.endsWith(" "))) continue;
-    normed += ws ? " " : text[i].toLowerCase();
+    normed += ws ? " " : text[i];
     map.push(i);
   }
-  const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
   const q = norm(quote);
-  if (!q) return null;
+  if (!q) return [];
   const pre = norm(prefix);
   const post = norm(suffix);
+  const ranges = [];
   for (let at = normed.indexOf(q); at >= 0; at = normed.indexOf(q, at + 1)) {
     if (pre && !normed.slice(0, at).trimEnd().endsWith(pre)) continue;
     if (post && !normed.slice(at + q.length).trimStart().startsWith(post)) continue;
-    return [map[at], map[at + q.length - 1] + 1];
+    ranges.push([map[at], map[at + q.length - 1] + 1]);
   }
-  return null;
+  return ranges;
 }
+
+const findQuote = (...args) => findQuotes(...args)[0] || null;
 
 function quoteMarkedHtml(text, marks) {
   const ranges = [];
@@ -2759,82 +2783,112 @@ function quoteMarkedHtml(text, marks) {
   return out + esc(text.slice(pos));
 }
 
-/* citation resolution: the same read endpoints the trace viewer uses — the
-   dashboard grounds every quote against the files, not the agent's word */
-const citeSummaryCache = new Map();
-const citeEpisodeCache = new Map();
+/* Citation resolution uses the same read endpoints as the trace viewer. Lookup
+   promises live only for the current report render: duplicate references share
+   work, while a changed report or rewritten trace never inherits stale evidence. */
+const CITATION_KEYS = new Set([
+  "run", "step", "kind", "subset", "episode", "line", "trace", "branch",
+  "node", "field", "quote", "prefix", "suffix", "note",
+]);
 
-async function resolveCitation(c) {
-  if (!c || typeof c !== "object" || c._invalid) return { matched: false, reason: "invalid citation JSON" };
+async function resolveCitation(c, cache) {
+  if (!c) return { matched: false, reason: "missing citation definition" };
+  if (typeof c !== "object" || c._invalid) return { matched: false, reason: "invalid citation JSON" };
+  const unknown = Object.keys(c).filter((key) => !CITATION_KEYS.has(key));
+  if (unknown.length) return { matched: false, reason: `unknown fields: ${unknown.join(", ")}` };
   const run = c.run || state.run;
-  if (c.step == null || !c.kind || !c.subset) return { matched: false, reason: "citation needs step, kind, subset" };
+  if (typeof run !== "string" || !run) return { matched: false, reason: "citation needs a run" };
+  if (!Number.isInteger(c.step) || !["train", "eval"].includes(c.kind) || !["all", "effective"].includes(c.subset))
+    return { matched: false, reason: "citation needs a valid step, kind, and subset" };
+  for (const key of ["line", "trace", "node"])
+    if (c[key] != null && (!Number.isInteger(c[key]) || c[key] < 0)) return { matched: false, reason: `${key} must be a non-negative integer` };
+  if (c.branch != null && (!Number.isInteger(c.branch) || c.branch < -1))
+    return { matched: false, reason: "branch must be an integer >= -1" };
+  if (c.field != null && !["content", "reasoning"].includes(c.field))
+    return { matched: false, reason: "field must be content or reasoning" };
+  if (c.episode != null && (typeof c.episode !== "string" || !c.episode))
+    return { matched: false, reason: "episode must be a non-empty string" };
+  if (typeof c.quote !== "string" || !c.quote.trim()) return { matched: false, reason: "citation needs a verbatim quote" };
+  if (typeof c.note !== "string" || !c.note.trim()) return { matched: false, reason: "citation needs a note" };
+  for (const key of ["prefix", "suffix"])
+    if (c[key] != null && typeof c[key] !== "string") return { matched: false, reason: `${key} must be a string` };
   const base = `/api/runs/${encodeURIComponent(run)}/rollouts/${c.step}/${c.kind}/${c.subset}`;
   let line = c.line;
   if (line == null) {
     if (!c.episode) return { matched: false, reason: "citation needs episode or line" };
-    if (!citeSummaryCache.has(base))
-      citeSummaryCache.set(
-        base,
-        api(base).catch((err) => {
-          citeSummaryCache.delete(base);
+    const summaryKey = `${base}?episode=${encodeURIComponent(c.episode)}&limit=2`;
+    if (!cache.summaries.has(summaryKey))
+      cache.summaries.set(
+        summaryKey,
+        api(summaryKey).catch((err) => {
+          cache.summaries.delete(summaryKey);
           throw err;
         })
       );
-    const list = await citeSummaryCache.get(base);
-    line = list.episodes.find((e) => e.id === c.episode)?.line;
-    if (line == null) return { matched: false, reason: `episode ${c.episode} not found` };
+    const list = await cache.summaries.get(summaryKey);
+    if (!list.total) return { matched: false, reason: `episode ${c.episode} not found` };
+    if (list.total > 1) return { matched: false, reason: `episode ${c.episode} is not unique` };
+    line = list.episodes[0].line;
   }
   const epKey = `${base}/${line}`;
-  if (!citeEpisodeCache.has(epKey))
-    citeEpisodeCache.set(
+  if (!cache.episodes.has(epKey))
+    cache.episodes.set(
       epKey,
       api(epKey).catch((err) => {
-        citeEpisodeCache.delete(epKey);
+        cache.episodes.delete(epKey);
         throw err;
       })
     );
-  const ep = await citeEpisodeCache.get(epKey);
+  const ep = await cache.episodes.get(epKey);
   const trace = (ep.traces || [])[c.trace ?? 0];
   if (!trace) return { matched: false, reason: "trace not found", line };
   let nodes = c.node != null ? [[c.node, (trace.nodes || [])[c.node]]] : (trace.nodes || []).map((n, i) => [i, n]);
   nodes = nodes.filter(([, n]) => n);
   if (!nodes.length) return { matched: false, reason: `node ${c.node} not found`, line };
-  if (!c.quote) return { matched: true, weak: true, reason: "address exists (no quote to check)", line, nodeIdx: nodes[0][0] };
+  const matches = [];
   for (const [i, node] of nodes) {
-    for (const t of [messageText(node.message), node.message?.reasoning_content ?? node.message?.reasoning ?? ""]) {
-      if (typeof t === "string" && t && findQuote(t, c.quote, c.prefix, c.suffix)) return { matched: true, line, nodeIdx: i };
+    const fields = [
+      ["content", messageText(node.message)],
+      ["reasoning", reasoningText(node.message?.reasoning_content ?? node.message?.reasoning)],
+    ].filter(([field]) => !c.field || c.field === field);
+    for (const [field, text] of fields) {
+      for (const _ of findQuotes(text, c.quote, c.prefix, c.suffix)) matches.push({ nodeIdx: i, field });
     }
   }
-  return { matched: false, reason: c.node != null ? "quote not found in node" : "quote not found in any node", line };
+  if (!matches.length)
+    return { matched: false, reason: c.node != null ? "quote not found in node" : "quote not found in any node", line };
+  if (matches.length > 1) return { matched: false, reason: "quote is ambiguous — add node and prefix or suffix", line };
+  return { matched: true, line, ...matches[0] };
+}
+
+function paintCitation(id, res) {
+  document.querySelectorAll(`.cite-chip[data-cite="${CSS.escape(id)}"]`).forEach((el) => {
+    el.classList.toggle("ok", !!res.matched);
+    el.classList.toggle("bad", !res.matched);
+    el.title = res.matched ? "quote verified against the trace" : `⚠ ${res.reason || "quote not found"}`;
+  });
 }
 
 async function verifyCitations() {
   const rep = state.report;
-  const text = rep.text;
-  const ids = rep.order.filter((id) => rep.citations[id]);
+  const citations = rep.citations;
+  const cache = rep.lookup;
+  const ids = rep.order;
   if (!ids.length) return;
   let verified = 0;
   let broken = 0;
-  for (const id of ids.slice(0, 50)) {
+  for (const id of ids) {
     let res;
     try {
-      res = await resolveCitation(rep.citations[id]);
+      res = await resolveCitation(citations[id], cache);
     } catch (err) {
       res = { matched: false, reason: String(err) };
     }
-    if (state.report.text !== text) return; // report changed under us
+    if (state.report !== rep || rep.lookup !== cache) return;
     rep.verify.set(id, res);
     if (res.matched) verified++;
     else broken++;
-    document.querySelectorAll(`.cite-chip[data-cite="${CSS.escape(id)}"]`).forEach((el) => {
-      el.classList.toggle("ok", !!res.matched && !res.weak);
-      el.classList.toggle("bad", !res.matched);
-      el.title = res.matched
-        ? res.weak
-          ? "address exists — no quote to verify"
-          : "quote verified against the trace"
-        : `⚠ ${res.reason || "quote not found"}`;
-    });
+    paintCitation(id, res);
     $("#report-verify").textContent = `${verified}/${ids.length} verified${broken ? ` · ${broken} broken` : ""}`;
   }
 }
@@ -2845,9 +2899,20 @@ async function verifyCitations() {
 
 async function openCitation(id) {
   const c = state.report.citations[id];
-  if (!c || c._invalid) return toastMsg(`[^${esc(id)}] has no valid citation definition`);
-  const res = state.report.verify.get(id);
-  const node = res?.nodeIdx ?? c.node;
+  const rep = state.report;
+  const cache = rep.lookup;
+  let res = rep.verify.get(id);
+  if (!res) {
+    try {
+      res = await resolveCitation(c, cache);
+    } catch (err) {
+      res = { matched: false, reason: String(err) };
+    }
+    if (state.report !== rep || rep.lookup !== cache) return;
+    rep.verify.set(id, res);
+    paintCitation(id, res);
+  }
+  if (!res.matched) return toastMsg(`[^${esc(id)}] is broken: ${esc(res.reason || "quote not found")}`);
   await applyViewCommand({
     run: c.run || state.run,
     tab: "traces",
@@ -2855,10 +2920,10 @@ async function openCitation(id) {
     kind: c.kind,
     subset: c.subset,
     episode: c.episode,
-    line: res?.line ?? c.line,
+    line: res.line,
     trace: c.trace,
     branch: c.branch,
-    highlight: node != null ? [{ node, quote: c.quote, prefix: c.prefix, suffix: c.suffix, reason: c.note }] : [],
+    highlight: [{ node: res.nodeIdx, field: res.field, quote: c.quote, prefix: c.prefix, suffix: c.suffix, reason: c.note }],
   });
   $("#tm-back").hidden = $("#trace-modal").hidden; // way back to the report
 }
@@ -2871,56 +2936,89 @@ let pendingHighlight = null;
 let lastViewSeq = 0;
 let hadHashRun = false;
 let applyingView = false;
+const viewCommandQueue = [];
+let viewDrain = Promise.resolve();
+const MAX_PENDING_VIEW_COMMANDS = 32;
 
-async function applyViewCommand(cmd) {
-  if (applyingView) return;
-  applyingView = true;
-  try {
-    if (cmd.run && cmd.run !== state.run) {
-      if (!state.runs.some((r) => r.name === cmd.run)) await loadRuns();
-      if (!state.runs.some((r) => r.name === cmd.run)) return toastMsg(`unknown run ${esc(cmd.run)}`);
-      await selectRun(cmd.run);
-    }
-    if (cmd.report) {
-      state.report.wanted = cmd.report;
-      state.report.loaded = false;
-    }
-    if (cmd.tab && (cmd.tab !== state.tab || cmd.report)) await activateTab(cmd.tab, true);
-    else if (cmd.report && state.tab === "report") await initReport();
-    if (cmd.line != null || cmd.episode != null) await applyTraceCommand(cmd);
-  } catch (err) {
-    console.warn("view command failed", err);
-  } finally {
-    applyingView = false;
-  }
-}
-
-async function applyTraceCommand(cmd) {
+function primeTraceCommand(cmd) {
   const traces = state.traces;
-  if (!traces.loaded) await initTraces();
   if (cmd.step != null) traces.step = cmd.step;
   if (cmd.kind) traces.kind = cmd.kind;
   if (cmd.subset) {
     traces.subset = cmd.subset;
     traces.preferred = cmd.subset;
   }
-  // a filter must not hide the addressed episode
   traces.env = "";
   traces.errorsOnly = false;
+  pendingHighlight = null;
+}
+
+async function applyOneViewCommand(cmd) {
+  let runChanged = false;
+  if (cmd.run && cmd.run !== state.run) {
+    if (!state.runs.some((r) => r.name === cmd.run)) await loadRuns();
+    if (!state.runs.some((r) => r.name === cmd.run)) return toastMsg(`unknown run ${esc(cmd.run)}`);
+    await selectRun(cmd.run, true);
+    runChanged = true;
+  }
+  if (cmd.report) {
+    state.report.wanted = cmd.report;
+    state.report.loaded = false;
+  }
+  const traceCommand = ["step", "kind", "subset", "episode", "line", "trace", "branch", "highlight"].some(
+    (key) => cmd[key] != null
+  );
+  if (traceCommand) primeTraceCommand(cmd); // target the requested file before the traces tab initializes
+  if (cmd.tab && (cmd.tab !== state.tab || cmd.report || runChanged)) await activateTab(cmd.tab, true);
+  else if (cmd.report && state.tab === "report") await initReport();
+  else if (runChanged) await activateTab(state.tab, true);
+  if (traceCommand) await applyTraceCommand(cmd);
+}
+
+async function drainViewCommands() {
+  while (viewCommandQueue.length) {
+    const cmd = viewCommandQueue.shift();
+    try {
+      await applyOneViewCommand(cmd);
+    } catch (err) {
+      console.warn("view command failed", err);
+    }
+  }
+  applyingView = false;
+}
+
+function applyViewCommand(cmd) {
+  viewCommandQueue.push(cmd);
+  if (viewCommandQueue.length > MAX_PENDING_VIEW_COMMANDS) viewCommandQueue.shift();
+  if (!applyingView) {
+    applyingView = true;
+    viewDrain = drainViewCommands();
+  }
+  return viewDrain;
+}
+
+async function applyTraceCommand(cmd) {
+  const traces = state.traces;
+  if (!traces.loaded) await initTraces();
   adjustKindSubset();
   renderStepControl();
   await loadEpisodes();
+  if (cmd.line == null && cmd.episode == null) return;
   const episodes = traces.episodes || [];
   const target = cmd.episode != null ? episodes.find((e) => e.id === cmd.episode) : episodes.find((e) => e.line === cmd.line);
   const line = target?.line ?? cmd.line;
   if (line == null) return toastMsg(`episode ${esc(cmd.episode ?? "?")} not found at this address`);
-  pendingHighlight = { line, highlights: (cmd.highlight || []).filter((h) => h && h.node != null), scrolled: false };
-  await openEpisode(line);
-  if (cmd.trace != null || cmd.branch != null) {
-    if (cmd.trace != null) currentTraceIdx = cmd.trace;
-    if (cmd.branch != null) currentBranchIdx = cmd.branch;
-    renderEpisode();
-  }
+  pendingHighlight = {
+    run: state.run,
+    step: traces.step,
+    kind: traces.kind,
+    subset: traces.subset,
+    line,
+    trace: cmd.trace ?? 0,
+    highlights: (cmd.highlight || []).filter((h) => h && h.node != null),
+    scrolled: false,
+  };
+  await openEpisode(line, { trace: cmd.trace, branch: cmd.branch });
 }
 
 let toastEl = null;

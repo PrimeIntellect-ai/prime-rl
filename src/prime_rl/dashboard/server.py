@@ -1,4 +1,4 @@
-"""Local dashboard for prime-rl runs: logs, metrics, and rollout traces.
+"""Local dashboard for prime-rl runs: logs, metrics, rollout traces, and reports.
 
 This package is fully AI-generated and maintained by agents - it is not meant to be read or edited by humans. Change it by asking an agent, and verify through the browser smoke tests.
 
@@ -66,7 +66,7 @@ def _lru_put(cache: OrderedDict, key, value) -> None:
 
 
 # Append-only file caches keyed by absolute path: line-start offsets and per-episode summaries.
-_offsets_cache: OrderedDict[Path, tuple[int, list[int]]] = OrderedDict()
+_offsets_cache: OrderedDict[Path, tuple[int, bytes, list[int]]] = OrderedDict()
 _summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
@@ -555,9 +555,13 @@ def rollout_steps(run_dir: Path) -> list[dict]:
 def line_offsets(path: Path) -> list[int]:
     size = path.stat().st_size
     with _lock:
-        cached_size, offsets = _lru_get(_offsets_cache, path) or (0, [])
-        if cached_size > size:  # rewritten (e.g. resume cleanup): rebuild
-            cached_size, offsets = 0, []
+        cached_size, checkpoint, offsets = _lru_get(_offsets_cache, path) or (0, b"", [])
+        if cached_size > size or (cached_size and file_checkpoint(path, cached_size) != checkpoint):
+            # The bytes immediately before the old EOF changed: this is a rewrite,
+            # not an append. Invalidate offsets and their derived summaries together.
+            cached_size, checkpoint, offsets = 0, b"", []
+            _summaries_cache.pop(path, None)
+            _sidecar_written.pop(path, None)
         if cached_size == size:
             return offsets
     # re-scan from the last recorded line (it may have been partial) into a local
@@ -573,14 +577,21 @@ def line_offsets(path: Path) -> list[int]:
             if line.strip():
                 found.append(pos)
             pos += len(line)
+        scanned_size = f.tell()
     with _lock:
-        cached_size, current = _lru_get(_offsets_cache, path) or (0, offsets)
-        if cached_size > size:
-            current = []
+        cached_size, checkpoint, current = _lru_get(_offsets_cache, path) or (0, b"", offsets)
+        current_matches = not cached_size or file_checkpoint(path, cached_size) == checkpoint
+        if cached_size > scanned_size and current_matches:
+            return current  # a concurrent reader already scanned farther
+        if not current_matches:
+            cached_size, current = 0, []
+            _summaries_cache.pop(path, None)
+            _sidecar_written.pop(path, None)
         for offset in found:
             if not current or offset > current[-1]:
                 current.append(offset)
-        _lru_put(_offsets_cache, path, (max(size, cached_size), current))
+        cached_size = max(scanned_size, cached_size)
+        _lru_put(_offsets_cache, path, (cached_size, file_checkpoint(path, cached_size), current))
     return current
 
 
@@ -692,7 +703,7 @@ def episode_summaries(path: Path) -> list[dict]:
                 summaries.append({"line": line_no, "id": None, "error": "unparseable"})
     with _lock:
         _lru_put(_summaries_cache, path, (len(offsets), summaries))
-    write_sidecar(path, offsets, summaries)
+    write_sidecar(path, summaries)
     return summaries
 
 
@@ -710,14 +721,19 @@ def sidecar_path(path: Path) -> Path:
     return SIDECAR_DIR / f"{digest}.json"
 
 
-def file_head(path: Path) -> str:
-    """First bytes of the file: an append-only file never changes them, so a
-    mismatch means the path was rewritten (relaunch, reseed) — even if bigger."""
+def file_checkpoint(path: Path, end: int) -> bytes:
+    """Bytes immediately before a previously observed EOF.
+
+    Appends preserve this window; rewrites and truncate-then-regrow resumes do
+    not. Checking 64 bytes stays constant-time even for multi-gigabyte traces.
+    """
     try:
         with path.open("rb") as f:
-            return f.read(64).hex()
+            start = max(0, end - 64)
+            f.seek(start)
+            return f.read(end - start)
     except OSError:
-        return ""
+        return b""
 
 
 def load_sidecar(path: Path) -> list[dict] | None:
@@ -726,23 +742,28 @@ def load_sidecar(path: Path) -> list[dict] | None:
         if (
             data.get("path") != str(path.resolve())
             or path.stat().st_size < data["size"]
-            or data.get("head") != file_head(path)
+            or data.get("checkpoint") != file_checkpoint(path, data["size"]).hex()
         ):
-            return None  # different file, or rewritten (smaller, or same path new content)
+            return None
         return data["summaries"]
     except (KeyError, OSError):
         return None
 
 
-def write_sidecar(path: Path, offsets: list[int], summaries: list[dict]) -> None:
+def write_sidecar(path: Path, summaries: list[dict]) -> None:
     now = time.monotonic()
     last_time, last_count = _sidecar_written.get(path, (0.0, -1))
     if len(summaries) == last_count or now - last_time < SIDECAR_WRITE_INTERVAL_S:
         return
     _sidecar_written[path] = (now, len(summaries))
     SIDECAR_DIR.mkdir(parents=True, exist_ok=True)
-    consumed = offsets[len(summaries) - 1] if summaries else 0
-    payload = {"path": str(path.resolve()), "size": consumed, "head": file_head(path), "summaries": summaries}
+    size = path.stat().st_size
+    payload = {
+        "path": str(path.resolve()),
+        "size": size,
+        "checkpoint": file_checkpoint(path, size).hex(),
+        "summaries": summaries,
+    }
     target = sidecar_path(path)
     tmp = target.with_suffix(".tmp")
     tmp.write_bytes(orjson.dumps(payload))
@@ -774,7 +795,8 @@ def list_episodes(
     step: int,
     kind: str,
     subset: str,
-    limit: int = Query(default=5000, le=5000),
+    limit: int = Query(default=5000, ge=1, le=5000),
+    episode: str | None = None,
     env: str | None = None,
     errors_only: bool = False,
     sort: str = "line",
@@ -787,6 +809,8 @@ def list_episodes(
         return unchanged
     summaries = episode_summaries(path)
     envs = sorted({s["env"] for s in summaries if s.get("env")})
+    if episode is not None:
+        summaries = [s for s in summaries if s.get("id") == episode]
     if env:
         summaries = [s for s in summaries if s.get("env") == env]
     if errors_only:
@@ -854,15 +878,19 @@ def episode_series(run: str, step: int, kind: str, subset: str, etag: str | None
     return {"etag": current_etag, "count": len(summaries), "after": max(0, after), "series": series}
 
 
-@app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}")
-def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: bool = False) -> dict:
-    path = traces_path(run, step, kind, subset)
+def read_episode_at(path: Path, line: int) -> dict:
     offsets = line_offsets(path)
     if not 0 <= line < len(offsets):
         raise HTTPException(404, "episode line out of range")
     with path.open("rb") as f:
         f.seek(offsets[line])
-        rec = orjson.loads(f.readline())
+        return orjson.loads(f.readline())
+
+
+@app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}")
+def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: bool = False) -> dict:
+    path = traces_path(run, step, kind, subset)
+    rec = read_episode_at(path, line)
     if not tokens:
         return rec
     fallback_model = model_name(main_config(get_run_dir(run))[1])
@@ -883,16 +911,36 @@ def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: 
 # address of what it wants shown POSTs that address here, and every connected
 # browser tab navigates there. One-way fan-out over SSE — no WebSocket dependency,
 # and the browser's EventSource reconnects on its own. The dashboard stays a
-# filesystem reader: commands carry addresses (and highlight anchors), never content.
+# filesystem reader: commands carry addresses and short highlight anchors, never
+# report or episode payloads.
 
 VIEW_TABS = {"metrics", "config", "traces", "logs", "report"}
 VIEW_KEYS = {"run", "tab", "step", "kind", "subset", "episode", "line", "trace", "branch", "report", "highlight"}
-HIGHLIGHT_KEYS = {"node", "tokens", "quote", "prefix", "suffix", "reason"}
+HIGHLIGHT_KEYS = {"node", "quote", "prefix", "suffix", "reason", "field"}
 
 _view_command: dict | None = None
 _view_seq = 0
 _view_clients: set["asyncio.Queue"] = set()
 _view_url = ""  # actual serve url, stamped by main() for the 409 body
+MAX_VIEW_QUEUE = 32
+
+
+def normalize_view_int(obj: dict, key: str, minimum: int) -> int | None:
+    value = obj.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise HTTPException(400, f"{key} must be an integer")
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"{key} must be an integer") from None
+    if isinstance(value, float) and not value.is_integer():
+        raise HTTPException(400, f"{key} must be an integer")
+    if normalized < minimum:
+        raise HTTPException(400, f"{key} must be >= {minimum}")
+    obj[key] = normalized
+    return normalized
 
 
 def validate_view_command(cmd: dict) -> dict:
@@ -902,40 +950,90 @@ def validate_view_command(cmd: dict) -> dict:
     if unknown:
         raise HTTPException(400, f"unknown fields: {sorted(unknown)} (known: {sorted(VIEW_KEYS)})")
     run = cmd.get("run")
-    if not run:
-        raise HTTPException(400, "run is required")
+    if not isinstance(run, str) or not run:
+        raise HTTPException(400, "run must be a non-empty string")
     run_dir = get_run_dir(run)
     tab = cmd.get("tab")
     if tab is not None and tab not in VIEW_TABS:
         raise HTTPException(400, f"tab must be one of {sorted(VIEW_TABS)}")
     report = cmd.get("report")
     if report is not None:
-        name = report if str(report).endswith(".md") else f"{report}.md"
+        if not isinstance(report, str) or not report:
+            raise HTTPException(400, "report must be a non-empty string")
+        name = report if report.endswith(".md") else f"{report}.md"
         safe_child(run_dir / "reports", name, suffix=".md")
         cmd["report"] = name
-    episode, line = cmd.get("episode"), cmd.get("line")
-    if episode is not None or line is not None:
-        step, kind, subset = cmd.get("step"), cmd.get("kind"), cmd.get("subset")
-        if step is None or kind is None or subset is None:
-            raise HTTPException(400, "episode addressing needs step, kind, and subset")
-        path = traces_path(run, int(step), kind, subset)
-        if episode is not None:
-            matches = [s["line"] for s in episode_summaries(path) if s.get("id") == episode]
-            if not matches:
-                raise HTTPException(404, f"episode id {episode!r} not found in {kind}/{subset} at step {step}")
-            cmd["line"] = matches[0]
-        elif not 0 <= int(line) < len(line_offsets(path)):
-            raise HTTPException(404, "episode line out of range")
+
+    step = normalize_view_int(cmd, "step", 0)
+    line = normalize_view_int(cmd, "line", 0)
+    trace_index = normalize_view_int(cmd, "trace", 0)
+    branch_index = normalize_view_int(cmd, "branch", -1)
+    episode = cmd.get("episode")
+    if episode is not None and (not isinstance(episode, str) or not episode):
+        raise HTTPException(400, "episode must be a non-empty string")
+
+    kind, subset = cmd.get("kind"), cmd.get("subset")
+    address = (step, kind, subset)
+    if any(value is not None for value in address) and not all(value is not None for value in address):
+        raise HTTPException(400, "trace addressing needs step, kind, and subset together")
+    path = traces_path(run, step, kind, subset) if all(value is not None for value in address) else None
+
+    needs_episode = episode is not None or line is not None
+    if needs_episode and path is None:
+        raise HTTPException(400, "episode addressing needs step, kind, and subset")
+    if any(value is not None for value in (trace_index, branch_index)) or cmd.get("highlight") is not None:
+        if not needs_episode:
+            raise HTTPException(400, "trace, branch, and highlight need an episode or line")
+
+    rec = None
+    if episode is not None:
+        matches = [s["line"] for s in episode_summaries(path) if s.get("id") == episode]
+        if not matches:
+            raise HTTPException(404, f"episode id {episode!r} not found in {kind}/{subset} at step {step}")
+        if len(matches) > 1:
+            raise HTTPException(409, f"episode id {episode!r} is not unique in {kind}/{subset} at step {step}")
+        line = cmd["line"] = matches[0]
+    if line is not None:
+        rec = read_episode_at(path, line)
+
+    selected_trace = None
+    if rec is not None and (trace_index is not None or branch_index is not None or cmd.get("highlight") is not None):
+        traces = rec.get("traces") or []
+        trace_index = trace_index or 0
+        if not 0 <= trace_index < len(traces):
+            raise HTTPException(404, f"trace {trace_index} not found in episode")
+        selected_trace = traces[trace_index]
+    if branch_index is not None:
+        nodes = selected_trace.get("nodes") or []
+        parents = {node.get("parent") for node in nodes if "parent" in node}
+        branches = [i for i in range(len(nodes)) if i not in parents]
+        if branch_index != -1 and not 0 <= branch_index < len(branches):
+            raise HTTPException(404, f"branch {branch_index} not found in trace {trace_index}")
+
     highlight = cmd.get("highlight")
     if highlight is not None:
         if not isinstance(highlight, list) or not all(isinstance(h, dict) for h in highlight):
             raise HTTPException(400, "highlight must be a list of objects")
+        if len(highlight) > 50:
+            raise HTTPException(400, "highlight may contain at most 50 entries")
+        nodes = selected_trace.get("nodes") or []
         for h in highlight:
             unknown = set(h) - HIGHLIGHT_KEYS
             if unknown:
                 raise HTTPException(
                     400, f"unknown highlight fields: {sorted(unknown)} (known: {sorted(HIGHLIGHT_KEYS)})"
                 )
+            node = normalize_view_int(h, "node", 0)
+            if node is None or node >= len(nodes):
+                raise HTTPException(404, f"highlight node {node} not found in trace {trace_index}")
+            quote = h.get("quote")
+            if not isinstance(quote, str) or not quote.strip():
+                raise HTTPException(400, "highlight quote must be a non-empty string")
+            for key in ("prefix", "suffix", "reason"):
+                if key in h and not isinstance(h[key], str):
+                    raise HTTPException(400, f"highlight {key} must be a string")
+            if h.get("field") not in (None, "content", "reasoning"):
+                raise HTTPException(400, "highlight field must be content|reasoning")
     return cmd
 
 
@@ -954,6 +1052,8 @@ async def post_view(cmd: dict) -> dict:
     cmd["ts"] = time.time()
     _view_command = cmd
     for queue in _view_clients:
+        if queue.full():
+            queue.get_nowait()
         queue.put_nowait(cmd)
     if not _view_clients:
         # stored for late-joining tabs, but the agent must not pretend it pointed
@@ -971,7 +1071,7 @@ def get_view() -> dict:
 
 @app.get("/api/view/events")
 async def view_events() -> "StreamingResponse":
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_VIEW_QUEUE)
 
     async def stream():
         _view_clients.add(queue)
