@@ -106,10 +106,8 @@ uv run rl @ rl.toml --orchestrator.train.source.0.args \
 
 ```toml
 [[orchestrator.train.source]]
-
-[orchestrator.train.source.args]
-dataset_name = "openai/gsm8k"
-dataset_subset = "main"
+args.dataset_name = "openai/gsm8k"
+args.dataset_subset = "main"
 ```
 
 ### Optional Sub-Configs
@@ -153,42 +151,24 @@ Training and evaluation sources are arrays of tables. Set one source per environ
 [[orchestrator.train.source]]
 name = "gsm8k"
 ratio = 3  # 75% of batches
-
-[orchestrator.train.source.env.taskset]
-id = "gsm8k"
-split = "train"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "gsm8k"
+env.taskset.split = "train"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [[orchestrator.train.source]]
 name = "reverse-text"
 ratio = 1  # default — 25% of batches
-
-[orchestrator.train.source.env.taskset]
-id = "reverse-text"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [[orchestrator.eval.source]]
 name = "gsm8k-eval"
-
-[orchestrator.eval.source.env.taskset]
-id = "gsm8k"
-split = "test"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "null"
-
-[orchestrator.eval.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "gsm8k"
+env.taskset.split = "test"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 ```
 
 `ratio` defaults to `1` (equal weight per env); values are relative weights normalized to probabilities across envs.
@@ -267,8 +247,8 @@ uv run rl @ examples/basic/reverse-text/rl.toml \
 Then inspect the resolved config:
 
 ```bash
-ls /tmp/reverse-dry/check/configs/
+ls /tmp/reverse-dry/check/configs/resolved/
 # rl.json  trainer.json  orchestrator.json  inference.json
 ```
 
-Each per-process TOML reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/check/configs/trainer.json`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.
+Each per-process JSON reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/check/configs/resolved/trainer.json`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.

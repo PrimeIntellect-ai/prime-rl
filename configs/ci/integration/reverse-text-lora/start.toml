@@ -20,22 +20,15 @@ group_size = 16
 max_inflight = 128
 
 [orchestrator.model.lora]
-name = "r8-1e-4"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128
 
 [[orchestrator.train.source]]
 name = "reverse-text"
-
-[orchestrator.train.source.env.taskset]
-id = "reverse-text"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [inference]
 

@@ -4,11 +4,11 @@ import zmq
 import zmq.asyncio
 
 from prime_rl.configs.shared import ZMQTransportConfig
-from prime_rl.transports.rollouts.base import MicroBatchReceiver, MicroBatchSender
-from prime_rl.transports.rollouts.types import MicroBatch
+from prime_rl.transports.batch.base import BatchReceiver, BatchSender
+from prime_rl.transports.batch.types import MicroBatch
 
 
-class ZMQMicroBatchSender(MicroBatchSender):
+class ZMQBatchSender(BatchSender):
     def __init__(self, output_dir: Path, data_world_size: int, current_step: int, transport: ZMQTransportConfig):
         """ZMQ micro batch sender that publishes per-rank micro batches to the trainers.
         There is one sender (in the orchestrator process) for the entire data world.
@@ -35,9 +35,9 @@ class ZMQMicroBatchSender(MicroBatchSender):
 
         self._ready = False
 
-        self.logger.info(
-            f"ZMQ micro batch sender initialized: endpoint=tcp://{transport.host}:{transport.port} "
-            f"ready_endpoint=tcp://{transport.host}:{transport.port + 1} hwm={transport.hwm}"
+        self.logger.debug(
+            f"Initialized ZMQ micro batch sender (endpoint=tcp://{transport.host}:{transport.port} "
+            f"ready_endpoint=tcp://{transport.host}:{transport.port + 1} hwm={transport.hwm})"
         )
 
         self._topic_prefix = b"data_rank|"
@@ -84,10 +84,10 @@ class ZMQMicroBatchSender(MicroBatchSender):
             self.socket.close(linger=0)
             self.ready_socket.close(linger=0)
         finally:
-            self.logger.info("ZMQ micro batch sender closed")
+            self.logger.debug("Closed ZMQ micro batch sender")
 
 
-class ZMQMicroBatchReceiver(MicroBatchReceiver):
+class ZMQBatchReceiver(BatchReceiver):
     def __init__(self, output_dir: Path, data_rank: int, current_step: int, transport: ZMQTransportConfig):
         """ZMQ micro batch receiver that receives micro batches from the orchestrator. There is one receiver per data rank."""
         super().__init__(output_dir, data_rank)
@@ -111,9 +111,9 @@ class ZMQMicroBatchReceiver(MicroBatchReceiver):
         # Announce readiness after connect+subscribe are set
         self.ready_socket.send(str(data_rank).encode("utf-8"))
 
-        self.logger.info(
-            f"ZMQ micro batch receiver initialized: endpoint=tcp://{transport.host}:{transport.port} "
-            f"ready_endpoint=tcp://{transport.host}:{transport.port + 1} hwm={transport.hwm}"
+        self.logger.debug(
+            f"Initialized ZMQ micro batch receiver (endpoint=tcp://{transport.host}:{transport.port} "
+            f"ready_endpoint=tcp://{transport.host}:{transport.port + 1} hwm={transport.hwm})"
         )
 
         self._current_step = current_step
@@ -138,4 +138,4 @@ class ZMQMicroBatchReceiver(MicroBatchReceiver):
             self.socket.close(linger=0)
             self.ready_socket.close(linger=0)
         finally:
-            self.logger.info("ZMQ micro batch receiver closed")
+            self.logger.debug("Closed ZMQ micro batch receiver")

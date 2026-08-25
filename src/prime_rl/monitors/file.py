@@ -22,15 +22,18 @@ class FileMonitor(Monitor):
     config: FileMonitorConfig
     file: TextIO
 
-    async def init(self, output_dir: Path) -> None:
+    async def init(self, output_dir: Path, producer: str | None = None) -> None:
         self.output_dir = output_dir
+        self.producer = producer
         self.path = output_dir / self.config.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
-        self.logger.info(f"Logging metrics to {self.path} and episodes to {output_dir / 'rollouts'}")
+        self.logger.info(f"Logging metrics and episodes to the local filesystem ({output_dir})")
 
-    async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
+    async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
+        """``step=None`` logs a time-keyed row (e.g. inference metrics, which are
+        sampled on wall time rather than the training step)."""
         sanitized, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(
@@ -38,6 +41,8 @@ class FileMonitor(Monitor):
             )
 
         row = {"step": step, "time": time.time(), **sanitized}
+        if self.producer is not None:
+            row["producer"] = self.producer
         self.file.write(json.dumps(row) + "\n")
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:

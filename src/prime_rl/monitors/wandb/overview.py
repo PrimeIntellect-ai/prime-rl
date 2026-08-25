@@ -1,5 +1,9 @@
 """Curated "overview" W&B saved view.
 
+The dashboard mirrors these sections in `prime_rl/dashboard/static/app.js`
+(buildSections + the *_METRICS/INFERENCE_PANELS constants) — keep the two in
+sync when editing panels here.
+
 prime-rl logs many metrics; the default workspace auto-generates a panel per key, which buries the
 few that matter. These build a named saved view grouping the important metrics into sections, so a
 new project gets a usable overview without hand-picking panels. Panels are untitled — each shows
@@ -29,6 +33,7 @@ OVERVIEW_NAME = "overview"
 # agent. Only the score metric differs — train scores with "reward/mean", eval with "avg@k" (its k
 # dynamic, so also a regex) — and each section builder prepends its own.
 COMMON_METRICS = [
+    "all/dispatch_failure/mean",
     "effective/num_total_tokens/mean",
     "effective/num_turns/mean",
     "effective/num_branches/mean",

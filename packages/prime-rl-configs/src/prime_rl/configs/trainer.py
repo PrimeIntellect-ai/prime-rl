@@ -7,6 +7,7 @@ from pydantic import BeforeValidator, Field, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    BaseWeightBroadcastConfig,
     EnvVars,
     HeartbeatConfig,
     MetricsServerConfig,
@@ -15,7 +16,7 @@ from prime_rl.configs.shared import (
     TransportConfig,
     ZMQTransportConfig,
 )
-from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.config import BaseConfig, default_output_dir
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
@@ -548,10 +549,6 @@ class DataLoaderConfig(BaseConfig):
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
 
-class BaseWeightBroadcastConfig(BaseConfig):
-    pass
-
-
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
@@ -562,9 +559,6 @@ class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
 
     port: int
     """Weight transfer port."""
-
-    timeout: int = 1200
-    """Weight transfer timeout in seconds."""
 
     # TODO: Should not be configurable, but auto-inferred
     inference_world_size: int = 1
@@ -628,8 +622,8 @@ class TrainerConfig(BaseConfig):
     monitors: MonitorsConfig = MonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
 
-    output_dir: Path = Path("outputs")
-    """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
+    output_dir: Path = Field(default_factory=default_output_dir)
+    """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
     matmul_precision: Literal["highest", "high", "medium"] = "high"
     """Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``."""
@@ -736,7 +730,15 @@ class TrainerConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
         if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
-            raise ValueError("In-memory weight broadcast does not support LoRA yet.")
+            raise ValueError(
+                "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
+                "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
+            )
+        if self.model.lora is not None and self.model.lora.modules_to_save and self.data.fake is None:
+            raise ValueError(
+                "model.lora.modules_to_save cannot be served: the weight broadcast ships only the "
+                "adapter tensors, so fully-trained modules would silently diverge from inference."
+            )
         return self
 
     @model_validator(mode="after")

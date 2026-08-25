@@ -12,6 +12,7 @@ from prime_rl.configs.evals import EvalsConfig, OnlineConfig
 from prime_rl.configs.orchestrator import EvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
+from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
@@ -21,10 +22,13 @@ from prime_rl.utils.pathing import (
     get_broadcast_dir,
     get_ckpt_dir,
     get_config_dir,
+    get_launcher_dir,
+    get_launcher_log_dir,
     get_log_dir,
     latest_log_dir,
     resolve_latest_ckpt_step,
     validate_run_dir,
+    write_launch_toml,
 )
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
@@ -161,6 +165,8 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, 
             **config.slurm.template_vars,
             config_path=config_path,
             output_dir=config.run_dir,
+            launcher_dir=get_launcher_dir(config.run_dir),
+            launcher_log_dir=get_launcher_log_dir(config.run_dir),
             gpus_per_node=config.deployment.gpus_per_node,
         )
     else:
@@ -168,6 +174,8 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, 
             **config.slurm.template_vars,
             config_path=config_path,
             output_dir=config.run_dir,
+            launcher_dir=get_launcher_dir(config.run_dir),
+            launcher_log_dir=get_launcher_log_dir(config.run_dir),
             trainer_env_vars=trainer_env_vars,
             num_nodes=config.deployment.num_train_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
@@ -182,6 +190,7 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, 
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
+    get_launcher_log_dir(config.run_dir).mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
 
 
@@ -216,6 +225,8 @@ def write_eval_slurm_script(config: SFTConfig, config_dir: Path, script_path: Pa
         **config.slurm.template_vars,
         config_dir=config_dir,
         output_dir=config.run_dir,
+        launcher_dir=get_launcher_dir(config.run_dir),
+        launcher_log_dir=get_launcher_log_dir(config.run_dir),
         num_infer_nodes=config.deployment.num_infer_nodes,
         gpus_per_node=config.deployment.gpus_per_node,
         router=config.inference.router,
@@ -233,6 +244,7 @@ def write_eval_slurm_script(config: SFTConfig, config_dir: Path, script_path: Pa
     )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
+    get_launcher_log_dir(config.run_dir).mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
 
 
@@ -248,6 +260,7 @@ def sft_slurm(config: SFTConfig):
     decoupled_eval = config.deployment.type == "multi_node" and config.eval is not None
 
     config_dir = get_config_dir(config.run_dir)
+    write_launch_toml(config.run_dir, "sft")
     config_path = config_dir / SFT_CONFIG
     exclude = (
         {"deployment", "slurm", "dry_run", "clean"}
@@ -267,7 +280,8 @@ def sft_slurm(config: SFTConfig):
     if decoupled_eval and config.monitors.wandb is not None:
         prl_run_id = os.environ["PRL_RUN_ID"]
 
-    script_path = config.run_dir / SFT_SBATCH
+    launcher_dir = get_launcher_dir(config.run_dir)
+    script_path = launcher_dir / SFT_SBATCH
     write_slurm_script(config, config_path, script_path, prl_run_id)
     logger.info(f"Wrote SLURM script to {script_path}")
 
@@ -279,7 +293,7 @@ def sft_slurm(config: SFTConfig):
     if decoupled_eval:
         write_eval_subconfigs(config, config_dir, strip_router=True)
         logger.info(f"Wrote eval subconfigs to {config_dir}")
-        eval_script_path = config.run_dir / EVAL_SBATCH
+        eval_script_path = launcher_dir / EVAL_SBATCH
         write_eval_slurm_script(config, config_dir, eval_script_path, prl_run_id)
         logger.info(f"Wrote eval SLURM script to {eval_script_path}")
         script_paths = [script_path, eval_script_path]
@@ -320,6 +334,8 @@ def sft_slurm(config: SFTConfig):
         logger.success(f"Dry run complete. To submit manually:\n\n{submit}{note}\n\n{log_message}")
         return
 
+    dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
+
     submitted_job_ids: list[str] = []
     for path in script_paths:
         # --parsable prints ``<job_id>[;<cluster>]`` — the human-readable format varies
@@ -344,6 +360,7 @@ def sft_slurm(config: SFTConfig):
         logger.success(f"Submitted batch job {job_id}")
 
     logger.success(log_message)
+    log_dashboard_url(logger, dashboard_url)
 
 
 def sft_local(config: SFTConfig):
@@ -353,6 +370,7 @@ def sft_local(config: SFTConfig):
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir = get_config_dir(config.run_dir)
+    write_launch_toml(config.run_dir, "sft")
     config_path = config_dir / SFT_CONFIG
     write_config(config, config_path)
     logger.info(f"Wrote config to {config_path}")
@@ -364,6 +382,8 @@ def sft_local(config: SFTConfig):
     if config.dry_run:
         logger.success("Dry run complete. To start an SFT run locally, remove --dry-run from your command.")
         return
+
+    dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
     log_dir = create_attempt_log_dir(config.run_dir)
 
@@ -446,7 +466,7 @@ def sft_local(config: SFTConfig):
         # deterministic address, polling until the server is up.
         for source, address in eval_env_servers(config):
             name = source.resolved_name
-            logger.info(f"Starting eval env server {name} at {address}")
+            logger.info(f"Starting {name} server")
             start_process(
                 f"env/eval/{name}",
                 ["env-server", "@", (config_dir / ENVS_DIR / "eval" / f"{name}.json").as_posix()],
@@ -455,7 +475,7 @@ def sft_local(config: SFTConfig):
             )
 
         if config.eval is not None:
-            logger.info("Starting evals process")
+            logger.info("Starting evals")
             start_process(
                 "evals",
                 ["evals", "@", (config_dir / EVALS_CONFIG).as_posix()],
@@ -503,12 +523,8 @@ def sft_local(config: SFTConfig):
             trainer_env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, trainer_gpu_ids))
         trainer_process = start_process("trainer", trainer_cmd, env=trainer_env, log_path=log_dir / "trainer.log")
 
-        logger.success("Startup complete. Showing trainer logs...")
-        tail_process = Popen(
-            f"tail -F '{log_dir / 'trainer.log'}' | sed -u 's/^\\[[a-zA-Z]*[0-9]*\\]://'",
-            shell=True,
-        )
-        processes.append(tail_process)
+        logger.success("Launcher complete")
+        log_dashboard_url(logger, dashboard_url)
 
         # Wait for the trainer (and the evals process, which drains its final evals after
         # the trainer's last checkpoint) while surfacing any process failure.

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
 import verifiers.v1 as vf
 
-from prime_rl.transports.rollouts import TrainingSample
+from prime_rl.transports.batch import TrainingSample
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
@@ -35,6 +35,49 @@ class Progress:
 
 WorkKind = Literal["train", "eval"]
 
+CancelReason = Literal["stale", "overload"]
+
+
+@dataclass
+class GroupCancellation:
+    """Terminal marker for a dropped group: one message covering every episode
+    the group still owed the sink (in-flight and never-dispatched), so
+    count-to-``group_size`` finalization still fires. ``reason`` distinguishes
+    pipeline decisions (staleness, overload cut) from episode errors."""
+
+    kind: WorkKind
+    env_name: str
+    group_id: str
+    count: int
+    reason: CancelReason
+
+
+@dataclass(frozen=True)
+class DispatchFailure:
+    """An environment request that failed before producing an episode."""
+
+    kind: WorkKind
+    env_name: str
+    group_id: str
+    step: int
+    policy_version: int
+    task_type: str
+    task_key: str
+    task_hash: str
+    error: vf.Error
+
+
+DispatchResult: TypeAlias = vf.WireEpisode | DispatchFailure | GroupCancellation
+
+
+@dataclass(frozen=True)
+class TaskRequest:
+    """A task selected by a train or eval source with its pinned run step."""
+
+    env_name: str
+    task: vf.Task
+    step: int
+
 
 @dataclass
 class InflightEpisode:
@@ -47,46 +90,47 @@ class InflightEpisode:
     policy_version: int
     step: int
     client_config: vf.ClientConfig | None = None
-    off_policy_steps: int = 0
-    eval_step: int | None = None
     started_at: float = 0.0
     """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
 
 
 @dataclass
 class GroupState:
-    """Per-group dispatcher state: what's left to schedule + the pinned
-    client (for prefix-cache hits)."""
+    """Per-group dispatcher state with its pinned run step."""
 
     kind: WorkKind
     env_name: str
     task: vf.Task
     """The group's task — its data is shipped on every dispatch."""
+    step: int
     episodes_to_schedule: int
     target_episodes: int
     emitted: int = 0
-    eval_step: int | None = None
-    pinned_client: vf.ClientConfig | None = None
     policy_version_at_start: int = 0
 
 
 @dataclass
 class TrainBatch:
-    """Observation and shipped-cohort reports plus the trainer payload."""
+    """Returned episodes, dispatch failures, shipped cohort, and trainer payload."""
 
     episodes: TrainEpisodes
     cohort: TrainEpisodes
     samples: list[TrainingSample]
+    failures: list[DispatchFailure]
 
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch. ``episodes`` is the full returned cohort (errored included); its
-    ``.effective`` / ``.metrics`` views drive logging."""
+    """One env's eval epoch.
+
+    ``episodes`` is the full returned cohort (errored included), while
+    ``failures`` accounts for requests that returned no verifier artifact.
+    """
 
     env_name: str
     step: int
     episodes: EvalEpisodes
+    failures: list[DispatchFailure]
 
 
 class VersionObserver(Protocol):

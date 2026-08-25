@@ -21,8 +21,7 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
-from prime_rl.transports.weights import setup_weight_broadcast
-from prime_rl.transports.weights.filesystem import FileSystemWeightBroadcast
+from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
@@ -72,12 +71,12 @@ def train(config: SFTConfig):
         config.log.level,
         json_logging=config.log.json_logging,
     )
-    logger.info(f"Starting SFT trainer in {world}")
+    logger.info(f"Starting SFT trainer in {world} (output_dir={config.run_dir})")
 
     # Setup the monitors
-    logger.info(f"Initializing monitors ({config.monitors})")
     asyncio.run(
         monitors.setup(
+            producer="trainer",
             wandb=config.monitors.wandb,
             file=config.monitors.file,
             output_dir=config.run_dir,
@@ -184,7 +183,7 @@ def train(config: SFTConfig):
         renderer = create_renderer(tokenizer, config.renderer)
         if processor is not None and hasattr(renderer, "_processor"):
             renderer._processor = processor
-        logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
+        logger.debug(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -208,7 +207,7 @@ def train(config: SFTConfig):
         if config.max_steps is not None and (config.ckpt and config.ckpt.skip_scheduler and checkpoint_step is not None)
         else config.max_steps
     )
-    logger.info(f"Setting up {config.scheduler.type} scheduler with {scheduler_steps} steps ({config.scheduler})")
+    logger.info(f"Initializing scheduler with {scheduler_steps} steps ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
     # Set up the dataset and dataloader
@@ -216,7 +215,6 @@ def train(config: SFTConfig):
     multimodal = config.model.vlm is not None
     dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer, multimodal=multimodal)
     dataloader = setup_dataloader(dataset, config.data)
-    dataiter = iter(dataloader)
 
     val_raw_dataset = None
     if config.val is not None:
@@ -238,16 +236,24 @@ def train(config: SFTConfig):
             dataloader=dataloader if not skip.skip_dataloader else None,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
-        logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         if not skip.skip_progress:
             progress.step += 1
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
-    logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
-    )
+        logger.info(
+            f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
+            f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
+        )
+    else:
+        logger.info("Starting from scratch")
+
+    # Create the iterator only after a potential resume: iter() forks workers with a
+    # copy of the dataset's *current* state, so a later load_state_dict never reaches
+    # an already-running worker (the run silently restarts the data from the beginning
+    # and re-saves the stale position).
+    dataiter = iter(dataloader)
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
@@ -412,27 +418,24 @@ def train(config: SFTConfig):
     def is_online_eval_step(step: int) -> bool:
         return any(step % interval == 0 for interval in online_eval_intervals)
 
-    weight_broadcast = None
+    weight_sender = None
     if online_eval_intervals:
         assert config.weight_broadcast is not None
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        weight_broadcast = setup_weight_broadcast(
+        weight_sender = setup_weight_sender(
             config.run_dir,
             config.weight_broadcast,
             parallel_dims,
             config.model.lora,
         )
-        if (
-            checkpoint_step is not None
-            and isinstance(weight_broadcast, FileSystemWeightBroadcast)
-            and not weight_broadcast.is_stable(checkpoint_step)
-        ):
-            # Rebroadcast the resumed policy so the evals process can re-trigger at
-            # the resume step (older broadcasts may have been cleaned). Skipped when
-            # the previous run's broadcast survived: rewriting the same dir in place
-            # would race an evals process already reloading it.
-            weight_broadcast.broadcast_weights(model, step=checkpoint_step)
-            weight_broadcast.clean_older(checkpoint_step)
+        # Startup broadcast of the incoming policy: fails fast on a broken
+        # transport and lets the evals process re-trigger at the resume step
+        # (older broadcasts may have been cleaned).
+        startup_version = checkpoint_step or 0
+        if world.is_master:
+            prune_broadcasts_beyond(config.run_dir, startup_version)
+        logger.info(f"Broadcasting startup policy weights (v{startup_version}) for online evals")
+        weight_sender.broadcast(model, startup_version)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
@@ -577,12 +580,10 @@ def train(config: SFTConfig):
             ckpt_manager.maybe_clean()
 
         broadcast_weights_time = 0
-        if weight_broadcast is not None and not is_last_step and is_online_eval_step(progress.step):
+        if weight_sender is not None and not is_last_step and is_online_eval_step(progress.step):
             logger.info(f"Broadcasting weights at step {progress.step}")
             broadcast_start_time = time.perf_counter()
-            weight_broadcast.broadcast_weights(model, step=progress.step)
-            if isinstance(weight_broadcast, FileSystemWeightBroadcast):
-                weight_broadcast.clean_older(progress.step)
+            weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_start_time
 
         # Optionally, dump memory snapshot
@@ -712,22 +713,20 @@ def train(config: SFTConfig):
 
     # Write final checkpoint
     if config.ckpt is not None:
-        logger.info("Writing final checkpoint")
+        logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
 
     # Broadcast the final weights so the evals process can run its forced final epoch
-    if weight_broadcast is not None:
+    if weight_sender is not None:
         logger.info("Broadcasting final weights")
-        weight_broadcast.broadcast_weights(model, step=progress.step)
-        if isinstance(weight_broadcast, FileSystemWeightBroadcast):
-            weight_broadcast.clean_older(progress.step)
+        weight_sender.broadcast(model, step=progress.step)
 
     if gradient_manager is not None:
         gradient_manager.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
-    logger.success("SFT trainer finished!")
+    logger.success("SFT trainer finished")
 
 
 def main():

@@ -55,14 +55,6 @@ class LoRAState:
         """Register an adapted module with its FQN prefix (e.g. "model.layers.0.self_attn.q_proj")."""
         self._modules.append((prefix, module))
 
-    def named_adapter_parameters(self) -> list[tuple[str, nn.Parameter]]:
-        """Named parameters of the adapter across all registered modules."""
-        params = []
-        for prefix, module in self._modules:
-            for name, param in module.named_parameters_for_adapter(0):
-                params.append((f"{prefix}.{name}.weight", param))
-        return params
-
     def adapter_state_dict(self) -> dict[str, torch.Tensor]:
         """Adapter-only state dict, converted for HF compatibility when a converter is registered."""
         state_dict = {}
@@ -241,7 +233,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         )
         raise RuntimeError("Cannot apply LoRA to FSDP-wrapped model. Apply LoRA before setup_fsdp().")
 
-    logger.debug(f"Applying LoRA to model: {model} for {config.target_modules}")
+    logger.debug(f"Applying LoRA to {type(model).__name__} (target_modules={config.target_modules})")
     target_modules = _find_target_modules(model, config.target_modules)
     logger.debug(
         f"Found {len(target_modules)} target modules for LoRA: {target_modules[:10]} ... {target_modules[-10:]}"

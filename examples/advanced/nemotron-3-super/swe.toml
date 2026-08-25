@@ -22,6 +22,8 @@ num_infer_replicas = 4
 project = "nemotron-3-super"
 name = "nemotron-3-super-swe"
 
+[monitors.prime]
+
 [weight_broadcast]
 type = "nccl"
 timeout = 3600
@@ -85,37 +87,21 @@ truncate_history_thinking = false
 
 [[orchestrator.train.source]]
 name = "scaleswe"
-
-[orchestrator.train.source.env.taskset]
-id = "scaleswe"
-
-[orchestrator.train.source.env.agent.harness]
-id = "rlm"
-summarize_at_tokens = [65536, 131072]
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["nemotron-3-super-swe"]
-
-[monitors.prime]
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "rlm"
+env.agent.harness.summarize_at_tokens = [65536, 131072]
+env.agent.runtime.labels = ["nemotron-3-super-swe"]
 
 [orchestrator.eval]
 interval = 20
 
 [[orchestrator.eval.source]]
 name = "swebench-verified"
-
-[orchestrator.eval.source.env.taskset]
-id = "swebench-verified"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "rlm"
-summarize_at_tokens = 98304
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["nemotron-3-super-swe"]
-
-[orchestrator.eval.source.env.agent.timeout]
-rollout = 3600
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "rlm"
+env.agent.harness.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["nemotron-3-super-swe"]
+env.agent.timeout.rollout = 3600
 
 [inference]
 # vLLM disables prefix caching by default for hybrid-Mamba models; SWE turns share long prefixes.

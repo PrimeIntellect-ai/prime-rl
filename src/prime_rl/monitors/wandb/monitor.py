@@ -16,6 +16,7 @@ from prime_rl.configs.monitors import WandbMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.wandb.overview import ensure_overview_view
 from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.logger import format_time
 
 if TYPE_CHECKING:
     import verifiers.v1 as vf
@@ -41,6 +42,9 @@ class WandbMonitor(Monitor):
             self.logger.debug(f"Found WANDB_ARGS in environment variables {wandb_args}")
             sys.argv = json.loads(wandb_args)
 
+        # W&B advertises Weave on every init when it sees openai/verifiers imported.
+        os.environ.setdefault("WANDB_DISABLE_WEAVE", "1")
+
         # WANDB_MODE=disabled/offline takes precedence over shared mode — shared mode
         # requires a server connection and can't work offline.
         shared_mode = os.environ.get("WANDB_SHARED_MODE") == "1" and os.environ.get("WANDB_MODE") not in (
@@ -63,7 +67,7 @@ class WandbMonitor(Monitor):
                 x_primary=primary,
                 x_update_finish_state=finisher,
             )
-            self.logger.info(f"Using shared W&B mode ({label=}, {primary=}, {finisher=})")
+            self.logger.debug(f"Using shared W&B mode ({label=}, {primary=}, {finisher=})")
             is_online = True
         else:
             run_id = None
@@ -112,6 +116,9 @@ class WandbMonitor(Monitor):
         self.wandb = init_wandb(max_retries)
 
         wandb.define_metric("*", step_metric="step")
+        # key prefixes that arrived via step=None (wall-time rows); their time axis
+        # is defined lazily on first sight in log_metrics
+        self._time_prefixes: set[str] = set()
 
         # Provision the curated "overview" saved view once per project (the run's primary process
         # in shared mode, else the single master). Best-effort: a workspaces/API failure must never
@@ -130,16 +137,28 @@ class WandbMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Failed to create W&B overview view - {e}")
 
-        self.logger.info(f"Logging metrics to W&B run {self.wandb.id} ({self.wandb.url})")
+        self.logger.info(f"Logging metrics to W&B ({self.wandb.url})")
 
-    async def log_metrics(self, metrics: dict[str, Any], step: int) -> None:
-        wandb.log({**metrics, "step": step})
+    async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
+        # every log carries the monitor's own wall-time stamp
+        if step is None:
+            # time-keyed rows chart against wall time; whichever key prefixes show
+            # up this way get their time axis defined on first sight
+            for prefix in {key.split("/")[0] for key in metrics}:
+                if prefix not in self._time_prefixes:
+                    self._time_prefixes.add(prefix)
+                    wandb.define_metric(f"{prefix}/*", step_metric="_timestamp")
+            wandb.log({**metrics, "_timestamp": time.time()})
+        else:
+            wandb.log({**metrics, "step": step, "_timestamp": time.time()})
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         pass
 
     async def finalize(self) -> None:
         self.logger.info(f"Finalizing W&B run {self.wandb.id}")
+        t0 = time.perf_counter()
         # Explicit finish: in (experimental) shared mode the SDK's atexit finish does
         # not land the run state - without this, even clean runs decay to "crashed".
         await asyncio.to_thread(wandb.finish, exit_code=0)
+        self.logger.debug(f"Finalized W&B run in {format_time(time.perf_counter() - t0)}")

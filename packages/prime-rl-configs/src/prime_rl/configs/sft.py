@@ -33,7 +33,7 @@ from prime_rl.configs.trainer import (
     WeightBroadcastConfig,
     validate_scheduler,
 )
-from prime_rl.utils.config import BaseConfig, find_package_resource
+from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
 class BaseDataConfig(BaseConfig):
@@ -46,8 +46,8 @@ class BaseDataConfig(BaseConfig):
     micro_batch_size: int = Field(1, ge=1)
     """Per-step micro batch size. ``batch_size`` must be divisible by this."""
 
-    num_workers: int = Field(1, ge=0)
-    """Number of dataloader worker processes. With ``>= 1``, batches are prepared and pinned in the background so tokenization/packing overlaps with training. ``0`` loads inline on the main process."""
+    num_workers: int = Field(1, ge=1)
+    """Number of dataloader worker processes. Batches are prepared and pinned in the background so tokenization/packing overlaps with training."""
 
     @model_validator(mode="after")
     def validate_batch_size(self):
@@ -233,8 +233,8 @@ class SFTConfig(BaseConfig):
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
 
-    output_dir: Path = Path("outputs")
-    """Directory that groups related runs. Each run writes its artifacts (checkpoints, logs, ...) to ``output_dir / run.name``. Should be a persistent directory with enough disk space."""
+    output_dir: Path = Field(default_factory=default_output_dir)
+    """Directory that groups related runs. Each run writes its artifacts (checkpoints, logs, ...) to ``output_dir / run.name``. Should be a persistent directory with enough disk space. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
     clean: bool = False
     """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""
@@ -284,6 +284,10 @@ class SFTConfig(BaseConfig):
 
     slurm: SlurmConfig | None = None
     """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
+
+    dashboard: bool = True
+    """Make sure a local dashboard daemon serves this run's output dir (started on
+    demand in interactive sessions; an already-running daemon's URL is logged)."""
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""

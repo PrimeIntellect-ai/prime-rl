@@ -9,6 +9,7 @@ down training.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
 
@@ -18,7 +19,7 @@ from prime_rl.monitors.file import FileMonitor
 from prime_rl.monitors.prime import PrimeMonitor
 from prime_rl.monitors.wandb import WandbMonitor
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 
 if TYPE_CHECKING:
     import verifiers.v1 as vf
@@ -44,6 +45,7 @@ async def setup(
     file: FileMonitorConfig | None = None,
     *,
     output_dir: Path,
+    producer: str | None = None,
     run_config: BaseConfig | None = None,
     train_env_names: list[str] | None = None,
     eval_env_names: list[str] | None = None,
@@ -60,12 +62,13 @@ async def setup(
     if rank != 0:
         return
 
-    monitors: list[tuple[Monitor, dict[str, Any]]] = []
+    monitors: list[tuple[str, Monitor, dict[str, Any]]] = []
     if prime is not None:
-        monitors.append((PrimeMonitor(prime), dict(config=run_config)))
+        monitors.append(("prime", PrimeMonitor(prime), dict(config=run_config)))
     if wandb is not None:
         monitors.append(
             (
+                "wandb",
                 WandbMonitor(wandb),
                 dict(
                     output_dir=output_dir,
@@ -77,11 +80,17 @@ async def setup(
             )
         )
     if file is not None:
-        monitors.append((FileMonitor(file), dict(output_dir=output_dir)))
+        monitors.append(("file", FileMonitor(file), dict(output_dir=output_dir, producer=producer)))
+    if not monitors:
+        return
 
-    for monitor, init_kwargs in monitors:
+    get_logger().info(f"Initializing monitors ({', '.join(name for name, _, _ in monitors)})")
+    t0 = time.perf_counter()
+    for name, monitor, init_kwargs in monitors:
+        get_logger().info(f"Initializing {name} monitor ({monitor.config})")
         await monitor.init(**init_kwargs)
         MONITORS.append(monitor)
+    get_logger().debug(f"Initialized monitors in {format_time(time.perf_counter() - t0)}")
 
 
 def get(monitor_cls: type[Monitor]) -> Monitor | None:
@@ -91,7 +100,7 @@ def get(monitor_cls: type[Monitor]) -> Monitor | None:
 
 
 @overload
-async def log(data: dict[str, Any], step: int) -> None: ...
+async def log(data: dict[str, Any], step: int | None) -> None: ...
 
 
 @overload
@@ -100,7 +109,7 @@ async def log(data: vf.Episode | list[vf.Episode], step: int, kind: Kind, subset
 
 async def log(
     data: dict[str, Any] | vf.Episode | list[vf.Episode],
-    step: int,
+    step: int | None,
     kind: Kind = "train",
     subset: Subset = "effective",
 ) -> None:

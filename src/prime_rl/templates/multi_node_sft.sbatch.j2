@@ -18,8 +18,8 @@
 #SBATCH --exclude={{ exclude }}
 {%- endif %}
 #SBATCH --exclusive
-#SBATCH --output={{ output_dir }}/job_%j.log
-#SBATCH --error={{ output_dir }}/job_%j.log
+#SBATCH --output={{ launcher_log_dir }}/job_%j.log
+#SBATCH --error={{ launcher_log_dir }}/job_%j.log
 
 # Exit immediately on any failed command so a crash on any node releases the
 # allocation instead of leaving zombie processes holding nodes.
@@ -33,6 +33,7 @@ export GPUS_PER_NODE={{ gpus_per_node }}
 export PROJECT_DIR={{ project_dir }}
 export CONFIG_PATH={{ config_path }}
 export OUTPUT_DIR={{ output_dir }}
+export LAUNCHER_DIR={{ launcher_dir }}
 # Per-attempt log dir: a resume or relaunch never overwrites an earlier attempt's logs.
 ATTEMPT=1
 while [ -e $OUTPUT_DIR/logs/attempt_$ATTEMPT ]; do ATTEMPT=$((ATTEMPT+1)); done
@@ -65,7 +66,7 @@ echo "MASTER_PORT=${MASTER_PORT}"
 {% if use_nccl_broadcast %}
 # The eval job has a separate allocation. Publish the trainer's NCCL host through
 # the shared run directory under this job ID.
-printf '%s\n' "$MASTER_ADDR" > "$OUTPUT_DIR/.sft_nccl_host_$SLURM_JOB_ID"
+printf '%s\n' "$MASTER_ADDR" > "$LAUNCHER_DIR/.sft_nccl_host_$SLURM_JOB_ID"
 {% endif %}
 
 # Install environment

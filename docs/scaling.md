@@ -43,19 +43,20 @@ uv run rl @ rl.toml \
 
 The launcher allocates GPUs in order from `CUDA_VISIBLE_DEVICES` (or all visible GPUs): inference first, trainer next. To target a specific physical subset, pin `CUDA_VISIBLE_DEVICES` before launching.
 
-For quick A/B ablations on the same node, run two RL instances side-by-side in separate tmux sessions, each pinned to half the GPUs and a separate inference port:
+For quick A/B ablations on the same node, run two RL instances side-by-side in separate shells, each pinned to half the GPUs and a separate inference port, and track both in one dashboard:
 
 ```bash
-# session 1, GPUs 0–1, default port 8000
-bash scripts/tmux.sh -s exp1 -o outputs/exp1
+# shell 1, GPUs 0–1, default port 8000
 CUDA_VISIBLE_DEVICES=0,1 uv run rl @ rl.toml --run.name exp1
 
-# session 2, GPUs 2–3, port 8001
-bash scripts/tmux.sh -s exp2 -o outputs/exp2
+# shell 2, GPUs 2–3, port 8001
 CUDA_VISIBLE_DEVICES=2,3 uv run rl @ rl.toml \
   --inference.server.port 8001 \
   --orchestrator.model.client.base-url http://localhost:8001/v1 \
   --run.name exp2
+
+# watch both side by side
+uv run dashboard outputs
 ```
 
 #### SFT and Torchrun
@@ -206,8 +207,10 @@ Launch:
 
 ```bash
 uv run rl @ base_rl.toml @ my_slurm.toml             # submits via sbatch
-uv run rl @ base_rl.toml @ my_slurm.toml --dry-run   # writes the sbatch script + resolved config, exits
+uv run rl @ base_rl.toml @ my_slurm.toml --dry-run   # writes launcher/rl.sbatch + resolved config, exits
 ```
+
+Every SLURM entrypoint stores its generated scripts and coordination files under `<run_dir>/launcher/`. SLURM stdout and stderr go to `launcher/logs/`. Local launches do not create `launcher/`.
 
 ### `[deployment]` Block
 

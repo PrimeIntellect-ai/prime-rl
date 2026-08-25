@@ -17,9 +17,8 @@ from torchtitan.distributed.utils import clip_grad_norm_ as torch_clip_grad_norm
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
-from prime_rl.utils.utils import get_step_path
 
 if TYPE_CHECKING:
     from prime_rl.configs.trainer import OptimizerInBackwardOffloadConfig
@@ -52,7 +51,7 @@ class GarbageCollection:
     def _collect(self, generation: int = 1):
         begin = time.monotonic()
         gc.collect(generation)
-        get_logger().info(f"[GC] collection took {time.monotonic() - begin:.2f}s")
+        get_logger().debug(f"Collected garbage in {format_time(time.monotonic() - begin)}")
 
 
 def prepare_gradient_offload(
@@ -172,6 +171,8 @@ def setup_full_cpu_optimizer_offload(config: "OptimizerInBackwardOffloadConfig")
 
 
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
+    get_logger().info(f"Initializing torch distributed (timeout={int(timeout.total_seconds())}s)")
+    t0 = time.perf_counter()
     device_id = get_world().local_rank
     torch.cuda.set_device(device_id)
     # Use Gloo backend for CPU and NCCL for GPU when CPU offloading is enabled
@@ -189,6 +190,7 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
     dist.distributed_c10d.default_pg_timeout = timeout
 
     dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
+    get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")
 
 
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
@@ -344,20 +346,3 @@ class MemoryProfiler:
             f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds, load {file_path} at https://docs.pytorch.org/memory_viz to visualize the memory usage"
         )
         self.step_num += 1
-
-
-def maybe_clean(path: Path, step: int, interval_to_keep: int | None) -> None:
-    """Delete the broadcast dir from 2 trainer steps ago.
-
-    With a 1-step async barrier, the orchestrator at trainer step ``step`` is still consuming the
-    ckpt from ``step - 1``; ``step - 2`` is therefore safe to remove unless it falls on a
-    checkpoint interval that we want to preserve.
-    """
-    logger = get_logger()
-    candidate_step = max(step - 2, 0)
-    candidate_path = get_step_path(path, candidate_step)
-    if interval_to_keep and candidate_step % interval_to_keep == 0:
-        logger.debug(f"Keeping path {candidate_path} (on ckpt interval)")
-        return
-    logger.debug(f"Removing path {candidate_path}")
-    shutil.rmtree(candidate_path, ignore_errors=True)

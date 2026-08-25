@@ -14,6 +14,7 @@ from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
+from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
 from prime_rl.entrypoints.inference import vllm_overrides_fragment
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -23,9 +24,12 @@ from prime_rl.utils.pathing import (
     format_log_message,
     get_ckpt_dir,
     get_config_dir,
+    get_launcher_dir,
+    get_launcher_log_dir,
     latest_log_dir,
     resolve_latest_ckpt_step,
     validate_run_dir,
+    write_launch_toml,
 )
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
@@ -120,12 +124,15 @@ def rl_local(config: RLConfig):
     )
 
     config_dir = get_config_dir(config.run_dir)
+    write_launch_toml(config.run_dir, "rl")
     write_subconfigs(config, config_dir)
     logger.info(f"Wrote subconfigs to {config_dir}")
 
     if config.dry_run:
         logger.success("Dry run complete. To start an RL run locally, remove --dry-run from your command.")
         return
+
+    dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
     # Derive launcher-local GPU IDs from deployment config
     gpu_offset = 0
@@ -252,7 +259,7 @@ def rl_local(config: RLConfig):
         for split, source, address in env_servers(config):
             name = source.resolved_name
             env_server_cmd = ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()]
-            logger.info(f"Starting {split} env server {name} at {address}")
+            logger.info(f"Starting {name} server")
             logger.debug(f"Env server start command: {' '.join(env_server_cmd)}")
             env_server_log = log_dir / ENVS_DIR / split / f"{name}.log"
             env_server_log.parent.mkdir(parents=True, exist_ok=True)
@@ -282,7 +289,7 @@ def rl_local(config: RLConfig):
             monitor_threads.append(monitor_thread)
 
         orchestrator_cmd = ["orchestrator", "@", (config_dir / ORCHESTRATOR_CONFIG).as_posix()]
-        logger.info("Starting orchestrator process")
+        logger.info("Starting orchestrator")
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
         with open(log_dir / "orchestrator.log", "w") as log_file:
             orchestrator_process = Popen(
@@ -365,17 +372,12 @@ def rl_local(config: RLConfig):
         monitor_thread.start()
         monitor_threads.append(monitor_thread)
 
-        # Monitor all processes for failures
-        logger.success("Startup complete. Showing orchestrator logs...")
+        logger.success("Launcher complete")
+        log_dashboard_url(logger, dashboard_url)
 
-        tail_process = Popen(
-            f"tail -F '{log_dir / 'orchestrator.log'}'",
-            shell=True,
-        )
-        processes.append(tail_process)
-
-        # Check for errors from monitor threads
-        while not (stop_events["orchestrator"].is_set() and stop_events["trainer"].is_set()):
+        # Trainer and orchestrator completion is the successful stop condition.
+        completion_events = (stop_events["trainer"], stop_events["orchestrator"])
+        while not all(event.is_set() for event in completion_events):
             if error_queue:
                 error = error_queue[0]
                 logger.error(f"Error: {error}")
@@ -462,6 +464,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             **config.slurm.template_vars,
             config_path=config_dir / RL_CONFIG,
             output_dir=config.run_dir,
+            launcher_dir=get_launcher_dir(config.run_dir),
+            launcher_log_dir=get_launcher_log_dir(config.run_dir),
             gpus_per_node=config.deployment.gpus_per_node,
         )
     elif config.inference is not None and config.inference.deployment.type == "disaggregated":
@@ -473,6 +477,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             run_name=config.run.name,
             config_dir=config_dir,
             output_dir=config.run_dir,
+            launcher_dir=get_launcher_dir(config.run_dir),
+            launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
             nodes_per_infer_replica=infer_deploy.num_nodes,
@@ -514,6 +520,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             run_name=config.run.name,
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             output_dir=config.run_dir,
+            launcher_dir=get_launcher_dir(config.run_dir),
+            launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes,
             nodes_per_infer_replica=config.deployment.infer_nodes_per_replica,
@@ -546,6 +554,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
+    get_launcher_log_dir(config.run_dir).mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
 
 
@@ -557,6 +566,7 @@ def rl_slurm(config: RLConfig):
     )
 
     config_dir = get_config_dir(config.run_dir)
+    write_launch_toml(config.run_dir, "rl")
     log_dir = latest_log_dir(config.run_dir)
 
     if config.deployment.type == "single_node":
@@ -593,13 +603,15 @@ def rl_slurm(config: RLConfig):
             num_infer_nodes=config.deployment.total_infer_nodes if has_infer else 0,
         )
 
-    script_path = config.run_dir / RL_SBATCH
+    script_path = get_launcher_dir(config.run_dir) / RL_SBATCH
     write_slurm_script(config, config_dir, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 
     if config.dry_run:
         logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
         return
+
+    dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
     logger.info(f"Submitting: sbatch {script_path}")
     result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True)
@@ -608,6 +620,7 @@ def rl_slurm(config: RLConfig):
         sys.exit(1)
 
     logger.success(f"{result.stdout.strip()}\n\n{log_message}")
+    log_dashboard_url(logger, dashboard_url)
 
 
 def rl(config: RLConfig):

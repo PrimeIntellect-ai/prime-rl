@@ -10,6 +10,7 @@ import pytest
 
 from prime_rl.utils.process import cleanup_process
 from tests.conftest import ProcessResult
+from tests.integration.dashboard_smoke import make_dashboard_test
 from tests.utils import check_final_eval_reward_above, check_no_error, strip_escape_codes
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
@@ -122,3 +123,6 @@ def test_eval_reward_converges(rl_opd_process: ProcessResult, test_no_error, run
     with open(run_dir / "logs" / "latest" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
     check_final_eval_reward_above(orchestrator_stdout, env_name="reverse-text", min_threshold=0.5)
+
+
+test_dashboard = make_dashboard_test("rl_opd_process", RUN_NAME)

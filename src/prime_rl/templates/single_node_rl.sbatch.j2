@@ -18,8 +18,8 @@
 {%- if exclude %}
 #SBATCH --exclude={{ exclude }}
 {%- endif %}
-#SBATCH --output={{ output_dir }}/job_%j.log
-#SBATCH --error={{ output_dir }}/job_%j.log
+#SBATCH --output={{ launcher_log_dir }}/job_%j.log
+#SBATCH --error={{ launcher_log_dir }}/job_%j.log
 
 # Exit immediately if any setup command or the launcher fails so the SLURM job
 # releases its allocation instead of holding nodes after a crash.

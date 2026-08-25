@@ -17,7 +17,7 @@ uv run rl --model @ model.toml --data @ data.toml                          # nes
 uv run rl @ base.toml --trainer @ trainer.toml --trainer.lr 1e-3           # mixed
 ```
 
-Resolution order: CLI > config files (left-to-right) > class defaults. Merging is deep — unset fields in an overlay are preserved from the base.
+Resolution order: CLI > config files (left-to-right) > class defaults. Merging is deep — unset fields in an overlay are preserved from the base. `output_dir` has one extra fallback: CLI > config files > `$PRL_OUTPUT_DIR` > `"outputs"`.
 
 Naming: CLI uses kebab-case (`--vllm.max-model-len`); TOML uses snake_case (`max_model_len`).
 
@@ -34,7 +34,9 @@ Incompatible combinations (e.g. CP requires flash attention) must raise in a `mo
 
 ## Special syntax
 
-**No inline tables** — checked-in configs use `[section]` headers, never `key = { ... }`. Expand `env.taskset = { id = "..." }` to a full-path header (`[orchestrator.train.source.env.taskset]` — subtable headers after a `[[...]]` entry attach to that entry).
+**No inline tables** — checked-in configs use `[section]` headers or dotted keys, never `key = { ... }`.
+
+**Sources are one block** — inside a `[[...source]]` entry, write nested sub-configs as dotted keys in the same block (`env.taskset.id = "..."`, `env.agent.harness.id = "..."`), not one subsection header per nested config. Nested arrays of tables (e.g. `[[orchestrator.train.source.env.taskset.task.judges]]`) keep full-path headers — they attach to the preceding `[[...source]]` entry.
 
 **Booleans** — CLI `--flag` / `--no-flag`; TOML must be explicit (`enforce_eager = true`).
 
@@ -45,28 +47,16 @@ Incompatible combinations (e.g. CP requires flash attention) must raise in a `mo
 ```toml
 [[orchestrator.train.source]]
 name = "reverse-text"
-
-[orchestrator.train.source.env.taskset]
-id = "reverse-text"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [[orchestrator.eval.source]]
 name = "reverse-text-eval"
-
-[orchestrator.eval.source.env.taskset]
-id = "reverse-text"
-split = "test"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "null"
-
-[orchestrator.eval.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.taskset.split = "test"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 ```
 
 CLI: `--orchestrator.train.source.0.env.taskset.id reverse-text` or `--orchestrator.eval.source.0.env.taskset.id reverse-text`.

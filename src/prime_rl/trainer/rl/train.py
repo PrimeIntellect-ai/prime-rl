@@ -9,7 +9,7 @@ from datetime import timedelta
 # ruff: noqa: I001
 
 from prime_rl.trainer.models.layers.attn import substitute_ring_attn
-from prime_rl.transports.weights import setup_weight_broadcast
+from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
@@ -67,7 +67,7 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
+from prime_rl.utils.utils import clean_exit, final_broadcast_version, resolve_latest_ckpt_step
 from ring_flash_attn import substitute_hf_flash_attn
 
 
@@ -79,13 +79,16 @@ def train(config: TrainerConfig):
         config.log.level,
         json_logging=config.log.json_logging,
     )
-    logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
+    logger.info(f"Starting RL trainer in {world} (output_dir={config.output_dir})")
 
     # Setup the monitors
-    logger.info(f"Initializing monitors ({config.monitors})")
     asyncio.run(
         monitors.setup(
-            wandb=config.monitors.wandb, file=config.monitors.file, output_dir=config.output_dir, run_config=config
+            producer="trainer",
+            wandb=config.monitors.wandb,
+            file=config.monitors.file,
+            output_dir=config.output_dir,
+            run_config=config,
         )
     )
 
@@ -140,19 +143,21 @@ def train(config: TrainerConfig):
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
+    t0 = time.perf_counter()
     loading_from_ckpt_later = checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")
 
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
-    logger.info(f"Setting up loss function ({config.loss})")
+    logger.info(f"Initializing loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-
+    t0 = time.perf_counter()
     optimizer, gradient_manager = setup_optimizer(
         config.optim,
         list(model.named_parameters()),
@@ -164,22 +169,25 @@ def train(config: TrainerConfig):
             get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
         ),
     )
-    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+    logger.debug(f"Initialized optimizer in {format_time(time.perf_counter() - t0)}")
 
-    logger.info(f"Using `{config.scheduler.type}` scheduler ({config.scheduler})")
+    logger.info(f"Initializing scheduler ({config.scheduler})")
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
 
     # Set up weight broadcast (skip when using fake data since there's no inference server)
     if config.data.fake:
-        weight_broadcast = None
+        weight_sender = None
         logger.info("Skipping weight broadcast setup (fake data mode)")
     else:
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        weight_broadcast = setup_weight_broadcast(
+        t0 = time.perf_counter()
+        weight_sender = setup_weight_sender(
             config.output_dir,
             config.weight_broadcast,
             parallel_dims,
             config.model.lora,
         )
+        logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
 
     if parallel_dims.cp_enabled:
         cp_group = parallel_dims.world_mesh["cp"].get_group()
@@ -228,14 +236,16 @@ def train(config: TrainerConfig):
         )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         progress.step += 1
-        logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
-
-    logger.info(
-        f"Starting from step {progress.step} (total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
-    )
+        logger.info(
+            f"Resuming from step {checkpoint_step} "
+            f"(total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
+        )
+    else:
+        logger.info("Starting from scratch")
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
+    t0 = time.perf_counter()
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.get_mesh("dp").size())
     else:
@@ -245,6 +255,7 @@ def train(config: TrainerConfig):
             parallel_dims.get_mesh("dp").size(),
             config.rollout_transport,
         )
+    logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
 
@@ -277,7 +288,7 @@ def train(config: TrainerConfig):
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
-        is_last_step = config.max_steps is not None and progress.step == config.max_steps
+        is_last_step = config.max_steps is not None and progress.step >= config.max_steps
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
@@ -286,23 +297,30 @@ def train(config: TrainerConfig):
         # rollouts so the trainer and inference pool join the same update lifecycle,
         # and so a broken broadcast path fails at startup instead of after the first
         # optimizer step.
-        if progress.step == start_step and weight_broadcast is not None:
-            logger.info(f"Broadcasting startup policy weights (v{progress.step - 1}) to inference engines")
-            weight_broadcast.broadcast_weights(model, step=progress.step - 1)
+        if progress.step == start_step and weight_sender is not None:
+            startup_version = progress.step - 1
+            if world.is_master:
+                prune_broadcasts_beyond(config.output_dir, startup_version)
+            logger.info(f"Broadcasting startup policy weights (v{startup_version}) to inference engines")
+            t0 = time.perf_counter()
+            weight_sender.broadcast(model, startup_version)
+            logger.debug(
+                f"Broadcast startup policy weights (v{startup_version}) in {format_time(time.perf_counter() - t0)}"
+            )
 
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")
         wait_for_batch_start_time = time.perf_counter()
         dataloader.wait_for_batch()
         wait_for_batch_time = time.perf_counter() - wait_for_batch_start_time
-        logger.debug(f"Waited for batch to arrive for {wait_for_batch_time:.2f} seconds")
+        logger.debug(f"Waited for batch for {format_time(wait_for_batch_time)}")
 
         # Load the training batch
         logger.debug("Loading batch")
         load_data_start_time = time.perf_counter()
         micro_batches = dataloader.get_batch()
         load_data_time = time.perf_counter() - load_data_start_time
-        logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
+        logger.debug(f"Loaded batch in {format_time(load_data_time)}")
 
         batch_size = len(micro_batches)
         memory_profiler = None
@@ -574,7 +592,7 @@ def train(config: TrainerConfig):
                 tensors[key].append(loss_tensor.detach().to("cpu"))
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss {tensors['loss'][-1].mean().item():.4f} | Entropy {tensors['entropy/all'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step + 1}/{len(micro_batches)} | Loss {tensors['loss'][-1].mean().item():.4f} | Entropy {tensors['entropy/all'][-1].mean().item():.4f}"
             if has_mismatch_tokens:
                 micro_step_message += f" | Mismatch KL {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
@@ -608,28 +626,28 @@ def train(config: TrainerConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
-        # sample its next step from it. In-memory transports retain their two-step shutdown
-        # window; filesystem broadcast still writes every version for resume.
-        if weight_broadcast is None:
+        # sample its next step from it. Every broadcast is a handshake with the consumer, so
+        # versions past the last consumed one are skipped (``final_broadcast_version``:
+        # training never samples v{max_steps}, but a configured final eval measures it).
+        if weight_sender is None:
             broadcast_weights_time = 0
         else:
-            broadcast_unused = (
-                config.weight_broadcast.type in ("nccl", "nixl")
-                and config.max_steps is not None
-                and progress.step >= config.max_steps - 1
+            broadcast_unused = config.max_steps is not None and progress.step > final_broadcast_version(
+                config.max_steps, config.weight_broadcast.broadcast_final
             )
             if not broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()
                 # The per-layer gather + fp8 conversion peaks ~50 GiB above the
                 # resident weights; release cached blocks (incl. offload-stream
-                # pools) so the broadcast gets the full headroom.
+                # pools) so the broadcast gets the full headroom. Drain all
+                # pending work first: empty_cache returns blocks to the driver,
+                # so a still-running kernel holding a cached block (e.g. the
+                # optimizer step's tail) faults with an illegal memory access
+                # once its block is freed under it.
+                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
-                weight_broadcast.broadcast_weights(model, step=progress.step)
+                weight_sender.broadcast(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
-                # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-                if config.weight_broadcast.type == "filesystem":
-                    interval_to_keep = config.ckpt and config.ckpt.interval
-                    weight_broadcast.maybe_clean(progress.step, interval_to_keep)
             else:
                 broadcast_weights_time = 0
 
@@ -763,7 +781,7 @@ def train(config: TrainerConfig):
 
     # Write final checkpoint
     if config.ckpt is not None:
-        logger.info("Writing final checkpoint")
+        logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.maybe_clean()
 
@@ -771,7 +789,7 @@ def train(config: TrainerConfig):
         gradient_manager.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
-    logger.success("RL trainer finished!")
+    logger.success("RL trainer finished")
 
     # Stop metrics/health server if configured
     if metrics_server is not None:
