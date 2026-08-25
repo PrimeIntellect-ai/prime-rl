@@ -2639,8 +2639,9 @@ function timelineSpanHtml(lane, span, start, total) {
     ["duration", span.ended_at == null ? "—" : fmtDuration(span.ended_at - span.started_at)],
   ];
   if (span.track === "activity") {
-    if (span.input_tokens != null || span.output_tokens != null)
-      rows.push(["tokens", `${fmtCompact(span.input_tokens || 0)} in · ${fmtCompact(span.output_tokens || 0)} out`]);
+    if (span.input_tokens != null) rows.push(["input tokens", fmtCompact(span.input_tokens)]);
+    if (span.cached_tokens != null) rows.push(["cached tokens", fmtCompact(span.cached_tokens)]);
+    if (span.output_tokens != null) rows.push(["output tokens", fmtCompact(span.output_tokens)]);
     if (span.cost != null) rows.push(["cost", fmtCost(span.cost)]);
   }
   const tip = timelineTipAttr({

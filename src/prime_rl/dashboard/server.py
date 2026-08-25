@@ -820,39 +820,69 @@ def timeline_reward(trace: dict) -> float | None:
 def trace_components(nodes: list[dict]) -> list[tuple[int, set[int]]]:
     """Group nodes by disconnected graph root. Shared-root leaves remain branches;
     additional roots are independent sessions and render as generic subagents."""
-    roots: dict[int, set[int]] = {}
+    node_roots: dict[int, int] = {}
     for node_index in range(len(nodes)):
         cursor = node_index
-        seen = set()
+        path = []
+        positions = {}
         while True:
-            parent = nodes[cursor].get("parent")
-            if parent is None or not isinstance(parent, int) or not 0 <= parent < len(nodes) or parent in seen:
+            if cursor in node_roots:
+                root = node_roots[cursor]
                 break
-            seen.add(cursor)
+            if cursor in positions:
+                root = min(path[positions[cursor] :])
+                break
+            positions[cursor] = len(path)
+            path.append(cursor)
+            parent = nodes[cursor].get("parent")
+            if parent is None or not isinstance(parent, int) or not 0 <= parent < len(nodes):
+                root = cursor
+                break
             cursor = parent
-        roots.setdefault(cursor, set()).add(node_index)
+        for index in path:
+            node_roots[index] = root
+    roots: dict[int, set[int]] = {}
+    for node_index, root in node_roots.items():
+        roots.setdefault(root, set()).add(node_index)
     return sorted(roots.items())
 
 
-def activity_spans(trace: dict, node_indexes: set[int]) -> list[dict]:
+def token_usage(usage: dict) -> tuple[int | None, int | None, int | None]:
+    prompt_tokens = usage.get("prompt_tokens")
+    output_tokens = usage.get("completion_tokens")
+    if "cached_input_tokens" in usage:
+        return prompt_tokens, usage.get("cached_input_tokens"), output_tokens
+    cached_tokens = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+    input_tokens = (
+        max(0, prompt_tokens - cached_tokens) if prompt_tokens is not None and cached_tokens else prompt_tokens
+    )
+    return input_tokens, cached_tokens, output_tokens
+
+
+def activity_spans(trace: dict, node_indexes: set[int], *, include_unlinked: bool = False) -> list[dict]:
     nodes = trace.get("nodes") or []
-    calls = {call.get("node"): call for call in trace.get("calls") or [] if call.get("node") is not None}
     spans = []
-    for node_index in sorted(node_indexes):
-        node = nodes[node_index]
-        if not node.get("sampled"):
+    for call_index, call in enumerate(trace.get("calls") or []):
+        node_index = call.get("node")
+        if node_index is None:
+            if not include_unlinked:
+                continue
+            node = {}
+        elif node_index not in node_indexes:
             continue
-        call = calls.get(node_index) or {}
+        else:
+            node = nodes[node_index]
         call_time = call.get("time") or {}
         started = call_time.get("start") or node.get("timestamp")
         ended = call_time.get("end") or node.get("timestamp")
         if not started:
             continue
         usage = call.get("usage") or {}
+        input_tokens, cached_tokens, output_tokens = token_usage(usage)
         text = " ".join(message_text(node.get("message") or {}).split())
         spans.append(
             {
-                "id": f"call-{node_index}",
+                "id": f"call-{call_index}",
                 "kind": "model_call",
                 "label": f"turn {len(spans) + 1}",
                 "track": "activity",
@@ -861,12 +891,13 @@ def activity_spans(trace: dict, node_indexes: set[int]) -> list[dict]:
                 "ended_at": ended,
                 "status": "completed" if ended else "running",
                 "snippet": text[:240],
-                "input_tokens": usage.get("prompt_tokens"),
-                "output_tokens": usage.get("completion_tokens"),
+                "input_tokens": input_tokens,
+                "cached_tokens": cached_tokens,
+                "output_tokens": output_tokens,
                 "cost": usage.get("cost"),
             }
         )
-    return spans
+    return sorted(spans, key=lambda span: span["started_at"])
 
 
 def lifecycle_spans(trace: dict) -> list[dict]:
@@ -899,19 +930,19 @@ def lifecycle_spans(trace: dict) -> list[dict]:
 def timeline_lane(
     trace: dict,
     trace_index: int,
-    node_indexes: set[int],
     *,
     lane_id: str,
     parent_id: str | None,
     label: str,
     depth: int,
     lifecycle: list[dict],
+    activities: list[dict],
+    started_at: float | None = None,
 ) -> dict:
-    activities = activity_spans(trace, node_indexes)
     timestamps = [
         span[edge] for span in lifecycle + activities for edge in ("started_at", "ended_at") if span.get(edge)
     ]
-    started = min(timestamps, default=(trace.get("timing") or {}).get("start"))
+    started = started_at if started_at is not None else min(timestamps, default=None)
     status = (
         timeline_status(trace)
         if not parent_id
@@ -943,23 +974,25 @@ def timeline_lane(
     }
 
 
-def project_episode_timeline(rec: dict) -> dict:
+def project_episode_timeline(episode: dict) -> dict:
     lane_groups = []
-    for trace_index, trace in enumerate(rec.get("traces") or []):
+    for trace_index, trace in enumerate(episode.get("traces") or []):
         nodes = trace.get("nodes") or []
         components = trace_components(nodes)
         main_indexes = components[0][1] if components else set(range(len(nodes)))
         role = (trace.get("agent") or {}).get("name") or "agent"
         lane_id = f"trace-{trace_index}"
+        activities = activity_spans(trace, main_indexes, include_unlinked=True)
         parent = timeline_lane(
             trace,
             trace_index,
-            main_indexes,
             lane_id=lane_id,
             parent_id=None,
             label=role,
             depth=0,
             lifecycle=lifecycle_spans(trace),
+            activities=activities,
+            started_at=(trace.get("timing") or {}).get("start"),
         )
         children = []
         for child_number, (_root, node_indexes) in enumerate(components[1:], 1):
@@ -990,12 +1023,12 @@ def project_episode_timeline(rec: dict) -> dict:
                 timeline_lane(
                     trace,
                     trace_index,
-                    node_indexes,
                     lane_id=f"{lane_id}-subagent-{child_number}",
                     parent_id=lane_id,
                     label=f"Subagent{suffix}",
                     depth=1,
                     lifecycle=child_lifecycle,
+                    activities=activities,
                 )
             )
         children.sort(key=lambda lane: lane["started_at"] if lane["started_at"] is not None else float("inf"))
@@ -1005,7 +1038,7 @@ def project_episode_timeline(rec: dict) -> dict:
     starts = [lane["started_at"] for lane in lanes if lane.get("started_at")]
     ends = [lane["ended_at"] for lane in lanes if lane.get("ended_at")]
     return {
-        "episode_id": rec.get("id"),
+        "episode_id": episode.get("id"),
         "started_at": min(starts, default=None),
         "ended_at": max(ends, default=None),
         "lanes": lanes,
