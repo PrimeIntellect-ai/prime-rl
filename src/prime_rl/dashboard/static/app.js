@@ -2209,12 +2209,15 @@ function toolCallHtml(toolCall) {
   return `<div class="tool-call">${esc(name)}(${esc(args)})</div>`;
 }
 
-function reasoningBlock(content) {
+function reasoningBlock(content, marks = null) {
   const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+  // a highlight whose quote lives in the reasoning marks it and opens the block
+  const marked = (marks || []).some((h) => h.quote && findQuote(text, h.quote));
   return (
-    `<details class="sub"><summary><span class="sub-name">Reasoning</span>` +
+    `<details class="sub"${marked ? " open" : ""}><summary><span class="sub-name">Reasoning</span>` +
     `<span class="entry-preview">${preview(text, 140)}</span>` +
-    `<span class="entry-chev">›</span></summary><div class="entry-body">${esc(text)}</div></details>`
+    `<span class="entry-chev">›</span></summary>` +
+    `<div class="entry-body">${marked ? quoteMarkedHtml(text, marks) : esc(text)}</div></details>`
   );
 }
 
@@ -2287,7 +2290,7 @@ function renderMessages(ep, trace, branches) {
       : marks ? quoteMarkedHtml(text, marks) : esc(text);
     const subs = [];
     const reasoning = node.message?.reasoning_content ?? node.message?.reasoning;
-    if (reasoning) subs.push(reasoningBlock(reasoning));
+    if (reasoning) subs.push(reasoningBlock(reasoning, marks));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
     const callouts = (marks || []).filter((h) => h.reason).map((h) => `<div class="hl-callout">${esc(h.reason)}</div>`);
     return (
@@ -2870,24 +2873,31 @@ function positionPeek(chip) {
 /* the peek is a mini conversation excerpt: the turns around the cited one
    render as real (dimmed) message blocks, the cited message shows in full
    with the quote marked — enough context to judge the claim in place */
-function peekMessageHtml(node, { marks = null, dim = false, quote = null } = {}) {
+function peekSectionHtml(text, { quote = null, dim = false, label = "" } = {}) {
+  let clipped = "";
+  const cap = dim ? 500 : 20000; // giant cited turns clip around the match
+  if (text.length > cap) {
+    let start = 0;
+    const range = quote ? findQuote(text, quote) : null;
+    if (range) start = Math.max(0, Math.floor((range[0] + range[1]) / 2 - cap / 2));
+    text = text.slice(start, start + cap);
+    clipped = "…";
+    if (start > 0) text = `…${text}`;
+  }
+  const html = quote ? quoteMarkedHtml(text, [{ quote }]) : esc(text);
+  const labelHtml = label ? `<span class="peek-sec-label">${esc(label)}</span>` : "";
+  return `<div class="entry-body${label ? " peek-reasoning" : ""}">${labelHtml}${html}${clipped}</div>`;
+}
+
+function peekMessageHtml(node, { dim = false, quote = null } = {}) {
   if (!node) return "";
   const role = node.message?.role ?? "?";
-  let text = messageText(node.message);
-  let clipped = "";
-  if (dim && text.length > 500) {
-    text = text.slice(0, 500);
-    clipped = "…";
-  } else if (!dim && text.length > 20000) {
-    // giant cited turns clip around the match so the popup never chokes
-    const mid = marks ? (marks[0] + marks[1]) / 2 : 0;
-    const start = Math.max(0, Math.floor(mid - 10000));
-    text = text.slice(start, start + 20000);
-    clipped = "…";
-  }
-  const body = quote ? quoteMarkedHtml(text, [{ quote }]) : esc(text);
+  const raw = node.message?.reasoning_content ?? node.message?.reasoning;
+  const reasoning = typeof raw === "string" ? raw : raw ? JSON.stringify(raw) : "";
+  const text = messageText(node.message);
   const parts = [];
-  if (body) parts.push(`<div class="entry-body">${body}${clipped}</div>`);
+  if (reasoning) parts.push(peekSectionHtml(reasoning, { quote, dim, label: "reasoning" }));
+  if (text) parts.push(peekSectionHtml(text, { quote, dim }));
   parts.push(...(node.message?.tool_calls || []).map(toolCallHtml));
   if (!parts.length) parts.push(`<div class="entry-body muted">(no text)</div>`);
   return `<div class="peek-snippet${dim ? " dim" : " cited"}"><span class="entry-role">${esc(role)}</span>${parts.join("")}</div>`;
@@ -2899,7 +2909,7 @@ function peekSnippet(res, c) {
   return (
     peekMessageHtml(nodes[res.nodeIdx - 2], { dim: true }) +
     peekMessageHtml(nodes[res.nodeIdx - 1], { dim: true }) +
-    peekMessageHtml(res.node, { marks: res.range, quote: res.range ? c.quote : null }) +
+    peekMessageHtml(res.node, { quote: res.range ? c.quote : null }) +
     peekMessageHtml(nodes[res.nodeIdx + 1], { dim: true })
   );
 }

@@ -108,7 +108,8 @@ The dip is provider errors, not policy regression [^err].
 ```
 
 A citation is a view command plus a verbatim quote: same address fields as
-`/api/view`, plus `quote` (copied **exactly** from the trace — the dashboard
+`/api/view`, plus `quote` (copied **exactly** from the trace — message content
+and `reasoning_content` both work as sources — the dashboard
 re-checks every quote against the files and renders the chip green only when it
 matches; a paraphrase shows the reader a red "broken" chip) and an optional
 `note` shown as a callout. Clicking a chip peeks the cited node inline;

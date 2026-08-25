@@ -710,11 +710,25 @@ def sidecar_path(path: Path) -> Path:
     return SIDECAR_DIR / f"{digest}.json"
 
 
+def file_head(path: Path) -> str:
+    """First bytes of the file: an append-only file never changes them, so a
+    mismatch means the path was rewritten (relaunch, reseed) — even if bigger."""
+    try:
+        with path.open("rb") as f:
+            return f.read(64).hex()
+    except OSError:
+        return ""
+
+
 def load_sidecar(path: Path) -> list[dict] | None:
     data = read_json(sidecar_path(path))
     try:
-        if data.get("path") != str(path.resolve()) or path.stat().st_size < data["size"]:
-            return None  # different file, or rewritten smaller (relaunch)
+        if (
+            data.get("path") != str(path.resolve())
+            or path.stat().st_size < data["size"]
+            or data.get("head") != file_head(path)
+        ):
+            return None  # different file, or rewritten (smaller, or same path new content)
         return data["summaries"]
     except (KeyError, OSError):
         return None
@@ -728,7 +742,7 @@ def write_sidecar(path: Path, offsets: list[int], summaries: list[dict]) -> None
     _sidecar_written[path] = (now, len(summaries))
     SIDECAR_DIR.mkdir(parents=True, exist_ok=True)
     consumed = offsets[len(summaries) - 1] if summaries else 0
-    payload = {"path": str(path.resolve()), "size": consumed, "summaries": summaries}
+    payload = {"path": str(path.resolve()), "size": consumed, "head": file_head(path), "summaries": summaries}
     target = sidecar_path(path)
     tmp = target.with_suffix(".tmp")
     tmp.write_bytes(orjson.dumps(payload))

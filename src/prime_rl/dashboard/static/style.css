@@ -949,6 +949,15 @@ pre.json { background: var(--grey-2); border: 1px solid var(--hairline); padding
 /* the peek is a mini conversation: dimmed neighbor turns frame the cited one */
 #cite-peek .peek-snippet.dim { opacity: 0.6; }
 #cite-peek .peek-snippet.dim .entry-body { max-height: 96px; }
+#cite-peek .peek-sec-label {
+  display: block;
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--grey-4);
+  margin-bottom: 4px;
+}
+#cite-peek .peek-reasoning { font-style: italic; color: var(--grey-4); }
 #cite-peek .peek-snippet.cited { border-left: 2px solid var(--accent); }
 #cite-peek .peek-actions { display: flex; justify-content: flex-end; }
 
