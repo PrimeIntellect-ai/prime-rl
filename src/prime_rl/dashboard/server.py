@@ -1061,11 +1061,6 @@ async def post_view(cmd: dict) -> dict:
     return {"ok": True, "seq": _view_seq, "clients": len(_view_clients), "line": cmd.get("line")}
 
 
-@app.get("/api/view")
-def get_view() -> dict:
-    return {"command": _view_command, "clients": len(_view_clients)}
-
-
 @app.get("/api/view/events")
 async def view_events() -> "StreamingResponse":
     queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_VIEW_QUEUE)
