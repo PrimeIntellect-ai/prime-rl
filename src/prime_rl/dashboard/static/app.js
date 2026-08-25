@@ -2509,7 +2509,7 @@ function renderEpisode() {
 }
 
 /* ----------------------------------------------------------------- report */
-/* Agent-written markdown from <run>/reports/*.md. Prose is free; claims are
+/* Markdown from <run>/reports/*.md. Prose is free; claims are
    addressed: [^id] markers reference JSON citation lines, each one a trace
    address plus a verbatim quote the frontend re-checks against the files. */
 
@@ -2529,10 +2529,7 @@ async function refreshReport() {
     renderReportSelect();
     $("#report-verify").textContent = "";
     $("#report-status").textContent = "";
-    $("#report-body").innerHTML = emptyState(
-      "no reports yet",
-      "an agent writes markdown to <run>/reports/ and POSTs /api/view to open it here"
-    );
+    $("#report-body").innerHTML = emptyState("no reports yet", "markdown files in <run>/reports/ appear here");
     return;
   }
   const wanted = rep.wanted && rep.files.find((f) => f.file === rep.wanted)?.file;
@@ -2579,7 +2576,7 @@ function renderReport() {
   rep.order = ctx.order;
   $("#report-body").innerHTML =
     (title ? `<h1 class="report-title">${esc(title)}</h1>` : "") +
-    (html || emptyState("empty report", "the agent has not written anything here yet"));
+    (html || emptyState("empty report", "this report has no content yet"));
   const entry = rep.files.find((f) => f.file === rep.file);
   $("#report-status").textContent = entry ? `${rep.file} · ${fmtAgo(entry.mtime)}` : (rep.file ?? "");
   $("#report-verify").textContent = rep.order.length ? "verifying citations…" : "";
@@ -2787,7 +2784,7 @@ function quoteMarkedHtml(text, marks) {
    promises live only for the current report render: duplicate references share
    work, while a changed report or rewritten trace never inherits stale evidence. */
 const CITATION_KEYS = new Set([
-  "run", "step", "kind", "subset", "episode", "line", "trace", "branch",
+  "run", "step", "kind", "subset", "episode", "trace", "branch",
   "node", "field", "quote", "prefix", "suffix", "note",
 ]);
 
@@ -2800,36 +2797,31 @@ async function resolveCitation(c, cache) {
   if (typeof run !== "string" || !run) return { matched: false, reason: "citation needs a run" };
   if (!Number.isInteger(c.step) || !["train", "eval"].includes(c.kind) || !["all", "effective"].includes(c.subset))
     return { matched: false, reason: "citation needs a valid step, kind, and subset" };
-  for (const key of ["line", "trace", "node"])
+  for (const key of ["trace", "node"])
     if (c[key] != null && (!Number.isInteger(c[key]) || c[key] < 0)) return { matched: false, reason: `${key} must be a non-negative integer` };
   if (c.branch != null && (!Number.isInteger(c.branch) || c.branch < -1))
     return { matched: false, reason: "branch must be an integer >= -1" };
   if (c.field != null && !["content", "reasoning"].includes(c.field))
     return { matched: false, reason: "field must be content or reasoning" };
-  if (c.episode != null && (typeof c.episode !== "string" || !c.episode))
-    return { matched: false, reason: "episode must be a non-empty string" };
+  if (typeof c.episode !== "string" || !c.episode) return { matched: false, reason: "citation needs an episode id" };
   if (typeof c.quote !== "string" || !c.quote.trim()) return { matched: false, reason: "citation needs a verbatim quote" };
   if (typeof c.note !== "string" || !c.note.trim()) return { matched: false, reason: "citation needs a note" };
   for (const key of ["prefix", "suffix"])
     if (c[key] != null && typeof c[key] !== "string") return { matched: false, reason: `${key} must be a string` };
   const base = `/api/runs/${encodeURIComponent(run)}/rollouts/${c.step}/${c.kind}/${c.subset}`;
-  let line = c.line;
-  if (line == null) {
-    if (!c.episode) return { matched: false, reason: "citation needs episode or line" };
-    const summaryKey = `${base}?episode=${encodeURIComponent(c.episode)}&limit=2`;
-    if (!cache.summaries.has(summaryKey))
-      cache.summaries.set(
-        summaryKey,
-        api(summaryKey).catch((err) => {
-          cache.summaries.delete(summaryKey);
-          throw err;
-        })
-      );
-    const list = await cache.summaries.get(summaryKey);
-    if (!list.total) return { matched: false, reason: `episode ${c.episode} not found` };
-    if (list.total > 1) return { matched: false, reason: `episode ${c.episode} is not unique` };
-    line = list.episodes[0].line;
-  }
+  const summaryKey = `${base}?episode=${encodeURIComponent(c.episode)}&limit=2`;
+  if (!cache.summaries.has(summaryKey))
+    cache.summaries.set(
+      summaryKey,
+      api(summaryKey).catch((err) => {
+        cache.summaries.delete(summaryKey);
+        throw err;
+      })
+    );
+  const list = await cache.summaries.get(summaryKey);
+  if (!list.total) return { matched: false, reason: `episode ${c.episode} not found` };
+  if (list.total > 1) return { matched: false, reason: `episode ${c.episode} is not unique` };
+  const line = list.episodes[0].line;
   const epKey = `${base}/${line}`;
   if (!cache.episodes.has(epKey))
     cache.episodes.set(
@@ -2844,6 +2836,11 @@ async function resolveCitation(c, cache) {
   if (!trace) return { matched: false, reason: "trace not found", line };
   let nodes = c.node != null ? [[c.node, (trace.nodes || [])[c.node]]] : (trace.nodes || []).map((n, i) => [i, n]);
   nodes = nodes.filter(([, n]) => n);
+  if (c.branch != null && c.branch !== -1) {
+    const branch = traceBranches(trace)[c.branch];
+    if (!branch) return { matched: false, reason: "branch not found", line };
+    nodes = nodes.filter(([i]) => branch.includes(i));
+  }
   if (!nodes.length) return { matched: false, reason: `node ${c.node} not found`, line };
   const matches = [];
   for (const [i, node] of nodes) {
@@ -2922,7 +2919,7 @@ async function openCitation(id) {
     episode: c.episode,
     line: res.line,
     trace: c.trace,
-    branch: c.branch,
+    branch: c.branch ?? -1,
     highlight: [{ node: res.nodeIdx, field: res.field, quote: c.quote, prefix: c.prefix, suffix: c.suffix, reason: c.note }],
   });
   $("#tm-back").hidden = $("#trace-modal").hidden; // way back to the report

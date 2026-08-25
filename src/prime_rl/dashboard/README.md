@@ -1,7 +1,7 @@
 # Dashboard
 
 `uv run dashboard [output_dir ...]` — a local web dashboard for run output
-directories (metrics, resolved configs, rollout traces, cited agent reports,
+directories (metrics, resolved configs, rollout traces, cited reports,
 component logs) at
 http://localhost:7788. Needs the `dashboard` extra. Every instance also serves
 the dirs registered by launchers in `~/.cache/prime-rl/dashboard/dirs.json`

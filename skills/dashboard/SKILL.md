@@ -1,6 +1,6 @@
 ---
 name: dashboard
-description: Find, start, use, and stop the local run dashboard — the web UI for run output dirs (metrics, configs, traces, logs, reports). Use when asked for the dashboard URL, when a run needs watching in the browser, when a dashboard must be restarted or killed, or when answering questions about a run's traces — write a report with citations and point the user's open tab at the evidence via POST /api/view.
+description: Find, start, use, and stop the local run dashboard for metrics, configs, traces, logs, and reports. Use when asked for its URL, to watch or inspect a run, to control the open dashboard, or to create a cited dashboard report explicitly requested by the user.
 ---
 
 # Run dashboard
@@ -52,11 +52,10 @@ over by the next start. Killing a dashboard never affects runs (it only reads),
 and killing a run never takes the dashboard down (it runs in its own session).
 Restart by launching any run, or directly: `uv run dashboard`.
 
-## Pointing the open dashboard (view commands)
+## Point the open dashboard
 
-When you answer a question about a run, don't just describe an episode — show
-it. `POST /api/view` with an on-disk address navigates every connected browser
-tab there:
+Use `POST /api/view` to show relevant run data in every connected dashboard
+tab:
 
 ```bash
 curl -sS -X POST $(jq -r .url ~/.cache/prime-rl/dashboard/daemon.json)/api/view \
@@ -68,35 +67,31 @@ curl -sS -X POST $(jq -r .url ~/.cache/prime-rl/dashboard/daemon.json)/api/view 
   }'
 ```
 
-Fields (all optional except `run`; missing fields leave that part of the UI
-alone). Supply `step`, `kind`, and `subset` together:
+`run` is required; other fields are optional and leave unspecified UI state
+unchanged. Supply `step`, `kind`, and `subset` together.
 
 | field | meaning |
 |---|---|
 | `run` | run id as `/api/runs` lists it |
 | `tab` | `metrics` / `config` / `traces` / `logs` / `report` |
 | `step`, `kind`, `subset` | `rollouts/step_N/{train,eval}/{all,effective}` (eval-only runs: `0/eval/all`) |
-| `episode` | episode `id` from the traces file (`line` is a positional fallback) |
+| `episode` | stable episode `id` (`line` is a view-command fallback only) |
 | `trace`, `branch` | multi-agent seat index and branch leaf (`-1` = concatenated) |
 | `report` | report file under `<run>/reports/` to open on the report tab |
 | `highlight` | list of `{node, quote, reason, field?}`: node index, verbatim quote, optional hover note; `field` is `content` or `reasoning` only when the same quote occurs in both |
 
-The server validates the address and trace/node indices against the filesystem
-(unknown run/episode → 404, so you cannot point at nothing). `409` means the
-command was stored but no tab is connected — tell the user to open the `url`
-from the response body and the command applies when they do. `GET /api/view`
-returns the last command.
-Errors and broken episodes usually live only in the `all` subset (`effective`
-drops them).
+The server validates addresses and indices. On `409`, tell the user to open the
+returned `url`; the stored command applies when the tab connects. Errors often
+exist only in `all` because `effective` excludes them.
 
-## Writing reports (the report tab)
+## Write a report only when asked
 
-For a question that deserves a written answer, put it in
-`<run>/reports/<slug>.md` and POST `{"run": ..., "tab": "report", "report":
-"<slug>"}`. The dashboard refreshes it every five seconds while live mode is
-on. Format: markdown with a `title:` frontmatter
-line, citing evidence with `[^id]` markers defined anywhere in the file as one
-JSON object per line:
+Create a report only when the user explicitly asks for one. Otherwise answer
+normally; use `/api/view` when showing trace evidence would help.
+
+Write requested reports to `<run>/reports/<slug>.md`, then POST `{"run": ...,
+"tab": "report", "report": "<slug>"}`. Use Markdown with a frontmatter
+`title` and one-line JSON citation definitions:
 
 ```markdown
 ---
@@ -108,29 +103,16 @@ The dip is provider errors, not policy regression [^err].
 [^err]: {"step": 4, "kind": "train", "subset": "all", "episode": "ep-...", "node": 0, "quote": "engine overloaded", "note": "The failed call that emptied this step's batch."}
 ```
 
-A citation is a view command plus a verbatim quote. Fields on top of the
-`/api/view` address:
+Each citation requires `step`, `kind`, `subset`, `episode`, `quote`, and `note`.
+Use the episode `id`, never `line`. Copy a short, distinctive quote exactly;
+matching is case-sensitive and whitespace-insensitive. Keep `note` to 1–2
+sentences explaining why the quote supports the claim.
 
-- `quote` — copied **exactly** from the trace (message content or
-  `reasoning_content`). The dashboard re-checks every quote against the files
-  and renders the chip green only when it matches; a paraphrase shows the
-  reader a red "broken" chip. Prefer a short, distinctive span (a phrase or
-  sentence), not a paragraph.
-- `prefix` / `suffix` — optional, only when the quote appears more than once in
-  the node: a few words copied verbatim from immediately before/after the
-  instance you mean. Ambiguous quotes stay broken until they identify one
-  passage.
-- `field` — optional `content` or `reasoning`, only when the same quote occurs
-  in both parts of one node and surrounding text cannot disambiguate it.
-- `note` — **required**: 1–2 sentences max saying why this passage matters to
-  your claim. It appears when the reader hovers the highlighted text inside
-  the trace, so write it as a caption for the highlight, not a restatement of
-  the quote.
+Optional fields are `run`, `trace`, `branch`, `node`, `field`, `prefix`, and
+`suffix`. Use `field: "content"` or `"reasoning"` only to disambiguate message
+parts. Use verbatim adjacent `prefix`/`suffix` only when a quote repeats.
+Ambiguous or mismatched citations remain broken and do not navigate.
 
-Clicking a verified chip jumps straight to the trace viewer with the quote
-highlighted (a "← report" button leads back); a broken chip refuses with an
-explanation. Cite by episode `id`, never by position:
-traces files grow continuously during a run and ids are the only stable
-address. Supported markdown: headings, lists, tables, fenced code, blockquotes,
-bold/italic/code, links; several citations can sit adjacent (`[^a] [^b]`). Raw
-HTML is escaped, not rendered.
+The dashboard refreshes the open report every five seconds in live mode. It
+supports headings, lists, tables, fenced code, blockquotes, emphasis, code,
+and links; raw HTML is escaped.

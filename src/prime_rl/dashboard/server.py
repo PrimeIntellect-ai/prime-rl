@@ -453,7 +453,7 @@ def report_title(path: Path) -> str | None:
 
 @app.get("/api/runs/{run}/reports")
 def list_reports(run: str) -> dict:
-    """Agent-written markdown reports under <run>/reports/, newest first."""
+    """Markdown reports under <run>/reports/, newest first."""
     reports_dir = get_run_dir(run) / "reports"
     rows = []
     for path in reports_dir.glob("*.md") if reports_dir.is_dir() else []:
@@ -727,13 +727,10 @@ def file_checkpoint(path: Path, end: int) -> bytes:
     Appends preserve this window; rewrites and truncate-then-regrow resumes do
     not. Checking 64 bytes stays constant-time even for multi-gigabyte traces.
     """
-    try:
-        with path.open("rb") as f:
-            start = max(0, end - 64)
-            f.seek(start)
-            return f.read(end - start)
-    except OSError:
-        return b""
+    with path.open("rb") as f:
+        start = max(0, end - 64)
+        f.seek(start)
+        return f.read(end - start)
 
 
 def load_sidecar(path: Path) -> list[dict] | None:
