@@ -335,6 +335,26 @@ Against `seq_tis`, this is the mask-vs-truncate trade: no mis-weighted gradients
 
 Reported metrics: `masked_mismatch_kl` / `unmasked_mismatch_kl`, `is_masked` (fraction of trainable tokens in rejected rollouts), `seq_log_ratio` ($\log w$), `geo_log_ratio` ($\frac{1}{T}\log w$), and `seq_weight` (the applied weight).
 
+### MIS-PO Loss
+
+`[trainer.loss] type = "mis_po"` replaces the `rl` component with the Metropolis-Independence-Sampling-filtered objective from [Step 3.5 Flash](https://arxiv.org/abs/2602.10604) (eq. 2): the plain score function behind dual-level binary masking, with no importance weighting anywhere. The inference policy is treated as a proposal distribution — samples close enough to the trainer are kept as effectively on-policy, everything else is dropped:
+
+$$
+\mathcal{L} = -\sum_{j,t} \mathbb{I}\big(\rho_{\text{tok,low}} \le \rho_t^{(j)} \le \rho_{\text{tok,high}}\big)\, \mathbb{I}\big(\rho_{\text{geo,low}} \le \bar\rho^{(j)} \le \rho_{\text{geo,high}}\big)\, \hat{A}_t^{(j)} \log \pi(y_t^{(j)}), \qquad \bar\rho = \Big(\prod_t \rho_t\Big)^{1/T}.
+$$
+
+The token-level indicator drops individually mismatched tokens even inside accepted rollouts; the trajectory-level indicator drops the rollout wholesale when its geometric-mean ratio drifts. Against the neighbouring loss types: it is `geo_mask`'s trajectory filter plus a token-level mismatch filter (and a far tighter trajectory band), and it is the pure-filtering counterpoint to the token trust regions above (`default`, `ipo`, `kpop`), which weight kept tokens by the importance ratio — MIS-PO deliberately does not.
+
+One calibration note: the paper's ratio numerator is the pre-update policy snapshot, so its ratios measure pure train/inference mismatch, whose geometric mean concentrates near one at long context — hence the very tight default trajectory band. Here the numerator is the live trainer policy (identical on the first pass over a batch); under real policy lag the geometric mean drifts further, so widen `geo_mask_low`/`geo_mask_high` accordingly (watch `is_traj_masked`).
+
+| Knob | Default | What it does |
+|---|---|---|
+| `token_mask_low` / `token_mask_high` | 0.5 / 2.0 | Token-level band on the trainer/inference importance ratio (paper values). |
+| `geo_mask_low` / `geo_mask_high` | 0.996 / 1.001 | Trajectory-level band on the geometric-mean importance ratio (paper values). |
+| `adv_tau` | 1.0 | Temperature on the advantage term. |
+
+Reported metrics: `masked_mismatch_kl` / `unmasked_mismatch_kl`, `is_masked` (fraction of trainable tokens dropped by either level), `is_token_masked`, `is_traj_masked`, and `geo_log_ratio`.
+
 ### Custom Loss
 
 `[trainer.loss] type = "custom"` replaces the `rl` component. The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates. `inputs.loss_mask` selects exactly the rl member tokens (for a plain GRPO run, all trainable tokens).

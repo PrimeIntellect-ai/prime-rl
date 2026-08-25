@@ -15,6 +15,7 @@ from prime_rl.configs.trainer import (
     KimiK15LossConfig,
     KPopLossConfig,
     LossConfig,
+    MISPOLossConfig,
     PMDMeanLossConfig,
     SeqMISLossConfig,
     SeqTISLossConfig,
@@ -583,6 +584,64 @@ def seq_mis_loss_fn(inputs: LossInputs, loss_config: SeqMISLossConfig) -> LossOu
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+@jaxtyped(typechecker=typechecker)
+def mis_po_loss_fn(inputs: LossInputs, loss_config: MISPOLossConfig) -> LossOutputs:
+    """MIS-PO loss type (Step 3.5 Flash, https://arxiv.org/abs/2602.10604,
+    eq. 2): Metropolis-Independence-Sampling-filtered policy optimization —
+    the plain score function behind dual-level binary masking, with no
+    importance weighting anywhere. The inference policy is treated as a
+    proposal distribution: samples close enough to the trainer are kept as
+    effectively on-policy, everything else is dropped.
+
+    Token level: tokens whose trainer/inference ratio leaves
+    ``[token_mask_low, token_mask_high]`` are dropped individually.
+    Trajectory level: the rollout is dropped wholesale when the geometric
+    mean of its per-token ratios leaves ``[geo_mask_low, geo_mask_high]``.
+    The paper's trajectory band ([0.996, 1.001]) is far tighter than
+    ``geo_mask``'s: the ratio in the paper measures train/inference mismatch
+    of a pre-update snapshot, whose geometric mean concentrates near one at
+    long context. Here the numerator is the live trainer policy (identical on
+    the first pass over a batch), so widen the band under real policy lag.
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
+
+    is_token_masked = (importance_ratio < loss_config.token_mask_low) | (importance_ratio > loss_config.token_mask_high)
+
+    num_tokens = loss_mask.sum().clamp_min(1)
+    geo_log_ratio = (loss_mask * log_importance_ratio).sum().detach() / num_tokens
+    is_traj_masked = (geo_log_ratio < math.log(loss_config.geo_mask_low)) | (
+        geo_log_ratio > math.log(loss_config.geo_mask_high)
+    )
+
+    is_masked = is_token_masked | is_traj_masked
+    keep_mask = loss_mask & ~is_masked
+
+    advantages = loss_config.adv_tau * advantages
+    pg_loss = keep_mask * advantages * trainer_logprobs
+    per_token_loss = -pg_loss
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+    loss = per_token_loss.sum()
+
+    metrics = {
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
+        "is_masked": _safe_mean(is_masked, loss_mask),
+        "is_token_masked": _safe_mean(is_token_masked, loss_mask),
+        "is_traj_masked": _safe_mean(is_traj_masked.expand(loss_mask.shape), loss_mask),
+        "geo_log_ratio": geo_log_ratio,
+    }
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
     """Build the loss fn for the rl component from ``trainer.loss``:
     ``default_loss_fn`` (``DefaultLossConfig``), ``ipo_loss_fn``
@@ -591,7 +650,8 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
     ``pmd_mean_loss_fn`` (``PMDMeanLossConfig``),
     ``geo_mask_loss_fn`` (``GeoMaskLossConfig``),
     ``seq_tis_loss_fn`` (``SeqTISLossConfig``),
-    ``seq_mis_loss_fn`` (``SeqMISLossConfig``), or the imported
+    ``seq_mis_loss_fn`` (``SeqMISLossConfig``),
+    ``mis_po_loss_fn`` (``MISPOLossConfig``), or the imported
     function (``CustomLossConfig``).
     The ce / ref_kl loss types are fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
@@ -628,6 +688,10 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return seq_mis_loss_fn(inputs, loss_config)
+    elif isinstance(loss_config, MISPOLossConfig):
+
+        def rl_fn(inputs: LossInputs) -> LossOutputs:
+            return mis_po_loss_fn(inputs, loss_config)
     else:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:

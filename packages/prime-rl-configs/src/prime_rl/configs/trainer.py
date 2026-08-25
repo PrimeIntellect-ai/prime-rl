@@ -606,6 +606,31 @@ class SeqMISLossConfig(BaseConfig):
     """Temperature for the advantage term."""
 
 
+class MISPOLossConfig(BaseConfig):
+    type: Literal["mis_po"] = "mis_po"
+
+    token_mask_low: float = Field(0.5, gt=0)
+    """Lower bound of the token-level band on the trainer/inference importance
+    ratio. Tokens outside the band are dropped individually."""
+
+    token_mask_high: float = Field(2.0, gt=0)
+    """Upper bound of the token-level band on the trainer/inference importance
+    ratio. Tokens outside the band are dropped individually."""
+
+    geo_mask_low: float = Field(0.996, gt=0)
+    """Lower bound of the trajectory-level band on the geometric-mean importance
+    ratio. Rollouts outside the band are dropped wholesale. The tight default is
+    the paper's, calibrated for near-on-policy train/inference mismatch at 128k
+    context; widen it under real policy lag."""
+
+    geo_mask_high: float = Field(1.001, gt=0)
+    """Upper bound of the trajectory-level band on the geometric-mean importance
+    ratio. Rollouts outside the band are dropped wholesale."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -625,6 +650,7 @@ LossConfig: TypeAlias = Annotated[
     | GeoMaskLossConfig
     | SeqTISLossConfig
     | SeqMISLossConfig
+    | MISPOLossConfig
     | CustomLossConfig,
     Field(discriminator="type"),
 ]
