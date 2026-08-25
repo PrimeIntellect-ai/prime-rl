@@ -154,7 +154,16 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any(name.endswith("mlp.gate.weight") or "mlp.shared_experts." in name for name in state_dict)
+        # Both the real on-disk checkpoint naming (`ffn.*`) and the `transformers`-native
+        # in-memory naming (`mlp.*`) count as "HF, not yet converted" -- see
+        # `converting_deepseek_v4.py`'s module docstring for why the two differ.
+        return any(
+            name.endswith("mlp.gate.weight")
+            or name.endswith("ffn.gate.weight")
+            or "mlp.shared_experts." in name
+            or "ffn.shared_experts." in name
+            for name in state_dict
+        )
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
