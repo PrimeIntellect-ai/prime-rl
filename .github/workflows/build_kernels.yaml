@@ -151,7 +151,8 @@ jobs:
           MAX_JOBS: "8"
         run: |
           export PATH="/tmp/build-env/bin:$PATH"
-          bash scripts/install_ep_kernels.sh --workspace /tmp/ep_kernels_workspace --wheel-dir dist
+          # absolute: the script cds into the DeepEP clone before building
+          bash scripts/install_ep_kernels.sh --workspace /tmp/ep_kernels_workspace --wheel-dir "$PWD/dist"
 
       - name: Build deep-gemm wheel
         if: matrix.kernel == 'deep-gemm'
