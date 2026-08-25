@@ -2331,6 +2331,8 @@ function renderMessages(ep, trace, branches) {
   const signal = $("#token-signal").value;
   const path = currentPath(trace, branches);
   const concatenated = currentBranchIdx === -1;
+  const toolsHtml = toolDefinitionsHtml(trace);
+  const systemPosition = path.findIndex((idx) => trace.nodes[idx]?.message?.role === "system");
   let maxAbsAdv = 0;
   for (const node of trace.nodes || [])
     for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
@@ -2351,7 +2353,7 @@ function renderMessages(ep, trace, branches) {
     const reasoning = node.message?.reasoning_content ?? node.message?.reasoning;
     if (reasoning) subs.push(reasoningBlock(reasoning));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
-    return (
+    const messageHtml =
       `<details class="entry ${esc(role)}"${role === "system" ? "" : " open"}>` +
       `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
       `<span class="entry-role">${esc(role)}</span>` +
@@ -2362,15 +2364,15 @@ function renderMessages(ep, trace, branches) {
       subs.join("") +
       (body ? `<div class="entry-body">${body}</div>` : "") +
       toolCalls.join("") +
-      `</details>`
-    );
+      `</details>`;
+    return messageHtml + (i === systemPosition ? toolsHtml : "");
   };
   // long traces render in chunks as the reader scrolls — a 1MB episode with
   // hundreds of turns paints the first screen immediately
   const CHUNK = 30;
   let rendered = Math.min(path.length, CHUNK);
   container.innerHTML =
-    toolDefinitionsHtml(trace) +
+    (systemPosition === -1 ? toolsHtml : "") +
     path.slice(0, rendered).map(entryHtml).join("") +
     (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
     errorsHtml;
