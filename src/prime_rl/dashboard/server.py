@@ -887,7 +887,7 @@ def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: 
 
 VIEW_TABS = {"metrics", "config", "traces", "logs", "report"}
 VIEW_KEYS = {"run", "tab", "step", "kind", "subset", "episode", "line", "trace", "branch", "report", "highlight"}
-HIGHLIGHT_KEYS = {"node", "tokens", "quote", "reason"}
+HIGHLIGHT_KEYS = {"node", "tokens", "quote", "prefix", "suffix", "reason"}
 
 _view_command: dict | None = None
 _view_seq = 0

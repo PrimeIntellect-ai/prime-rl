@@ -2101,6 +2101,7 @@ async function openEpisode(line) {
 function closeDrawer() {
   $("#trace-modal").hidden = true;
   $("#drawer-backdrop").hidden = true;
+  $("#tm-back").hidden = true;
   currentEpisode = null;
   currentLine = null;
   pendingHighlight = null;
@@ -2212,7 +2213,7 @@ function toolCallHtml(toolCall) {
 function reasoningBlock(content, marks = null) {
   const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
   // a highlight whose quote lives in the reasoning marks it and opens the block
-  const marked = (marks || []).some((h) => h.quote && findQuote(text, h.quote));
+  const marked = (marks || []).some((h) => h.quote && findQuote(text, h.quote, h.prefix, h.suffix));
   return (
     `<details class="sub"${marked ? " open" : ""}><summary><span class="sub-name">Reasoning</span>` +
     `<span class="entry-preview">${preview(text, 140)}</span>` +
@@ -2292,7 +2293,6 @@ function renderMessages(ep, trace, branches) {
     const reasoning = node.message?.reasoning_content ?? node.message?.reasoning;
     if (reasoning) subs.push(reasoningBlock(reasoning, marks));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
-    const callouts = (marks || []).filter((h) => h.reason).map((h) => `<div class="hl-callout">${esc(h.reason)}</div>`);
     return (
       `<details class="entry ${esc(role)}${marks ? " hl-entry" : ""}"${role === "system" && !marks ? "" : " open"}>` +
       `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
@@ -2301,7 +2301,6 @@ function renderMessages(ep, trace, branches) {
       chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("") +
       `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>` +
       `<span class="entry-chev">›</span></summary>` +
-      callouts.join("") +
       subs.join("") +
       (body ? `<div class="entry-body">${body}</div>` : "") +
       toolCalls.join("") +
@@ -2712,8 +2711,10 @@ function citeChipHtml(id, ctx) {
 }
 
 /* whitespace-insensitive, case-insensitive quote search; returns [start, end) in
-   the original text so highlights survive reflowed whitespace */
-function findQuote(text, quote) {
+   the original text so highlights survive reflowed whitespace. When the quote
+   repeats inside the text, optional prefix/suffix (verbatim adjacent text) pick
+   the right occurrence. */
+function findQuote(text, quote, prefix = "", suffix = "") {
   const map = [];
   let normed = "";
   for (let i = 0; i < text.length; i++) {
@@ -2722,18 +2723,24 @@ function findQuote(text, quote) {
     normed += ws ? " " : text[i].toLowerCase();
     map.push(i);
   }
-  const q = quote.replace(/\s+/g, " ").trim().toLowerCase();
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const q = norm(quote);
   if (!q) return null;
-  const at = normed.indexOf(q);
-  if (at < 0) return null;
-  return [map[at], map[at + q.length - 1] + 1];
+  const pre = norm(prefix);
+  const post = norm(suffix);
+  for (let at = normed.indexOf(q); at >= 0; at = normed.indexOf(q, at + 1)) {
+    if (pre && !normed.slice(0, at).trimEnd().endsWith(pre)) continue;
+    if (post && !normed.slice(at + q.length).trimStart().startsWith(post)) continue;
+    return [map[at], map[at + q.length - 1] + 1];
+  }
+  return null;
 }
 
 function quoteMarkedHtml(text, marks) {
   const ranges = [];
   for (const h of marks) {
-    const r = h.quote ? findQuote(text, h.quote) : null;
-    if (r) ranges.push(r);
+    const r = h.quote ? findQuote(text, h.quote, h.prefix, h.suffix) : null;
+    if (r) ranges.push([...r, h.reason]);
   }
   if (!ranges.length) return esc(text);
   ranges.sort((a, b) => a[0] - b[0]);
@@ -2745,8 +2752,8 @@ function quoteMarkedHtml(text, marks) {
   }
   let out = "";
   let pos = 0;
-  for (const [s, e] of merged) {
-    out += esc(text.slice(pos, s)) + `<mark class="hl-quote">${esc(text.slice(s, e))}</mark>`;
+  for (const [s, e, tip] of merged) {
+    out += esc(text.slice(pos, s)) + `<mark class="hl-quote"${tip ? ` data-tip="${esc(tip)}"` : ""}>${esc(text.slice(s, e))}</mark>`;
     pos = e;
   }
   return out + esc(text.slice(pos));
@@ -2791,19 +2798,14 @@ async function resolveCitation(c) {
   if (!trace) return { matched: false, reason: "trace not found", line };
   let nodes = c.node != null ? [[c.node, (trace.nodes || [])[c.node]]] : (trace.nodes || []).map((n, i) => [i, n]);
   nodes = nodes.filter(([, n]) => n);
-  if (!nodes.length) return { matched: false, reason: `node ${c.node} not found`, line, trace };
-  if (!c.quote) {
-    const [nodeIdx, node] = nodes[0];
-    return { matched: true, weak: true, reason: "address exists (no quote to check)", line, trace, node, nodeIdx };
-  }
+  if (!nodes.length) return { matched: false, reason: `node ${c.node} not found`, line };
+  if (!c.quote) return { matched: true, weak: true, reason: "address exists (no quote to check)", line, nodeIdx: nodes[0][0] };
   for (const [i, node] of nodes) {
     for (const t of [messageText(node.message), node.message?.reasoning_content ?? node.message?.reasoning ?? ""]) {
-      const text = typeof t === "string" ? t : "";
-      const range = text && findQuote(text, c.quote);
-      if (range) return { matched: true, line, trace, node, nodeIdx: i, range, text };
+      if (typeof t === "string" && t && findQuote(t, c.quote, c.prefix, c.suffix)) return { matched: true, line, nodeIdx: i };
     }
   }
-  return { matched: false, reason: c.node != null ? "quote not found in node" : "quote not found in any node", line, trace };
+  return { matched: false, reason: c.node != null ? "quote not found in node" : "quote not found in any node", line };
 }
 
 async function verifyCitations() {
@@ -2837,147 +2839,28 @@ async function verifyCitations() {
   }
 }
 
-/* ------------------------------------------------------- citation peek */
+/* ------------------------------------------------------ citation click */
+/* a chip is a link: clicking jumps straight to the trace with the quote
+   highlighted; the citation's note surfaces on hover over the mark */
 
-let peekEl = null;
-
-function ensurePeek() {
-  if (peekEl) return peekEl;
-  peekEl = document.createElement("div");
-  peekEl.id = "cite-peek";
-  peekEl.hidden = true;
-  document.body.appendChild(peekEl);
-  document.addEventListener("click", (e) => {
-    if (!peekEl.hidden && !e.target.closest("#cite-peek") && !e.target.closest(".cite-chip")) peekEl.hidden = true;
-  });
-  peekEl.addEventListener("click", (e) => {
-    if (e.target.closest(".peek-close")) peekEl.hidden = true;
-    const go = e.target.closest("[data-goto]");
-    if (go) {
-      peekEl.hidden = true;
-      applyViewCommand(JSON.parse(go.dataset.goto));
-    }
-  });
-  return peekEl;
-}
-
-function positionPeek(chip) {
-  const rect = chip.getBoundingClientRect();
-  const width = Math.min(520, window.innerWidth - 24);
-  peekEl.style.width = `${width}px`;
-  peekEl.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))}px`;
-  const below = rect.bottom + 8;
-  peekEl.style.top = `${below + 300 > window.innerHeight ? Math.max(12, rect.top - peekEl.offsetHeight - 8) : below}px`;
-}
-
-/* the peek is a mini conversation excerpt: the turns around the cited one
-   render as real (dimmed) message blocks, the cited message shows in full
-   with the quote marked — enough context to judge the claim in place */
-function peekSectionHtml(text, { quote = null, dim = false, label = "" } = {}) {
-  let clipped = "";
-  const cap = dim ? 500 : 20000; // giant cited turns clip around the match
-  if (text.length > cap) {
-    let start = 0;
-    const range = quote ? findQuote(text, quote) : null;
-    if (range) start = Math.max(0, Math.floor((range[0] + range[1]) / 2 - cap / 2));
-    text = text.slice(start, start + cap);
-    clipped = "…";
-    if (start > 0) text = `…${text}`;
-  }
-  const html = quote ? quoteMarkedHtml(text, [{ quote }]) : esc(text);
-  const labelHtml = label ? `<span class="peek-sec-label">${esc(label)}</span>` : "";
-  return `<div class="entry-body${label ? " peek-reasoning" : ""}">${labelHtml}${html}${clipped}</div>`;
-}
-
-function peekMessageHtml(node, { dim = false, quote = null } = {}) {
-  if (!node) return "";
-  const role = node.message?.role ?? "?";
-  const raw = node.message?.reasoning_content ?? node.message?.reasoning;
-  const reasoning = typeof raw === "string" ? raw : raw ? JSON.stringify(raw) : "";
-  const text = messageText(node.message);
-  const parts = [];
-  if (reasoning) parts.push(peekSectionHtml(reasoning, { quote, dim, label: "reasoning" }));
-  if (text) parts.push(peekSectionHtml(text, { quote, dim }));
-  parts.push(...(node.message?.tool_calls || []).map(toolCallHtml));
-  if (!parts.length) parts.push(`<div class="entry-body muted">(no text)</div>`);
-  return `<div class="peek-snippet${dim ? " dim" : " cited"}"><span class="entry-role">${esc(role)}</span>${parts.join("")}</div>`;
-}
-
-function peekSnippet(res, c) {
-  if (!res?.node) return "";
-  const nodes = res.trace?.nodes || [];
-  return (
-    peekMessageHtml(nodes[res.nodeIdx - 2], { dim: true }) +
-    peekMessageHtml(nodes[res.nodeIdx - 1], { dim: true }) +
-    peekMessageHtml(res.node, { quote: res.range ? c.quote : null }) +
-    peekMessageHtml(nodes[res.nodeIdx + 1], { dim: true })
-  );
-}
-
-async function openCitePeek(chip) {
-  const id = chip.dataset.cite;
+async function openCitation(id) {
   const c = state.report.citations[id];
-  const peek = ensurePeek();
-  const head = `<div class="peek-head"><span class="t-label">citation ${esc(id)}</span><span class="spacer"></span><button class="icon-btn peek-close">✕</button></div>`;
-  peek.hidden = false;
-  peek.innerHTML = `${head}<div class="peek-load muted">loading…</div>`;
-  positionPeek(chip);
-  if (!c) {
-    peek.innerHTML = `${head}<div class="peek-load muted">no definition for [^${esc(id)}] in this report</div>`;
-    return;
-  }
-  if (c._invalid) {
-    peek.innerHTML = `${head}<div class="peek-load muted">citation JSON did not parse:</div><pre class="md-code"><code>${esc(c._invalid)}</code></pre>`;
-    return;
-  }
-  let res = state.report.verify.get(id);
-  if (!res) {
-    try {
-      res = await resolveCitation(c);
-    } catch (err) {
-      res = { matched: false, reason: String(err) };
-    }
-    state.report.verify.set(id, res);
-  }
-  const badge = res.matched
-    ? res.weak
-      ? `<span class="badge">unchecked</span>`
-      : `<span class="badge st-completed">verified</span>`
-    : `<span class="badge st-stopped">not found</span>`;
-  const addr = [
-    c.run && c.run !== state.run ? c.run : null,
-    c.step != null ? `step ${c.step}` : null,
-    c.kind && c.subset ? `${c.kind}/${c.subset}` : null,
-    c.episode ?? (c.line != null ? `line ${c.line}` : null),
-    (res.nodeIdx ?? c.node) != null ? `node ${res.nodeIdx ?? c.node}` : null,
-  ].filter(Boolean).join(" · ");
-  const nodeIdx = res.nodeIdx ?? c.node;
-  const goto = res.line != null || c.line != null || c.episode
-    ? {
-        run: c.run || state.run,
-        tab: "traces",
-        step: c.step,
-        kind: c.kind,
-        subset: c.subset,
-        episode: c.episode,
-        line: res.line ?? c.line,
-        trace: c.trace,
-        branch: c.branch,
-        highlight: nodeIdx != null ? [{ node: nodeIdx, quote: c.quote, reason: c.note }] : [],
-      }
-    : null;
-  peek.innerHTML =
-    head +
-    `<div class="peek-meta">${badge}<span class="muted">${esc(addr)}</span></div>` +
-    (c.note ? `<div class="peek-note">${esc(c.note)}</div>` : "") +
-    (res.matched ? "" : `<div class="peek-broken">⚠ ${esc(res.reason || "quote not found")}</div>`) +
-    peekSnippet(res, c) +
-    (goto ? `<div class="peek-actions"><button class="btn" data-goto="${esc(JSON.stringify(goto))}">open in traces →</button></div>` : "");
-  positionPeek(chip);
-  // open with the quote centered inside the cited message's scroll box
-  const mark = peek.querySelector(".peek-snippet.cited mark.hl-quote");
-  const box = peek.querySelector(".peek-snippet.cited .entry-body");
-  if (mark && box) box.scrollTop = Math.max(0, mark.offsetTop - box.clientHeight / 2);
+  if (!c || c._invalid) return toastMsg(`[^${esc(id)}] has no valid citation definition`);
+  const res = state.report.verify.get(id);
+  const node = res?.nodeIdx ?? c.node;
+  await applyViewCommand({
+    run: c.run || state.run,
+    tab: "traces",
+    step: c.step,
+    kind: c.kind,
+    subset: c.subset,
+    episode: c.episode,
+    line: res?.line ?? c.line,
+    trace: c.trace,
+    branch: c.branch,
+    highlight: node != null ? [{ node, quote: c.quote, prefix: c.prefix, suffix: c.suffix, reason: c.note }] : [],
+  });
+  $("#tm-back").hidden = $("#trace-modal").hidden; // way back to the report
 }
 
 /* ----------------------------------------------------------- view command */
@@ -3104,7 +2987,7 @@ $("#report-select").addEventListener("change", async (e) => {
 });
 $("#report-body").addEventListener("click", (e) => {
   const chip = e.target.closest(".cite-chip");
-  if (chip) openCitePeek(chip);
+  if (chip) openCitation(chip.dataset.cite);
 });
 
 /* ---------------------------------------------------------------- wiring */
@@ -3502,6 +3385,10 @@ $("#episode-table-wrap").addEventListener(
 );
 $("#tm-list").addEventListener("scroll", rafThrottle(renderRolloutWindow));
 $("#drawer-close").addEventListener("click", closeDrawer);
+$("#tm-back").addEventListener("click", () => {
+  closeDrawer();
+  activateTab("report");
+});
 $("#drawer-backdrop").addEventListener("click", closeDrawer);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") return closeDrawer();
@@ -3519,16 +3406,17 @@ tokTip.className = "tok-tip";
 tokTip.hidden = true;
 document.body.appendChild(tokTip);
 $("#tm-messages").addEventListener("mouseover", (e) => {
-  const tok = e.target.closest(".tok[data-tip]");
+  const tok = e.target.closest("[data-tip]");
   if (!tok) return;
   tokTip.textContent = tok.dataset.tip;
+  tokTip.classList.toggle("note", tok.matches("mark.hl-quote")); // citation notes wrap
   tokTip.hidden = false;
   const rect = tok.getBoundingClientRect();
   tokTip.style.left = `${Math.min(rect.left, window.innerWidth - tokTip.offsetWidth - 12)}px`;
   tokTip.style.top = `${rect.top - tokTip.offsetHeight - 6}px`;
 });
 $("#tm-messages").addEventListener("mouseout", (e) => {
-  if (e.target.closest(".tok[data-tip]")) tokTip.hidden = true;
+  if (e.target.closest("[data-tip]")) tokTip.hidden = true;
 });
 $("#token-signal").addEventListener("change", async () => {
   await ensureTokens();

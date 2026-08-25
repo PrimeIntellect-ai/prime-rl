@@ -919,64 +919,16 @@ pre.json { background: var(--grey-2); border: 1px solid var(--hairline); padding
 .cite-chip.ok { border-color: rgba(182, 255, 60, 0.5); color: var(--accent); }
 .cite-chip.bad, .cite-chip.missing { border-color: rgba(255, 69, 57, 0.6); color: var(--negative); }
 
-#cite-peek {
-  position: fixed;
-  z-index: 60;
-  background: var(--grey-1);
-  border: 1px solid var(--grey-3);
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 60vh;
-  overflow-y: auto;
-}
-#cite-peek .peek-head { display: flex; align-items: center; gap: 8px; }
-#cite-peek .peek-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-#cite-peek .peek-note { font-size: 12px; color: var(--grey-6); }
-#cite-peek .peek-broken { font-size: 12px; color: var(--negative); }
-#cite-peek .peek-load { font-size: 12px; }
-#cite-peek .peek-snippet { border: 1px solid var(--hairline); background: var(--grey-2); }
-#cite-peek .peek-snippet .entry-role {
-  display: block;
-  padding: 6px 10px 0;
-  font-size: 10px;
-  letter-spacing: var(--track-caps);
-  text-transform: uppercase;
-  color: var(--grey-4);
-}
-#cite-peek .peek-snippet .entry-body { position: relative; max-height: 280px; overflow-y: auto; }
-/* the peek is a mini conversation: dimmed neighbor turns frame the cited one */
-#cite-peek .peek-snippet.dim { opacity: 0.6; }
-#cite-peek .peek-snippet.dim .entry-body { max-height: 96px; }
-#cite-peek .peek-sec-label {
-  display: block;
-  font-size: 9px;
-  letter-spacing: var(--track-caps);
-  text-transform: uppercase;
-  color: var(--grey-4);
-  margin-bottom: 4px;
-}
-#cite-peek .peek-reasoning { font-style: italic; color: var(--grey-4); }
-#cite-peek .peek-snippet.cited { border-left: 2px solid var(--accent); }
-#cite-peek .peek-actions { display: flex; justify-content: flex-end; }
-
-/* agent highlights inside the trace viewer */
+/* agent highlights inside the trace viewer; the citation note rides the mark
+   as a hover tooltip */
 mark.hl-quote {
   background: rgba(182, 255, 60, 0.22);
   color: var(--grey-6);
   outline: 1px solid rgba(182, 255, 60, 0.45);
 }
+mark.hl-quote[data-tip] { cursor: help; }
+.tok-tip.note { max-width: 420px; white-space: normal; }
 details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pulse 1.6s ease-out 2; }
-.hl-callout {
-  margin: 8px 14px 0;
-  padding: 6px 10px;
-  border: 1px solid rgba(182, 255, 60, 0.4);
-  border-left: 2px solid var(--accent);
-  background: rgba(182, 255, 60, 0.06);
-  color: var(--grey-6);
-  font-size: 12px;
-}
 @keyframes hl-pulse {
   0% { box-shadow: 0 0 0 0 rgba(182, 255, 60, 0.45); }
   70% { box-shadow: 0 0 0 6px rgba(182, 255, 60, 0); }

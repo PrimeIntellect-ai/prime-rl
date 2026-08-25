@@ -104,15 +104,28 @@ title: Why does reward dip at step 4?
 
 The dip is provider errors, not policy regression [^err].
 
-[^err]: {"step": 4, "kind": "train", "subset": "all", "episode": "ep-...", "node": 0, "quote": "engine overloaded", "note": "the failed call"}
+[^err]: {"step": 4, "kind": "train", "subset": "all", "episode": "ep-...", "node": 0, "quote": "engine overloaded", "note": "The failed call that emptied this step's batch."}
 ```
 
-A citation is a view command plus a verbatim quote: same address fields as
-`/api/view`, plus `quote` (copied **exactly** from the trace — message content
-and `reasoning_content` both work as sources — the dashboard
-re-checks every quote against the files and renders the chip green only when it
-matches; a paraphrase shows the reader a red "broken" chip) and an optional
-`note` shown as a callout. Clicking a chip peeks the cited node inline;
-"open in traces" jumps to the full trace with the quote highlighted. Supported
-markdown: headings, lists, tables, fenced code, blockquotes, bold/italic/code,
-links. Raw HTML is escaped, not rendered.
+A citation is a view command plus a verbatim quote. Fields on top of the
+`/api/view` address:
+
+- `quote` — copied **exactly** from the trace (message content or
+  `reasoning_content`). The dashboard re-checks every quote against the files
+  and renders the chip green only when it matches; a paraphrase shows the
+  reader a red "broken" chip. Prefer a short, distinctive span (a phrase or
+  sentence), not a paragraph.
+- `prefix` / `suffix` — optional, only when the quote appears more than once in
+  the node: a few words copied verbatim from immediately before/after the
+  instance you mean.
+- `note` — **required**: 1–2 sentences max saying why this passage matters to
+  your claim. It appears when the reader hovers the highlighted text inside
+  the trace, so write it as a caption for the highlight, not a restatement of
+  the quote.
+
+Clicking a chip jumps straight to the trace viewer with the quote highlighted
+(a "← report" button leads back). Cite by episode `id`, never by position:
+traces files grow continuously during a run and ids are the only stable
+address. Supported markdown: headings, lists, tables, fenced code, blockquotes,
+bold/italic/code, links; several citations can sit adjacent (`[^a] [^b]`). Raw
+HTML is escaped, not rendered.
