@@ -1001,15 +1001,6 @@ def project_episode_timeline(episode: dict) -> dict:
         )
         children = []
         for child_number, (_root, node_indexes) in enumerate(components[1:], 1):
-            prompt = next(
-                (
-                    " ".join(message_text(nodes[index].get("message") or {}).split())
-                    for index in sorted(node_indexes)
-                    if (nodes[index].get("message") or {}).get("role") == "user"
-                ),
-                "",
-            )
-            suffix = f" · {prompt[:52]}{'…' if len(prompt) > 52 else ''}" if prompt else f" {child_number}"
             activities = activity_spans(trace, node_indexes)
             if not activities:
                 continue
@@ -1035,7 +1026,7 @@ def project_episode_timeline(episode: dict) -> dict:
                     trace_index,
                     lane_id=f"{lane_id}-subagent-{child_number}",
                     parent_id=lane_id,
-                    label=f"Subagent{suffix}",
+                    label="subagent",
                     depth=1,
                     lifecycle=child_lifecycle,
                     activities=activities,

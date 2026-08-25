@@ -2705,7 +2705,7 @@ function timelineLaneHtml(lane, start, total) {
     `<div class="tl-label" style="padding-left:${10 + (lane.depth || 0) * 18}px">` +
     `${lane.depth ? '<span class="tl-tree">└</span>' : ""}<span class="tl-dot" style="background:${PALETTE[lane.trace_index % PALETTE.length]}"></span>` +
     `<span class="tl-label-copy"><div class="tl-label-name" title="${esc(lane.label)}">${esc(lane.label)}</div>` +
-    `<div class="tl-label-meta" title="${esc(model)}">${lane.parent_id ? "subagent · " : ""}${esc(model)}</div></span></div>` +
+    `<div class="tl-label-meta" title="${esc(model)}">${esc(model)}</div></span></div>` +
     `<div class="tl-track">${grids}${spans}</div>` +
     `<div class="tl-time"><span>${duration}</span><span class="muted">${lane.ended_at == null ? "open" : timelineClock(lane.ended_at)}</span></div>` +
     `<div class="tl-outcome"><span class="tl-state ${esc(lane.status)}">${esc(lane.outcome || lane.status)}</span>` +
