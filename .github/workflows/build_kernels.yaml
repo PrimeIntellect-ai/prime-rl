@@ -82,10 +82,12 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: nvidia/cuda:12.9.1-devel-ubuntu24.04
     steps:
+      # libibverbs-dev/librdmacm-dev: NVSHMEM's IBGDA transport headers (infiniband/mlx5dv.h),
+      # compile-time only — deep-ep dlopens the real thing at runtime.
       - name: Install build tooling
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git curl ca-certificates build-essential gh xz-utils
+          apt-get install -y --no-install-recommends git curl ca-certificates build-essential gh xz-utils libibverbs-dev librdmacm-dev
 
       - name: Checkout
         uses: actions/checkout@v5
