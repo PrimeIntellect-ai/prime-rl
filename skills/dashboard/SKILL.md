@@ -78,7 +78,7 @@ alone):
 | `step`, `kind`, `subset` | `rollouts/step_N/{train,eval}/{all,effective}` (eval-only runs: `0/eval/all`) |
 | `episode` | episode `id` from the traces file (`line` is a positional fallback) |
 | `trace`, `branch` | multi-agent seat index and branch leaf (`-1` = concatenated) |
-| `report` | thread dir or report file under `<run>/reports/` to open on the report tab (`"wordle"` or `"wordle/002-follow-up"`) |
+| `report` | report file under `<run>/reports/` to open on the report tab |
 | `highlight` | list of `{node, quote, reason}`: node index into `trace.nodes`, verbatim quote to mark, optional callout text |
 
 The server validates the address against the filesystem (unknown run/episode →
@@ -90,29 +90,12 @@ drops them).
 
 ## Writing reports (the report tab)
 
-Reports are organized as **threads**: one investigation = one directory under
-`<run>/reports/`, holding sequential reports. The dashboard renders the thread
-as a stacked sequence (older reports collapse, the latest stays open):
-
-```
-<run>/reports/<thread-slug>/
-  001-<slug>.md      sealed answers, numbered in order
-  002-<slug>.md
-  draft.md           the answer you are writing right now
-```
-
-Workflow: stream your work-in-progress into `<thread>/draft.md` (the dashboard
-shows it live with a DRAFT badge — appending streams to the reader), then POST
-`{"run": ..., "tab": "report", "report": "<thread-slug>"}`. When the answer is
-final, seal it as the next number — either rename `draft.md` to `NNN-<slug>.md`
-yourself, or leave it and the user clicks **save draft** in the dashboard
-(`POST /api/runs/<run>/reports/save {"thread": "<slug>"}` does the same
-rename). Start the next answer in the same thread as a fresh `draft.md`; start
-a new thread for a new question. A loose `<run>/reports/<slug>.md` file still
-works as a one-off single-report thread.
-
-Report format: markdown with a `title:` frontmatter line, citing evidence with
-`[^id]` markers defined anywhere in the file as one JSON object per line:
+For a question that deserves a written answer, put it in
+`<run>/reports/<slug>.md` and POST `{"run": ..., "tab": "report", "report":
+"<slug>"}`. The dashboard renders it live (poll-based — appending while you
+write streams to the reader). Format: markdown with a `title:` frontmatter
+line, citing evidence with `[^id]` markers defined anywhere in the file as one
+JSON object per line:
 
 ```markdown
 ---

@@ -845,40 +845,6 @@ pre.json { background: var(--grey-2); border: 1px solid var(--hairline); padding
 /* two toggles share the topbar: only the first one pushes right */
 #topbar .toggle + .toggle { margin-left: 0; }
 
-#report-layout { flex: 1; min-height: 0; display: flex; }
-#report-rail {
-  width: 240px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--hairline);
-  padding-right: 12px;
-  margin-right: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 0;
-}
-#report-rail .tm-head { display: flex; align-items: center; gap: 8px; }
-#report-threads { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-#report-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
-.re-dot { width: 7px; height: 7px; flex-shrink: 0; background: var(--chart-3); }
-
-/* a thread is a stacked sequence: collapsed reports are one summary line */
-.report-entry { border: 1px solid var(--hairline); margin-bottom: 8px; }
-.report-entry > summary {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-}
-.report-entry > summary:hover { background: var(--grey-2); }
-.report-entry .entry-num { color: var(--grey-4); font-size: 11px; }
-.report-entry .re-title { color: var(--grey-6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.report-entry .entry-chev { margin-left: auto; color: var(--grey-4); transition: transform 0.12s; }
-.report-entry[open] > summary .entry-chev { transform: rotate(90deg); }
-.report-entry .re-body { padding: 0 16px 8px; border-top: 1px solid var(--hairline-faint); }
-.report-entry.draft { border-color: rgba(252, 218, 164, 0.35); }
-.re-draft { color: var(--chart-3); border-color: rgba(252, 218, 164, 0.5); }
-
 #report-wrap { flex: 1; min-height: 0; overflow-y: auto; }
 #report-body {
   max-width: 820px;
@@ -979,22 +945,11 @@ pre.json { background: var(--grey-2); border: 1px solid var(--hairline); padding
   text-transform: uppercase;
   color: var(--grey-4);
 }
-#cite-peek .peek-snippet .entry-body { position: relative; max-height: 320px; overflow-y: auto; }
-#cite-peek .peek-neighbor {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 0 2px;
-  opacity: 0.75;
-}
-#cite-peek .peek-neighbor .entry-role {
-  flex-shrink: 0;
-  font-size: 10px;
-  letter-spacing: var(--track-caps);
-  text-transform: uppercase;
-  color: var(--grey-4);
-}
-#cite-peek .peek-neighbor .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#cite-peek .peek-snippet .entry-body { position: relative; max-height: 280px; overflow-y: auto; }
+/* the peek is a mini conversation: dimmed neighbor turns frame the cited one */
+#cite-peek .peek-snippet.dim { opacity: 0.6; }
+#cite-peek .peek-snippet.dim .entry-body { max-height: 96px; }
+#cite-peek .peek-snippet.cited { border-left: 2px solid var(--accent); }
 #cite-peek .peek-actions { display: flex; justify-content: flex-end; }
 
 /* agent highlights inside the trace viewer */
