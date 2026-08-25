@@ -55,14 +55,6 @@ class LoRAState:
         """Register an adapted module with its FQN prefix (e.g. "model.layers.0.self_attn.q_proj")."""
         self._modules.append((prefix, module))
 
-    def named_adapter_parameters(self) -> list[tuple[str, nn.Parameter]]:
-        """Named parameters of the adapter across all registered modules."""
-        params = []
-        for prefix, module in self._modules:
-            for name, param in module.named_parameters_for_adapter(0):
-                params.append((f"{prefix}.{name}.weight", param))
-        return params
-
     def adapter_state_dict(self) -> dict[str, torch.Tensor]:
         """Adapter-only state dict, converted for HF compatibility when a converter is registered."""
         state_dict = {}

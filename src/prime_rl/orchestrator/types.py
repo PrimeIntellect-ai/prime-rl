@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
 import verifiers.v1 as vf
 
-from prime_rl.transports.rollouts import TrainingSample
+from prime_rl.transports.batch import TrainingSample
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
@@ -52,7 +52,22 @@ class GroupCancellation:
     reason: CancelReason
 
 
-DispatchResult: TypeAlias = vf.WireEpisode | GroupCancellation
+@dataclass(frozen=True)
+class DispatchFailure:
+    """An environment request that failed before producing an episode."""
+
+    kind: WorkKind
+    env_name: str
+    group_id: str
+    step: int
+    policy_version: int
+    task_type: str
+    task_key: str
+    task_hash: str
+    error: vf.Error
+
+
+DispatchResult: TypeAlias = vf.WireEpisode | DispatchFailure | GroupCancellation
 
 
 @dataclass(frozen=True)
@@ -81,7 +96,7 @@ class InflightEpisode:
 
 @dataclass
 class GroupState:
-    """Per-group dispatcher state with pinned run context and client."""
+    """Per-group dispatcher state with its pinned run step."""
 
     kind: WorkKind
     env_name: str
@@ -91,27 +106,31 @@ class GroupState:
     episodes_to_schedule: int
     target_episodes: int
     emitted: int = 0
-    pinned_client: vf.ClientConfig | None = None
     policy_version_at_start: int = 0
 
 
 @dataclass
 class TrainBatch:
-    """Observation and shipped-cohort reports plus the trainer payload."""
+    """Returned episodes, dispatch failures, shipped cohort, and trainer payload."""
 
     episodes: TrainEpisodes
     cohort: TrainEpisodes
     samples: list[TrainingSample]
+    failures: list[DispatchFailure]
 
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch. ``episodes`` is the full returned cohort (errored included); its
-    ``.effective`` / ``.metrics`` views drive logging."""
+    """One env's eval epoch.
+
+    ``episodes`` is the full returned cohort (errored included), while
+    ``failures`` accounts for requests that returned no verifier artifact.
+    """
 
     env_name: str
     step: int
     episodes: EvalEpisodes
+    failures: list[DispatchFailure]
 
 
 class VersionObserver(Protocol):

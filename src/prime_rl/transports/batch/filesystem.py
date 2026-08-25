@@ -1,12 +1,12 @@
 import asyncio
 from pathlib import Path
 
-from prime_rl.transports.rollouts.base import MicroBatchReceiver, MicroBatchSender
-from prime_rl.transports.rollouts.types import MicroBatch
+from prime_rl.transports.batch.base import BatchReceiver, BatchSender
+from prime_rl.transports.batch.types import MicroBatch
 from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for_path
 
 
-class FileSystemMicroBatchSender(MicroBatchSender):
+class FileSystemBatchSender(BatchSender):
     """Filesystem-based micro batch sender that writes micro batches to disk."""
 
     def __init__(self, output_dir: Path, data_world_size: int, current_step: int = 0):
@@ -35,7 +35,7 @@ class FileSystemMicroBatchSender(MicroBatchSender):
             tmp_path.rename(step_path / f"rank_{data_rank}.bin")
 
 
-class FileSystemMicroBatchReceiver(MicroBatchReceiver):
+class FileSystemBatchReceiver(BatchReceiver):
     """Filesystem-based micro batch receiver that reads micro batches from disk."""
 
     def __init__(self, output_dir: Path, data_rank: int, current_step: int = 0):

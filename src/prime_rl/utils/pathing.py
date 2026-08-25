@@ -1,6 +1,7 @@
 import asyncio
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -90,8 +91,42 @@ def format_log_message(
     return "Logs:\n" + "\n".join(log_lines)
 
 
+def home_dir() -> Path:
+    """Best-effort home directory; fall back to the temp dir so import never fails."""
+    try:
+        return Path.home()
+    except RuntimeError:
+        return Path(tempfile.gettempdir())
+
+
+CACHE_DIR = home_dir() / ".cache" / "prime-rl"
+"""User-scoped cache root."""
+
+
 def get_config_dir(output_dir: Path) -> Path:
-    return output_dir / "configs"
+    """Resolved per-component config dumps (JSON). The launch TOML copy lives one
+    level up, at `configs/<entrypoint>.toml`."""
+    return output_dir / "configs" / "resolved"
+
+
+def write_launch_toml(run_dir: Path, name: str) -> None:
+    """Copy the launch `@` TOML file(s) verbatim to `configs/<name>.toml`."""
+    import sys
+
+    argv = sys.argv[1:]
+    paths = []
+    for i, arg in enumerate(argv):
+        # root config references only: `@ file`; a `--flag @ file` / `--flag @file`
+        # is a nested reference and belongs under its flag, not in the launch copy
+        if arg == "@" and i + 1 < len(argv) and (i == 0 or not argv[i - 1].startswith("--")):
+            paths.append(Path(argv[i + 1]))
+    tomls = [(p, p.read_text()) for p in paths if p.suffix == ".toml" and p.is_file()]
+    if not tomls:
+        return
+    texts = [text for _, text in tomls] if len(tomls) == 1 else [f"# @ {p}\n{text}" for p, text in tomls]
+    config_dir = run_dir / "configs"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / f"{name}.toml").write_text("\n".join(texts))
 
 
 def get_ckpt_dir(output_dir: Path) -> Path:

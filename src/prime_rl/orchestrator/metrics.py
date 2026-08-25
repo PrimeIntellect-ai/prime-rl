@@ -9,9 +9,23 @@ from typing import Any, Literal
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
+from prime_rl.orchestrator.types import DispatchFailure
 from prime_rl.orchestrator.utils import compute_pass_metrics, episode_env_name, episode_group_id
 
 Subset = Literal["all", "effective"]
+
+
+def dispatch_failure_metrics(failures: list[DispatchFailure], *, prefix: str, total_attempts: int) -> dict[str, float]:
+    """Metrics for requests that failed outside the verifier episode boundary."""
+    if total_attempts == 0:
+        return {}
+    out = {f"{prefix}/dispatch_failure/mean": len(failures) / total_attempts}
+    error_types = [failure.error.type for failure in failures]
+    out |= {
+        f"{prefix}/dispatch_failure/{error_type}": float(error_types.count(error_type))
+        for error_type in sorted(set(error_types))
+    }
+    return out
 
 
 @dataclass(frozen=True)
@@ -317,8 +331,7 @@ class EpisodeMetrics:
     def cancelled(self) -> Stat:
         """Per-episode pipeline-cancellation rate — same denominator as
         ``has_error``. Read from the id-set, not the trace records, so
-        trace-less episodes (synthetic error episodes inside a voided group)
-        still count."""
+        trace-less episodes still count."""
         return Stat([float(episode.id in self.cancelled_ids) for episode in self.episodes])
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:

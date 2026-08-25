@@ -4,6 +4,7 @@ from typing import Callable
 import pytest
 
 from tests.conftest import ProcessResult
+from tests.integration.dashboard_smoke import make_dashboard_test
 from tests.utils import (
     check_avg_mismatch_kl_in_range,
     check_no_error,
@@ -83,3 +84,6 @@ def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, run_dir:
     with open(run_dir / "logs" / "latest" / "trainer.log", "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_avg_mismatch_kl_in_range(trainer_stdout, last_n_steps=5, max_threshold=0.15)
+
+
+test_dashboard = make_dashboard_test("rl_process", RUN_NAME)

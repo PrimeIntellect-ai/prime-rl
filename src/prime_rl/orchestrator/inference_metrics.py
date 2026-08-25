@@ -7,10 +7,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from statistics import mean, median
 
-import wandb
 from httpx import AsyncClient
 from prometheus_client.parser import text_string_to_metric_families
 
+from prime_rl import monitors
 from prime_rl.orchestrator.concurrency import EngineLoadSample
 from prime_rl.utils.logger import get_logger
 
@@ -279,7 +279,7 @@ class InferenceMetricsCollector:
         admin_clients: list[AsyncClient],
         roles: list[str | None] | None = None,
         on_load: Callable[[list[EngineLoadSample]], None] | None = None,
-        log_to_wandb: bool = True,
+        log_metrics: bool = True,
     ):
         self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
         self.previous: dict[tuple[str, str], TimedSnapshot] = {}
@@ -287,16 +287,13 @@ class InferenceMetricsCollector:
         self.task: asyncio.Task | None = None
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
         self.on_load = on_load
-        self.log_to_wandb = log_to_wandb
+        self.log_metrics = log_metrics
         get_logger().info(
             "Collecting inference metrics from "
             + ", ".join(f"{endpoint.name}={endpoint.key}" for endpoint in self.endpoints)
         )
 
     async def start(self):
-        if self.log_to_wandb:
-            wandb.define_metric("inference/*", step_metric="_timestamp")
-
         async def poll_loop():
             while True:
                 try:
@@ -346,7 +343,7 @@ class InferenceMetricsCollector:
             return
 
         await asyncio.gather(*[self.fetch_max_model_len(endpoint) for endpoint in self.endpoints])
-        metrics = self.build_metrics(samples) if self.log_to_wandb else {}
+        metrics = self.build_metrics(samples) if self.log_metrics else {}
         load_samples = [self.build_load_sample(sample) for sample in samples]
         for sample in samples:
             self.previous[sample.key] = TimedSnapshot(timestamp=sample.timestamp, snapshot=sample.snapshot)
@@ -355,8 +352,10 @@ class InferenceMetricsCollector:
             self.on_load(load_samples)
 
         if metrics:
-            metrics["_timestamp"] = time.time()
-            wandb.log(metrics)
+            # Time-keyed rows (step=None): inference metrics are sampled on wall
+            # time, not the training step. Fans out to every registered monitor;
+            # each monitor stamps its own timestamp.
+            await monitors.log(metrics, step=None)
 
     async def fetch_max_model_len(self, endpoint: MetricsEndpoint) -> None:
         """Cache the engine's max context length from ``/v1/models`` (set

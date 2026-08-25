@@ -6,10 +6,10 @@
   burst-capped so a raised (or drained) cap never lands all its prefills at
   once.
 - Optional rate limiting via ``AsyncLimiter(tasks_per_minute, 60)``.
-- Emit-everything invariant: every dispatched episode eventually reaches
-  ``out_q`` exactly once — as a native episode, or covered by its group's
-  single ``GroupCancellation`` message when the group is dropped. Failures
-  remain episode errors; sinks decide drop / partial-train policy.
+- Every dispatched attempt reaches ``out_q`` exactly once: as the native
+  episode returned by the environment, as a ``DispatchFailure`` when no
+  episode was produced, or under the group's ``GroupCancellation`` when the
+  orchestrator abandons it.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight episodes of the opposite kind drain
@@ -38,11 +38,13 @@ from typing import Literal
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
 
+from prime_rl.orchestrator.clients import InferenceClient
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     CancelReason,
+    DispatchFailure,
     DispatchResult,
     GroupCancellation,
     GroupState,
@@ -53,7 +55,6 @@ from prime_rl.orchestrator.types import (
 )
 from prime_rl.orchestrator.utils import min_fresh_version
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
-from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import get_logger
 
 
@@ -121,15 +122,6 @@ class DispatcherMetrics:
         return keys
 
 
-def _trace_task(task: vf.Task) -> vf.TraceTask:
-    return vf.TraceTask(
-        type=type(task).__name__,
-        data=task.data,
-        key=task.key,
-        hash=task.hash,
-    )
-
-
 def _validate_episode_task(episode: vf.WireEpisode, task: vf.Task) -> None:
     expected = (task.key, task.hash)
     actual = (episode.task.key, episode.task.hash)
@@ -151,7 +143,7 @@ class Dispatcher:
         eval_envs: EvalEnvs | None,
         train_source: TrainSource | None,
         eval_source: EvalSource | None,
-        policy_pool: InferencePool,
+        policy_clients: InferenceClient,
         policy: Policy,
         progress: Progress | None,
         initial_max_inflight: int,
@@ -168,7 +160,7 @@ class Dispatcher:
         self.eval_envs = eval_envs
         # Train rollouts go to the env's generation source; eval always
         # evaluates the policy.
-        self.policy_pool = policy_pool
+        self.policy_clients = policy_clients
         self.train_source = train_source
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
@@ -202,7 +194,8 @@ class Dispatcher:
         # Bounded so the dispatcher backpressures on a slow sink (unbounded
         # when no hard ceiling is configured — the dynamic cap still bounds
         # in-flight work). One entry per episode — the sinks count episodes,
-        # never loose traces — plus one ``GroupCancellation`` per dropped group.
+        # never loose traces — plus terminal dispatcher events for attempts
+        # that produced no episode.
         maxsize = max(8, max_inflight_ceiling) if max_inflight_ceiling is not None else 0
         self.out_q: asyncio.Queue[DispatchResult] = asyncio.Queue(maxsize=maxsize)
 
@@ -221,14 +214,14 @@ class Dispatcher:
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
 
-    def _train_generation_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
-        """``(pool, model_name, is_live)`` for *train* rollouts of this env —
+    def _train_generation_for(self, env_name: str) -> tuple[InferenceClient, str, bool]:
+        """``(clients, model_name, is_live)`` for *train* rollouts of this env —
         eval always uses the policy."""
         assert self.train_envs is not None  # train groups only exist when train is configured
         source = self.train_envs.get(env_name).generation_source
         if source.uses_live_policy:
-            return source.pool, self.policy.model_name, True
-        return source.pool, source.pool.model_name, False
+            return source.clients, self.policy.model_name, True
+        return source.clients, source.clients.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -353,7 +346,7 @@ class Dispatcher:
                     timeout=0.5,  # wake periodically to re-check fill (mode flips)
                 )
                 for task in done:
-                    await self.handle_completed_episode(task)
+                    await self.handle_completed_request(task)
         except asyncio.CancelledError:
             return
 
@@ -500,14 +493,12 @@ class Dispatcher:
         # goes through the eval client (chat-completions) so eval scores stay
         # comparable.
         if group.kind == "eval":
-            pool, model_name = self.policy_pool, self.policy.model_name
+            clients, model_name = self.policy_clients, self.policy.model_name
             live_sourced = True
         else:
-            pool, model_name, live_sourced = self._train_generation_for(group.env_name)
+            clients, model_name, live_sourced = self._train_generation_for(group.env_name)
 
-        if group.pinned_client is None:
-            group.pinned_client = pool.eval_client if group.kind == "eval" else pool.train_client
-        client = group.pinned_client
+        client = clients.eval_client if group.kind == "eval" else clients.train_client
 
         env_collection = self.train_envs if group.kind == "train" else self.eval_envs
         if env_collection is None:
@@ -560,34 +551,40 @@ class Dispatcher:
         if refund_admission:
             self.admissions_in_window = max(0, self.admissions_in_window - 1)
 
-    async def handle_completed_episode(self, task: asyncio.Task) -> None:
-        """Emit every dispatched episode exactly once to ``out_q``."""
+    async def handle_completed_request(self, task: asyncio.Task) -> None:
+        """Emit the terminal result of one dispatched environment request."""
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_episodes
         self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
 
-        is_synth_exception = False
         try:
             episode: vf.WireEpisode = task.result()
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            get_logger().warning(f"Episode task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
-            episode = vf.WireEpisode(
-                env=vf.EnvInfo(id=meta.env_name),
-                task=_trace_task(meta.task),
-                ok=False,
-                errors=[
-                    vf.Error(
+            get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
+            self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+            policy_version = self.complete_group_member(meta, group)
+            await self.out_q.put(
+                DispatchFailure(
+                    kind=meta.kind,
+                    env_name=meta.env_name,
+                    group_id=str(meta.group_id),
+                    step=meta.step,
+                    policy_version=policy_version,
+                    task_type=type(meta.task).__name__,
+                    task_key=meta.task.key,
+                    task_hash=meta.task.hash,
+                    error=vf.Error(
                         type=type(exc).__name__,
                         message=str(exc),
                         traceback="".join(traceback.format_exception(exc)),
-                    )
-                ],
+                    ),
+                )
             )
-            is_synth_exception = True
+            return
 
         if not episode.traces and episode.ok:
             episode.ok = False
@@ -603,18 +600,28 @@ class Dispatcher:
                 get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
             if trace.has_error:
                 self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
-                if not is_synth_exception and trace.last_error is not None:
+                if trace.last_error is not None:
                     get_logger().warning(
                         f"Trace failed in group {meta.group_id} ({meta.env_name}) — "
                         f"{trace.last_error.type}: {trace.last_error.message}"
                     )
         if not episode.ok and not episode.traces:
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
-        if not is_synth_exception and self.on_episode_complete is not None and meta.started_at > 0:
+        if self.on_episode_complete is not None and meta.started_at > 0:
             self.on_episode_complete(
                 meta.env_name, meta.kind, episode.num_total_tokens, time.monotonic() - meta.started_at
             )
         await self.emit_episode(meta, group, episode)
+
+    def complete_group_member(self, meta: InflightEpisode, group: GroupState | None) -> int:
+        """Advance group accounting and return the attempt's pinned policy version."""
+        policy_version = meta.policy_version
+        if group is not None:
+            policy_version = group.policy_version_at_start
+            group.emitted += 1
+            if group.emitted >= group.target_episodes:
+                self.groups.pop(meta.group_id, None)
+        return policy_version
 
     async def emit_episode(
         self,
@@ -624,12 +631,7 @@ class Dispatcher:
     ) -> None:
         """Stamp one completed episode with its dispatch provenance and emit it."""
         _validate_episode_task(episode, meta.task)
-        policy_version = meta.policy_version
-        if group is not None:
-            policy_version = group.policy_version_at_start
-            group.emitted += 1
-            if group.emitted >= group.target_episodes:
-                self.groups.pop(meta.group_id, None)
+        policy_version = self.complete_group_member(meta, group)
 
         episode.env.name = meta.env_name
         episode.group = vf.GroupInfo(id=str(meta.group_id))
@@ -656,7 +658,7 @@ class Dispatcher:
         # Sync claim phase: pop matching tasks from ``self.inflight`` and
         # release their permits in one non-yielding sweep. After this loop
         # the dropped tasks are no longer reachable from ``self.inflight``,
-        # so ``handle_completed_episode``'s existing None-guard makes the
+        # so ``handle_completed_request``'s existing None-guard makes the
         # subsequent async emit phase race-free.
         claimed: list[tuple[asyncio.Task, InflightEpisode]] = []
         for task, meta in list(self.inflight.items()):

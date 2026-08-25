@@ -9,7 +9,7 @@ description: Monitor an ongoing prime-rl training run — find the output direct
 
 ### On launch
 
-1. Find the run dir and read the resolved configs at `{run_dir}/configs/` (start with `rl.json`). The run dir is `{output_dir}/{run_name}` — `run.name` auto-generates as `<envs>--<model>--<short-id>`, so if you only know the output dir, pick the most recently modified subdirectory (`ls -t {output_dir} | head -1`) or read `run.name` from the launch command.
+1. Find the run dir and read the resolved configs at `{run_dir}/configs/resolved/` (start with `rl.json`, or `orchestrator.json` on local runs). The launch TOML is copied verbatim to `{run_dir}/configs/rl.toml`. The run dir is `{output_dir}/{run_name}` — `run.name` auto-generates as `<envs>--<model>--<short-id>`, so if you only know the output dir, pick the most recently modified subdirectory (`ls -t {output_dir} | head -1`) or read `run.name` from the launch command.
 2. Confirm all processes are alive and the run is making progress.
 3. Write the initial summary into `{run_dir}/STATUS.md`.
 
@@ -40,14 +40,7 @@ In W&B, each project auto-gets an **"overview" saved view** (train / eval / stab
 
 **Never restart unless the researcher explicitly asked.** Confirm the exact restart command and the conditions that warrant one.
 
-**Never** run kill or launch commands from your own shell. Dispatch them to the tmux **Launcher** window so the researcher sees what was executed:
-
-```bash
-SESSION=$(tmux display-message -p '#S')
-tmux send-keys -t "$SESSION:Launcher" 'your command here' Enter
-```
-
-After a restart, verify all processes are back up and progress resumed before the next check-in.
+**Never** run kill or launch commands yourself. Hand the researcher the exact command and let them run it; after a restart, verify all processes are back up and progress resumed before the next check-in.
 
 ---
 
@@ -55,10 +48,33 @@ After a restart, verify all processes are back up and progress resumed before th
 
 ### Where to find things
 
-- `scripts/tmux.sh` launches the run with a `Launcher` window in the named tmux session. The Claude window receives the run dir and session name in its appended prompt — if either is missing, **ask** rather than guess.
-- `{run_dir}/configs/` — resolved configs, written as JSON so explicit None settings round-trip (`rl.json` has the full picture).
+- `{run_dir}/configs/` — the launch TOML copied verbatim (`rl.toml`/`sft.toml`), plus `resolved/` with the per-component resolved configs, written as JSON so explicit None settings round-trip.
 - `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
 - `{run_dir}/rollouts/step_{n}/{train,eval}/` — saved episodes (see Episodes below).
+
+### Dashboard
+
+`uv run dashboard [output_dir ...]` (default `outputs/`, or `$PRL_OUTPUT_DIR` if set; several dirs can be tracked at
+once) serves a local web dashboard at `http://localhost:7788` with four views per run:
+metrics (the W&B overview sections, read from `metrics.jsonl`), the resolved config
+files, a rollout trace viewer with a per-token advantage/logprob view, and merged
+component logs. It only reads the run dirs — safe to run against a live run.
+`--port`/`--host` pick the bind address; a taken port automatically bumps to the next
+free one, so several dashboards run side by side without coordination. GPU deps live
+behind the `gpu` extra, so `uv sync --extra dashboard && uv run dashboard` works
+without the training stack (e.g. on a head node).
+
+**Daemon (auto-start)**: launchers auto-start one dashboard per host per user and a
+live one absorbs each new run's output dir automatically — see the `dashboard` skill
+for discovery, kill/restart commands, and `--isolated`. The short version: the live
+port can differ from 7788 (a taken port bumps), so read the discovery file:
+
+```bash
+cat ~/.cache/prime-rl/dashboard/daemon.json   # {"pid": ..., "url": "http://localhost:<actual port>"}
+ps aux | grep PRL::Dashboard                  # the daemon's process title
+```
+
+Verify liveness with `curl -sf <url>/api/runs` and hand the researcher the `url`.
 
 ### Logs
 
@@ -180,13 +196,13 @@ A few warnings are normal. Escalate when errors are persistent, growing, or hit 
 All processes use `setproctitle` so they're visible in `ps`/`htop`/`pstree`:
 
 ```
-PRIME-RL::Launcher
-├── PRIME-RL::Inference          (vLLM server, GPU 0)
-├── PRIME-RL::EnvServer          (verifiers' ZMQ env server, run in-process; one per train/eval source)
+PRL::Launcher
+├── PRL::Inference          (vLLM server, GPU 0)
+├── PRL::EnvServer          (verifiers' ZMQ env server, run in-process; one per train/eval source)
 │   └── Verifiers::EnvWorker0..N
-├── PRIME-RL::Orchestrator       (CPU-only; connects to each env server)
+├── PRL::Orchestrator       (CPU-only; connects to each env server)
 ├── torchrun
-│   └── PRIME-RL::Trainer        (GPU 1+)
+│   └── PRL::Trainer        (GPU 1+)
 └── tail trainer.log
 ```
 

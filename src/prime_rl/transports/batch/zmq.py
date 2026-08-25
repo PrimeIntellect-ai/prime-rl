@@ -4,11 +4,11 @@ import zmq
 import zmq.asyncio
 
 from prime_rl.configs.shared import ZMQTransportConfig
-from prime_rl.transports.rollouts.base import MicroBatchReceiver, MicroBatchSender
-from prime_rl.transports.rollouts.types import MicroBatch
+from prime_rl.transports.batch.base import BatchReceiver, BatchSender
+from prime_rl.transports.batch.types import MicroBatch
 
 
-class ZMQMicroBatchSender(MicroBatchSender):
+class ZMQBatchSender(BatchSender):
     def __init__(self, output_dir: Path, data_world_size: int, current_step: int, transport: ZMQTransportConfig):
         """ZMQ micro batch sender that publishes per-rank micro batches to the trainers.
         There is one sender (in the orchestrator process) for the entire data world.
@@ -87,7 +87,7 @@ class ZMQMicroBatchSender(MicroBatchSender):
             self.logger.debug("Closed ZMQ micro batch sender")
 
 
-class ZMQMicroBatchReceiver(MicroBatchReceiver):
+class ZMQBatchReceiver(BatchReceiver):
     def __init__(self, output_dir: Path, data_rank: int, current_step: int, transport: ZMQTransportConfig):
         """ZMQ micro batch receiver that receives micro batches from the orchestrator. There is one receiver per data rank."""
         super().__init__(output_dir, data_rank)

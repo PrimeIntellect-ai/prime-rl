@@ -26,27 +26,26 @@ import uuid
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
-from modelexpress import p2p_pb2
-from modelexpress.client import MxClient
 from verifiers.v1.runtimes import set_base_sandbox_labels
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
 
     from prime_rl.orchestrator.ckpt import CheckpointManager
-    from prime_rl.transports.rollouts.base import MicroBatchSender
+    from prime_rl.transports.batch.base import BatchSender
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
+from prime_rl.orchestrator.clients import AdminClients, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.metrics import TrainEpisodes
+from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.packing import BatchPacker
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
@@ -56,6 +55,7 @@ from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
+    DispatchFailure,
     EvalBatch,
     GroupCancellation,
     Policy,
@@ -66,21 +66,21 @@ from prime_rl.orchestrator.utils import (
     episode_group_id,
     episode_staleness,
     eval_work,
-    get_weight_dir,
     intercept_vf_logging,
     set_default_executor,
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
-from prime_rl.transports.rollouts import setup_micro_batch_sender
-from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
+from prime_rl.transports.batch import setup_batch_sender
+from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
-from prime_rl.utils.client import InferencePool, init_nccl_broadcast, init_nixl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
+from prime_rl.utils.pathing import get_broadcast_dir
 from prime_rl.utils.utils import (
     clean_exit,
+    final_broadcast_version,
     resolve_latest_ckpt_step,
 )
 
@@ -121,8 +121,9 @@ class Orchestrator:
 
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
-    policy_inference: InferencePool
-    sender: MicroBatchSender | None
+    clients: InferenceClient | None
+    admin_clients: AdminClients | None
+    sender: BatchSender | None
     packer: BatchPacker
     train_envs: TrainEnvs
     train_source: TrainSource
@@ -139,7 +140,7 @@ class Orchestrator:
     eval_envs: EvalEnvs | None
     eval_sink: EvalSink | None
     eval_source: EvalSource | None
-    lora_name: str | None
+    receiver: WeightReceiver
     resume_step: int | None
     lag_task: asyncio.Task | None
 
@@ -170,6 +171,11 @@ class Orchestrator:
         self.wait_for_policy_time = 0.0
         self.component_tasks = []
 
+        # Always assigned by ``setup()``; None-initialized so teardown can run
+        # on a partially completed setup with plain attribute checks
+        self.clients = None
+        self.admin_clients = None
+
         # Optional attributes — ``setup()`` populates them when the relevant
         # config is present
         self.heart = None
@@ -177,10 +183,8 @@ class Orchestrator:
         self.eval_envs = None
         self.eval_sink = None
         self.eval_source = None
-        self.lora_name = None
         self.resume_step = None
         self.lag_task = None
-        self.model_express = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -199,15 +203,17 @@ class Orchestrator:
         # references are external endpoints — each env's Algorithm builds its
         # own pools in ``setup()`` below.
         get_logger().info(f"Initializing policy inference pool ({config.model})")
-        self.policy_inference = InferencePool(
+        self.clients = InferenceClient(
             config.model.client,
             model_name=config.model.name,
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
             renderer_config=config.renderer,
         )
+        self.admin_clients = AdminClients(config.model.client)
 
         await monitors.setup(
+            producer="orch",
             wandb=config.monitors.wandb,
             prime=config.monitors.prime,
             file=config.monitors.file,
@@ -230,7 +236,7 @@ class Orchestrator:
         self.train_envs = TrainEnvs(
             config.train.source,
             config.env_addresses,
-            policy_pool=self.policy_inference,
+            clients=self.clients,
             renderer_config=config.renderer,
         )
         if config.eval is not None:
@@ -245,8 +251,7 @@ class Orchestrator:
                     self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
 
         # Resume below may bump ``policy.version`` and the LoRA model name
-        self.policy.model_name = self.policy_inference.model_name
-        self.lora_name = config.model.lora.name if config.model.lora else None
+        self.policy.model_name = self.clients.model_name
 
         # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
         # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
@@ -261,12 +266,9 @@ class Orchestrator:
         # Transports are local setup — initialize them before the env and inference waits.
         self.packer = BatchPacker(config)
         get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
-        self.sender = setup_micro_batch_sender(
+        self.sender = setup_batch_sender(
             config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
         )
-        if config.weight_broadcast.type == "filesystem":
-            # Nothing to set up client-side — the watcher polls the broadcast dir.
-            get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
 
         # Wait phase: envs, then inference, then the trainer's startup broadcast —
         # the last things before the main loop starts.
@@ -290,7 +292,7 @@ class Orchestrator:
 
         get_logger().info("Waiting for policy inference pool to be ready")
         t0 = time.perf_counter()
-        await self.policy_inference.wait_for_ready(config.model.name)
+        await self.admin_clients.wait_for_ready(config.model.name)
         get_logger().success(f"Policy inference pool ready after {format_time(time.perf_counter() - t0)}")
         # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
@@ -299,74 +301,31 @@ class Orchestrator:
             *(env.algorithm.setup() for env in self.train_envs),
         )
 
-        # The in-memory broadcast transports rendezvous with live inference
-        # engines, so their setup must follow pool readiness.
-        if config.weight_broadcast.type in ("nccl", "nixl"):
-            get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
-            t0 = time.perf_counter()
-            if config.weight_broadcast.type == "nccl":
-                await init_nccl_broadcast(
-                    self.policy_inference.admin_clients,
-                    config.weight_broadcast.host,
-                    config.weight_broadcast.port,
-                    config.weight_broadcast.timeout,
-                    inference_world_size=config.weight_broadcast.inference_world_size,
-                    quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
-                )
-            else:
-                await init_nixl_broadcast(
-                    self.policy_inference.admin_clients,
-                    config.weight_broadcast.host,
-                    config.weight_broadcast.port,
-                    config.weight_broadcast.timeout,
-                    config.weight_broadcast.inference_world_size,
-                    config.weight_broadcast.session_id,
-                )
-                self.model_express = ModelExpressSession(
-                    client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
-                    role="orchestrator",
-                    rank=0,
-                    session_id=config.weight_broadcast.session_id,
-                    worker_id="orchestrator",
-                )
-                self.model_express.publish()
-                await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
-            get_logger().debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
+        get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        t0 = time.perf_counter()
+        # A LoRA run's adapter is registered under the base model name: the
+        # single adapter shadows it (vLLM resolves lora_requests before the
+        # base-model match), so requests keep addressing one stable name.
+        self.receiver = setup_weight_receiver(
+            get_broadcast_dir(config.output_dir),
+            config.weight_broadcast,
+            admin_clients=self.admin_clients.clients,
+            model_name=config.model.name,
+        )
+        await self.receiver.initialize()
+        get_logger().debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
 
         # Sync inference to the incoming policy before the first step, rendezvousing
         # with the trainer's startup broadcast (v{resume_step} on resume, v0 from
-        # scratch).
+        # scratch). The startup broadcast is always coming, so wait for it rather
+        # than failing immediately when it is not there yet.
         sync_version = self.resume_step if self.resume_step is not None else 0
         get_logger().info(f"Syncing inference to the trainer's startup broadcast (v{sync_version})")
         t0 = time.perf_counter()
-        if config.weight_broadcast.type == "nixl":
-            weights_path = None
-        else:
-            check_exists = config.weight_broadcast.type == "filesystem"
-            # The trainer's startup broadcast is always coming, so wait for it
-            # rather than failing immediately when the directory is not there yet.
-            wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
-                STARTUP_WEIGHT_WAIT_TIMEOUT_S
-            )
-            weights_path = get_weight_dir(
-                config.output_dir, sync_version, check_exists=check_exists, wait_timeout=wait_timeout
-            )
-        if self.model_express is not None:
-            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
-        await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=sync_version)
-        if self.model_express is not None:
-            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
-            # Complete the startup rendezvous before the watcher begins its next cycle.
-            await asyncio.to_thread(
-                self.model_express.wait_for,
-                "trainer",
-                count=1,
-                status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                timeout=config.weight_broadcast.timeout,
-            )
-        if self.lora_name is not None:
-            self.policy_inference.update_model_name(self.lora_name)
-            self.policy.model_name = self.lora_name
+        wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
+            STARTUP_WEIGHT_WAIT_TIMEOUT_S
+        )
+        await self.receiver.sync_startup(sync_version, timeout=wait_timeout)
         self.policy.version = sync_version
         get_logger().debug(f"Synced inference to policy v{sync_version} in {format_time(time.perf_counter() - t0)}")
 
@@ -389,7 +348,7 @@ class Orchestrator:
             eval_envs=self.eval_envs,
             train_source=self.train_source,
             eval_source=self.eval_source,
-            policy_pool=self.policy_inference,
+            policy_clients=self.clients,
             policy=self.policy,
             progress=self.progress,
             initial_max_inflight=self.concurrency.max_inflight,
@@ -406,13 +365,12 @@ class Orchestrator:
             on_overload=self.dispatcher.cancel_inflight,
         )
         # The collector always polls — it feeds the concurrency controller;
-        # W&B mirroring is gated on the registered monitor (the collector logs
-        # to the global W&B session, which only exists when init succeeded).
+        # metrics fan out to every registered monitor when collection is on.
         self.inference_metrics = InferenceMetricsCollector(
-            self.policy_inference.admin_clients,
+            self.admin_clients.clients,
             roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
-            log_to_wandb=wandb_enabled and config.collect_inference_metrics,
+            log_metrics=config.collect_inference_metrics,
         )
         await self.inference_metrics.start()
         # One awaited scrape so the concurrency controller derives (and logs) its
@@ -430,13 +388,10 @@ class Orchestrator:
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
-            config,
+            self.receiver,
             policy=self.policy,
-            inference=self.policy_inference,
             observers=[self.dispatcher, self],
-            lora_name=self.lora_name,
             ckpt_step=self.policy.version,
-            model_express=self.model_express,
         )
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
@@ -529,23 +484,23 @@ class Orchestrator:
                 get_logger().warning("Orchestrator cleanup complete (forced)")
             trim_process_memory()
 
-    async def wait_for_final_broadcast(self) -> None:
-        """Stay alive for the trainer's last in-memory broadcast (v{max_steps-1};
-        nothing samples from v{max_steps}, so it is never sent). An in-memory
-        broadcast is a blocking collective — tearing down the watcher before
-        the rendezvous would strand the trainer inside it."""
-        config = self.config
-        if config.weight_broadcast.type not in ("nccl", "nixl") or config.max_steps is None:
+    @property
+    def final_version(self) -> int | None:
+        """Newest policy version the trainer will ever broadcast."""
+        if self.config.max_steps is None:
+            return None
+        return final_broadcast_version(self.config.max_steps, self.config.weight_broadcast.broadcast_final)
+
+    async def wait_for_version(self, version: int, reason: str) -> None:
+        """Bounded wait until the watcher has applied v{version}."""
+        if self.policy.version >= version:
             return
-        final_version = config.max_steps - 1
-        if self.policy.version >= final_version:
-            return
-        get_logger().info(f"Waiting for the trainer's final broadcast (v{final_version}) before shutdown")
+        get_logger().info(f"Waiting for the trainer to broadcast v{version} {reason}")
 
         async def wait() -> None:
-            while self.policy.version < final_version:
+            while self.policy.version < version:
                 self.version_advanced.clear()
-                if self.policy.version >= final_version:
+                if self.policy.version >= version:
                     return
                 # A dead watcher can never deliver the broadcast — fail out
                 # instead of idling until the timeout.
@@ -555,18 +510,28 @@ class Orchestrator:
                 except asyncio.TimeoutError:
                     pass
 
+        timeout = self.config.weight_broadcast.timeout
         try:
-            await asyncio.wait_for(wait(), timeout=config.weight_broadcast.timeout)
+            await asyncio.wait_for(wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            get_logger().warning(
-                f"Trainer did not broadcast v{final_version} within {config.weight_broadcast.timeout}s — "
-                "shutting down anyway"
-            )
+            get_logger().warning(f"Trainer did not broadcast v{version} within {timeout}s — proceeding anyway")
+
+    async def wait_for_final_broadcast(self) -> None:
+        """Stay alive for the trainer's last broadcast. Every broadcast is a
+        blocking rendezvous — tearing down the watcher before it would strand
+        the trainer inside the handshake."""
+        if self.final_version is None:
+            return
+        await self.wait_for_version(self.final_version, reason="before shutdown")
 
     async def main_loop(self) -> None:
-        """Consume completed episodes and ``GroupCancellation`` events from the
-        dispatcher and route them to the train / eval sink. The sinks return a
-        finalized batch (or ``None``); we just dispatch on the result."""
+        """Consume dispatcher results and route them to the train / eval sink.
+
+        Native episodes are persisted as verifier artifacts. Dispatch failures
+        and group cancellations remain internal accounting events.
+
+        The sinks return a finalized batch (or ``None``); we just dispatch on
+        the result."""
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
             if self.draining and self.dispatcher.is_idle:
@@ -585,6 +550,17 @@ class Orchestrator:
                 train_batch = await self.train_sink.cancel(item)
                 if train_batch is not None and not self.draining and not self.stopped.is_set():
                     await self.finalize_train_batch(train_batch)
+                continue
+            if isinstance(item, DispatchFailure):
+                if item.kind == "eval":
+                    assert self.eval_sink is not None
+                    eval_batch = self.eval_sink.fail(item)
+                    if eval_batch is not None:
+                        await self.finalize_eval_batch(eval_batch)
+                else:
+                    train_batch = await self.train_sink.fail(item)
+                    if train_batch is not None and not self.draining and not self.stopped.is_set():
+                        await self.finalize_train_batch(train_batch)
                 continue
             episode = item
 
@@ -709,6 +685,20 @@ class Orchestrator:
             metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
             for env_name, env_pool in pool.by_env().items():
                 metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
+        total_attempts = len(batch.episodes) + len(batch.failures)
+        metrics |= dispatch_failure_metrics(batch.failures, prefix="train/agg/all", total_attempts=total_attempts)
+        failures_by_env: dict[str, list[DispatchFailure]] = {}
+        for failure in batch.failures:
+            failures_by_env.setdefault(failure.env_name, []).append(failure)
+        episodes_by_env = batch.episodes.by_env()
+        for env_name in set(episodes_by_env) | set(failures_by_env):
+            env_failures = failures_by_env.get(env_name, [])
+            env_attempts = len(episodes_by_env.get(env_name, TrainEpisodes())) + len(env_failures)
+            metrics |= dispatch_failure_metrics(
+                env_failures,
+                prefix=f"train/{env_name}/all",
+                total_attempts=env_attempts,
+            )
 
         # Progress / timing / env-share accounting (assembled here, not in the metrics
         # objects). ``num_tokens`` is over the full arrival window; the input/output breakdown is over
@@ -718,7 +708,9 @@ class Orchestrator:
         num_input = sum(record.trace.num_input_tokens for record in effective.records)
         num_output = sum(record.trace.num_output_tokens for record in effective.records)
         num_rollouts = batch.episodes.num_traces
-        num_unique_examples = len({episode_group_id(episode) for episode in batch.episodes})
+        group_ids = {episode_group_id(episode) for episode in batch.episodes}
+        group_ids.update(failure.group_id for failure in batch.failures)
+        num_unique_examples = len(group_ids)
         metrics |= {
             "progress/tokens": num_tokens,
             "progress/input_tokens": num_input,
@@ -765,6 +757,13 @@ class Orchestrator:
 
         self.log_train_batch(batch, step=step, step_time=step_time)
 
+        # The final eval must measure the final weights: hold until the
+        # trainer's last broadcast (v{max_steps} when evals consume it) has
+        # been applied before triggering it. Satisfiable — the trainer
+        # broadcasts right after consuming the batch this call just shipped.
+        if config.eval is not None and config.max_steps is not None and step >= config.max_steps:
+            assert self.final_version is not None
+            await self.wait_for_version(self.final_version, reason="for the final eval")
         self.maybe_trigger_eval(self.progress.step)
         # Drain right after shipping the final batch. Waiting for a further
         # batch to fill would burn inference on data that can never train —
@@ -872,10 +871,10 @@ class Orchestrator:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
         Every quality metric (Reward, Trainable, Turns, Branches, Max Off-Policy, Truncation) is
         computed over exactly the traces shipped to the trainer this step (``batch.cohort``).
-        ``Error``, ``Cancelled``, and ``Ratio`` are rates over the step's full arrival window —
+        ``Error``, ``Dispatch Failure``, ``Cancelled``, and ``Ratio`` describe the step's full arrival window —
         over the shipped set they are 0/0/share-of-shipped by construction, so the window is the
         only scope where they carry signal (and they stay disjoint: a cancellation is a pipeline
-        decision, not a rollout failure)."""
+        decision, an episode error came from the environment, and a dispatch failure produced no episode)."""
         episodes = batch.episodes
         effective = batch.cohort.effective
         eff = effective.metrics
@@ -884,13 +883,16 @@ class Orchestrator:
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
         max_off_policy_steps = max((episode_staleness(episode, step)[0] for episode in effective), default=0)
+        num_attempts = len(episodes) + len(batch.failures)
+        dispatch_failure_rate = len(batch.failures) / num_attempts if num_attempts else 0.0
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
             f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Max Off-Policy {max_off_policy_steps} | "
-            f"Error {episodes.metrics.has_error.mean():.1%} | Cancelled {episodes.metrics.cancelled.mean():.1%} | "
+            f"Error {episodes.metrics.has_error.mean():.1%} | Dispatch Failure {dispatch_failure_rate:.1%} | "
+            f"Cancelled {episodes.metrics.cancelled.mean():.1%} | "
             f"Truncation {eff.is_truncated.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
@@ -899,7 +901,10 @@ class Orchestrator:
 
         window_by_env = episodes.by_env()
         shipped_by_env = effective.by_env()
-        env_names = sorted(set(window_by_env) | set(shipped_by_env))
+        failures_by_env: dict[str, list[DispatchFailure]] = {}
+        for failure in batch.failures:
+            failures_by_env.setdefault(failure.env_name, []).append(failure)
+        env_names = sorted(set(window_by_env) | set(shipped_by_env) | set(failures_by_env))
         name_width = max((len(name) for name in env_names), default=0)
         lines = [head]
         for env_name in env_names:
@@ -907,29 +912,35 @@ class Orchestrator:
             env_eff_pool = shipped_by_env.get(env_name, TrainEpisodes())
             env_eff = env_eff_pool.metrics
             ratio = (pool.num_traces / n_generated) if n_generated else 0.0
+            env_failures = failures_by_env.get(env_name, [])
+            env_attempts = len(pool) + len(env_failures)
+            env_failure_rate = len(env_failures) / env_attempts if env_attempts else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
                 f"Max Off-Policy {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
-                f"Error {pool.metrics.has_error.mean():.1%} | Cancelled {pool.metrics.cancelled.mean():.1%} | "
+                f"Error {pool.metrics.has_error.mean():.1%} | Dispatch Failure {env_failure_rate:.1%} | "
+                f"Cancelled {pool.metrics.cancelled.mean():.1%} | "
                 f"Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors."""
-        if not batch.episodes:
-            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no episodes returned, skipping log")
+        if not batch.episodes and not batch.failures:
+            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
         # The non-errored subset is logged on epoch completion (multiple eval envs share the
         # step's trace file — each epoch appends its cohort once, and every record carries
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
-        await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
+        if batch.episodes.effective:
+            await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
         policy_spans = [eval_work(episode).policy for episode in batch.episodes]
         if any(span is None for span in policy_spans):
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")
         policy_versions = {span.start for span in policy_spans if span is not None}
+        policy_versions.update(failure.policy_version for failure in batch.failures)
         policy_version = min(policy_versions)
         if len(policy_versions) > 1:
             get_logger().warning(
@@ -942,6 +953,12 @@ class Orchestrator:
         metrics: dict[str, float] = {}
         for subset, pool in (("all", episodes), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
+        total_attempts = len(episodes) + len(batch.failures)
+        metrics |= dispatch_failure_metrics(
+            batch.failures,
+            prefix=f"eval/{batch.env_name}/all",
+            total_attempts=total_attempts,
+        )
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
         await monitors.log(metrics, step=batch.step)
@@ -1005,15 +1022,11 @@ class Orchestrator:
     async def on_version_pending(self, step: int) -> None:
         """``VersionObserver`` hook, fired at publish confirmation (pre-apply):
         ``policy.version`` already carries the new version, so wake a held ship."""
-        if self.model_express is not None:
-            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_READY)
         self.version_advanced.set()
 
     async def on_new_version(self, step: int) -> None:
         """``VersionObserver`` hook: the weight update completed;
         re-evaluate the dispatch gate (may resume if the trainer caught up)."""
-        if self.model_express is not None:
-            await asyncio.to_thread(self.model_express.set_status, p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.update_dispatch_gate()
 
     async def stop(self) -> None:
@@ -1041,14 +1054,16 @@ class Orchestrator:
             if self.inference_metrics is not None:
                 get_logger().debug("Stopping inference metrics collector")
                 await self.inference_metrics.stop()
-            if getattr(self, "policy_inference", None) is not None:
-                get_logger().debug("Stopping policy inference pool")
-                await self.policy_inference.stop()
+            if self.clients is not None:
+                await self.clients.aclose()
+            if self.admin_clients is not None:
+                await self.admin_clients.aclose()
             if self.train_envs is not None:
-                get_logger().debug("Stopping generation source and algorithm pools")
+                get_logger().debug("Stopping generation source and algorithm clients")
                 for env in self.train_envs:
-                    for pool in (*env.generation_source.connected_pools, *env.algorithm.connected_pools):
-                        await pool.stop()
+                    for clients in (env.generation_source.connected, env.algorithm.connected):
+                        if clients is not None:
+                            await clients.aclose()
 
         get_logger().info("Stopping orchestrator components")
         t0 = time.perf_counter()

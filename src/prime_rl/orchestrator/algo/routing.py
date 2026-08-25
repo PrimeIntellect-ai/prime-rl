@@ -5,7 +5,7 @@ from __future__ import annotations
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import ActionLossType
-from prime_rl.transports.rollouts import TrainingSample
+from prime_rl.transports.batch import TrainingSample
 
 
 def assign_advantages(trace: vf.Trace, values: float | list[float]) -> None:
