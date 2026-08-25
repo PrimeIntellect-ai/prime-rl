@@ -177,7 +177,6 @@ def _run_experts_grouped_mm_impl(
         h = h * grouped_fp8_gemm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offsets)
         out = grouped_fp8_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
     else:
-
         w1 = w1 if w1.dtype == torch.bfloat16 else w1.bfloat16()
         w2 = w2 if w2.dtype == torch.bfloat16 else w2.bfloat16()
         w3 = w3 if w3.dtype == torch.bfloat16 else w3.bfloat16()
