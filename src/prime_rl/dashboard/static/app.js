@@ -1948,6 +1948,7 @@ let currentEpisode = null;
 let currentLine = null;
 let currentTraceIdx = 0;
 let currentBranchIdx = 0;
+let episodeFetchVersion = 0;
 
 const COPY_SVG =
   `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">` +
@@ -2069,14 +2070,18 @@ async function ensureTokens() {
   const wantsRendered = state.traces.viewMode === "rendered";
   if ((!wantsPieces || currentEpisode._hasTokens) && (!wantsRendered || currentEpisode._hasRendered)) return;
   const line = currentLine;
-  const episode = await fetchEpisode(line, wantsPieces || currentEpisode._hasTokens, wantsRendered || currentEpisode._hasRendered);
-  if (line !== currentLine) return;
-  episode._hasTokens = wantsPieces || currentEpisode._hasTokens;
-  episode._hasRendered = wantsRendered || currentEpisode._hasRendered;
+  const withTokens = wantsPieces || !!currentEpisode._hasTokens;
+  const withRendered = wantsRendered || !!currentEpisode._hasRendered;
+  const requestVersion = ++episodeFetchVersion;
+  const episode = await fetchEpisode(line, withTokens, withRendered);
+  if (line !== currentLine || requestVersion !== episodeFetchVersion) return;
+  episode._hasTokens = withTokens;
+  episode._hasRendered = withRendered;
   currentEpisode = episode;
 }
 
 async function openEpisode(line) {
+  const requestVersion = ++episodeFetchVersion;
   $("#trace-modal").hidden = false;
   $("#drawer-backdrop").hidden = false;
   currentLine = line;
@@ -2087,7 +2092,7 @@ async function openEpisode(line) {
   const withTokens = !!$("#token-signal").value;
   const withRendered = state.traces.viewMode === "rendered";
   const episode = await fetchEpisode(line, withTokens, withRendered);
-  if (line !== currentLine) return; // user already moved to another rollout
+  if (line !== currentLine || requestVersion !== episodeFetchVersion) return;
   episode._hasTokens = withTokens;
   episode._hasRendered = withRendered;
   currentEpisode = episode;
@@ -2097,6 +2102,7 @@ async function openEpisode(line) {
 }
 
 function closeDrawer() {
+  episodeFetchVersion++;
   $("#trace-modal").hidden = true;
   $("#drawer-backdrop").hidden = true;
   currentEpisode = null;
@@ -2289,7 +2295,7 @@ function renderedTokensHtml(trace, branches) {
       `<pre class="rendered-text">${body}</pre></details>` + errors
     );
   }
-  if (rendered.status !== "ok" || selected?.text == null) {
+  if (selected?.text == null) {
     const [title, detail] = unavailable[rendered.status] ?? ["rendered text unavailable", "The recorded token sequence could not be decoded."];
     return emptyState(title, detail) + errors;
   }
