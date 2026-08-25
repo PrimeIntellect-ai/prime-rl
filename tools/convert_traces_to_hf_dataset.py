@@ -122,9 +122,14 @@ def register_in_dataset_card(root: Path, subset: str, split: str, rel_path: str)
     body = ""
     if readme.exists():
         text = readme.read_text()
-        if text.startswith("---"):
-            _, header, body = text.split("---", 2)
+        lines = text.splitlines(keepends=True)
+        end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
+        if lines and lines[0].strip() == "---" and end is not None:
+            header = "".join(lines[1:end])
+            body = "".join(lines[end + 1 :])
             meta = yaml.safe_load(header) or {}
+        else:
+            body = text
     configs = meta.setdefault("configs", [])
     config = next((c for c in configs if c["config_name"] == subset), None)
     if config is None:
@@ -135,7 +140,7 @@ def register_in_dataset_card(root: Path, subset: str, split: str, rel_path: str)
         config["data_files"].append({"split": split, "path": rel_path})
     else:
         entry["path"] = rel_path
-    text = f"---\n{yaml.safe_dump(meta, sort_keys=False)}---{body}"
+    text = f"---\n{yaml.safe_dump(meta, sort_keys=False)}---\n{body}"
     readme.write_text(text if text.endswith("\n") else text + "\n")
 
 
