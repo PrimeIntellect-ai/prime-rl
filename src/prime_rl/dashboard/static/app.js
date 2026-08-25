@@ -2456,9 +2456,16 @@ function renderMessages(ep, trace, branches) {
     (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
     errorsHtml;
   if (hl && !hl.scrolled) {
-    hl.scrolled = true;
     const first = container.querySelector(".hl-entry");
-    if (first) requestAnimationFrame(() => first.scrollIntoView({ block: "start", behavior: "smooth" }));
+    // consume the one-shot flag only when the scroll lands: openEpisode renders
+    // twice (enrichment re-render), which detaches the first render's node
+    // before its scheduled scroll fires
+    if (first)
+      requestAnimationFrame(() => {
+        if (!first.isConnected) return;
+        hl.scrolled = true;
+        first.scrollIntoView({ block: "start", behavior: "smooth" });
+      });
   }
   if (rendered < path.length) {
     const sentinel = container.querySelector("#tm-more");
