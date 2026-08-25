@@ -236,17 +236,17 @@ def validate_run_dir(
 
 
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
-    """Remove stale rollouts, broadcasts, and traces past ``resume_step``.
+    """Remove stale rollouts past ``resume_step`` and broadcasts from it onward.
 
     Pass ``resume_step=-1`` to wipe every step directory (fresh runs).
     """
-    dirs = [
-        get_rollout_dir(output_dir),
-        get_broadcast_dir(output_dir),
+    cleanup_rules = [
+        (get_rollout_dir(output_dir), lambda step: step > resume_step),
+        (get_broadcast_dir(output_dir), lambda step: step >= resume_step),
     ]
 
-    for directory in dirs:
-        steps_to_delete = [step for step in get_all_ckpt_steps(directory) if step > resume_step]
+    for directory, should_delete in cleanup_rules:
+        steps_to_delete = [step for step in get_all_ckpt_steps(directory) if should_delete(step)]
         if not steps_to_delete:
             continue
         get_logger().info(

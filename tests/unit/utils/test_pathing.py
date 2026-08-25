@@ -1,6 +1,12 @@
 import pytest
 
-from prime_rl.utils.pathing import validate_run_dir
+from prime_rl.utils.pathing import (
+    clean_future_steps,
+    get_broadcast_dir,
+    get_rollout_dir,
+    get_step_path,
+    validate_run_dir,
+)
 
 
 def test_nonexistent_dir_passes(tmp_path):
@@ -88,3 +94,20 @@ def test_clean_outside_output_dir_raises(tmp_path):
     with pytest.raises(ValueError, match="remain under output_dir"):
         validate_run_dir(escaped, output_dir=tmp_path / "outputs", resuming=False, clean=True)
     assert escaped.exists()
+
+
+def test_clean_future_steps_rebuilds_resume_broadcast(tmp_path):
+    rollout_dir = get_rollout_dir(tmp_path)
+    broadcast_dir = get_broadcast_dir(tmp_path)
+    for parent in (rollout_dir, broadcast_dir):
+        for step in (1, 2, 3):
+            get_step_path(parent, step).mkdir(parents=True)
+
+    clean_future_steps(tmp_path, resume_step=2)
+
+    assert get_step_path(rollout_dir, 1).exists()
+    assert get_step_path(rollout_dir, 2).exists()
+    assert not get_step_path(rollout_dir, 3).exists()
+    assert get_step_path(broadcast_dir, 1).exists()
+    assert not get_step_path(broadcast_dir, 2).exists()
+    assert not get_step_path(broadcast_dir, 3).exists()
