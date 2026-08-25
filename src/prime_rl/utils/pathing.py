@@ -61,7 +61,7 @@ def format_log_message(
 
     log_lines: list[str] = []
     if job_log:
-        log_lines.append(f"{i1}{'Job:':<{col}}tail -F {log_dir.parent.parent}/job_*.log")
+        log_lines.append(f"{i1}{'Job:':<{col}}tail -F {get_launcher_log_dir(log_dir.parent.parent)}/*job_*.log")
     if trainer:
         log_lines.append(f"{i1}{'Trainer:':<{col}}tail -F {log_dir}/trainer.log")
         if num_train_nodes > 1:
@@ -129,6 +129,14 @@ def write_launch_toml(run_dir: Path, name: str) -> None:
     (config_dir / f"{name}.toml").write_text("\n".join(texts))
 
 
+def get_launcher_dir(output_dir: Path) -> Path:
+    return output_dir / "launcher"
+
+
+def get_launcher_log_dir(output_dir: Path) -> Path:
+    return get_launcher_dir(output_dir) / "logs"
+
+
 def get_ckpt_dir(output_dir: Path) -> Path:
     return output_dir / "checkpoints"
 
@@ -174,10 +182,9 @@ def has_checkpoints(output_dir: Path) -> bool:
     return ckpt_dir.exists() and any(ckpt_dir.iterdir())
 
 
-# Launcher artifacts that may exist in a run directory before training starts: resolved
-# configs and the SLURM script/job log (a submitted job re-invokes the entrypoint inside
-# the run directory). Everything else is treated as artifacts of a previous run.
-LAUNCHER_ARTIFACTS = ("configs", "rl.sbatch", "sft.sbatch", "job_*.log")
+# Launcher artifacts may exist before training starts. Everything else is treated as
+# artifacts of a previous run.
+LAUNCHER_ARTIFACTS = ("configs", "launcher")
 
 
 def has_run_artifacts(run_dir: Path) -> bool:
@@ -229,17 +236,17 @@ def validate_run_dir(
 
 
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
-    """Remove stale rollouts, broadcasts, and traces past ``resume_step``.
+    """Remove stale rollouts past ``resume_step`` and broadcasts from it onward.
 
     Pass ``resume_step=-1`` to wipe every step directory (fresh runs).
     """
-    dirs = [
-        get_rollout_dir(output_dir),
-        get_broadcast_dir(output_dir),
+    cleanup_rules = [
+        (get_rollout_dir(output_dir), lambda step: step > resume_step),
+        (get_broadcast_dir(output_dir), lambda step: step >= resume_step),
     ]
 
-    for directory in dirs:
-        steps_to_delete = [step for step in get_all_ckpt_steps(directory) if step > resume_step]
+    for directory, should_delete in cleanup_rules:
+        steps_to_delete = [step for step in get_all_ckpt_steps(directory) if should_delete(step)]
         if not steps_to_delete:
             continue
         get_logger().info(

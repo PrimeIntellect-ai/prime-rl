@@ -108,7 +108,7 @@ def check_loss_goes_down(lines: list[str]):
 
 
 def check_final_eval_reward_above(lines: list[str], env_name: str, min_threshold: float):
-    """Assert the LAST `Evaluated {env_name} (Step N) | ... | Reward X.XXXX`
+    """Assert the last `Evaluated {env_name} | ... | Reward X.XXXX`
     line reports a reward above ``min_threshold``.
 
     Robust for short distill smokes: until the policy converges, eval reward is

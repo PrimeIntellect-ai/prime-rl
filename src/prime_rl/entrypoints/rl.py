@@ -24,6 +24,8 @@ from prime_rl.utils.pathing import (
     format_log_message,
     get_ckpt_dir,
     get_config_dir,
+    get_launcher_dir,
+    get_launcher_log_dir,
     latest_log_dir,
     resolve_latest_ckpt_step,
     validate_run_dir,
@@ -373,8 +375,9 @@ def rl_local(config: RLConfig):
         logger.success("Launcher complete")
         log_dashboard_url(logger, dashboard_url)
 
-        # Check for errors from monitor threads
-        while not (stop_events["orchestrator"].is_set() and stop_events["trainer"].is_set()):
+        # Trainer and orchestrator completion is the successful stop condition.
+        completion_events = (stop_events["trainer"], stop_events["orchestrator"])
+        while not all(event.is_set() for event in completion_events):
             if error_queue:
                 error = error_queue[0]
                 logger.error(f"Error: {error}")
@@ -461,6 +464,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             **config.slurm.template_vars,
             config_path=config_dir / RL_CONFIG,
             output_dir=config.run_dir,
+            launcher_dir=get_launcher_dir(config.run_dir),
+            launcher_log_dir=get_launcher_log_dir(config.run_dir),
             gpus_per_node=config.deployment.gpus_per_node,
         )
     elif config.inference is not None and config.inference.deployment.type == "disaggregated":
@@ -472,6 +477,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             run_name=config.run.name,
             config_dir=config_dir,
             output_dir=config.run_dir,
+            launcher_dir=get_launcher_dir(config.run_dir),
+            launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
             nodes_per_infer_replica=infer_deploy.num_nodes,
@@ -513,6 +520,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             run_name=config.run.name,
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             output_dir=config.run_dir,
+            launcher_dir=get_launcher_dir(config.run_dir),
+            launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes,
             nodes_per_infer_replica=config.deployment.infer_nodes_per_replica,
@@ -545,6 +554,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
+    get_launcher_log_dir(config.run_dir).mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
 
 
@@ -593,7 +603,7 @@ def rl_slurm(config: RLConfig):
             num_infer_nodes=config.deployment.total_infer_nodes if has_infer else 0,
         )
 
-    script_path = config.run_dir / RL_SBATCH
+    script_path = get_launcher_dir(config.run_dir) / RL_SBATCH
     write_slurm_script(config, config_dir, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 

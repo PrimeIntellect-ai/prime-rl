@@ -42,12 +42,6 @@ class BaseWeightBroadcastConfig(BaseConfig):
     """Timeout in seconds for the broadcast handshake and transfer. The trainer
     fails the run when no consumer acknowledges an offered version in time."""
 
-    broadcast_final: bool = True
-    """Internal - stamped by the RL/SFT launcher, never set by users: whether the
-    trainer broadcasts the final version v{max_steps}. True iff something consumes
-    it (a configured final eval) - training itself never samples from the final
-    version."""
-
 
 class RunConfig(BaseConfig):
     name: str | None = None

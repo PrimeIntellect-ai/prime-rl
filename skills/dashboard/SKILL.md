@@ -1,6 +1,6 @@
 ---
 name: dashboard
-description: Find, start, use, and stop the local run dashboard — the web UI for run output dirs (metrics, configs, traces, logs). Use when asked for the dashboard URL, when a run needs watching in the browser, or when a dashboard must be restarted or killed.
+description: Find, start, use, and stop the local run dashboard for metrics, configs, traces, logs, and reports. Use when asked for its URL, to watch or inspect a run, to control the open dashboard, or to create a cited dashboard report explicitly requested by the user.
 ---
 
 # Run dashboard
@@ -51,3 +51,60 @@ A clean exit releases `daemon.json`; a stale file from a dead process is taken
 over by the next start. Killing a dashboard never affects runs (it only reads),
 and killing a run never takes the dashboard down (it runs in its own session).
 Restart by launching any run, or directly: `uv run dashboard`.
+
+## Point the open dashboard
+
+Use `POST /api/view` to show relevant run data in every connected dashboard
+tab:
+
+```bash
+curl -sS -X POST $(jq -r .url ~/.cache/prime-rl/dashboard/daemon.json)/api/view \
+  -H 'content-type: application/json' -d '{
+    "run": "demo-rl", "tab": "traces",
+    "step": 0, "kind": "train", "subset": "effective",
+    "episode": "ep-s00-reverse-text-0",
+    "highlight": [{"node": 3, "quote": "hint: reverse the words", "reason": "tool result the policy conditioned on"}]
+  }'
+```
+
+`run` is required; other fields are optional and leave unspecified UI state
+unchanged. For trace evidence, supply `step`, `kind`, and `subset` together and
+address the episode by stable `id`. Use optional `trace` and `branch` indices
+for multi-agent traces and `highlight` entries shaped as `{node, quote,
+reason, field?}`. On `409`, tell the user to open the returned `url`; the stored
+command applies when the tab connects.
+
+## Write a report only when asked
+
+Create a report only when the user explicitly asks for one. Otherwise answer
+normally; use `/api/view` when showing trace evidence would help.
+
+Write requested reports to `<run>/reports/<slug>.md`, then POST `{"run": ...,
+"tab": "report", "report": "<slug>"}`. Use Markdown with a frontmatter
+`title` and one-line JSON citation definitions:
+
+```markdown
+---
+title: Why does reward dip at step 4?
+---
+
+The dip is provider errors, not policy regression [^err].
+
+[^err]: {"step": 4, "kind": "train", "subset": "all", "episode": "ep-...", "node": 0, "quote": "engine overloaded", "note": "The failed call that emptied this step's batch."}
+```
+
+Each citation requires `step`, `kind`, `subset`, `episode`, `quote`, and `note`.
+Use the episode `id`, never `line`. Copy a short, distinctive quote exactly;
+matching is case-sensitive and whitespace-insensitive. Keep `note` to 1–2
+sentences explaining why the quote supports the claim.
+
+Use adjacent markers (`[^a] [^b]`) only when one claim genuinely depends on
+distinct passages, such as a comparison or corroboration. Use one citation
+when one passage is sufficient.
+
+Optional fields are `run`, `trace`, `branch`, `node`, `field`, `prefix`, and
+`suffix`. Use `field: "content"` or `"reasoning"` only to disambiguate message
+parts. Use verbatim adjacent `prefix`/`suffix` only when a quote repeats.
+Ambiguous or mismatched citations remain broken and do not navigate.
+
+Use Markdown; raw HTML is escaped.

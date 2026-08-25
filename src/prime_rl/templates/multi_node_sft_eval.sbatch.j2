@@ -18,8 +18,8 @@
 #SBATCH --exclude={{ exclude }}
 {%- endif %}
 #SBATCH --exclusive
-#SBATCH --output={{ output_dir }}/eval_job_%j.log
-#SBATCH --error={{ output_dir }}/eval_job_%j.log
+#SBATCH --output={{ launcher_log_dir }}/eval_job_%j.log
+#SBATCH --error={{ launcher_log_dir }}/eval_job_%j.log
 
 # Online-eval job for a decoupled SFT run: the inference pool (one vLLM engine per
 # DP rank behind a single router) plus the evals process and its env servers. The trainer
@@ -42,6 +42,7 @@ export PROJECT_DIR={{ project_dir }}
 export CONFIG_DIR={{ config_dir }}
 export CONFIG_PATH=$CONFIG_DIR/inference.json
 export OUTPUT_DIR={{ output_dir }}
+export LAUNCHER_DIR={{ launcher_dir }}
 # Move a previous job's inference logs aside instead of deleting them: rm of log
 # files another job's processes still hold open can wedge in the NFS client and
 # hang the whole job before srun even runs.
@@ -50,10 +51,9 @@ mkdir -p $OUTPUT_DIR/logs/inference
 ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 
 # A clean evals exit cannot trip srun --kill-on-bad-exit (which only propagates
-# failures), so node 0 publishes completion through this job-scoped sentinel and the
-# other nodes watch for it to release their engines. Stale sentinels from other job
-# IDs are inert, so only this job's own path needs clearing.
-export EVAL_DONE=$OUTPUT_DIR/.eval_done_$SLURM_JOB_ID
+# failures), so node 0 publishes completion through this sentinel and the other nodes
+# watch for it to release their engines.
+export EVAL_DONE=$LAUNCHER_DIR/.eval.done
 rm -f "$EVAL_DONE"
 {% if prl_run_id %}
 # Trainer (separate SLURM job) and evals log to a single shared W&B run whose id
@@ -72,7 +72,7 @@ export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
 {% if use_nccl_broadcast %}
 : "${TRAIN_JOB_ID:?TRAIN_JOB_ID is required for NCCL weight broadcast}"
-TRAIN_HOST_FILE="$OUTPUT_DIR/.sft_nccl_host_$TRAIN_JOB_ID"
+TRAIN_HOST_FILE="$LAUNCHER_DIR/.sft_nccl_host_$TRAIN_JOB_ID"
 until [ -s "$TRAIN_HOST_FILE" ]; do sleep 1; done
 export TRAIN_HOST=$(<"$TRAIN_HOST_FILE")
 rm -f "$TRAIN_HOST_FILE"

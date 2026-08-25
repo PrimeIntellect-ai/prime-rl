@@ -18,8 +18,8 @@
 #SBATCH --exclude={{ exclude }}
 {%- endif %}
 #SBATCH --exclusive
-#SBATCH --output={{ output_dir }}/job_%j.log
-#SBATCH --error={{ output_dir }}/job_%j.log
+#SBATCH --output={{ launcher_log_dir }}/job_%j.log
+#SBATCH --error={{ launcher_log_dir }}/job_%j.log
 
 # Exit immediately on any failed command so a crash anywhere releases the
 # allocation instead of leaving zombie processes holding nodes.
