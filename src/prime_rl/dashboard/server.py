@@ -976,16 +976,13 @@ def activity_spans(trace: dict, node_indexes: set[int], *, include_unlinked: boo
         else:
             node = nodes[node_index]
         call_time = call.get("time") or {}
-        started = call_time.get("start") or node.get("timestamp")
-        ended = call_time.get("end") or node.get("timestamp")
-        if ended is None and started is not None and trace.get("is_completed"):
-            ended = started
+        started = call_time.get("start")
+        ended = call_time.get("end")
         usage = call.get("usage") or {}
         input_tokens, cached_tokens, output_tokens = token_usage(usage)
         text = " ".join(message_text(node.get("message") or {}).split())
         spans.append(
             {
-                "id": f"call-{call_index}",
                 "kind": "model_call",
                 "label": f"turn {len(spans) + 1}",
                 "track": "activity",
@@ -993,7 +990,6 @@ def activity_spans(trace: dict, node_indexes: set[int], *, include_unlinked: boo
                 "node_index": node_index,
                 "started_at": started,
                 "ended_at": ended,
-                "untimed": started is None,
                 "status": "completed" if ended is not None or trace.get("is_completed") else "running",
                 "snippet": text[:240],
                 "input_tokens": input_tokens,
@@ -1020,7 +1016,6 @@ def lifecycle_spans(trace: dict) -> list[dict]:
             continue
         spans.append(
             {
-                "id": kind,
                 "kind": kind,
                 "label": label,
                 "track": "lifecycle",
@@ -1043,35 +1038,30 @@ def timeline_lane(
     activities: list[dict],
     started_at: float | None = None,
 ) -> dict:
-    timestamps = [
-        span[edge]
-        for span in lifecycle + activities
-        for edge in ("started_at", "ended_at")
-        if span.get(edge) is not None
-    ]
-    started = started_at if started_at is not None else min(timestamps, default=None)
+    spans = lifecycle + activities
+    starts = [span["started_at"] for span in spans if span.get("started_at") is not None]
+    ends = [span["ended_at"] for span in spans if span.get("ended_at") is not None]
+    started = started_at if started_at is not None else min(starts or ends, default=None)
     status = (
         ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running")
         if subagent
         else timeline_status(trace)
     )
-    ended = max(timestamps, default=None) if status != "running" else None
+    ended = max(ends, default=None) if status != "running" else None
     agent = trace.get("agent") or {}
     config = agent.get("config") or {}
     client = config.get("client") or {}
     return {
         "trace_index": trace_index,
         "label": label,
-        "role": agent.get("name") or "agent",
         "model": config.get("model") or client.get("renderer_model_name") or "",
         "depth": depth,
         "started_at": started,
         "ended_at": ended,
-        "duration": ended - started if started is not None and ended is not None else None,
         "status": status,
         "outcome": status if subagent else (trace.get("stop_condition") or status),
         "reward": None if subagent else timeline_reward(trace),
-        "spans": lifecycle + activities,
+        "spans": spans,
     }
 
 
@@ -1111,13 +1101,10 @@ def project_episode_timeline(episode: dict) -> dict:
                 [(span.get("ended_at") or span["started_at"]) for span in timed_activities] or component_timestamps,
                 default=None,
             )
-            child_completed = trace.get("is_completed") or bool(
-                activities and all(span["status"] == "completed" for span in activities)
-            )
+            child_completed = bool(trace.get("is_completed"))
             child_lifecycle = (
                 [
                     {
-                        "id": f"subagent-{root}",
                         "kind": "agent",
                         "label": "subagent",
                         "track": "lifecycle",
@@ -1169,14 +1156,7 @@ def project_episode_timeline(episode: dict) -> dict:
         lane_groups.append((parent, descendants))
     lane_groups.sort(key=lambda group: group[0]["started_at"] if group[0]["started_at"] is not None else float("inf"))
     lanes = [lane for parent, children in lane_groups for lane in (parent, *children)]
-    starts = [lane["started_at"] for lane in lanes if lane.get("started_at") is not None]
-    ends = [lane["ended_at"] for lane in lanes if lane.get("ended_at") is not None]
-    return {
-        "episode_id": episode.get("id"),
-        "started_at": min(starts, default=None),
-        "ended_at": max(ends, default=None),
-        "lanes": lanes,
-    }
+    return {"lanes": lanes}
 
 
 @app.get("/api/runs/{run}/rollouts")

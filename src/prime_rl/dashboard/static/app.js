@@ -2665,14 +2665,13 @@ function timelineTipAttr(payload) {
 }
 
 function timelineSpanHtml(lane, span, start, total) {
-  if (span.started_at == null && !span.untimed) return "";
-  const left = span.untimed ? 0 : Math.max(0, Math.min(100, ((span.started_at - start) / total) * 100));
-  const end = span.ended_at ?? span.started_at;
-  const width = span.untimed ? 0.35 : Math.max(0.35, Math.min(100 - left, ((end - span.started_at) / total) * 100));
+  const partial = span.started_at == null || span.ended_at == null;
+  const left = span.started_at == null ? 0 : Math.max(0, Math.min(100, ((span.started_at - start) / total) * 100));
+  const width = partial ? 0.35 : Math.max(0.35, Math.min(100 - left, ((span.ended_at - span.started_at) / total) * 100));
   const rows = [
-    ["start", span.untimed ? "unknown" : timelineClock(span.started_at)],
-    ["end", span.untimed ? "unknown" : span.ended_at == null ? "open" : timelineClock(span.ended_at)],
-    ["duration", span.untimed || span.ended_at == null ? "—" : fmtDuration(span.ended_at - span.started_at)],
+    ["start", span.started_at == null ? "unknown" : timelineClock(span.started_at)],
+    ["end", span.ended_at == null ? (span.status === "running" ? "open" : "unknown") : timelineClock(span.ended_at)],
+    ["duration", partial ? "—" : fmtDuration(span.ended_at - span.started_at)],
   ];
   if (span.track === "activity") {
     if (span.input_tokens != null) rows.push(["input tokens", fmtCompact(span.input_tokens)]);
@@ -2690,24 +2689,27 @@ function timelineSpanHtml(lane, span, start, total) {
   const node = span.node_index == null ? "" : ` data-tl-node="${span.node_index}"`;
   const call = span.call_index == null ? "" : ` data-tl-call="${span.call_index}"`;
   return (
-    `<button class="tl-span ${esc(span.track)} ${esc(span.kind)} ${span.status === "running" ? "running" : ""} ${span.untimed ? "untimed" : ""}"` +
+    `<button class="tl-span ${esc(span.track)} ${esc(span.kind)} ${span.status === "running" ? "running" : ""} ${partial ? "untimed" : ""}"` +
     ` style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%" data-tl-trace="${lane.trace_index}"${node}${call}${tip}></button>`
   );
 }
 
 function timelineLaneHtml(lane, start, total) {
-  const model = lane.model || lane.role || "agent";
   const grids = [25, 50, 75].map((left) => `<i class="tl-gridline" style="left:${left}%"></i>`).join("");
   const spans = (lane.spans || []).map((span) => timelineSpanHtml(lane, span, start, total)).join("");
-  const duration = lane.duration != null ? fmtDuration(lane.duration) : lane.started_at ? fmtDuration(Math.max(0, (lane.ended_at || Date.now() / 1000) - lane.started_at)) : "—";
+  const duration = lane.started_at == null || lane.ended_at == null ? "—" : fmtDuration(lane.ended_at - lane.started_at);
+  const ended = lane.ended_at == null ? (lane.status === "running" ? "open" : "unknown") : timelineClock(lane.ended_at);
+  const model = lane.model
+    ? `<div class="tl-label-meta" title="${esc(lane.model)}">${esc(lane.model)}</div>`
+    : "";
   return (
     `<div class="tl-lane" data-tl-trace="${lane.trace_index}">` +
     `<div class="tl-label" style="padding-left:${10 + (lane.depth || 0) * 18}px">` +
     `${lane.depth ? '<span class="tl-tree">└</span>' : ""}<span class="tl-dot" style="background:${PALETTE[lane.trace_index % PALETTE.length]}"></span>` +
     `<span class="tl-label-copy"><div class="tl-label-name" title="${esc(lane.label)}">${esc(lane.label)}</div>` +
-    `<div class="tl-label-meta" title="${esc(model)}">${esc(model)}</div></span></div>` +
+    `${model}</span></div>` +
     `<div class="tl-track">${grids}${spans}</div>` +
-    `<div class="tl-time"><span>${duration}</span><span class="muted">${lane.ended_at == null ? "open" : timelineClock(lane.ended_at)}</span></div>` +
+    `<div class="tl-time"><span>${duration}</span><span class="muted">${ended}</span></div>` +
     `<div class="tl-outcome"><span class="tl-state ${esc(lane.status)}">${esc(lane.outcome || lane.status)}</span>` +
     `${lane.reward == null ? "" : `<span class="tl-reward">reward ${fmtReward(lane.reward)}</span>`}</div></div>`
   );
@@ -2721,13 +2723,13 @@ function renderTimeline() {
     return;
   }
   if (!(timeline.lanes || []).length) {
-    target.innerHTML = emptyState("no timeline", "this episode carries no timed agent traces");
+    target.innerHTML = emptyState("no timeline", "this episode carries no agent traces");
     return;
   }
   const starts = timeline.lanes.map((lane) => lane.started_at).filter((value) => value != null);
   const ends = timeline.lanes.map((lane) => lane.ended_at ?? lane.started_at).filter((value) => value != null);
-  const start = timeline.started_at ?? (starts.length ? Math.min(...starts) : 0);
-  const end = timeline.ended_at ?? (ends.length ? Math.max(...ends) : start + 1);
+  const start = starts.length ? Math.min(...starts) : 0;
+  const end = ends.length ? Math.max(...ends) : start + 1;
   const total = Math.max(1, end - start);
   const axis = [0, 0.25, 0.5, 0.75, 1]
     .map((fraction) => `<span style="left:${fraction * 100}%">${fraction ? fmtDuration(total * fraction) : "0"}</span>`)
