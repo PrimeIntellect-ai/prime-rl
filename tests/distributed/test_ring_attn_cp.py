@@ -38,6 +38,16 @@ _NOT_SM100 = _SM_MAJOR is not None and (_SM_MAJOR, _SM_MINOR) != (10, 0)
 
 
 class TestRingAttnCP(DTest):
+    """Context-parallel attention must match the single-GPU reference bit for bit.
+
+    These wrappers all-gather K/V and then make ordinary varlen calls, rather than merging
+    per-step partial outputs and LSEs across ranks the way online ring attention does. Causality
+    forces each rank's key range to start at its document's start, so every output row reduces
+    over the same key blocks, in the same order, as the reference: identical arithmetic, hence
+    identical bits. A mismatch therefore means the reduction pattern changed, not that rounding
+    drifted.
+    """
+
     default_world_size = 2
 
     def _build_qkv(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int, float]:
@@ -56,9 +66,7 @@ class TestRingAttnCP(DTest):
 
     def _assert_shard_matches_reference(self, ref_out: torch.Tensor, out: torch.Tensor) -> None:
         expected = torch.chunk(ref_out, self.world_size, dim=0)[self.rank]
-        # Same kernel underneath; CP just reorders it into per-head-group calls over
-        # all-gathered K/V, so differences should stay within ordinary bf16 rounding.
-        torch.testing.assert_close(out, expected, rtol=2e-2, atol=2e-2)
+        assert torch.equal(out, expected)
 
     @pytest.mark.skipif(not _HAS_FLASH_ATTN, reason="flash_attn not installed")
     def test_fa2_correctness(self) -> None:
