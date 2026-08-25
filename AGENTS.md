@@ -53,6 +53,8 @@ multi-GPU distributed tests, which subclass `DTest` (`tests/dtest.py`) — the c
 test methods transparent access to `self.rank`/`self.world_size`/`self.device` inside a spawned
 worker process, which a plain function or fixture can't replicate without either dropping
 support for combining with ordinary pytest fixtures or resorting to per-test signature surgery.
+`DTest`-based tests live under `tests/distributed/`, which CI runs on a multi-GPU runner —
+don't put them under `tests/unit/`, which runs on a single-GPU runner and would silently skip them.
 Subclasses are auto-tagged `gpu`/`distributed` via `DTest.pytestmark` — don't add `pytestmark` yourself.
 
 - **Conservative test additions**: don't add new tests unless the user explicitly asks for them or it's clearly necessary. Editing existing tests is fine, but adding new test files or test functions should be the exception, not the default.

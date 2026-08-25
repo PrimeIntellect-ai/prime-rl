@@ -48,6 +48,43 @@ jobs:
           PYTEST_OUTPUT_DIR: /tmp/outputs
         run: uv run pytest tests/unit -m gpu
 
+  distributed-tests:
+    name: Distributed tests
+    runs-on: 4xa6000
+    container:
+      image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
+      options: --gpus all
+    timeout-minutes: 45
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+      - name: Init public submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Install dependencies
+        run: uv sync --all-extras --all-packages --locked
+      - name: Run distributed tests
+        env:
+          USERNAME_CI: CI_RUNNER
+          WANDB_MODE: offline
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+          PYTEST_OUTPUT_DIR: /tmp/outputs
+        run: uv run pytest tests/distributed -m distributed
+
   integration-tests:
     name: Integration tests (${{ matrix.test }})
     runs-on: ${{ matrix.runner }}
