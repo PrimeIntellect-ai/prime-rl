@@ -10,7 +10,13 @@ from typing import Any
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import format_log_message, get_config_dir, latest_log_dir
+from prime_rl.utils.pathing import (
+    format_log_message,
+    get_config_dir,
+    get_launcher_dir,
+    get_launcher_log_dir,
+    latest_log_dir,
+)
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_INFERENCE_ENV_VARS,
@@ -71,6 +77,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         **config.slurm.template_vars,
         config_path=config_path,
         output_dir=config.output_dir,
+        launcher_log_dir=get_launcher_log_dir(config.output_dir),
         gpus_per_node=config.deployment.gpus_per_node,
         dp_per_node=dp_per_node,
         num_nodes=getattr(config.deployment, "num_nodes", 1),
@@ -116,6 +123,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
     script = template.render(**template_vars)
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
+    get_launcher_log_dir(config.output_dir).mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
 
 
@@ -131,7 +139,7 @@ def inference_slurm(config: InferenceConfig):
     config_path = write_config(config, config_dir, exclude=exclude, engine_only=is_multi_node)
     logger.info(f"Wrote config to {config_path}")
 
-    script_path = config.output_dir / INFERENCE_SBATCH
+    script_path = get_launcher_dir(config.output_dir) / INFERENCE_SBATCH
     write_slurm_script(config, config_path, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 

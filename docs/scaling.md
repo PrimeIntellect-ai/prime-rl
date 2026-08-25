@@ -194,8 +194,10 @@ Launch:
 
 ```bash
 uv run rl @ base_rl.toml @ my_slurm.toml             # submits via sbatch
-uv run rl @ base_rl.toml @ my_slurm.toml --dry-run   # writes the sbatch script + resolved config, exits
+uv run rl @ base_rl.toml @ my_slurm.toml --dry-run   # writes launcher/rl.sbatch + resolved config, exits
 ```
+
+Every SLURM entrypoint stores its generated scripts and coordination files under `<run_dir>/launcher/`. SLURM stdout and stderr go to `launcher/logs/`. Local launches do not create `launcher/`.
 
 ### `[deployment]` Block
 

@@ -45,6 +45,7 @@ const state = {
     errorsOnly: prefs.traceErrorsOnly ?? false,
     sort: (prefs.traceSort ?? "line:asc").split(":")[0],
     order: (prefs.traceSort ?? "line:asc").split(":")[1],
+    viewMode: prefs.tokenSignal === "rendered" ? "rendered" : (prefs.traceViewMode ?? "messages"),
   },
   report: { loaded: false, files: [], file: null, wanted: null, text: null, mtime: null, citations: {}, order: [], verify: new Map() },
   follow: prefs.follow ?? true,
@@ -1959,6 +1960,8 @@ let currentEpisode = null;
 let currentLine = null;
 let currentTraceIdx = 0;
 let currentBranchIdx = 0;
+let episodeOpenVersion = 0;
+let episodeEnrichmentVersion = 0;
 
 const COPY_SVG =
   `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">` +
@@ -2063,42 +2066,61 @@ async function modalStep(delta) {
   }
 }
 
-function fetchEpisode(line, withTokens) {
+function fetchEpisode(line, withTokens, withRendered = false) {
   const traces = state.traces;
-  const qs = withTokens ? "?tokens=true" : "";
+  const params = new URLSearchParams();
+  if (withTokens) params.set("tokens", "true");
+  if (withRendered) params.set("rendered", "true");
+  const qs = params.size ? `?${params}` : "";
   return api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}${qs}`);
 }
 
 /* token strings multiply the payload of a big episode, so they are fetched only
-   while a token signal is selected — the plain view ships the raw record */
+   for token signals or the rendered-token view — the plain view ships the raw record */
 async function ensureTokens() {
-  if (!currentEpisode || currentEpisode._hasTokens || !$("#token-signal").value) return;
+  if (!currentEpisode) return;
+  const wantsPieces = !!$("#token-signal").value;
+  const wantsRendered = state.traces.viewMode === "rendered";
+  if ((!wantsPieces || currentEpisode._hasTokens) && (!wantsRendered || currentEpisode._hasRendered)) return;
   const line = currentLine;
-  const episode = await fetchEpisode(line, true);
-  if (line !== currentLine) return;
-  episode._hasTokens = true;
+  const withTokens = wantsPieces || !!currentEpisode._hasTokens;
+  const withRendered = wantsRendered || !!currentEpisode._hasRendered;
+  const requestVersion = ++episodeEnrichmentVersion;
+  const episode = await fetchEpisode(line, withTokens, withRendered);
+  if (line !== currentLine || requestVersion !== episodeEnrichmentVersion) return;
+  episode._hasTokens = withTokens;
+  episode._hasRendered = withRendered;
   currentEpisode = episode;
 }
 
 async function openEpisode(line, target = {}) {
+  const requestVersion = ++episodeOpenVersion;
+  episodeEnrichmentVersion++;
   $("#trace-modal").hidden = false;
   $("#drawer-backdrop").hidden = false;
   currentLine = line;
+  currentEpisode = null;
   renderModalStep();
   renderRolloutList();
   $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
   $("#tm-meta").innerHTML = "";
   const withTokens = !!$("#token-signal").value;
-  const episode = await fetchEpisode(line, withTokens);
-  if (line !== currentLine) return; // user already moved to another rollout
+  const withRendered = state.traces.viewMode === "rendered";
+  const episode = await fetchEpisode(line, withTokens, withRendered);
+  if (line !== currentLine || requestVersion !== episodeOpenVersion) return;
   episode._hasTokens = withTokens;
+  episode._hasRendered = withRendered;
   currentEpisode = episode;
   currentTraceIdx = target.trace ?? 0;
   currentBranchIdx = target.branch ?? 0;
   renderEpisode();
+  await ensureTokens();
+  if (line === currentLine && requestVersion === episodeOpenVersion) renderEpisode();
 }
 
 function closeDrawer() {
+  episodeOpenVersion++;
+  episodeEnrichmentVersion++;
   $("#trace-modal").hidden = true;
   $("#drawer-backdrop").hidden = true;
   $("#tm-back").hidden = true;
@@ -2163,7 +2185,7 @@ function renderTokenNode(node, signal, maxAbsAdv) {
   const logprobAt = alignedSignal(node, node.logprobs);
   const advantageAt = alignedSignal(node, node.advantages);
   const spans = ids.map((id, i) => {
-    const text = strs ? strs[i] : ` ${id} `;
+    const text = strs?.[i] ?? ` ${id} `;
     const logprob = logprobAt(i), advantage = advantageAt(i);
     let bg = "";
     if (signal === "advantage" && advantage != null && maxAbsAdv > 0) {
@@ -2226,6 +2248,95 @@ function reasoningBlock(content, marks = null) {
   );
 }
 
+function normalizedTools(tools) {
+  if (tools == null) return [];
+  return Array.isArray(tools) ? tools : [tools];
+}
+
+function toolParts(tool, index) {
+  if (!tool || typeof tool !== "object" || Array.isArray(tool))
+    return { name: `tool ${index + 1}`, description: "Malformed tool definition", parameters: tool };
+  const value = tool.function && typeof tool.function === "object" ? tool.function : tool;
+  return {
+    name: typeof value.name === "string" && value.name ? value.name : `tool ${index + 1}`,
+    description: typeof value.description === "string" ? value.description : "No description recorded.",
+    parameters: value.parameters ?? value.input_schema ?? value.schema ?? null,
+  };
+}
+
+function toolDefinitionsHtml(trace) {
+  const tools = normalizedTools(trace.tools);
+  if (!tools.length) return "";
+  const names = tools.map((tool, i) => toolParts(tool, i).name);
+  const body = tools.map((tool, i) => {
+    const parts = toolParts(tool, i);
+    const schema = parts.parameters == null ? "No parameters/schema recorded." :
+      typeof parts.parameters === "string" ? parts.parameters : JSON.stringify(parts.parameters, null, 2);
+    return (
+      `<details class="tool-definition"><summary><span class="tool-def-name">${esc(parts.name)}</span>` +
+      `<span class="entry-preview">${preview(parts.description, 140)}</span>` +
+      `<button class="icon-btn" data-copy-tool="${i}" title="copy full tool definition">${COPY_SVG}</button>` +
+      `<span class="entry-chev">›</span></summary>` +
+      `<div class="tool-description">${esc(parts.description)}</div>` +
+      `<div class="schema-head"><span>Parameters / JSON schema</span>` +
+      `<button class="icon-btn" data-copy-schema="${i}" title="copy parameters/schema">${COPY_SVG}</button></div>` +
+      `<pre class="tool-schema">${esc(schema)}</pre></details>`
+    );
+  }).join("");
+  return (
+    `<details class="tool-definitions"><summary><span class="context-label">Tool definitions</span>` +
+    `<span class="chip">${tools.length} tool${tools.length === 1 ? "" : "s"}</span>` +
+    `<span class="entry-preview">${esc(names.join(", "))}</span>` +
+    `<button class="icon-btn" data-copy-tools title="copy all tool definitions">${COPY_SVG}</button>` +
+    `<span class="entry-chev">›</span></summary>` +
+    body + `</details>`
+  );
+}
+
+function renderedTokensHtml(trace, branches) {
+  const rendered = trace.rendered_tokens;
+  const errors = errorBannersHtml(episodeErrors(currentEpisode, trace));
+  if (!rendered) return emptyState("rendered text not loaded", "select this view again to load recorded token IDs") + errors;
+  const signal = $("#token-signal").value;
+  const path = currentPath(trace, branches);
+  const tokenCount = path.reduce((count, index) => count + (trace.nodes[index]?.token_ids?.length || 0), 0);
+  const unavailable = {
+    missing_token_ids: ["no recorded token IDs", "This trace cannot provide post-renderer text because its nodes have no token_ids."],
+    missing_model: ["tokenizer model unavailable", "Neither renderer_model_name nor the run model was recorded."],
+    tokenizer_unavailable: ["tokenizer unavailable", `Could not load the recorded renderer tokenizer${rendered.model ? ` (${rendered.model})` : ""}. Token IDs remain authoritative.`],
+    decode_error: ["recorded tokens could not be decoded", "The tokenizer was found, but it could not decode this recorded sequence."],
+  };
+  const selected = currentBranchIdx === -1 ? rendered.all_nodes : rendered.paths?.[currentBranchIdx];
+  if (signal && tokenCount) {
+    let maxAbsAdv = 0;
+    for (const node of trace.nodes || [])
+      for (const advantage of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(advantage));
+    const body = path.map((index) => renderTokenNode(trace.nodes[index], signal, maxAbsAdv)).join("");
+    return (
+      `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
+      `<span class="chip">${fmtCompact(tokenCount)} tokens</span>` +
+      (selected?.text != null ? `<span class="entry-preview">${preview(selected.text, 180)}</span>` : `<span class="entry-preview"></span>`) +
+      (selected?.text != null ? `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` : "") +
+      `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button>` +
+      `<span class="entry-chev">›</span></summary>` +
+      `<pre class="rendered-text">${body}</pre></details>` + errors
+    );
+  }
+  if (selected?.text == null) {
+    const [title, detail] = unavailable[rendered.status] ?? ["rendered text unavailable", "The recorded token sequence could not be decoded."];
+    return emptyState(title, detail) + errors;
+  }
+  return (
+    `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
+    `<span class="chip">${fmtCompact(selected.token_count)} tokens</span>` +
+    `<span class="entry-preview">${preview(selected.text, 180)}</span>` +
+    `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` +
+    `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button>` +
+    `<span class="entry-chev">›</span></summary>` +
+    `<pre class="rendered-text">${esc(selected.text)}</pre></details>` + errors
+  );
+}
+
 let entriesObserver = null;
 
 function episodeErrors(ep, trace) {
@@ -2264,9 +2375,15 @@ function renderMessages(ep, trace, branches) {
     container.innerHTML = emptyState("no traces", "this episode carries no trace data") + errorsHtml;
     return;
   }
+  if (state.traces.viewMode === "rendered") {
+    container.innerHTML = renderedTokensHtml(trace, branches);
+    return;
+  }
   const signal = $("#token-signal").value;
   const path = currentPath(trace, branches);
   const concatenated = currentBranchIdx === -1;
+  const toolsHtml = toolDefinitionsHtml(trace);
+  const systemPosition = path.findIndex((idx) => trace.nodes[idx]?.message?.role === "system");
   let maxAbsAdv = 0;
   for (const node of trace.nodes || [])
     for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
@@ -2313,7 +2430,7 @@ function renderMessages(ep, trace, branches) {
     const subs = [];
     if (reasoning) subs.push(reasoningBlock(reasoning, reasoningMarks));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
-    return (
+    const messageHtml =
       `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}"${role === "system" && !marked ? "" : " open"}>` +
       `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
       `<span class="entry-role">${esc(role)}</span>` +
@@ -2324,8 +2441,8 @@ function renderMessages(ep, trace, branches) {
       subs.join("") +
       (body ? `<div class="entry-body">${body}</div>` : "") +
       toolCalls.join("") +
-      `</details>`
-    );
+      `</details>`;
+    return messageHtml + (i === systemPosition ? toolsHtml : "");
   };
   // long traces render in chunks as the reader scrolls — a 1MB episode with
   // hundreds of turns paints the first screen immediately; a highlight past the
@@ -2334,6 +2451,7 @@ function renderMessages(ep, trace, branches) {
   const lastMark = Math.max(-1, ...[...hlByNode.keys()].map((n) => path.indexOf(n)));
   let rendered = Math.min(path.length, Math.max(CHUNK, lastMark + 3));
   container.innerHTML =
+    (systemPosition === -1 ? toolsHtml : "") +
     path.slice(0, rendered).map(entryHtml).join("") +
     (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
     errorsHtml;
@@ -2503,6 +2621,7 @@ function renderEpisode() {
         `<button data-branch="-1" class="${currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
       : "";
   $("#tm-tabs-row").hidden = traceTabs.hidden && branchTabs.hidden;
+  setActive("#trace-view-mode", "mode", state.traces.viewMode);
   renderRolloutList();
   renderMessages(ep, trace, branches);
   renderMeta(ep, trace, branches);
@@ -2947,6 +3066,7 @@ function primeTraceCommand(cmd) {
   }
   traces.env = "";
   traces.errorsOnly = false;
+  if (cmd.highlight?.length) traces.viewMode = "messages";
   pendingHighlight = null;
 }
 
@@ -3518,6 +3638,15 @@ $("#token-signal").addEventListener("change", async () => {
   renderEpisode();
   savePrefs();
 });
+$("#trace-view-mode").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-mode]");
+  if (!btn || btn.dataset.mode === state.traces.viewMode) return;
+  state.traces.viewMode = btn.dataset.mode;
+  setActive("#trace-view-mode", "mode", state.traces.viewMode);
+  await ensureTokens();
+  renderEpisode();
+  savePrefs();
+});
 $("#tm-trace-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-trace]");
   if (btn) { currentTraceIdx = +btn.dataset.trace; currentBranchIdx = 0; renderEpisode(); }
@@ -3531,18 +3660,41 @@ $("#tm-list").addEventListener("click", (e) => {
   if (item) openEpisode(+item.dataset.line);
 });
 $("#tm-collapse").addEventListener("click", () =>
-  document.querySelectorAll("#tm-messages details.entry").forEach((d) => (d.open = false))
+  document.querySelectorAll("#tm-messages details").forEach((d) => (d.open = false))
 );
 $("#tm-expand").addEventListener("click", () =>
   document.querySelectorAll("#tm-messages details").forEach((d) => (d.open = true))
 );
 $("#tm-messages").addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-copy]");
+  const btn = e.target.closest("[data-copy], [data-copy-tool], [data-copy-schema], [data-copy-tools], [data-copy-rendered]");
   if (!btn) return;
   e.preventDefault();
   e.stopPropagation();
-  const node = currentEpisode?.traces?.[currentTraceIdx]?.nodes?.[+btn.dataset.copy];
-  if (node) copyText(messageText(node.message), btn);
+  const trace = currentEpisode?.traces?.[currentTraceIdx];
+  if (!trace) return;
+  if (btn.dataset.copy != null) {
+    const node = trace.nodes?.[+btn.dataset.copy];
+    if (node) copyText(messageText(node.message), btn);
+    return;
+  }
+  const tools = normalizedTools(trace.tools);
+  if (btn.hasAttribute("data-copy-tools")) return copyText(JSON.stringify(tools, null, 2), btn);
+  if (btn.dataset.copyTool != null) return copyText(JSON.stringify(tools[+btn.dataset.copyTool], null, 2), btn);
+  if (btn.dataset.copySchema != null) {
+    const schema = toolParts(tools[+btn.dataset.copySchema], +btn.dataset.copySchema).parameters;
+    return copyText(typeof schema === "string" ? schema : JSON.stringify(schema, null, 2), btn);
+  }
+  if (btn.dataset.copyRendered) {
+    const rendered = trace.rendered_tokens;
+    const selected = currentBranchIdx === -1 ? rendered?.all_nodes : rendered?.paths?.[currentBranchIdx];
+    if (btn.dataset.copyRendered === "text") {
+      if (selected?.text != null) copyText(selected.text, btn);
+      return;
+    }
+    const path = currentPath(trace, traceBranches(trace));
+    const ids = path.flatMap((index) => trace.nodes?.[index]?.token_ids || []);
+    return copyText(JSON.stringify(ids), btn);
+  }
 });
 $("#tm-meta").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-copytext]");
@@ -3574,6 +3726,7 @@ function savePrefs() {
       collapsedSections: [...state.metrics.collapsedSections],
       traceErrorsOnly: state.traces.errorsOnly,
       traceSort: `${state.traces.sort}:${state.traces.order}`,
+      traceViewMode: state.traces.viewMode,
       logView: state.logs.view,
       logComponents: state.logs.components ? [...state.logs.components] : null,
       logLevel: state.logs.level,
@@ -3638,7 +3791,7 @@ document.addEventListener("visibilitychange", () => {
   renderLogLevel();
   $("#log-search").value = prefs.logSearch ?? "";
   $("#config-search").value = prefs.configSearch ?? "";
-  $("#token-signal").value = prefs.tokenSignal ?? "";
+  $("#token-signal").value = prefs.tokenSignal === "rendered" ? "" : (prefs.tokenSignal ?? "");
   $("#follow-toggle").checked = state.follow;
   for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#attempt-select", "#token-signal", "#report-select"])
     dressSelect($(sel));

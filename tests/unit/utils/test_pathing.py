@@ -19,8 +19,12 @@ def test_dir_with_launcher_artifacts_passes(tmp_path):
     run_dir.mkdir()
     (run_dir / "configs").mkdir()
     (run_dir / "configs" / "trainer.toml").touch()
-    (run_dir / "rl.sbatch").touch()
-    (run_dir / "job_1234.log").touch()
+    (run_dir / "launcher").mkdir()
+    (run_dir / "launcher" / "rl.sbatch").touch()
+    (run_dir / "launcher" / ".trainer.done").touch()
+    (run_dir / "launcher" / ".orchestrator.done").touch()
+    (run_dir / "launcher" / "logs").mkdir()
+    (run_dir / "launcher" / "logs" / "job_1234.log").touch()
     validate_run_dir(run_dir, output_dir=tmp_path, resuming=False, clean=False)
 
 
