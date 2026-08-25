@@ -45,7 +45,7 @@ const state = {
     errorsOnly: prefs.traceErrorsOnly ?? false,
     sort: (prefs.traceSort ?? "line:asc").split(":")[0],
     order: (prefs.traceSort ?? "line:asc").split(":")[1],
-    viewMode: prefs.traceViewMode ?? "messages",
+    viewMode: prefs.tokenSignal === "rendered" ? "rendered" : (prefs.traceViewMode ?? "messages"),
   },
 };
 
@@ -2155,7 +2155,7 @@ function renderTokenNode(node, signal, maxAbsAdv) {
   const logprobAt = alignedSignal(node, node.logprobs);
   const advantageAt = alignedSignal(node, node.advantages);
   const spans = ids.map((id, i) => {
-    const text = strs ? strs[i] : ` ${id} `;
+    const text = strs?.[i] ?? ` ${id} `;
     const logprob = logprobAt(i), advantage = advantageAt(i);
     let bg = "";
     if (signal === "advantage" && advantage != null && maxAbsAdv > 0) {
@@ -2264,6 +2264,9 @@ function renderedTokensHtml(trace, branches) {
   const rendered = trace.rendered_tokens;
   const errors = errorBannersHtml(episodeErrors(currentEpisode, trace));
   if (!rendered) return emptyState("rendered text not loaded", "select this view again to load recorded token IDs") + errors;
+  const signal = $("#token-signal").value;
+  const path = currentPath(trace, branches);
+  const tokenCount = path.reduce((count, index) => count + (trace.nodes[index]?.token_ids?.length || 0), 0);
   const unavailable = {
     missing_token_ids: ["no recorded token IDs", "This trace cannot provide post-renderer text because its nodes have no token_ids."],
     missing_model: ["tokenizer model unavailable", "Neither renderer_model_name nor the run model was recorded."],
@@ -2271,6 +2274,21 @@ function renderedTokensHtml(trace, branches) {
     decode_error: ["recorded tokens could not be decoded", "The tokenizer was found, but it could not decode this recorded sequence."],
   };
   const selected = currentBranchIdx === -1 ? rendered.all_nodes : rendered.paths?.[currentBranchIdx];
+  if (signal && tokenCount) {
+    let maxAbsAdv = 0;
+    for (const node of trace.nodes || [])
+      for (const advantage of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(advantage));
+    const body = path.map((index) => renderTokenNode(trace.nodes[index], signal, maxAbsAdv)).join("");
+    return (
+      `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
+      `<span class="chip">${fmtCompact(tokenCount)} tokens</span>` +
+      (selected?.text != null ? `<span class="entry-preview">${preview(selected.text, 180)}</span>` : `<span class="entry-preview"></span>`) +
+      (selected?.text != null ? `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` : "") +
+      `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button>` +
+      `<span class="entry-chev">›</span></summary>` +
+      `<pre class="rendered-text">${body}</pre></details>` + errors
+    );
+  }
   if (rendered.status !== "ok" || selected?.text == null) {
     const [title, detail] = unavailable[rendered.status] ?? ["rendered text unavailable", "The recorded token sequence could not be decoded."];
     return emptyState(title, detail) + errors;
@@ -2967,7 +2985,6 @@ $("#tm-messages").addEventListener("mouseout", (e) => {
   if (e.target.closest(".tok[data-tip]")) tokTip.hidden = true;
 });
 $("#token-signal").addEventListener("change", async () => {
-  state.traces.viewMode = "messages";
   await ensureTokens();
   renderEpisode();
   savePrefs();
@@ -3021,9 +3038,12 @@ $("#tm-messages").addEventListener("click", (e) => {
   if (btn.dataset.copyRendered) {
     const rendered = trace.rendered_tokens;
     const selected = currentBranchIdx === -1 ? rendered?.all_nodes : rendered?.paths?.[currentBranchIdx];
-    if (!selected) return;
-    if (btn.dataset.copyRendered === "text") return copyText(selected.text, btn);
-    const ids = selected.nodes.flatMap((index) => trace.nodes?.[index]?.token_ids || []);
+    if (btn.dataset.copyRendered === "text") {
+      if (selected?.text != null) copyText(selected.text, btn);
+      return;
+    }
+    const path = currentPath(trace, traceBranches(trace));
+    const ids = path.flatMap((index) => trace.nodes?.[index]?.token_ids || []);
     return copyText(JSON.stringify(ids), btn);
   }
 });
@@ -3120,7 +3140,7 @@ document.addEventListener("visibilitychange", () => {
   renderLogLevel();
   $("#log-search").value = prefs.logSearch ?? "";
   $("#config-search").value = prefs.configSearch ?? "";
-  $("#token-signal").value = prefs.tokenSignal ?? "";
+  $("#token-signal").value = prefs.tokenSignal === "rendered" ? "" : (prefs.tokenSignal ?? "");
   for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#attempt-select", "#token-signal"])
     dressSelect($(sel));
   syncTraceFilterControls();
