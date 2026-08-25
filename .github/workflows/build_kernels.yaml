@@ -1,15 +1,19 @@
 name: Build Kernels
 
-# Builds the `prime-kernels` wheel for x86_64 and aarch64 from the deps/prime-kernels submodule.
-# Runs on every bump of that submodule to catch build breakage, and with `release_tag` to
-# attach the wheels to a GitHub release — which is how they are consumed (see the `kernels`
-# skill).
+# Builds every prebuilt kernel wheel `[tool.uv.sources]` pins: `prime-kernels` (from the
+# deps/prime-kernels submodule), `deep-ep` and `deep-gemm` (from their pinned deepseek-ai
+# revs, see scripts/install_ep_kernels.sh and scripts/install_deep_gemm.sh) and `torchao`
+# (from the pytorch/ao rev the MXFP8 training path requires). Runs on every bump of those
+# inputs to catch build breakage, and with `release_tag` to attach the wheels to a GitHub
+# release — which is how they are consumed (see the `kernels` skill).
 #
 # `tag-and-release.yaml` calls this for every release, before it promotes the draft, so a
 # published release always carries the wheels its `[tool.uv.sources]` pin can point at.
-# `workflow_dispatch` does the same by hand, for backfilling an already published release.
+# `workflow_dispatch` does the same by hand, for backfilling an already published release
+# or rebuilding after a torch/CUDA bump.
 #
-# No GPU is needed: nvcc cross compiles for the architectures kernels.toml declares.
+# No GPU is needed: nvcc cross compiles for every architecture we ship
+# (TORCH_CUDA_ARCH_LIST below; kernels.toml declares prime-kernels' own).
 
 on:
   pull_request:
@@ -17,12 +21,16 @@ on:
       - "deps/prime-kernels"
       - ".gitmodules"
       - ".github/workflows/build_kernels.yaml"
+      - "scripts/install_ep_kernels.sh"
+      - "scripts/install_deep_gemm.sh"
   push:
     branches: [main]
     paths:
       - "deps/prime-kernels"
       - ".gitmodules"
       - ".github/workflows/build_kernels.yaml"
+      - "scripts/install_ep_kernels.sh"
+      - "scripts/install_deep_gemm.sh"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -47,11 +55,11 @@ on:
 env:
   # Keep in sync with the CUDA the prime-rl image is built against (Dockerfile.cuda);
   # the job container image below must be edited alongside it (no env context there).
-  CUDA_TAG: cu128
+  CUDA_TAG: cu129
 
 jobs:
   build:
-    name: Build wheel (${{ matrix.arch }})
+    name: Build ${{ matrix.kernel }} (${{ matrix.arch }})
     # Uploading the wheels to a release needs write; on workflow_call the caller
     # must grant it too (tag-and-release.yaml does).
     permissions:
@@ -59,18 +67,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        kernel: [prime-kernels, deep-ep, deep-gemm, torchao]
+        arch: [x86_64, aarch64]
         include:
-          - runner: image-builder
-            arch: x86_64
-          - runner: image-builder-arm-2204
+          - arch: x86_64
+            runner: image-builder
+          - arch: aarch64
+            runner: image-builder-arm-2204
+        exclude:
+          # torchao is consumed on x86_64 only (see its marker in pyproject.toml);
+          # aarch64 resolves the PyPI release.
+          - kernel: torchao
             arch: aarch64
     runs-on: ${{ matrix.runner }}
-    container: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    container: nvidia/cuda:12.9.1-devel-ubuntu24.04
     steps:
       - name: Install build tooling
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git curl ca-certificates build-essential gh
+          apt-get install -y --no-install-recommends git curl ca-certificates build-essential gh xz-utils
 
       - name: Checkout
         uses: actions/checkout@v5
@@ -80,6 +95,7 @@ jobs:
 
       # deps/prime-kernels is the prime-kernels submodule and carries every kernel's sources.
       - name: Init the kernels submodule
+        if: matrix.kernel == 'prime-kernels'
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git submodule update --init -- deps/prime-kernels
@@ -89,7 +105,7 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | env INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR=/usr/local/bin sh
           uv --version
 
-      # The wheel only imports under the exact torch it was compiled against, so build
+      # The wheels only import under the exact torch they were compiled against, so build
       # against the torch prime-rl resolves rather than whatever is newest today.
       - name: Create build environment
         env:
@@ -102,24 +118,65 @@ jobs:
           fi
           echo "Building against torch==$TORCH_PIN"
           uv venv --python 3.12 /tmp/build-env
-          VIRTUAL_ENV=/tmp/build-env uv pip install "torch==$TORCH_PIN" setuptools wheel ninja
+          VIRTUAL_ENV=/tmp/build-env uv pip install "torch==$TORCH_PIN" setuptools wheel ninja cmake
 
       # torch C++ extensions are bound to the torch and CUDA they were compiled against, so
-      # the wheel carries both in its local version.
+      # the prime-kernels wheel carries both in its local version. (deep-ep, deep-gemm and
+      # torchao keep their upstream `+<rev>` naming; the release tag they are attached to
+      # disambiguates the ABI.)
       - name: Stamp ABI into the version
+        if: matrix.kernel == 'prime-kernels'
         run: |
           TORCH_VERSION=$(/tmp/build-env/bin/python -c 'import torch; print(torch.__version__.split("+")[0])')
           LOCAL="${CUDA_TAG}torch${TORCH_VERSION}"
           sed -i -E "s/^version = \"([^\"]+)\"$/version = \"\1+${LOCAL}\"/" deps/prime-kernels/pyproject.toml
           grep '^version' deps/prime-kernels/pyproject.toml
 
-      - name: Build wheel
+      - name: Build prime-kernels wheel
+        if: matrix.kernel == 'prime-kernels'
         env:
           VIRTUAL_ENV: /tmp/build-env
           CUDA_HOME: /usr/local/cuda
           PRIME_KERNELS_REQUIRE: "1"
           MAX_JOBS: "8"
         run: uv build --wheel --no-build-isolation --out-dir dist deps/prime-kernels
+
+      - name: Build deep-ep wheel
+        if: matrix.kernel == 'deep-ep'
+        env:
+          VIRTUAL_ENV: /tmp/build-env
+          TORCH_CUDA_ARCH_LIST: "9.0;10.0;10.3"
+          MAX_JOBS: "8"
+        run: |
+          export PATH="/tmp/build-env/bin:$PATH"
+          bash scripts/install_ep_kernels.sh --workspace /tmp/ep_kernels_workspace --wheel-dir dist
+
+      - name: Build deep-gemm wheel
+        if: matrix.kernel == 'deep-gemm'
+        env:
+          VIRTUAL_ENV: /tmp/build-env
+          CUDA_HOME: /usr/local/cuda
+          MAX_JOBS: "8"
+        run: |
+          export PATH="/tmp/build-env/bin:$PATH"
+          bash scripts/install_deep_gemm.sh --wheel-dir dist
+
+      # Pinned to the pytorch/ao rev the MXFP8 training path requires (see the torchao
+      # entry in `[tool.uv.sources]`). sm_90a enables the CUTLASS kernels, sm_100a the
+      # MXFP8 extension — both gated on the arch list in torchao's setup.py.
+      - name: Build torchao wheel
+        if: matrix.kernel == 'torchao'
+        env:
+          VIRTUAL_ENV: /tmp/build-env
+          CUDA_HOME: /usr/local/cuda
+          TORCH_CUDA_ARCH_LIST: "9.0a;10.0a"
+          MAX_JOBS: "8"
+        run: |
+          export PATH="/tmp/build-env/bin:$PATH"
+          git clone https://github.com/pytorch/ao /tmp/ao
+          git -C /tmp/ao checkout 02105d46c61dc80a8c9d39d5836e827ba3af8439
+          git -C /tmp/ao submodule update --init --recursive
+          uv build --wheel --no-build-isolation --out-dir dist /tmp/ao
 
       - name: Inspect wheel
         run: |
@@ -135,7 +192,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: prime-kernels-${{ matrix.arch }}
+          name: ${{ matrix.kernel }}-${{ matrix.arch }}
           path: dist/*.whl
           if-no-files-found: error
 
