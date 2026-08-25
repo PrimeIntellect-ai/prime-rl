@@ -374,8 +374,9 @@ def rl_local(config: RLConfig):
         )
         processes.append(tail_process)
 
-        # Check for errors from monitor threads
-        while not (stop_events["orchestrator"].is_set() and stop_events["trainer"].is_set()):
+        # Trainer and orchestrator completion is the successful stop condition.
+        completion_events = (stop_events["trainer"], stop_events["orchestrator"])
+        while not all(event.is_set() for event in completion_events):
             if error_queue:
                 error = error_queue[0]
                 logger.error(f"Error: {error}")

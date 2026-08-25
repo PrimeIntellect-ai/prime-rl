@@ -67,13 +67,14 @@ ln -sfn attempt_$ATTEMPT $OUTPUT_DIR/logs/latest
 ln -sfn trainer/node_0.log $LOG_DIR/trainer.log
 ln -sfn inference/node_0.log $LOG_DIR/inference.log
 
-# A clean run cannot trip srun --kill-on-bad-exit (which only propagates
-# failures), so the orchestrator's node publishes completion through this
-# job-scoped sentinel and the inference nodes watch for it to release their
-# engines. Stale sentinels from other job IDs are inert, so only this job's own
-# path needs clearing.
-export RUN_DONE=$OUTPUT_DIR/.run_done_$SLURM_JOB_ID
-rm -f "$RUN_DONE"
+# Clean exits do not trigger srun --kill-on-bad-exit. Each terminal component
+# publishes its successful exit through this job-scoped state directory. Every
+# node uses the same completion condition before it tears down support processes.
+export RUN_STATE_DIR=$OUTPUT_DIR/.launcher/$SLURM_JOB_ID
+export TRAINER_DONE=$RUN_STATE_DIR/trainer.done
+export ORCHESTRATOR_DONE=$RUN_STATE_DIR/orchestrator.done
+mkdir -p "$RUN_STATE_DIR"
+rm -f "$TRAINER_DONE" "$ORCHESTRATOR_DONE"
 
 export PRL_RUN_ID=${PRL_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
 export PRL_RUN_NAME={{ run_name }}
@@ -395,11 +396,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     done
 {%- endif %}
 
-    # Watch for the completion sentinel so this node's wait below returns when
-    # the run finishes cleanly on the orchestrator's node — the engines never
-    # exit on their own, so without this the allocation idles until wall time.
-    ( until [ -f "$RUN_DONE" ]; do sleep 10; done ) &
-
 else
     TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
 {%- else %}
@@ -413,22 +409,28 @@ else
 
     echo $HOSTNAMES_STR | tee $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
 
-    WANDB_SHARED_LABEL=trainer uv run torchrun \
-        --role=trainer \
-        --nnodes=$NUM_TRAIN_NODES \
-        --nproc-per-node=$GPUS_PER_NODE \
-        --node-rank=$TRAIN_NODE_RANK \
-        --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
-        --rdzv-id=job_$SLURM_JOB_ID \
-        --log-dir=$LOG_DIR/trainer/torchrun \
-        --tee=3 \
-        --redirects=3 \
-        --local-ranks-filter={{ ranks_filter }} \
-        -m prime_rl.trainer.rl.train \
-        @ $CONFIG_DIR/trainer.json \
-        {% if use_zmq_transport %}--rollout_transport.host $ORCH_ADDR \
-        {% endif %}2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log &
-    TRAINER_PID=$!
+    (
+        WANDB_SHARED_LABEL=trainer uv run torchrun \
+            --role=trainer \
+            --nnodes=$NUM_TRAIN_NODES \
+            --nproc-per-node=$GPUS_PER_NODE \
+            --node-rank=$TRAIN_NODE_RANK \
+            --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
+            --rdzv-id=job_$SLURM_JOB_ID \
+            --log-dir=$LOG_DIR/trainer/torchrun \
+            --tee=3 \
+            --redirects=3 \
+            --local-ranks-filter={{ ranks_filter }} \
+            -m prime_rl.trainer.rl.train \
+            @ $CONFIG_DIR/trainer.json \
+            {% if use_zmq_transport %}--rollout_transport.host $ORCH_ADDR \
+            {% endif %}2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
+        COMPONENT_CODE=$?
+        if [ "$COMPONENT_CODE" -eq 0 ] && [ "$TRAIN_NODE_RANK" -eq 0 ]; then
+            touch "$TRAINER_DONE" || exit $?
+        fi
+        exit "$COMPONENT_CODE"
+    ) &
 {% if num_infer_nodes > 0 %}    fi{% endif %}
 {% if num_infer_nodes > 0 %}
 # Launch the orchestrator on the node ORCH_ADDR points at (see the ORCH_PROCID
@@ -464,45 +466,36 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
 {%- endfor %}
 {%- endif %}
 
-    {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
-    {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
-    {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
-        2>&1 | tee $LOG_DIR/orchestrator.log &
-    ORCHESTRATOR_PID=$!
+    (
+        {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
+        {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
+        {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
+            2>&1 | tee $LOG_DIR/orchestrator.log
+        COMPONENT_CODE=$?
+        if [ "$COMPONENT_CODE" -eq 0 ]; then
+            touch "$ORCHESTRATOR_DONE" || exit $?
+        fi
+        exit "$COMPONENT_CODE"
+    ) &
 fi
 {% endif %}
 
-# Wait for the first background job to exit and propagate its exit code. This
-# turns background process crashes (router, orchestrator) into task failures
-# that --kill-on-bad-exit=1 can broadcast to the other nodes so the whole job
-# tears down instead of leaving zombies holding the allocation.
-wait -n -p FINISHED_PID
-EXIT_CODE=$?
+# Trainer and orchestrator completion is the successful stop condition. The
+# watcher lets every node apply it, including nodes that only run inference.
+( until [ -f "$TRAINER_DONE" ] && [ -f "$ORCHESTRATOR_DONE" ]; do sleep 10; done ) &
+COMPLETION_PID=$!
 
-# A component finishing cleanly does not mean the run is over: at max_steps the
-# trainer exits while the orchestrator still drains that step's eval, and the
-# orchestrator can likewise finish first while the trainer writes its last
-# checkpoint. Tearing down on the first exit kills the peer mid-flight, so wait
-# for whichever of the two is still working.
-if [ "$EXIT_CODE" -eq 0 ]; then
-    for pid in "${TRAINER_PID:-}" "${ORCHESTRATOR_PID:-}"; do
-        if [ -n "$pid" ] && [ "$pid" != "${FINISHED_PID:-}" ] && kill -0 "$pid" 2>/dev/null; then
-            echo "[$(hostname)] component finished cleanly - waiting for peer $pid to finish its work"
-            wait "$pid"
-            PEER_CODE=$?
-            if [ "$PEER_CODE" -ne 0 ]; then
-                EXIT_CODE=$PEER_CODE
-            fi
-        fi
-    done
-fi
+# A clean component exit is not enough to stop the run. Keep waiting for the
+# shared completion condition. Propagate any failure through
+# --kill-on-bad-exit=1 so every node tears down.
+while true; do
+    wait -n -p FINISHED_PID
+    EXIT_CODE=$?
+    if [ "$EXIT_CODE" -ne 0 ] || [ "${FINISHED_PID:-}" = "$COMPLETION_PID" ]; then
+        break
+    fi
+done
 
-# Publish completion from the orchestrator's node only: a peer trainer node also
-# exits zero at max_steps, and releasing the engines on its word would truncate
-# the eval this block just waited for.
-if [ "$EXIT_CODE" -eq 0 ] && [ -n "${ORCHESTRATOR_PID:-}" ]; then
-    touch "$RUN_DONE"
-fi
 REMAINING_PIDS=$(jobs -p)
 {%- if cleanup_grace_period %}
 # Cross-node teardown is driven by `srun --kill-on-bad-exit=1`, which reaps peer
