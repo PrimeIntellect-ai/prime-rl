@@ -2665,14 +2665,14 @@ function timelineTipAttr(payload) {
 }
 
 function timelineSpanHtml(lane, span, start, total) {
-  if (span.started_at == null) return "";
-  const left = Math.max(0, Math.min(100, ((span.started_at - start) / total) * 100));
+  if (span.started_at == null && !span.untimed) return "";
+  const left = span.untimed ? 0 : Math.max(0, Math.min(100, ((span.started_at - start) / total) * 100));
   const end = span.ended_at ?? span.started_at;
-  const width = Math.max(0.35, Math.min(100 - left, ((end - span.started_at) / total) * 100));
+  const width = span.untimed ? 0.35 : Math.max(0.35, Math.min(100 - left, ((end - span.started_at) / total) * 100));
   const rows = [
-    ["start", timelineClock(span.started_at)],
-    ["end", span.ended_at == null ? "open" : timelineClock(span.ended_at)],
-    ["duration", span.ended_at == null ? "—" : fmtDuration(span.ended_at - span.started_at)],
+    ["start", span.untimed ? "unknown" : timelineClock(span.started_at)],
+    ["end", span.untimed ? "unknown" : span.ended_at == null ? "open" : timelineClock(span.ended_at)],
+    ["duration", span.untimed || span.ended_at == null ? "—" : fmtDuration(span.ended_at - span.started_at)],
   ];
   if (span.track === "activity") {
     if (span.input_tokens != null) rows.push(["input tokens", fmtCompact(span.input_tokens)]);
@@ -2690,7 +2690,7 @@ function timelineSpanHtml(lane, span, start, total) {
   const node = span.node_index == null ? "" : ` data-tl-node="${span.node_index}"`;
   const call = span.call_index == null ? "" : ` data-tl-call="${span.call_index}"`;
   return (
-    `<button class="tl-span ${esc(span.track)} ${esc(span.kind)} ${span.status === "running" ? "running" : ""}"` +
+    `<button class="tl-span ${esc(span.track)} ${esc(span.kind)} ${span.status === "running" ? "running" : ""} ${span.untimed ? "untimed" : ""}"` +
     ` style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%" data-tl-trace="${lane.trace_index}"${node}${call}${tip}></button>`
   );
 }
@@ -2724,8 +2724,10 @@ function renderTimeline() {
     target.innerHTML = emptyState("no timeline", "this episode carries no timed agent traces");
     return;
   }
-  const start = timeline.started_at ?? Math.min(...timeline.lanes.map((lane) => lane.started_at).filter(Boolean));
-  const end = timeline.ended_at ?? Math.max(...timeline.lanes.map((lane) => lane.ended_at || lane.started_at).filter(Boolean));
+  const starts = timeline.lanes.map((lane) => lane.started_at).filter((value) => value != null);
+  const ends = timeline.lanes.map((lane) => lane.ended_at ?? lane.started_at).filter((value) => value != null);
+  const start = timeline.started_at ?? (starts.length ? Math.min(...starts) : 0);
+  const end = timeline.ended_at ?? (ends.length ? Math.max(...ends) : start + 1);
   const total = Math.max(1, end - start);
   const axis = [0, 0.25, 0.5, 0.75, 1]
     .map((fraction) => `<span style="left:${fraction * 100}%">${fraction ? fmtDuration(total * fraction) : "0"}</span>`)

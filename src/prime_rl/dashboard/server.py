@@ -871,7 +871,7 @@ def activity_spans(trace: dict, node_indexes: set[int], *, include_unlinked: boo
         )
         if timestamp is not None
     ]
-    fallback_started = min(known_starts, default=0.0)
+    fallback_started = min(known_starts, default=None)
     spans = []
     for call_index, call in enumerate(trace.get("calls") or []):
         node_index = call.get("node")
@@ -886,7 +886,7 @@ def activity_spans(trace: dict, node_indexes: set[int], *, include_unlinked: boo
         call_time = call.get("time") or {}
         started = call_time.get("start") or node.get("timestamp") or fallback_started
         ended = call_time.get("end") or node.get("timestamp")
-        if ended is None and trace.get("is_completed"):
+        if ended is None and started is not None and trace.get("is_completed"):
             ended = started
         usage = call.get("usage") or {}
         input_tokens, cached_tokens, output_tokens = token_usage(usage)
@@ -901,7 +901,8 @@ def activity_spans(trace: dict, node_indexes: set[int], *, include_unlinked: boo
                 "node_index": node_index,
                 "started_at": started,
                 "ended_at": ended,
-                "status": "completed" if ended else "running",
+                "untimed": started is None,
+                "status": "completed" if ended is not None or trace.get("is_completed") else "running",
                 "snippet": text[:240],
                 "input_tokens": input_tokens,
                 "cached_tokens": cached_tokens,
@@ -909,7 +910,7 @@ def activity_spans(trace: dict, node_indexes: set[int], *, include_unlinked: boo
                 "cost": usage.get("cost"),
             }
         )
-    return sorted(spans, key=lambda span: span["started_at"])
+    return sorted(spans, key=lambda span: span["started_at"] if span["started_at"] is not None else float("inf"))
 
 
 def lifecycle_spans(trace: dict) -> list[dict]:
@@ -1023,17 +1024,22 @@ def project_episode_timeline(episode: dict) -> dict:
             activities = activity_spans(trace, node_indexes)
             if not activities:
                 continue
-            child_lifecycle = [
-                {
-                    "id": f"subagent-{child_number}",
-                    "kind": "agent",
-                    "label": "subagent",
-                    "track": "lifecycle",
-                    "started_at": min(span["started_at"] for span in activities),
-                    "ended_at": max((span.get("ended_at") or span["started_at"]) for span in activities),
-                    "status": "completed",
-                }
-            ]
+            timed_activities = [span for span in activities if span["started_at"] is not None]
+            child_lifecycle = (
+                [
+                    {
+                        "id": f"subagent-{child_number}",
+                        "kind": "agent",
+                        "label": "subagent",
+                        "track": "lifecycle",
+                        "started_at": min(span["started_at"] for span in timed_activities),
+                        "ended_at": max((span.get("ended_at") or span["started_at"]) for span in timed_activities),
+                        "status": "completed",
+                    }
+                ]
+                if timed_activities
+                else []
+            )
             children.append(
                 timeline_lane(
                     trace,
