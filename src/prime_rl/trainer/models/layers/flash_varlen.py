@@ -313,11 +313,12 @@ class _SinkVarlen(torch.autograd.Function):
         max_seqlen_k: int,
         causal: bool,
         flash_attn_version: int,
+        softmax_scale: float | None = None,
         window_size_left: int = -1,
         window_size_right: int = -1,
     ) -> torch.Tensor:
         window_size = (window_size_left, window_size_right)
-        softmax_scale = q.shape[-1] ** (-0.5)
+        softmax_scale = q.shape[-1] ** (-0.5) if softmax_scale is None else softmax_scale
         out, lse = VARLEN_FORWARD[flash_attn_version](
             q=q,
             k=k,
@@ -365,8 +366,8 @@ class _SinkVarlen(torch.autograd.Function):
         )
         dsink = sink_grad(out, lse, dout, sink)
         # Grads for: q, k, v, sink, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,
-        #            causal, flash_attn_version, window_size_left, window_size_right
-        return dq, dk, dv, dsink, None, None, None, None, None, None, None, None
+        #            causal, flash_attn_version, softmax_scale, window_size_left, window_size_right
+        return dq, dk, dv, dsink, None, None, None, None, None, None, None, None, None
 
 
 def sink_flash_attn_varlen_func(
@@ -380,6 +381,7 @@ def sink_flash_attn_varlen_func(
     max_seqlen_k: int,
     causal: bool,
     flash_attn_version: int,
+    softmax_scale: float | None = None,
     window_size: tuple[int, int] = (-1, -1),
 ) -> torch.Tensor:
     return _SinkVarlen.apply(
@@ -393,6 +395,7 @@ def sink_flash_attn_varlen_func(
         max_seqlen_k,
         causal,
         flash_attn_version,
+        softmax_scale,
         window_size[0],
         window_size[1],
     )

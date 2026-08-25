@@ -39,6 +39,8 @@ import torch
 import torch.distributed as dist
 import torch.distributed.nn.functional as dist_nn
 
+from .flash_varlen import sink_flash_attn_varlen_func
+
 # Populated by `update_ulysses_params` before each forward pass. Mirrors
 # ring_flash_attn's DATA_PARAMS pattern so the patched attention path can
 # reach the *full* (un-sharded) cu_seqlens / max_seqlen at call time.
@@ -129,6 +131,7 @@ def ulysses_flash_attn_varlen_func(
     softmax_scale: float | None = None,
     dropout_p: float = 0.0,
     deterministic: bool | None = None,
+    sink: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Run varlen flash attention under Ulysses CP.
 
@@ -138,6 +141,10 @@ def ulysses_flash_attn_varlen_func(
     GQA with num_key_value_heads < cp_size: K/V heads are replicated up to
     cp_size before the all-to-all (see `_replicate_kv_heads`), so each rank runs
     grouped attention on its query-head slice with the single matching KV head.
+
+    `sink` is a per-head additive sink logit over the *full* head count; each rank
+    applies the slice belonging to its own query heads, so its gradient comes back
+    zero-filled elsewhere and the CP-group sum reassembles it.
     """
     q = _all_to_all_seq_to_head(q, cp_size, cp_group)
     if k.shape[1] < cp_size:
@@ -156,7 +163,27 @@ def ulysses_flash_attn_varlen_func(
     if deterministic is not None:
         kwargs["deterministic"] = deterministic
 
-    if flash_attn_version == 4:
+    if sink is not None:
+        assert not dropout_p, "ulysses CP with an attention sink does not support dropout"
+        assert not deterministic, "ulysses CP with an attention sink does not support deterministic mode"
+        # After the all-to-all this rank holds query heads [rank * h_local, (rank + 1) * h_local).
+        h_local = q.shape[1]
+        rank = dist.get_rank(cp_group)
+        out = sink_flash_attn_varlen_func(
+            q,
+            k,
+            v,
+            sink[rank * h_local : (rank + 1) * h_local],
+            cu_seqlens_q,
+            cu_seqlens_k,
+            max_seqlen_q,
+            max_seqlen_k,
+            causal=causal,
+            flash_attn_version=flash_attn_version,
+            softmax_scale=softmax_scale,
+            window_size=window_size,
+        )
+    elif flash_attn_version == 4:
         # FA4 takes cu_seqlens as keyword args (qv positional collides otherwise).
         kwargs["cu_seqlens_q"] = cu_seqlens_q
         kwargs["cu_seqlens_k"] = cu_seqlens_k
