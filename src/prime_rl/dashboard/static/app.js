@@ -2536,7 +2536,6 @@ function renderEpisode() {
       : "";
   $("#tm-tabs-row").hidden = traceTabs.hidden && branchTabs.hidden;
   setActive("#trace-view-mode", "mode", state.traces.viewMode);
-  $("#token-signal").disabled = state.traces.viewMode === "rendered";
   renderRolloutList();
   renderMessages(ep, trace, branches);
   renderMeta(ep, trace, branches);
@@ -2976,7 +2975,6 @@ $("#trace-view-mode").addEventListener("click", async (e) => {
   if (!btn || btn.dataset.mode === state.traces.viewMode) return;
   state.traces.viewMode = btn.dataset.mode;
   setActive("#trace-view-mode", "mode", state.traces.viewMode);
-  $("#token-signal").disabled = state.traces.viewMode === "rendered";
   await ensureTokens();
   renderEpisode();
   savePrefs();

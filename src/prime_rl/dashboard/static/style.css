@@ -824,7 +824,6 @@ details.tool-definition { margin: 8px 12px; border: 1px solid var(--hairline); }
 .tool-schema { max-height: 380px; border-top: 1px solid var(--hairline); white-space: pre; }
 .rendered-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 #trace-view-mode button { white-space: nowrap; }
-#token-signal:disabled { opacity: 0.45; }
 
 /* right pane: overview metadata */
 .tm-reward-big { color: var(--positive); }
