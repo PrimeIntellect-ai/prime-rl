@@ -22,7 +22,7 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_rope_unhashable_cache_key()
     monkey_patch_deepseek_v4_kv_norm_weight_mapper()
     monkey_patch_deepseek_v4_rope_force_fp32_cache()
-    monkey_patch_deepseek_v4_hc_prenorm_gemm_arch_fallback()
+    monkey_patch_deepseek_v4_hc_prenorm_gemm_fallback()
     monkey_patch_deepseek_v4_bf16_o_proj()
     monkey_patch_cutedsl_fmax_result_type()
 
@@ -278,49 +278,62 @@ def monkey_patch_deepseek_v4_rope_force_fp32_cache():
     dsv4_rope.get_rope = _patched_get_rope
 
 
-def monkey_patch_deepseek_v4_hc_prenorm_gemm_arch_fallback():
-    """Fall back to torch for the mHC pre-norm GEMM on GPUs DeepGEMM does not cover.
+def monkey_patch_deepseek_v4_hc_prenorm_gemm_fallback():
+    """Verify DeepGEMM's mHC pre-norm GEMM per shape, and fall back to torch when it is wrong.
 
-    DeepSeek V4's manifold-constrained hyper-connections need a fused
-    "project the residual streams and accumulate their squared norms" GEMM. Every
-    call site in ``vllm/model_executor/kernels/mhc/tilelang.py`` (lines 195, 374,
-    598) routes it to DeepGEMM's ``tf32_hc_prenorm_gemm``, which raises
+    DeepSeek V4's manifold-constrained hyper-connections need a fused "project the
+    residual streams and accumulate their squared norms" GEMM. Every call site in
+    ``vllm/model_executor/kernels/mhc/tilelang.py`` (lines 195, 374, 598) routes it
+    to DeepGEMM's ``tf32_hc_prenorm_gemm``. On SM120 (RTX PRO 6000 Blackwell) that
+    kernel has two distinct failure modes, and only one of them is loud:
 
-        RuntimeError: Assertion error (csrc/apis/hyperconnection.hpp:56):
-        Unsupported architecture
+    - The CUDA 13 ``deep_gemm`` wheel this repo pins raises
+      ``Assertion error (csrc/apis/hyperconnection.hpp:56): Unsupported architecture``.
+      Only reachable if that build shadows the vendored copy (do not put a CUDA 13
+      runtime on ``LD_LIBRARY_PATH``).
+    - vLLM's *vendored* DeepGEMM, the one normally used, **silently returns NaN**
+      once the split-K count falls low enough that each split covers a large K.
+      Measured against a torch reference, with ``num_split`` as
+      ``compute_num_split`` picks it:
 
-    on any GPU its hyper-connection kernels were not built for (observed on SM120
-    / RTX PRO 6000 Blackwell, where DeepGEMM's *other* kernels, including the FP8
-    GEMMs, are supported and work). Whether it fires is a property of the DeepGEMM
-    build, not of the model or the checkpoint, so probe once on the first call and
-    switch permanently rather than guessing an architecture allowlist: a DeepGEMM
-    build that grows SM120 support silently stops triggering this.
+      =======  =========  ===========
+      K        num_split  result
+      =======  =========  ===========
+      4096     16, 11     rel 2e-4
+      4096     5, 2       **NaN**
+      16384    64         rel 2e-4
+      16384    23, 11, 5  **NaN**
+      =======  =========  ===========
 
-    vLLM does ship its own non-DeepGEMM path (``_tilelang_hc_prenorm_gemm``), but
-    it is not usable as the fallback here for two independent reasons. It is only
-    reachable when ``is_deep_gemm_supported()`` is False, which is the wrong
-    condition (DeepGEMM is supported here, just not this one kernel), and the
-    ``mhc_pre_broadcast_tilelang`` path does not consult that flag at all. More
-    importantly its ``x.shape[0] >= 1024`` branch,
-    ``hc_prenorm_gemm_block_m_tilelang``, is itself wrong on SM120: measured
-    against a torch reference at hidden_size=4096 it agrees to a relative 3e-7 for
-    every token count below 1024 and returns garbage (relative error ~1.0, with
-    ``sqrsum`` left at zero) from exactly 1024 up. That is a second,
-    architecture-specific vLLM bug, and 1024 is well below any real training
-    sequence length.
+      The boundary tracks K per split (correct at 256 and 372, NaN from about 712
+      up), not the token count directly. Since ``compute_num_split`` returns fewer
+      splits as the batch grows, this shows up as an inference server that answers
+      correctly at low concurrency and starts emitting NaN logprobs once batches get
+      big: measured on the mini checkpoint, clean through concurrency 24 and 116 of
+      200 requests failing at concurrency 32, surfacing to the caller as
+      ``400 - Out of range float values are not JSON compliant: nan``.
 
-    The op's contract is fully specified by its own docstring
-    (``vllm/utils/deep_gemm.py:618``):
+    So an exception handler is not enough, and an architecture allowlist would be a
+    guess about which DeepGEMM builds are affected. Instead each distinct
+    ``(K, num_split)`` shape is checked once against the torch reference and the
+    verdict cached: hardware where the kernel is correct keeps using it after one
+    comparison per shape, and hardware where it is not silently switches to torch.
+    Shapes repeat every forward pass, so there is no per-call cost and no per-call
+    device sync.
+
+    The reference is the op's own documented contract
+    (``vllm/utils/deep_gemm.py:618``), which vLLM also spells out in a dead-code
+    torch implementation at ``kernels/mhc/tilelang.py:8``:
 
         out = x.float() @ fn.T
         sqrsum = x.float().square().sum(-1)
 
-    ``out`` and ``sqrsum`` carry a leading split-K axis whose entries the consuming
-    TileLang kernel simply sums over (``tilelang_kernels.py:407-414``), so writing
-    the whole result into split 0 and zeroing the rest is exact. Verified against
-    the correct sub-1024 TileLang kernel: relative 5e-7 on ``out``, and 2e-4 on
-    ``sqrsum`` in the direction of *more* accuracy, since this accumulates a
-    4096-term sum of squares in fp32 rather than the kernel's narrower type.
+    The leading axis is split-K partials that the consuming TileLang kernel sums
+    over (``tilelang_kernels.py:407-414``), so writing the whole result into split 0
+    and zeroing the rest is exact. Verified against vLLM's own correct sub-1024
+    TileLang kernel: relative 4.9e-07 on ``out``, and 2.0e-04 on ``sqrsum`` in the
+    direction of *more* accuracy, since this accumulates a 4096-term sum of squares
+    in fp32 rather than the kernel's narrower type.
     """
     from vllm.logger import init_logger
     from vllm.utils import deep_gemm as vllm_deep_gemm
@@ -330,7 +343,8 @@ def monkey_patch_deepseek_v4_hc_prenorm_gemm_arch_fallback():
         return
 
     logger = init_logger(__name__)
-    use_torch = False
+    # (K, num_split) -> whether DeepGEMM's kernel matches the reference for that shape.
+    kernel_is_correct: dict[tuple[int, int], bool] = {}
 
     def _torch_prenorm_gemm(x, fn, out, sqrsum, num_split):
         x_fp32 = x.float()
@@ -341,22 +355,52 @@ def monkey_patch_deepseek_v4_hc_prenorm_gemm_arch_fallback():
             sqrsum[1:].zero_()
         return out
 
+    def _matches_reference(x, fn, out, sqrsum) -> bool:
+        x_fp32 = x.float()
+        reference_out = x_fp32 @ fn.transpose(0, 1)
+        reference_sqrsum = x_fp32.square().sum(dim=-1)
+        for got, want in ((out.sum(0), reference_out), (sqrsum.sum(0), reference_sqrsum)):
+            if not torch.isfinite(got).all():
+                return False
+            # The kernel accumulates in tf32, so a loose bound still separates
+            # "correct" (order 1e-4) from "wrong" (order 1).
+            if (got - want).abs().max() > 5e-2 * want.abs().max():
+                return False
+        return True
+
     def _patched_prenorm_gemm(x, fn, out, sqrsum, num_split):
-        nonlocal use_torch
-        if use_torch:
+        shape = (x.shape[1], num_split)
+        verdict = kernel_is_correct.get(shape)
+        if verdict is False:
             return _torch_prenorm_gemm(x, fn, out, sqrsum, num_split)
-        try:
+        if verdict is True:
             return original_prenorm_gemm(x, fn, out, sqrsum, num_split)
+
+        try:
+            result = original_prenorm_gemm(x, fn, out, sqrsum, num_split)
         except RuntimeError as e:
             if "Unsupported architecture" not in str(e):
                 raise
-            use_torch = True
+            kernel_is_correct[shape] = False
             logger.warning(
-                "DeepGEMM has no hyper-connection kernel for this GPU (%s); "
-                "using prime-rl's torch mHC pre-norm GEMM for the rest of this process.",
+                "DeepGEMM has no hyper-connection kernel for this GPU (%s); using prime-rl's "
+                "torch mHC pre-norm GEMM instead.",
                 torch.cuda.get_device_name() if torch.cuda.is_available() else "unknown",
             )
             return _torch_prenorm_gemm(x, fn, out, sqrsum, num_split)
+
+        if _matches_reference(x, fn, out, sqrsum):
+            kernel_is_correct[shape] = True
+            return result
+
+        kernel_is_correct[shape] = False
+        logger.warning(
+            "DeepGEMM's hyper-connection kernel disagrees with the reference at K=%d, "
+            "num_split=%d on this GPU; using prime-rl's torch mHC pre-norm GEMM for this shape.",
+            shape[0],
+            shape[1],
+        )
+        return _torch_prenorm_gemm(x, fn, out, sqrsum, num_split)
 
     _patched_prenorm_gemm._prime_rl_has_torch_fallback = True
     vllm_deep_gemm.tf32_hc_prenorm_gemm = _patched_prenorm_gemm

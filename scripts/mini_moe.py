@@ -326,6 +326,22 @@ def _fixup_deepseek_v4_checkpoint(output_dir: Path) -> None:
     path = output_dir / "model.safetensors"
     save_file(to_on_disk_naming(load_file(path)), path, metadata={"format": "pt"})
 
+    # `deepseek-ai/DeepSeek-V4-Flash-0731` ships no chat template: no `chat_template.jinja` in
+    # the repo and no `chat_template` key in its tokenizer config. prime-rl's environments call
+    # the chat completions endpoint, and the router renders the template itself from the model
+    # directory (it takes no template argument), so without one in the checkpoint every rollout
+    # comes back 502 and the run dies reporting "10 consecutive zero-output batch equivalents".
+    # Deliberately plain: this only has to make the loop runnable on an untrained checkpoint,
+    # and inventing a template for a *real* checkpoint would degrade quality silently.
+    tokenizer_config_path = output_dir / "tokenizer_config.json"
+    tokenizer_config = json.loads(tokenizer_config_path.read_text())
+    tokenizer_config.setdefault(
+        "chat_template",
+        "{% for message in messages %}{{ message['role'] }}: {{ message['content'] }}\n"
+        "{% endfor %}{% if add_generation_prompt %}assistant:{% endif %}",
+    )
+    tokenizer_config_path.write_text(json.dumps(tokenizer_config, indent=2))
+
     # `topk_method` is a real DeepSeek V4 config field (the real checkpoint sets it to
     # "noaux_tc") that this repo's `DeepseekV4Config` doesn't model at all -- prime-rl's own
     # `DeepseekV4MoE` always behaves as if it were "noaux_tc" (always builds the aux-loss-free

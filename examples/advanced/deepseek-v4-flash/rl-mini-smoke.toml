@@ -16,6 +16,13 @@ max_steps = 20
 [model]
 name = "/tmp/deepseek-v4-mini"
 
+[weight_broadcast]
+# Matches rl.toml: NCCL/NIXL need convert_layer_to_vllm_kernel, which this port does not
+# implement. Filesystem broadcast uses convert_to_hf, which is implemented and tested. The
+# nccl default also breaks outright here with data_parallel_size > 1, since only DP rank 0
+# gets a broadcast receiver.
+type = "filesystem"
+
 [trainer.model]
 impl = "custom"
 

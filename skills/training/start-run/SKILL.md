@@ -95,6 +95,30 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
+### DeepSeek V4
+
+DeepSeek V4 needs three things no other model here does, and two of them fail confusingly:
+
+```bash
+CUDA_HOME=/usr/local/cuda-12.9 PATH=/usr/local/cuda-12.9/bin:$PATH \
+  uv run inference --vllm.model <ckpt> --use-deep-gemm --vllm.kv-cache-dtype fp8 --vllm.enforce-eager
+```
+
+- `CUDA_HOME`/`PATH` pointing at CUDA >= 12.3: the TileLang kernel JIT needs it and the system
+  default `nvcc` may be much older.
+- `--use-deep-gemm` (top-level, not under `--vllm.`) is **mandatory, not an optimization**.
+  Without it `VLLM_USE_DEEP_GEMM=0`, and vLLM's manifold-hyper-connection pre-norm GEMM falls
+  back to a TileLang kernel that is numerically wrong above 1024 tokens per forward pass on
+  SM120, silently. See the DeepSeek V4 notes in `TODO.md`.
+- `--vllm.kv-cache-dtype fp8`: the attention backend does not support the `auto` default.
+
+Do **not** pass `--vllm.quantization`, and do not put a CUDA 13 runtime on `LD_LIBRARY_PATH` to
+"fix" the `deep_gemm` import error in the log. That error is expected: vLLM falls back to its own
+vendored DeepGEMM, which has the SM120 kernels the pinned CUDA 13 wheel lacks.
+
+For RL, set `[weight_broadcast] type = "filesystem"`. NCCL and NIXL need
+`convert_layer_to_vllm_kernel`, which the DeepSeek V4 port does not implement.
+
 ## `evals` — multi-env evals
 
 Runs the configured eval sources against a live inference server. Standalone (no `[online]` block): one epoch of every source against the served weights, then exit. Add `[ckpt]` (`interval` counts completed task groups in the eval-source order) to make the run interruptible, then use `--resume`, `--resume.step N`, or `--resume.dir path/to/checkpoints/step_N`; for standalone evals, checkpoint step N means resume from task cursor N. Checkpoints store only the cursor, not generated episode records; partially completed groups and groups beyond the durable cursor are retried. Resume loads without `[ckpt]` but does not save new checkpoints. Checkpoint/resume is rejected with `[online]` because that process is coupled to the trainer's live broadcast handshake. With `[online]` (`broadcasts_dir`, `max_steps`, `resume_step`): watch the broadcasts dir for stable `step_{n}` weight broadcasts and evaluate each — the `sft` launcher writes this config for online evals. By default a newer checkpoint cancels unfinished episodes from the prior eval. Set `eval.cancel_on_new_checkpoint = false` to drain every epoch. The trainer can idle while it waits for slow evals. Launcher-managed SFT evals use NCCL weight broadcast by default, including multi-node SLURM deployments. LoRA and external inference use filesystem broadcast.

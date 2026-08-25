@@ -238,6 +238,16 @@ config values. None of these are visible from the test suite; all of them are on
   and returns garbage (relative error about 1.0, `sqrsum` left at zero) from exactly 1024 up. So
   without the flag, any forward pass with 1024 or more tokens gets silently corrupt mHC
   activations. Not yet checked on Hopper.
+- **Filesystem weight broadcast silently downcast everything to bf16** (fixed here, but worth
+  knowing it affected six models). `gather_weights_parallel` cast every DTensor to bf16 and the
+  filesystem sender passed no exceptions, so `keep_in_fp32_for_weight_transfer`, which only the
+  NIXL transport honored, did nothing. For DeepSeek V4 that meant vLLM received bf16
+  hyper-connection parameters where its kernels assert fp32; the loader casts them back up
+  instead of failing, so the only symptom was NaN logprobs out of the Sinkhorn normalization
+  (surfacing as `400 - Out of range float values are not JSON compliant: nan` on every rollout).
+  `glm4_moe`, `glm_moe_dsa`, `nemotron_h`, `qwen3_5`, and `qwen3_5_moe` all declare such lists
+  too and were equally affected; whether they show quality loss or nothing visible depends on
+  their kernels.
 - **Filesystem weight broadcast cannot feed an FP8-served vLLM.**
   `gather_weights_parallel` (`utils/weights.py:153`) casts every DTensor parameter to bf16, and
   no `config.json` is written into the broadcast directory, so a broadcast contains no
@@ -246,6 +256,28 @@ config values. None of these are visible from the test suite; all of them are on
   (`[inference.vllm] quantization`), which `finalize_layerwise_reload` re-applies on every
   broadcast; the `quantize_in_weight_transfer` route needs `convert_layer_to_vllm_kernel`, which
   DeepSeek V4 does not implement.
+- **The checkpoint ships no chat template, so the rollouts cannot be rendered.**
+  `deepseek-ai/DeepSeek-V4-Flash-0731` has no `chat_template.jinja` in its repo and no
+  `chat_template` key in its `tokenizer_config.json` (checked on the Hub). The orchestrator's
+  environments call the chat completions endpoint, so vLLM answers every rollout request with a
+  502, and the orchestrator then dies reporting "10 consecutive zero-output batch equivalents",
+  which points at the curriculum rather than at the real cause. Reproduced locally and worked
+  around for the smoke test by writing a plain template into the checkpoint's
+  `tokenizer_config.json` in `scripts/mini_moe.py`. It has to go in the checkpoint, not in a
+  prime-rl config: `[inference.vllm] chat_template` is rejected by the shared-tokenizer
+  validator, and the shared `[tokenizer]` block does reach the engine but not the `vllm-router`
+  in front of it, which renders chat messages itself for `consistent_hash` routing and whose
+  launch command takes no template argument. Deliberately **not** applied to
+  `rl.toml`/`kl-check.toml`, since inventing a template for a real checkpoint degrades output
+  quality silently instead of erroring: pick DeepSeek's official template if one exists for this
+  model, an instruct variant of the checkpoint, or environments that drive the completions
+  endpoint.
+- **NCCL weight broadcast breaks with `data_parallel_size > 1`.** With two DP replicas the
+  orchestrator logs `inference_world_size=1, gpus_per_server=1` and only DP rank 0 gets a
+  receiver installed, so the collective RPC reaches DP1 and fails with `'Worker' object has no
+  attribute 'nccl_broadcast_receiver'` while the API servers keep answering `/health`. Not root
+  caused. Not on the DeepSeek V4 critical path, since this port has to use filesystem broadcast
+  anyway (no `convert_layer_to_vllm_kernel`), but it is not DeepSeek-V4-specific either.
 - **The real checkpoint's `config.json` is in the legacy flat format.** It carries a
   46-element `compress_ratios` list and no `layer_types` / `mlp_layer_types` / `rope_parameters`,
   while anything written by `save_pretrained` (including every filesystem broadcast directory) is
