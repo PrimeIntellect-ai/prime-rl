@@ -781,6 +781,234 @@ def traces_path(run: str, step: int, kind: str, subset: str) -> Path:
     raise HTTPException(404, "no traces for this step/kind/subset")
 
 
+def read_episode_record(path: Path, line: int) -> dict:
+    offsets = line_offsets(path)
+    if not 0 <= line < len(offsets):
+        raise HTTPException(404, "episode line out of range")
+    with path.open("rb") as f:
+        f.seek(offsets[line])
+        return orjson.loads(f.readline())
+
+
+def message_text(message: dict) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
+    return "" if content is None else str(content)
+
+
+def timeline_status(trace: dict) -> str:
+    if not trace.get("is_completed"):
+        return "running"
+    if not trace.get("ok") and (trace.get("errors") or trace.get("stop_condition") == "error"):
+        return "failed"
+    return "completed"
+
+
+def timeline_reward(trace: dict) -> float | None:
+    rewards = [reward for reward in (trace.get("rewards") or {}).values() if isinstance(reward, dict)]
+    if not rewards:
+        return None
+    return sum(
+        (reward.get("score") or 0) * (reward.get("weight") if reward.get("weight") is not None else 1)
+        for reward in rewards
+    )
+
+
+def trace_components(nodes: list[dict]) -> list[tuple[int, set[int]]]:
+    """Group nodes by disconnected graph root. Shared-root leaves remain branches;
+    additional roots are independent sessions and render as generic subagents."""
+    roots: dict[int, set[int]] = {}
+    for node_index in range(len(nodes)):
+        cursor = node_index
+        seen = set()
+        while True:
+            parent = nodes[cursor].get("parent")
+            if parent is None or not isinstance(parent, int) or not 0 <= parent < len(nodes) or parent in seen:
+                break
+            seen.add(cursor)
+            cursor = parent
+        roots.setdefault(cursor, set()).add(node_index)
+    return sorted(roots.items())
+
+
+def activity_spans(trace: dict, node_indexes: set[int]) -> list[dict]:
+    nodes = trace.get("nodes") or []
+    calls = {call.get("node"): call for call in trace.get("calls") or [] if call.get("node") is not None}
+    spans = []
+    for node_index in sorted(node_indexes):
+        node = nodes[node_index]
+        if not node.get("sampled"):
+            continue
+        call = calls.get(node_index) or {}
+        call_time = call.get("time") or {}
+        started = call_time.get("start") or node.get("timestamp")
+        ended = call_time.get("end") or node.get("timestamp")
+        if not started:
+            continue
+        usage = call.get("usage") or {}
+        text = " ".join(message_text(node.get("message") or {}).split())
+        spans.append(
+            {
+                "id": f"call-{node_index}",
+                "kind": "model_call",
+                "label": f"turn {len(spans) + 1}",
+                "track": "activity",
+                "node_index": node_index,
+                "started_at": started,
+                "ended_at": ended,
+                "status": "completed" if ended else "running",
+                "snippet": text[:240],
+                "input_tokens": usage.get("prompt_tokens"),
+                "output_tokens": usage.get("completion_tokens"),
+                "cost": usage.get("cost"),
+            }
+        )
+    return spans
+
+
+def lifecycle_spans(trace: dict) -> list[dict]:
+    timing = trace.get("timing") or {}
+    spans = []
+    for kind, label in (
+        ("boot", "boot"),
+        ("setup", "setup"),
+        ("agent", "agent"),
+        ("finalize", "finalize"),
+        ("scoring", "scoring"),
+    ):
+        span = timing.get(kind) or {}
+        if not span.get("start"):
+            continue
+        spans.append(
+            {
+                "id": kind,
+                "kind": kind,
+                "label": label,
+                "track": "lifecycle",
+                "started_at": span["start"],
+                "ended_at": span.get("end") or None,
+                "status": "completed" if span.get("end") else "running",
+            }
+        )
+    return spans
+
+
+def timeline_lane(
+    trace: dict,
+    trace_index: int,
+    node_indexes: set[int],
+    *,
+    lane_id: str,
+    parent_id: str | None,
+    label: str,
+    depth: int,
+    lifecycle: list[dict],
+) -> dict:
+    activities = activity_spans(trace, node_indexes)
+    timestamps = [
+        span[edge] for span in lifecycle + activities for edge in ("started_at", "ended_at") if span.get(edge)
+    ]
+    started = min(timestamps, default=(trace.get("timing") or {}).get("start"))
+    status = (
+        timeline_status(trace)
+        if not parent_id
+        else ("completed" if all(span["status"] == "completed" for span in activities) else "running")
+    )
+    ended = max(timestamps, default=None) if status != "running" else None
+    agent = trace.get("agent") or {}
+    config = agent.get("config") or {}
+    client = config.get("client") or {}
+    errors = trace.get("errors") or []
+    error = errors[-1] if errors else None
+    return {
+        "id": lane_id,
+        "parent_id": parent_id,
+        "trace_index": trace_index,
+        "label": label,
+        "role": agent.get("name") or "agent",
+        "model": config.get("model") or client.get("renderer_model_name") or "",
+        "depth": depth,
+        "started_at": started,
+        "ended_at": ended,
+        "duration": ended - started if started and ended else None,
+        "status": status,
+        "outcome": status if parent_id else (trace.get("stop_condition") or status),
+        "reward": None if parent_id else timeline_reward(trace),
+        "error": (error.get("message") if isinstance(error, dict) else str(error)) if error else "",
+        "turns": len(activities),
+        "spans": lifecycle + activities,
+    }
+
+
+def project_episode_timeline(rec: dict) -> dict:
+    lanes = []
+    for trace_index, trace in enumerate(rec.get("traces") or []):
+        nodes = trace.get("nodes") or []
+        components = trace_components(nodes)
+        main_indexes = components[0][1] if components else set(range(len(nodes)))
+        role = ((trace.get("agent") or {}).get("name") or "agent").replace("_", " ").title()
+        lane_id = f"trace-{trace_index}"
+        lanes.append(
+            timeline_lane(
+                trace,
+                trace_index,
+                main_indexes,
+                lane_id=lane_id,
+                parent_id=None,
+                label=role,
+                depth=0,
+                lifecycle=lifecycle_spans(trace),
+            )
+        )
+        for child_number, (_root, node_indexes) in enumerate(components[1:], 1):
+            prompt = next(
+                (
+                    " ".join(message_text(nodes[index].get("message") or {}).split())
+                    for index in sorted(node_indexes)
+                    if (nodes[index].get("message") or {}).get("role") == "user"
+                ),
+                "",
+            )
+            suffix = f" · {prompt[:52]}{'…' if len(prompt) > 52 else ''}" if prompt else f" {child_number}"
+            activities = activity_spans(trace, node_indexes)
+            if not activities:
+                continue
+            child_lifecycle = [
+                {
+                    "id": f"subagent-{child_number}",
+                    "kind": "agent",
+                    "label": "subagent",
+                    "track": "lifecycle",
+                    "started_at": min(span["started_at"] for span in activities),
+                    "ended_at": max((span.get("ended_at") or span["started_at"]) for span in activities),
+                    "status": "completed",
+                }
+            ]
+            lanes.append(
+                timeline_lane(
+                    trace,
+                    trace_index,
+                    node_indexes,
+                    lane_id=f"{lane_id}-subagent-{child_number}",
+                    parent_id=lane_id,
+                    label=f"Subagent{suffix}",
+                    depth=1,
+                    lifecycle=child_lifecycle,
+                )
+            )
+    starts = [lane["started_at"] for lane in lanes if lane.get("started_at")]
+    ends = [lane["ended_at"] for lane in lanes if lane.get("ended_at")]
+    return {
+        "episode_id": rec.get("id"),
+        "started_at": min(starts, default=None),
+        "ended_at": max(ends, default=None),
+        "lanes": lanes,
+    }
+
+
 @app.get("/api/runs/{run}/rollouts")
 def list_rollouts(run: str) -> dict:
     return {"steps": rollout_steps(get_run_dir(run))}
@@ -1145,6 +1373,11 @@ async def view_events() -> "StreamingResponse":
         media_type="text/event-stream",
         headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
     )
+
+
+@app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}/timeline")
+def get_episode_timeline(run: str, step: int, kind: str, subset: str, line: int) -> dict:
+    return project_episode_timeline(read_episode_at(traces_path(run, step, kind, subset), line))
 
 
 # -------------------------------------------------------------------------- static

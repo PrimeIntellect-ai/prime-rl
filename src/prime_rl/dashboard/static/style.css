@@ -686,8 +686,75 @@ mark.hit {
 #tm-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 #tm-messages { display: flex; flex: 1; flex-direction: column; overflow-y: auto; padding: 14px 16px; }
 #tm-messages > * { flex-shrink: 0; }
+#tm-timeline { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px 24px; }
 #tm-right { border-left: 1px solid var(--hairline); overflow-y: auto; min-height: 0; }
 #tm-meta { padding: 12px 14px; }
+
+/* episode timeline: lifecycle spans above exact model-call activity */
+.tl-shell { min-width: 780px; border: 1px solid var(--hairline); }
+.tl-head, .tl-lane {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(390px, 1fr) 105px 150px;
+}
+.tl-head {
+  min-height: 42px;
+  align-items: end;
+  color: var(--grey-4);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--grey-3);
+}
+.tl-head > span { padding: 8px 10px; }
+.tl-axis { position: relative; align-self: stretch; min-width: 0; }
+.tl-axis span { position: absolute; bottom: 8px; transform: translateX(-50%); white-space: nowrap; }
+.tl-axis span:first-child { transform: none; }
+.tl-axis span:last-child { transform: translateX(-100%); }
+.tl-lane { min-height: 66px; border-bottom: 1px solid var(--hairline-faint); cursor: pointer; }
+.tl-lane:last-child { border-bottom: 0; }
+.tl-lane:hover { background: rgba(255, 255, 255, 0.025); }
+.tl-label, .tl-time, .tl-outcome { padding: 11px 10px; min-width: 0; }
+.tl-label { display: flex; align-items: flex-start; gap: 8px; }
+.tl-tree { color: var(--grey-3); flex-shrink: 0; }
+.tl-dot { width: 6px; height: 6px; margin-top: 5px; background: var(--chart-2); flex-shrink: 0; }
+.tl-label-copy { min-width: 0; }
+.tl-label-name { color: var(--grey-6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-label-meta { color: var(--grey-4); font-size: 9.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-track { position: relative; height: 42px; margin: 11px 0; border: 1px solid var(--hairline); overflow: hidden; }
+.tl-gridline { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--hairline-faint); pointer-events: none; }
+.tl-span { position: absolute; min-width: 3px; cursor: pointer; border: 0; padding: 0; }
+.tl-span.lifecycle { top: 7px; height: 13px; opacity: 0.78; }
+.tl-span.activity { top: 28px; height: 6px; background: var(--grey-4); }
+.tl-span:hover, .tl-span:focus-visible { opacity: 1; outline: 1px solid var(--grey-6); outline-offset: 1px; }
+.tl-span.boot, .tl-span.setup { background: var(--grey-4); }
+.tl-span.agent { background: var(--chart-2); }
+.tl-span.finalize { background: var(--chart-1); }
+.tl-span.scoring { background: var(--chart-3); }
+.tl-span.running { border-right: 2px solid var(--accent); }
+.tl-time { color: var(--grey-5); font-size: 11px; }
+.tl-time .muted { display: block; font-size: 9.5px; }
+.tl-outcome { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; font-size: 9.5px; }
+.tl-state, .tl-reward { border: 1px solid var(--grey-3); padding: 1px 5px; white-space: nowrap; }
+.tl-state.completed { color: var(--positive); }
+.tl-state.failed { color: var(--negative); }
+.tl-state.running { color: var(--infra); }
+.tl-reward { color: var(--chart-3); }
+.tl-tooltip {
+  position: fixed;
+  z-index: 60;
+  width: min(390px, calc(100vw - 24px));
+  padding: 12px 14px;
+  background: var(--grey-1);
+  border: 1px solid var(--grey-3);
+  pointer-events: none;
+}
+.tl-tooltip-kind { color: var(--accent); font-size: 9px; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.tl-tooltip-title { color: var(--grey-6); font-size: 12px; margin: 3px 0 8px; }
+.tl-tooltip-snippet { color: var(--grey-5); font-size: 11px; margin-bottom: 9px; white-space: normal; }
+.tl-tooltip dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 16px; margin: 0; font-size: 10.5px; }
+.tl-tooltip dt { color: var(--grey-4); }
+.tl-tooltip dd { color: var(--grey-6); margin: 0; }
+.tl-tooltip-hint { color: var(--grey-4); border-top: 1px solid var(--hairline); margin-top: 9px; padding-top: 7px; font-size: 9.5px; }
 
 .trace-errors { margin-top: auto; padding-top: 12px; }
 .trace-error-banner {

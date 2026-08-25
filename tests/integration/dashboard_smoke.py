@@ -106,6 +106,19 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
                 assert entries > 0, "episode viewer rendered no messages"
                 reward = page.locator(".tm-reward-big").first.inner_text()
                 assert reward not in ("", "n/a"), f"episode reward did not render: {reward!r}"
+                page.click("#tm-view [data-view=timeline]")
+                page.wait_for_timeout(1000)
+                lanes = page.locator("#tm-timeline .tl-lane").count()
+                assert lanes > 0, "episode timeline rendered no agent lanes"
+                lifecycle = page.locator("#tm-timeline .tl-span.lifecycle").count()
+                assert lifecycle > 0, "episode timeline rendered no lifecycle spans"
+                activity = page.locator("#tm-timeline .tl-span.activity")
+                if activity.count():
+                    activity.first.click()
+                    page.wait_for_timeout(500)
+                    assert page.locator("#tm-view [data-view=transcript].active").count(), (
+                        "timeline activity did not return to the transcript"
+                    )
                 page.keyboard.press("Escape")
 
             # logs: the merged pane shows lines

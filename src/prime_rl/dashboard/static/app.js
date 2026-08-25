@@ -1962,6 +1962,9 @@ let currentTraceIdx = 0;
 let currentBranchIdx = 0;
 let episodeOpenVersion = 0;
 let episodeEnrichmentVersion = 0;
+let currentTimeline = null;
+let traceView = prefs.traceView === "timeline" ? "timeline" : "transcript";
+let pendingTimelineNode = null;
 
 const COPY_SVG =
   `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">` +
@@ -2075,6 +2078,19 @@ function fetchEpisode(line, withTokens, withRendered = false) {
   return api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}${qs}`);
 }
 
+function fetchEpisodeTimeline(line) {
+  const traces = state.traces;
+  return api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}/timeline`);
+}
+
+async function ensureTimeline() {
+  if (currentTimeline || currentLine == null) return;
+  const line = currentLine;
+  const timeline = await fetchEpisodeTimeline(line);
+  if (line !== currentLine) return;
+  currentTimeline = timeline;
+}
+
 /* token strings multiply the payload of a big episode, so they are fetched only
    for token signals or the rendered-token view — the plain view ships the raw record */
 async function ensureTokens() {
@@ -2103,7 +2119,9 @@ async function openEpisode(line, target = {}) {
   renderModalStep();
   renderRolloutList();
   $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
+  $("#tm-timeline").innerHTML = `<div class="chart-empty">loading timeline…</div>`;
   $("#tm-meta").innerHTML = "";
+  currentTimeline = null;
   const withTokens = !!$("#token-signal").value;
   const withRendered = state.traces.viewMode === "rendered";
   const episode = await fetchEpisode(line, withTokens, withRendered);
@@ -2113,6 +2131,7 @@ async function openEpisode(line, target = {}) {
   currentEpisode = episode;
   currentTraceIdx = target.trace ?? 0;
   currentBranchIdx = target.branch ?? 0;
+  if (traceView === "timeline") await ensureTimeline();
   renderEpisode();
   await ensureTokens();
   if (line === currentLine && requestVersion === episodeOpenVersion) renderEpisode();
@@ -2125,6 +2144,7 @@ function closeDrawer() {
   $("#drawer-backdrop").hidden = true;
   $("#tm-back").hidden = true;
   currentEpisode = null;
+  currentTimeline = null;
   currentLine = null;
   pendingHighlight = null;
 }
@@ -2431,7 +2451,7 @@ function renderMessages(ep, trace, branches) {
     if (reasoning) subs.push(reasoningBlock(reasoning, reasoningMarks));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
     const messageHtml =
-      `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}"${role === "system" && !marked ? "" : " open"}>` +
+      `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}" data-node="${idx}"${role === "system" && !marked ? "" : " open"}>` +
       `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
       `<span class="entry-role">${esc(role)}</span>` +
       `<span class="entry-preview">${preview(text, 180)}</span>` +
@@ -2449,7 +2469,8 @@ function renderMessages(ep, trace, branches) {
   // first chunk forces enough entries into the DOM to scroll to
   const CHUNK = 30;
   const lastMark = Math.max(-1, ...[...hlByNode.keys()].map((n) => path.indexOf(n)));
-  let rendered = Math.min(path.length, Math.max(CHUNK, lastMark + 3));
+  const targetPosition = pendingTimelineNode == null ? -1 : path.indexOf(pendingTimelineNode);
+  let rendered = Math.min(path.length, Math.max(CHUNK, lastMark + 3, targetPosition + 1));
   container.innerHTML =
     (systemPosition === -1 ? toolsHtml : "") +
     path.slice(0, rendered).map(entryHtml).join("") +
@@ -2598,6 +2619,93 @@ function renderMeta(ep, trace, branches) {
   $("#tm-meta").innerHTML = parts.join("");
 }
 
+function timelineClock(ts) {
+  if (ts == null) return "—";
+  return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function timelineTipAttr(payload) {
+  return ` data-timeline-tip="${esc(JSON.stringify(payload))}"`;
+}
+
+function timelineSpanHtml(lane, span, start, total) {
+  if (span.started_at == null) return "";
+  const left = Math.max(0, Math.min(100, ((span.started_at - start) / total) * 100));
+  const end = span.ended_at ?? span.started_at;
+  const width = Math.max(0.35, Math.min(100 - left, ((end - span.started_at) / total) * 100));
+  const rows = [
+    ["start", timelineClock(span.started_at)],
+    ["end", span.ended_at == null ? "open" : timelineClock(span.ended_at)],
+    ["duration", span.ended_at == null ? "—" : fmtDuration(span.ended_at - span.started_at)],
+  ];
+  if (span.track === "activity") {
+    if (span.input_tokens != null || span.output_tokens != null)
+      rows.push(["tokens", `${fmtCompact(span.input_tokens || 0)} in · ${fmtCompact(span.output_tokens || 0)} out`]);
+    if (span.cost != null) rows.push(["cost", fmtCost(span.cost)]);
+  }
+  const tip = timelineTipAttr({
+    kind: span.track === "activity" ? "activity" : "lifecycle",
+    title: `${lane.label} — ${span.label}`,
+    snippet: span.snippet || "",
+    rows,
+    hint: span.track === "activity" ? "Click to open this call in the transcript." : "Click to open this agent transcript.",
+  });
+  const node = span.node_index == null ? "" : ` data-tl-node="${span.node_index}"`;
+  return (
+    `<button class="tl-span ${esc(span.track)} ${esc(span.kind)} ${span.status === "running" ? "running" : ""}"` +
+    ` style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%" data-tl-trace="${lane.trace_index}"${node}${tip}></button>`
+  );
+}
+
+function timelineLaneHtml(lane, start, total) {
+  const model = lane.model || lane.role || "agent";
+  const grids = [25, 50, 75].map((left) => `<i class="tl-gridline" style="left:${left}%"></i>`).join("");
+  const spans = (lane.spans || []).map((span) => timelineSpanHtml(lane, span, start, total)).join("");
+  const duration = lane.duration != null ? fmtDuration(lane.duration) : lane.started_at ? fmtDuration(Math.max(0, (lane.ended_at || Date.now() / 1000) - lane.started_at)) : "—";
+  return (
+    `<div class="tl-lane" data-tl-trace="${lane.trace_index}">` +
+    `<div class="tl-label" style="padding-left:${10 + (lane.depth || 0) * 18}px">` +
+    `${lane.depth ? '<span class="tl-tree">└</span>' : ""}<span class="tl-dot" style="background:${PALETTE[lane.trace_index % PALETTE.length]}"></span>` +
+    `<span class="tl-label-copy"><div class="tl-label-name" title="${esc(lane.label)}">${esc(lane.label)}</div>` +
+    `<div class="tl-label-meta" title="${esc(model)}">${lane.parent_id ? "subagent · " : ""}${esc(model)}</div></span></div>` +
+    `<div class="tl-track">${grids}${spans}</div>` +
+    `<div class="tl-time"><span>${duration}</span><span class="muted">${lane.ended_at == null ? "open" : timelineClock(lane.ended_at)}</span></div>` +
+    `<div class="tl-outcome"><span class="tl-state ${esc(lane.status)}">${esc(lane.outcome || lane.status)}</span>` +
+    `${lane.reward == null ? "" : `<span class="tl-reward">reward ${fmtReward(lane.reward)}</span>`}</div></div>`
+  );
+}
+
+function renderTimeline() {
+  const target = $("#tm-timeline");
+  const timeline = currentTimeline;
+  if (!timeline) {
+    target.innerHTML = `<div class="chart-empty">loading timeline…</div>`;
+    return;
+  }
+  if (!(timeline.lanes || []).length) {
+    target.innerHTML = emptyState("no timeline", "this episode carries no timed agent traces");
+    return;
+  }
+  const start = timeline.started_at ?? Math.min(...timeline.lanes.map((lane) => lane.started_at).filter(Boolean));
+  const end = timeline.ended_at ?? Math.max(...timeline.lanes.map((lane) => lane.ended_at || lane.started_at).filter(Boolean));
+  const total = Math.max(1, end - start);
+  const axis = [0, 0.25, 0.5, 0.75, 1]
+    .map((fraction) => `<span style="left:${fraction * 100}%">${fraction ? fmtDuration(total * fraction) : "0"}</span>`)
+    .join("");
+  target.innerHTML =
+    `<div class="tl-shell"><div class="tl-head"><span>execution tree</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
+    timeline.lanes.map((lane) => timelineLaneHtml(lane, start, total)).join("") +
+    `</div>`;
+}
+
+async function setTraceView(view) {
+  traceView = view;
+  setActive("#tm-view", "view", view);
+  if (view === "timeline") await ensureTimeline();
+  renderEpisode();
+  savePrefs();
+}
+
 function renderEpisode() {
   const ep = currentEpisode;
   if (!ep) return;
@@ -2627,10 +2735,18 @@ function renderEpisode() {
           .join("") +
         `<button data-branch="-1" class="${currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
       : "";
-  $("#tm-tabs-row").hidden = traceTabs.hidden && branchTabs.hidden;
   setActive("#trace-view-mode", "mode", state.traces.viewMode);
   renderRolloutList();
-  renderMessages(ep, trace, branches);
+  const timeline = traceView === "timeline";
+  $("#tm-tabs-row").hidden = timeline || (traceTabs.hidden && branchTabs.hidden);
+  $("#tm-messages").hidden = timeline;
+  $("#tm-timeline").hidden = !timeline;
+  $("#token-signal").closest(".dd-select").hidden = timeline;
+  $("#tm-collapse").hidden = timeline;
+  $("#tm-expand").hidden = timeline;
+  setActive("#tm-view", "view", traceView);
+  if (timeline) renderTimeline();
+  else renderMessages(ep, trace, branches);
   renderMeta(ep, trace, branches);
 }
 
@@ -3654,6 +3770,63 @@ $("#trace-view-mode").addEventListener("click", async (e) => {
   renderEpisode();
   savePrefs();
 });
+$("#tm-view").addEventListener("click", (e) => {
+  const button = e.target.closest("[data-view]");
+  if (button && button.dataset.view !== traceView) setTraceView(button.dataset.view);
+});
+$("#tm-timeline").addEventListener("click", async (e) => {
+  const target = e.target.closest("[data-tl-trace]");
+  if (!target) return;
+  e.stopPropagation();
+  currentTraceIdx = +target.dataset.tlTrace;
+  const node = target.dataset.tlNode == null ? null : +target.dataset.tlNode;
+  if (node != null) {
+    const trace = currentEpisode?.traces?.[currentTraceIdx];
+    const branches = trace ? traceBranches(trace) : [];
+    const branch = branches.findIndex((path) => path.includes(node));
+    currentBranchIdx = branch >= 0 ? branch : -1;
+    pendingTimelineNode = node;
+  } else {
+    currentBranchIdx = 0;
+    pendingTimelineNode = null;
+  }
+  await setTraceView("transcript");
+  requestAnimationFrame(() => {
+    const entry = pendingTimelineNode == null ? null : $(`#tm-messages [data-node="${pendingTimelineNode}"]`);
+    entry?.scrollIntoView({ block: "center" });
+    if (entry) entry.open = true;
+    pendingTimelineNode = null;
+  });
+});
+const timelineTip = document.createElement("div");
+timelineTip.className = "tl-tooltip";
+timelineTip.hidden = true;
+document.body.appendChild(timelineTip);
+function moveTimelineTip(e) {
+  const gap = 12;
+  const left = Math.min(e.clientX + gap, window.innerWidth - timelineTip.offsetWidth - 8);
+  const top = Math.min(e.clientY + gap, window.innerHeight - timelineTip.offsetHeight - 8);
+  timelineTip.style.left = `${Math.max(8, left)}px`;
+  timelineTip.style.top = `${Math.max(8, top)}px`;
+}
+$("#tm-timeline").addEventListener("mouseover", (e) => {
+  const target = e.target.closest("[data-timeline-tip]");
+  if (!target) return;
+  const payload = JSON.parse(target.dataset.timelineTip);
+  timelineTip.innerHTML =
+    `<div class="tl-tooltip-kind">${esc(payload.kind)}</div><div class="tl-tooltip-title">${esc(payload.title)}</div>` +
+    `${payload.snippet ? `<div class="tl-tooltip-snippet">${esc(payload.snippet)}</div>` : ""}` +
+    `<dl>${payload.rows.map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>` +
+    `<div class="tl-tooltip-hint">${esc(payload.hint)}</div>`;
+  timelineTip.hidden = false;
+  moveTimelineTip(e);
+});
+$("#tm-timeline").addEventListener("mousemove", (e) => {
+  if (!timelineTip.hidden) moveTimelineTip(e);
+});
+$("#tm-timeline").addEventListener("mouseout", (e) => {
+  if (e.target.closest("[data-timeline-tip]") && !e.relatedTarget?.closest?.("[data-timeline-tip]")) timelineTip.hidden = true;
+});
 $("#tm-trace-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-trace]");
   if (btn) { currentTraceIdx = +btn.dataset.trace; currentBranchIdx = 0; renderEpisode(); }
@@ -3734,6 +3907,7 @@ function savePrefs() {
       traceErrorsOnly: state.traces.errorsOnly,
       traceSort: `${state.traces.sort}:${state.traces.order}`,
       traceViewMode: state.traces.viewMode,
+      traceView,
       logView: state.logs.view,
       logComponents: state.logs.components ? [...state.logs.components] : null,
       logLevel: state.logs.level,
