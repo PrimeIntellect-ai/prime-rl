@@ -46,7 +46,7 @@ const state = {
     sort: (prefs.traceSort ?? "line:asc").split(":")[0],
     order: (prefs.traceSort ?? "line:asc").split(":")[1],
   },
-  report: { loaded: false, files: [], file: null, wanted: null, text: null, mtime: null, citations: {}, order: [], verify: new Map() },
+  report: { loaded: false, threads: [], thread: null, wanted: null, docs: new Map(), open: new Set(), verify: new Map() },
   follow: prefs.follow ?? true,
 };
 
@@ -196,7 +196,7 @@ async function selectRun(name) {
   };
   state.report = {
     ...state.report,
-    loaded: false, files: [], file: null, text: null, mtime: null, citations: {}, order: [], verify: new Map(),
+    loaded: false, threads: [], thread: null, docs: new Map(), open: new Set(), verify: new Map(),
   };
   applyRunTypeControls();
   renderOverview();
@@ -299,7 +299,7 @@ function renderOverview() {
 
 function updateHash() {
   const parts = [`run=${encodeURIComponent(state.run || "")}`, `tab=${state.tab}`];
-  if (state.tab === "report" && state.report.file) parts.push(`report=${encodeURIComponent(state.report.file)}`);
+  if (state.tab === "report" && state.report.thread) parts.push(`report=${encodeURIComponent(state.report.thread)}`);
   location.hash = `#${parts.join("&")}`;
 }
 
@@ -2496,71 +2496,123 @@ async function initReport() {
   await refreshReport();
 }
 
+/* a thread's identity: its dir name, or the relpath for loose root files */
+const threadKey = (t) => (t.loose ? t.reports[0].file : t.name);
+
+function currentThread() {
+  return state.report.threads.find((t) => threadKey(t) === state.report.thread);
+}
+
 async function refreshReport() {
   const rep = state.report;
   const data = await api(`/api/runs/${encodeURIComponent(state.run)}/reports`);
   if (state.report !== rep) return;
-  rep.files = data.reports;
-  if (!rep.files.length) {
-    rep.file = null;
-    rep.text = null;
-    renderReportSelect();
+  rep.threads = data.threads;
+  if (!rep.threads.length) {
+    rep.thread = null;
+    renderThreadRail();
     $("#report-verify").textContent = "";
     $("#report-status").textContent = "";
+    $("#report-save").hidden = true;
     $("#report-body").innerHTML = emptyState(
       "no reports yet",
-      "an agent writes markdown to <run>/reports/ and POSTs /api/view to open it here"
+      "an agent writes markdown to <run>/reports/<thread>/ and POSTs /api/view to open it here"
     );
     return;
   }
-  const wanted = rep.wanted && rep.files.find((f) => f.file === rep.wanted)?.file;
-  rep.wanted = null;
-  const target = wanted || (rep.file && rep.files.find((f) => f.file === rep.file)?.file) || rep.files[0].file;
-  const entry = rep.files.find((f) => f.file === target);
-  const changed = target !== rep.file || entry.mtime !== rep.mtime;
-  rep.file = target;
-  renderReportSelect();
-  if (changed) await loadReport();
+  // wanted may be a thread name, a loose file, or a thread/file path
+  let scrollTo = null;
+  if (rep.wanted) {
+    const bare = rep.wanted.replace(/\.md$/, "");
+    const byName = rep.threads.find((t) => threadKey(t) === rep.wanted || t.name === bare);
+    const byFile = rep.threads.find((t) => t.reports.some((r) => r.file === rep.wanted || r.file === `${rep.wanted}.md`));
+    const hit = byName ?? byFile;
+    if (hit) {
+      rep.thread = threadKey(hit);
+      if (!byName && byFile) {
+        scrollTo = hit.reports.find((r) => r.file === rep.wanted || r.file === `${rep.wanted}.md`).file;
+        rep.open.add(scrollTo);
+      }
+    }
+    rep.wanted = null;
+  }
+  const thread = currentThread() ?? rep.threads[0];
+  if (threadKey(thread) !== rep.thread) {
+    rep.thread = threadKey(thread);
+    rep.open = new Set();
+  }
+  rep.open.add(thread.reports[thread.reports.length - 1].file); // latest is always open
+  renderThreadRail();
+  await renderThread(scrollTo);
 }
 
-async function loadReport() {
+function renderThreadRail() {
   const rep = state.report;
-  const file = rep.file;
-  const data = await api(`/api/runs/${encodeURIComponent(state.run)}/report?file=${encodeURIComponent(file)}`);
-  if (state.report !== rep || rep.file !== file) return;
-  rep.text = data.text;
-  rep.mtime = data.mtime;
-  renderReport();
+  $("#report-count").textContent = rep.threads.length ? fmtCompact(rep.threads.length) : "";
+  $("#report-threads").innerHTML = rep.threads
+    .map((t) => {
+      const key = threadKey(t);
+      const title = t.loose ? t.reports[0].title || t.name : t.name;
+      const saved = t.reports.filter((r) => !r.draft).length;
+      return (
+        `<div class="tm-item${key === rep.thread ? " active" : ""}" data-thread="${esc(key)}">` +
+        `<span class="tm-env" title="${esc(title)}">${esc(title)}</span>` +
+        (t.reports.some((r) => r.draft) ? `<span class="re-dot" title="draft in progress"></span>` : "") +
+        `<span class="muted">${saved > 1 ? saved : ""}</span></div>`
+      );
+    })
+    .join("");
+}
+
+/* the selected thread renders as a stacked sequence — a lab notebook: older
+   reports collapse to a title line, the latest (or the streaming draft) is open */
+async function renderThread(scrollTo = null) {
+  const rep = state.report;
+  const thread = currentThread();
+  if (!thread) return;
+  await Promise.all(
+    thread.reports
+      .filter((r) => rep.open.has(r.file) && rep.docs.get(r.file)?.mtime !== r.mtime)
+      .map(async (r) => {
+        const data = await api(`/api/runs/${encodeURIComponent(state.run)}/report?file=${encodeURIComponent(r.file)}`);
+        rep.docs.set(r.file, { mtime: data.mtime, ...parseReport(data.text), order: [] });
+        for (const key of [...rep.verify.keys()]) if (key.startsWith(`${r.file}#`)) rep.verify.delete(key);
+      })
+  );
+  if (state.report !== rep || currentThread() !== thread) return;
+  const wrap = $("#report-wrap");
+  const scrollTop = wrap.scrollTop;
+  $("#report-body").innerHTML = thread.reports.map((r) => reportEntryHtml(thread, r)).join("");
+  $("#report-save").hidden = thread.loose || !thread.reports.some((r) => r.draft);
+  $("#report-status").textContent = `${thread.loose ? thread.reports[0].file : thread.name} · ${fmtAgo(thread.mtime)}`;
+  const target = scrollTo && $(`.report-entry[data-file="${CSS.escape(scrollTo)}"]`);
+  if (target) target.scrollIntoView({ block: "start" });
+  else wrap.scrollTop = scrollTop;
   if (state.tab === "report") updateHash();
-}
-
-function renderReportSelect() {
-  const rep = state.report;
-  const sel = $("#report-select");
-  sel.disabled = !rep.files.length;
-  sel.innerHTML = rep.files.length
-    ? rep.files
-        .map((f) => `<option value="${esc(f.file)}" ${f.file === rep.file ? "selected" : ""}>${esc(f.title || f.file)}</option>`)
-        .join("")
-    : `<option>no reports</option>`;
-  syncDressedSelects();
-}
-
-function renderReport() {
-  const rep = state.report;
-  const { title, body, citations } = parseReport(rep.text || "");
-  rep.citations = citations;
-  rep.verify = new Map();
-  const ctx = { citations, order: [] };
-  const html = mdToHtml(body, ctx);
-  rep.order = ctx.order;
-  $("#report-body").innerHTML =
-    (title ? `<h1 class="report-title">${esc(title)}</h1>` : "") +
-    (html || emptyState("empty report", "the agent has not written anything here yet"));
-  const entry = rep.files.find((f) => f.file === rep.file);
-  $("#report-status").textContent = entry ? `${rep.file} · ${fmtAgo(entry.mtime)}` : (rep.file ?? "");
-  $("#report-verify").textContent = rep.order.length ? "verifying citations…" : "";
   verifyCitations();
+}
+
+function reportEntryHtml(thread, r) {
+  const rep = state.report;
+  const open = rep.open.has(r.file);
+  const doc = rep.docs.get(r.file);
+  const seqLabel = r.draft ? "···" : r.seq != null ? String(r.seq).padStart(3, "0") : "·";
+  const title = doc?.title || r.title || r.file.split("/").pop();
+  const body = !open
+    ? ""
+    : doc
+      ? (doc.title ? `<h1 class="report-title">${esc(doc.title)}</h1>` : "") +
+        (mdToHtml(doc.body, { citations: doc.citations, order: (doc.order = []), doc: r.file }) ||
+          `<p class="muted">(nothing written yet)</p>`)
+      : `<div class="chart-empty">loading…</div>`;
+  return (
+    `<details class="report-entry${r.draft ? " draft" : ""}" data-file="${esc(r.file)}"${open ? " open" : ""}>` +
+    `<summary><span class="entry-num">${esc(seqLabel)}</span>` +
+    `<span class="re-title">${esc(title)}</span>` +
+    (r.draft ? `<span class="badge re-draft">draft</span>` : "") +
+    `<span class="muted">${fmtAgo(r.mtime)}</span><span class="entry-chev">›</span></summary>` +
+    `<div class="re-body">${body}</div></details>`
+  );
 }
 
 /* frontmatter title + [^id]: {json} citation definitions, stripped from the body */
@@ -2701,11 +2753,12 @@ function renderInline(text, ctx) {
 }
 
 function citeChipHtml(id, ctx) {
+  const doc = esc(ctx.doc ?? "");
   if (!ctx.citations[id])
-    return `<sup class="cite-chip missing" data-cite="${esc(id)}" title="[^${esc(id)}] has no citation definition">?</sup>`;
+    return `<sup class="cite-chip missing" data-doc="${doc}" data-cite="${esc(id)}" title="[^${esc(id)}] has no citation definition">?</sup>`;
   let n = ctx.order.indexOf(id) + 1;
   if (!n) n = ctx.order.push(id);
-  return `<sup class="cite-chip" data-cite="${esc(id)}" title="citation ${esc(id)}">${n}</sup>`;
+  return `<sup class="cite-chip" data-doc="${doc}" data-cite="${esc(id)}" title="citation ${esc(id)}">${n}</sup>`;
 }
 
 /* whitespace-insensitive, case-insensitive quote search; returns [start, end) in
@@ -2788,40 +2841,54 @@ async function resolveCitation(c) {
   if (!trace) return { matched: false, reason: "trace not found", line };
   let nodes = c.node != null ? [[c.node, (trace.nodes || [])[c.node]]] : (trace.nodes || []).map((n, i) => [i, n]);
   nodes = nodes.filter(([, n]) => n);
-  if (!nodes.length) return { matched: false, reason: `node ${c.node} not found`, line };
+  if (!nodes.length) return { matched: false, reason: `node ${c.node} not found`, line, trace };
   if (!c.quote) {
     const [nodeIdx, node] = nodes[0];
-    return { matched: true, weak: true, reason: "address exists (no quote to check)", line, node, nodeIdx };
+    return { matched: true, weak: true, reason: "address exists (no quote to check)", line, trace, node, nodeIdx };
   }
   for (const [i, node] of nodes) {
     for (const t of [messageText(node.message), node.message?.reasoning_content ?? node.message?.reasoning ?? ""]) {
       const text = typeof t === "string" ? t : "";
       const range = text && findQuote(text, c.quote);
-      if (range) return { matched: true, line, node, nodeIdx: i, range, text };
+      if (range) return { matched: true, line, trace, node, nodeIdx: i, range, text };
     }
   }
-  return { matched: false, reason: c.node != null ? "quote not found in node" : "quote not found in any node", line };
+  return { matched: false, reason: c.node != null ? "quote not found in node" : "quote not found in any node", line, trace };
 }
 
 async function verifyCitations() {
   const rep = state.report;
-  const text = rep.text;
-  const ids = rep.order.filter((id) => rep.citations[id]);
-  if (!ids.length) return;
+  const thread = currentThread();
+  if (!thread) return;
+  const jobs = [];
+  for (const r of thread.reports) {
+    if (!rep.open.has(r.file)) continue;
+    const doc = rep.docs.get(r.file);
+    for (const id of doc?.order || []) if (doc.citations[id]) jobs.push([r.file, id, doc]);
+  }
+  if (!jobs.length) {
+    $("#report-verify").textContent = "";
+    return;
+  }
+  $("#report-verify").textContent = "verifying citations…";
+  const stamp = (rep.verifyStamp = (rep.verifyStamp || 0) + 1);
   let verified = 0;
   let broken = 0;
-  for (const id of ids.slice(0, 50)) {
-    let res;
-    try {
-      res = await resolveCitation(rep.citations[id]);
-    } catch (err) {
-      res = { matched: false, reason: String(err) };
+  for (const [file, id, doc] of jobs.slice(0, 80)) {
+    const key = `${file}#${id}`;
+    let res = rep.verify.get(key);
+    if (!res) {
+      try {
+        res = await resolveCitation(doc.citations[id]);
+      } catch (err) {
+        res = { matched: false, reason: String(err) };
+      }
+      if (state.report !== rep || rep.verifyStamp !== stamp) return; // superseded render
+      rep.verify.set(key, res);
     }
-    if (state.report.text !== text) return; // report changed under us
-    rep.verify.set(id, res);
     if (res.matched) verified++;
     else broken++;
-    document.querySelectorAll(`.cite-chip[data-cite="${CSS.escape(id)}"]`).forEach((el) => {
+    document.querySelectorAll(`.cite-chip[data-doc="${CSS.escape(file)}"][data-cite="${CSS.escape(id)}"]`).forEach((el) => {
       el.classList.toggle("ok", !!res.matched && !res.weak);
       el.classList.toggle("bad", !res.matched);
       el.title = res.matched
@@ -2830,7 +2897,7 @@ async function verifyCitations() {
           : "quote verified against the trace"
         : `⚠ ${res.reason || "quote not found"}`;
     });
-    $("#report-verify").textContent = `${verified}/${ids.length} verified${broken ? ` · ${broken} broken` : ""}`;
+    $("#report-verify").textContent = `${verified}/${jobs.length} verified${broken ? ` · ${broken} broken` : ""}`;
   }
 }
 
@@ -2867,27 +2934,44 @@ function positionPeek(chip) {
   peekEl.style.top = `${below + 300 > window.innerHeight ? Math.max(12, rect.top - peekEl.offsetHeight - 8) : below}px`;
 }
 
+function peekNeighborHtml(trace, idx) {
+  const node = trace?.nodes?.[idx];
+  if (!node) return "";
+  const role = node.message?.role ?? "?";
+  return (
+    `<div class="peek-neighbor"><span class="entry-role">${esc(role)}</span>` +
+    `<span class="muted">${preview(messageText(node.message), 110) || "…"}</span></div>`
+  );
+}
+
 function peekSnippet(res, c) {
   if (!res?.node) return "";
   const role = res.node.message?.role ?? "?";
   const full = res.text ?? messageText(res.node.message);
+  // the whole message scrolls inside the box (opened centered on the quote);
+  // giant messages clip around the match so the popup never chokes on 1MB turns
   let s = 0;
   let e = full.length;
-  if (res.range) {
-    s = Math.max(0, res.range[0] - 200);
-    e = Math.min(full.length, res.range[1] + 200);
-  } else if (full.length > 500) e = 500;
+  const CAP = 20000;
+  if (full.length > CAP) {
+    const mid = res.range ? (res.range[0] + res.range[1]) / 2 : 0;
+    s = Math.max(0, Math.floor(mid - CAP / 2));
+    e = Math.min(full.length, s + CAP);
+  }
   const slice = full.slice(s, e);
   const html = res.range ? quoteMarkedHtml(slice, [{ quote: c.quote }]) : esc(slice);
   return (
+    peekNeighborHtml(res.trace, res.nodeIdx - 1) +
     `<div class="peek-snippet"><span class="entry-role">${esc(role)}</span>` +
-    `<div class="entry-body">${s > 0 ? "…" : ""}${html}${e < full.length ? "…" : ""}</div></div>`
+    `<div class="entry-body">${s > 0 ? "…" : ""}${html}${e < full.length ? "…" : ""}</div></div>` +
+    peekNeighborHtml(res.trace, res.nodeIdx + 1)
   );
 }
 
 async function openCitePeek(chip) {
   const id = chip.dataset.cite;
-  const c = state.report.citations[id];
+  const doc = chip.dataset.doc;
+  const c = state.report.docs.get(doc)?.citations[id];
   const peek = ensurePeek();
   const head = `<div class="peek-head"><span class="t-label">citation ${esc(id)}</span><span class="spacer"></span><button class="icon-btn peek-close">✕</button></div>`;
   peek.hidden = false;
@@ -2901,14 +2985,14 @@ async function openCitePeek(chip) {
     peek.innerHTML = `${head}<div class="peek-load muted">citation JSON did not parse:</div><pre class="md-code"><code>${esc(c._invalid)}</code></pre>`;
     return;
   }
-  let res = state.report.verify.get(id);
+  let res = state.report.verify.get(`${doc}#${id}`);
   if (!res) {
     try {
       res = await resolveCitation(c);
     } catch (err) {
       res = { matched: false, reason: String(err) };
     }
-    state.report.verify.set(id, res);
+    state.report.verify.set(`${doc}#${id}`, res);
   }
   const badge = res.matched
     ? res.weak
@@ -2945,6 +3029,9 @@ async function openCitePeek(chip) {
     peekSnippet(res, c) +
     (goto ? `<div class="peek-actions"><button class="btn" data-goto="${esc(JSON.stringify(goto))}">open in traces →</button></div>` : "");
   positionPeek(chip);
+  const mark = peek.querySelector(".peek-snippet mark.hl-quote");
+  const box = peek.querySelector(".peek-snippet .entry-body");
+  if (mark && box) box.scrollTop = Math.max(0, mark.offsetTop - box.clientHeight / 2);
 }
 
 /* ----------------------------------------------------------- view command */
@@ -3065,9 +3152,45 @@ $("#follow-toggle").addEventListener("change", (e) => {
   state.follow = e.target.checked;
   savePrefs();
 });
-$("#report-select").addEventListener("change", async (e) => {
-  state.report.file = e.target.value;
-  await loadReport();
+$("#report-threads").addEventListener("click", async (e) => {
+  const item = e.target.closest("[data-thread]");
+  if (!item || item.dataset.thread === state.report.thread) return;
+  const rep = state.report;
+  rep.thread = item.dataset.thread;
+  rep.open = new Set();
+  const thread = currentThread();
+  if (thread) rep.open.add(thread.reports[thread.reports.length - 1].file);
+  renderThreadRail();
+  await renderThread();
+});
+// expanding a collapsed report fetches and renders it in place ("toggle"
+// doesn't bubble → capture)
+$("#report-body").addEventListener(
+  "toggle",
+  (e) => {
+    const entry = e.target;
+    if (!entry.matches?.(".report-entry")) return;
+    const rep = state.report;
+    if (entry.open) {
+      if (rep.open.has(entry.dataset.file)) return; // rendered open already
+      rep.open.add(entry.dataset.file);
+      renderThread(entry.dataset.file);
+    } else rep.open.delete(entry.dataset.file);
+  },
+  true
+);
+$("#report-save").addEventListener("click", async () => {
+  const rep = state.report;
+  const res = await fetch(`/api/runs/${encodeURIComponent(state.run)}/reports/save`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ thread: rep.thread }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return toastMsg(`save failed: ${esc(typeof data.detail === "string" ? data.detail : res.status)}`);
+  toastMsg(`saved ${esc(data.file)}`);
+  rep.open.add(data.file); // the sealed draft stays open under its new name
+  await refreshReport();
 });
 $("#report-body").addEventListener("click", (e) => {
   const chip = e.target.closest(".cite-chip");
@@ -3624,7 +3747,7 @@ document.addEventListener("visibilitychange", () => {
   $("#config-search").value = prefs.configSearch ?? "";
   $("#token-signal").value = prefs.tokenSignal ?? "";
   $("#follow-toggle").checked = state.follow;
-  for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#attempt-select", "#token-signal", "#report-select"])
+  for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#attempt-select", "#token-signal"])
     dressSelect($(sel));
   syncTraceFilterControls();
   setActive("#metrics-mode", "mode", state.metrics.mode);

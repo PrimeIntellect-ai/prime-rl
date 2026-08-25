@@ -116,14 +116,21 @@
   </section>
 
   <section id="tab-report" hidden>
-    <div class="controls">
-      <label class="t-label">report</label>
-      <select id="report-select"></select>
-      <span id="report-verify" class="muted"></span>
-      <div class="spacer"></div>
-      <span id="report-status" class="muted"></span>
+    <div id="report-layout">
+      <aside id="report-rail">
+        <div class="tm-head"><span class="t-label">threads</span><span id="report-count" class="badge"></span></div>
+        <div id="report-threads"></div>
+      </aside>
+      <div id="report-main">
+        <div class="controls">
+          <span id="report-verify" class="muted"></span>
+          <div class="spacer"></div>
+          <button id="report-save" class="btn" hidden title="seal the streaming draft as the next numbered report">save draft</button>
+          <span id="report-status" class="muted"></span>
+        </div>
+        <div id="report-wrap"><article id="report-body"></article></div>
+      </div>
     </div>
-    <div id="report-wrap"><article id="report-body"></article></div>
   </section>
 
   <section id="tab-logs" hidden>

@@ -451,19 +451,71 @@ def report_title(path: Path) -> str | None:
     return None
 
 
+def report_row(base: Path, path: Path) -> dict | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    prefix = path.stem.split("-", 1)[0]
+    return {
+        "file": str(path.relative_to(base)),
+        "title": report_title(path),
+        "mtime": stat.st_mtime,
+        "size": stat.st_size,
+        "seq": int(prefix) if prefix.isdigit() else None,
+        "draft": path.stem == "draft",
+    }
+
+
 @app.get("/api/runs/{run}/reports")
 def list_reports(run: str) -> dict:
-    """Agent-written markdown reports under <run>/reports/, newest first."""
-    reports_dir = get_run_dir(run) / "reports"
-    rows = []
-    for path in reports_dir.glob("*.md") if reports_dir.is_dir() else []:
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        rows.append({"file": path.name, "title": report_title(path), "mtime": stat.st_mtime, "size": stat.st_size})
-    rows.sort(key=lambda r: r["mtime"], reverse=True)
-    return {"reports": rows}
+    """Agent-written markdown, organized as threads: each subdir of <run>/reports/
+    is one investigation holding sequential reports (NNN-slug.md; a streaming
+    draft.md sorts last). Loose root-level files are single-report threads."""
+    base = get_run_dir(run) / "reports"
+    threads = []
+    for entry in sorted(base.iterdir()) if base.is_dir() else []:
+        if entry.is_dir():
+            rows = [row for path in entry.glob("*.md") if (row := report_row(base, path))]
+            if not rows:
+                continue
+            rows.sort(key=lambda r: (r["draft"], r["seq"] if r["seq"] is not None else 1_000_000, r["mtime"]))
+            threads.append(
+                {"name": entry.name, "loose": False, "reports": rows, "mtime": max(r["mtime"] for r in rows)}
+            )
+        elif entry.suffix == ".md":
+            row = report_row(base, entry)
+            if row:
+                threads.append({"name": entry.stem, "loose": True, "reports": [row], "mtime": row["mtime"]})
+    threads.sort(key=lambda t: t["mtime"], reverse=True)
+    return {"threads": threads}
+
+
+def slugify(text: str) -> str:
+    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in text)
+    slug = "-".join(part for part in slug.split("-") if part)
+    return slug[:48] or "report"
+
+
+@app.post("/api/runs/{run}/reports/save")
+def save_report(run: str, body: dict) -> dict:
+    """The one write the dashboard performs: seal a thread's streaming draft as
+    the next numbered report (draft.md -> NNN-<slug-of-title>.md, atomic rename)."""
+    thread = (body or {}).get("thread")
+    if not thread:
+        raise HTTPException(400, "thread is required")
+    base = get_run_dir(run) / "reports"
+    thread_dir = (base / str(thread)).resolve()
+    if not thread_dir.is_relative_to(base.resolve()) or not thread_dir.is_dir():
+        raise HTTPException(404, f"thread {thread} not found")
+    draft = thread_dir / "draft.md"
+    if not draft.is_file():
+        raise HTTPException(404, "no draft.md in this thread")
+    seqs = [int(p.stem.split("-", 1)[0]) for p in thread_dir.glob("*.md") if p.stem.split("-", 1)[0].isdigit()]
+    seq = max(seqs, default=0) + 1
+    target = thread_dir / f"{seq:03d}-{slugify(report_title(draft) or 'report')}.md"
+    draft.rename(target)
+    return {"file": str(target.relative_to(base.resolve())), "seq": seq}
 
 
 @app.get("/api/runs/{run}/report")
@@ -896,9 +948,16 @@ def validate_view_command(cmd: dict) -> dict:
         raise HTTPException(400, f"tab must be one of {sorted(VIEW_TABS)}")
     report = cmd.get("report")
     if report is not None:
-        name = report if str(report).endswith(".md") else f"{report}.md"
-        safe_child(run_dir / "reports", name, suffix=".md")
-        cmd["report"] = name
+        # a report address is a thread dir ("wordle") or a file inside one
+        # ("wordle/002-after-budget-bump"); loose root files still work
+        base = run_dir / "reports"
+        as_dir = (base / str(report)).resolve()
+        if as_dir.is_dir() and as_dir.is_relative_to(base.resolve()) and as_dir != base.resolve():
+            cmd["report"] = str(as_dir.relative_to(base.resolve()))
+        else:
+            name = report if str(report).endswith(".md") else f"{report}.md"
+            path = safe_child(base, name, suffix=".md")
+            cmd["report"] = str(path.relative_to(base.resolve()))
     episode, line = cmd.get("episode"), cmd.get("line")
     if episode is not None or line is not None:
         step, kind, subset = cmd.get("step"), cmd.get("kind"), cmd.get("subset")
@@ -1017,6 +1076,9 @@ def free_port(host: str, start: int) -> int:
 
     for port in range(start, start + 100):
         with socket.socket() as sock:
+            # match uvicorn's own listener: without SO_REUSEADDR a just-killed
+            # dashboard's TIME_WAIT sockets push restarts onto the next port
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind((host, port))
             except OSError:
