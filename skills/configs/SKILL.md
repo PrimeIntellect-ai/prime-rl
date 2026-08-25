@@ -60,8 +60,6 @@ env.agent.runtime.type = "subprocess"
 ```
 
 CLI: `--orchestrator.train.source.0.env.taskset.id reverse-text` or `--orchestrator.eval.source.0.env.taskset.id reverse-text`.
-Use a JSON literal for a one-item list. For example, use `--data.subsets '["default"]'` and
-`--data.splits '["train"]'`. A bare scalar does not pass list validation.
 
 The `sft` entrypoint takes the same eval shape at the top level for online evals: `[eval]` + `[[eval.source]]` (with `[inference]` for the server), e.g. `--eval.source.0.env.taskset.id reverse-text`.
 

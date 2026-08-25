@@ -40,7 +40,7 @@ def jsonable(value: Any) -> Any:
 
 
 def as_json(value: Any) -> str:
-    return json.dumps(jsonable(value), separators=(",", ":"))
+    return json.dumps(jsonable(value))
 
 
 def trace_rows(episode: WireEpisode, trace: Trace) -> list[dict]:
