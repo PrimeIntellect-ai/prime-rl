@@ -276,6 +276,28 @@ Because the coefficient is detached, the gradient is the score function scaled b
 
 Reported metrics: `pmd_squared_error` (half the squared residual), `pmd_residual`, `pmd_abs_residual`, `sequence_log_ratio`, and `target_log_ratio`.
 
+### Geo-Mask Loss
+
+`[trainer.loss] type = "geo_mask"` replaces the `rl` component with sequence-level importance sampling behind a geometric trust region, from [RL collapse, part 3](https://richardli.xyz/post/rl-collapse-part3/). The rollout's importance ratio is the *geometric mean* of its per-token ratios, and the rollout contributes gradient only if that ratio lies inside the trust region:
+
+$$
+\rho_{\text{geo}}^{(j)} = \Big( \prod_t \rho_t^{(j)} \Big)^{1/|y^{(j)}|}, \qquad
+\mathcal{L} = -\sum_{j,t} \mathbb{I}\big(C_{\text{low}} \le \rho_{\text{geo}}^{(j)} \le C_{\text{high}}\big)\, \hat{A}_t^{(j)} \log \pi(y_t^{(j)}).
+$$
+
+The geometric mean is what makes the trust region length-invariant. A sequence-level mask on the *product* of per-token ratios rejects by cumulative divergence, which random-walks with length — past a critical length every rollout is rejected regardless of quality. The geometric mean is the average per-token log-ratio (an estimate of the per-token KL to the sampling policy), so the same bounds apply uniformly to short and long rollouts, and a rollout is judged by how far it drifted per token, not how long it is.
+
+Two properties distinguish it from the token-level trust regions above. The mask is all-or-nothing per rollout — a single divergent token never drops just itself, and an on-average-divergent rollout is dropped wholesale. And accepted rollouts use the plain score function with no importance weighting: inside the trust region the ratio is close to one, so the correction it would apply is dropped rather than carried as variance. Setting `token_clip` restores it as the Geo-Mask-Token-TIS hybrid, which weights each token's score function by its detached importance ratio clipped from above.
+
+| Knob | Default | What it does |
+|---|---|---|
+| `geo_mask_low` | 0.5 | Lower bound $C_{\text{low}}$ on the geometric-mean importance ratio. |
+| `geo_mask_high` | 2.0 | Upper bound $C_{\text{high}}$ on the geometric-mean importance ratio. The defaults accept rollouts whose mean absolute per-token log-ratio is within $\log 2 \approx 0.69$. |
+| `adv_tau` | 1.0 | Temperature on the advantage term. |
+| `token_clip` | None | Per-token importance-ratio ceiling for the Geo-Mask-Token-TIS hybrid ($\min(\rho_t, C)$, detached). None keeps the base estimator's plain score function. |
+
+Reported metrics: `masked_mismatch_kl` / `unmasked_mismatch_kl` (trainer/inference mismatch KL over dropped and kept tokens), `is_masked` (fraction of trainable tokens in rejected rollouts), and `geo_log_ratio` (the per-rollout mean log-ratio, $\log \rho_{\text{geo}}$).
+
 ### Custom Loss
 
 `[trainer.loss] type = "custom"` replaces the `rl` component. The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates. `inputs.loss_mask` selects exactly the rl member tokens (for a plain GRPO run, all trainable tokens).

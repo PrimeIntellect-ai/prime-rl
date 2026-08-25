@@ -559,6 +559,27 @@ class PMDMeanLossConfig(BaseConfig):
     (``advantage / pmd_tau``). Must be positive; the loss divides by it."""
 
 
+class GeoMaskLossConfig(BaseConfig):
+    type: Literal["geo_mask"] = "geo_mask"
+
+    geo_mask_low: float = Field(0.5, gt=0)
+    """Lower bound of the trust region on the geometric-mean importance ratio.
+    Sequences whose ratio falls below it contribute no gradient."""
+
+    geo_mask_high: float = Field(2.0, gt=0)
+    """Upper bound of the trust region on the geometric-mean importance ratio.
+    Sequences whose ratio rises above it contribute no gradient."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    token_clip: float | None = Field(None, gt=0)
+    """Per-token importance-ratio ceiling for the Geo-Mask-Token-TIS hybrid:
+    accepted sequences weight the score function by ``min(ratio, token_clip)``
+    (detached). None (the default) is the base estimator — the plain score
+    function with no importance weighting."""
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -570,7 +591,13 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    DefaultLossConfig | IPOLossConfig | KPopLossConfig | KimiK15LossConfig | PMDMeanLossConfig | CustomLossConfig,
+    DefaultLossConfig
+    | IPOLossConfig
+    | KPopLossConfig
+    | KimiK15LossConfig
+    | PMDMeanLossConfig
+    | GeoMaskLossConfig
+    | CustomLossConfig,
     Field(discriminator="type"),
 ]
 

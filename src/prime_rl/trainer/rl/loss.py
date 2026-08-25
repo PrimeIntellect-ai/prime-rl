@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -9,6 +10,7 @@ from torch import Tensor
 from prime_rl.configs.trainer import (
     CustomLossConfig,
     DefaultLossConfig,
+    GeoMaskLossConfig,
     IPOLossConfig,
     KimiK15LossConfig,
     KPopLossConfig,
@@ -419,12 +421,67 @@ def pmd_mean_loss_fn(
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+@jaxtyped(typechecker=typechecker)
+def geo_mask_loss_fn(inputs: LossInputs, loss_config: GeoMaskLossConfig) -> LossOutputs:
+    """Geo-Mask loss type (https://richardli.xyz/post/rl-collapse-part3/):
+    sequence-level importance sampling behind a geometric trust region. The
+    rollout's importance ratio is the geometric mean of its per-token ratios —
+    an intensive quantity that stays comparable across lengths, where the
+    product of per-token ratios grows with length and ends up rejecting long
+    rollouts wholesale. A rollout contributes gradient only if that ratio lies
+    within ``[geo_mask_low, geo_mask_high]``; the mask is all-or-nothing per
+    rollout, never per token.
+
+    Accepted rollouts use the plain score function: inside the trust region
+    the ratio is close to one, so the correction it would apply is dropped
+    rather than carried as variance. ``token_clip`` switches to the
+    Geo-Mask-Token-TIS hybrid, which weights each token's score function by
+    its detached importance ratio clipped from above.
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
+
+    num_tokens = loss_mask.sum().clamp_min(1)
+    geo_log_ratio = (loss_mask * log_importance_ratio).sum() / num_tokens
+    is_masked = (geo_log_ratio < math.log(loss_config.geo_mask_low)) | (
+        geo_log_ratio > math.log(loss_config.geo_mask_high)
+    )
+    keep_mask = loss_mask & ~is_masked
+
+    advantages = loss_config.adv_tau * advantages
+    if loss_config.token_clip is None:
+        token_weight = 1.0
+    else:
+        token_weight = importance_ratio.detach().clamp(max=loss_config.token_clip)
+    pg_loss = keep_mask * advantages * token_weight * trainer_logprobs
+    per_token_loss = -pg_loss
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+    loss = per_token_loss.sum()
+
+    metrics = {
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
+        "is_masked": _safe_mean(is_masked.expand(loss_mask.shape), loss_mask),
+        "geo_log_ratio": geo_log_ratio.detach(),
+    }
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
     """Build the loss fn for the rl component from ``trainer.loss``:
     ``default_loss_fn`` (``DefaultLossConfig``), ``ipo_loss_fn``
     (``IPOLossConfig``), ``kpop_loss_fn`` (``KPopLossConfig``),
     ``kimi_k15_loss_fn`` (``KimiK15LossConfig``),
-    ``pmd_mean_loss_fn`` (``PMDMeanLossConfig``), or the imported
+    ``pmd_mean_loss_fn`` (``PMDMeanLossConfig``),
+    ``geo_mask_loss_fn`` (``GeoMaskLossConfig``), or the imported
     function (``CustomLossConfig``).
     The ce / ref_kl loss types are fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
@@ -449,6 +506,10 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return pmd_mean_loss_fn(inputs, loss_config)
+    elif isinstance(loss_config, GeoMaskLossConfig):
+
+        def rl_fn(inputs: LossInputs) -> LossOutputs:
+            return geo_mask_loss_fn(inputs, loss_config)
     else:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
