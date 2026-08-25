@@ -10,11 +10,11 @@ so later scripts can filter them directly. Metadata with variable schemas stays 
 
 Usage (from the prime-rl repo):
     uv run python tools/convert_traces_to_hf_dataset.py <traces.jsonl> --name <dir-or-repo-id>
-        [--subset default] [--split train] [--push]
+        [--subset default] [--split train] [--private] [--local]
 
-Without `--push`, the tool writes `<name>/<subset>/<split>.parquet` and registers it in
-`<name>/README.md`. With `--push`, it pushes to the Hugging Face Hub repo `<name>` under
-config `<subset>` and split `<split>`.
+By default, the tool pushes to the Hugging Face Hub repo `<name>`. Use `--private` when
+creating a private repo. With `--local`, it writes `<name>/<subset>/<split>.parquet` and
+registers it in `<name>/README.md` instead.
 """
 
 import argparse
@@ -142,11 +142,14 @@ def register_in_dataset_card(root: Path, subset: str, split: str, rel_path: str)
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("traces", type=Path, help="a run's traces.jsonl (one episode per line)")
-    parser.add_argument("--name", required=True, help="output dataset dir, or HF repo id with --push")
+    parser.add_argument("--name", required=True, help="HF repo id, or output dataset dir with --local")
     parser.add_argument("--subset", default="default", help="dataset config name")
     parser.add_argument("--split", default="train", help="dataset split name")
-    parser.add_argument("--push", action="store_true", help="push to the HF Hub instead of writing parquet")
+    parser.add_argument("--private", action="store_true", help="make a new Hub dataset private")
+    parser.add_argument("--local", action="store_true", help="write parquet locally instead of pushing")
     args = parser.parse_args()
+    if args.local and args.private:
+        parser.error("--private cannot be used with --local")
 
     num_episodes, num_traces, rows = 0, 0, []
     with args.traces.open(encoding="utf-8") as f:
@@ -163,9 +166,14 @@ def main() -> None:
         raise SystemExit("traces-to-hf: no branches found")
 
     dataset = Dataset.from_list(rows)
-    if args.push:
-        dataset.push_to_hub(args.name, config_name=args.subset, split=args.split)
-        print(f"traces-to-hf: pushed to {args.name} (subset={args.subset}, split={args.split})")
+    if not args.local:
+        dataset.push_to_hub(
+            args.name,
+            config_name=args.subset,
+            split=args.split,
+            private=True if args.private else None,
+        )
+        print(f"traces-to-hf: pushed to {args.name} (subset={args.subset}, split={args.split}, private={args.private})")
         return
     root = Path(args.name)
     rel_path = f"{args.subset}/{args.split}.parquet"
