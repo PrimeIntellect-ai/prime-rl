@@ -45,6 +45,7 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
 - Config: `RLConfig` (`packages/prime-rl-configs/src/prime_rl/configs/rl.py`)
 - Entrypoint: `src/prime_rl/entrypoints/rl.py`
 - SLURM: single- and multi-node
+- Multi-node SLURM stops after `.trainer.done` for trainer-only fake-data runs. Runs with inference stop after both `.trainer.done` and `.orchestrator.done`.
 - Environment packages: before launching a config with a non-core verifier env id,
   verify the package imports under `uv run` (for example
   `uv run python -c "import importlib.util; print(importlib.util.find_spec('r2e_gym'))"`).

@@ -72,9 +72,11 @@ ln -sfn inference/node_0.log $LOG_DIR/inference.log
 # publishes its successful exit through the shared launcher directory. Every node
 # uses the same completion condition before it tears down support processes.
 export TRAINER_DONE=$LAUNCHER_DIR/.trainer.done
+{% if num_infer_nodes > 0 -%}
 export ORCHESTRATOR_DONE=$LAUNCHER_DIR/.orchestrator.done
+{% endif -%}
 mkdir -p "$LAUNCHER_DIR"
-rm -f "$TRAINER_DONE" "$ORCHESTRATOR_DONE"
+rm -f "$TRAINER_DONE"{% if num_infer_nodes > 0 %} "$ORCHESTRATOR_DONE"{% endif %}
 
 export PRL_RUN_ID=${PRL_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
 export PRL_RUN_NAME={{ run_name }}
@@ -480,9 +482,14 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
 fi
 {% endif %}
 
-# Trainer and orchestrator completion is the successful stop condition. The
-# watcher lets every node apply it, including nodes that only run inference.
+# Every node watches the terminal components for successful completion.
+{% if num_infer_nodes > 0 -%}
+# Inference runs stop after both the trainer and orchestrator finish.
 ( until [ -f "$TRAINER_DONE" ] && [ -f "$ORCHESTRATOR_DONE" ]; do sleep 10; done ) &
+{% else -%}
+# Trainer-only runs stop when the trainer finishes.
+( until [ -f "$TRAINER_DONE" ]; do sleep 10; done ) &
+{% endif -%}
 COMPLETION_PID=$!
 
 # A clean component exit is not enough to stop the run. Keep waiting for the
