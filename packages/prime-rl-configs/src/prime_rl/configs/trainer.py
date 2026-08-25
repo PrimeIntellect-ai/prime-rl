@@ -580,23 +580,27 @@ class GeoMaskLossConfig(BaseConfig):
     function with no importance weighting."""
 
 
-class SeqISLossConfig(BaseConfig):
-    type: Literal["seq_is"] = "seq_is"
+class SeqTISLossConfig(BaseConfig):
+    type: Literal["seq_tis"] = "seq_tis"
 
-    seq_clip: float | None = Field(2.0, gt=0)
-    """Ceiling on the sequence-level importance weight (Seq-TIS). None disables
-    truncation, leaving the unbiased Seq-IS weight (up to a numerics guard at
-    ``exp(40)``)."""
+    seq_clip: float = Field(2.0, gt=0)
+    """Ceiling on the sequence-level importance weight. Every rollout keeps a
+    (possibly damped) gradient contribution; the bias is one-sided."""
 
-    geo_mask_low: float | None = Field(None, gt=0)
-    """Optional lower bound of a trust region on the geometric-mean importance
-    ratio: rollouts whose ratio falls below it contribute no gradient. None
-    (the default) disables the bound."""
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
 
-    geo_mask_high: float | None = Field(None, gt=0)
-    """Optional upper bound of a trust region on the geometric-mean importance
-    ratio: rollouts whose ratio rises above it contribute no gradient. None
-    (the default) disables the bound."""
+
+class SeqMISLossConfig(BaseConfig):
+    type: Literal["seq_mis"] = "seq_mis"
+
+    geo_mask_low: float = Field(0.5, gt=0)
+    """Lower bound of the trust region on the geometric-mean importance ratio.
+    Rollouts whose ratio falls below it contribute no gradient."""
+
+    geo_mask_high: float = Field(2.0, gt=0)
+    """Upper bound of the trust region on the geometric-mean importance ratio.
+    Rollouts whose ratio rises above it contribute no gradient."""
 
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
@@ -619,7 +623,8 @@ LossConfig: TypeAlias = Annotated[
     | KimiK15LossConfig
     | PMDMeanLossConfig
     | GeoMaskLossConfig
-    | SeqISLossConfig
+    | SeqTISLossConfig
+    | SeqMISLossConfig
     | CustomLossConfig,
     Field(discriminator="type"),
 ]
