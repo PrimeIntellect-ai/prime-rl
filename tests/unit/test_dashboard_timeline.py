@@ -77,9 +77,25 @@ def test_timeline_infers_recursive_rlm_hierarchy_with_concurrent_siblings():
         "timing": {"start": 0},
     }
 
-    lanes = project_episode_timeline({"traces": [trace]})["lanes"]
+    concurrent_trace = {
+        "nodes": [
+            node("user", 5.5, content="review concurrently"),
+            node("assistant", 5.8, 0, content="reviewed"),
+        ],
+        "calls": [{"node": 1, "time": {"start": 5.6, "end": 5.8}}],
+        "is_completed": True,
+        "ok": True,
+        "agent": {"name": "reviewer"},
+        "timing": {"start": 5.5},
+    }
 
-    assert [lane["depth"] for lane in lanes] == [0, 1, 2, 1]
-    assert lanes[1]["parent_id"] == lanes[0]["id"]
-    assert lanes[2]["parent_id"] == lanes[1]["id"]
-    assert lanes[3]["parent_id"] == lanes[0]["id"]
+    lanes = project_episode_timeline({"traces": [trace, concurrent_trace]})["lanes"]
+
+    assert [lane["started_at"] for lane in lanes] == sorted(lane["started_at"] for lane in lanes)
+    lanes_by_id = {lane["id"]: lane for lane in lanes}
+    assert lanes_by_id["trace-0-subagent-3"]["parent_id"] == "trace-0"
+    assert lanes_by_id["trace-0-subagent-3"]["depth"] == 1
+    assert lanes_by_id["trace-0-subagent-6"]["parent_id"] == "trace-0-subagent-3"
+    assert lanes_by_id["trace-0-subagent-6"]["depth"] == 2
+    assert lanes_by_id["trace-0-subagent-10"]["parent_id"] == "trace-0"
+    assert lanes_by_id["trace-0-subagent-10"]["depth"] == 1
