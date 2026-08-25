@@ -45,7 +45,6 @@ const state = {
     errorsOnly: prefs.traceErrorsOnly ?? false,
     sort: (prefs.traceSort ?? "line:asc").split(":")[0],
     order: (prefs.traceSort ?? "line:asc").split(":")[1],
-    viewMode: prefs.traceViewMode ?? "messages",
   },
 };
 
@@ -2065,8 +2064,9 @@ function fetchEpisode(line, withTokens, withRendered = false) {
    for token signals or the rendered-token view — the plain view ships the raw record */
 async function ensureTokens() {
   if (!currentEpisode) return;
-  const wantsPieces = !!$("#token-signal").value;
-  const wantsRendered = state.traces.viewMode === "rendered";
+  const display = $("#token-signal").value;
+  const wantsPieces = !!display && display !== "rendered";
+  const wantsRendered = display === "rendered";
   if ((!wantsPieces || currentEpisode._hasTokens) && (!wantsRendered || currentEpisode._hasRendered)) return;
   const line = currentLine;
   const episode = await fetchEpisode(line, wantsPieces || currentEpisode._hasTokens, wantsRendered || currentEpisode._hasRendered);
@@ -2084,8 +2084,9 @@ async function openEpisode(line) {
   renderRolloutList();
   $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
   $("#tm-meta").innerHTML = "";
-  const withTokens = !!$("#token-signal").value;
-  const withRendered = state.traces.viewMode === "rendered";
+  const display = $("#token-signal").value;
+  const withTokens = !!display && display !== "rendered";
+  const withRendered = display === "rendered";
   const episode = await fetchEpisode(line, withTokens, withRendered);
   if (line !== currentLine) return; // user already moved to another rollout
   episode._hasTokens = withTokens;
@@ -2324,11 +2325,11 @@ function renderMessages(ep, trace, branches) {
     container.innerHTML = emptyState("no traces", "this episode carries no trace data") + errorsHtml;
     return;
   }
-  if (state.traces.viewMode === "rendered") {
+  const signal = $("#token-signal").value;
+  if (signal === "rendered") {
     container.innerHTML = renderedTokensHtml(trace, branches);
     return;
   }
-  const signal = $("#token-signal").value;
   const path = currentPath(trace, branches);
   const concatenated = currentBranchIdx === -1;
   const toolsHtml = toolDefinitionsHtml(trace);
@@ -2537,7 +2538,6 @@ function renderEpisode() {
         `<button data-branch="-1" class="${currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
       : "";
   $("#tm-tabs-row").hidden = traceTabs.hidden && branchTabs.hidden;
-  setActive("#trace-view-mode", "mode", state.traces.viewMode);
   renderRolloutList();
   renderMessages(ep, trace, branches);
   renderMeta(ep, trace, branches);
@@ -2967,16 +2967,6 @@ $("#tm-messages").addEventListener("mouseout", (e) => {
   if (e.target.closest(".tok[data-tip]")) tokTip.hidden = true;
 });
 $("#token-signal").addEventListener("change", async () => {
-  state.traces.viewMode = "messages";
-  await ensureTokens();
-  renderEpisode();
-  savePrefs();
-});
-$("#trace-view-mode").addEventListener("click", async (e) => {
-  const btn = e.target.closest("[data-mode]");
-  if (!btn || btn.dataset.mode === state.traces.viewMode) return;
-  state.traces.viewMode = btn.dataset.mode;
-  setActive("#trace-view-mode", "mode", state.traces.viewMode);
   await ensureTokens();
   renderEpisode();
   savePrefs();
@@ -3057,7 +3047,6 @@ function savePrefs() {
       collapsedSections: [...state.metrics.collapsedSections],
       traceErrorsOnly: state.traces.errorsOnly,
       traceSort: `${state.traces.sort}:${state.traces.order}`,
-      traceViewMode: state.traces.viewMode,
       logView: state.logs.view,
       logComponents: state.logs.components ? [...state.logs.components] : null,
       logLevel: state.logs.level,
@@ -3120,7 +3109,7 @@ document.addEventListener("visibilitychange", () => {
   renderLogLevel();
   $("#log-search").value = prefs.logSearch ?? "";
   $("#config-search").value = prefs.configSearch ?? "";
-  $("#token-signal").value = prefs.tokenSignal ?? "";
+  $("#token-signal").value = prefs.traceViewMode === "rendered" ? "rendered" : (prefs.tokenSignal ?? "");
   for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#attempt-select", "#token-signal"])
     dressSelect($(sel));
   syncTraceFilterControls();
