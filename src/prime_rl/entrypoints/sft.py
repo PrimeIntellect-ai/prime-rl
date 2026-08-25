@@ -21,6 +21,8 @@ from prime_rl.utils.pathing import (
     get_broadcast_dir,
     get_ckpt_dir,
     get_config_dir,
+    get_launcher_dir,
+    get_launcher_log_dir,
     get_log_dir,
     latest_log_dir,
     resolve_latest_ckpt_step,
@@ -161,6 +163,8 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, 
             **config.slurm.template_vars,
             config_path=config_path,
             output_dir=config.run_dir,
+            launcher_dir=get_launcher_dir(config.run_dir),
+            launcher_log_dir=get_launcher_log_dir(config.run_dir),
             gpus_per_node=config.deployment.gpus_per_node,
         )
     else:
@@ -168,6 +172,8 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, 
             **config.slurm.template_vars,
             config_path=config_path,
             output_dir=config.run_dir,
+            launcher_dir=get_launcher_dir(config.run_dir),
+            launcher_log_dir=get_launcher_log_dir(config.run_dir),
             trainer_env_vars=trainer_env_vars,
             num_nodes=config.deployment.num_train_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
@@ -182,6 +188,7 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, 
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
+    get_launcher_log_dir(config.run_dir).mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
 
 
@@ -216,6 +223,8 @@ def write_eval_slurm_script(config: SFTConfig, config_dir: Path, script_path: Pa
         **config.slurm.template_vars,
         config_dir=config_dir,
         output_dir=config.run_dir,
+        launcher_dir=get_launcher_dir(config.run_dir),
+        launcher_log_dir=get_launcher_log_dir(config.run_dir),
         num_infer_nodes=config.deployment.num_infer_nodes,
         gpus_per_node=config.deployment.gpus_per_node,
         router=config.inference.router,
@@ -233,6 +242,7 @@ def write_eval_slurm_script(config: SFTConfig, config_dir: Path, script_path: Pa
     )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
+    get_launcher_log_dir(config.run_dir).mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
 
 
@@ -267,7 +277,8 @@ def sft_slurm(config: SFTConfig):
     if decoupled_eval and config.monitors.wandb is not None:
         prl_run_id = os.environ["PRL_RUN_ID"]
 
-    script_path = config.run_dir / SFT_SBATCH
+    launcher_dir = get_launcher_dir(config.run_dir)
+    script_path = launcher_dir / SFT_SBATCH
     write_slurm_script(config, config_path, script_path, prl_run_id)
     logger.info(f"Wrote SLURM script to {script_path}")
 
@@ -279,7 +290,7 @@ def sft_slurm(config: SFTConfig):
     if decoupled_eval:
         write_eval_subconfigs(config, config_dir, strip_router=True)
         logger.info(f"Wrote eval subconfigs to {config_dir}")
-        eval_script_path = config.run_dir / EVAL_SBATCH
+        eval_script_path = launcher_dir / EVAL_SBATCH
         write_eval_slurm_script(config, config_dir, eval_script_path, prl_run_id)
         logger.info(f"Wrote eval SLURM script to {eval_script_path}")
         script_paths = [script_path, eval_script_path]

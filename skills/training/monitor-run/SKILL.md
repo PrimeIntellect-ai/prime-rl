@@ -77,6 +77,8 @@ After a restart, verify all processes are back up and progress resumed before th
 └── envs/{train,eval}/{env_name}.log    # one log file per env
 ```
 
+SLURM batch logs are under `{run_dir}/launcher/logs/*job_*.log`.
+
 Usually tailing `trainer.log`, `orchestrator.log`, and `inference.log` is enough. Drop into per-node or per-rank logs only when debugging. All logs are loguru with `HH:mm:ss  LEVEL  message`; levels: `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`.
 
 Scan for problems:

@@ -18,8 +18,8 @@
 #SBATCH --exclude={{ exclude }}
 {%- endif %}
 #SBATCH --exclusive
-#SBATCH --output={{ output_dir }}/job_%j.log
-#SBATCH --error={{ output_dir }}/job_%j.log
+#SBATCH --output={{ launcher_log_dir }}/job_%j.log
+#SBATCH --error={{ launcher_log_dir }}/job_%j.log
 
 # Exit immediately on any failed command so a crash anywhere releases the
 # allocation instead of leaving zombie processes holding nodes.
@@ -58,6 +58,7 @@ export INFERENCE_ENABLE_EXPERT_PARALLEL={{ "1" if inference_enable_expert_parall
 export PROJECT_DIR={{ project_dir }}
 export CONFIG_DIR={{ config_dir }}
 export OUTPUT_DIR={{ output_dir }}
+export LAUNCHER_DIR={{ launcher_dir }}
 # Per-attempt log dir: a resume or relaunch never overwrites an earlier attempt's logs.
 ATTEMPT=1
 while [ -e $OUTPUT_DIR/logs/attempt_$ATTEMPT ]; do ATTEMPT=$((ATTEMPT+1)); done
@@ -68,12 +69,11 @@ ln -sfn trainer/node_0.log $LOG_DIR/trainer.log
 ln -sfn inference/node_0.log $LOG_DIR/inference.log
 
 # Clean exits do not trigger srun --kill-on-bad-exit. Each terminal component
-# publishes its successful exit through this job-scoped state directory. Every
-# node uses the same completion condition before it tears down support processes.
-export RUN_STATE_DIR=$OUTPUT_DIR/.launcher/$SLURM_JOB_ID
-export TRAINER_DONE=$RUN_STATE_DIR/trainer.done
-export ORCHESTRATOR_DONE=$RUN_STATE_DIR/orchestrator.done
-mkdir -p "$RUN_STATE_DIR"
+# publishes its successful exit through the shared launcher directory. Every node
+# uses the same completion condition before it tears down support processes.
+export TRAINER_DONE=$LAUNCHER_DIR/.trainer.done
+export ORCHESTRATOR_DONE=$LAUNCHER_DIR/.orchestrator.done
+mkdir -p "$LAUNCHER_DIR"
 rm -f "$TRAINER_DONE" "$ORCHESTRATOR_DONE"
 
 export PRL_RUN_ID=${PRL_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
