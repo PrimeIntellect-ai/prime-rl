@@ -210,6 +210,8 @@ class Dispatcher:
         # *why* — the orchestrator toggles this based on step / policy lead.
         self.dispatch_allowed = asyncio.Event()
         self.dispatch_allowed.set()
+        self.policy_update_pending = False
+        self.scheduling_lock = asyncio.Lock()
 
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
@@ -371,6 +373,12 @@ class Dispatcher:
         the resulting aborts are processed while the engine is still stepping —
         otherwise the orphaned KV transfers crash the decode engine on resume
         (see ``WeightWatcher.apply_policy_update``)."""
+        self.policy_update_pending = True
+        # Wait for a scheduling call that started before the pending update.
+        # No rollout can cross the inference weight swap after this barrier.
+        async with self.scheduling_lock:
+            pass
+
         if self.train_envs is None or self.progress is None:
             return
         min_version = min_fresh_version(self.progress.step, self.max_off_policy_steps)
@@ -392,7 +400,8 @@ class Dispatcher:
             )
 
     async def on_new_version(self, step: int) -> None:
-        """No-op: the dispatcher drains in ``on_version_pending`` (pre-pause)."""
+        """Resume rollout scheduling after inference applies the new policy."""
+        self.policy_update_pending = False
 
     async def fill_inflight(self) -> None:
         """Schedule new rollouts up to ``max_inflight``, honoring
@@ -401,28 +410,33 @@ class Dispatcher:
         respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
         ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
         while True:
+            if self.policy_update_pending:
+                return
             if self.available_permits <= 0 or self.admission_budget() <= 0:
                 return
 
-            if self.mode == DispatcherMode.PREFER_EVAL:
-                # PREFER_EVAL is only entered when the orchestrator triggers
-                # eval, which requires ``eval_source`` to be configured
-                assert self.eval_source is not None
-                if not self.eval_has_work:
-                    # Eval source + all eval groups fully dispatched. Flip
-                    # to PREFER_TRAIN so any remaining permits go to train
-                    # while the in-flight eval tail completes naturally
-                    self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
-                    continue
-                scheduled = await self.try_schedule("eval")
-                if not scheduled:
+            async with self.scheduling_lock:
+                if self.policy_update_pending:
                     return
-            else:  # PREFER_TRAIN — respects the orchestrator's dispatch gate
-                if not self.dispatch_allowed.is_set():
-                    return
-                scheduled = await self.try_schedule("train")
-                if not scheduled:
-                    return
+                if self.mode == DispatcherMode.PREFER_EVAL:
+                    # PREFER_EVAL is only entered when the orchestrator triggers
+                    # eval, which requires ``eval_source`` to be configured
+                    assert self.eval_source is not None
+                    if not self.eval_has_work:
+                        # Eval source + all eval groups fully dispatched. Flip
+                        # to PREFER_TRAIN so any remaining permits go to train
+                        # while the in-flight eval tail completes naturally
+                        self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
+                        continue
+                    scheduled = await self.try_schedule("eval")
+                    if not scheduled:
+                        return
+                else:  # PREFER_TRAIN — respects the orchestrator's dispatch gate
+                    if not self.dispatch_allowed.is_set():
+                        return
+                    scheduled = await self.try_schedule("train")
+                    if not scheduled:
+                        return
 
     def switch_mode(self, new_mode: DispatcherMode, *, reason: str) -> None:
         if new_mode == self.mode:

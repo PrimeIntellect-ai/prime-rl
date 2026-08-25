@@ -78,11 +78,7 @@ from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, s
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_broadcast_dir
-from prime_rl.utils.utils import (
-    clean_exit,
-    final_broadcast_version,
-    resolve_latest_ckpt_step,
-)
+from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 
 monkey_patch_oai_iterable_types()
 monkey_patch_chat_completion_logprobs()
@@ -166,9 +162,10 @@ class Orchestrator:
         self.eval_triggered_at = {}
         self.consecutive_empty_batches = 0
         self.gate_closed_at = None
-        # Pulsed by the version hooks so a held ship can re-check ``policy.version``
+        # Pulsed after inference applies a policy so held work can re-check it.
         self.version_advanced = asyncio.Event()
         self.wait_for_policy_time = 0.0
+        self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
@@ -320,14 +317,9 @@ class Orchestrator:
         # scratch). The startup broadcast is always coming, so wait for it rather
         # than failing immediately when it is not there yet.
         sync_version = self.resume_step if self.resume_step is not None else 0
-        get_logger().info(f"Syncing inference to the trainer's startup broadcast (v{sync_version})")
-        t0 = time.perf_counter()
         wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
             STARTUP_WEIGHT_WAIT_TIMEOUT_S
         )
-        await self.receiver.sync_startup(sync_version, timeout=wait_timeout)
-        self.policy.version = sync_version
-        get_logger().debug(f"Synced inference to policy v{sync_version} in {format_time(time.perf_counter() - t0)}")
 
         self.eval_source: EvalSource | None = (
             EvalSource(
@@ -390,9 +382,12 @@ class Orchestrator:
         self.watcher = WeightWatcher(
             self.receiver,
             policy=self.policy,
-            observers=[self.dispatcher, self],
-            ckpt_step=self.policy.version,
+            observers=[self.dispatcher],
+            ckpt_step=sync_version,
         )
+        if self.eval_source is not None:
+            self.watcher.on_update(self.trigger_eval)
+        self.watcher.on_update(self.on_policy_update)
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
         self.lag_monitor = EventLoopLagMonitor()
@@ -419,6 +414,11 @@ class Orchestrator:
             wandb_enabled=wandb_enabled,
         )
 
+        get_logger().info(f"Syncing inference to the trainer's startup broadcast (v{sync_version})")
+        t0 = time.perf_counter()
+        await self.watcher.sync_startup(sync_version, timeout=wait_timeout)
+        get_logger().debug(f"Synced inference to policy v{sync_version} in {format_time(time.perf_counter() - t0)}")
+
     async def start(self) -> None:
         """Run the orchestrator until shutdown. Drives setup, spawns the
         background tasks, runs the main loop in this task, then cleans up."""
@@ -437,14 +437,6 @@ class Orchestrator:
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
         ]
-
-        # Base-model eval (policy v0) — fires before any train rollouts, logged at the first
-        # step, unless ``eval.skip_first_step=True``. On resume, defaults to assuming a clean
-        # exit (evals already completed); set ``eval.retrigger_on_resume=True`` to also re-fire
-        # interval-aligned evals at the checkpoint step (e.g. after a crash).
-        if config.eval is not None and config.eval.retrigger_on_resume and self.resume_step is not None:
-            self.maybe_trigger_eval(self.resume_step)
-        self.maybe_trigger_eval(self.progress.step)
 
         # Anchor step-time clock so the first step measures startup → first batch
         self.last_batch_at = time.perf_counter()
@@ -484,18 +476,11 @@ class Orchestrator:
                 get_logger().warning("Orchestrator cleanup complete (forced)")
             trim_process_memory()
 
-    @property
-    def final_version(self) -> int | None:
-        """Newest policy version the trainer will ever broadcast."""
-        if self.config.max_steps is None:
-            return None
-        return final_broadcast_version(self.config.max_steps, self.config.weight_broadcast.broadcast_final)
-
     async def wait_for_version(self, version: int, reason: str) -> None:
         """Bounded wait until the watcher has applied v{version}."""
         if self.policy.version >= version:
             return
-        get_logger().info(f"Waiting for the trainer to broadcast v{version} {reason}")
+        get_logger().info(f"Waiting for inference to apply policy v{version} {reason}")
 
         async def wait() -> None:
             while self.policy.version < version:
@@ -514,15 +499,15 @@ class Orchestrator:
         try:
             await asyncio.wait_for(wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            get_logger().warning(f"Trainer did not broadcast v{version} within {timeout}s — proceeding anyway")
+            get_logger().warning(f"Inference did not apply policy v{version} within {timeout}s — proceeding anyway")
 
     async def wait_for_final_broadcast(self) -> None:
         """Stay alive for the trainer's last broadcast. Every broadcast is a
         blocking rendezvous — tearing down the watcher before it would strand
         the trainer inside the handshake."""
-        if self.final_version is None:
+        if self.config.max_steps is None:
             return
-        await self.wait_for_version(self.final_version, reason="before shutdown")
+        await self.wait_for_version(self.config.max_steps, reason="before shutdown")
 
     async def main_loop(self) -> None:
         """Consume dispatcher results and route them to the train / eval sink.
@@ -644,16 +629,16 @@ class Orchestrator:
                 f"({n_trainable / effective.num_traces:.1%}) — consider reviewing task difficulty"
             )
 
-        # Ship batch ``step`` only once the trainer has published v{step-1-TARGET_LAG}.
+        # Ship batch ``step`` only once inference has applied v{step-1-TARGET_LAG}.
         # Without this, fast envs fill batches from buffered rollouts and the
         # orchestrator races arbitrarily far ahead of the trainer. Always
-        # satisfiable: the trainer broadcasts every version except v{max_steps},
-        # and ``wait_for_final_broadcast`` keeps the watcher alive through the
-        # last rendezvous after the pipeline drains.
+        # satisfiable: the trainer broadcasts every version, and
+        # ``wait_for_final_broadcast`` keeps the watcher alive through the last
+        # rendezvous after the pipeline drains.
         required_version = step - 1 - TARGET_LAG
         if self.policy.version < required_version:
             get_logger().info(
-                f"Holding batch {step} until the trainer publishes policy v{required_version} "
+                f"Holding batch {step} until inference applies policy v{required_version} "
                 f"(currently v{self.policy.version})"
             )
             hold_start = time.perf_counter()
@@ -757,14 +742,8 @@ class Orchestrator:
 
         self.log_train_batch(batch, step=step, step_time=step_time)
 
-        # The final eval must measure the final weights: hold until the
-        # trainer's last broadcast (v{max_steps} when evals consume it) has
-        # been applied before triggering it. Satisfiable — the trainer
-        # broadcasts right after consuming the batch this call just shipped.
-        if config.eval is not None and config.max_steps is not None and step >= config.max_steps:
-            assert self.final_version is not None
-            await self.wait_for_version(self.final_version, reason="for the final eval")
-        self.maybe_trigger_eval(self.progress.step)
+        if config.max_steps is not None and step >= config.max_steps:
+            await self.wait_for_version(step, reason="before shutdown")
         # Drain right after shipping the final batch. Waiting for a further
         # batch to fill would burn inference on data that can never train —
         # and with a tight ``max_off_policy_steps`` it never fills at all (the
@@ -784,14 +763,18 @@ class Orchestrator:
             f"train episode(s); any in-flight evals will complete)"
         )
 
-    def maybe_trigger_eval(self, step: int) -> None:
+    async def trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything
         fires. No-op when eval is not configured."""
-        if self.eval_source is None:
+        if self.eval_source is None or step in self.eval_triggered_steps:
             return
-        fired = self.eval_source.trigger(step)
+        if self.resume_step == step and self.config.eval is not None and not self.config.eval.retrigger_on_resume:
+            return
+        is_final = self.config.max_steps is not None and step >= self.config.max_steps
+        fired = self.eval_source.trigger(step, force=is_final)
         if not fired:
             return
+        self.eval_triggered_steps.add(step)
         reason = f"eval was triggered at step {step}"
         self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=reason)
         now = time.perf_counter()
@@ -942,10 +925,6 @@ class Orchestrator:
         policy_versions = {span.start for span in policy_spans if span is not None}
         policy_versions.update(failure.policy_version for failure in batch.failures)
         policy_version = min(policy_versions)
-        if len(policy_versions) > 1:
-            get_logger().warning(
-                f"Eval {batch.env_name} step {batch.step} had mixed policy versions: {sorted(policy_versions)}"
-            )
         # Episode metrics over {all,effective} (eval batches are per-env, so no `agg` axis).
         # ``effective`` = non-errored; pass@k / pass^k only over the effective set.
         episodes = batch.episodes
@@ -969,7 +948,7 @@ class Orchestrator:
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
         get_logger().success(
-            f"Evaluated {batch.env_name} (Step {batch.step}) | "
+            f"Evaluated {batch.env_name} | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%}"
@@ -1006,7 +985,7 @@ class Orchestrator:
         if lead > TARGET_LAG:
             if was_set:
                 get_logger().info(
-                    f"Pausing dispatcher until the trainer publishes policy v{self.progress.step - 1 - TARGET_LAG} "
+                    f"Pausing dispatcher until inference applies policy v{self.progress.step - 1 - TARGET_LAG} "
                     f"(currently v{self.policy.version})"
                 )
                 self.gate_closed_at = time.perf_counter()
@@ -1019,15 +998,10 @@ class Orchestrator:
                     self.gate_closed_at = None
             gate.set()
 
-    async def on_version_pending(self, step: int) -> None:
-        """``VersionObserver`` hook, fired at publish confirmation (pre-apply):
-        ``policy.version`` already carries the new version, so wake a held ship."""
-        self.version_advanced.set()
-
-    async def on_new_version(self, step: int) -> None:
-        """``VersionObserver`` hook: the weight update completed;
-        re-evaluate the dispatch gate (may resume if the trainer caught up)."""
+    async def on_policy_update(self, _step: int) -> None:
+        """Refresh policy-dependent state after inference applies new weights."""
         self.update_dispatch_gate()
+        self.version_advanced.set()
 
     async def stop(self) -> None:
         """Bounded best-effort teardown of all components. Has a global

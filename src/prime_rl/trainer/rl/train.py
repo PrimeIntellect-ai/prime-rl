@@ -67,7 +67,7 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, final_broadcast_version, resolve_latest_ckpt_step
+from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
 from ring_flash_attn import substitute_hf_flash_attn
 
 
@@ -625,31 +625,23 @@ def train(config: TrainerConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
-        # Broadcast the model just produced (policy v{progress.step}) so the orchestrator can
-        # sample its next step from it. Every broadcast is a handshake with the consumer, so
-        # versions past the last consumed one are skipped (``final_broadcast_version``:
-        # training never samples v{max_steps}, but a configured final eval measures it).
+        # Broadcast the model just produced (policy v{progress.step}). The final
+        # broadcast keeps inference synchronized with the completed trainer.
         if weight_sender is None:
             broadcast_weights_time = 0
         else:
-            broadcast_unused = config.max_steps is not None and progress.step > final_broadcast_version(
-                config.max_steps, config.weight_broadcast.broadcast_final
-            )
-            if not broadcast_unused:
-                broadcast_weights_start_time = time.perf_counter()
-                # The per-layer gather + fp8 conversion peaks ~50 GiB above the
-                # resident weights; release cached blocks (incl. offload-stream
-                # pools) so the broadcast gets the full headroom. Drain all
-                # pending work first: empty_cache returns blocks to the driver,
-                # so a still-running kernel holding a cached block (e.g. the
-                # optimizer step's tail) faults with an illegal memory access
-                # once its block is freed under it.
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
-                weight_sender.broadcast(model, step=progress.step)
-                broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
-            else:
-                broadcast_weights_time = 0
+            broadcast_weights_start_time = time.perf_counter()
+            # The per-layer gather + fp8 conversion peaks ~50 GiB above the
+            # resident weights; release cached blocks (incl. offload-stream
+            # pools) so the broadcast gets the full headroom. Drain all
+            # pending work first: empty_cache returns blocks to the driver,
+            # so a still-running kernel holding a cached block (e.g. the
+            # optimizer step's tail) faults with an illegal memory access
+            # once its block is freed under it.
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            weight_sender.broadcast(model, step=progress.step)
+            broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
 
         # Checkpoint the step we just finished (model = policy v{progress.step}).
         if (
