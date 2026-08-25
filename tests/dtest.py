@@ -29,6 +29,10 @@ class DTest:
     parent.
     """
 
+    # Inherited by every subclass's test methods (pytest resolves `pytestmark` through the MRO),
+    # so subclasses don't need to redeclare `gpu`/`distributed` themselves.
+    pytestmark = [pytest.mark.gpu, pytest.mark.distributed]
+
     default_world_size: int = 2
     _timeout_sec: float = 30.0
     _is_worker: bool = False
