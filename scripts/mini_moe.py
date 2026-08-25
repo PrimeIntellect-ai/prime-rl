@@ -16,11 +16,14 @@ from pathlib import Path
 
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import DeepseekV4ForCausalLM as HFDeepseekV4ForCausalLM
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
 from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
 )
 
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4ForCausalLM as PrimeRLDeepseekV4ForCausalLM
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
 from prime_rl.trainer.models.laguna import LagunaConfig
@@ -76,6 +79,43 @@ def _qwen3_5_moe_vlm_config():
 
 
 ARCH_PRESETS = {
+    "deepseek_v4": {
+        "config_class": DeepseekV4Config,
+        "config_kwargs": dict(
+            vocab_size=129280,
+            hidden_size=128,
+            moe_intermediate_size=64,
+            num_hidden_layers=5,
+            num_attention_heads=4,
+            num_key_value_heads=1,
+            head_dim=32,
+            q_lora_rank=64,
+            partial_rotary_factor=0.5,
+            sliding_window=6,
+            o_groups=2,
+            o_lora_rank=16,
+            layer_types=[
+                "sliding_attention",
+                "compressed_sparse_attention",
+                "heavily_compressed_attention",
+                "compressed_sparse_attention",
+                "sliding_attention",
+            ],
+            compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 8},
+            index_n_heads=4,
+            index_head_dim=24,
+            index_topk=2,
+            n_routed_experts=8,
+            num_experts_per_tok=3,
+            n_shared_experts=1,
+            mlp_layer_types=["hash_moe", "hash_moe", "moe", "moe", "moe"],
+            use_grouped_mm=False,
+        ),
+        "hf_model_class": HFDeepseekV4ForCausalLM,
+        "prime_model_class": PrimeRLDeepseekV4ForCausalLM,
+        "tokenizer_source": "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "attn_implementation": "eager",  # HF's DeepseekV4Attention doesn't support sdpa
+    },
     "glm4_moe": {
         "config_class": Glm4MoeConfig,
         "config_kwargs": dict(
@@ -248,9 +288,10 @@ def verify(arch: str, model_dir: Path) -> None:
 
     trust_remote_code = preset["hf_model_class"] is None
     config = AutoConfig.from_pretrained(str(model_dir), trust_remote_code=trust_remote_code)
-    config._attn_implementation = "sdpa"
+    attn_implementation = preset.get("attn_implementation", "sdpa")
+    config._attn_implementation = attn_implementation
     if hasattr(config, "text_config"):
-        config.text_config._attn_implementation = "sdpa"
+        config.text_config._attn_implementation = attn_implementation
 
     text_config = getattr(config, "text_config", config)
     vocab_size = text_config.vocab_size
