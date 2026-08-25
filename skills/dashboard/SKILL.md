@@ -68,21 +68,11 @@ curl -sS -X POST $(jq -r .url ~/.cache/prime-rl/dashboard/daemon.json)/api/view 
 ```
 
 `run` is required; other fields are optional and leave unspecified UI state
-unchanged. Supply `step`, `kind`, and `subset` together.
-
-| field | meaning |
-|---|---|
-| `run` | run id as `/api/runs` lists it |
-| `tab` | `metrics` / `config` / `traces` / `logs` / `report` |
-| `step`, `kind`, `subset` | `rollouts/step_N/{train,eval}/{all,effective}` (eval-only runs: `0/eval/all`) |
-| `episode` | stable episode `id` (`line` is a view-command fallback only) |
-| `trace`, `branch` | multi-agent seat index and branch leaf (`-1` = concatenated) |
-| `report` | report file under `<run>/reports/` to open on the report tab |
-| `highlight` | list of `{node, quote, reason, field?}`: node index, verbatim quote, optional hover note; `field` is `content` or `reasoning` only when the same quote occurs in both |
-
-The server validates addresses and indices. On `409`, tell the user to open the
-returned `url`; the stored command applies when the tab connects. Errors often
-exist only in `all` because `effective` excludes them.
+unchanged. For trace evidence, supply `step`, `kind`, and `subset` together and
+address the episode by stable `id`. Use optional `trace` and `branch` indices
+for multi-agent traces and `highlight` entries shaped as `{node, quote,
+reason, field?}`. On `409`, tell the user to open the returned `url`; the stored
+command applies when the tab connects.
 
 ## Write a report only when asked
 
@@ -108,11 +98,13 @@ Use the episode `id`, never `line`. Copy a short, distinctive quote exactly;
 matching is case-sensitive and whitespace-insensitive. Keep `note` to 1–2
 sentences explaining why the quote supports the claim.
 
+Use adjacent markers (`[^a] [^b]`) only when one claim genuinely depends on
+distinct passages, such as a comparison or corroboration. Use one citation
+when one passage is sufficient.
+
 Optional fields are `run`, `trace`, `branch`, `node`, `field`, `prefix`, and
 `suffix`. Use `field: "content"` or `"reasoning"` only to disambiguate message
 parts. Use verbatim adjacent `prefix`/`suffix` only when a quote repeats.
 Ambiguous or mismatched citations remain broken and do not navigate.
 
-The dashboard refreshes the open report every five seconds in live mode. It
-supports headings, lists, tables, fenced code, blockquotes, emphasis, code,
-and links; raw HTML is escaped.
+Use Markdown; raw HTML is escaped.
