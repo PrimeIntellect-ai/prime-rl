@@ -13,6 +13,7 @@ from prime_rl.configs.trainer import (
     KimiK15LossConfig,
     KPopLossConfig,
     LossConfig,
+    PMDMeanLossConfig,
 )
 from prime_rl.utils.utils import import_object
 
@@ -370,11 +371,60 @@ def kimi_k15_loss_fn(inputs: LossInputs, loss_config: KimiK15LossConfig) -> Loss
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+@jaxtyped(typechecker=typechecker)
+def pmd_mean_loss_fn(
+    inputs: LossInputs,
+    loss_config: PMDMeanLossConfig,
+) -> LossOutputs:
+    """Policy mirror descent against a sequence-level target log-ratio.
+
+    The sequence-mean advantage divided by ``pmd_tau`` gives the log-ratio the
+    rollout should end up at; the residual between that target and the rollout's
+    actual summed log-ratio is a detached per-sequence coefficient on the score
+    function, so the update drives the sequence toward its target rather than
+    optimizing each token against its own advantage.
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    token_log_ratio = trainer_logprobs - inference_logprobs
+
+    sequence_log_ratio = (token_log_ratio * loss_mask).sum(dim=-1)
+
+    num_tokens = loss_mask.sum(dim=-1).clamp_min(1)
+
+    sequence_advantage = (advantages * loss_mask).sum(dim=-1) / num_tokens
+
+    target_log_ratio = sequence_advantage / loss_config.pmd_tau
+
+    residual = sequence_log_ratio - target_log_ratio
+
+    per_token_loss = loss_mask * residual.detach().unsqueeze(-1) * trainer_logprobs
+
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+
+    loss = per_token_loss.sum()
+
+    metrics = {
+        "pmd_squared_error": 0.5 * residual.detach().square().mean(),
+        "pmd_residual": residual.detach().mean(),
+        "pmd_abs_residual": residual.detach().abs().mean(),
+        "sequence_log_ratio": sequence_log_ratio.detach().mean(),
+        "target_log_ratio": target_log_ratio.detach().mean(),
+    }
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
     """Build the loss fn for the rl component from ``trainer.loss``:
     ``default_loss_fn`` (``DefaultLossConfig``), ``ipo_loss_fn``
     (``IPOLossConfig``), ``kpop_loss_fn`` (``KPopLossConfig``),
-    ``kimi_k15_loss_fn`` (``KimiK15LossConfig``), or the imported
+    ``kimi_k15_loss_fn`` (``KimiK15LossConfig``),
+    ``pmd_mean_loss_fn`` (``PMDMeanLossConfig``), or the imported
     function (``CustomLossConfig``).
     The ce / ref_kl loss types are fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
@@ -395,6 +445,10 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return kimi_k15_loss_fn(inputs, loss_config)
+    elif isinstance(loss_config, PMDMeanLossConfig):
+
+        def rl_fn(inputs: LossInputs) -> LossOutputs:
+            return pmd_mean_loss_fn(inputs, loss_config)
     else:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:

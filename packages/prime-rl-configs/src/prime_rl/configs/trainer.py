@@ -551,6 +551,14 @@ class KimiK15LossConfig(BaseConfig):
     default."""
 
 
+class PMDMeanLossConfig(BaseConfig):
+    type: Literal["pmd_mean"] = "pmd_mean"
+
+    pmd_tau: float = Field(1.0, gt=0)
+    """Temperature converting the sequence-mean advantage into the target log-ratio
+    (``advantage / pmd_tau``). Must be positive; the loss divides by it."""
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -562,7 +570,7 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    DefaultLossConfig | IPOLossConfig | KPopLossConfig | KimiK15LossConfig | CustomLossConfig,
+    DefaultLossConfig | IPOLossConfig | KPopLossConfig | KimiK15LossConfig | PMDMeanLossConfig | CustomLossConfig,
     Field(discriminator="type"),
 ]
 
