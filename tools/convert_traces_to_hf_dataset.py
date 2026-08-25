@@ -10,10 +10,10 @@ so later scripts can filter them directly. Metadata with variable schemas stays 
 
 Usage (from the prime-rl repo):
     uv run python tools/convert_traces_to_hf_dataset.py <traces.jsonl> --name <dir-or-repo-id>
-        [--subset default] [--split train] [--private] [--local]
+        [--subset default] [--split train] [--public] [--local]
 
-By default, the tool pushes to the Hugging Face Hub repo `<name>`. Use `--private` when
-creating a private repo. With `--local`, it writes `<name>/<subset>/<split>.parquet` and
+By default, the tool creates a private Hugging Face Hub repo named `<name>`. Use `--public`
+to create a public repo. With `--local`, it writes `<name>/<subset>/<split>.parquet` and
 registers it in `<name>/README.md` instead.
 """
 
@@ -150,11 +150,11 @@ def main() -> None:
     parser.add_argument("--name", required=True, help="HF repo id, or output dataset dir with --local")
     parser.add_argument("--subset", default="default", help="dataset config name")
     parser.add_argument("--split", default="train", help="dataset split name")
-    parser.add_argument("--private", action="store_true", help="make a new Hub dataset private")
+    parser.add_argument("--public", action="store_true", help="make a new Hub dataset public")
     parser.add_argument("--local", action="store_true", help="write parquet locally instead of pushing")
     args = parser.parse_args()
-    if args.local and args.private:
-        parser.error("--private cannot be used with --local")
+    if args.local and args.public:
+        parser.error("--public cannot be used with --local")
 
     num_episodes, num_traces, rows = 0, 0, []
     with args.traces.open(encoding="utf-8") as f:
@@ -176,9 +176,11 @@ def main() -> None:
             args.name,
             config_name=args.subset,
             split=args.split,
-            private=True if args.private else None,
+            private=not args.public,
         )
-        print(f"traces-to-hf: pushed to {args.name} (subset={args.subset}, split={args.split}, private={args.private})")
+        print(
+            f"traces-to-hf: pushed to {args.name} (subset={args.subset}, split={args.split}, private={not args.public})"
+        )
         return
     root = Path(args.name)
     rel_path = f"{args.subset}/{args.split}.parquet"
