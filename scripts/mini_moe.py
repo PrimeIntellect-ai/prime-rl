@@ -81,19 +81,37 @@ def _qwen3_5_moe_vlm_config():
 ARCH_PRESETS = {
     "deepseek_v4": {
         "config_class": DeepseekV4Config,
+        # Real deepseek-ai/DeepSeek-V4-Flash-0731 config values throughout, only
+        # `num_hidden_layers` (and the per-layer schedules that must match its length) are
+        # truncated -- this keeps every kernel-relevant shape (head_dim, index_head_dim,
+        # sliding_window, compress ratios, o_groups, ...) identical to the real checkpoint,
+        # since arbitrary "convenient" small values can silently violate real kernel
+        # constraints (e.g. vLLM's fused indexer quant+cache path only supports
+        # head_dim in {128, 512}) that a real checkpoint would never actually exercise.
+        # `n_routed_experts`/`num_experts_per_tok` are the one exception: expert *count* is a
+        # routing cardinality, not a kernel-shape constraint, and the real value (256) makes
+        # the checkpoint ~136GB (won't fit one GPU, OOMs `verify()`'s single-GPU fp32 compare)
+        # -- reduced here to keep this locally runnable; every expert's own shape stays real.
         "config_kwargs": dict(
             vocab_size=129280,
-            hidden_size=128,
-            moe_intermediate_size=64,
+            hidden_size=4096,
+            moe_intermediate_size=2048,
             num_hidden_layers=5,
-            num_attention_heads=4,
+            num_attention_heads=64,
             num_key_value_heads=1,
-            head_dim=32,
-            q_lora_rank=64,
-            partial_rotary_factor=0.5,
-            sliding_window=6,
-            o_groups=2,
-            o_lora_rank=16,
+            head_dim=512,
+            q_lora_rank=1024,
+            partial_rotary_factor=64 / 512,  # qk_rope_head_dim=64
+            sliding_window=128,
+            o_groups=8,
+            o_lora_rank=1024,
+            rope_scaling={
+                "type": "yarn",
+                "factor": 16,
+                "beta_fast": 32,
+                "beta_slow": 1,
+                "original_max_position_embeddings": 65536,
+            },
             layer_types=[
                 "sliding_attention",
                 "compressed_sparse_attention",
@@ -101,14 +119,21 @@ ARCH_PRESETS = {
                 "compressed_sparse_attention",
                 "sliding_attention",
             ],
-            compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 8},
-            index_n_heads=4,
-            index_head_dim=24,
-            index_topk=2,
-            n_routed_experts=8,
-            num_experts_per_tok=3,
+            compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 128},
+            index_n_heads=64,
+            index_head_dim=128,
+            index_topk=512,
+            n_routed_experts=16,
+            num_experts_per_tok=4,
             n_shared_experts=1,
             mlp_layer_types=["hash_moe", "hash_moe", "moe", "moe", "moe"],
+            # Must agree with the leading "hash_moe" count in mlp_layer_types above: vLLM's
+            # own model determines which layers are hash-routed from this plain layer-index
+            # threshold (`extract_layer_index(prefix) < config.num_hash_layers`), not from
+            # mlp_layer_types -- a mismatch makes it build the wrong gate parameters for
+            # layers in between (e.g. `tid2eid` instead of `e_score_correction_bias`),
+            # which then don't match what's actually in the checkpoint.
+            num_hash_layers=2,
             use_grouped_mm=False,
         ),
         "hf_model_class": HFDeepseekV4ForCausalLM,
@@ -278,7 +303,58 @@ def create(arch: str, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
+    if arch == "deepseek_v4":
+        _fixup_deepseek_v4_checkpoint(output_dir)
     print(f"  Saved to {output_dir}")
+
+
+def _fixup_deepseek_v4_checkpoint(output_dir: Path) -> None:
+    """Work around `transformers`' incomplete DeepSeek V4 reverse-conversion.
+
+    `transformers.DeepseekV4ForCausalLM.save_pretrained()` is supposed to write the real,
+    flat, no-``model.``-prefix on-disk key format DeepSeek's own checkpoints use (confirmed
+    against the real `deepseek-ai/DeepSeek-V4-Flash-0731` `model.safetensors.index.json`:
+    keys like ``embed.weight``, ``layers.0.hc_attn_base``, never ``model.*``). Its own
+    `transformers.conversion_mapping` "deepseek_v4" entry has the leaf-renaming rules for
+    this (``attn`` <-> ``self_attn``, ``ffn`` <-> ``mlp``, etc. -- confirmed correctly applied
+    for every *per-layer* key), but its top-level, one-off renames don't survive the round
+    trip: it doesn't strip the ``model.`` prefix at all, never applies its own
+    ``embed.weight`` <-> ``embed_tokens.weight`` rename, and leaves the final hyper-head
+    nested (``hc_head.hc_fn``/``hc_base``/``hc_scale``) instead of flat
+    (``hc_head_fn``/``hc_head_base``/``hc_head_scale``, the same flat-vs-nested split already
+    fixed per-layer for ``hc_attn_*``/``hc_ffn_*``). vLLM's own
+    `DeepseekV4ForCausalLM.hf_to_vllm_mapper` (`vllm/models/deepseek_v4/nvidia/model.py`)
+    assumes the correct flat format and fails to find weights otherwise
+    (``KeyError: 'hc_head.hc_base'``). Only affects locally-generated test checkpoints from
+    this script -- the real checkpoint is already correctly formatted upstream.
+    """
+    import json
+
+    from safetensors.torch import load_file, save_file
+
+    path = output_dir / "model.safetensors"
+    tensors = load_file(path)
+    fixed = {}
+    for key, tensor in tensors.items():
+        new_key = key.removeprefix("model.")
+        new_key = new_key.replace("embed_tokens.weight", "embed.weight")
+        new_key = new_key.replace("hc_head.hc_fn", "hc_head_fn")
+        new_key = new_key.replace("hc_head.hc_base", "hc_head_base")
+        new_key = new_key.replace("hc_head.hc_scale", "hc_head_scale")
+        fixed[new_key] = tensor
+    save_file(fixed, path, metadata={"format": "pt"})
+
+    # `topk_method` is a real DeepSeek V4 config field (the real checkpoint sets it to
+    # "noaux_tc") that this repo's `DeepseekV4Config` doesn't model at all -- prime-rl's own
+    # `DeepseekV4MoE` always behaves as if it were "noaux_tc" (always builds the aux-loss-free
+    # `expert_bias` for non-hash layers), but never persists the field, so external consumers
+    # like vLLM that gate `e_score_correction_bias` construction on it see it as absent and
+    # skip building the parameter entirely. Backfill it so the saved config matches what the
+    # real checkpoint (and vLLM) expect.
+    config_path = output_dir / "config.json"
+    config = json.loads(config_path.read_text())
+    config.setdefault("topk_method", "noaux_tc")
+    config_path.write_text(json.dumps(config, indent=2))
 
 
 def verify(arch: str, model_dir: Path) -> None:
