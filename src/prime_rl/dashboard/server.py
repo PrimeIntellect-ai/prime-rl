@@ -990,7 +990,7 @@ def timeline_lane(
         "ended_at": ended,
         "status": status,
         "outcome": status if branch else (trace.get("stop_condition") or status),
-        "reward": None if branch else timeline_reward(trace),
+        "reward": timeline_reward(trace),
         "usage": {
             "model_calls": len(activities),
             "input_tokens": input_tokens,
