@@ -6,6 +6,8 @@ from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4
 from transformers.models.deepseek_v4.modeling_deepseek_v4 import DeepseekV4ForCausalLM as HFDeepseekV4ForCausalLM
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
+from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4CSACompressor, DeepseekV4HCACompressor
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import to_on_disk_naming
 from prime_rl.trainer.models.layers import norms
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -371,3 +373,261 @@ def test_deepseek_v4_init_buffers_post_meta_restores_every_rotary():
         assert torch.isfinite(compressor.rotary_emb.compress_inv_freq).all()
         # The compress branch runs a different base, so it must not collapse onto `main`.
         assert not torch.equal(compressor.rotary_emb.compress_inv_freq, reference)
+
+
+# Everything below exercises a *packed* batch: several rollouts concatenated into one row, with
+# `position_ids` restarting at 0 per document and the per-document lengths handed over as
+# `seq_lens`, exactly as `trainer/batch.py` builds them. `DeepseekV4Model.forward` ignores
+# `seq_lens` today (`modeling_deepseek_v4.py:223-228`), and the three resulting defects do not
+# cost the same to fix. The sliding-window mask (defect 1) is a port regression: HF builds it
+# with `create_sliding_window_causal_mask(..., position_ids=position_ids)` and recovers the
+# boundaries from the restarts, so there is an upstream reference to copy. The compressors'
+# coordinate mismatch (defect 2) and their boundary-straddling pooling windows (defect 3) are
+# inherited from HF, which never runs this model on packed input, so those have to be designed.
+#
+# The assertions deliberately avoid naming which compressed entry index belongs to which
+# document, and go through `forward` rather than the internals it calls. A fix that compresses
+# per document renumbers the entries, and an index-based assertion would then stay red for the
+# wrong reason, which `strict=True` cannot detect. They state the invariant instead: redraw the
+# first document and nothing the second document reads may move, and what a query reads must not
+# depend on whether its document was packed or run alone.
+
+# Neither length is a multiple of a compress rate, so the boundary falls mid-window for both
+# compressors and defect 3's blending is reached on each.
+_DOC_LENS = (14, 18)
+# Below the HCA compress rate of 8, where packed and unpacked agree for a reason that is not a fix.
+_SHORT_DOC_LENS = (6, 6)
+
+
+def _packed_inputs(doc_lens: tuple[int, ...]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """One packed row: token ids, `position_ids` restarting per document, and flat `seq_lens`."""
+    total = sum(doc_lens)
+    input_ids = torch.randint(0, _BASE["vocab_size"], (1, total), device="cuda")
+    position_ids = torch.cat([torch.arange(length, device="cuda") for length in doc_lens]).unsqueeze(0)
+    return input_ids, position_ids, torch.tensor(doc_lens, device="cuda")
+
+
+def _doc_ids(doc_lens: tuple[int, ...]) -> torch.Tensor:
+    return torch.cat([torch.full((length,), index, device="cuda") for index, length in enumerate(doc_lens)])
+
+
+def _doc_slice(doc_lens: tuple[int, ...], index: int) -> slice:
+    start = sum(doc_lens[:index])
+    return slice(start, start + doc_lens[index])
+
+
+def _compressor_inputs(doc_lens: tuple[int, ...]) -> tuple[torch.Tensor, torch.Tensor]:
+    """Random tensors of the shapes a decoder layer hands its compressor."""
+    total = sum(doc_lens)
+    hidden_states = torch.randn(1, total, _BASE["hidden_size"], device="cuda")
+    q_residual = torch.randn(1, total, _BASE["q_lora_rank"], device="cuda")
+    return hidden_states, q_residual
+
+
+def _resample_first_document(tensors: tuple[torch.Tensor, ...], doc_lens: tuple[int, ...]) -> tuple[torch.Tensor, ...]:
+    """Copies with document 0's rows redrawn and every later document left byte-identical."""
+    first = _doc_slice(doc_lens, 0)
+    resampled = []
+    for tensor in tensors:
+        clone = tensor.clone()
+        clone[:, first] = torch.randn_like(clone[:, first])
+        resampled.append(clone)
+    return tuple(resampled)
+
+
+def _compressor_of_type(model: nn.Module, compressor_class: type) -> nn.Module:
+    compressors = [
+        layer.self_attn.compressor
+        for layer in model.model.layers
+        if isinstance(layer.self_attn.compressor, compressor_class)
+    ]
+    assert compressors, f"config must contain a {compressor_class.__name__} layer"
+    return compressors[0]
+
+
+def _assert_reads_are_document_local(compressor: nn.Module, doc_lens: tuple[int, ...]) -> None:
+    """The second document's readable entries, and their values, must not depend on the first."""
+    hidden_states, q_residual = _compressor_inputs(doc_lens)
+    _, position_ids, _ = _packed_inputs(doc_lens)
+
+    compressed_kv, block_bias = compressor(hidden_states, q_residual, position_ids)
+    other_hidden, other_q = _resample_first_document((hidden_states, q_residual), doc_lens)
+    other_kv, other_bias = compressor(other_hidden, other_q, position_ids)
+
+    second = _doc_slice(doc_lens, 1)
+    readable = block_bias[0, 0, second] == 0
+    assert readable.any(), "vacuous probe: the second document reads no compressed entry at all"
+    assert torch.equal(readable, other_bias[0, 0, second] == 0), (
+        "which entries the second document may read changed when only the first document did"
+    )
+    for row, entries in enumerate(readable):
+        assert torch.equal(compressed_kv[0, 0][entries], other_kv[0, 0][entries]), (
+            f"query {row} of the second document reads an entry built from the first document"
+        )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="defect 1: build_sliding_window_mask ignores document boundaries (attention.py:85-89)",
+)
+def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypatch):
+    """The local window bleeds across documents.
+
+    `build_sliding_window_mask` (`attention.py:85-89`) derives its distances from
+    `torch.arange(seq_len)` over the whole packed row, so a query attends to the previous
+    `sliding_window` packed positions no matter which document they belong to. This hits every
+    layer, sliding and compressed alike.
+
+    Captured from the mask the model actually applies, not from the builder's signature, so the
+    test stays valid whether the fix threads document boundaries into that builder or replaces it
+    with HF's `create_sliding_window_causal_mask`.
+    """
+    recorded = []
+    real_attention = dsv4_attention.eager_attention_with_sinks
+
+    def record(query, key, value, sinks, attention_mask, **kwargs):
+        recorded.append(attention_mask)
+        return real_attention(query, key, value, sinks, attention_mask, **kwargs)
+
+    monkeypatch.setattr(dsv4_attention, "eager_attention_with_sinks", record)
+
+    _, prime_model = get_model_pairs(dtype=torch.float32)
+    input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)
+    prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)
+
+    assert len(recorded) == _BASE["num_hidden_layers"]
+    total = sum(_DOC_LENS)
+    doc_ids = _doc_ids(_DOC_LENS)
+    positions = position_ids[0]
+    distance = positions[:, None] - positions[None, :]
+    expected = (doc_ids[:, None] == doc_ids[None, :]) & (distance >= 0) & (distance < _BASE["sliding_window"])
+    for layer_idx, mask in enumerate(recorded):
+        # Compressed layers append their own entries as extra columns; those carry defects 2 and 3
+        # and are covered separately, so only the local window is compared here.
+        local = mask[0, 0, :, :total] == 0
+        assert torch.equal(local, expected), f"layer {layer_idx}: the local window crosses a document boundary"
+
+
+@pytest.mark.xfail(strict=True, reason="defects 1-3: a packed forward does not reproduce per-document forwards")
+def test_packed_logits_match_unpacked(_torch_rms_norm):
+    """The invariant that makes the trainer agree with vLLM, which serves each rollout alone.
+
+    All three defects land here at once: the bleeding sliding window (`attention.py:85-89`), the
+    compressed entries addressed in packed coordinates while their threshold counts per document
+    (`attention.py:159`, `:226-232`, `:329-332`), and pooling windows that straddle boundaries
+    (`attention.py:129-151`, `:301-317`).
+    """
+    _, prime_model = get_model_pairs(dtype=torch.float32)
+    input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)
+
+    packed = prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)["logits"]
+
+    for index, length in enumerate(_DOC_LENS):
+        span = _doc_slice(_DOC_LENS, index)
+        alone = prime_model(
+            input_ids[:, span],
+            position_ids=torch.arange(length, device="cuda").unsqueeze(0),
+            seq_lens=torch.tensor([length], device="cuda"),
+        )["logits"]
+        _assert_relative(packed[:, span], alone, 1e-4, f"document {index}")
+
+
+@pytest.mark.xfail(strict=True, reason="defect 2: CSA thresholds a per-document counter against packed entries")
+def test_packed_csa_reads_only_own_document_entries(_torch_rms_norm):
+    """CSA points the second document's long-range pathway at the start of the row.
+
+    `causal_threshold` returns `(position_ids + 1) // compress_rate` (`attention.py:159`), and
+    `position_ids` restart per document, but entry `w` pools *packed* positions
+    (`attention.py:129-151`). A query at local position 4 of the second document therefore reads
+    entry 0, which pools the first document's opening tokens, while its own document's entries sit
+    above the threshold and are masked off as future.
+    """
+    _, prime_model = get_model_pairs(dtype=torch.float32)
+    _assert_reads_are_document_local(_compressor_of_type(prime_model, DeepseekV4CSACompressor), _DOC_LENS)
+
+
+@pytest.mark.xfail(strict=True, reason="defect 2: HCA thresholds a per-document counter against packed entries")
+def test_packed_hca_reads_only_own_document_entries(_torch_rms_norm):
+    """The same coordinate mismatch in HCA, which has no indexer to narrow the damage.
+
+    `attention.py:329-332` compares `(position_ids + 1) // compress_rate` against entries indexed
+    from the start of the packed row, and every entry under that threshold is readable rather than
+    a selected few. The documents here are longer than the compress rate of 8 on purpose: below it
+    the threshold floors to zero and the defect hides, which
+    `test_hca_inert_below_compress_rate_matches_unpacked` pins.
+    """
+    _, prime_model = get_model_pairs(dtype=torch.float32)
+    _assert_reads_are_document_local(_compressor_of_type(prime_model, DeepseekV4HCACompressor), _DOC_LENS)
+
+
+@pytest.mark.xfail(strict=True, reason="defects 2 and 3: CSA hands a query different entries packed than alone")
+def test_packed_csa_selection_matches_unpacked(_torch_rms_norm):
+    """What the Lightning Indexer hands a query must not depend on how the row was packed.
+
+    The indexer masks its candidates with the same mismatched threshold (`attention.py:226-232`),
+    so the second document's top-k is drawn from the first document's entries, and the entries
+    themselves pool across the boundary (`attention.py:129-151`).
+
+    This is the oracle `forward(pack([A, B])) == concat(forward(A), forward(B))` applied one level
+    down, so unlike the perturbation probes above it also catches the blending, which no mask can
+    repair. Compared as the gathered entry *values* per query, not as indices, since a fix that
+    compresses per document renumbers the entries. It goes through `forward` rather than
+    `compress` and `indexer` directly, so a fix living in `forward` reaches it.
+    """
+    _, prime_model = get_model_pairs(dtype=torch.float32)
+    compressor = _compressor_of_type(prime_model, DeepseekV4CSACompressor)
+
+    hidden_states, q_residual = _compressor_inputs(_DOC_LENS)
+    _, position_ids, _ = _packed_inputs(_DOC_LENS)
+    packed_kv, packed_bias = compressor(hidden_states, q_residual, position_ids)
+
+    second = _doc_slice(_DOC_LENS, 1)
+    length = _DOC_LENS[1]
+    alone_kv, alone_bias = compressor(
+        hidden_states[:, second],
+        q_residual[:, second],
+        torch.arange(length, device="cuda").unsqueeze(0),
+    )
+
+    packed_reads = packed_bias[0, 0, second] == 0
+    assert packed_reads.any(), "vacuous probe: the second document selects no entry at all"
+    for row in range(length):
+        selected = packed_kv[0, 0][packed_reads[row]]
+        alone_selected = alone_kv[0, 0][alone_bias[0, 0, row] == 0]
+        assert selected.shape == alone_selected.shape and torch.equal(selected, alone_selected), (
+            f"query {row} of the second document reads different entries packed than on its own"
+        )
+
+
+def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):
+    """Not a defect: HCA contributes nothing either way when documents are shorter than its rate.
+
+    The threshold `(position_ids + 1) // 8` (`attention.py:329`) floors to zero for every query in
+    a 6-token document, so nothing is readable and `exp(-inf) = 0`; run alone, the document is too
+    short to fill a window and there are no entries at all. Packed and unpacked agree, so this is
+    a capability loss rather than a packing mismatch and must not be "fixed" here. It matters
+    because a whole-model packing test built on documents this short would report green while HCA
+    is broken.
+
+    Asserted as "no query reads anything", not as an entry count: the 12-token row happens to fill
+    one global window today, but a fix that compresses per document leaves zero entries, and both
+    satisfy the invariant.
+    """
+    _, prime_model = get_model_pairs(dtype=torch.float32)
+    compressor = _compressor_of_type(prime_model, DeepseekV4HCACompressor)
+    assert compressor.compress_rate == 8
+
+    hidden_states, q_residual = _compressor_inputs(_SHORT_DOC_LENS)
+    _, position_ids, _ = _packed_inputs(_SHORT_DOC_LENS)
+    _, packed_bias = compressor(hidden_states, q_residual, position_ids)
+    assert not (packed_bias == 0).any(), "no query may read a compressed entry, so none contributes"
+
+    for index, length in enumerate(_SHORT_DOC_LENS):
+        span = _doc_slice(_SHORT_DOC_LENS, index)
+        alone_kv, alone_bias = compressor(
+            hidden_states[:, span],
+            q_residual[:, span],
+            torch.arange(length, device="cuda").unsqueeze(0),
+        )
+        assert alone_kv.shape[2] == 0, f"document {index} is too short to fill a window"
+        assert alone_bias.shape[-1] == 0
