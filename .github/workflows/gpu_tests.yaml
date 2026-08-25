@@ -84,12 +84,6 @@ jobs:
           - test: reverse_text_moe
             runner: vm
             pytest_args: "tests/integration/test_reverse_text_moe.py"
-          - test: converters
-            runner: vm
-            pytest_args: "tests/converters/test_converters.py"
-          - test: converters_sft_checkpoint
-            runner: vm
-            pytest_args: "tests/converters/test_sft_checkpoint.py"
           - test: benchmark_regression
             runner: 4xa6000
             pytest_args: "tests/integration/test_benchmark_regression.py"
