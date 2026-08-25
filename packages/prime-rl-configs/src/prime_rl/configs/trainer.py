@@ -559,6 +559,78 @@ class PMDMeanLossConfig(BaseConfig):
     (``advantage / pmd_tau``). Must be positive; the loss divides by it."""
 
 
+class GeoMaskLossConfig(BaseConfig):
+    type: Literal["geo_mask"] = "geo_mask"
+
+    geo_mask_low: float = Field(0.5, gt=0)
+    """Lower bound of the trust region on the geometric-mean importance ratio.
+    Sequences whose ratio falls below it contribute no gradient."""
+
+    geo_mask_high: float = Field(2.0, gt=0)
+    """Upper bound of the trust region on the geometric-mean importance ratio.
+    Sequences whose ratio rises above it contribute no gradient."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    token_clip: float | None = Field(None, gt=0)
+    """Per-token importance-ratio ceiling for the Geo-Mask-Token-TIS hybrid:
+    accepted sequences weight the score function by ``min(ratio, token_clip)``
+    (detached). None (the default) is the base estimator — the plain score
+    function with no importance weighting."""
+
+
+class SeqTISLossConfig(BaseConfig):
+    type: Literal["seq_tis"] = "seq_tis"
+
+    seq_clip: float = Field(2.0, gt=0)
+    """Ceiling on the sequence-level importance weight. Every rollout keeps a
+    (possibly damped) gradient contribution; the bias is one-sided."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+
+class SeqMISLossConfig(BaseConfig):
+    type: Literal["seq_mis"] = "seq_mis"
+
+    geo_mask_low: float = Field(0.5, gt=0)
+    """Lower bound of the trust region on the geometric-mean importance ratio.
+    Rollouts whose ratio falls below it contribute no gradient."""
+
+    geo_mask_high: float = Field(2.0, gt=0)
+    """Upper bound of the trust region on the geometric-mean importance ratio.
+    Rollouts whose ratio rises above it contribute no gradient."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+
+class MISPOLossConfig(BaseConfig):
+    type: Literal["mis_po"] = "mis_po"
+
+    token_mask_low: float = Field(0.5, gt=0)
+    """Lower bound of the token-level band on the trainer/inference importance
+    ratio. Tokens outside the band are dropped individually."""
+
+    token_mask_high: float = Field(2.0, gt=0)
+    """Upper bound of the token-level band on the trainer/inference importance
+    ratio. Tokens outside the band are dropped individually."""
+
+    geo_mask_low: float = Field(0.996, gt=0)
+    """Lower bound of the trajectory-level band on the geometric-mean importance
+    ratio. Rollouts outside the band are dropped wholesale. The tight default is
+    the paper's, calibrated for near-on-policy train/inference mismatch at 128k
+    context; widen it under real policy lag."""
+
+    geo_mask_high: float = Field(1.001, gt=0)
+    """Upper bound of the trajectory-level band on the geometric-mean importance
+    ratio. Rollouts outside the band are dropped wholesale."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -570,7 +642,16 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    DefaultLossConfig | IPOLossConfig | KPopLossConfig | KimiK15LossConfig | PMDMeanLossConfig | CustomLossConfig,
+    DefaultLossConfig
+    | IPOLossConfig
+    | KPopLossConfig
+    | KimiK15LossConfig
+    | PMDMeanLossConfig
+    | GeoMaskLossConfig
+    | SeqTISLossConfig
+    | SeqMISLossConfig
+    | MISPOLossConfig
+    | CustomLossConfig,
     Field(discriminator="type"),
 ]
 

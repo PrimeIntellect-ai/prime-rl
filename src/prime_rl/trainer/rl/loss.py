@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -9,11 +10,15 @@ from torch import Tensor
 from prime_rl.configs.trainer import (
     CustomLossConfig,
     DefaultLossConfig,
+    GeoMaskLossConfig,
     IPOLossConfig,
     KimiK15LossConfig,
     KPopLossConfig,
     LossConfig,
+    MISPOLossConfig,
     PMDMeanLossConfig,
+    SeqMISLossConfig,
+    SeqTISLossConfig,
 )
 from prime_rl.utils.utils import import_object
 
@@ -419,12 +424,234 @@ def pmd_mean_loss_fn(
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+@jaxtyped(typechecker=typechecker)
+def geo_mask_loss_fn(inputs: LossInputs, loss_config: GeoMaskLossConfig) -> LossOutputs:
+    """Geo-Mask loss type (https://richardli.xyz/post/rl-collapse-part3/):
+    sequence-level importance sampling behind a geometric trust region. The
+    rollout's importance ratio is the geometric mean of its per-token ratios —
+    an intensive quantity that stays comparable across lengths, where the
+    product of per-token ratios grows with length and ends up rejecting long
+    rollouts wholesale. A rollout contributes gradient only if that ratio lies
+    within ``[geo_mask_low, geo_mask_high]``; the mask is all-or-nothing per
+    rollout, never per token.
+
+    Accepted rollouts use the plain score function: inside the trust region
+    the ratio is close to one, so the correction it would apply is dropped
+    rather than carried as variance. ``token_clip`` switches to the
+    Geo-Mask-Token-TIS hybrid, which weights each token's score function by
+    its detached importance ratio clipped from above.
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
+
+    num_tokens = loss_mask.sum().clamp_min(1)
+    geo_log_ratio = (loss_mask * log_importance_ratio).sum() / num_tokens
+    is_masked = (geo_log_ratio < math.log(loss_config.geo_mask_low)) | (
+        geo_log_ratio > math.log(loss_config.geo_mask_high)
+    )
+    keep_mask = loss_mask & ~is_masked
+
+    advantages = loss_config.adv_tau * advantages
+    if loss_config.token_clip is None:
+        token_weight = 1.0
+    else:
+        token_weight = importance_ratio.detach().clamp(max=loss_config.token_clip)
+    pg_loss = keep_mask * advantages * token_weight * trainer_logprobs
+    per_token_loss = -pg_loss
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+    loss = per_token_loss.sum()
+
+    metrics = {
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
+        "is_masked": _safe_mean(is_masked.expand(loss_mask.shape), loss_mask),
+        "geo_log_ratio": geo_log_ratio.detach(),
+    }
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
+@jaxtyped(typechecker=typechecker)
+def seq_tis_loss_fn(inputs: LossInputs, loss_config: SeqTISLossConfig) -> LossOutputs:
+    """Seq-TIS loss type: truncated sequence-level importance sampling — the
+    rollout's full product importance ratio, capped at ``seq_clip`` and
+    detached, weights the score function of every token
+    (https://luk-huang.github.io/personal-website/blog/is-frontier-asynchronous-rl-solved.html).
+
+    Every rollout keeps a gradient contribution: divergent rollouts are damped
+    to the ceiling rather than dropped, so the bias is one-sided (the region
+    where the weight would exceed the ceiling is underweighted, but its
+    gradient direction is retained).
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
+
+    seq_log_ratio = (loss_mask * log_importance_ratio).sum().detach()
+    num_tokens = loss_mask.sum().clamp_min(1)
+    geo_log_ratio = seq_log_ratio / num_tokens
+
+    seq_weight = seq_log_ratio.clamp(max=math.log(loss_config.seq_clip)).exp()
+    is_clipped = seq_log_ratio > math.log(loss_config.seq_clip)
+
+    advantages = loss_config.adv_tau * advantages
+    pg_loss = loss_mask * seq_weight * advantages * trainer_logprobs
+    per_token_loss = -pg_loss
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+    loss = per_token_loss.sum()
+
+    metrics = {
+        "mismatch_kl": _safe_mean(mismatch_kl, loss_mask),
+        "is_clipped": is_clipped.float(),
+        "seq_log_ratio": seq_log_ratio,
+        "geo_log_ratio": geo_log_ratio,
+        "seq_weight": seq_weight,
+    }
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
+@jaxtyped(typechecker=typechecker)
+def seq_mis_loss_fn(inputs: LossInputs, loss_config: SeqMISLossConfig) -> LossOutputs:
+    """Seq-MIS loss type: masked sequence-level importance sampling — the
+    rollout is dropped wholesale unless the *geometric mean* of its per-token
+    ratios lies within ``[geo_mask_low, geo_mask_high]``; accepted rollouts
+    keep the untempered product importance ratio (detached) on the score
+    function of every token, so the estimator is exactly unbiased on the
+    accepted region.
+
+    The masking criterion is deliberately the geometric mean rather than the
+    product: a threshold on the product rejects by cumulative divergence,
+    which grows with length until every long rollout is rejected, while the
+    geometric mean judges rollouts by their average per-token drift
+    (https://richardli.xyz/post/rl-collapse-part3/). The complementary
+    trade-off to ``seq_tis``: masking discards the divergent tail entirely
+    (no mis-weighted gradients, but the effective batch shrinks as policies
+    drift apart), truncation keeps it damped.
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    log_importance_ratio, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
+
+    seq_log_ratio = (loss_mask * log_importance_ratio).sum().detach()
+    num_tokens = loss_mask.sum().clamp_min(1)
+    geo_log_ratio = seq_log_ratio / num_tokens
+
+    is_masked = (geo_log_ratio < math.log(loss_config.geo_mask_low)) | (
+        geo_log_ratio > math.log(loss_config.geo_mask_high)
+    )
+    keep_mask = loss_mask & ~is_masked
+
+    # Within the geo trust region a long rollout's product ratio can still
+    # overflow exp(); keep the weight finite rather than poisoning the step
+    # with inf.
+    seq_weight = seq_log_ratio.clamp(max=40.0).exp()
+
+    advantages = loss_config.adv_tau * advantages
+    pg_loss = keep_mask * seq_weight * advantages * trainer_logprobs
+    per_token_loss = -pg_loss
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+    loss = per_token_loss.sum()
+
+    metrics = {
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
+        "is_masked": _safe_mean(is_masked.expand(loss_mask.shape), loss_mask),
+        "seq_log_ratio": seq_log_ratio,
+        "geo_log_ratio": geo_log_ratio,
+        "seq_weight": seq_weight,
+    }
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
+@jaxtyped(typechecker=typechecker)
+def mis_po_loss_fn(inputs: LossInputs, loss_config: MISPOLossConfig) -> LossOutputs:
+    """MIS-PO loss type (Step 3.5 Flash, https://arxiv.org/abs/2602.10604,
+    eq. 2): Metropolis-Independence-Sampling-filtered policy optimization —
+    the plain score function behind dual-level binary masking, with no
+    importance weighting anywhere. The inference policy is treated as a
+    proposal distribution: samples close enough to the trainer are kept as
+    effectively on-policy, everything else is dropped.
+
+    Token level: tokens whose trainer/inference ratio leaves
+    ``[token_mask_low, token_mask_high]`` are dropped individually.
+    Trajectory level: the rollout is dropped wholesale when the geometric
+    mean of its per-token ratios leaves ``[geo_mask_low, geo_mask_high]``.
+    The paper's trajectory band ([0.996, 1.001]) is far tighter than
+    ``geo_mask``'s: the ratio in the paper measures train/inference mismatch
+    of a pre-update snapshot, whose geometric mean concentrates near one at
+    long context. Here the numerator is the live trainer policy (identical on
+    the first pass over a batch), so widen the band under real policy lag.
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
+
+    is_token_masked = (importance_ratio < loss_config.token_mask_low) | (importance_ratio > loss_config.token_mask_high)
+
+    num_tokens = loss_mask.sum().clamp_min(1)
+    geo_log_ratio = (loss_mask * log_importance_ratio).sum().detach() / num_tokens
+    is_traj_masked = (geo_log_ratio < math.log(loss_config.geo_mask_low)) | (
+        geo_log_ratio > math.log(loss_config.geo_mask_high)
+    )
+
+    is_masked = is_token_masked | is_traj_masked
+    keep_mask = loss_mask & ~is_masked
+
+    advantages = loss_config.adv_tau * advantages
+    pg_loss = keep_mask * advantages * trainer_logprobs
+    per_token_loss = -pg_loss
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+    loss = per_token_loss.sum()
+
+    metrics = {
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
+        "is_masked": _safe_mean(is_masked, loss_mask),
+        "is_token_masked": _safe_mean(is_token_masked, loss_mask),
+        "is_traj_masked": _safe_mean(is_traj_masked.expand(loss_mask.shape), loss_mask),
+        "geo_log_ratio": geo_log_ratio,
+    }
+
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
     """Build the loss fn for the rl component from ``trainer.loss``:
     ``default_loss_fn`` (``DefaultLossConfig``), ``ipo_loss_fn``
     (``IPOLossConfig``), ``kpop_loss_fn`` (``KPopLossConfig``),
     ``kimi_k15_loss_fn`` (``KimiK15LossConfig``),
-    ``pmd_mean_loss_fn`` (``PMDMeanLossConfig``), or the imported
+    ``pmd_mean_loss_fn`` (``PMDMeanLossConfig``),
+    ``geo_mask_loss_fn`` (``GeoMaskLossConfig``),
+    ``seq_tis_loss_fn`` (``SeqTISLossConfig``),
+    ``seq_mis_loss_fn`` (``SeqMISLossConfig``),
+    ``mis_po_loss_fn`` (``MISPOLossConfig``), or the imported
     function (``CustomLossConfig``).
     The ce / ref_kl loss types are fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
@@ -449,6 +676,22 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return pmd_mean_loss_fn(inputs, loss_config)
+    elif isinstance(loss_config, GeoMaskLossConfig):
+
+        def rl_fn(inputs: LossInputs) -> LossOutputs:
+            return geo_mask_loss_fn(inputs, loss_config)
+    elif isinstance(loss_config, SeqTISLossConfig):
+
+        def rl_fn(inputs: LossInputs) -> LossOutputs:
+            return seq_tis_loss_fn(inputs, loss_config)
+    elif isinstance(loss_config, SeqMISLossConfig):
+
+        def rl_fn(inputs: LossInputs) -> LossOutputs:
+            return seq_mis_loss_fn(inputs, loss_config)
+    elif isinstance(loss_config, MISPOLossConfig):
+
+        def rl_fn(inputs: LossInputs) -> LossOutputs:
+            return mis_po_loss_fn(inputs, loss_config)
     else:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
