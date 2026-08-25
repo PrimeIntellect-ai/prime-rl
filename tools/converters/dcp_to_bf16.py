@@ -45,10 +45,18 @@ from prime_rl.utils.weights import (
     save_state_dict_parallel,
 )
 
-# Fields forced to conversion-safe values: the run's compile/parallelism settings
-# don't apply to an offline export, and a resolved EP degree from a larger world
-# would fail at the conversion world size.
-CONVERSION_OVERRIDES = {"compile": None, "ac": None, "dp_replicate": 1, "cp": 1, "ep": "auto"}
+# Training kernels and parallelism settings do not apply to an offline export.
+# Resolve parallelism for the converter's world size and use portable kernels.
+CONVERSION_OVERRIDES = {
+    "compile": None,
+    "ac": None,
+    "dp_replicate": 1,
+    "cp": 1,
+    "ep": "auto",
+    "ep_comm_backend": "torch",
+    "attn": "flash_attention_2",
+    "moe_fused_kernel": False,
+}
 
 RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
 
