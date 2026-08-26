@@ -25,6 +25,7 @@ from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
 class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
@@ -211,7 +212,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         inputs_embeds: torch.FloatTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor | None = None,
+        seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
     ) -> MoeModelOutputWithPast:
         """
@@ -220,25 +221,39 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             bootstrap layers route on `tid2eid[input_ids]` and cannot run without them.
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`, *optional*):
-            Per-document lengths of the packed row (PrimeRL packed-batch contract). Unused:
-            the sliding-window mask and both compressors assume one document per row, so a
-            packed batch would let windows and compression bleed across documents.
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract). Clips the
+            sliding window at document boundaries. Both compressors still ignore it and pool
+            across boundaries; see TODO.md.
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
-            Whether `seq_lens` holds pre-CP-shard (global) document boundaries. Unused.
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries. Rejected: the
+            window mask is dense and local, so global boundaries cannot address it.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+        if seq_lens_are_pre_shard:
+            raise NotImplementedError(
+                "DeepSeek V4 does not support context parallelism: pre-shard document boundaries "
+                "do not address the local sliding-window mask."
+            )
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
+        cu_seqlens, _ = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
+        )
+
         # Every layer type attends over the same local window; the compressed variants add
         # their own out-of-window entries and the per-query bias that gates them.
         attention_mask = build_sliding_window_mask(
-            inputs_embeds.shape[1], self.config.sliding_window, inputs_embeds.dtype, inputs_embeds.device
+            inputs_embeds.shape[1],
+            self.config.sliding_window,
+            inputs_embeds.dtype,
+            inputs_embeds.device,
+            cu_seqlens=cu_seqlens,
         )
         position_embeddings = {
             rope_type: self.rotary_emb(inputs_embeds, position_ids, rope_type)
@@ -289,7 +304,7 @@ class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel, GenerationMixin):
         temperature: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor | None = None,
+        seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
         **kwargs,
     ) -> PrimeLmOutput:
@@ -299,6 +314,10 @@ class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel, GenerationMixin):
             logprobs/entropy.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are given.
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row. Required rather than defaulting to one
+            document, so a caller that forgets it fails instead of silently getting a window
+            that spans neighbouring rollouts.
         """
         outputs = self.model(
             input_ids=input_ids,

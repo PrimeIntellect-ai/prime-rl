@@ -575,6 +575,12 @@ def get_model(
 
         _hub_kernels._kernels_enabled = True
 
+    # DeepSeek V4's sliding window is a dense local mask built from post-shard document
+    # boundaries, which CP's global (pre-shard) boundaries cannot address. Caught here so a
+    # misconfigured job dies at setup rather than at the first forward.
+    if getattr(model_config, "model_type", "") == "deepseek_v4" and config.cp > 1:
+        raise ValueError("DeepSeek V4 does not support context parallelism, set cp=1.")
+
     # Qwen3.6 and Qwen3.8 reuse the Qwen3.5 architecture, so match on model_type, not repo name.
     if getattr(model_config, "model_type", "").startswith("qwen3_5"):
         _patch_qwen3_5_text_position_ids()

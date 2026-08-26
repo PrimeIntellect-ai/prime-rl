@@ -31,6 +31,7 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4Hyper
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4Experts, DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers import norms
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -360,19 +361,31 @@ def test_rotary_matches_hf_yarn():
         torch.testing.assert_close(prime_sin, hf_sin, rtol=0, atol=0)
 
 
-def test_sliding_window_mask_matches_hf():
+@pytest.mark.parametrize("doc_lens", [(_SEQ,), (7, 9)], ids=["single_document", "packed"])
+def test_sliding_window_mask_matches_hf(doc_lens):
+    """Upstream is the oracle for the local window, packed or not.
+
+    HF recovers document boundaries from `position_ids` restarts and prime-rl is told them as
+    `seq_lens`, so the two agree wherever the restarts line up with the boundaries. They do here,
+    and on a padded micro-batch they would not: `pad_micro_batch` restarts `position_ids` for the
+    padding while folding it into `seq_lens[-1]`.
+    """
     hf_config, _ = _attention_configs()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         probe = torch.zeros(_BATCH, _SEQ, _ATTN["hidden_size"])
+    position_ids = torch.cat([torch.arange(length, device="cuda") for length in doc_lens])
     hf_mask = create_sliding_window_causal_mask(
         config=hf_config,
         inputs_embeds=probe,
         attention_mask=None,
         past_key_values=None,
-        position_ids=_position_ids(),
+        position_ids=position_ids.unsqueeze(0).expand(_BATCH, -1),
         allow_is_causal_skip=False,
     )
-    prime_mask = build_sliding_window_mask(_SEQ, _ATTN["sliding_window"], torch.bfloat16, torch.device("cuda"))
+    cu_seqlens, _ = get_cu_seqlens_from_seq_lens(torch.tensor(doc_lens, device="cuda"), total_tokens=_SEQ)
+    prime_mask = build_sliding_window_mask(
+        _SEQ, _ATTN["sliding_window"], torch.bfloat16, torch.device("cuda"), cu_seqlens=cu_seqlens
+    )
 
     assert prime_mask.shape == (1, 1, _SEQ, _SEQ)
     torch.testing.assert_close(prime_mask.expand_as(hf_mask), hf_mask, rtol=0, atol=0)

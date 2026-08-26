@@ -81,14 +81,22 @@ Open items:
 - **No MTP.** `num_nextn_predict_layers` is not carried over and no multi-token-prediction head is
   built (HF does not build one either). The conversion chain drops `mtp.*` keys at either nesting
   depth, mirroring HF's `_keys_to_ignore_on_load_unexpected`.
-- **Everything is single-document.** `build_sliding_window_mask`, both compressors, and
-  `DeepseekV4Model`'s default `position_ids` all assume one document per row (no `cu_seqlens`
-  awareness). `DeepseekV4Model.forward` accepts `seq_lens` / `seq_lens_are_pre_shard` to satisfy
-  the trainer's contract and ignores them, so a packed multi-document batch would let windows and
-  compression bleed across document boundaries. Fixing it means either a `cu_seqlens`-aware
-  mask and compressor, or a flash-attention path with `window_size` (attention is eager-only
-  today, since the per-head sink logit has no flash-attention equivalent in prime-rl's vendored
-  kernels).
+- **The compressors are still single-document.** `DeepseekV4Model.forward` takes `seq_lens` and
+  clips the sliding window at document boundaries, but both compressors ignore them, in two ways
+  that a mask cannot separate. Their entries are indexed in packed-row coordinates while the
+  readable-set threshold is `(position_ids + 1) // compress_rate` and `position_ids` restart per
+  document, so every document after the first reads entries pooled from the start of the row. And
+  their pooling windows straddle boundaries, blending two rollouts into one entry, which no mask
+  can unblend. The fix is to compress per document; the open design question is that with HCA's
+  production `compress_rate` of 128 against 77-token rollouts, per-document compression leaves
+  roughly 18 of the 43 layers contributing nothing beyond their local window. This is the same
+  property vLLM has, since it serves each rollout alone, so it is what closes the mismatch KL.
+  `tests/unit/train/models/test_deepseek_v4.py` pins all of it with `xfail(strict=True)`.
+- **No context parallelism.** CP hands the model pre-shard (global) document boundaries, which
+  cannot address a dense local mask built over post-shard positions. `get_model` rejects `cp > 1`
+  for this model and `DeepseekV4Model.forward` rejects `seq_lens_are_pre_shard`. Lifting this
+  means a flash-attention path with `window_size` instead of a dense mask, which needs a
+  flash-attention equivalent for the per-head sink logit that prime-rl's vendored kernels lack.
 - **The compressors and attention are stateless (no KV cache), by design.** prime-rl only runs a
   single forward + backward over a full sequence, never `generate()`, so `DeepseekV4HCACache`/
   `DeepseekV4CSACache` are not ported. Only relevant again if prime-rl grows incremental decode.

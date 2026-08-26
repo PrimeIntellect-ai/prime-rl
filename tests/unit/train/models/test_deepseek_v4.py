@@ -377,13 +377,12 @@ def test_deepseek_v4_init_buffers_post_meta_restores_every_rotary():
 
 # Everything below exercises a *packed* batch: several rollouts concatenated into one row, with
 # `position_ids` restarting at 0 per document and the per-document lengths handed over as
-# `seq_lens`, exactly as `trainer/batch.py` builds them. `DeepseekV4Model.forward` ignores
-# `seq_lens` today (`modeling_deepseek_v4.py:223-228`), and the three resulting defects do not
-# cost the same to fix. The sliding-window mask (defect 1) is a port regression: HF builds it
-# with `create_sliding_window_causal_mask(..., position_ids=position_ids)` and recovers the
-# boundaries from the restarts, so there is an upstream reference to copy. The compressors'
-# coordinate mismatch (defect 2) and their boundary-straddling pooling windows (defect 3) are
-# inherited from HF, which never runs this model on packed input, so those have to be designed.
+# `seq_lens`, exactly as `trainer/batch.py` builds them. `DeepseekV4Model.forward` consumes
+# `seq_lens` for the sliding-window mask (defect 1, fixed) and nowhere else. Both compressors
+# still ignore document boundaries: their entries are addressed in packed coordinates while the
+# readable-set threshold counts per document (defect 2), and their pooling windows straddle
+# boundaries (defect 3). Those two are inherited from HF, which never runs this model on packed
+# input, so unlike the mask they have no upstream reference to copy and have to be designed.
 #
 # The assertions deliberately avoid naming which compressed entry index belongs to which
 # document, and go through `forward` rather than the internals it calls. A fix that compresses
@@ -466,21 +465,16 @@ def _assert_reads_are_document_local(compressor: nn.Module, doc_lens: tuple[int,
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="defect 1: build_sliding_window_mask ignores document boundaries (attention.py:85-89)",
-)
 def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypatch):
-    """The local window bleeds across documents.
+    """The local window stops at document boundaries, on every layer.
 
-    `build_sliding_window_mask` (`attention.py:85-89`) derives its distances from
-    `torch.arange(seq_len)` over the whole packed row, so a query attends to the previous
-    `sliding_window` packed positions no matter which document they belong to. This hits every
-    layer, sliding and compressed alike.
+    Guards the `cu_seqlens` term in `build_sliding_window_mask`: without it the distances come
+    from `torch.arange(seq_len)` over the whole packed row and a query reaches the previous
+    `sliding_window` packed positions whatever document they belong to, which at the production
+    `sliding_window = 128` against 77-token rollouts spans roughly two neighbours on all 43 layers.
 
-    Captured from the mask the model actually applies, not from the builder's signature, so the
-    test stays valid whether the fix threads document boundaries into that builder or replaces it
-    with HF's `create_sliding_window_causal_mask`.
+    Captured from the mask the model actually applies rather than by calling the builder, so it
+    keeps holding if the masking ever moves.
     """
     recorded = []
     real_attention = dsv4_attention.eager_attention_with_sinks
@@ -508,14 +502,14 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
         assert torch.equal(local, expected), f"layer {layer_idx}: the local window crosses a document boundary"
 
 
-@pytest.mark.xfail(strict=True, reason="defects 1-3: a packed forward does not reproduce per-document forwards")
+@pytest.mark.xfail(strict=True, reason="defects 2 and 3: the compressors still ignore document boundaries")
 def test_packed_logits_match_unpacked(_torch_rms_norm):
     """The invariant that makes the trainer agree with vLLM, which serves each rollout alone.
 
-    All three defects land here at once: the bleeding sliding window (`attention.py:85-89`), the
-    compressed entries addressed in packed coordinates while their threshold counts per document
-    (`attention.py:159`, `:226-232`, `:329-332`), and pooling windows that straddle boundaries
-    (`attention.py:129-151`, `:301-317`).
+    Both remaining defects land here: the compressed entries addressed in packed coordinates while
+    their threshold counts per document (`attention.py:159`, `:226-232`, `:329-332`), and pooling
+    windows that straddle boundaries (`attention.py:129-151`, `:301-317`). The sliding window no
+    longer contributes.
     """
     _, prime_model = get_model_pairs(dtype=torch.float32)
     input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)

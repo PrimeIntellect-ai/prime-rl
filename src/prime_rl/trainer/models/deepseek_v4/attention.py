@@ -72,19 +72,34 @@ def eager_attention_with_sinks(
 
 
 def build_sliding_window_mask(
-    seq_len: int, sliding_window: int, dtype: torch.dtype, device: torch.device
+    seq_len: int,
+    sliding_window: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    *,
+    cu_seqlens: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Additive `[1, 1, seq_len, seq_len]` mask: causal, restricted to a local window.
 
     Query `q` may attend to key `k` when `k <= q` and `q - k < sliding_window`; every
     other entry is the dtype's minimum, so it vanishes under the softmax.
 
-    Assumes a single document per row. Packed multi-document batches additionally need
-    the window clipped at document boundaries; see TODO.md.
+    `cu_seqlens` carries the packed row's document boundaries, and the window is clipped
+    at them: a query never reaches into the rollout before its own. Without it the row is
+    treated as a single document. The mask broadcasts over the batch, so a batched packed
+    row shares one document layout, which is all `seq_lens` can express anyway.
+
+    A padded micro-batch folds its padding into the last document (`batch.py:717-718`
+    extends `seq_lens[-1]` while restarting `position_ids`), so the padding is masked as a
+    continuation of the last rollout. Causality already keeps it away from every real
+    token, and it is loss-masked.
     """
     positions = torch.arange(seq_len, device=device)
     distance = positions[:, None] - positions[None, :]
     allowed = (distance >= 0) & (distance < sliding_window)
+    if cu_seqlens is not None:
+        document_ids = torch.searchsorted(cu_seqlens[1:].to(positions.dtype), positions, right=True)
+        allowed &= document_ids[:, None] == document_ids[None, :]
     mask = torch.zeros(seq_len, seq_len, dtype=dtype, device=device)
     return mask.masked_fill_(~allowed, torch.finfo(dtype).min)[None, None]
 
@@ -419,7 +434,8 @@ class DeepseekV4Attention(nn.Module):
 
         if self.compressor is not None:
             if position_ids is None:
-                # Same single-document assumption as `build_sliding_window_mask`.
+                # Single document, as in the `cu_seqlens`-less mask above. Both compressors
+                # assume one document per row regardless; see TODO.md.
                 position_ids = torch.arange(input_shape[1], device=hidden_states.device).expand(input_shape[0], -1)
             compressed_kv, block_bias = self.compressor(hidden_states, q_residual, position_ids)
             kv = torch.cat([kv, compressed_kv], dim=2)
