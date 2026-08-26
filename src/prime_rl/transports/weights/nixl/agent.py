@@ -7,7 +7,6 @@ import socket
 import time
 from typing import Any, Callable, Sequence
 
-import torch
 from torch import Tensor
 
 MemDesc = tuple[int, int, int]
@@ -86,25 +85,8 @@ def make_agent_name(role: str, global_rank: int) -> str:
     return f"{role}-{socket.gethostname()}-r{global_rank}"
 
 
-# UCX exposes one device-memory copy transport per accelerator family. Since
-# UCX_TLS is a whitelist, naming a transport the local UCX build lacks narrows
-# selection instead of widening it, so an unmapped accelerator omits the token
-# and falls back to host staging.
-_UCX_COPY_MAP = {
-    "cuda": "cuda_copy",
-    "xpu": "ze_copy",
-}
-
-
 def set_ucx_env_defaults() -> None:
-    accel = torch.accelerator.current_accelerator()
-    copy_tl = _UCX_COPY_MAP.get(accel.type) if accel is not None else None
-
-    tls = ["rc_x", "rc", "dc_x", "dc"]
-    if copy_tl:
-        tls.append(copy_tl)
-
-    os.environ.setdefault("UCX_TLS", ",".join(tls))
+    os.environ.setdefault("UCX_TLS", "rc_x,rc,dc_x,dc,cuda_copy")
     os.environ.setdefault("UCX_IB_GPU_DIRECT_RDMA", "y")
     os.environ.setdefault("UCX_RNDV_SCHEME", "get_zcopy")
     os.environ.setdefault("UCX_RNDV_THRESH", "0")
