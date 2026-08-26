@@ -56,23 +56,26 @@ def load_trainer_checkpoint(
     *,
     skip_optimizer: bool = False,
 ) -> None:
-    """Load model (strict) then optimizer state (partial when never-trained params were omitted)."""
-    if skip_optimizer:
-        load_distributed_checkpoint(
-            {"app": AppState(model, [], scheduler, progress)},
-            path,
-            allow_partial_load=False,
-        )
-        return
+    """Load a checkpoint whose optimizer state may omit never-trained parameters.
 
-    # Strict pass: model, scheduler, and progress must match the checkpoint exactly.
+    A parameter that never took a step has no entry in ``optimizer.state``, so the
+    save side wrote no optimizer shard for it and a strict load fails on the missing
+    key. Only the optimizer may be partial: model, scheduler and progress load
+    strictly first, so a truncated checkpoint still fails loudly instead of silently
+    resuming from freshly initialized weights.
+    """
     load_distributed_checkpoint(
         {"app": AppState(model, [], scheduler, progress)},
         path,
         allow_partial_load=False,
     )
+    if skip_optimizer:
+        return
+
+    # Scheduler and progress are already applied, so this pass asks only for the
+    # optimizer keys the strict pass could not cover.
     load_distributed_checkpoint(
-        {"app": AppState(model, optimizers, scheduler, progress)},
+        {"app": AppState(model, optimizers, None, None)},
         path,
         allow_partial_load=True,
     )
