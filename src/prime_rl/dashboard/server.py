@@ -278,6 +278,7 @@ def run_meta(run_dir: Path) -> dict:
         "type": run_type,
         "model": model_name(config),
         "dataset": (config.get("data") or {}).get("name"),
+        "has_validation": run_type == "sft" and config.get("val") is not None,
         "env": ((config.get("env") or {}).get("taskset") or {}).get("id"),
         "total_episodes": (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None,
         "max_steps": config.get("max_steps"),
