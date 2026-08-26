@@ -464,11 +464,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         if config.weight_broadcast is not None and config.weight_broadcast.type == "nixl"
         else None
     )
-    launch_modelexpress = nixl_broadcast is not None and nixl_broadcast.host in {
-        "localhost",
-        "127.0.0.1",
-        "0.0.0.0",
-    }
+    launch_modelexpress = nixl_broadcast is not None and config.slurm.launch_modelexpress
     modelexpress_vars = {
         "use_nixl_broadcast": nixl_broadcast is not None,
         "launch_modelexpress": launch_modelexpress,

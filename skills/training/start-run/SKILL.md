@@ -46,7 +46,7 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
 - Entrypoint: `src/prime_rl/entrypoints/rl.py`
 - SLURM: single- and multi-node
 - Multi-node SLURM stops after `.trainer.done` for trainer-only fake-data runs. Runs with inference stop after both `.trainer.done` and `.orchestrator.done`.
-- NIXL on SLURM: install the UCX/NIXL build with `scripts/install_nixl_from_source.sh`, reinstall its wheel after `uv sync`, then install the ModelExpress and Redis binaries with `scripts/install_modelexpress.sh`. With the default local broadcast host, the generated job runs ModelExpress on the trainer head and injects its address into every component; a non-local `weight_broadcast.host` selects an external service. Each NIXL process pins UCX to its GPU's nearest active InfiniBand port unless `UCX_NET_DEVICES` is explicitly set, and inference ranks rotate their trainer-agent pull order across the available source rails.
+- NIXL on SLURM: install NIXL and ModelExpress with the provided scripts. The job starts ModelExpress and Redis unless `slurm.launch_modelexpress = false`.
 - Environment packages: before launching a config with a non-core verifier env id,
   verify the package imports under `uv run` (for example
   `uv run python -c "import importlib.util; print(importlib.util.find_spec('r2e_gym'))"`).

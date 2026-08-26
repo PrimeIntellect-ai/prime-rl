@@ -241,7 +241,7 @@ uv pip install --reinstall --no-deps deps/nixl_cu12-*.whl
 bash scripts/install_modelexpress.sh
 ```
 
-With the default `weight_broadcast.host = "localhost"`, the generated job starts a job-scoped ModelExpress server and Redis backend on the trainer head node and passes that address to every component. Set `weight_broadcast.host` to a non-local hostname to connect to an externally managed ModelExpress service instead.
+The generated job starts a job-scoped ModelExpress server and Redis backend on the trainer head node and passes that address to every component. To use an existing service, set `slurm.launch_modelexpress = false` and configure `weight_broadcast.host` and `weight_broadcast.port`.
 
 The launcher requires the CUDA and InfiniBand transports from `third_party/ucx`. Each NIXL process selects the active InfiniBand port nearest its GPU; an explicitly configured `UCX_NET_DEVICES` takes precedence. Inference ranks start their pulls at different trainer ranks so concurrent workers distribute traffic across all available source rails.
 
