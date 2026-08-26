@@ -1,7 +1,8 @@
 """Create and verify a mini MoE model for testing.
 
-Creates a small MoE model with random weights, saves it with a tokenizer,
-and verifies the HF <-> PrimeRL weight conversion roundtrip.
+Creates a small MoE model with random weights, saves it with a tokenizer, and verifies the HF <->
+PrimeRL weight conversion roundtrip. Compares KL divergences between prime-rl and HF
+implementations, and top-1 agreement (a noisy metric for random-init models).
 
 How this mirrors production:
   1. bf16 weights, fp32 buffers (inv_freq, expert_bias, ...): the prod forward under FSDP mixed precision
@@ -10,13 +11,6 @@ How this mirrors production:
   4. flash_attention_2 on both models, so a logits gap means the port, not two kernels
   5. Prime LM head injected, as setup_model does
   6. seq_lens passed explicitly, but as one document, so packed boundaries stay untested
-
-Never use model.to(dtype=...) here: it casts buffers too, quantizing the rope table irrecoverably.
-Flash attention constrains only the q/k/v activations, so nothing forces buffers to bf16.
-
-Not covered: FSDP (no fp32 masters, no gradient reduction), backward, EP/CP, activation
-checkpointing, torch.compile, quantization, the fused MoE kernel, long context (one 64-token
-sequence), and real checkpoints (weights are random).
 
 Usage:
     # Create and verify
@@ -30,6 +24,7 @@ import argparse
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 import transformers.utils.generic
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
@@ -111,7 +106,7 @@ def _qwen3_5_moe_vlm_config():
     tc.linear_num_value_heads = 8
     tc.layer_types = ["full_attention", "linear_attention"]
     tc.use_cache = False
-    # head_dim shrinks to 64, so the rotary dim is 16 and mrope_section must sum to 8
+    # mrope sections must sum to head_dim * partial_rotary_factor / 2 = 8, for head_dim = 64
     tc.rope_parameters["mrope_section"] = [3, 3, 2]
 
     vc = config.vision_config
@@ -273,17 +268,11 @@ def _create_hf_model_from_config(preset, config):
 
 
 def _compare_distributions(hf_logits: torch.Tensor, prime_logits: torch.Tensor) -> tuple[float, float, float]:
-    """Report full-vocab KL and top-1 agreement, and return the three gated quantities.
-
-    KL is the informative number. Max logits diff is a tail statistic over millions of entries, and
-    bf16 error concentrates on near-zero logits that carry almost no probability mass.
-
-    Both the mean and the max KL are gated: averaging over the sequence dilutes a single divergent
-    token by the sequence length, so a localized error can hide behind a healthy mean.
-    """
+    "Report and return full-vocab KL mean, KL max, and top-1 agreement."
     hf_logprobs = hf_logits.float().log_softmax(-1)
     prime_logprobs = prime_logits.float().log_softmax(-1)
-    kl = (hf_logprobs.exp() * (hf_logprobs - prime_logprobs)).sum(-1)
+    # F.kl_div computes KL(target || input), so the arguments read in the opposite order to the name
+    kl = F.kl_div(input=prime_logprobs, target=hf_logprobs, reduction="none", log_target=True).sum(-1)
     top1 = (hf_logits.argmax(-1) == prime_logits.argmax(-1)).float().mean()
     print(f"  HF vs PrimeRL KL(HF || PrimeRL) per token: mean {kl.mean().item():.3e}, max {kl.max().item():.3e}")
     print(f"  HF vs PrimeRL top-1 agreement: {top1.item():.1%}")
@@ -353,9 +342,8 @@ def verify(arch: str, model_dir: Path) -> None:
 
     # Use tokens in safe range (avoid special VLM token IDs)
     max_token = min(vocab_size, 200) if is_vlm else vocab_size
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        input_ids = torch.randint(0, max_token, (1, 64))
-        position_ids = torch.arange(1, 65).unsqueeze(0)
+    input_ids = torch.randint(0, max_token, (1, 64), device="cuda")
+    position_ids = torch.arange(1, 65, device="cuda").unsqueeze(0)
 
     seq_lens = torch.tensor([input_ids.shape[1]], device=input_ids.device)
     hf_output = hf_model(input_ids=input_ids, position_ids=position_ids)
