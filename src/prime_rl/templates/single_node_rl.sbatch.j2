@@ -66,6 +66,8 @@ if [ ! -x "$MX_BIN/modelexpress-server" ] || [ ! -x "$MX_BIN/redis-server" ]; th
     echo "ModelExpress server dependencies are missing; run scripts/install_modelexpress.sh" >&2
     exit 1
 fi
+pkill -9 -f "[m]odelexpress-server" 2>/dev/null || true
+pkill -9 -x redis-server 2>/dev/null || true
 
 MX_STATE_DIR="{{ output_dir }}/modelexpress"
 mkdir -p "$MX_STATE_DIR/cache"

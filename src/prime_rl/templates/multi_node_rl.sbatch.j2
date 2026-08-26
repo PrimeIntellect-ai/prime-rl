@@ -211,6 +211,10 @@ srun bash -s <<'CLEANUP_SH'
     # the exact process name, so it never hits the worktree path (e.g. mooncake-baby).
     pkill -9 -x mooncake_master 2>/dev/null
     pkill -9 -x mooncake_client 2>/dev/null
+{% if use_nixl_broadcast and launch_modelexpress %}
+    pkill -9 -f "[m]odelexpress-server" 2>/dev/null
+    pkill -9 -x redis-server 2>/dev/null
+{% endif %}
     sleep 2
     rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
     procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::|mooncake_|[e]pp |envoy|pd-sidecar" | grep -v grep | wc -l)
