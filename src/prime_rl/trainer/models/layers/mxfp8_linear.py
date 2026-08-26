@@ -14,11 +14,13 @@ from prime_rl.utils.logger import get_logger
 
 
 def _cache_mxfp8_dim0_weight_across_checkpoint_recompute() -> None:
+    """Cache the dim0 MXFP8 quantization of the weight on the tensor itself so activation checkpointing's recompute forward reuses it instead of requantizing.
+    """
     if getattr(tao_mx_linear.mx_mm, "_prime_rl_dim0_cached", False):
         return
 
     MXTensor = tao_mx_linear.MXTensor
-    cache: dict[int, tuple[int, object]] = {}
+    orig_backward = tao_mx_linear.mx_mm.backward
 
     @staticmethod
     def forward(
@@ -36,6 +38,7 @@ def _cache_mxfp8_dim0_weight_across_checkpoint_recompute() -> None:
         wgrad_with_hp,
     ):
         ctx.save_for_backward(input_hp, weight_hp)
+        ctx._prime_rl_weight_hp = weight_hp
         ctx.in_elem_dtype = in_elem_dtype
         ctx.w_elem_dtype = w_elem_dtype
         ctx.grad_elem_dtype = grad_elem_dtype
@@ -55,8 +58,7 @@ def _cache_mxfp8_dim0_weight_across_checkpoint_recompute() -> None:
             kernel_preference,
             mxfp8_dim0_cast_kernel_choice=mxfp8_dim0_cast_kernel_choice,
         )
-        cache_key = id(weight_hp)
-        cached = cache.get(cache_key)
+        cached = getattr(weight_hp, "_prime_rl_mxfp8_dim0_cache", None)
         if cached is not None and cached[0] == weight_hp._version:
             weight_mx_dim0 = cached[1]
         else:
@@ -68,13 +70,23 @@ def _cache_mxfp8_dim0_weight_across_checkpoint_recompute() -> None:
                 kernel_preference,
                 mxfp8_dim0_cast_kernel_choice=mxfp8_dim0_cast_kernel_choice,
             )
-            cache[cache_key] = (weight_hp._version, weight_mx_dim0)
+            weight_hp._prime_rl_mxfp8_dim0_cache = (weight_hp._version, weight_mx_dim0)
 
         output = torch.mm(input_mx_r_dim0, weight_mx_dim0.t())
         output = output.reshape(*input_orig_shape[:-1], output.shape[-1])
         return output
 
+    @staticmethod
+    def backward(ctx, grad_output_hp):
+        weight_hp = ctx._prime_rl_weight_hp
+        try:
+            return orig_backward(ctx, grad_output_hp)
+        finally:
+            if hasattr(weight_hp, "_prime_rl_mxfp8_dim0_cache"):
+                del weight_hp._prime_rl_mxfp8_dim0_cache
+
     tao_mx_linear.mx_mm.forward = forward
+    tao_mx_linear.mx_mm.backward = backward
     tao_mx_linear.mx_mm._prime_rl_dim0_cached = True
 
 
