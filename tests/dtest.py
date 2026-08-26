@@ -43,8 +43,10 @@ class DTest:
         self.run(test, test_kwargs, self.default_world_size)
 
     def _get_fixture_kwargs(self, request, func):
-        # Reused near-verbatim from dtest (`_dtest.py:202-214`) — lets a DTest test method
-        # also request ordinary pytest fixtures alongside `self.rank`/`self.world_size`.
+        """
+        Lets a DTest test method also request ordinary pytest fixtures alongside
+        `self.rank`/`self.world_size`.
+        """
         params = inspect.getfullargspec(func).args
         params.remove("self")
         kwargs = {}
