@@ -217,7 +217,8 @@ SFT multi-node:
 ```toml
 [deployment]
 type = "multi_node"
-num_nodes = 2
+num_train_nodes = 2
+num_infer_nodes = 1  # required only for online evals
 gpus_per_node = 8
 ```
 

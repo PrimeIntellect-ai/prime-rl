@@ -69,6 +69,7 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 - Config: `SFTConfig` (`packages/prime-rl-configs/src/prime_rl/configs/sft.py`)
 - Entrypoint: `src/prime_rl/entrypoints/sft.py`
 - SLURM: single- and multi-node
+- Multi-node online evals use one SLURM job with `num_train_nodes + num_infer_nodes` nodes. The generated `launcher/sft.sbatch` assigns inference nodes first, then trainer nodes.
 
 ## `inference` — vLLM server
 
@@ -122,10 +123,14 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 ```
 
-- Env servers: spawned by the evals process, one per source without an explicit `serve.address`, at `tcp://127.0.0.1:<eval.env_server_base_port + index>`; logs at `{output_dir}/logs/envs/eval/{name}.log`.
+- Env servers: spawned by the evals process, one per source without an explicit `serve.address`, at `tcp://127.0.0.1:<eval.env_server_base_port + index>`; logs at `{output_dir}/logs/latest/envs/eval/{name}.log`.
 - External inference APIs (no vLLM `/metrics`, e.g. Prime Inference) have no load signal for adaptive concurrency: the startup `/metrics` probe fails fast unless the band is pinned (`min_inflight = max_inflight`). Full example: `examples/evals/swe.toml` (SWE-bench Verified + Terminal-Bench 2 on Prime Inference, `agent.timeout.rollout = 3600`).
 - Config: `EvalsConfig` (`packages/prime-rl-configs/src/prime_rl/configs/evals.py`)
 - Entrypoint: `src/prime_rl/entrypoints/evals.py` (implementation: `src/prime_rl/evals/evals.py`)
+
+## Exporting checkpoints
+
+Trainer checkpoints are DCP-sharded (`<run_dir>/checkpoints/step_{n}/trainer`). Convert to HF safetensors with `uv run python tools/convert_dcp_to_bf16.py <run_dir>/checkpoints/step_{n}` (writes `<ckpt_dir>/weights`, serveable via `uv run inference --vllm.model <dir>`; model config auto-read from the run’s `configs/resolved/trainer.json`/`sft.json`; multi-rank via `torchrun --nproc-per-node N`; full fine-tunes only, LoRA rejected). Quantize a bf16 HF dir to blockwise FP8 with `tools/convert_bf16_to_fp8.py <dir>` (vLLM-native format), or straight from a checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (rank-parallel, writes only `<ckpt_dir>/weights-FP8`, no bf16 on disk); dequantize fp8-only releases with `tools/convert_fp8_to_bf16.py <dir>`. Caveat: on SM120 GPUs (RTX PRO 6000) vLLM 0.26 picks `CutlassFp8BlockScaledMMKernel` for blockwise-fp8 checkpoints and it silently degrades outputs — serve with `VLLM_DISABLED_KERNELS=CutlassFp8BlockScaledMMKernel,MarlinFP8ScaledMMLinearKernel` to fall back to the Triton kernel.
 
 ## Summary
 
@@ -150,4 +155,3 @@ Interactive launches auto-start one shared dashboard daemon per user (process ti
 that URL to the researcher. Discovery: `~/.cache/prime-rl/dashboard/daemon.json` holds
 the live `url` (the port can differ from 7788 when it was taken). `--no-dashboard`
 opts a run out.
-

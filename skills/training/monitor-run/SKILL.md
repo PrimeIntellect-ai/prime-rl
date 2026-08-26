@@ -50,7 +50,7 @@ In W&B, each project auto-gets an **"overview" saved view** (train / eval / stab
 
 - `{run_dir}/configs/` — the launch TOML copied verbatim (`rl.toml`/`sft.toml`), plus `resolved/` with the per-component resolved configs, written as JSON so explicit None settings round-trip.
 - `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
-- `{run_dir}/rollouts/step_N/{train,eval}/` — saved episodes (see Episodes below).
+- `{run_dir}/rollouts/step_{n}/{train,eval}/` — saved episodes (see Episodes below).
 
 ### Dashboard
 
@@ -82,7 +82,7 @@ Verify liveness with `curl -sf <url>/api/runs` and hand the researcher the `url`
 {run_dir}/logs/latest/
 ├── trainer.log                # rank 0 stdout
 ├── orchestrator.log           # orchestrator stdout
-├── evals.log                  # SFT online-eval evals stdout (single-node; the decoupled multi-node eval job logs at {run_dir}/logs/evals.log)
+├── evals.log                  # SFT online-eval evals stdout
 ├── inference.log              # vLLM stdout
 ├── trainer/
 │   ├── node_*.log             # per-node (multi-node only)
@@ -162,8 +162,8 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 ### Episodes
 
 ```
-{run_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per episode as it completes
-{run_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
+{run_dir}/rollouts/step_{n}/{train,eval}/all/traces.jsonl        # appended per episode as it completes
+{run_dir}/rollouts/step_{n}/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
 
 JSONL files of native `vf.Episode` records (training tensors excluded), one line per episode.
@@ -182,7 +182,7 @@ jq '.traces[].rewards' {run_dir}/rollouts/step_42/train/effective/traces.jsonl
 jq 'select(.ok | not) | {id, env: .env.id, errors}' {run_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
-The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_N/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the episode subtrees.
+The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_{n}/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the episode subtrees.
 
 ### Common failure modes
 

@@ -23,8 +23,10 @@
     <button data-tab="config">Config</button>
     <button data-tab="metrics" class="active">Metrics</button>
     <button data-tab="traces">Traces</button>
+    <button data-tab="report">Report</button>
     <button data-tab="logs">Logs</button>
   </nav>
+  <label class="toggle" title="apply agent view commands as they arrive"><input type="checkbox" id="follow-toggle" checked><span class="dot"></span>follow</label>
   <label class="toggle" title="poll for updates"><input type="checkbox" id="live-toggle" checked><span class="dot"></span>live</label>
 </header>
 
@@ -113,6 +115,17 @@
     </div>
   </section>
 
+  <section id="tab-report" hidden>
+    <div class="controls">
+      <label class="t-label">report</label>
+      <select id="report-select"></select>
+      <span id="report-verify" class="muted"></span>
+      <div class="spacer"></div>
+      <span id="report-status" class="muted"></span>
+    </div>
+    <div id="report-wrap"><article id="report-body"></article></div>
+  </section>
+
   <section id="tab-logs" hidden>
     <div class="controls">
       <label class="t-label">attempt</label>
@@ -189,13 +202,22 @@
   <section id="tm-main">
     <div class="tm-head">
       <span class="tm-title">Trace Viewer</span>
+      <button id="tm-back" class="btn" hidden title="back to the report">← report</button>
+      <div class="seg" id="tm-view">
+        <button data-view="transcript" class="active">Transcript</button>
+        <button data-view="timeline">Timeline</button>
+      </div>
       <div class="spacer"></div>
-      <select id="token-signal">
-        <option value="">text view</option>
-        <option value="advantage">tokens: advantage</option>
-        <option value="logprob">tokens: logprob</option>
-        <option value="mask">tokens: mask</option>
-        <option value="is_content">tokens: is_content</option>
+      <div class="seg" id="trace-view-mode">
+        <button data-mode="messages" class="active">Messages</button>
+        <button data-mode="rendered">Rendered</button>
+      </div>
+      <select id="token-signal" title="Choose the token signal for either view. Text is uncolored; other options color recorded tokens by advantage, log probability, training mask, or message-content membership.">
+        <option value="">Text</option>
+        <option value="advantage">Advantage</option>
+        <option value="logprob">Logprob</option>
+        <option value="mask">Mask</option>
+        <option value="is_content">Content</option>
       </select>
       <button id="tm-collapse" class="btn">collapse</button>
       <button id="tm-expand" class="btn">expand</button>
@@ -206,6 +228,7 @@
       <div id="tm-branch-tabs" class="seg" hidden></div>
     </div>
     <div id="tm-messages"></div>
+    <div id="tm-timeline" hidden></div>
   </section>
   <aside id="tm-right">
     <div class="tm-head"><span class="tm-title">Overview</span></div>

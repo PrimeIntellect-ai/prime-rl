@@ -200,15 +200,15 @@ num_infer_gpus = 1  # inference
 
 The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. NCCL is the default weight transport. The trainer broadcasts weights at startup (fail-fast) and at every step an eval env is due, Every broadcast runs the same four-stage handshake in `broadcasts/step_{n}`: the trainer offers the version (`.sender_ready`) and blocks, the evals process acknowledges (`.receiver_ready`), then the trainer transfers (`.started`) and commits (`.finished`). It runs the due envs sequentially per broadcast, so every epoch measures exactly one policy version. Set `[weight_broadcast] type = "filesystem"` to reload weights from disk instead. LoRA and externally managed inference use filesystem broadcast automatically. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
 
-#### Multi-Node (Decoupled Trainer and Inference Pool)
+#### Multi-Node Trainer and Inference Pool
 
-On a `multi_node` deployment (SLURM), the trainer and the eval deployment are **two separate SLURM jobs**. `deployment.num_train_nodes` sizes the trainer job; `deployment.num_infer_nodes` sizes the eval job, which runs the inference pool (one vLLM engine per DP rank behind a single router, `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node), one env server per eval source, and the evals process:
+On a `multi_node` deployment, one SLURM job reserves `deployment.num_train_nodes + deployment.num_infer_nodes` nodes. The first `num_infer_nodes` run the inference pool, router, env servers, and evals process. The remaining nodes run the trainer. The inference pool runs one vLLM engine per DP rank behind one router, with `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node:
 
 ```toml
 [deployment]
 type = "multi_node"
-num_train_nodes = 2  # trainer job
-num_infer_nodes = 1  # eval job (inference pool + evals)
+num_train_nodes = 2  # trainer nodes
+num_infer_nodes = 1  # inference pool + evals
 
 [inference.vllm]
 tensor_parallel_size = 8
@@ -217,7 +217,7 @@ tensor_parallel_size = 8
 job_name = "my-run"
 ```
 
-The launcher submits the eval job after the trainer allocation starts. The trainer publishes its rank-0 hostname in the shared run directory, and the eval job uses it to join the NCCL weight-broadcast group. Each weight transfer is synchronous, but eval rollout execution overlaps with later training steps. After the final transfer, the trainer job releases its nodes while the eval job finishes the final epoch and exits. Without `max_steps`, the eval job never sees a final broadcast and holds its allocation until walltime. Trainer and evals log to one shared W&B run — the trainer creates it, and the evals process finalizes it. Any trainer-to-inference node layout works because `num_train_nodes` and `num_infer_nodes` are independent.
+The shared script passes the trainer rank-0 hostname directly to the evals process for NCCL weight broadcasts. Each transfer is synchronous, but eval rollout execution overlaps with later training steps. The allocation remains active while the final eval finishes. Without `max_steps`, evals never sees a final broadcast, so the job remains active until walltime. Trainer and evals log to one shared W&B run. The trainer creates it, and evals finalizes it.
 
 ### SFT-Specific Knobs
 
@@ -263,8 +263,8 @@ Checkpointing is split across processes because the orchestrator and trainer can
 
 | Process | What's saved | Where |
 |---|---|---|
-| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_N/trainer/` |
-| Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_N/orchestrator/` |
+| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
+| Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 
 ### Enabling Checkpoints
@@ -297,6 +297,20 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
+### Exporting Checkpoints
+
+Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected.
+
+```bash
+# single process (1 GPU)
+uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
+
+# multi-rank for faster gathers and models that don't fit one GPU
+uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
+```
+
+The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (each rank quantizes its gathered slice, writes only `<ckpt_dir>/weights-FP8` — no intermediate bf16 export); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
+
 ## Observability
 
 ### Log Files
@@ -307,6 +321,7 @@ The launcher tees every process's stdout/stderr into `<run_dir>/logs/attempt_<n>
 <run_dir>/logs/latest/     # symlink -> attempt_<n>, one per launch
 ├── trainer.log                  # rank 0 only; symlink → trainer/node_0.log on multi-node
 ├── orchestrator.log             # single instance, single file
+├── evals.log                    # SFT online-eval process
 ├── inference.log                # symlink → inference/node_0.log on multi-node
 ├── trainer/
 │   ├── node_*.log               # per-node trainer stdout (multi-node only)
@@ -317,19 +332,21 @@ The launcher tees every process's stdout/stderr into `<run_dir>/logs/attempt_<n>
 └── envs/{train,eval}/<env_name>.log # one env server process per source (broker + its workers)
 ```
 
-Env logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`. For multi-rank trainer debugging, drop into `logs/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
+Env logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`. For multi-rank trainer debugging, drop into `logs/latest/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
 
 Live tailing from a single point (works on the head node for multi-node runs over a shared filesystem):
 
 ```bash
-tail -F <run_dir>/logs/latest/{trainer,orchestrator,inference}.log
+tail -F <run_dir>/logs/latest/{trainer,orchestrator,evals,inference}.log
 tail -F <run_dir>/logs/latest/trainer/node_*.log   # multi-node only
 tail -F <run_dir>/logs/latest/inference/router.log # multi-node only
 ```
 
 ### Dashboard
 
-`uv run dashboard [output_dir ...]` (default `outputs/`) serves a local web dashboard at `http://localhost:7788` with four views per run: metrics (the W&B overview sections, read from `metrics.jsonl`), the resolved configs, a rollout trace viewer with a per-token advantage/logprob view, and merged component logs. It only reads the run dirs, so it is safe to point at a live run; pass several output directories to track parallel experiments. A taken port automatically bumps to the next free one, so several dashboards coexist on one node.
+`uv run dashboard [output_dir ...]` (default `outputs/`) serves a local web dashboard at `http://localhost:7788` with five views per run: metrics (the W&B overview sections, read from `metrics.jsonl`), the resolved configs, a rollout trace viewer with a per-token advantage/logprob view, merged component logs, and markdown reports from `<run>/reports/`. It only reads the run dirs, so it is safe to point at a live run; pass several output directories to track parallel experiments. A taken port automatically bumps to the next free one, so several dashboards coexist on one node.
+
+A coding agent on the same machine can drive the open dashboard: `POST /api/view` with an on-disk address (`{"run", "tab", "step", "kind", "subset", "episode", "highlight": [...]}`) navigates every connected tab there and paints quote-anchored highlights in the trace viewer. Reports cite traces with `[^id]` markers whose JSON definitions carry the same address plus a verbatim quote; the dashboard re-checks each quote against the trace files and marks the citation verified or broken, so answers stay grounded in what is actually on disk. The `dashboard` skill documents the full contract.
 
 ### Weights & Biases
 
