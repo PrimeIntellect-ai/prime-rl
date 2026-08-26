@@ -283,6 +283,15 @@ def test_env_algo_overrides_top_level():
         )
 
 
+def test_online_evals_cancel_on_new_checkpoint_defaults_on_and_can_disable():
+    source = [{"env": {"taskset": {"id": "reverse-text"}}}]
+    default = EvalsConfig.model_validate({"eval": {"source": source}, "online": {}})
+    disabled = EvalsConfig.model_validate({"eval": {"source": source, "cancel_on_new_checkpoint": False}, "online": {}})
+
+    assert default.eval.cancel_on_new_checkpoint
+    assert not disabled.eval.cancel_on_new_checkpoint
+
+
 def test_trainer_enable_token_export_cli_flag():
     assert not cli(TrainerConfig, args=[]).enable_token_export
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
