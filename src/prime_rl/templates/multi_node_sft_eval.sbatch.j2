@@ -43,6 +43,7 @@ export CONFIG_DIR={{ config_dir }}
 export CONFIG_PATH=$CONFIG_DIR/inference.json
 export OUTPUT_DIR={{ output_dir }}
 export LAUNCHER_DIR={{ launcher_dir }}
+export LOG_DIR=$OUTPUT_DIR/logs
 # Move a previous job's inference logs aside instead of deleting them: rm of log
 # files another job's processes still hold open can wedge in the NFS client and
 # hang the whole job before srun even runs.
