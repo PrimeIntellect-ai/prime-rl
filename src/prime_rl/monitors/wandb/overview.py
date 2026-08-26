@@ -143,7 +143,7 @@ def eval_section(name: str, env_pattern: str) -> ws.Section:
     return section(
         name,
         regexes=[f"eval/{env_pattern}/all/[^/]+/avg@.*", f"eval/{env_pattern}/effective/[^/]+/avg@.*"]
-        + [f"eval/{env_pattern}/all/cancelled/mean", f"eval/{env_pattern}/all/cancelled/count"]
+        + [f"eval/{env_pattern}/all/cancelled/mean"]
         + [f"eval/{env_pattern}/{m}" for m in COMMON_METRICS]
         + [f"eval/{env_pattern}/{r}" for r in COMMON_REGEXES],
     )
