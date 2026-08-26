@@ -378,14 +378,23 @@ class Check:
     def ok(self) -> bool:
         return self.value <= self.threshold
 
+    @property
+    def ratio(self) -> float | None:
+        """value / threshold, the pass margin. None when the bar is exactly zero."""
+        return None if self.threshold == 0 else self.value / self.threshold
+
 
 def report(checks: list[Check]) -> None:
     width = max(len(c.name) for c in checks)
     print()
-    print(f"  {'check':<{width}}  {'value':>12}  {'threshold':>12}  status")
+    print(f"  {'check':<{width}}  {'value':>12}  {'threshold':>12}  {'ratio':>12}  status")
     for c in checks:
         detail = f"  {c.detail}" if c.detail else ""
-        print(f"  {c.name:<{width}}  {c.value:>12.6f}  {c.threshold:>12.6f}  {'ok' if c.ok else 'FAIL'}{detail}")
+        ratio = "N/A" if c.ratio is None else f"{c.ratio:.6f}"
+        print(
+            f"  {c.name:<{width}}  {c.value:>12.6f}  {c.threshold:>12.6f}  {ratio:>12}  "
+            f"{'ok' if c.ok else 'FAIL'}{detail}"
+        )
     print()
 
 
