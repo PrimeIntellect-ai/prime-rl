@@ -12,23 +12,23 @@ The taskset is included through the Verifiers workspace. After syncing the repos
 uv run python -c "import wordle"
 ```
 
-Start the pre-layouted `tmux` session which we will use to run all experiments and view logs conveniently
+We'll use two terminals: one for the inference server, one for everything else. To watch the run while it trains — metrics, resolved configs, rollout traces, and logs in one place — start the local dashboard and open http://localhost:7788:
 
 ```bash
-bash scripts/tmux.sh
+uv run dashboard
 ```
 
 Before training, we want to get a baseline score and test how well `Qwen3-1.7B` does out-of-the-box in the `wordle` environment so that we quantify our training effect. To do so, first start a local inference server to serve `Qwen3-1.7B`.
 
 ```bash
-# Run this in the `Inference` pane
+# Run this in the inference terminal
 uv run inference --vllm.model Qwen/Qwen3-1.7B
 ```
 
 Then, use the `eval` entrypoint to evaluate the model in the `wordle` environment. We evaluate on the 20 evaluation examples which are distinct words not appearing in the training set of the environment. We constrain the response length to 1024 tokens as this should be more than enough to play a full game.
 
 ```bash
-# Run this in the `Trainer` pane
+# Run this in the other terminal
 uv run eval wordle --harness.id null -m Qwen/Qwen3-1.7B --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
 ```
 
@@ -43,30 +43,26 @@ We will fine-tune `PrimeIntellect/Qwen3-1.7B` ([HF](https://huggingface.co/Prime
 To train on a single GPU, run
 
 ```bash
-# In the `Trainer` pane
+# Run this in the other terminal
 uv run sft @ examples/basic/wordle/sft.toml \
   --run.name sft \
-  --wandb.project ... \
-  --wandb.name ...
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ...
 ```
 
 To train on multiple GPUs, run
 
 ```bash
-# In the `Trainer` pane
+# Run this in the other terminal
 uv run torchrun \
   --local-ranks-filter 0 \
   --nproc-per-node ... \
   src/prime_rl/trainer/sft/train.py @ examples/basic/wordle/sft.toml \
-  --wandb.project ... \
-  --wandb.name ... 
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ... 
 ```
 
-After training completes, you will find the final weight checkpoint in `outputs/sft/weights/step_20`. Upload it to HF to be able to use it as the base model for RL we will do in the next section.
-
-```bash
-uv run hf upload <user>/Qwen3-1.7B-Wordle-SFT outputs/sft/weights/step_20
-```
+After training completes, you will find the final DCP checkpoint in `outputs/sft/checkpoints/step_20`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-1.7B-Wordle-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-SFT).
 
@@ -78,19 +74,15 @@ Finally, we will do multi-turn RL against the `wordle` environment using the mod
 
 
 ```bash
-# Run this in the `Trainer` pane
+# Run this in the other terminal
 uv run rl @ examples/basic/wordle/rl.toml \
   --model.name ... \
   --run.name rl \
-  --wandb.project ... \
-  --wandb.name ... 
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ... 
 ```
 
-This will write a weight checkpoint in `outputs/rl/weights/step_100`. As before, let's upload it to HF.
-
-```bash
-uv run hf upload <user>/Qwen3-1.7B-Wordle-RL outputs/rl/weights/step_100
-```
+This will write a DCP checkpoint in `outputs/rl/checkpoints/step_100`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-1.7B-Wordle-RL`](https://huggingface.co/PrimeIntellect/Qwen3-1.7B-Wordle-RL).
 
@@ -99,12 +91,12 @@ We have uploaded the final model as [`PrimeIntellect/Qwen3-1.7B-Wordle-RL`](http
 Let's see how our final RL checkpoint performs on the eval set.
 
 ```bash
-# Run this in the `Inference` pane
+# Run this in the inference terminal
 uv run inference --vllm.model PrimeIntellect/Qwen3-1.7B-Wordle-RL
 ```
 
 ```bash
-# Run this in the `Trainer` pane
+# Run this in the other terminal
 uv run eval wordle --harness.id null -m PrimeIntellect/Qwen3-1.7B-Wordle-RL --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
 ```
 

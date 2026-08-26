@@ -20,8 +20,8 @@ from collections.abc import Iterator
 import numpy as np
 import verifiers.v1 as vf
 
-from prime_rl.transport import TrainingSample
-from prime_rl.transport.types import EncodedTensor, RoutedExperts
+from prime_rl.transports.batch import TrainingSample
+from prime_rl.transports.batch.types import EncodedTensor, RoutedExperts
 from prime_rl.utils.logger import get_logger
 
 
@@ -89,33 +89,45 @@ def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[b
             yield branch, mask
 
 
-def trace_to_samples(
-    trace: vf.Trace,
-    *,
-    env_name: str = "",
-    mm_token_type_ids_mapping: dict[int, int] | None = None,
-) -> list[TrainingSample]:
+def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> list[float] | None:
+    """Flatten one graph-native loss stream, training each shared node once."""
+    weights: list[float] = []
+    for node in branch.nodes:
+        node_weights = (node.loss_weights or {}).get(name)
+        if node_weights is None or id(node) in trained_nodes:
+            weights.extend([0.0] * len(node.token_ids))
+            continue
+        if len(node_weights) != len(node.token_ids):
+            raise ValueError(
+                f"loss weight stream {name!r} must align with node token_ids: "
+                f"got {len(node_weights)}, expected {len(node.token_ids)}"
+            )
+        weights.extend(node_weights)
+        if any(node_weights):
+            trained_nodes.add(id(node))
+    return weights if any(weights) else None
+
+
+def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
     Each `trace.branches` entry is already a flat token sequence (`branch.token_ids` /
     `branch.sampled_mask` / `branch.logprobs`), so a sample carries it directly: `mask` marks
     the trainable (model-sampled) tokens, the context tokens between completions stay masked
-    out. Errored rollouts are dropped upstream (`TrainSink.process_rollout`), so no error
+    out. Errored traces are dropped upstream (`TrainSink.process_episode`), so no error
     handling happens here. A branch carrying images also gets `mm_kwargs` (the concatenated
-    pixel tensors) and `mm_token_type_ids` (the renderer's `mm_token_type_id_map` applied to
-    the branch tokens). Branches with no sampled tokens (e.g. an openai client carrying none)
-    yield nothing.
+    pixel tensors) and `mm_token_type_ids` (`branch.mm_token_type_ids`, computed from the
+    trace's renderer-stamped `mm_token_type_id_map`). Branches with no sampled tokens
+    (e.g. an openai client carrying none) yield nothing.
     """
     samples: list[TrainingSample] = []
+    trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
         mm_kwargs: dict[str, EncodedTensor] | None = None
-        mm_token_type_ids: list[int] | None = None
         mmd = branch.multi_modal_data
         if mmd is not None:
             mm_kwargs = _encode_mm_kwargs(mmd.mm_items)
-            mapping = mm_token_type_ids_mapping or {}
-            mm_token_type_ids = [mapping.get(t, 0) for t in token_ids]
         samples.append(
             TrainingSample(
                 token_ids=token_ids,
@@ -123,9 +135,14 @@ def trace_to_samples(
                 logprobs=branch.logprobs,
                 temperatures=[],  # filled by TrainSink.process_group
                 env_name=env_name,
+                ref_logprobs=branch.reference_logprobs,
                 mm_kwargs=mm_kwargs,
-                mm_token_type_ids=mm_token_type_ids,
+                mm_token_type_ids=branch.mm_token_type_ids,
                 routed_experts=_encode_routed_experts(branch.routed_experts, len(token_ids)),
+                rl_weights=_loss_weights(branch, "rl", trained_loss_nodes["rl"]),
+                ce_weights=_loss_weights(branch, "ce", trained_loss_nodes["ce"]),
+                ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
+                advantages=branch.advantages,
             )
         )
     if not samples:

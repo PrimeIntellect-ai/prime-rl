@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+import verifiers.v1 as vf
+
 from prime_rl.configs.algorithm import RAEAlgoConfig
-from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
+from prime_rl.orchestrator.algo.routing import assign_advantages
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.orchestrator.clients import InferenceClient
 
 
 class RAEAlgorithm(Algorithm):
@@ -29,13 +31,13 @@ class RAEAlgorithm(Algorithm):
     live in orchestrator memory: a restart re-warms them over ~1/(1 − decay)
     traces per agent."""
 
-    def __init__(self, config: RAEAlgoConfig, policy_pool: InferencePool):
-        super().__init__(config, policy_pool)
+    def __init__(self, config: RAEAlgoConfig, clients: InferenceClient):
+        super().__init__(config, clients)
         self.decay = config.decay
         self.baselines: dict[str, float] = defaultdict(float)
 
-    async def score_group(self, group: list[Rollout]) -> None:
-        for rollout in group:
-            baseline = self.baselines[rollout.agent.name]
-            rollout.assign_advantages(rollout.reward - baseline)
-            self.baselines[rollout.agent.name] = self.decay * baseline + (1.0 - self.decay) * rollout.reward
+    async def score_group(self, episodes: list[vf.Episode]) -> None:
+        for _, trace in iter_trainable_traces(episodes):
+            baseline = self.baselines[trace.agent.name]
+            assign_advantages(trace, trace.reward - baseline)
+            self.baselines[trace.agent.name] = self.decay * baseline + (1.0 - self.decay) * trace.reward

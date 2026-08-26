@@ -9,7 +9,7 @@ name = "glm5-llmd"
 [log]
 level = "debug"
 
-[wandb]
+[monitors.wandb]
 project = "glm5-llmd"
 name = "base"
 
@@ -93,7 +93,6 @@ attn = "flash_attention_2" # ignored with GLM5
 fused_lm_head_token_chunk_size = 1024
 cp = 4 # context parallel for the 131K seq len
 ep = 8
-optim_cpu_offload = true
 
 [trainer.model.quantization]
 type = "fp8"
@@ -114,8 +113,11 @@ weight_decay = 0.0
 [orchestrator]
 batch_size = 256
 group_size = 16
-max_inflight_episodes = 2048
 max_off_policy_steps = 8 # 16/32 can be better, 8 is more CPU stable
+
+[orchestrator.concurrency]
+initial_inflight = 256
+max_inflight = 512
 
 [orchestrator.model]
 name = "zai-org/GLM-5.1-FP8"
@@ -132,15 +134,9 @@ clear_thinking = false
 
 [[orchestrator.train.source]]
 name = "r2e"
-
-[orchestrator.train.source.env.taskset]
-id = "r2e-gym"
-
-[orchestrator.train.source.env.agent.harness]
-id = "rlm"
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["glm5-llmd"]
+env.taskset.id = "r2e-gym"
+env.agent.harness.id = "rlm"
+env.agent.runtime.labels = ["glm5-llmd"]
 
 [inference]
 # <0.80 because glm5 layers are too large for 0.85

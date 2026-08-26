@@ -1,6 +1,6 @@
 max_steps = 5000
 
-[wandb]
+[monitors.wandb]
 project = "hendrycks-sanity"
 name = "hendrycks-sanity"
 
@@ -18,17 +18,11 @@ seq_len = 8192
 
 [[orchestrator.train.source]]
 name = "hendrycks-math"
-
-[orchestrator.train.source.env.taskset]
-id = "math-env"
-dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B"
-dataset_subset = "default"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "math-env"
+env.taskset.dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B"
+env.taskset.dataset_subset = "default"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [orchestrator.eval]
 interval = 50
@@ -36,15 +30,9 @@ interval = 50
 [[orchestrator.eval.source]]
 name = "aime2024"
 group_size = 32
-
-[orchestrator.eval.source.env.taskset]
-id = "aime24"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "null"
-
-[orchestrator.eval.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "aime24"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [trainer.model]
 seq_len = 16384

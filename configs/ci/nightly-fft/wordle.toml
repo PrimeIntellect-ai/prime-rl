@@ -5,7 +5,7 @@ seq_len = 8192
 num_train_gpus = 2
 num_infer_gpus = 6
 
-[wandb]
+[monitors.wandb]
 project = "wordle"
 name = "wordle"
 
@@ -18,17 +18,14 @@ name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 batch_size = 512
 group_size = 16
 
+[orchestrator.concurrency]
+max_inflight = 128
+
 [[orchestrator.train.source]]
 name = "wordle"
-
-[orchestrator.train.source.env.taskset]
-id = "wordle"
-
-[orchestrator.train.source.env.player.harness]
-id = "null"
-
-[orchestrator.train.source.env.player.runtime]
-type = "subprocess"
+env.taskset.id = "wordle"
+env.player.harness.id = "null"
+env.player.runtime.type = "subprocess"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 1024

@@ -10,7 +10,7 @@ import setproctitle
 
 from prime_rl.utils.logger import get_logger
 
-PRIME_RL_PROC_PREFIX = "PRIME-RL"
+PRIME_RL_PROC_PREFIX = "PRL"
 
 
 # Applied to every launched component (trainer, orchestrator, inference).
@@ -31,6 +31,17 @@ DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
     "VLLM_ENGINE_READY_TIMEOUT_S": "4200",
     "UCX_TLS": "all",
 }
+
+
+def get_physical_gpu_ids() -> list[int]:
+    """Return physical GPU IDs visible to the launcher."""
+    raw_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw_visible is None:
+        import pynvml
+
+        pynvml.nvmlInit()
+        return list(range(pynvml.nvmlDeviceGetCount()))
+    return [int(token.strip()) for token in raw_visible.split(",") if token.strip()]
 
 
 def set_proc_title(name: str) -> None:

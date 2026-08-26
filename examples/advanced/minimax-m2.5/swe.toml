@@ -20,7 +20,7 @@ job_name = "swe-minimax"
 [ckpt]
 interval = 100
 
-[wandb]
+[monitors.wandb]
 project = "minimax-swe"
 
 [trainer.model]
@@ -45,35 +45,26 @@ weight_decay = 0.01
 
 [orchestrator]
 batch_size = 2048
-oversampling_factor = 2
 max_off_policy_steps = 16
+
+[orchestrator.concurrency]
+initial_inflight = 4096
+max_inflight = 4096
 
 [[orchestrator.train.source]]
 name = "swe"
-
-[orchestrator.train.source.env.taskset]
-id = "r2e-gym"
-
-[orchestrator.train.source.env.agent.harness]
-id = "bash"
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["minimax-swe", "swe"]
+env.taskset.id = "r2e-gym"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["minimax-swe", "swe"]
 
 [orchestrator.eval]
 interval = 25
 
 [[orchestrator.eval.source]]
 name = "swe-bench-verified"
-
-[orchestrator.eval.source.env.taskset]
-id = "swebench-verified"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "bash"
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["minimax-swe", "swe-bench-verified"]
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["minimax-swe", "swe-bench-verified"]
 
 [inference.vllm]
 tensor_parallel_size = 8

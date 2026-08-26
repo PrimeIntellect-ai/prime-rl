@@ -18,14 +18,16 @@
 {%- if exclude %}
 #SBATCH --exclude={{ exclude }}
 {%- endif %}
-#SBATCH --output={{ output_dir }}/job_%j.log
-#SBATCH --error={{ output_dir }}/job_%j.log
+#SBATCH --output={{ launcher_log_dir }}/job_%j.log
+#SBATCH --error={{ launcher_log_dir }}/job_%j.log
 
 # Exit immediately if any setup command or the launcher fails so the SLURM job
 # releases its allocation instead of holding nodes after a crash.
 set -e
 
 export PROJECT_DIR={{ project_dir }}
+export PRL_ATTEMPT_CONFIG_DIR={{ config_dir }}
+export PRL_ATTEMPT_LOG_DIR={{ log_dir }}
 
 # Setup environment
 cd $PROJECT_DIR

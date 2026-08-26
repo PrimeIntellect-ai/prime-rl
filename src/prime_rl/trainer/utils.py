@@ -1,27 +1,28 @@
 import gc
-import json
+import os
 import pickle
 import shutil
 import time
 from collections import defaultdict
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
-import pandas as pd
 import torch
 import torch.distributed as dist
 from rich import print as rich_print
-from rich.console import Console
-from rich.table import Table
 from rich.text import Text
-from torch import Tensor
+from torch import Tensor, nn
+from torchtitan.distributed.utils import clip_grad_norm_ as torch_clip_grad_norm_
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
-from prime_rl.utils.utils import format_num, format_time, get_step_path
+
+if TYPE_CHECKING:
+    from prime_rl.configs.trainer import OptimizerInBackwardOffloadConfig
+    from prime_rl.trainer.optim import GradientOffloadManager
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
 
@@ -50,7 +51,50 @@ class GarbageCollection:
     def _collect(self, generation: int = 1):
         begin = time.monotonic()
         gc.collect(generation)
-        get_logger().info(f"[GC] collection took {time.monotonic() - begin:.2f}s")
+        get_logger().debug(f"Collected garbage in {format_time(time.monotonic() - begin)}")
+
+
+def prepare_gradient_offload(
+    manager: "GradientOffloadManager | None",
+    gradient_scale: float,
+    *,
+    overlap_optimizer: bool,
+) -> None:
+    if manager is not None:
+        manager.begin_step(gradient_scale, overlap_optimizer=overlap_optimizer)
+
+
+def begin_backward(manager: "GradientOffloadManager | None", *, final_backward: bool) -> None:
+    if manager is not None:
+        manager.begin_backward(final_backward=final_backward)
+
+
+def finish_backward(manager: "GradientOffloadManager | None", *, wait_for_copies: bool = False) -> None:
+    if manager is not None:
+        manager.finish_backward(wait_for_copies=wait_for_copies)
+
+
+@torch.no_grad()
+def scale_gradients_(manager: "GradientOffloadManager | None", model: nn.Module, factor: float) -> None:
+    if manager is not None:
+        manager.scale_(factor)
+        return
+    for param in model.parameters():
+        if param.grad is not None:
+            param.grad.mul_(factor)
+
+
+def clip_grad_norm_(
+    manager: "GradientOffloadManager | None",
+    model: nn.Module,
+    max_norm: float,
+    ep_enabled: bool,
+) -> Tensor:
+    if manager is not None:
+        grad_norm = manager.clip_grad_norm_(max_norm)
+    else:
+        grad_norm = torch_clip_grad_norm_(model.parameters(), max_norm=max_norm, ep_enabled=ep_enabled)
+    return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm
 
 
 def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
@@ -58,7 +102,7 @@ def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
     Disk usage metrics for the checkpoint directory (<output_dir>/checkpoints).
 
     Intended to be called by trainer(s) on rank 0 and included in an existing
-    monitor.log(...) call (once per step).
+    monitors.log(...) call (once per step).
     """
     ckpt_dir = get_ckpt_dir(output_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -72,7 +116,63 @@ def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
     }
 
 
+def bind_process_to_gpu_numa_node() -> None:
+    """Pin this rank's CPUs to its GPU's NUMA node.
+
+    Offloaded optimizer state is pageable host memory placed by first-touch, and the
+    CPU optimizer pipeline is DRAM-bandwidth-bound; binding before the state is
+    allocated keeps slabs, OMP threads, and pinned rings local to the socket the
+    GPU hangs off. Must run before CPU optimizer state allocation and before the
+    OMP thread pool spins up.
+    """
+    import pynvml
+
+    logger = get_logger()
+    device_id = torch.cuda.current_device()
+    pynvml.nvmlInit()
+    try:
+        bus_id = pynvml.nvmlDeviceGetPciInfo(pynvml.nvmlDeviceGetHandleByIndex(device_id)).busId
+    finally:
+        pynvml.nvmlShutdown()
+    if isinstance(bus_id, bytes):
+        bus_id = bus_id.decode()
+    domain, rest = bus_id.split(":", 1)
+    sysfs_bus_id = f"{int(domain, 16):04x}:{rest}".lower()
+    numa_node = int(Path(f"/sys/bus/pci/devices/{sysfs_bus_id}/numa_node").read_text())
+    if numa_node < 0:
+        logger.warning(f"GPU {device_id} ({sysfs_bus_id}) reports no NUMA node; skipping NUMA binding")
+        return
+    cpus: set[int] = set()
+    for part in Path(f"/sys/devices/system/node/node{numa_node}/cpulist").read_text().strip().split(","):
+        if "-" in part:
+            start, end = part.split("-")
+            cpus.update(range(int(start), int(end) + 1))
+        else:
+            cpus.add(int(part))
+    os.sched_setaffinity(0, cpus)
+    logger.info(f"Bound rank with GPU {device_id} to NUMA node {numa_node} ({len(cpus)} CPUs)")
+
+
+def configure_cpu_optimizer_threads() -> None:
+    available = os.sched_getaffinity(0)
+    fair_share = (os.cpu_count() or len(available)) // get_world().local_world_size
+    threads = max(1, min(len(available), fair_share))
+    torch.set_num_threads(threads)
+    get_logger().info(
+        f"CPU optimizer uses {threads} intra-op threads "
+        f"({len(available)} CPUs in this rank's affinity mask, {get_world().local_world_size} local ranks)"
+    )
+
+
+def setup_full_cpu_optimizer_offload(config: "OptimizerInBackwardOffloadConfig") -> None:
+    if config.numa_bind:
+        bind_process_to_gpu_numa_node()
+    configure_cpu_optimizer_threads()
+
+
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
+    get_logger().info(f"Initializing torch distributed (timeout={int(timeout.total_seconds())}s)")
+    t0 = time.perf_counter()
     device_id = get_world().local_rank
     torch.cuda.set_device(device_id)
     # Use Gloo backend for CPU and NCCL for GPU when CPU offloading is enabled
@@ -82,7 +182,15 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
         get_logger().info("Using Gloo backend for CPU and NCCL backend for GPU")
         backend = "cpu:gloo,cuda:nccl"
 
+    # init_process_group applies `timeout` only to the default PG; device-mesh
+    # sub-groups (dp/cp/ep) are created via new_group without a timeout and fall
+    # back to torch's 10-minute module default — dist_timeout_seconds silently
+    # never reached the PGs doing the real work (watchdogs at 600s). Patch the
+    # module default so every subsequently created PG inherits it.
+    dist.distributed_c10d.default_pg_timeout = timeout
+
     dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
+    get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")
 
 
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
@@ -94,125 +202,6 @@ def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrai
     for token, mask in zip(tokenizer.convert_ids_to_tokens(input_ids), loss_mask):
         text.append(token.replace("Ġ", " ").replace("Ċ", "\n"), style="cyan" if mask else "white")
     rich_print(text)
-
-
-def print_benchmark(history: dict[str, list[Any]]) -> None:
-    """
-    Print benchmark results as rich table. Shows formatted values for the
-    training throughput and overall step time. First first N rows show the
-    per-step values, and the last row shows the mean, std, min, and max values.
-    """
-    history.pop("step")
-    assert all(len(v) for v in history.values()), "All metrics must have logged the same number of steps"
-
-    # Turn metric history into pd.DataFrame
-    df = pd.DataFrame(dict(history.items()))
-    columns = {
-        "perf/mfu": "MFU",
-        "perf/throughput": "Throughput",
-        "time/step": "Step Time",
-        "perf/peak_memory": "Peak Memory",
-    }
-    df = df[columns.keys()].rename(columns=columns)
-    df = df.iloc[1:]  # Exclude first row
-
-    # Setup console
-    console = Console()
-    table = Table(title="Benchmark")
-
-    # Add columns
-    table.add_column("Step", justify="right")
-    for col in df.columns:
-        table.add_column(col, justify="center", style="magenta")
-
-    # Add formatted rows
-    formatted_df = pd.DataFrame(columns=df.columns)
-    formatted_df["MFU"] = df["MFU"].apply(lambda x: f"{format_num(x, precision=2)}%")
-    formatted_df["Throughput"] = df["Throughput"].apply(lambda x: format_num(x, precision=2))
-    formatted_df["Step Time"] = df["Step Time"].apply(format_time)
-    formatted_df["Peak Memory"] = df["Peak Memory"].apply(lambda x: f"{format_num(x, precision=1)} GiB")
-    for step, row in formatted_df.iterrows():
-        table.add_row(*([str(step)] + [str(x) for x in row]))
-
-    # Separator
-    table.add_row(*([""] * len(formatted_df.columns)))
-
-    # Add row for formatted, aggregated statistics
-    mean_df = df.describe().loc[["mean", "std", "min", "max"], :]
-    formatted_mean_df = pd.DataFrame()
-    formatted_mean_df["MFU"] = mean_df["MFU"].apply(lambda x: f"{format_num(x, precision=2)}%")
-    formatted_mean_df["Throughput"] = mean_df["Throughput"].apply(format_num, precision=2)
-    formatted_mean_df["Step Time"] = mean_df["Step Time"].apply(format_time)
-    mean_row = (
-        ["Overall"]
-        + formatted_mean_df.T.apply(
-            lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
-        ).tolist()
-        + [
-            f"{format_num(mean_df['Peak Memory']['mean'], precision=1)} GiB ({mean_df['Peak Memory']['mean'] / (torch.cuda.mem_get_info()[1] / 1024**3) * 100:.1f}%)"
-        ]
-    )
-    table.add_row(*mean_row)
-
-    # Display table
-    console.print(table)
-
-
-def export_benchmark_json(history: dict[str, list[Any]], output_path: Path) -> None:
-    """
-    Export benchmark results to a JSON file.
-
-    The JSON contains aggregated statistics (mean, std, min, max) for each metric.
-    """
-    history = history.copy()
-    history.pop("step", None)
-
-    # Turn metric history into pd.DataFrame
-    df = pd.DataFrame(dict(history.items()))
-    columns = {
-        "perf/mfu": "mfu",
-        "perf/throughput": "throughput",
-        "time/step": "step_time",
-        "perf/peak_memory": "peak_memory",
-    }
-    df = df[columns.keys()].rename(columns=columns)
-    df = df.iloc[1:]  # Exclude first warmup row
-
-    # Calculate statistics
-    stats = df.describe().loc[["mean", "std", "min", "max"], :]
-
-    # Get peak memory percentage
-    total_memory_gib = torch.cuda.mem_get_info()[1] / 1024**3
-    peak_memory_pct = stats["peak_memory"]["mean"] / total_memory_gib * 100
-
-    result = {
-        "mfu": {
-            "mean": float(stats["mfu"]["mean"]),
-            "std": float(stats["mfu"]["std"]),
-            "min": float(stats["mfu"]["min"]),
-            "max": float(stats["mfu"]["max"]),
-        },
-        "throughput": {
-            "mean": float(stats["throughput"]["mean"]),
-            "std": float(stats["throughput"]["std"]),
-            "min": float(stats["throughput"]["min"]),
-            "max": float(stats["throughput"]["max"]),
-        },
-        "step_time": {
-            "mean": float(stats["step_time"]["mean"]),
-            "std": float(stats["step_time"]["std"]),
-            "min": float(stats["step_time"]["min"]),
-            "max": float(stats["step_time"]["max"]),
-        },
-        "peak_memory": {
-            "gib": float(stats["peak_memory"]["mean"]),
-            "pct": float(peak_memory_pct),
-        },
-    }
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(result, f, indent=2)
 
 
 def flexible_all_gather(tensor: Tensor) -> Tensor:
@@ -357,20 +346,3 @@ class MemoryProfiler:
             f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds, load {file_path} at https://docs.pytorch.org/memory_viz to visualize the memory usage"
         )
         self.step_num += 1
-
-
-def maybe_clean(path: Path, step: int, interval_to_keep: int | None) -> None:
-    """Delete the broadcast dir from 2 trainer steps ago.
-
-    With a 1-step async barrier, the orchestrator at trainer step ``step`` is still consuming the
-    ckpt from ``step - 1``; ``step - 2`` is therefore safe to remove unless it falls on a
-    checkpoint interval that we want to preserve.
-    """
-    logger = get_logger()
-    candidate_step = max(step - 2, 0)
-    candidate_path = get_step_path(path, candidate_step)
-    if interval_to_keep and candidate_step % interval_to_keep == 0:
-        logger.debug(f"Keeping path {candidate_path} (on ckpt interval)")
-        return
-    logger.debug(f"Removing path {candidate_path}")
-    shutil.rmtree(candidate_path, ignore_errors=True)

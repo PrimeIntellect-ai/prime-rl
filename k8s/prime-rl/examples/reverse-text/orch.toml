@@ -6,7 +6,7 @@ group_size = 16
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
-[wandb]
+[monitors.wandb]
 project = "reverse-text"
 name = "reverse-text"
 
@@ -15,15 +15,9 @@ max_completion_tokens = 128
 
 [[train.source]]
 name = "reverse-text"
-
-[train.source.env.taskset]
-id = "reverse-text"
-
-[train.source.env.agent.harness]
-id = "null"
-
-[train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [renderer]
 name = "prime-qwen3"

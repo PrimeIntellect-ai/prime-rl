@@ -10,7 +10,7 @@ num_infer_gpus = 1
 [model]
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
-[wandb]
+[monitors.wandb]
 project = "hendrycks-sanity"
 name = "hendrycks-sanity"
 
@@ -21,17 +21,11 @@ seq_len = 8192
 
 [[orchestrator.train.source]]
 name = "hendrycks-math"
-
-[orchestrator.train.source.env.taskset]
-id = "math-env"
-dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B"
-dataset_subset = "default"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "math-env"
+env.taskset.dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B"
+env.taskset.dataset_subset = "default"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [trainer.model]
 seq_len = 16384

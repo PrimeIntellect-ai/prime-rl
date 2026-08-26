@@ -1,0 +1,244 @@
+<!-- This package is fully AI-generated and maintained by agents - it is not meant to be read or edited by humans. Change it by asking an agent, and verify through the browser smoke tests. -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prime-rl dashboard</title>
+<link rel="icon" href="/static/butterfly-white.svg">
+<link rel="stylesheet" href="/static/vendor/uPlot.min.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">
+    <img src="/static/butterfly-white.svg" alt="Prime Intellect">
+  </div>
+  <select id="run-select" title="run"></select>
+  <div id="compare-wrap" class="dd-wrap">
+    <button id="compare-btn" class="btn dd-btn">compare</button>
+    <div id="compare-menu" class="dd-menu" hidden></div>
+  </div>
+  <nav id="tabs">
+    <button data-tab="config">Config</button>
+    <button data-tab="metrics" class="active">Metrics</button>
+    <button data-tab="traces">Traces</button>
+    <button data-tab="report">Report</button>
+    <button data-tab="logs">Logs</button>
+  </nav>
+  <label class="toggle" title="apply agent view commands as they arrive"><input type="checkbox" id="follow-toggle" checked><span class="dot"></span>follow</label>
+  <label class="toggle" title="poll for updates"><input type="checkbox" id="live-toggle" checked><span class="dot"></span>live</label>
+</header>
+
+<div id="run-overview"></div>
+
+<main>
+  <section id="tab-metrics">
+    <div class="controls">
+      <div class="seg" id="metrics-mode">
+        <button data-mode="overview" class="active">Overview</button>
+        <button data-mode="all">All</button>
+      </div>
+      <input id="metrics-search" class="search" type="search" placeholder="regex filter, e.g. ^entropy/ or reward">
+      <label class="ctl">smooth <input id="smooth-range" type="range" min="1" max="50" value="1"><span id="smooth-val">off</span></label>
+      <span id="metrics-status" class="muted"></span>
+      <div class="spacer"></div>
+      <div class="seg" id="all-layout" hidden>
+        <button data-layout="flat">Flat</button>
+        <button data-layout="nested">Nested</button>
+      </div>
+      <button id="metrics-collapse" class="btn">collapse</button>
+      <button id="metrics-expand" class="btn">expand</button>
+    </div>
+    <div id="metrics-body"></div>
+  </section>
+
+  <section id="tab-config" hidden>
+    <div class="controls">
+      <label class="t-label">attempt</label>
+      <select id="config-attempt-select"></select>
+      <div class="seg" id="config-format">
+        <button data-fmt="toml">TOML</button>
+        <button data-fmt="json">JSON</button>
+      </div>
+      <input id="config-search" class="search" type="search" placeholder="regex search, e.g. lora|lr">
+      <span id="config-hits" class="muted"></span>
+    </div>
+    <pre id="config-view"></pre>
+  </section>
+
+  <section id="tab-traces" hidden>
+    <div class="controls" id="step-bar">
+      <button id="step-prev" class="btn tm-nav" title="previous step">‹</button>
+      <div id="step-blocks"></div>
+      <button id="step-next" class="btn tm-nav" title="next step">›</button>
+      <span id="step-label" class="t-label"></span>
+    </div>
+    <div class="controls">
+      <div id="trace-filter-wrap" class="dd-wrap">
+        <button id="trace-filter-btn" class="btn dd-btn" title="filter &amp; sort">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
+          filter
+        </button>
+        <div id="trace-filter-menu" class="dd-menu" hidden>
+          <label class="t-label">env</label>
+          <select id="trace-env"><option value="">all envs</option></select>
+          <label class="t-label">sort</label>
+          <select id="trace-sort">
+            <option value="line:asc">order: arrival</option>
+            <option value="reward:desc">reward ↓</option>
+            <option value="reward:asc">reward ↑</option>
+            <option value="advantage:desc">advantage ↓</option>
+            <option value="advantage:asc">advantage ↑</option>
+            <option value="output_tokens:desc">tokens ↓</option>
+            <option value="group:asc">group</option>
+          </select>
+          <label class="toggle"><input type="checkbox" id="trace-errors"><span class="dot"></span>errors only</label>
+        </div>
+      </div>
+      <div class="seg" id="trace-kind">
+        <button data-kind="train" class="active">Train</button>
+        <button data-kind="eval">Eval</button>
+      </div>
+      <div class="seg" id="trace-subset">
+        <button data-subset="all">All</button>
+        <button data-subset="effective" class="active">Effective</button>
+      </div>
+      <span id="trace-status" class="muted"></span>
+    </div>
+    <div id="episode-table-wrap">
+      <table id="episode-table">
+        <thead><tr>
+          <th>#</th><th>env</th><th>group</th><th>reward</th><th>adv</th>
+          <th>tok</th><th>turns</th><th>branches</th><th>stop</th><th>status</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-report" hidden>
+    <div class="controls">
+      <label class="t-label">report</label>
+      <select id="report-select"></select>
+      <span id="report-verify" class="muted"></span>
+      <div class="spacer"></div>
+      <span id="report-status" class="muted"></span>
+    </div>
+    <div id="report-wrap"><article id="report-body"></article></div>
+  </section>
+
+  <section id="tab-logs" hidden>
+    <div class="controls">
+      <label class="t-label">attempt</label>
+      <select id="attempt-select"></select>
+      <div id="log-comp-wrap" class="dd-wrap">
+        <button id="log-comp-btn" class="btn dd-btn">components</button>
+        <div id="log-comp-menu" class="dd-menu" hidden></div>
+      </div>
+      <div class="seg" id="log-view">
+        <button data-view="merge" class="active">Merge</button>
+        <button data-view="split">Split</button>
+      </div>
+      <div class="stepper" id="log-level" title="minimum log level">
+        <button id="log-level-down" title="more verbose">‹</button>
+        <span id="log-level-label">all</span>
+        <button id="log-level-up" title="less verbose">›</button>
+      </div>
+      <input id="log-search" class="search" type="search" placeholder="regex filter, e.g. ERROR|WARN">
+      <button id="log-older" class="btn">load older</button>
+    </div>
+    <div id="log-panes"></div>
+  </section>
+</main>
+
+<div id="drawer-backdrop" hidden></div>
+<div id="trace-modal" hidden>
+  <aside id="tm-left">
+    <div class="tm-head tm-stephead">
+      <button id="tm-step-prev" class="btn tm-nav" title="previous step">‹</button>
+      <span id="tm-step-label"></span>
+      <button id="tm-step-next" class="btn tm-nav" title="next step">›</button>
+    </div>
+    <div class="tm-head tm-ctlrow">
+      <div id="tm-filter-wrap" class="dd-wrap">
+        <button id="tm-filter-btn" class="btn dd-btn" title="filter &amp; sort">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
+          filter
+        </button>
+        <div id="tm-filter-menu" class="dd-menu" hidden>
+          <label class="t-label">env</label>
+          <select id="tm-env"><option value="">all envs</option></select>
+          <label class="t-label">sort</label>
+          <select id="tm-sort">
+            <option value="line:asc">order: arrival</option>
+            <option value="reward:desc">reward ↓</option>
+            <option value="reward:asc">reward ↑</option>
+            <option value="advantage:desc">advantage ↓</option>
+            <option value="advantage:asc">advantage ↑</option>
+            <option value="output_tokens:desc">tokens ↓</option>
+            <option value="group:asc">group</option>
+          </select>
+          <label class="toggle"><input type="checkbox" id="tm-errors"><span class="dot"></span>errors only</label>
+        </div>
+      </div>
+    </div>
+    <div class="tm-head tm-ctlrow" id="tm-kind-row">
+      <div class="seg" id="tm-kind">
+        <button data-kind="train">Train</button>
+        <button data-kind="eval">Eval</button>
+      </div>
+    </div>
+    <div class="tm-head tm-ctlrow" id="tm-subset-row">
+      <div class="seg" id="tm-subset">
+        <button data-subset="all">All</button>
+        <button data-subset="effective">Effective</button>
+      </div>
+    </div>
+    <div class="tm-head">
+      <span class="t-label">episodes</span>
+      <span id="tm-count" class="badge"></span>
+    </div>
+    <div id="tm-list"></div>
+  </aside>
+  <section id="tm-main">
+    <div class="tm-head">
+      <span class="tm-title">Trace Viewer</span>
+      <button id="tm-back" class="btn" hidden title="back to the report">← report</button>
+      <div class="seg" id="tm-view">
+        <button data-view="transcript" class="active">Transcript</button>
+        <button data-view="timeline">Timeline</button>
+      </div>
+      <div class="spacer"></div>
+      <div class="seg" id="trace-view-mode">
+        <button data-mode="messages" class="active">Messages</button>
+        <button data-mode="rendered">Rendered</button>
+      </div>
+      <select id="token-signal" title="Choose the token signal for either view. Text is uncolored; other options color recorded tokens by advantage, log probability, training mask, or message-content membership.">
+        <option value="">Text</option>
+        <option value="advantage">Advantage</option>
+        <option value="logprob">Logprob</option>
+        <option value="mask">Mask</option>
+        <option value="is_content">Content</option>
+      </select>
+      <button id="tm-collapse" class="btn">collapse</button>
+      <button id="tm-expand" class="btn">expand</button>
+      <button id="drawer-close" class="btn">✕</button>
+    </div>
+    <div class="tm-head tm-tabs-row" id="tm-tabs-row" hidden>
+      <div id="tm-trace-tabs" class="seg" hidden></div>
+      <div id="tm-branch-tabs" class="seg" hidden></div>
+    </div>
+    <div id="tm-messages"></div>
+    <div id="tm-timeline" hidden></div>
+  </section>
+  <aside id="tm-right">
+    <div class="tm-head"><span class="tm-title">Overview</span></div>
+    <div id="tm-meta"></div>
+  </aside>
+</div>
+
+<script src="/static/vendor/uPlot.iife.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

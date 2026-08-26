@@ -9,7 +9,7 @@ type = "multi_node"
 num_train_nodes = 1
 num_infer_nodes = 1
 
-[wandb]
+[monitors.wandb]
 project = "general-agent-debug"
 name = "qwen3-30b-a3b-rlm"
 
@@ -36,19 +36,11 @@ group_size = 16
 max_off_policy_steps = 32
 
 [[orchestrator.train.source]]
-
-[orchestrator.train.source.env.taskset]
-id = "general-agent"
-min_tier = 1
-
-[orchestrator.train.source.env.taskset.task.tools]
-colocated = true
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "modal"
+env.taskset.id = "general-agent"
+env.taskset.min_tier = 1
+env.taskset.task.tools.colocated = true
+env.agent.harness.id = "null"
+env.agent.runtime.type = "modal"
 
 [inference]
 

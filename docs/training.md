@@ -59,7 +59,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 |---|---|
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.group_size` | Rollouts generated per task. |
-| `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
+| `orchestrator.max_off_policy_steps` | Maximum staleness of a trained rollout (default 8): the version a batch trains on minus the oldest version that generated the rollout, queue time included. Episodes past the bound are dropped; a group shares one dispatch version, so its episodes age out together. The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `off_policy/*` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
 | `[[orchestrator.eval.source]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
@@ -70,18 +70,18 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 |---|---|
 | `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. |
 | `orchestrator.log.vf_level` | Env-worker / [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) log level (`info` default; `debug` is noisy but useful for env debugging). |
-| `--wandb` (+ `--wandb.project`, `--wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
-| `--orchestrator.prime-monitor` | Stream metrics to the Prime Intellect platform (Prime Lab). See [Platform monitoring](#platform-monitoring). |
+| `--monitors.wandb` (+ `--monitors.wandb.project`, `--monitors.wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
+| `--monitors.prime` | Stream metrics and episodes to the Prime Intellect platform (Prime Lab). See [Platform monitoring](#platform-monitoring). |
 
 **Run management:**
 
 | Knob | What it does |
 |---|---|
-| `--output-dir outputs` | Directory that groups related runs. Each run writes its artifacts to its own run directory `<output_dir>/<run_name>` (`<run_dir>` below). |
+| `--output-dir outputs` | Directory that groups related runs. Each run writes its artifacts to its own run directory `<output_dir>/<run_name>` (`<run_dir>` below). Defaults to `$PRL_OUTPUT_DIR` if set, else `outputs`. |
 | `--run.name <name>` | Run name, also the run directory name under `<output_dir>` (override the directory separately via `--run.dir`). Auto-generated as `<envs>--<model>--<short-id>` when unset, so every launch gets a fresh, readable run directory. Set an explicit name for a predictable path — required to resume the run later. |
 | `--clean` | Wipe the run directory before starting. Useful when re-running a named run during iteration. |
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
-| `--dry-run` | Resolve + validate the full config, write per-process TOMLs to `<run_dir>/configs/`, and exit without launching. The fastest way to debug a misbehaving config. |
+| `--dry-run` | Resolve + validate the full config, write per-process configs to `<run_dir>/configs/latest/resolved/`, and exit without launching. The fastest way to debug a misbehaving config. |
 
 ### Algorithms
 
@@ -171,10 +171,53 @@ See [Algorithms § Multi-Turn Trajectories](algorithms.md#multi-turn-trajectorie
 The minimal SFT run trains `Qwen3-0.6B` on the `reverse-text` SFT dataset:
 
 ```bash
-uv run sft @ examples/basic/reverse-text/sft.toml --wandb
+uv run sft @ examples/basic/reverse-text/sft.toml --monitors.wandb
 ```
 
 Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and Torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
+
+### Online Evals
+
+`uv run sft` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[eval]` block — the same shape as `[orchestrator.eval]`: multiple `[[eval.source]]` envs with per-source `interval` / `num_examples` / `group_size` / sampling overrides — plus an `[inference]` block for the vLLM server:
+
+```toml
+[eval]
+interval = 25
+num_examples = 32
+
+[[eval.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[inference]
+
+[deployment]
+num_train_gpus = 1  # trainer
+num_infer_gpus = 1  # inference
+```
+
+The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. NCCL is the default weight transport. The trainer broadcasts weights at startup (fail-fast) and at every step an eval env is due, Every broadcast runs the same four-stage handshake in `broadcasts/step_{n}`: the trainer offers the version (`.sender_ready`) and blocks, the evals process acknowledges (`.receiver_ready`), then the trainer transfers (`.started`) and commits (`.finished`). It runs the due envs sequentially per broadcast, so every epoch measures exactly one policy version. Set `[weight_broadcast] type = "filesystem"` to reload weights from disk instead. LoRA and externally managed inference use filesystem broadcast automatically. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are cancelled by default when the next checkpoint is ready, so stale evals do not delay a weight update. Set `eval.cancel_on_new_checkpoint = false` to drain every triggered epoch instead. The trainer can idle while it waits for slow evals. They are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
+
+#### Multi-Node Trainer and Inference Pool
+
+On a `multi_node` deployment, one SLURM job reserves `deployment.num_train_nodes + deployment.num_infer_nodes` nodes. The first `num_infer_nodes` run the inference pool, router, env servers, and evals process. The remaining nodes run the trainer. The inference pool runs one vLLM engine per DP rank behind one router, with `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node:
+
+```toml
+[deployment]
+type = "multi_node"
+num_train_nodes = 2  # trainer nodes
+num_infer_nodes = 1  # inference pool + evals
+
+[inference.vllm]
+tensor_parallel_size = 8
+
+[slurm]
+job_name = "my-run"
+```
+
+The shared script passes the trainer rank-0 hostname directly to the evals process for NCCL weight broadcasts. Each transfer is synchronous, but eval rollout execution overlaps with later training steps. The allocation remains active while the final eval finishes. Without `max_steps`, evals never sees a final broadcast, so the job remains active until walltime. Trainer and evals log to one shared W&B run. The trainer creates it, and evals finalizes it.
 
 ### SFT-Specific Knobs
 
@@ -185,6 +228,7 @@ Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manag
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
+| `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 
 ### Important Metrics
 
@@ -192,8 +236,9 @@ Pulled from the console log and mirrored to W&B.
 
 **Progress and loss:**
 
-- `loss/mean` — main signal. Should decrease through the run.
-- `val/loss` — validation loss when `[val]` is set, logged every `val.interval` steps.
+- `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
+- `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
+- `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
 
@@ -218,10 +263,9 @@ Checkpointing is split across processes because the orchestrator and trainer can
 
 | Process | What's saved | Where |
 |---|---|---|
-| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_N/trainer/` |
-| Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_N/orchestrator/` |
+| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
+| Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
-| Trainer (HF weights) | HF-compatible weight snapshot for serving | `<run_dir>/weights/step_N/` |
 
 ### Enabling Checkpoints
 
@@ -253,17 +297,27 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
-### Serving Checkpoints
+### Exporting Checkpoints
 
-HF-compatible weight snapshots are written under `<run_dir>/weights/step_N/` whenever a full checkpoint runs (or you can write weights-only via `--ckpt.weights-only` for cheaper snapshots). Upload directly:
+Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected.
 
 ```bash
-uv run hf upload <user>/<model>-RL outputs/<run_name>/weights/step_100
+# single process (1 GPU)
+uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
+
+# multi-rank for faster gathers and models that don't fit one GPU
+uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
 ```
 
-For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write the raw adapter alongside the merged weights — useful when serving the adapter through a separate `/load_lora_adapter` call.
+The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (each rank quantizes its gathered slice, writes only `<ckpt_dir>/weights-FP8` — no intermediate bf16 export); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
 
 ## Observability
+
+### Config Files
+
+Each launch writes its input TOML and resolved JSON files to
+`<run_dir>/configs/attempt_<n>/`. Resumed runs keep the earlier configs.
+`configs/latest` points to the current attempt.
 
 ### Log Files
 
@@ -273,6 +327,7 @@ The launcher tees every process's stdout/stderr into `<run_dir>/logs/attempt_<n>
 <run_dir>/logs/latest/     # symlink -> attempt_<n>, one per launch
 ├── trainer.log                  # rank 0 only; symlink → trainer/node_0.log on multi-node
 ├── orchestrator.log             # single instance, single file
+├── evals.log                    # SFT online-eval process
 ├── inference.log                # symlink → inference/node_0.log on multi-node
 ├── trainer/
 │   ├── node_*.log               # per-node trainer stdout (multi-node only)
@@ -283,64 +338,52 @@ The launcher tees every process's stdout/stderr into `<run_dir>/logs/attempt_<n>
 └── envs/{train,eval}/<env_name>.log # one env server process per source (broker + its workers)
 ```
 
-Env logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`. For multi-rank trainer debugging, drop into `logs/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
+Env logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`. For multi-rank trainer debugging, drop into `logs/latest/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
 
 Live tailing from a single point (works on the head node for multi-node runs over a shared filesystem):
 
 ```bash
-tail -F <run_dir>/logs/latest/{trainer,orchestrator,inference}.log
+tail -F <run_dir>/logs/latest/{trainer,orchestrator,evals,inference}.log
 tail -F <run_dir>/logs/latest/trainer/node_*.log   # multi-node only
 tail -F <run_dir>/logs/latest/inference/router.log # multi-node only
 ```
 
-### Console Output
+### Dashboard
 
-`scripts/tmux.sh` opens a 4-pane tmux session that follows `trainer.log`, `orchestrator.log`, `inference.log`, and the union of env worker logs. Start it before launching:
+`uv run dashboard [output_dir ...]` (default `outputs/`) serves a local web dashboard at `http://localhost:7788` with five views per run: metrics (the W&B overview sections, read from `metrics.jsonl`), the resolved configs, a rollout trace viewer with a per-token advantage/logprob view, merged component logs, and markdown reports from `<run>/reports/`. It only reads the run dirs, so it is safe to point at a live run; pass several output directories to track parallel experiments. A taken port automatically bumps to the next free one, so several dashboards coexist on one node.
 
-```bash
-bash scripts/tmux.sh -o outputs/my-run
-# then in the Launcher window:
-uv run rl @ ... --run.name my-run
-```
-
-Pass `-s <session>` and `-o <run_dir>` (the run directory, `<output_dir>/<run_name>`) to run multiple parallel experiments side-by-side in different sessions. The helper also works on a SLURM head node — `bash scripts/tmux.sh my-rl-job /shared/outputs/my-rl-job`.
+A coding agent on the same machine can drive the open dashboard: `POST /api/view` with an on-disk address (`{"run", "tab", "step", "kind", "subset", "episode", "highlight": [...]}`) navigates every connected tab there and paints quote-anchored highlights in the trace viewer. Reports cite traces with `[^id]` markers whose JSON definitions carry the same address plus a verbatim quote; the dashboard re-checks each quote against the trace files and marks the citation verified or broken, so answers stay grounded in what is actually on disk. The `dashboard` skill documents the full contract.
 
 ### Weights & Biases
 
-W&B is off by default. Enable with `--wandb`:
+W&B is off by default (the file monitor, which writes `metrics.jsonl` and the per-step trace files to the run directory, is on by default):
 
 ```bash
-uv run rl @ rl.toml --wandb                               # default project, random name
-uv run rl @ rl.toml --wandb.project my-proj --wandb.name run-42
-uv run rl @ rl.toml --no-wandb                            # force-disable even if the TOML enables it
+uv run rl @ rl.toml --monitors.wandb                      # default project, random name
+uv run rl @ rl.toml --monitors.wandb.project my-proj --monitors.wandb.name run-42
+uv run rl @ rl.toml --no-monitors.file                    # disable the local metric/trace files
 ```
 
-The trainer and orchestrator log into a **single shared W&B run**, so all metrics from both processes land in one place. Shared mode requires the W&B SDK ≥ 0.19.9 and is incompatible with `wandb.offline = true`.
+The trainer and orchestrator log into a **single shared W&B run**, so all metrics from both processes land in one place. Shared mode requires the W&B SDK ≥ 0.19.9 and is incompatible with `monitors.wandb.offline = true`.
 
-By default, every 10 steps each process also logs a sample of prompts/completions (with rewards and advantages) and reward/advantage/entropy distributions as W&B tables. Tune via `--wandb.log-extras.interval` and `--wandb.log-extras.sample-ratio`, or disable subsets:
-
-```bash
-uv run rl @ rl.toml --wandb \
-  --orchestrator.wandb.log-extras.interval 50 \
-  --no-trainer.wandb.log-extras.distributions
-```
-
-prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, W&B mode **auto-creates an `overview` saved view** on the first run into a project — curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first.
+prime-rl deliberately logs a **large number of metrics** for maximum observability: every rollout metric is emitted per subset (`all`/`effective`), per statistic (`mean`/`max`/`min`/`p10`/`p90`), and per environment alongside a cross-env aggregate, so a multi-env run can emit thousands of series. To keep that navigable, every training run (RL and SFT) gets an **auto-created `overview` saved view** curating the handful of metrics that matter into `train`, `eval`, `stability`, and `performance` sections (with per-env breakdowns). The view is created once per project and adapts to the run's environments; if a later run uses a different set of environments, a new versioned view (`overview-v2`, …) is created instead of overwriting the first.
 
 ### Platform Monitoring
 
-Register a run on the Prime Intellect platform (Prime Lab) and stream training metrics, samples, and distributions to the platform dashboard. Bare flag uses defaults:
+Register a run on the Prime Intellect platform (Prime Lab) and stream training metrics and episodes to the platform dashboard. Bare flag uses defaults:
 
 ```bash
-uv run rl @ rl.toml --orchestrator.prime-monitor
+uv run rl @ rl.toml --monitors.prime
 ```
 
 Or set it in TOML:
 
 ```toml
-[orchestrator.prime_monitor]
-run_name = "my-experiment"
+[monitors.prime]
+name = "my-experiment"
 ```
+
+Every 10th step the orchestrator uploads the step's episodes (full conversations with rewards and advantages) to the run's sample viewer.
 
 Requires `PRIME_API_KEY` (set via `prime login` or env var) and an allowlisted team. Currently internal-only.
 

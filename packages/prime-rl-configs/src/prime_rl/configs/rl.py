@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
+from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
 from prime_rl.configs.orchestrator import (
     FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
 )
@@ -21,18 +22,11 @@ from prime_rl.configs.orchestrator import (
 )
 from prime_rl.configs.shared import (
     EnvVars,
-    FileMonitorConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
     TransportConfig,
     VLMConfig,
-)
-from prime_rl.configs.trainer import (
-    BenchConfig,
-    FakeDataLoaderConfig,
-    TokenizerConfig,
-    TrainerConfig,
 )
 from prime_rl.configs.trainer import (
     FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
@@ -43,7 +37,11 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
 )
-from prime_rl.utils.config import BaseConfig, find_package_resource
+from prime_rl.configs.trainer import (
+    TokenizerConfig,
+    TrainerConfig,
+)
+from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
     validate_shared_ckpt_config,
@@ -72,7 +70,7 @@ class SharedWandbConfig(BaseConfig):
     """W&B entity."""
 
     name: str | None = None
-    """W&B run name."""
+    """W&B run name. Inherits ``run.name`` when unset."""
 
     group: str | None = None
     """W&B group."""
@@ -88,11 +86,24 @@ class SharedWandbConfig(BaseConfig):
         if self.offline:
             raise ValueError(
                 "W&B shared mode is always on for the rl entrypoint and requires server "
-                "connectivity; wandb.offline = true is not supported. Use offline mode "
-                "via the sub-config wandb blocks (trainer.wandb.offline, "
-                "orchestrator.wandb.offline) if you really need it per-process."
+                "connectivity; monitors.wandb.offline = true is not supported. Use offline mode "
+                "via the sub-config wandb blocks (trainer.monitors.wandb.offline, "
+                "orchestrator.monitors.wandb.offline) if you really need it per-process."
             )
         return self
+
+
+class SharedMonitorsConfig(BaseConfig):
+    """The ``rl`` entrypoint's shared monitor configs, propagated to trainer and orchestrator."""
+
+    wandb: SharedWandbConfig | None = None
+    """Shared W&B config. Propagated to trainer and orchestrator."""
+
+    file: FileMonitorConfig | None = None
+    """Shared local JSONL metric sink. If set, enables ``<output_dir>/metrics.jsonl`` on both trainer and orchestrator."""
+
+    prime: PrimeMonitorConfig | None = None
+    """Prime platform monitor. Propagated to the orchestrator only — the trainer has no platform integration."""
 
 
 class SharedCheckpointConfig(BaseConfig):
@@ -125,7 +136,7 @@ class SharedInMemoryWeightBroadcastConfig(BaseConfig):
     """Weight transfer port."""
 
     timeout: int = 1200
-    """Timeout in seconds for in-memory weight transfer."""
+    """Timeout in seconds for the broadcast handshake and transfer."""
 
 
 class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
@@ -150,6 +161,9 @@ class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
 
 class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
+
+    timeout: int = 1200
+    """Timeout in seconds for the broadcast handshake and transfer."""
 
 
 SharedWeightBroadcastConfig: TypeAlias = Annotated[
@@ -229,8 +243,8 @@ class RLConfig(BaseConfig):
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
 
-    output_dir: Path = Path("outputs")
-    """Directory that groups related runs. Each run writes its artifacts to ``output_dir / run.name``."""
+    output_dir: Path = Field(default_factory=default_output_dir)
+    """Directory that groups related runs. Each run writes its artifacts to ``output_dir / run.name``. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
     clean: bool = False
     """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""
@@ -261,11 +275,8 @@ class RLConfig(BaseConfig):
     resume: ResumeConfig | None = None
     """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
 
-    wandb: SharedWandbConfig | None = None
-    """Shared W&B config. If None, falls back to the sub-config W&B settings."""
-
-    file_monitor: FileMonitorConfig | None = None
-    """Shared local JSONL metric sink. If set, enables ``<output_dir>/metrics.jsonl`` on both trainer and orchestrator. If None, falls back to the sub-config settings."""
+    monitors: SharedMonitorsConfig = SharedMonitorsConfig()
+    """Shared monitor configs (``monitors.wandb``, ``monitors.file``). Propagated to trainer and orchestrator; ``[orchestrator.monitors.prime]`` configures the platform monitor."""
 
     model: SharedModelConfig | None = None
     """Shared model config. If None, falls back to the sub-config model settings."""
@@ -283,13 +294,14 @@ class RLConfig(BaseConfig):
 
     rollout_transport: TransportConfig | None = None
 
-    bench: bool = False
-    """Benchmark mode. Sets trainer and orchestrator to benchmark mode and, when set, suffixes the W&B project with ``-bench``."""
-
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
     slurm: SlurmConfig | None = None
     """SLURM configuration. If None, runs locally."""
+
+    dashboard: bool = True
+    """Make sure a local dashboard daemon serves this run's output dir (started on
+    demand in interactive sessions; an already-running daemon's URL is logged)."""
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
@@ -336,9 +348,9 @@ class RLConfig(BaseConfig):
                     "Cannot configure inference with num_infer_nodes = 0. "
                     "Either set num_infer_nodes > 0 or remove the inference config."
                 )
-            if num_infer_nodes == 0 and not self.trainer.data.fake and not self.bench:
+            if num_infer_nodes == 0 and not self.trainer.data.fake:
                 raise ValueError(
-                    "Must use fake data (trainer.data.fake or bench = true) when num_infer_nodes = 0, "
+                    "Must use fake data (trainer.data.fake) when num_infer_nodes = 0, "
                     "since no orchestrator or inference server will be running."
                 )
         return self
@@ -413,18 +425,18 @@ class RLConfig(BaseConfig):
         """Default the W&B and Prime platform run names to ``run.name``.
 
         Explicit names always win: only unset names inherit. Runs after the
-        orchestrator's own ``auto_setup_prime_monitor_run_name``, so an explicitly
+        orchestrator's own ``auto_setup_prime_monitor_name``, so an explicitly
         set W&B name still takes precedence for the platform run name. The run
         identity itself is runtime-only ($PRL_RUN_ID / $PRL_RUN_NAME, set by the
         ``rl`` entrypoint), never sub-config.
         """
         self._resolve_run_name()
-        for wandb in (self.wandb, self.trainer.wandb, self.orchestrator.wandb):
+        for wandb in (self.monitors.wandb, self.trainer.monitors.wandb, self.orchestrator.monitors.wandb):
             if wandb is not None and wandb.name is None:
                 wandb.name = self.run.name
-        prime_monitor = self.orchestrator.prime_monitor
-        if prime_monitor is not None and prime_monitor.run_name is None:
-            prime_monitor.run_name = self.run.name
+        for prime in (self.monitors.prime, self.orchestrator.monitors.prime):
+            if prime is not None and prime.name is None:
+                prime.name = self.run.name
         return self
 
     ### Validate shared configs (after sub-config construction)
@@ -455,8 +467,9 @@ class RLConfig(BaseConfig):
                 self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
-                "LoRA training is not yet supported with in-memory weight broadcast. "
-                "Set weight_broadcast.type = 'filesystem'."
+                "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
+                "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
+                "have no disk artifact to load from."
             )
         if self.weight_broadcast.type in ("nccl", "nixl"):
             inference_world_size = (
@@ -483,8 +496,12 @@ class RLConfig(BaseConfig):
             self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
             self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
         elif self.weight_broadcast.type == "filesystem":
-            self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
-            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
+            self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
+                timeout=self.weight_broadcast.timeout
+            )
+            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
+                timeout=self.weight_broadcast.timeout
+            )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
@@ -530,24 +547,6 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_bench(self):
-        if self.bench:
-            self.trainer.bench = BenchConfig()
-            self.orchestrator.bench = True
-            self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=self.orchestrator.batch_size or 32,
-            )
-
-        trainer_bench_enabled = self.trainer.bench is not None
-        if trainer_bench_enabled != self.orchestrator.bench:
-            raise ValueError(
-                f"Trainer benchmark mode ({self.trainer.bench}) and orchestrator benchmark mode "
-                f"({self.orchestrator.bench}) must match. Use the top-level bench = true to set both."
-            )
-
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_lora(self):
         if self.trainer.model.lora is not None:
             if self.orchestrator.model.lora is None:
@@ -580,11 +579,6 @@ class RLConfig(BaseConfig):
 
             if self.orchestrator.model.lora.alpha is None:
                 self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
-
-            if self.orchestrator.model.lora.name is None:
-                self.orchestrator.model.lora.name = (
-                    f"r{self.orchestrator.model.lora.rank}-a{self.orchestrator.model.lora.alpha}"
-                )
 
             if self.inference is not None:
                 self.inference.vllm.enable_lora = True

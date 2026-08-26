@@ -16,13 +16,16 @@ type = "filesystem"
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
-[wandb]
+[monitors.wandb]
 project = "reverse-text-ci"
 name = "ci-rl-opd"
 
 [orchestrator]
 batch_size = 128
 group_size = 16
+
+[orchestrator.concurrency]
+max_inflight = 128
 
 [orchestrator.algo]
 type = "opd"
@@ -39,15 +42,9 @@ max_completion_tokens = 128
 
 [[orchestrator.train.source]]
 name = "reverse-text"
-
-[orchestrator.train.source.env.taskset]
-id = "reverse-text"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [orchestrator.eval]
 interval = 1
@@ -58,15 +55,9 @@ max_completion_tokens = 128
 
 [[orchestrator.eval.source]]
 name = "reverse-text"
-
-[orchestrator.eval.source.env.taskset]
-id = "reverse-text"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "null"
-
-[orchestrator.eval.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [trainer.optim]
 lr = 3e-6

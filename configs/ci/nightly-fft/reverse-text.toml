@@ -5,7 +5,7 @@ seq_len = 2048
 num_train_gpus = 1
 num_infer_gpus = 1
 
-[wandb]
+[monitors.wandb]
 project = "reverse-text"
 name = "reverse-text"
 
@@ -18,17 +18,14 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 batch_size = 128
 group_size = 16
 
+[orchestrator.concurrency]
+max_inflight = 128
+
 [[orchestrator.train.source]]
 name = "reverse-text"
-
-[orchestrator.train.source.env.taskset]
-id = "reverse-text"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128

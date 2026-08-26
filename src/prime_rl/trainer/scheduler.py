@@ -4,13 +4,13 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
 
 from prime_rl.configs.trainer import SchedulerConfig
-from prime_rl.trainer.optim import CPUOffloadOptimizer
+from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 
 
-def _get_base_optimizer(optimizer: Optimizer | CPUOffloadOptimizer) -> Optimizer:
+def _get_base_optimizer(optimizer: OptimizerLike) -> Optimizer:
     """Extract the base optimizer from a potentially wrapped optimizer."""
-    if isinstance(optimizer, CPUOffloadOptimizer):
-        return optimizer.optimizer
+    if isinstance(optimizer, OffloadOptimizer):
+        return optimizer.base_optimizer
     return optimizer
 
 
@@ -41,9 +41,10 @@ def setup_linear_scheduler(
     if decay_steps > 0:
         assert max_steps is not None, "max_steps must be specified when specifying decay_steps"
         decay_start_step = max_steps - decay_steps
-        assert decay_start_step >= warmup_steps
+        assert decay_start_step >= warmup_steps, (
+            f"warmup_steps ({warmup_steps}) + decay_steps ({decay_steps}) must not exceed max_steps ({max_steps})"
+        )
         constant_steps = decay_start_step - warmup_steps
-        assert constant_steps >= 0
         constant_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=constant_steps)
         decay_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=min_lr_factor, total_iters=decay_steps - 1)
         schedulers.append(constant_scheduler)
@@ -85,7 +86,7 @@ def setup_cosine_scheduler(
 
 
 def setup_scheduler(
-    optimizer: Optimizer | CPUOffloadOptimizer,
+    optimizer: OptimizerLike,
     scheduler_config: SchedulerConfig,
     max_steps: int | None,
     lr: float,

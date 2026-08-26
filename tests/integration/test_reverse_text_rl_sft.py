@@ -10,6 +10,7 @@ import pytest
 
 from prime_rl.utils.process import cleanup_process
 from tests.conftest import ProcessResult
+from tests.integration.dashboard_smoke import make_dashboard_test
 from tests.utils import check_final_eval_reward_above, check_no_error, strip_escape_codes
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
@@ -100,9 +101,9 @@ def rl_sft_process(
         "@",
         "configs/ci/integration/reverse-text-rl-sft/start.toml",
         "--clean",
-        "--wandb.project",
+        "--monitors.wandb.project",
         wandb_project,
-        "--wandb.name",
+        "--monitors.wandb.name",
         wandb_name,
         "--output-dir",
         output_dir.as_posix(),
@@ -121,3 +122,6 @@ def test_eval_reward_converges(rl_sft_process: ProcessResult, test_no_error, run
     with open(run_dir / "logs" / "latest" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
     check_final_eval_reward_above(orchestrator_stdout, env_name="reverse-text", min_threshold=0.5)
+
+
+test_dashboard = make_dashboard_test("rl_sft_process", RUN_NAME)
