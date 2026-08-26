@@ -9,7 +9,7 @@ How this mirrors production:
   3. Grouped-mm experts, per the use_grouped_mm=True default (needs a recent GPU arch)
   4. flash_attention_2 on both models, so a logits gap means the port, not two kernels
   5. Prime LM head injected, as setup_model does
-  6. seq_lens passed explicitly, the packed-sample boundary contract
+  6. seq_lens passed explicitly, but as one document, so packed boundaries stay untested
 
 Never use model.to(dtype=...) here: it casts buffers too, quantizing the rope table irrecoverably.
 Flash attention constrains only the q/k/v activations, so nothing forces buffers to bf16.
@@ -34,9 +34,6 @@ import transformers.utils.generic
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
-from transformers.models.minimax_m2.modeling_minimax_m2 import (
-    MiniMaxM2ForCausalLM as NativeMiniMaxM2ForCausalLM,
-)
 from transformers.models.minimax_m2.modeling_minimax_m2 import (
     MiniMaxM2RotaryEmbedding as NativeMiniMaxM2RotaryEmbedding,
 )
@@ -69,7 +66,7 @@ def _patch_minimax_m2_hub_code() -> None:
     out of `utils.generic`, turning `compute_default_rope_parameters` into a per-class method on the
     rotary embedding, and respelling `_tied_weights_keys` as a tied-key -> source mapping. Without
     these the module fails to import, then to initialize its weights, then to save. The two
-    modernized attributes are borrowed from transformers' own MiniMax-M2 classes.
+    modernized attributes are borrowed from the native transformers and PrimeRL MiniMax-M2 classes.
 
     The hub code, not transformers' native MiniMaxM2ForCausalLM, is the reference we want: real
     MiniMax-M2.1 checkpoints use `block_sparse_moe.experts.{j}.w1/w2/w3`, which
@@ -84,7 +81,7 @@ def _patch_minimax_m2_hub_code() -> None:
     hub_class("MiniMaxM2RotaryEmbedding").compute_default_rope_parameters = staticmethod(
         NativeMiniMaxM2RotaryEmbedding.compute_default_rope_parameters
     )
-    hub_class("MiniMaxM2ForCausalLM")._tied_weights_keys = NativeMiniMaxM2ForCausalLM._tied_weights_keys
+    hub_class("MiniMaxM2ForCausalLM")._tied_weights_keys = PrimeRLMiniMaxM2ForCausalLM._tied_weights_keys
 
 
 def _qwen3_5_moe_vlm_config():
@@ -275,19 +272,22 @@ def _create_hf_model_from_config(preset, config):
     return AutoModelForCausalLM.from_config(config, trust_remote_code=True)
 
 
-def _compare_distributions(hf_logits: torch.Tensor, prime_logits: torch.Tensor) -> tuple[float, float]:
-    """Report full-vocab KL and top-1 agreement, and return the two gated quantities.
+def _compare_distributions(hf_logits: torch.Tensor, prime_logits: torch.Tensor) -> tuple[float, float, float]:
+    """Report full-vocab KL and top-1 agreement, and return the three gated quantities.
 
     KL is the informative number. Max logits diff is a tail statistic over millions of entries, and
     bf16 error concentrates on near-zero logits that carry almost no probability mass.
+
+    Both the mean and the max KL are gated: averaging over the sequence dilutes a single divergent
+    token by the sequence length, so a localized error can hide behind a healthy mean.
     """
     hf_logprobs = hf_logits.float().log_softmax(-1)
     prime_logprobs = prime_logits.float().log_softmax(-1)
     kl = (hf_logprobs.exp() * (hf_logprobs - prime_logprobs)).sum(-1)
     top1 = (hf_logits.argmax(-1) == prime_logits.argmax(-1)).float().mean()
-    print(f"  HF vs PrimeRL KL per token: mean {kl.mean().item():.3e}, max {kl.max().item():.3e}")
+    print(f"  HF vs PrimeRL KL(HF || PrimeRL) per token: mean {kl.mean().item():.3e}, max {kl.max().item():.3e}")
     print(f"  HF vs PrimeRL top-1 agreement: {top1.item():.1%}")
-    return kl.mean().item(), top1.item()
+    return kl.mean().item(), kl.max().item(), top1.item()
 
 
 def _build_config(preset):
@@ -368,8 +368,9 @@ def verify(arch: str, model_dir: Path) -> None:
     logits_diff = prime_output["logits"] - hf_output.logits
     max_diff = logits_diff.abs().max().item()
     print(f"  HF vs PrimeRL max logits diff: {max_diff:.6f}")
-    mean_kl, top1 = _compare_distributions(hf_output.logits, prime_output["logits"])
+    mean_kl, max_kl, top1 = _compare_distributions(hf_output.logits, prime_output["logits"])
     assert mean_kl < 1e-3, f"HF vs PrimeRL distribution mismatch: mean KL {mean_kl}"
+    assert max_kl < 1e-2, f"HF vs PrimeRL distribution mismatch on one token: max KL {max_kl}"
     assert top1 >= 0.75, f"HF vs PrimeRL top-1 agreement too low: {top1}"
     assert max_diff < 1.0, f"HF vs PrimeRL logits mismatch: max diff {max_diff}"
 
