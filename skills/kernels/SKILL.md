@@ -39,14 +39,15 @@ the same answer for one kernel (`None` when it is usable), which is what a test'
 wants; `is_available` is just that call compared to `None`.
 
 `flash_moe` is the one kernel today: fused MoE forward (bf16 + mxfp8) on Blackwell
-tcgen05, reached through `model.moe_fused_kernel=true`.
+tcgen05. Its trainer integration is currently dormant: there is no model configuration
+field or setup path that enables it.
 
 What a kernel requires of its inputs — block sizes, alignments, shape constraints — belongs
 to prime-kernels, which exports it: `flash_moe.BLOCK_M`, `flash_moe.MXFP8_SCALE_BLOCK`, and
-`flash_moe.unsupported_shape_reason(dim, hidden_dim, mxfp8=...)`, which
-`apply_fused_moe_kernel` calls once at setup so an unsupported model fails before training
-rather than mid-step. Never hardcode a `128` on this side: then every requirement change is
-a change in both repos.
+`flash_moe.unsupported_shape_reason(dim, hidden_dim, mxfp8=...)`. When the trainer integration
+is restored, call this once during setup so an unsupported model fails before training rather
+than mid-step. Never hardcode a `128` on this side: then every requirement change is a change
+in both repos.
 
 ## Building locally
 

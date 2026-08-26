@@ -489,7 +489,7 @@ def get_full_offload_dtype_policy(
     language_model = get_language_model(model)
     for layer in language_model.layers:
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, (MoE, LatentMoE)):
+        if isinstance(mlp, MoE):
             for param in mlp.router.parameters():
                 if param.is_floating_point():
                     policy[id(param)] = (torch.float32, torch.float32)
@@ -1359,14 +1359,6 @@ def setup_model(
 
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
-
-    if config.moe_fused_kernel:
-        if parallel_dims.ep_enabled:
-            raise ValueError(
-                "model.moe_fused_kernel=true requires ep=1: the fused kernel bypasses the EP "
-                "all-to-all and indexes experts with global ids."
-            )
-        apply_fused_moe_kernel(model, config.quantization)
 
     # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
     # never trainable. Freeze it so optimizer state stays symmetric across checkpoint

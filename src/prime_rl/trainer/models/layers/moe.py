@@ -420,6 +420,7 @@ class _FusedMoE(torch.autograd.Function):
         grads = {p: (next(computed) if leaf.requires_grad else None) for leaf, p in zip(leaves, grad_poses)}
         return grads[0], grads[1], grads[2], grads[3], None, grads[5], None, None
 
+
 class GroupedExperts(nn.Module):
     @staticmethod
     def export_weights_to_state_dict(

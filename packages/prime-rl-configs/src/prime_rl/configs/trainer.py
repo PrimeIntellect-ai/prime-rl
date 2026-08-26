@@ -240,8 +240,6 @@ class ModelConfig(BaseModelConfig):
     moe_router_dtype: Literal["bfloat16", "float32"] = "float32"
     """Compute dtype for MoE router gates. ``float32`` (default) keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. Router score functions (sigmoid/softmax) run in fp32 regardless. Only affects the custom MoE implementation; a no-op for non-MoE and HF-impl models."""
 
-    moe_fused_kernel: bool = False
-    """Run MoE routed experts through the vendored fused MoE CUDA kernel (``prime_kernels.flash_moe``) in forward; backward recomputes the reference grouped-mm path. Picks the mxfp8 kernel when ``quantization`` is MXFP8 with ``enable_grouped_gemm`` (which additionally needs ``hidden_size`` divisible by 256), otherwise the bf16 one. Requires the ``prime-kernels`` wheel, Blackwell (SM100) GPUs, ``ep=1``, ``model.impl='custom'``, MoE layers with output-weighted scores (``score_before_experts=False``), and ``moe_intermediate_size`` divisible by 128."""
     quantization: QuantizationConfig | None = None
 
     index_cache: IndexCacheConfig | None = None
