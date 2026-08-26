@@ -3,6 +3,21 @@
 Creates a small MoE model with random weights, saves it with a tokenizer,
 and verifies the HF <-> PrimeRL weight conversion roundtrip.
 
+How this mirrors production:
+  1. bf16 weights, fp32 buffers (inv_freq, expert_bias, ...): the prod forward under FSDP mixed precision
+  2. fp32 MoE router gate, per the moe_router_dtype="float32" default
+  3. Grouped-mm experts, per the use_grouped_mm=True default (needs a recent GPU arch)
+  4. flash_attention_2 on both models, so a logits gap means the port, not two kernels
+  5. Prime LM head injected, as setup_model does
+  6. seq_lens passed explicitly, the packed-sample boundary contract
+
+Never use model.to(dtype=...) here: it casts buffers too, quantizing the rope table irrecoverably.
+Flash attention constrains only the q/k/v activations, so nothing forces buffers to bf16.
+
+Not covered: FSDP (no fp32 masters, no gradient reduction), backward, EP/CP, activation
+checkpointing, torch.compile, quantization, the fused MoE kernel, long context (one 64-token
+sequence), and real checkpoints (weights are random).
+
 Usage:
     # Create and verify
     uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
@@ -30,6 +45,7 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
 )
 from transformers.utils.output_capturing import OutputRecorder
 
+from prime_rl.trainer.model import apply_fp32_moe_router
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
 from prime_rl.trainer.models.laguna import LagunaConfig
@@ -138,7 +154,6 @@ ARCH_PRESETS = {
             first_k_dense_replace=1,
             norm_topk_prob=True,
             use_qk_norm=False,
-            use_grouped_mm=False,
             pad_token_id=151329,
             eos_token_id=[151329, 151336, 151338],
         ),
@@ -167,7 +182,6 @@ ARCH_PRESETS = {
             use_routing_bias=True,
             use_qk_norm=True,
             qk_norm_type="per_layer",
-            use_grouped_mm=False,
             auto_map={"AutoModelForCausalLM": f"{MINIMAX_M2_REPO}--modeling_minimax_m2.MiniMaxM2ForCausalLM"},
         ),
         "hf_model_class": None,  # uses AutoModelForCausalLM with trust_remote_code
@@ -213,7 +227,6 @@ ARCH_PRESETS = {
             num_experts_per_tok=4,
             mlp_layer_types=["dense"] + ["sparse"] * 11,
             moe_routed_scaling_factor=2.5,
-            use_grouped_mm=False,
             pad_token_id=9,
             bos_token_id=2,
             eos_token_id=[2, 24],
@@ -260,6 +273,21 @@ def _create_hf_model_from_config(preset, config):
     if hf_cls is not None:
         return hf_cls._from_config(config)
     return AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+
+
+def _compare_distributions(hf_logits: torch.Tensor, prime_logits: torch.Tensor) -> tuple[float, float]:
+    """Report full-vocab KL and top-1 agreement, and return the two gated quantities.
+
+    KL is the informative number. Max logits diff is a tail statistic over millions of entries, and
+    bf16 error concentrates on near-zero logits that carry almost no probability mass.
+    """
+    hf_logprobs = hf_logits.float().log_softmax(-1)
+    prime_logprobs = prime_logits.float().log_softmax(-1)
+    kl = (hf_logprobs.exp() * (hf_logprobs - prime_logprobs)).sum(-1)
+    top1 = (hf_logits.argmax(-1) == prime_logits.argmax(-1)).float().mean()
+    print(f"  HF vs PrimeRL KL per token: mean {kl.mean().item():.3e}, max {kl.max().item():.3e}")
+    print(f"  HF vs PrimeRL top-1 agreement: {top1.item():.1%}")
+    return kl.mean().item(), top1.item()
 
 
 def _build_config(preset):
@@ -309,7 +337,9 @@ def verify(arch: str, model_dir: Path) -> None:
     text_config = getattr(config, "text_config", config)
     vocab_size = text_config.vocab_size
 
-    hf_model = _load_hf_model(preset, model_dir, config).to(device="cuda", dtype=torch.bfloat16)
+    # `config.dtype` above already builds bf16 weights. Casting with `.to(dtype=...)` would also cast
+    # buffers, quantizing inv_freq and the routing bias that PrimeRL keeps in fp32.
+    hf_model = _load_hf_model(preset, model_dir, config).to(device="cuda")
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         prime_model = preset["prime_model_class"]._from_config(config)
 
@@ -319,6 +349,7 @@ def verify(arch: str, model_dir: Path) -> None:
         prime_model.load_state_dict(state_dict)
 
     inject_prime_lm_head(prime_model, chunk_size=None)
+    apply_fp32_moe_router(prime_model)
 
     # Use tokens in safe range (avoid special VLM token IDs)
     max_token = min(vocab_size, 200) if is_vlm else vocab_size
@@ -337,6 +368,9 @@ def verify(arch: str, model_dir: Path) -> None:
     logits_diff = prime_output["logits"] - hf_output.logits
     max_diff = logits_diff.abs().max().item()
     print(f"  HF vs PrimeRL max logits diff: {max_diff:.6f}")
+    mean_kl, top1 = _compare_distributions(hf_output.logits, prime_output["logits"])
+    assert mean_kl < 1e-3, f"HF vs PrimeRL distribution mismatch: mean KL {mean_kl}"
+    assert top1 >= 0.75, f"HF vs PrimeRL top-1 agreement too low: {top1}"
     assert max_diff < 1.0, f"HF vs PrimeRL logits mismatch: max diff {max_diff}"
 
     # Roundtrip weight conversion: HF -> PrimeRL -> HF
