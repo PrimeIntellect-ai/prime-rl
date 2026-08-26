@@ -28,6 +28,10 @@ uv run rl --help                                  # all fields and defaults
 uv run rl @ rl.toml --dry-run --output-dir /tmp/x --run.name check # write resolved JSON to /tmp/x/check/configs/latest
 ```
 
+Each attempt also writes `configs/attempt_<n>/command.txt`. It records the
+shell-safe launch command, including CLI overrides. `configs/latest` points to
+the current attempt.
+
 ## Validators
 
 Incompatible combinations (e.g. CP requires flash attention) must raise in a `model_validator` at resolve time, not at runtime. When renaming a field, remove the old spelling: no `validation_alias`, no auto-translating `mode="before"` validator. The old key then fails as an unknown key, which is the signal. An alias that stays forever is worse than a break — it never gets retired, and a key whose *meaning* changed silently misconfigures the run.

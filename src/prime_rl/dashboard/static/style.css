@@ -448,6 +448,34 @@ details.section[open] .sec-chev { transform: rotate(90deg); }
 body.resizing { user-select: none; }
 
 /* ---------------------------------------------------------------- config */
+#config-command {
+  background: #0b0b0b;
+  border: 1px solid var(--grey-3);
+  color: var(--grey-6);
+}
+.config-command-head {
+  min-height: 30px;
+  padding: 4px 6px 4px 12px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--grey-2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#config-command-copy { height: 22px; }
+#config-command-copy.copied { color: var(--accent); border-color: var(--accent); }
+#config-command-copy:disabled { opacity: 0.35; cursor: default; }
+.config-command-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.config-command-prompt { color: var(--accent); user-select: none; }
+#config-command-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+#config-command.empty #config-command-text { color: var(--grey-4); }
 #config-view {
   flex: 1;
   overflow: auto;

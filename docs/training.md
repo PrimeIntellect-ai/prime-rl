@@ -315,8 +315,9 @@ The exported directory loads directly into `uv run inference --vllm.model <dir>`
 
 ### Config Files
 
-Each launch writes its input TOML and resolved JSON files to
+Each launch writes its command, input TOML, and resolved JSON files to
 `<run_dir>/configs/attempt_<n>/`. Resumed runs keep the earlier configs.
+`command.txt` uses shell-safe quoting.
 `configs/latest` points to the current attempt.
 
 ### Log Files
