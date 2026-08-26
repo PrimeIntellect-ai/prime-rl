@@ -15,11 +15,20 @@ import argparse
 from pathlib import Path
 
 import torch
+import transformers.utils.generic
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
+from transformers.dynamic_module_utils import get_class_from_dynamic_module
+from transformers.models.minimax_m2.modeling_minimax_m2 import (
+    MiniMaxM2ForCausalLM as NativeMiniMaxM2ForCausalLM,
+)
+from transformers.models.minimax_m2.modeling_minimax_m2 import (
+    MiniMaxM2RotaryEmbedding as NativeMiniMaxM2RotaryEmbedding,
+)
 from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
 )
+from transformers.utils.output_capturing import OutputRecorder
 
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
@@ -34,10 +43,39 @@ from prime_rl.utils.utils import default_dtype
 
 setup_logger("info")
 
+MINIMAX_M2_REPO = "MiniMaxAI/MiniMax-M2.1"
+
+
+def _patch_minimax_m2_hub_code() -> None:
+    """Backport three transformers refactors into the MiniMax-M2.1 hub modeling code.
+
+    The hub code has not changed since 2026-02-13 and predates transformers moving OutputRecorder
+    out of `utils.generic`, turning `compute_default_rope_parameters` into a per-class method on the
+    rotary embedding, and respelling `_tied_weights_keys` as a tied-key -> source mapping. Without
+    these the module fails to import, then to initialize its weights, then to save. The two
+    modernized attributes are borrowed from transformers' own MiniMax-M2 classes.
+
+    The hub code, not transformers' native MiniMaxM2ForCausalLM, is the reference we want: real
+    MiniMax-M2.1 checkpoints use `block_sparse_moe.experts.{j}.w1/w2/w3`, which
+    `converting_minimax_m2.py` targets, whereas the native class uses fused
+    `mlp.experts.gate_up_proj`.
+    """
+    transformers.utils.generic.OutputRecorder = OutputRecorder
+
+    def hub_class(name: str) -> type:
+        return get_class_from_dynamic_module(f"{MINIMAX_M2_REPO}--modeling_minimax_m2.{name}", MINIMAX_M2_REPO)
+
+    hub_class("MiniMaxM2RotaryEmbedding").compute_default_rope_parameters = staticmethod(
+        NativeMiniMaxM2RotaryEmbedding.compute_default_rope_parameters
+    )
+    hub_class("MiniMaxM2ForCausalLM")._tied_weights_keys = NativeMiniMaxM2ForCausalLM._tied_weights_keys
+
 
 def _qwen3_5_moe_vlm_config():
     """Build a tiny composite VLM config for Qwen3.5 MoE."""
-    config = AutoConfig.from_pretrained("Qwen/Qwen3.5-35B-A3B", trust_remote_code=True, attn_implementation="sdpa")
+    config = AutoConfig.from_pretrained(
+        "Qwen/Qwen3.5-35B-A3B", trust_remote_code=True, attn_implementation="flash_attention_2"
+    )
     config.use_cache = False
 
     tc = config.text_config
@@ -60,6 +98,8 @@ def _qwen3_5_moe_vlm_config():
     tc.linear_num_value_heads = 8
     tc.layer_types = ["full_attention", "linear_attention"]
     tc.use_cache = False
+    # head_dim shrinks to 64, so the rotary dim is 16 and mrope_section must sum to 8
+    tc.rope_parameters["mrope_section"] = [3, 3, 2]
 
     vc = config.vision_config
     vc.depth = 2
@@ -128,11 +168,11 @@ ARCH_PRESETS = {
             use_qk_norm=True,
             qk_norm_type="per_layer",
             use_grouped_mm=False,
-            auto_map={"AutoModelForCausalLM": "MiniMaxAI/MiniMax-M2.1--modeling_minimax_m2.MiniMaxM2ForCausalLM"},
+            auto_map={"AutoModelForCausalLM": f"{MINIMAX_M2_REPO}--modeling_minimax_m2.MiniMaxM2ForCausalLM"},
         ),
         "hf_model_class": None,  # uses AutoModelForCausalLM with trust_remote_code
         "prime_model_class": PrimeRLMiniMaxM2ForCausalLM,
-        "tokenizer_source": "MiniMaxAI/MiniMax-M2.1",
+        "tokenizer_source": MINIMAX_M2_REPO,
     },
     "laguna": {
         "config_class": LagunaConfig,
@@ -259,15 +299,18 @@ def verify(arch: str, model_dir: Path) -> None:
 
     trust_remote_code = preset["hf_model_class"] is None
     config = AutoConfig.from_pretrained(str(model_dir), trust_remote_code=trust_remote_code)
-    config._attn_implementation = "sdpa"
+    config._attn_implementation = "flash_attention_2"
     if hasattr(config, "text_config"):
-        config.text_config._attn_implementation = "sdpa"
+        config.text_config._attn_implementation = "flash_attention_2"
+    # The checkpoint is saved in float32, but flash attention only accepts fp16/bf16. `_from_config`
+    # reads `config.dtype`, which would otherwise override the ambient default dtype below.
+    config.dtype = torch.bfloat16
 
     text_config = getattr(config, "text_config", config)
     vocab_size = text_config.vocab_size
 
-    hf_model = _load_hf_model(preset, model_dir, config).to(device="cuda", dtype=torch.float32)
-    with torch.device("cuda"), default_dtype(torch.float32):
+    hf_model = _load_hf_model(preset, model_dir, config).to(device="cuda", dtype=torch.bfloat16)
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         prime_model = preset["prime_model_class"]._from_config(config)
 
     with torch.no_grad():
@@ -279,23 +322,22 @@ def verify(arch: str, model_dir: Path) -> None:
 
     # Use tokens in safe range (avoid special VLM token IDs)
     max_token = min(vocab_size, 200) if is_vlm else vocab_size
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         input_ids = torch.randint(0, max_token, (1, 64))
         position_ids = torch.arange(1, 65).unsqueeze(0)
 
+    seq_lens = torch.tensor([input_ids.shape[1]], device=input_ids.device)
     hf_output = hf_model(input_ids=input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids)
+    prime_output = prime_model(input_ids, position_ids, seq_lens=seq_lens)
 
     if is_vlm:
-        # HF GatedDeltaNet has a dtype bug in float32 mode; just verify non-NaN output
         assert not torch.isnan(prime_output["logits"]).any(), "PrimeRL VLM output contains NaN"
         assert prime_output["logits"].shape == hf_output.logits.shape
-        print("  VLM forward pass verified (shape match, no NaN)")
-    else:
-        logits_diff = prime_output["logits"] - hf_output.logits
-        max_diff = logits_diff.abs().max().item()
-        print(f"  HF vs PrimeRL max logits diff: {max_diff:.6f}")
-        assert max_diff < 0.1, f"HF vs PrimeRL logits mismatch: max diff {max_diff}"
+
+    logits_diff = prime_output["logits"] - hf_output.logits
+    max_diff = logits_diff.abs().max().item()
+    print(f"  HF vs PrimeRL max logits diff: {max_diff:.6f}")
+    assert max_diff < 1.0, f"HF vs PrimeRL logits mismatch: max diff {max_diff}"
 
     # Roundtrip weight conversion: HF -> PrimeRL -> HF
     # Normalize both through the same roundtrip to handle expert format differences
@@ -319,6 +361,9 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--verify-only", action="store_true", help="Skip creation, only verify an existing model")
     args = parser.parse_args()
+
+    if args.arch == "minimax_m2":
+        _patch_minimax_m2_hub_code()
 
     if not args.verify_only:
         create(args.arch, args.output_dir)
