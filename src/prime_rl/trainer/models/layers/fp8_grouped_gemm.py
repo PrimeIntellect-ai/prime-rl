@@ -102,7 +102,11 @@ class _GroupedFP8Gemm(torch.autograd.Function):
         x: torch.Tensor,
         weight: torch.Tensor,
         offs: torch.Tensor,
+        layout: tuple | None = None,
+        x_fp8_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> torch.Tensor:
+        if layout is None:
+            layout = build_grouped_layout(offs, total_m=x.size(0))
         (
             total_m,
             padded_total_m,
@@ -112,19 +116,22 @@ class _GroupedFP8Gemm(torch.autograd.Function):
             starts_tensor,
             actual_ms_tensor,
             block_starts_tensor,
-        ) = build_grouped_layout(offs, total_m=x.size(0))
+        ) = layout
 
         use_ue8m0 = ue8m0_for_device(x.device)
-        x_fp8 = grouped_per_token_cast_to_fp8_triton(
-            x,
-            padded_total_m,
-            block_to_group,
-            starts_tensor,
-            actual_ms_tensor,
-            block_starts_tensor,
-            use_ue8m0,
-            GROUP_ALIGNMENT,
-        )
+        if x_fp8_cache is not None:
+            x_fp8 = x_fp8_cache
+        else:
+            x_fp8 = grouped_per_token_cast_to_fp8_triton(
+                x,
+                padded_total_m,
+                block_to_group,
+                starts_tensor,
+                actual_ms_tensor,
+                block_starts_tensor,
+                use_ue8m0,
+                GROUP_ALIGNMENT,
+            )
         weight_fp8 = grouped_per_block_cast_to_fp8_triton(
             weight.transpose(1, 2),
             use_ue8m0,
@@ -236,13 +243,44 @@ class _GroupedFP8Gemm(torch.autograd.Function):
                 block_starts_tensor,
             )
 
-        return grad_x, grad_weight, None
+        # grad_x, grad_weight, offs, layout, x_fp8_cache — the last three never need grad.
+        return grad_x, grad_weight, None, None, None
+
+
+def compute_grouped_layout(offs: torch.Tensor, total_m: int):
+    return build_grouped_layout(offs, total_m=total_m)
+
+
+def cast_grouped_input_to_fp8(x: torch.Tensor, layout: tuple) -> tuple[torch.Tensor, torch.Tensor]:
+    (
+        _total_m,
+        padded_total_m,
+        _grouped_layout,
+        block_to_group,
+        _ks_tensor,
+        starts_tensor,
+        actual_ms_tensor,
+        block_starts_tensor,
+    ) = layout
+    use_ue8m0 = ue8m0_for_device(x.device)
+    return grouped_per_token_cast_to_fp8_triton(
+        x,
+        padded_total_m,
+        block_to_group,
+        starts_tensor,
+        actual_ms_tensor,
+        block_starts_tensor,
+        use_ue8m0,
+        GROUP_ALIGNMENT,
+    )
 
 
 def grouped_fp8_gemm(
     x: torch.Tensor,
     weight: torch.Tensor,
     offs: torch.Tensor,
+    layout: tuple | None = None,
+    x_fp8_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """FP8 grouped GEMM, drop-in replacement for torch._grouped_mm.
 
@@ -250,8 +288,15 @@ def grouped_fp8_gemm(
         x: (M, K) concatenated token activations in bfloat16.
         weight: (G, K, N) expert weights in bfloat16.
         offs: (G,) int32 cumulative token counts per expert.
+        layout: optional precomputed ``compute_grouped_layout(offs, total_m)`` result,
+            to skip rebuilding the ragged-group layout when the caller already has one
+            for this (offs, total_m) pair.
+        x_fp8_cache: optional precomputed ``cast_grouped_input_to_fp8(x, layout)``
+            result, to skip re-casting ``x`` when the caller already cast this exact
+            tensor against this exact layout (e.g. for a sibling grouped_fp8_gemm call
+            with a different weight but the same x).
 
     Returns:
         (M, N) output tensor in bfloat16.
     """
-    return _GroupedFP8Gemm.apply(x, weight, offs)
+    return _GroupedFP8Gemm.apply(x, weight, offs, layout, x_fp8_cache)
