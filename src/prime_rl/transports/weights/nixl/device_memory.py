@@ -95,7 +95,8 @@ def _check_caching_allocator_registerable() -> None:
     if _expandable_segments_enabled(config):
         raise RuntimeError(
             "NIXL weight transfer cannot register memory allocated with "
-            "expandable_segments:True. Set expandable_segments:False for this component."
+            "expandable_segments:True. Set PYTORCH_ALLOC_CONF=expandable_segments:False "
+            "in this component's env_vars."
         )
 
 
