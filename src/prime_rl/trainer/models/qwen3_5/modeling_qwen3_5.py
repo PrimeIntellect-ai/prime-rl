@@ -32,6 +32,19 @@ from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_pos
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
+def _init_vision_rope_buffers_post_meta(self: Qwen3_5VisionRotaryEmbedding) -> None:
+    inv_freq = 1.0 / (
+        self.theta ** (torch.arange(0, self.dim, 2, dtype=torch.float32, device=self.inv_freq.device) / self.dim)
+    )
+    self.inv_freq.copy_(inv_freq)
+
+
+# Qwen3_5VisionRotaryEmbedding is upstream transformers code; Qwen3_5VisionModel.__init__
+# hardcodes its construction, so we can't subclass-and-inject like elsewhere. Attach the
+# buffer-init hook to the class directly instead.
+Qwen3_5VisionRotaryEmbedding.init_buffers_post_meta = _init_vision_rope_buffers_post_meta
+
+
 class Qwen3_5GatedFlashAttention(Qwen3_5MoeGatedFlashAttention):
     pass
 
@@ -128,9 +141,6 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL, HFQwen3_5PreTrainedModel):
     config_class = Qwen3_5TextConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    # Vision-tower rope belongs to upstream transformers' Qwen3_5VisionModel; we can't add
-    # init_buffers_post_meta to it, so it's exempted and reinitialized explicitly below instead.
-    _init_buffers_post_meta_exempt = (Qwen3_5VisionRotaryEmbedding,)
     _no_split_modules = ["Qwen3_5DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
@@ -454,17 +464,6 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature,
         )
-
-    def init_buffers_post_meta(self) -> None:
-        super().init_buffers_post_meta()
-        if self._is_vlm:
-            vis_rope = self.model.visual.rotary_pos_emb
-            dim = vis_rope.inv_freq.shape[0]
-            inv_freq = 1.0 / (
-                10000.0
-                ** (torch.arange(0, dim * 2, 2, dtype=torch.float32, device=vis_rope.inv_freq.device) / (dim * 2))
-            )
-            vis_rope.inv_freq.copy_(inv_freq)
 
 
 __all__ = [

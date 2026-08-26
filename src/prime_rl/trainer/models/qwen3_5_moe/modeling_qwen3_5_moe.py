@@ -38,6 +38,19 @@ from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
 from .converting_qwen3_5_moe import conversion_chain
 from .mrope import build_qwen3_5_mrope_position_ids
 
+
+def _init_vision_rope_buffers_post_meta(self: Qwen3_5MoeVisionRotaryEmbedding) -> None:
+    inv_freq = 1.0 / (
+        self.theta ** (torch.arange(0, self.dim, 2, dtype=torch.float32, device=self.inv_freq.device) / self.dim)
+    )
+    self.inv_freq.copy_(inv_freq)
+
+
+# Qwen3_5MoeVisionRotaryEmbedding is upstream transformers code; Qwen3_5MoeVisionModel.__init__
+# hardcodes its construction, so we can't subclass-and-inject like elsewhere. Attach the
+# buffer-init hook to the class directly instead.
+Qwen3_5MoeVisionRotaryEmbedding.init_buffers_post_meta = _init_vision_rope_buffers_post_meta
+
 logger = logging.get_logger(__name__)
 
 
@@ -622,9 +635,6 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
     config_class = Qwen3_5MoeConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    # Vision-tower rope belongs to upstream transformers' Qwen3_5MoeVisionModel; we can't add
-    # init_buffers_post_meta to it, so it's exempted and reinitialized explicitly below instead.
-    _init_buffers_post_meta_exempt = (Qwen3_5MoeVisionRotaryEmbedding,)
     _no_split_modules = ["Qwen3_5MoeDecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
@@ -1003,21 +1013,6 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature,
         )
-
-    # ------------------------------------------------------------------
-    # Buffer init after meta-device loading
-    # ------------------------------------------------------------------
-
-    def init_buffers_post_meta(self) -> None:
-        super().init_buffers_post_meta()
-        if self._is_vlm:
-            vis_rope = self.model.visual.rotary_pos_emb
-            dim = vis_rope.inv_freq.shape[0]
-            inv_freq = 1.0 / (
-                10000.0
-                ** (torch.arange(0, dim * 2, 2, dtype=torch.float32, device=vis_rope.inv_freq.device) / (dim * 2))
-            )
-            vis_rope.inv_freq.copy_(inv_freq)
 
 
 __all__ = [
