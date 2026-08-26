@@ -110,8 +110,6 @@ def _qwen3_5_moe_vlm_config():
     tc.linear_num_value_heads = 8
     tc.layer_types = ["full_attention", "linear_attention"]
     tc.use_cache = False
-    # mrope sections must sum to head_dim * partial_rotary_factor / 2 = 8, for head_dim = 64
-    tc.rope_parameters["mrope_section"] = [3, 3, 2]
 
     vc = config.vision_config
     vc.depth = 2
