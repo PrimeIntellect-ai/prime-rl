@@ -15,7 +15,7 @@ from prime_rl.utils.pathing import (
     get_launcher_dir,
     get_launcher_log_dir,
     prepare_attempt_dirs,
-    write_launch_toml,
+    write_launch_artifacts,
 )
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
@@ -136,7 +136,7 @@ def inference_slurm(config: InferenceConfig):
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
 
     config_dir, log_dir = prepare_attempt_dirs(config.output_dir)
-    write_launch_toml(config_dir, "inference")
+    write_launch_artifacts(config_dir, "inference")
     is_multi_node = config.deployment.type in ("multi_node", "disaggregated")
     exclude = {"deployment", "slurm", "dry_run"} if is_multi_node else {"slurm", "dry_run"}
     config_path = write_config(config, config_dir, exclude=exclude, engine_only=is_multi_node)

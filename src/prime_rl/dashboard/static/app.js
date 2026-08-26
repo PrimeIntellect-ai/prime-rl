@@ -1226,8 +1226,8 @@ async function initMetrics() {
 /* ----------------------------------------------------------------- config */
 
 
-/* both views are fetched once per run, so the TOML/JSON toggle never waits on
-   the network */
+/* config artifacts are fetched once per attempt, so format changes never wait
+   on the network */
 async function fetchConfigText(file) {
   const cache = state.config.cache;
   const key = `${state.config.attempt}:${file}`;
@@ -1333,6 +1333,13 @@ function renderToml(text) {
     .join("");
 }
 
+function renderPlain(text) {
+  return text
+    .split("\n")
+    .map((line) => `<div class="t-line">${esc(line)}</div>`)
+    .join("");
+}
+
 /* filter the config to matched subtrees, render the collapsible tree, then
    mark every hit by walking text nodes (keeps syntax spans intact) */
 function applyConfigSearch() {
@@ -1348,6 +1355,7 @@ function applyConfigSearch() {
   }
   if (!query) {
     if (parsed !== undefined) view.innerHTML = renderJsonNode(null, parsed, 0, true);
+    else if (state.config.fmt === "command") view.innerHTML = renderPlain(state.config.text ?? "");
     else view.innerHTML = renderToml(state.config.text ?? "");
     return;
   }
@@ -1357,6 +1365,10 @@ function applyConfigSearch() {
   } catch {
     re = new RegExp(escRe(query), "gi");
   }
+  const test = (line) => {
+    re.lastIndex = 0;
+    return re.test(line);
+  };
   const noHits = () => {
     view.innerHTML = emptyState("no hits", "nothing in this config matches the filter");
     hitsEl.textContent = "no hits";
@@ -1366,38 +1378,40 @@ function applyConfigSearch() {
     if (pruned === undefined) return noHits();
     view.innerHTML = renderJsonNode(null, pruned, 0, true);
   } else {
-    // TOML (launch config): a matching line keeps itself (plus its [section]
-    // header for context); a matching [section] header keeps the whole section
-    const lines = (state.config.text ?? "").split("\n");
-    const test = (line) => {
-      re.lastIndex = 0;
-      return re.test(line);
-    };
-    const kept = [];
-    let header = null;
-    let headerKept = false;
-    let sectionMatched = false;
-    for (const line of lines) {
-      if (/^\s*\[/.test(line)) {
-        header = line;
-        headerKept = false;
-        sectionMatched = test(line);
-        if (sectionMatched) {
+    if (state.config.fmt === "command") {
+      const kept = (state.config.text ?? "").split("\n").filter(test);
+      if (!kept.length) return noHits();
+      view.innerHTML = renderPlain(kept.join("\n"));
+    } else {
+      // TOML (launch config): a matching line keeps itself (plus its [section]
+      // header for context); a matching [section] header keeps the whole section
+      const lines = (state.config.text ?? "").split("\n");
+      const kept = [];
+      let header = null;
+      let headerKept = false;
+      let sectionMatched = false;
+      for (const line of lines) {
+        if (/^\s*\[/.test(line)) {
+          header = line;
+          headerKept = false;
+          sectionMatched = test(line);
+          if (sectionMatched) {
+            kept.push(line);
+            headerKept = true;
+          }
+          continue;
+        }
+        if (sectionMatched || test(line)) {
+          if (header !== null && !headerKept) {
+            kept.push(header);
+            headerKept = true;
+          }
           kept.push(line);
-          headerKept = true;
         }
-        continue;
       }
-      if (sectionMatched || test(line)) {
-        if (header !== null && !headerKept) {
-          kept.push(header);
-          headerKept = true;
-        }
-        kept.push(line);
-      }
+      if (!kept.length) return noHits();
+      view.innerHTML = renderToml(kept.join("\n"));
     }
-    if (!kept.length) return noHits();
-    view.innerHTML = renderToml(kept.join("\n"));
   }
   const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
   const nodes = [];
@@ -1431,10 +1445,12 @@ function applyConfigSearch() {
   view.querySelector("mark.hit")?.scrollIntoView({ block: "center" });
 }
 
-/* TOML = the launch config as it was passed, JSON = the concatenated resolved dumps */
+/* TOML = launch config, JSON = resolved dumps, command = shell-safe invocation */
 function configFileFor(fmt) {
   const files = state.config.files || [];
-  return fmt === "toml" ? files.find((f) => f.endsWith(".toml")) : files.find((f) => f === "resolved");
+  if (fmt === "toml") return files.find((f) => f.endsWith(".toml"));
+  if (fmt === "json") return files.find((f) => f === "resolved");
+  return files.find((f) => f === "command.txt");
 }
 
 function renderConfigFormat() {
@@ -1468,12 +1484,16 @@ async function loadConfigAttempt() {
     $("#config-view").innerHTML = emptyState("no configs", "this attempt has no config files");
     return;
   }
-  if (!configFileFor(state.config.fmt)) state.config.fmt = configFileFor("toml") ? "toml" : "json";
+  if (!configFileFor(state.config.fmt)) {
+    state.config.fmt = ["toml", "json", "command"].find((fmt) => configFileFor(fmt));
+  }
   state.config.file = configFileFor(state.config.fmt);
   renderConfigFormat();
   await loadConfig();
-  const other = configFileFor(state.config.fmt === "toml" ? "json" : "toml");
-  if (other) fetchConfigText(other); // warm the other side of the toggle
+  for (const fmt of ["toml", "json", "command"]) {
+    const file = configFileFor(fmt);
+    if (file && file !== state.config.file) fetchConfigText(file);
+  }
 }
 
 async function initConfig() {

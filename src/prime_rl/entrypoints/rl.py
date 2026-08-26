@@ -27,7 +27,7 @@ from prime_rl.utils.pathing import (
     prepare_attempt_dirs,
     resolve_latest_ckpt_step,
     validate_run_dir,
-    write_launch_toml,
+    write_launch_artifacts,
 )
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
@@ -122,7 +122,7 @@ def rl_local(config: RLConfig):
     )
 
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
-    write_launch_toml(config_dir, "rl")
+    write_launch_artifacts(config_dir, "rl")
     write_subconfigs(config, config_dir)
     logger.info(f"Wrote subconfigs to {config_dir}")
 
@@ -565,7 +565,7 @@ def rl_slurm(config: RLConfig):
     )
 
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
-    write_launch_toml(config_dir, "rl")
+    write_launch_artifacts(config_dir, "rl")
 
     if config.deployment.type == "single_node":
         write_config(config, config_dir, exclude={"slurm", "dry_run", "clean"})

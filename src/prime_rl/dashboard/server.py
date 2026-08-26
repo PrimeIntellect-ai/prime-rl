@@ -433,6 +433,8 @@ def list_configs(run: str, attempt: str = "latest") -> dict:
     files = sorted((p.name for p in configs_dir.glob("*.toml")), key=config_rank) if configs_dir.is_dir() else []
     if any(resolved_config_dir(run_dir, attempt).rglob("*.json")):
         files.append("resolved")
+    if (configs_dir / "command.txt").is_file():
+        files.append("command.txt")
     return {"attempt": attempt_num, "attempts": config_attempt_numbers(run_dir), "files": files}
 
 
@@ -445,7 +447,7 @@ def read_config(run: str, file: str, attempt: str = "latest") -> dict:
         doc = {name: read_json(base / f"{name}.json") for name in names}
         return {"file": file, "content": orjson.dumps(doc).decode()}
     configs_dir, _ = config_attempt_dir(run_dir, attempt)
-    path = safe_child(configs_dir, file, suffix=".toml")
+    path = safe_child(configs_dir, file, suffix=".txt" if file == "command.txt" else ".toml")
     return {"file": file, "content": path.read_text()}
 
 

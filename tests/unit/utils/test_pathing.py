@@ -1,3 +1,5 @@
+import shlex
+
 import pytest
 
 from prime_rl.utils.pathing import (
@@ -7,6 +9,7 @@ from prime_rl.utils.pathing import (
     get_rollout_dir,
     get_step_path,
     validate_run_dir,
+    write_launch_artifacts,
 )
 
 
@@ -38,6 +41,47 @@ def test_dir_with_launcher_artifacts_passes(tmp_path):
     (run_dir / "launcher" / "logs").mkdir()
     (run_dir / "launcher" / "logs" / "job_1234.log").touch()
     validate_run_dir(run_dir, output_dir=tmp_path, resuming=False, clean=False)
+
+
+def test_write_launch_command_once_with_redaction(tmp_path, monkeypatch):
+    config_dir, _ = create_attempt_dirs(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "/tmp/rl",
+            "@",
+            "base.toml",
+            "--max-steps",
+            "10",
+            "--monitors.wandb.api-key=one",
+            "--trainer.env-vars",
+            '{"TOKEN":"two"}',
+            "--max-tokens",
+            "128",
+        ],
+    )
+
+    write_launch_artifacts(config_dir, "rl")
+
+    command_path = config_dir.parent / "command.txt"
+    assert shlex.split(command_path.read_text()) == [
+        "uv",
+        "run",
+        "rl",
+        "@",
+        "base.toml",
+        "--max-steps",
+        "10",
+        "--monitors.wandb.api-key=<redacted>",
+        "--trainer.env-vars",
+        "<redacted>",
+        "--max-tokens",
+        "128",
+    ]
+
+    monkeypatch.setattr("sys.argv", ["/tmp/rl", "--max-steps", "20"])
+    write_launch_artifacts(config_dir, "rl")
+    assert "--max-steps 10" in command_path.read_text()
 
 
 def test_dir_with_logs_raises(tmp_path):
