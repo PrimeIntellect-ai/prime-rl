@@ -681,6 +681,15 @@ function groupColors(groups) {
   return groups.length > 1 ? groups.map((_, i) => PALETTE[i % PALETTE.length]) : [SINGLE_SERIES];
 }
 
+function singletonPoints(series, color) {
+  return {
+    show: () => series.points.size === 1,
+    size: 6,
+    width: 0,
+    fill: color,
+  };
+}
+
 /* flatten groups into uPlot series defs + data columns + tooltip meta */
 function buildChartLayout(entry, timeAxis) {
   const groups = panelGroups(entry.series);
@@ -705,7 +714,7 @@ function buildChartLayout(entry, timeAxis) {
         width: 1.25,
         dash: si > 0 ? [6, 4] : undefined,
         spanGaps: true,
-        points: { show: false },
+        points: singletonPoints(strand.main, color),
       });
       const m = { label: labels[mainIdx] || "value", stat: statOf(strand.main.key) ?? "value", color, dataIdx: cols.length };
       meta.push(m);
@@ -714,7 +723,14 @@ function buildChartLayout(entry, timeAxis) {
       const bandIdx = {};
       for (const s of aux) {
         cols.push({ s, role: "aux" });
-        uSeries.push({ stroke: hexToRgba(color, 0.55), width: 1, dash: [3, 3], spanGaps: true, points: { show: false } });
+        const auxColor = hexToRgba(color, 0.55);
+        uSeries.push({
+          stroke: auxColor,
+          width: 1,
+          dash: [3, 3],
+          spanGaps: true,
+          points: singletonPoints(s, auxColor),
+        });
         if (s === strand.lo) bandIdx.lo = cols.length;
         if (s === strand.hi) bandIdx.hi = cols.length;
       }
