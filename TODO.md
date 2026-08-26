@@ -92,6 +92,11 @@ Open items:
   roughly 18 of the 43 layers contributing nothing beyond their local window. This is the same
   property vLLM has, since it serves each rollout alone, so it is what closes the mismatch KL.
   `tests/unit/train/models/test_deepseek_v4.py` pins all of it with `xfail(strict=True)`.
+  Measured on the local RL smoke, 20 steps, same checkpoint and config either side: clipping the
+  sliding window took `mismatch_kl/all/mean` from 0.507 to 0.063 (worst per-token 106.15 to 3.39),
+  so the window was the dominant term. The residual 0.063 is still roughly 4x the 0.015 merge bar
+  and is what these compressors are expected to account for, though this sandbox's fp8 KV cache
+  and torch-fallback output projection contribute an unapportioned share of it.
 - **No context parallelism.** CP hands the model pre-shard (global) document boundaries, which
   cannot address a dense local mask built over post-shard positions. `get_model` rejects `cp > 1`
   for this model and `DeepseekV4Model.forward` rejects `seq_lens_are_pre_shard`. Lifting this
