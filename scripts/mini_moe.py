@@ -394,7 +394,10 @@ def verify(arch: str, model_dir: Path) -> None:
         position_ids = torch.arange(1, 65).unsqueeze(0)
 
     hf_output = hf_model(input_ids=input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids)
+    # One unpacked document, which is what the probe above builds. Required by every model that
+    # derives document boundaries from it rather than from `position_ids`.
+    seq_lens = torch.tensor([input_ids.shape[1]], device=input_ids.device)
+    prime_output = prime_model(input_ids, position_ids, seq_lens=seq_lens)
 
     if is_vlm:
         # HF GatedDeltaNet has a dtype bug in float32 mode; just verify non-NaN output
