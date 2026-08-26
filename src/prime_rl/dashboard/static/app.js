@@ -574,7 +574,10 @@ function buildSections(meta) {
   const sections = [];
   const evalEnvs = meta.eval_envs || [];
   if (meta.type === "sft") {
-    sections.push({ name: "train", panels: SFT_TRAIN_METRICS.map((m) => ({ metric: m })) });
+    const trainMetrics = meta.has_validation
+      ? SFT_TRAIN_METRICS
+      : SFT_TRAIN_METRICS.filter((m) => !m.startsWith("val/"));
+    sections.push({ name: "train", panels: trainMetrics.map((m) => ({ metric: m })) });
     if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true)));
     else sections.push(evalSection("eval", ".*"));
     sections.push({ name: "stability", panels: SFT_STABILITY_METRICS.map((m) => ({ metric: m })) });
