@@ -2,6 +2,7 @@ import pytest
 
 from prime_rl.utils.pathing import (
     clean_future_steps,
+    create_attempt_dirs,
     get_broadcast_dir,
     get_rollout_dir,
     get_step_path,
@@ -23,8 +24,13 @@ def test_empty_dir_passes(tmp_path):
 def test_dir_with_launcher_artifacts_passes(tmp_path):
     run_dir = tmp_path / "submitted"
     run_dir.mkdir()
-    (run_dir / "configs").mkdir()
-    (run_dir / "configs" / "trainer.toml").touch()
+    config_dir, log_dir = create_attempt_dirs(run_dir)
+    (config_dir / "trainer.json").touch()
+    next_config_dir, next_log_dir = create_attempt_dirs(run_dir)
+    assert next_config_dir.parent.name == "attempt_2"
+    assert next_log_dir.name == "attempt_2"
+    assert (run_dir / "configs" / "latest").resolve() == next_config_dir.parent
+    assert (run_dir / "logs" / "latest").resolve() == next_log_dir
     (run_dir / "launcher").mkdir()
     (run_dir / "launcher" / "rl.sbatch").touch()
     (run_dir / "launcher" / ".trainer.done").touch()

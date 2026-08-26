@@ -11,6 +11,9 @@ the dirs registered by launchers in `~/.cache/prime-rl/dashboard/dirs.json`
 skips the registry. See `skills/dashboard/SKILL.md` for discovery,
 kill/restart commands, and the local view-command/report contract.
 
+The Config and Logs views keep each launch attempt available. Both views open
+at `latest (attempt <n>)` and let you select an earlier attempt.
+
 GPU dependencies live behind the `gpu` extra, so this works anywhere — a
 cluster head node, a laptop against a mounted outputs dir:
 

@@ -208,10 +208,27 @@ def model_name(config: dict) -> str | None:
     return model if isinstance(model, str) else (model or {}).get("name")
 
 
-def resolved_config_dir(run_dir: Path) -> Path:
-    """Where the resolved JSON dumps live: `configs/resolved/`, or `configs/` on
-    runs from before the launch-TOML split."""
+def config_attempt_numbers(run_dir: Path) -> list[int]:
+    return [n for n, _ in numbered_dirs(run_dir / "configs", "attempt_")]
+
+
+def config_attempt_dir(run_dir: Path, attempt: str = "latest") -> tuple[Path, int | None]:
+    """Return one config attempt root, with a fallback for legacy run layouts."""
     configs = run_dir / "configs"
+    attempts = config_attempt_numbers(run_dir)
+    if not attempts:
+        return configs, None
+    if attempt == "latest":
+        latest = (configs / "latest").resolve()
+        attempt_num = int(latest.name.removeprefix("attempt_")) if latest.is_dir() else attempts[-1]
+    else:
+        attempt_num = int(attempt)
+    return configs / f"attempt_{attempt_num}", attempt_num
+
+
+def resolved_config_dir(run_dir: Path, attempt: str = "latest") -> Path:
+    """Return resolved JSON dumps for one attempt or a legacy run."""
+    configs, _ = config_attempt_dir(run_dir, attempt)
     resolved = configs / "resolved"
     return resolved if resolved.is_dir() else configs
 
@@ -408,26 +425,27 @@ def config_rank(name: str) -> tuple[int, str]:
 
 
 @app.get("/api/runs/{run}/configs")
-def list_configs(run: str) -> dict:
+def list_configs(run: str, attempt: str = "latest") -> dict:
     """Two views of a run's config: each launch TOML (verbatim, as the run was
     started) and one "resolved" document concatenating every resolved JSON dump."""
     run_dir = get_run_dir(run)
-    configs_dir = run_dir / "configs"
+    configs_dir, attempt_num = config_attempt_dir(run_dir, attempt)
     files = sorted((p.name for p in configs_dir.glob("*.toml")), key=config_rank) if configs_dir.is_dir() else []
-    if any(resolved_config_dir(run_dir).rglob("*.json")):
+    if any(resolved_config_dir(run_dir, attempt).rglob("*.json")):
         files.append("resolved")
-    return {"files": files}
+    return {"attempt": attempt_num, "attempts": config_attempt_numbers(run_dir), "files": files}
 
 
 @app.get("/api/runs/{run}/config")
-def read_config(run: str, file: str) -> dict:
+def read_config(run: str, file: str, attempt: str = "latest") -> dict:
     run_dir = get_run_dir(run)
     if file == "resolved":
-        base = resolved_config_dir(run_dir)
+        base = resolved_config_dir(run_dir, attempt)
         names = sorted((str(p.relative_to(base).with_suffix("")) for p in base.rglob("*.json")), key=config_rank)
         doc = {name: read_json(base / f"{name}.json") for name in names}
         return {"file": file, "content": orjson.dumps(doc).decode()}
-    path = safe_child(run_dir / "configs", file, suffix=".toml")
+    configs_dir, _ = config_attempt_dir(run_dir, attempt)
+    path = safe_child(configs_dir, file, suffix=".toml")
     return {"file": file, "content": path.read_text()}
 
 

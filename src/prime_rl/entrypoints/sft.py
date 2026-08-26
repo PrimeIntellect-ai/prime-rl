@@ -17,14 +17,12 @@ from prime_rl.utils.config import cli, dump_resolved_config, find_package_resour
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
-    create_attempt_log_dir,
     format_log_message,
     get_broadcast_dir,
     get_ckpt_dir,
-    get_config_dir,
     get_launcher_dir,
     get_launcher_log_dir,
-    latest_log_dir,
+    prepare_attempt_dirs,
     resolve_latest_ckpt_step,
     validate_run_dir,
     write_launch_toml,
@@ -141,7 +139,9 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: boo
             json.dump(env_server_dict, f, indent=2)
 
 
-def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, prl_run_id: str | None = None) -> None:
+def write_slurm_script(
+    config: SFTConfig, config_path: Path, log_dir: Path, script_path: Path, prl_run_id: str | None = None
+) -> None:
     """Write the SLURM script to disk."""
     from jinja2 import Environment, FileSystemLoader
 
@@ -165,6 +165,8 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, 
         script = template.render(
             **config.slurm.template_vars,
             config_path=config_path,
+            config_dir=config_path.parent,
+            log_dir=log_dir,
             output_dir=config.run_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
@@ -199,7 +201,8 @@ def write_slurm_script(config: SFTConfig, config_path: Path, script_path: Path, 
         script = template.render(
             **config.slurm.template_vars,
             config_path=config_path,
-            config_dir=get_config_dir(config.run_dir),
+            config_dir=config_path.parent,
+            log_dir=log_dir,
             output_dir=config.run_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
@@ -233,8 +236,8 @@ def sft_slurm(config: SFTConfig):
 
     online_eval = config.deployment.type == "multi_node" and config.eval is not None
 
-    config_dir = get_config_dir(config.run_dir)
-    write_launch_toml(config.run_dir, "sft")
+    config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
+    write_launch_toml(config_dir, "sft")
     config_path = config_dir / SFT_CONFIG
     exclude = (
         {"deployment", "slurm", "dry_run", "clean"}
@@ -258,12 +261,12 @@ def sft_slurm(config: SFTConfig):
         write_eval_subconfigs(config, config_dir, strip_router=True)
         logger.info(f"Wrote eval subconfigs to {config_dir}")
     script_path = launcher_dir / SFT_SBATCH
-    write_slurm_script(config, config_path, script_path, prl_run_id)
+    write_slurm_script(config, config_path, log_dir, script_path, prl_run_id)
     logger.info(f"Wrote SLURM script to {script_path}")
 
     num_nodes = config.deployment.num_train_nodes if config.deployment.type == "multi_node" else 1
     log_message = format_log_message(
-        log_dir=latest_log_dir(config.run_dir),
+        log_dir=log_dir,
         trainer=True,
         num_train_nodes=num_nodes,
         evals=online_eval,
@@ -294,8 +297,8 @@ def sft_local(config: SFTConfig):
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
-    config_dir = get_config_dir(config.run_dir)
-    write_launch_toml(config.run_dir, "sft")
+    config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
+    write_launch_toml(config_dir, "sft")
     config_path = config_dir / SFT_CONFIG
     write_config(config, config_path)
     logger.info(f"Wrote config to {config_path}")
@@ -309,8 +312,6 @@ def sft_local(config: SFTConfig):
         return
 
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
-
-    log_dir = create_attempt_log_dir(config.run_dir)
 
     # Derive launcher-local GPU IDs (inference first, then the trainer) only when the
     # launcher must partition GPUs between processes; plain SFT leaves them to torchrun.
@@ -409,6 +410,8 @@ def sft_local(config: SFTConfig):
                     **DEFAULT_COMMON_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",
                     **config.env_vars,
+                    "PRL_ATTEMPT_CONFIG_DIR": str(config_dir),
+                    "PRL_ATTEMPT_LOG_DIR": str(log_dir),
                     "PRL_LOG_DIR": str(log_dir),
                     **wandb_shared_env,
                     "WANDB_SHARED_LABEL": "evals",

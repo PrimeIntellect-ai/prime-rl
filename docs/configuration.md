@@ -247,8 +247,8 @@ uv run rl @ examples/basic/reverse-text/rl.toml \
 Then inspect the resolved config:
 
 ```bash
-ls /tmp/reverse-dry/check/configs/resolved/
+ls /tmp/reverse-dry/check/configs/latest/resolved/
 # rl.json  trainer.json  orchestrator.json  inference.json
 ```
 
-Each per-process JSON reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/check/configs/resolved/trainer.json`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.
+Each per-process JSON reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/check/configs/latest/resolved/trainer.json`, etc.). Each launch also remains under `configs/attempt_<n>/`. This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.

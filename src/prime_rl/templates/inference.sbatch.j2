@@ -52,13 +52,12 @@ export RPC_PORT={{ data_parallel_rpc_port }}
 # Paths
 export PROJECT_DIR={{ project_dir }}
 export CONFIG_PATH={{ config_path }}
+export CONFIG_DIR={{ config_dir }}
 export OUTPUT_DIR={{ output_dir }}
-# Per-attempt log dir: a relaunch never overwrites an earlier attempt's logs.
-ATTEMPT=1
-while [ -e $OUTPUT_DIR/logs/attempt_$ATTEMPT ]; do ATTEMPT=$((ATTEMPT+1)); done
-export LOG_DIR=$OUTPUT_DIR/logs/attempt_$ATTEMPT
+export LOG_DIR={{ log_dir }}
+export PRL_ATTEMPT_CONFIG_DIR=$CONFIG_DIR
+export PRL_ATTEMPT_LOG_DIR=$LOG_DIR
 mkdir -p $LOG_DIR/inference
-ln -sfn attempt_$ATTEMPT $OUTPUT_DIR/logs/latest
 ln -sfn inference/node_0.log $LOG_DIR/inference.log
 
 # Setup environment

@@ -9,7 +9,7 @@ description: Monitor an ongoing prime-rl training run — find the output direct
 
 ### On launch
 
-1. Find the run dir and read the resolved configs at `{run_dir}/configs/resolved/` (start with `rl.json`, or `orchestrator.json` on local runs). The launch TOML is copied verbatim to `{run_dir}/configs/rl.toml`. The run dir is `{output_dir}/{run_name}` — `run.name` auto-generates as `<envs>--<model>--<short-id>`, so if you only know the output dir, pick the most recently modified subdirectory (`ls -t {output_dir} | head -1`) or read `run.name` from the launch command.
+1. Find the run dir and read the resolved configs at `{run_dir}/configs/latest/resolved/` (start with `rl.json`, or `orchestrator.json` on local runs). The launch TOML is copied verbatim to `{run_dir}/configs/latest/rl.toml`. The run dir is `{output_dir}/{run_name}` — `run.name` auto-generates as `<envs>--<model>--<short-id>`, so if you only know the output dir, pick the most recently modified subdirectory (`ls -t {output_dir} | head -1`) or read `run.name` from the launch command.
 2. Confirm all processes are alive and the run is making progress.
 3. Write the initial summary into `{run_dir}/STATUS.md`.
 
@@ -48,7 +48,7 @@ In W&B, each project auto-gets an **"overview" saved view** (train / eval / stab
 
 ### Where to find things
 
-- `{run_dir}/configs/` — the launch TOML copied verbatim (`rl.toml`/`sft.toml`), plus `resolved/` with the per-component resolved configs, written as JSON so explicit None settings round-trip.
+- `{run_dir}/configs/latest/` — the current attempt's launch TOML and `resolved/` JSON files. Each launch stays under `configs/attempt_<n>/`.
 - `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
 - `{run_dir}/rollouts/step_{n}/{train,eval}/` — saved episodes (see Episodes below).
 
@@ -56,7 +56,7 @@ In W&B, each project auto-gets an **"overview" saved view** (train / eval / stab
 
 `uv run dashboard [output_dir ...]` (default `outputs/`, or `$PRL_OUTPUT_DIR` if set; several dirs can be tracked at
 once) serves a local web dashboard at `http://localhost:7788` with four views per run:
-metrics (the W&B overview sections, read from `metrics.jsonl`), the resolved config
+metrics (the W&B overview sections, read from `metrics.jsonl`), per-attempt config
 files, a rollout trace viewer with a per-token advantage/logprob view, and merged
 component logs. It only reads the run dirs — safe to run against a live run.
 `--port`/`--host` pick the bind address; a taken port automatically bumps to the next

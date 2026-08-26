@@ -6,7 +6,7 @@ the checkpoint's model state, gather rank-parallel, convert to HF format, and
 write sharded safetensors plus config/tokenizer assets.
 
 The model and tokenizer configs are read from the run's resolved config
-(``<run>/configs/resolved/trainer.json`` or ``sft.json``). LoRA checkpoints are not
+(``<run>/configs/latest/resolved/trainer.json`` or ``sft.json``). LoRA checkpoints are not
 supported — the script exports full fine-tunes only.
 
 Usage (from the prime-rl repo; more ranks = faster gathers and writes, and

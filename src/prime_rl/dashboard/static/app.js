@@ -31,7 +31,10 @@ const state = {
     paneOrder: prefs.paneOrder ?? {},
   },
   compare: { runs: [], data: new Map() },
-  config: { loaded: false, files: [], file: null, fmt: "toml", cache: new Map() },
+  config: {
+    loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
+    files: [], file: null, fmt: "toml", cache: new Map(),
+  },
   logs: {
     loaded: false, attempt: "latest", attempts: [], files: [], paneFile: {},
     components: prefs.logComponents ? new Set(prefs.logComponents) : null,
@@ -188,8 +191,14 @@ async function selectRun(name, deferTab = false) {
     evalEtag: null, evalCount: 0, evalCost: null,
   };
   if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
-  state.config = { loaded: false, files: [], file: null, fmt: state.config.fmt, cache: new Map() };
-  state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], paneFile: {}, maximized: null, buffers: new Map() };
+  state.config = {
+    loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
+    files: [], file: null, fmt: state.config.fmt, cache: new Map(),
+  };
+  state.logs = {
+    ...state.logs, loaded: false, attempt: "latest", latestAttempt: null,
+    files: [], paneFile: {}, maximized: null, buffers: new Map(),
+  };
   state.traces = {
     ...state.traces,
     loaded: false, fetching: false, steps: [], step: null, env: "", episodes: [], etag: null,
@@ -1221,15 +1230,19 @@ async function initMetrics() {
    the network */
 async function fetchConfigText(file) {
   const cache = state.config.cache;
-  if (cache.has(file)) return cache.get(file);
-  const data = await api(`/api/runs/${encodeURIComponent(state.run)}/config?file=${encodeURIComponent(file)}`);
+  const key = `${state.config.attempt}:${file}`;
+  if (cache.has(key)) return cache.get(key);
+  const data = await api(
+    `/api/runs/${encodeURIComponent(state.run)}/config?file=${encodeURIComponent(file)}` +
+    `&attempt=${encodeURIComponent(state.config.attempt)}`
+  );
   let text = data.content;
   try {
     text = JSON.stringify(JSON.parse(text), null, 2);
   } catch {
     /* show raw content if not valid JSON */
   }
-  cache.set(file, text);
+  cache.set(key, text);
   return text;
 }
 
@@ -1431,13 +1444,28 @@ function renderConfigFormat() {
   }
 }
 
-async function initConfig() {
-  state.config.loaded = true;
-  const data = await api(`/api/runs/${encodeURIComponent(state.run)}/configs`);
+function renderConfigAttempts() {
+  const config = state.config;
+  const latest = config.latestAttempt == null ? "latest" : `latest (attempt ${config.latestAttempt})`;
+  $("#config-attempt-select").innerHTML =
+    `<option value="latest" ${config.attempt === "latest" ? "selected" : ""}>${latest}</option>` +
+    config.attempts
+      .map((a) => `<option value="${a}" ${String(a) === String(config.attempt) ? "selected" : ""}>attempt ${a}</option>`)
+      .join("");
+  syncDressedSelects();
+}
+
+async function loadConfigAttempt() {
+  const data = await api(
+    `/api/runs/${encodeURIComponent(state.run)}/configs?attempt=${encodeURIComponent(state.config.attempt)}`
+  );
+  state.config.latestAttempt = state.config.attempt === "latest" ? data.attempt : state.config.latestAttempt;
+  state.config.attempts = data.attempts;
   state.config.files = data.files;
+  renderConfigAttempts();
   if (!data.files.length) {
     renderConfigFormat();
-    $("#config-view").innerHTML = emptyState("no configs", "this run has no configs/ directory");
+    $("#config-view").innerHTML = emptyState("no configs", "this attempt has no config files");
     return;
   }
   if (!configFileFor(state.config.fmt)) state.config.fmt = configFileFor("toml") ? "toml" : "json";
@@ -1446,6 +1474,11 @@ async function initConfig() {
   await loadConfig();
   const other = configFileFor(state.config.fmt === "toml" ? "json" : "toml");
   if (other) fetchConfigText(other); // warm the other side of the toggle
+}
+
+async function initConfig() {
+  state.config.loaded = true;
+  await loadConfigAttempt();
 }
 
 /* ------------------------------------------------------------------- logs */
@@ -1578,9 +1611,12 @@ function dressLogPaneSelects() {
 
 function renderLogPanes() {
   const logs = state.logs;
-  $("#attempt-select").innerHTML = logs.attempts
-    .map((a) => `<option value="${a}" ${String(a) === String(logs.attempt) ? "selected" : ""}>attempt ${a}</option>`)
-    .join("");
+  const latest = logs.latestAttempt == null ? "latest" : `latest (attempt ${logs.latestAttempt})`;
+  $("#attempt-select").innerHTML =
+    `<option value="latest" ${logs.attempt === "latest" ? "selected" : ""}>${latest}</option>` +
+    logs.attempts
+      .map((a) => `<option value="${a}" ${String(a) === String(logs.attempt) ? "selected" : ""}>attempt ${a}</option>`)
+      .join("");
   renderLogCompMenu();
   const container = $("#log-panes");
   container.innerHTML = "";
@@ -1755,7 +1791,7 @@ async function loadLogfiles() {
   const logs = state.logs;
   const data = await api(`/api/runs/${encodeURIComponent(state.run)}/logfiles?attempt=${logs.attempt}`);
   logs.attempts = data.attempts;
-  logs.attempt = data.attempt;
+  if (logs.attempt === "latest") logs.latestAttempt = data.attempt;
   logs.files = data.files;
   renderLogPanes();
   dressLogPaneSelects();
@@ -3635,6 +3671,11 @@ $("#attempt-select").addEventListener("change", async (e) => {
   await loadLogfiles();
   await pollLogs();
 });
+$("#config-attempt-select").addEventListener("change", async (e) => {
+  state.config.attempt = e.target.value;
+  state.config.file = null;
+  await loadConfigAttempt();
+});
 $("#log-panes").addEventListener("change", async (e) => {
   const select = e.target.closest(".lp-file");
   if (!select) return;
@@ -4084,7 +4125,7 @@ document.addEventListener("visibilitychange", () => {
   $("#config-search").value = prefs.configSearch ?? "";
   $("#token-signal").value = prefs.tokenSignal === "rendered" ? "" : (prefs.tokenSignal ?? "");
   $("#follow-toggle").checked = state.follow;
-  for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#attempt-select", "#token-signal", "#report-select"])
+  for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
     dressSelect($(sel));
   syncTraceFilterControls();
   setActive("#metrics-mode", "mode", state.metrics.mode);
