@@ -19,7 +19,7 @@ _pool: torch.cuda.MemPool | None = None
 _allocator: torch.cuda.memory.CUDAPluggableAllocator | None = None
 
 
-def size_cuda_buffers(
+def size_device_buffers(
     buffer_bytes: int,
     max_buffers: int,
     device: torch.device,
@@ -73,6 +73,6 @@ void cuda_free(void* pointer, ptrdiff_t size, int device, void* stream) {
 
 
 @contextmanager
-def use_cuda_malloc_pool() -> Iterator[None]:
+def use_registerable_pool() -> Iterator[None]:
     with torch.cuda.use_mem_pool(_get_pool()):
         yield
