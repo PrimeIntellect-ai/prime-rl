@@ -89,17 +89,27 @@ ARCH_PRESETS = {
 
 ### Run the Smoke Test
 
-Build the mini model. This creates a ~543M-parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) with random weights, copies the tokenizer from the original GLM-4 model, and verifies the HF↔prime-rl roundtrip is lossless:
+Build the mini model. This creates a ~543M-parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) with random weights, copies the tokenizer from the original GLM-4 model, then checks that the HF↔prime-rl roundtrip is lossless, that the two forwards agree, and that packing a document behind another one leaves its logprobs unchanged:
 
 ```bash
 uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
 ```
 
-To re-verify the roundtrip after a modeling-code change without re-creating the model:
+To re-run those checks after a modeling-code change without re-creating the model:
 
 ```bash
 uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --verify-only
 ```
+
+Both invocations are seeded, so the checkpoint and the verification inputs are reproducible; pass `--seed` to vary them. The HF comparison pins `flash_attention_2` on both models so a gap means the port rather than two kernels; the packing and vLLM checks have no HF side and instead use the implementation the trainer resolves `attn = "auto"` to, which `--attn` can pin.
+
+The packed-vs-unpacked check above needs no inference engine. To also measure the mismatch KL against vLLM, the number the RL trainer actually sees, add `--check-vllm-kl`. This starts an in-process vLLM engine, so it costs a minute or two and a second copy of the weights on the GPU:
+
+```bash
+uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --verify-only --check-vllm-kl
+```
+
+Every row gates. `kl_unpacked_*` and `kl_packed_*` bound the absolute divergence from vLLM and catch differences that are not boundary-related at all, such as dtype or kernel choice. vLLM serves one document per request, so the engine side is identical for both trainer-side forwards, and `kl_packed_minus_unpacked_*` isolates document-boundary handling from whatever constant divergence the two implementations carry. Nothing asserts mid-run: the whole table prints and the script then exits non-zero naming every check that failed. On GPUs where vLLM's auto-selected FlashInfer MoE kernels do not build, pass `--vllm-moe-backend triton`.
 
 Warm up the random-weight mini model with SFT on reverse-text so KL divergence becomes meaningful in the RL phase. Loss drops from ~12 to ~2.5 — the output won't be coherent, but the distribution is non-trivial. A pre-built SFT'd checkpoint lives at [samsja/mini-glm-moe](https://huggingface.co/samsja/mini-glm-moe) if you want to skip this step:
 
