@@ -35,8 +35,8 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
 
 
 def lm_head_keep_index(keep_mask: Tensor) -> Tensor | None:
-    """Flattened indices of the LM head tokens which must actually be used"""
-    index = keep_mask.reshape(-1).nonzero(as_tuple=True)[0]
+
+    index = keep_mask.reshape(-1).nonzero(as_tuple=True)[0]  # Forces CPU<->GPU sync
     if index.numel() == keep_mask.numel():
         return None
     if index.numel() == 0:
@@ -50,7 +50,7 @@ def _compact(tensor: Tensor, keep_index: Tensor | None) -> Tensor:
 
 
 def _expand(values: Tensor, keep_index: Tensor | None, num_tokens: int) -> Tensor:
-    """Scatter compacted tokens back into the full token grid - dropped poses are 0 and logprob(0) keeps ther importance ratio at exp(0-0)=1"""
+    """Scatter compacted tokens back into the full token grid - dropped positions are 0 and logprob(0) keeps the importance ratio at exp(0-0)=1"""
     if keep_index is None:
         return values
     return values.new_zeros(num_tokens).index_copy(0, keep_index, values)

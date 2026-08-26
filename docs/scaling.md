@@ -155,7 +155,7 @@ Drop the chunk size when peak memory is still tight (e.g. with very long sequenc
 
 ### Skipping Masked Tokens in the LM Head
 
-Most of a packed batch is tokens no loss component reads: prompts, environment observations, and pack padding. The backbone still has to run on them — attention needs them in context — but the LM head does not, because it scores each token independently of the others. `skip_masked_lm_head_tokens` (on by default) gathers the hidden states of the tokens some component actually reads, runs the head only on those, and scatters the results back:
+The loss computations typically only depend on a small subset of tokens: prompts, environment observations, and pack padding aren't scored by any loss. `skip_masked_lm_head_tokens` (on by default) runs the LM head only on the tokens some loss component actually reads. Requires the fused head; ignored with `fused_lm_head_token_chunk_size = "disabled"`, and with `enable_token_export`, which records logprobs for every token of a sequence.
 
 ```toml
 [trainer.model]
@@ -163,8 +163,6 @@ skip_masked_lm_head_tokens = true   # default
 ```
 
 Head time and its activation memory then scale with the kept fraction, which `perf/lm_head_token_fraction` reports each step. The head is roughly 10% of a dense 8B step and a much larger share when the vocabulary is big relative to the backbone, so the end-to-end win is largest for small models, long prompts, and observation-heavy agentic rollouts.
-
-Every value the loss reads is unchanged — a token's logprob does not depend on which other tokens the head was given. Gradients move by the same amount that changing `fused_lm_head_token_chunk_size` does, since both reshuffle the order of the same bf16 chunk accumulation. Requires the fused head; ignored with `fused_lm_head_token_chunk_size = "disabled"`, and with `enable_token_export`, which records logprobs for every token of a sequence.
 
 ## Memory-Tight Recipe
 

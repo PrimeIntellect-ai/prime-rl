@@ -3,7 +3,7 @@ from typing import Any, Callable
 
 import torch
 from beartype import beartype as typechecker
-from jaxtyping import Bool, Float, Int, jaxtyped
+from jaxtyping import Bool, Float, Int, Shaped, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, IPOLossConfig, LossConfig
@@ -63,11 +63,12 @@ def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[T
     return entropy
 
 
-def shift_tensor_left(t: Tensor) -> Tensor:
+def shift_tensor_left(t: Shaped[Tensor, "batch seq"]) -> Shaped[Tensor, "batch seq"]:
     """Shifts the tensor one token to the left.
 
-    Used to create labels from input_ids: labels[i] = input_ids[i+1], and to move
-    a per-token mask onto the next-token positions the LM head runs on.
+    Used to create labels from input_ids (dtype long) and to move a per-token mask
+    (dtype bool) onto the next-token positions the LM head runs on, so it takes any
+    dtype rather than just float.
     The last position is padded with 0 (a valid token index, and False for a mask)
     since this value will be shifted off by shift_tensor_right and never used.
     """
