@@ -2705,6 +2705,7 @@ function timelineSpanHtml(lane, span, start, total) {
     ["duration", partial ? "—" : fmtDuration(span.ended_at - span.started_at)],
   ];
   if (span.track === "activity") {
+    if (span.shared) rows.push(["branch role", "shared prefix"]);
     const totalInput = span.input_tokens == null ? null : span.input_tokens + (span.cached_tokens || 0);
     appendTimelineUsage(rows, {
       input_tokens: span.input_tokens,
@@ -2729,7 +2730,7 @@ function timelineSpanHtml(lane, span, start, total) {
   const node = span.node_index == null ? "" : ` data-tl-node="${span.node_index}"`;
   const call = span.call_index == null ? "" : ` data-tl-call="${span.call_index}"`;
   return (
-    `<button class="tl-span ${esc(span.track)} ${esc(span.kind)} ${span.status === "running" ? "running" : ""} ${partial ? "untimed" : ""}"` +
+    `<button class="tl-span ${esc(span.track)} ${esc(span.kind)} ${span.shared ? "shared" : ""} ${span.status === "running" ? "running" : ""} ${partial ? "untimed" : ""}"` +
     ` style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%" data-tl-trace="${lane.trace_index}"${node}${call}${tip}></button>`
   );
 }
@@ -2775,7 +2776,7 @@ function renderTimeline() {
     .map((fraction) => `<span style="left:${fraction * 100}%">${fraction ? fmtDuration(total * fraction) : "0"}</span>`)
     .join("");
   target.innerHTML =
-    `<div class="tl-shell"><div class="tl-head"><span>execution segments</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
+    `<div class="tl-shell"><div class="tl-head"><span>branches</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
     timeline.lanes.map((lane) => timelineLaneHtml(lane, start, total)).join("") +
     `</div>`;
 }

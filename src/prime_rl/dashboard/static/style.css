@@ -731,6 +731,7 @@ mark.hit {
 .tl-span { position: absolute; min-width: 3px; cursor: pointer; border: 0; padding: 0; }
 .tl-span.lifecycle { top: 7px; height: 13px; opacity: 0.78; }
 .tl-span.activity { top: 28px; height: 6px; background: var(--grey-4); }
+.tl-span.activity.shared { opacity: 0.28; }
 .tl-span.untimed { border-left: 3px double var(--grey-6); }
 .tl-span:hover, .tl-span:focus-visible { opacity: 1; outline: 1px solid var(--grey-6); outline-offset: 1px; }
 .tl-span.boot, .tl-span.setup { background: var(--grey-4); }
