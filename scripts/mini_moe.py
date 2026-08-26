@@ -12,6 +12,10 @@ How this mirrors production:
   5. Prime LM head injected, as setup_model does
   6. seq_lens passed explicitly, but as one document, so packed boundaries stay untested
 
+NOTE: should be taken as a very coarse sanity check against catastrophic incorrectness. Thresholds
+are loose and may pass even with moderate correctness bugs. Not a replacement for robust unit
+testing.
+
 Usage:
     # Create and verify
     uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
