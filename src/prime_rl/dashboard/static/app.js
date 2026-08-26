@@ -576,6 +576,7 @@ function buildSections(meta) {
       { regex: `eval/${envPattern}/effective/[^/]+/avg@.*` },
       { regex: `eval/${envPattern}/effective/[^/]+/reward/mean`, split: true },
       { regex: `eval/${envPattern}/all/[^/]+/reward/mean`, split: true },
+      { regex: `eval/${envPattern}/all/cancelled/mean` },
       ...COMMON_METRICS.map((m) => ({ regex: `eval/${envPattern}/${m}` })),
       ...COMMON_REGEXES.map((r) => ({ regex: `eval/${envPattern}/${r}` })),
     ],

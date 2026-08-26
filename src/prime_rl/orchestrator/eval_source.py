@@ -71,6 +71,12 @@ class EvalSource:
             return None
         return self.queue.popleft()
 
+    def cancel_step(self, step: int) -> list[TaskRequest]:
+        """Remove and return queued examples for a superseded eval step."""
+        cancelled = [request for request in self.queue if request.step == step]
+        self.queue = deque(request for request in self.queue if request.step != step)
+        return cancelled
+
     def __bool__(self) -> bool:
         return bool(self.queue)
 

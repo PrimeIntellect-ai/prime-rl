@@ -35,7 +35,7 @@ class Progress:
 
 WorkKind = Literal["train", "eval"]
 
-CancelReason = Literal["stale", "overload"]
+CancelReason = Literal["stale", "overload", "superseded"]
 
 
 @dataclass
@@ -43,11 +43,12 @@ class GroupCancellation:
     """Terminal marker for a dropped group: one message covering every episode
     the group still owed the sink (in-flight and never-dispatched), so
     count-to-``group_size`` finalization still fires. ``reason`` distinguishes
-    pipeline decisions (staleness, overload cut) from episode errors."""
+    pipeline decisions (staleness, overload cut, superseded eval) from episode errors."""
 
     kind: WorkKind
     env_name: str
     group_id: str
+    step: int
     count: int
     reason: CancelReason
 
@@ -131,6 +132,7 @@ class EvalBatch:
     step: int
     episodes: EvalEpisodes
     failures: list[DispatchFailure]
+    cancelled: int = 0
 
 
 class VersionObserver(Protocol):

@@ -27,6 +27,11 @@ class EvalsEvalConfig(EvalConfig):
     """Adaptive in-flight episode concurrency (``[eval.concurrency]``), sized by the
     same controller as the orchestrator's ``[orchestrator.concurrency]``."""
 
+    cancel_on_new_checkpoint: bool = True
+    """For online evals, cancel unfinished episodes when a newer trainer checkpoint is ready.
+    Disable to finish every triggered eval epoch before loading later weights. The trainer can
+    idle while it waits for slow evals."""
+
     @property
     def env_addresses(self) -> dict[tuple[str, str], str]:
         """Where each eval source's env server lives, keyed by ``("eval", resolved_name)``.
