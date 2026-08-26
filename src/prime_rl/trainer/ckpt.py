@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 from torch import nn
+from torch.distributed.checkpoint.default_planner import DefaultLoadPlanner
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict, set_state_dict
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
@@ -30,6 +31,51 @@ class Progress:
     step: int = 1
     total_tokens: int = 0
     total_samples: int = 0
+
+
+def load_distributed_checkpoint(
+    state_dict: dict[str, Any],
+    checkpoint_id: Path,
+    *,
+    allow_partial_load: bool = False,
+) -> None:
+    """Load a DCP checkpoint. Partial load tolerates absent optimizer keys only."""
+    dcp_load(
+        state_dict=state_dict,
+        checkpoint_id=checkpoint_id,
+        planner=DefaultLoadPlanner(allow_partial_load=allow_partial_load),
+    )
+
+
+def load_trainer_checkpoint(
+    path: Path,
+    model: nn.Module,
+    optimizers: list[OptimizerLike],
+    scheduler: LRScheduler | None,
+    progress: Progress | None,
+    *,
+    skip_optimizer: bool = False,
+) -> None:
+    """Load model (strict) then optimizer state (partial when never-trained params were omitted)."""
+    if skip_optimizer:
+        load_distributed_checkpoint(
+            {"app": AppState(model, [], scheduler, progress)},
+            path,
+            allow_partial_load=False,
+        )
+        return
+
+    # Strict pass: model, scheduler, and progress must match the checkpoint exactly.
+    load_distributed_checkpoint(
+        {"app": AppState(model, [], scheduler, progress)},
+        path,
+        allow_partial_load=False,
+    )
+    load_distributed_checkpoint(
+        {"app": AppState(model, optimizers, scheduler, progress)},
+        path,
+        allow_partial_load=True,
+    )
 
 
 def _try_rmtree(path: Path, logger) -> None:
@@ -210,9 +256,14 @@ class CheckpointManager:
         start_time = time.perf_counter()
 
         # Load sharded state
-        app_state = AppState(model, optimizers if not self.skip_optimizer else [], scheduler, progress)
-        state_dict = {"app": app_state}
-        dcp_load(state_dict=state_dict, checkpoint_id=path)
+        load_trainer_checkpoint(
+            path,
+            model,
+            optimizers,
+            scheduler,
+            progress,
+            skip_optimizer=self.skip_optimizer,
+        )
         if self.skip_optimizer:
             for optimizer in optimizers:
                 if isinstance(optimizer, OffloadOptimizer):
