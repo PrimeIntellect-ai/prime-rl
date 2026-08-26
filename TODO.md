@@ -81,22 +81,21 @@ Open items:
 - **No MTP.** `num_nextn_predict_layers` is not carried over and no multi-token-prediction head is
   built (HF does not build one either). The conversion chain drops `mtp.*` keys at either nesting
   depth, mirroring HF's `_keys_to_ignore_on_load_unexpected`.
-- **The compressors are still single-document.** `DeepseekV4Model.forward` takes `seq_lens` and
-  clips the sliding window at document boundaries, but both compressors ignore them, in two ways
-  that a mask cannot separate. Their entries are indexed in packed-row coordinates while the
-  readable-set threshold is `(position_ids + 1) // compress_rate` and `position_ids` restart per
-  document, so every document after the first reads entries pooled from the start of the row. And
-  their pooling windows straddle boundaries, blending two rollouts into one entry, which no mask
-  can unblend. The fix is to compress per document; the open design question is that with HCA's
-  production `compress_rate` of 128 against 77-token rollouts, per-document compression leaves
-  roughly 18 of the 43 layers contributing nothing beyond their local window. This is the same
-  property vLLM has, since it serves each rollout alone, so it is what closes the mismatch KL.
-  `tests/unit/train/models/test_deepseek_v4.py` pins all of it with `xfail(strict=True)`.
-  Measured on the local RL smoke, 20 steps, same checkpoint and config either side: clipping the
-  sliding window took `mismatch_kl/all/mean` from 0.507 to 0.063 (worst per-token 106.15 to 3.39),
-  so the window was the dominant term. The residual 0.063 is still roughly 4x the 0.015 merge bar
-  and is what these compressors are expected to account for, though this sandbox's fp8 KV cache
-  and torch-fallback output projection contribute an unapportioned share of it.
+- **Per-document compression makes HCA inert on short rollouts.** The compressors now pool and
+  number their entries per document, so a packed batch matches running each rollout alone, which
+  is what vLLM serves. That closes the packing defects, but it also means a document shorter than
+  a compress rate gets no compressed entry at all: at HCA's production `compress_rate` of 128
+  against 77-token rollouts, roughly 18 of the 43 layers contribute nothing beyond their local
+  sliding window. This is a property of the architecture under short-rollout RL, not a bug, and it
+  is what vLLM already does. Whether it costs quality at the production rollout length is not yet
+  measured.
+- **The mismatch-KL residual has not been re-measured.** On the local RL smoke, 20 steps, same
+  checkpoint and config either side, clipping the sliding window took `mismatch_kl/all/mean` from
+  0.507 to 0.063 (worst per-token 106.15 to 3.39), so the window was the dominant term. The
+  residual 0.063 was roughly 4x the 0.015 merge bar and the compressors were expected to account
+  for most of it. Per-document compression has since landed but the smoke has not been re-run, and
+  this sandbox's fp8 KV cache and torch-fallback output projection contribute an unapportioned
+  share that will not appear on the cluster.
 - **No context parallelism.** CP hands the model pre-shard (global) document boundaries, which
   cannot address a dense local mask built over post-shard positions. `get_model` rejects `cp > 1`
   for this model and `DeepseekV4Model.forward` rejects `seq_lens_are_pre_shard`. Lifting this

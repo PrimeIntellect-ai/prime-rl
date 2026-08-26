@@ -1,6 +1,8 @@
+from dataclasses import dataclass
+
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
@@ -104,6 +106,90 @@ def build_sliding_window_mask(
     return mask.masked_fill_(~allowed, torch.finfo(dtype).min)[None, None]
 
 
+@dataclass(frozen=True)
+class CompressionLayout:
+    """Per-document compressed-entry layout for one compress rate.
+
+    A compressor pools the packed row into entries, and every one of them has to belong to
+    exactly one document: an entry that straddled a boundary would blend two rollouts, and an
+    entry numbered from the start of the row could not be compared against a per-document
+    causal threshold. This carries both, precomputed once per rate and shared by every layer
+    that uses it.
+
+    `seq_lens` has no batch dimension, so one layout describes every row of the batch.
+    """
+
+    src_idx: Tensor  # (N, rate) int64 - source token index in the packed row
+    entry_doc: Tensor  # (N,) int64 - which document each entry belongs to
+    entry_local: Tensor  # (N,) int64 - entry index within its own document
+    is_first: Tensor  # (N,) bool - entry 0 of its document
+    entry_pos: Tensor  # (N,) int64 - == entry_local * rate, the compress-RoPE position
+    doc_of_token: Tensor  # (S,) int64 - which document each packed token belongs to
+
+
+def build_compression_layout(cu_seqlens: Tensor, compress_rate: int, total_tokens: int) -> CompressionLayout:
+    """Lay out the compressed entries of a packed row, document by document.
+
+    Document `d` of length `L_d` gets `L_d // compress_rate` entries; entry `j` covers the
+    `compress_rate` source tokens starting at `cu_seqlens[d] + j * compress_rate`. The
+    trailing `L_d % compress_rate` tokens get no entry, exactly as the unpacked case drops
+    its trailing partial window; they stay visible through the local sliding window.
+
+    A row whose every document is shorter than `compress_rate` yields `N == 0`, which is
+    well-formed: the compressors then contribute nothing beyond their local window.
+    """
+    device = cu_seqlens.device
+    starts = cu_seqlens[:-1].to(torch.int64)
+    lengths = cu_seqlens[1:].to(torch.int64) - starts
+    counts = lengths // compress_rate
+
+    entry_doc = torch.repeat_interleave(torch.arange(counts.numel(), device=device), counts)
+    first_entry_of_doc = counts.cumsum(0) - counts
+    entry_local = torch.arange(int(counts.sum()), device=device) - first_entry_of_doc[entry_doc]
+    entry_pos = entry_local * compress_rate
+    src_idx = starts[entry_doc, None] + entry_pos[:, None] + torch.arange(compress_rate, device=device)[None, :]
+
+    tokens = torch.arange(total_tokens, device=device)
+    doc_of_token = torch.searchsorted(cu_seqlens[1:].to(tokens.dtype), tokens, right=True)
+
+    return CompressionLayout(
+        src_idx=src_idx,
+        entry_doc=entry_doc,
+        entry_local=entry_local,
+        is_first=entry_local == 0,
+        entry_pos=entry_pos,
+        doc_of_token=doc_of_token,
+    )
+
+
+def _cu_seqlens_from_position_ids(position_ids: Tensor, total_tokens: int) -> Tensor:
+    """Recover document boundaries from where `position_ids` stop advancing by one.
+
+    `DeepseekV4Model` always hands its compressors a layout built from the authoritative
+    `seq_lens`; this is the fallback for a caller that drives a compressor directly, and it
+    reads the boundaries the same way HF does for its own window mask. A row of contiguous
+    positions, whatever it starts at, comes back as a single document.
+
+    Not `prime_rl.utils.sequence.get_cu_seqlens_from_position_ids`: that one flattens the batch
+    with `reshape(-1)`, so at batch 2 it reports four documents spanning twice the row. It is
+    written for the trainer, where the batch is always one packed row.
+    """
+    positions = position_ids[0]
+    starts = torch.nonzero(positions[1:] != positions[:-1] + 1).flatten() + 1
+    return torch.cat([starts.new_zeros(1), starts, starts.new_full((1,), total_tokens)])
+
+
+def _readable_entries(layout: CompressionLayout, threshold: Tensor) -> Tensor:
+    """`[batch, seq_len, n_entries]` bool: which entries query `t` may read.
+
+    An entry has to belong to the query's own document, and it has to sit below the query's
+    per-document causal threshold. Comparing the threshold against a packed-row entry number
+    instead would mix the two coordinate systems.
+    """
+    same_document = layout.doc_of_token[None, :, None] == layout.entry_doc[None, None, :]
+    return same_document & (threshold.unsqueeze(-1) > layout.entry_local[None, None, :])
+
+
 class DeepseekV4DualSeriesCompressor(nn.Module):
     """Softmax-gated pooling of the token stream into one entry per `compress_rate` tokens.
 
@@ -111,8 +197,8 @@ class DeepseekV4DualSeriesCompressor(nn.Module):
     independent series: `Ca = [..., :head_dim]` and `Cb = [..., head_dim:]`. Compressed
     entry `w` pools window `w - 1`'s `Ca` slice together with window `w`'s `Cb` slice, so
     the pooling window is `2 * compress_rate` wide with stride `compress_rate` and
-    consecutive entries overlap. Entry `0` has no predecessor, so its `Ca` half is gated
-    with `-inf` and contributes nothing.
+    consecutive entries overlap. The first entry of a document has no predecessor, so its
+    `Ca` half is gated with `-inf` and contributes nothing.
 
     Every entry is rotated with the `compress` RoPE at the absolute position of its own
     window's first source token, which is what makes it comparable with the attention
@@ -135,25 +221,33 @@ class DeepseekV4DualSeriesCompressor(nn.Module):
         self.kv_norm = RMSNorm(RMSNormConfig(hidden_size=head_dim, eps=config.rms_norm_eps))
         self.rotary_emb = DeepseekV4RotaryEmbedding(config)
 
-    def compress(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Compress `[batch, seq_len, hidden_size]` to `[batch, seq_len // compress_rate, head_dim]`.
+    def compress(self, hidden_states: torch.Tensor, layout: CompressionLayout | None = None) -> torch.Tensor:
+        """Compress `[batch, seq_len, hidden_size]` to `[batch, n_entries, head_dim]`.
 
-        The trailing `seq_len % compress_rate` tokens do not fill a window and are
-        dropped; they are still visible through the attention block's local window.
+        `layout` decides which source tokens each entry pools; without one the row is treated
+        as a single document, which is the only reading available to a caller that supplies no
+        boundaries.
         """
         batch, seq_len, _ = hidden_states.shape
-        n_windows = seq_len // self.compress_rate
-        if n_windows == 0:
+        if layout is None:
+            boundaries = torch.tensor([0, seq_len], device=hidden_states.device)
+            layout = build_compression_layout(boundaries, self.compress_rate, seq_len)
+        n_entries = layout.src_idx.shape[0]
+        if n_entries == 0:
             return hidden_states.new_zeros(batch, 0, self.head_dim)
 
-        usable = n_windows * self.compress_rate
-        window_shape = (batch, n_windows, self.compress_rate, -1)
-        kv = self.kv_proj(hidden_states)[:, :usable].view(window_shape)
-        gate = self.gate_proj(hidden_states)[:, :usable].view(window_shape) + self.position_bias
+        kv = self.kv_proj(hidden_states)[:, layout.src_idx]
+        gate = self.gate_proj(hidden_states)[:, layout.src_idx] + self.position_bias
 
-        # Shift the `Ca` series one window later so entry `w` sees window `w - 1`'s.
-        previous_kv = F.pad(kv[:, :-1, :, : self.head_dim], (0, 0, 0, 0, 1, 0))
-        previous_gate = F.pad(gate[:, :-1, :, : self.head_dim], (0, 0, 0, 0, 1, 0), value=float("-inf"))
+        # Shift the `Ca` series one entry later so entry `w` sees entry `w - 1`'s. The first
+        # entry of every document has no predecessor, and the entry sitting before it in the
+        # packed row belongs to another document, so both halves are cleared: the gate to
+        # `-inf` and the values to zero. Zeroing is not redundant with the gate, because a
+        # zero softmax weight against a non-finite value would still yield NaN.
+        previous = (torch.arange(n_entries, device=hidden_states.device) - 1).clamp(min=0)
+        first_entry = layout.is_first[None, :, None, None]
+        previous_kv = kv[:, previous, :, : self.head_dim].masked_fill(first_entry, 0.0)
+        previous_gate = gate[:, previous, :, : self.head_dim].masked_fill(first_entry, float("-inf"))
         pooled_kv = torch.cat([previous_kv, kv[..., self.head_dim :]], dim=2)
         pooled_gate = torch.cat([previous_gate, gate[..., self.head_dim :]], dim=2)
 
@@ -161,8 +255,7 @@ class DeepseekV4DualSeriesCompressor(nn.Module):
         weights = pooled_gate.softmax(dim=2, dtype=torch.float32).to(pooled_kv.dtype)
         compressed = self.kv_norm((pooled_kv * weights).sum(dim=2))
 
-        positions = torch.arange(n_windows, device=compressed.device) * self.compress_rate
-        cos, sin = self.rotary_emb(compressed, positions.unsqueeze(0).expand(batch, -1), self.rope_layer_type)
+        cos, sin = self.rotary_emb(compressed, layout.entry_pos.unsqueeze(0).expand(batch, -1), self.rope_layer_type)
         return apply_rotary_pos_emb_interleaved(compressed.unsqueeze(1), cos, sin).squeeze(1)
 
     def causal_threshold(self, position_ids: torch.Tensor) -> torch.Tensor:
@@ -223,10 +316,18 @@ class DeepseekV4Indexer(DeepseekV4DualSeriesCompressor):
         self.scorer = DeepseekV4IndexerScorer(config)
 
     def forward(
-        self, hidden_states: torch.Tensor, q_residual: torch.Tensor, position_ids: torch.Tensor
+        self,
+        hidden_states: torch.Tensor,
+        q_residual: torch.Tensor,
+        position_ids: torch.Tensor,
+        layout: CompressionLayout | None = None,
     ) -> torch.Tensor:
         batch, seq_len, _ = hidden_states.shape
-        compressed_kv = self.compress(hidden_states)
+        if layout is None:
+            layout = build_compression_layout(
+                _cu_seqlens_from_position_ids(position_ids, seq_len), self.compress_rate, seq_len
+            )
+        compressed_kv = self.compress(hidden_states, layout)
         compressed_len = compressed_kv.shape[1]
         top_k = min(self.index_topk, compressed_len)
 
@@ -238,13 +339,12 @@ class DeepseekV4Indexer(DeepseekV4DualSeriesCompressor):
         if compressed_len == 0:
             return scores.topk(top_k, dim=-1).indices
 
-        threshold = self.causal_threshold(position_ids).unsqueeze(-1)
-        entries = torch.arange(compressed_len, device=scores.device).view(1, 1, -1)
-        scores = scores.masked_fill(entries >= threshold, float("-inf"))
+        readable = _readable_entries(layout, self.causal_threshold(position_ids)).expand_as(scores)
+        scores = scores.masked_fill(~readable, float("-inf"))
         top_k_indices = scores.topk(top_k, dim=-1).indices
         # An early query has fewer than `top_k` readable entries, so top-k still hands back
         # masked-out ones. Mark those `-1` rather than letting them leak into attention.
-        return torch.where(top_k_indices >= threshold, torch.full_like(top_k_indices, -1), top_k_indices)
+        return torch.where(readable.gather(-1, top_k_indices), top_k_indices, torch.full_like(top_k_indices, -1))
 
 
 class DeepseekV4CSACompressor(DeepseekV4DualSeriesCompressor):
@@ -261,13 +361,23 @@ class DeepseekV4CSACompressor(DeepseekV4DualSeriesCompressor):
         self.indexer = DeepseekV4Indexer(config)
 
     def forward(
-        self, hidden_states: torch.Tensor, q_residual: torch.Tensor, position_ids: torch.Tensor
+        self,
+        hidden_states: torch.Tensor,
+        q_residual: torch.Tensor,
+        position_ids: torch.Tensor,
+        layout: CompressionLayout | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         batch, seq_len, _ = hidden_states.shape
-        compressed_kv = self.compress(hidden_states).unsqueeze(1)
+        if layout is None:
+            layout = build_compression_layout(
+                _cu_seqlens_from_position_ids(position_ids, seq_len), self.compress_rate, seq_len
+            )
+        compressed_kv = self.compress(hidden_states, layout).unsqueeze(1)
         compressed_len = compressed_kv.shape[2]
 
-        top_k_indices = self.indexer(hidden_states, q_residual, position_ids)
+        # The indexer shares this layout: it compresses the same source windows at a narrower
+        # head dim, so its entry `n` and this compressor's entry `n` are the same window.
+        top_k_indices = self.indexer(hidden_states, q_residual, position_ids, layout)
         # The `-1` sentinels are scattered into one throwaway column that is sliced back off.
         safe_indices = torch.where(top_k_indices >= 0, top_k_indices, torch.full_like(top_k_indices, compressed_len))
         block_bias = compressed_kv.new_full((batch, 1, seq_len, compressed_len + 1), float("-inf"))
@@ -307,44 +417,52 @@ class DeepseekV4HCACompressor(nn.Module):
         self.kv_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
         self.rotary_emb = DeepseekV4RotaryEmbedding(config)
 
-    def compress(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Compress `[batch, seq_len, hidden_size]` to `[batch, seq_len // compress_rate, head_dim]`.
+    def compress(self, hidden_states: torch.Tensor, layout: CompressionLayout | None = None) -> torch.Tensor:
+        """Compress `[batch, seq_len, hidden_size]` to `[batch, n_entries, head_dim]`.
 
-        The trailing `seq_len % compress_rate` tokens do not fill a window and are dropped,
-        as in CSA; they are still visible through the attention block's local window.
+        `layout` decides which source tokens each entry pools; without one the row is treated
+        as a single document, as in CSA.
         """
         batch, seq_len, _ = hidden_states.shape
-        n_windows = seq_len // self.compress_rate
-        if n_windows == 0:
+        if layout is None:
+            boundaries = torch.tensor([0, seq_len], device=hidden_states.device)
+            layout = build_compression_layout(boundaries, self.compress_rate, seq_len)
+        if layout.src_idx.shape[0] == 0:
             return hidden_states.new_zeros(batch, 0, self.head_dim)
 
-        usable = n_windows * self.compress_rate
-        window_shape = (batch, n_windows, self.compress_rate, -1)
-        kv = self.kv_proj(hidden_states)[:, :usable].view(window_shape)
-        gate = self.gate_proj(hidden_states)[:, :usable].view(window_shape) + self.position_bias
+        kv = self.kv_proj(hidden_states)[:, layout.src_idx]
+        gate = self.gate_proj(hidden_states)[:, layout.src_idx] + self.position_bias
 
         # fp32 softmax: in bf16 the gate logits of a wide window collapse onto each other.
         weights = gate.softmax(dim=2, dtype=torch.float32).to(kv.dtype)
         compressed = self.kv_norm((kv * weights).sum(dim=2))
 
-        positions = torch.arange(n_windows, device=compressed.device) * self.compress_rate
-        cos, sin = self.rotary_emb(compressed, positions.unsqueeze(0).expand(batch, -1), self.rope_layer_type)
+        cos, sin = self.rotary_emb(compressed, layout.entry_pos.unsqueeze(0).expand(batch, -1), self.rope_layer_type)
         return apply_rotary_pos_emb_interleaved(compressed.unsqueeze(1), cos, sin).squeeze(1)
 
     def forward(
-        self, hidden_states: torch.Tensor, q_residual: torch.Tensor, position_ids: torch.Tensor
+        self,
+        hidden_states: torch.Tensor,
+        q_residual: torch.Tensor,
+        position_ids: torch.Tensor,
+        layout: CompressionLayout | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """`q_residual` is part of the compressor contract but unused: HCA has no indexer."""
         batch, seq_len, _ = hidden_states.shape
-        compressed_kv = self.compress(hidden_states).unsqueeze(1)
+        if layout is None:
+            layout = build_compression_layout(
+                _cu_seqlens_from_position_ids(position_ids, seq_len), self.compress_rate, seq_len
+            )
+        compressed_kv = self.compress(hidden_states, layout).unsqueeze(1)
         compressed_len = compressed_kv.shape[2]
 
-        # Entry `w` pools source tokens up to index `(w + 1) * compress_rate - 1`, so it
-        # only becomes readable once the query has reached that token.
-        threshold = ((position_ids + 1) // self.compress_rate).unsqueeze(1).unsqueeze(-1)
-        entries = torch.arange(compressed_len, device=compressed_kv.device).view(1, 1, 1, -1)
+        # Entry `j` of a document pools its source tokens up to local index
+        # `(j + 1) * compress_rate - 1`, so it only becomes readable once the query has
+        # reached that token of its own document.
+        threshold = (position_ids + 1) // self.compress_rate
+        readable = _readable_entries(layout, threshold).unsqueeze(1)
         block_bias = compressed_kv.new_zeros((batch, 1, seq_len, compressed_len))
-        return compressed_kv, block_bias.masked_fill_(entries >= threshold, float("-inf"))
+        return compressed_kv, block_bias.masked_fill_(~readable, float("-inf"))
 
     def init_weights(self, init_std: float) -> None:
         # `init_std` is unused: the projections are initialized by the caller and the
@@ -417,6 +535,7 @@ class DeepseekV4Attention(nn.Module):
         position_embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]],
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
+        compression_layouts: dict[int, CompressionLayout] | None = None,
     ) -> tuple[torch.Tensor, None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -434,10 +553,10 @@ class DeepseekV4Attention(nn.Module):
 
         if self.compressor is not None:
             if position_ids is None:
-                # Single document, as in the `cu_seqlens`-less mask above. Both compressors
-                # assume one document per row regardless; see TODO.md.
+                # Single document, as in the `cu_seqlens`-less mask above.
                 position_ids = torch.arange(input_shape[1], device=hidden_states.device).expand(input_shape[0], -1)
-            compressed_kv, block_bias = self.compressor(hidden_states, q_residual, position_ids)
+            layout = compression_layouts[self.compressor.compress_rate] if compression_layouts else None
+            compressed_kv, block_bias = self.compressor(hidden_states, q_residual, position_ids, layout)
             kv = torch.cat([kv, compressed_kv], dim=2)
             # The compressed entries live outside the local window, so the sliding mask says
             # nothing about them; `block_bias` carries their per-query causality and the
@@ -473,12 +592,14 @@ class DeepseekV4Attention(nn.Module):
 
 
 __all__ = [
+    "CompressionLayout",
     "DeepseekV4Attention",
     "DeepseekV4CSACompressor",
     "DeepseekV4GroupedLinear",
     "DeepseekV4HCACompressor",
     "DeepseekV4Indexer",
     "DeepseekV4IndexerScorer",
+    "build_compression_layout",
     "build_sliding_window_mask",
     "eager_attention_with_sinks",
 ]

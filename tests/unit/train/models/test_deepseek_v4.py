@@ -378,23 +378,21 @@ def test_deepseek_v4_init_buffers_post_meta_restores_every_rotary():
 # Everything below exercises a *packed* batch: several rollouts concatenated into one row, with
 # `position_ids` restarting at 0 per document and the per-document lengths handed over as
 # `seq_lens`, exactly as `trainer/batch.py` builds them. `DeepseekV4Model.forward` consumes
-# `seq_lens` for the sliding-window mask (defect 1, fixed) and nowhere else. Both compressors
-# still ignore document boundaries: their entries are addressed in packed coordinates while the
-# readable-set threshold counts per document (defect 2), and their pooling windows straddle
-# boundaries (defect 3). Those two are inherited from HF, which never runs this model on packed
-# input, so unlike the mask they have no upstream reference to copy and have to be designed.
+# `seq_lens` for the sliding-window mask and for the compression layout both compressors pool
+# and number their entries against, so every pathway a query reads through stops at the
+# boundaries of that query's own document.
 #
 # The assertions deliberately avoid naming which compressed entry index belongs to which
-# document, and go through `forward` rather than the internals it calls. A fix that compresses
-# per document renumbers the entries, and an index-based assertion would then stay red for the
-# wrong reason, which `strict=True` cannot detect. They state the invariant instead: redraw the
-# first document and nothing the second document reads may move, and what a query reads must not
-# depend on whether its document was packed or run alone.
+# document, and go through `forward` rather than the internals it calls. Entry numbering is a
+# detail of the layout, so an index-based assertion would pin the numbering scheme rather than
+# the property that matters. They state the invariant instead: redraw the first document and
+# nothing the second document reads may move, and what a query reads must not depend on whether
+# its document was packed or run alone.
 
-# Neither length is a multiple of a compress rate, so the boundary falls mid-window for both
-# compressors and defect 3's blending is reached on each.
+# Neither length is a multiple of a compress rate, so each document ends mid-window and both
+# compressors have to drop a trailing partial window instead of pooling across the boundary.
 _DOC_LENS = (14, 18)
-# Below the HCA compress rate of 8, where packed and unpacked agree for a reason that is not a fix.
+# Below the HCA compress rate of 8, where HCA yields no entries and contributes nothing either way.
 _SHORT_DOC_LENS = (6, 6)
 
 
@@ -496,20 +494,18 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
     distance = positions[:, None] - positions[None, :]
     expected = (doc_ids[:, None] == doc_ids[None, :]) & (distance >= 0) & (distance < _BASE["sliding_window"])
     for layer_idx, mask in enumerate(recorded):
-        # Compressed layers append their own entries as extra columns; those carry defects 2 and 3
-        # and are covered separately, so only the local window is compared here.
+        # Compressed layers append their own entries as extra columns; those are covered
+        # separately, so only the local window is compared here.
         local = mask[0, 0, :, :total] == 0
         assert torch.equal(local, expected), f"layer {layer_idx}: the local window crosses a document boundary"
 
 
-@pytest.mark.xfail(strict=True, reason="defects 2 and 3: the compressors still ignore document boundaries")
 def test_packed_logits_match_unpacked(_torch_rms_norm):
     """The invariant that makes the trainer agree with vLLM, which serves each rollout alone.
 
-    Both remaining defects land here: the compressed entries addressed in packed coordinates while
-    their threshold counts per document (`attention.py:159`, `:226-232`, `:329-332`), and pooling
-    windows that straddle boundaries (`attention.py:129-151`, `:301-317`). The sliding window no
-    longer contributes.
+    End to end over every pathway at once: the local sliding window, the CSA compressor with its
+    indexer, and HCA. Each document's logits have to come out the same whether it is packed beside
+    another rollout or served on its own.
     """
     _, prime_model = get_model_pairs(dtype=torch.float32)
     input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)
@@ -526,47 +522,40 @@ def test_packed_logits_match_unpacked(_torch_rms_norm):
         _assert_relative(packed[:, span], alone, 1e-4, f"document {index}")
 
 
-@pytest.mark.xfail(strict=True, reason="defect 2: CSA thresholds a per-document counter against packed entries")
 def test_packed_csa_reads_only_own_document_entries(_torch_rms_norm):
-    """CSA points the second document's long-range pathway at the start of the row.
+    """CSA's long-range pathway stays inside the querying token's own document.
 
-    `causal_threshold` returns `(position_ids + 1) // compress_rate` (`attention.py:159`), and
-    `position_ids` restart per document, but entry `w` pools *packed* positions
-    (`attention.py:129-151`). A query at local position 4 of the second document therefore reads
-    entry 0, which pools the first document's opening tokens, while its own document's entries sit
-    above the threshold and are masked off as future.
+    `causal_threshold` counts entries per document and `build_compression_layout` numbers and
+    pools them per document to match, so the entries a query at local position 4 of the second
+    document may read are its own document's, not the ones pooled from the first.
     """
     _, prime_model = get_model_pairs(dtype=torch.float32)
     _assert_reads_are_document_local(_compressor_of_type(prime_model, DeepseekV4CSACompressor), _DOC_LENS)
 
 
-@pytest.mark.xfail(strict=True, reason="defect 2: HCA thresholds a per-document counter against packed entries")
 def test_packed_hca_reads_only_own_document_entries(_torch_rms_norm):
-    """The same coordinate mismatch in HCA, which has no indexer to narrow the damage.
+    """The same invariant for HCA, which has no indexer and reads every entry under its threshold.
 
-    `attention.py:329-332` compares `(position_ids + 1) // compress_rate` against entries indexed
-    from the start of the packed row, and every entry under that threshold is readable rather than
-    a selected few. The documents here are longer than the compress rate of 8 on purpose: below it
-    the threshold floors to zero and the defect hides, which
-    `test_hca_inert_below_compress_rate_matches_unpacked` pins.
+    The documents here are longer than the compress rate of 8 on purpose: below it the threshold
+    floors to zero, HCA contributes nothing at all, and the probe would be vacuous. That regime is
+    covered by `test_hca_inert_below_compress_rate_matches_unpacked` instead.
     """
     _, prime_model = get_model_pairs(dtype=torch.float32)
     _assert_reads_are_document_local(_compressor_of_type(prime_model, DeepseekV4HCACompressor), _DOC_LENS)
 
 
-@pytest.mark.xfail(strict=True, reason="defects 2 and 3: CSA hands a query different entries packed than alone")
 def test_packed_csa_selection_matches_unpacked(_torch_rms_norm):
     """What the Lightning Indexer hands a query must not depend on how the row was packed.
 
-    The indexer masks its candidates with the same mismatched threshold (`attention.py:226-232`),
-    so the second document's top-k is drawn from the first document's entries, and the entries
-    themselves pool across the boundary (`attention.py:129-151`).
+    The indexer masks its candidates to the querying document's own entries, and those entries
+    pool only that document's tokens, so a query's top-k comes out the same either way.
 
     This is the oracle `forward(pack([A, B])) == concat(forward(A), forward(B))` applied one level
-    down, so unlike the perturbation probes above it also catches the blending, which no mask can
-    repair. Compared as the gathered entry *values* per query, not as indices, since a fix that
-    compresses per document renumbers the entries. It goes through `forward` rather than
-    `compress` and `indexer` directly, so a fix living in `forward` reaches it.
+    down, so unlike the perturbation probes above it also catches pooling that blends two
+    documents, which no mask can repair. Compared as the gathered entry *values* per query, not as
+    indices, since entries are numbered per document and the packed row numbers the second
+    document's entries differently than the lone run does. It goes through `forward` rather than
+    `compress` and `indexer` directly, so the whole path a query takes is covered.
     """
     _, prime_model = get_model_pairs(dtype=torch.float32)
     compressor = _compressor_of_type(prime_model, DeepseekV4CSACompressor)
@@ -594,18 +583,17 @@ def test_packed_csa_selection_matches_unpacked(_torch_rms_norm):
 
 
 def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):
-    """Not a defect: HCA contributes nothing either way when documents are shorter than its rate.
+    """HCA contributes nothing either way when every document is shorter than its rate.
 
-    The threshold `(position_ids + 1) // 8` (`attention.py:329`) floors to zero for every query in
-    a 6-token document, so nothing is readable and `exp(-inf) = 0`; run alone, the document is too
-    short to fill a window and there are no entries at all. Packed and unpacked agree, so this is
-    a capability loss rather than a packing mismatch and must not be "fixed" here. It matters
-    because a whole-model packing test built on documents this short would report green while HCA
-    is broken.
+    Its threshold `(position_ids + 1) // 8` floors to zero for every query in a 6-token document,
+    so nothing is readable and `exp(-inf) = 0`; run alone, the document is too short to fill a
+    window and there are no entries at all. Packed and unpacked agree, so this is a capability
+    loss rather than a packing mismatch and must not be "fixed" here. It matters because a
+    whole-model packing test built on documents this short would report green without ever
+    exercising HCA.
 
-    Asserted as "no query reads anything", not as an entry count: the 12-token row happens to fill
-    one global window today, but a fix that compresses per document leaves zero entries, and both
-    satisfy the invariant.
+    Asserted as "no query reads anything", not as an entry count, so it holds whether the row
+    yields entries none of these queries may read or no entries at all.
     """
     _, prime_model = get_model_pairs(dtype=torch.float32)
     compressor = _compressor_of_type(prime_model, DeepseekV4HCACompressor)
