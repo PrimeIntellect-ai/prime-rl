@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from functools import wraps
 from math import prod
 from threading import Event
+from types import ModuleType
 from typing import TYPE_CHECKING, Any, cast
 
 import torch
@@ -83,6 +84,10 @@ class NIXLWeightUpdateWorker(Worker):
     @property
     def raw_model(self) -> nn.Module:
         return cast(nn.Module, self.model_runner.get_model())
+
+    @property
+    def device_module(self) -> ModuleType:
+        return torch.get_device_module(self.device)
 
     def liveness_probe(self) -> None:
         return None
@@ -319,15 +324,16 @@ class NIXLWeightUpdateWorker(Worker):
             1,
             sum(elements * dtype.itemsize for dtype, elements in receive_buffer_elements.items()),
         )
-        allocated_bytes = torch.cuda.memory_allocated(self.device)
+        device_module = self.device_module
+        allocated_bytes = device_module.memory_allocated(self.device)
         peak_growth_bytes = max(
             0,
-            torch.cuda.max_memory_allocated(self.device) - allocated_bytes,
+            device_module.max_memory_allocated(self.device) - allocated_bytes,
         )
-        free_bytes, _ = torch.cuda.mem_get_info(self.device)
+        free_bytes, _ = device_module.mem_get_info(self.device)
         max_receive_buffers = min(2, staging_buffer_count) if peak_growth_bytes else 1
         if peak_growth_bytes or free_bytes < receive_buffer_bytes:
-            torch.cuda.empty_cache()
+            device_module.empty_cache()
         return size_device_buffers(
             receive_buffer_bytes,
             max_receive_buffers,
@@ -340,7 +346,7 @@ class NIXLWeightUpdateWorker(Worker):
         receive_buffer_elements: dict[torch.dtype, int],
         receive_buffer_count: int,
     ) -> dict[torch.dtype, torch.Tensor]:
-        with use_registerable_pool():
+        with use_registerable_pool(self.device):
             receive_arenas = {
                 dtype: torch.empty(
                     receive_buffer_count * elements,
@@ -518,7 +524,7 @@ class NIXLWeightUpdateWorker(Worker):
         started = time.perf_counter()
         self.apply_transfer_plan(plan)
         update_mla_absorbed_weights(self.raw_model)
-        torch.cuda.synchronize(self.device)
+        self.device_module.synchronize(self.device)
         self.model_express.set_status(p2p_pb2.SOURCE_STATUS_READY)
         logger.info(
             "Applied NIXL policy update on rank %d in %.2fs",
@@ -576,7 +582,7 @@ class NIXLWeightUpdateWorker(Worker):
             session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
 
         def prefetch_group(group_index: int) -> WeightTransferGroup:
-            torch.cuda.set_device(self.device)
+            self.device_module.set_device(self.device)
             transfer_group = pull_group(group_index)
             acknowledge_group(group_index)
             return transfer_group
@@ -619,12 +625,12 @@ class NIXLWeightUpdateWorker(Worker):
                 for group_index in range(len(plan.groups)):
                     transfer_group = pull.result() if pull is not None else pull_group(group_index)
 
-                    torch.cuda.synchronize(self.device)
+                    self.device_module.synchronize(self.device)
                     if executor is not None and group_index + 1 < len(plan.groups):
                         pull = executor.submit(prefetch_group, group_index + 1)
 
                     replay_group(transfer_group)
-                    torch.cuda.synchronize(self.device)
+                    self.device_module.synchronize(self.device)
 
                     if not pipelined:
                         acknowledge_group(group_index)

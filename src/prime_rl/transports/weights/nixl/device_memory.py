@@ -1,8 +1,9 @@
-"""CUDA memory sizing and a cudaMalloc-backed pool for NIXL arenas."""
+"""Device memory sizing and registerable allocation for NIXL arenas."""
 
 from __future__ import annotations
 
 import ctypes
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -25,7 +26,7 @@ def size_device_buffers(
     device: torch.device,
     extra_headroom_bytes: int,
 ) -> int:
-    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+    free_bytes, total_bytes = torch.get_device_module(device).mem_get_info(device)
     headroom_bytes = max(4 * 1024**3, int(total_bytes * 0.02)) + extra_headroom_bytes
     return max(1, min(max_buffers, (free_bytes - headroom_bytes) // buffer_bytes))
 
@@ -72,7 +73,44 @@ void cuda_free(void* pointer, ptrdiff_t size, int device, void* stream) {
     return _pool
 
 
+def _expandable_segments_enabled(config: str) -> bool:
+    for item in config.split(","):
+        key, separator, value = item.partition(":")
+        if separator and key.strip() == "expandable_segments" and value.strip().lower() == "true":
+            return True
+    return False
+
+
+def _check_caching_allocator_registerable() -> None:
+    """Reject expandable segments, which hand out unregisterable addresses.
+
+    An expandable segment spans several driver-level physical handles, so the
+    NIC cannot pin the virtual range and NIXL registration fails. Both variables
+    are supported because a trainer inherits ``PYTORCH_CUDA_ALLOC_CONF`` regardless
+    of its accelerator (see ``DEFAULT_TRAINER_ENV_VARS``).
+    """
+    config = os.environ.get("PYTORCH_ALLOC_CONF")
+    if config is None:
+        config = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+    if _expandable_segments_enabled(config):
+        raise RuntimeError(
+            "NIXL weight transfer cannot register memory allocated with "
+            "expandable_segments:True. Set expandable_segments:False for this component."
+        )
+
+
 @contextmanager
-def use_registerable_pool() -> Iterator[None]:
-    with torch.cuda.use_mem_pool(_get_pool()):
+def use_registerable_pool(device: torch.device) -> Iterator[None]:
+    """Allocate memory that NIXL can register."""
+    if device.type == "cuda":
+        # The caching allocator runs with expandable segments here, so arenas come
+        # from a dedicated cudaMalloc pool instead.
+        with torch.cuda.use_mem_pool(_get_pool()):
+            yield
+    elif device.type == "xpu":
+        # Registration needs one allocation per region, which the caching allocator
+        # already satisfies once expandable segments are off.
+        _check_caching_allocator_registerable()
         yield
+    else:
+        raise NotImplementedError(f"NIXL weight transfer does not support {device.type!r} devices")

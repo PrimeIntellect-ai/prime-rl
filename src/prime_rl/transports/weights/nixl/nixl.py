@@ -188,12 +188,13 @@ class NIXLWeightSender(WeightSender):
         local_buffer_count = min(len(self.transfer_group_names), MAX_STAGING_BUFFER_COUNT)
         if self.is_serving_rank and largest_group_bytes:
             device = self.staged_shards[0].source_tensor.device
-            allocated_bytes = torch.cuda.memory_allocated()
-            peak_growth_bytes = max(0, torch.cuda.max_memory_allocated() - allocated_bytes)
-            free_bytes, _ = torch.cuda.mem_get_info(device)
+            device_module = torch.get_device_module(device)
+            allocated_bytes = device_module.memory_allocated(device)
+            peak_growth_bytes = max(0, device_module.max_memory_allocated(device) - allocated_bytes)
+            free_bytes, _ = device_module.mem_get_info(device)
             max_buffers = local_buffer_count if peak_growth_bytes else 1
             if peak_growth_bytes or free_bytes < largest_group_bytes:
-                torch.cuda.empty_cache()
+                device_module.empty_cache()
             local_buffer_count = size_device_buffers(
                 largest_group_bytes,
                 max_buffers,
@@ -201,10 +202,15 @@ class NIXLWeightSender(WeightSender):
                 extra_headroom_bytes=peak_growth_bytes,
             )
 
+        # Every rank reaches this collective, including non-serving ranks that never
+        # resolved a staged device above.
         staging_buffer_count = torch.tensor(
             local_buffer_count,
             dtype=torch.int64,
-            device=torch.device("cuda", torch.cuda.current_device()),
+            device=torch.device(
+                torch.accelerator.current_accelerator().type,
+                torch.accelerator.current_device_index(),
+            ),
         )
         dist.all_reduce(staging_buffer_count, op=dist.ReduceOp.MIN)
         return int(staging_buffer_count.item())
@@ -214,7 +220,7 @@ class NIXLWeightSender(WeightSender):
             return
 
         device = self.staged_shards[0].source_tensor.device
-        with use_registerable_pool():
+        with use_registerable_pool(device):
             self.staging_arenas = {
                 dtype: torch.empty(
                     self.staging_buffer_count * elements,
@@ -284,7 +290,7 @@ class NIXLWeightSender(WeightSender):
                 TrainerAgent(
                     name=self.nixl_agent.name,
                     metadata=self.nixl_agent.get_metadata(),
-                    device_id=torch.cuda.current_device(),
+                    device_id=torch.accelerator.current_device_index(),
                 )
             ],
             staging_buffer_count=self.staging_buffer_count,
@@ -440,7 +446,7 @@ class NIXLWeightSender(WeightSender):
             if self.is_serving_rank:
                 for shard in self.staged_shards_by_group.get(group, ()):
                     shard.copy_to_staging()
-                torch.cuda.synchronize()
+                torch.accelerator.synchronize()
             dist.barrier()
             if self.world.is_master:
                 self.buffer_sessions[buffer_index].set_status(p2p_pb2.SOURCE_STATUS_READY)
