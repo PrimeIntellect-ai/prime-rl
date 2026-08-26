@@ -93,10 +93,21 @@ The dip is provider errors, not policy regression [^err].
 [^err]: {"step": 4, "kind": "train", "subset": "all", "episode": "ep-...", "node": 0, "quote": "engine overloaded", "note": "The failed call that emptied this step's batch."}
 ```
 
+The frontmatter `title` is rendered as the report H1; do not repeat it with a
+Markdown `#` heading. The inline renderer supports only HTTP(S) and anchor
+links. Relative Markdown links render as literal text, so identify local source
+files with inline code paths or link to a supported HTTP endpoint.
+
 Each citation requires `step`, `kind`, `subset`, `episode`, `quote`, and `note`.
-Use the episode `id`, never `line`. Copy a short, distinctive quote exactly;
-matching is case-sensitive and whitespace-insensitive. Keep `note` to 1–2
-sentences explaining why the quote supports the claim.
+Use the top-level rollout record `id` returned by the dashboard episode-list
+API—not a nested `traces[*].id`, and never `line`. Copy a short, distinctive
+quote exactly; matching is case-sensitive and whitespace-insensitive. Keep
+`note` to 1–2 sentences explaining why the quote supports the claim.
+
+Cite major empirical, comparative, and diagnostic conclusions, but not routine
+explanation. Use exact trace citations for trajectory-level claims. For
+aggregate statistics, identify the run and source file; do not imply that one
+example trajectory proves the aggregate.
 
 Use adjacent markers (`[^a] [^b]`) only when one claim genuinely depends on
 distinct passages, such as a comparison or corroboration. Use one citation
@@ -108,3 +119,8 @@ parts. Use verbatim adjacent `prefix`/`suffix` only when a quote repeats.
 Ambiguous or mismatched citations remain broken and do not navigate.
 
 Use Markdown; raw HTML is escaped.
+
+Before handoff, reload the report and verify through the dashboard API that
+every referenced citation resolves uniquely to its episode, node, and quote.
+Confirm zero broken citations, one rendered title, and no unsupported relative
+links.

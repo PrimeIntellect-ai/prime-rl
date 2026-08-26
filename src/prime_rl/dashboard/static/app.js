@@ -574,7 +574,10 @@ function buildSections(meta) {
   const sections = [];
   const evalEnvs = meta.eval_envs || [];
   if (meta.type === "sft") {
-    sections.push({ name: "train", panels: SFT_TRAIN_METRICS.map((m) => ({ metric: m })) });
+    const trainMetrics = meta.has_validation
+      ? SFT_TRAIN_METRICS
+      : SFT_TRAIN_METRICS.filter((m) => !m.startsWith("val/"));
+    sections.push({ name: "train", panels: trainMetrics.map((m) => ({ metric: m })) });
     if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true)));
     else sections.push(evalSection("eval", ".*"));
     sections.push({ name: "stability", panels: SFT_STABILITY_METRICS.map((m) => ({ metric: m })) });
@@ -681,6 +684,15 @@ function groupColors(groups) {
   return groups.length > 1 ? groups.map((_, i) => PALETTE[i % PALETTE.length]) : [SINGLE_SERIES];
 }
 
+function singletonPoints(series, color) {
+  return {
+    show: () => series.points.size === 1,
+    size: 6,
+    width: 0,
+    fill: color,
+  };
+}
+
 /* flatten groups into uPlot series defs + data columns + tooltip meta */
 function buildChartLayout(entry, timeAxis) {
   const groups = panelGroups(entry.series);
@@ -705,7 +717,7 @@ function buildChartLayout(entry, timeAxis) {
         width: 1.25,
         dash: si > 0 ? [6, 4] : undefined,
         spanGaps: true,
-        points: { show: false },
+        points: singletonPoints(strand.main, color),
       });
       const m = { label: labels[mainIdx] || "value", stat: statOf(strand.main.key) ?? "value", color, dataIdx: cols.length };
       meta.push(m);
@@ -714,7 +726,14 @@ function buildChartLayout(entry, timeAxis) {
       const bandIdx = {};
       for (const s of aux) {
         cols.push({ s, role: "aux" });
-        uSeries.push({ stroke: hexToRgba(color, 0.55), width: 1, dash: [3, 3], spanGaps: true, points: { show: false } });
+        const auxColor = hexToRgba(color, 0.55);
+        uSeries.push({
+          stroke: auxColor,
+          width: 1,
+          dash: [3, 3],
+          spanGaps: true,
+          points: singletonPoints(s, auxColor),
+        });
         if (s === strand.lo) bandIdx.lo = cols.length;
         if (s === strand.hi) bandIdx.hi = cols.length;
       }
@@ -1962,6 +1981,10 @@ let currentTraceIdx = 0;
 let currentBranchIdx = 0;
 let episodeOpenVersion = 0;
 let episodeEnrichmentVersion = 0;
+let currentTimeline = null;
+let traceView = prefs.traceView === "timeline" ? "timeline" : "transcript";
+let pendingTimelineNode = null;
+let pendingTimelineCall = null;
 
 const COPY_SVG =
   `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">` +
@@ -2075,6 +2098,20 @@ function fetchEpisode(line, withTokens, withRendered = false) {
   return api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}${qs}`);
 }
 
+function fetchEpisodeTimeline(line) {
+  const traces = state.traces;
+  return api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}/timeline`);
+}
+
+async function ensureTimeline() {
+  if (currentTimeline || currentLine == null) return;
+  const line = currentLine;
+  const requestVersion = episodeOpenVersion;
+  const timeline = await fetchEpisodeTimeline(line);
+  if (line !== currentLine || requestVersion !== episodeOpenVersion) return;
+  currentTimeline = timeline;
+}
+
 /* token strings multiply the payload of a big episode, so they are fetched only
    for token signals or the rendered-token view — the plain view ships the raw record */
 async function ensureTokens() {
@@ -2103,7 +2140,11 @@ async function openEpisode(line, target = {}) {
   renderModalStep();
   renderRolloutList();
   $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
+  $("#tm-timeline").innerHTML = `<div class="chart-empty">loading timeline…</div>`;
   $("#tm-meta").innerHTML = "";
+  currentTimeline = null;
+  pendingTimelineNode = null;
+  pendingTimelineCall = null;
   const withTokens = !!$("#token-signal").value;
   const withRendered = state.traces.viewMode === "rendered";
   const episode = await fetchEpisode(line, withTokens, withRendered);
@@ -2113,6 +2154,7 @@ async function openEpisode(line, target = {}) {
   currentEpisode = episode;
   currentTraceIdx = target.trace ?? 0;
   currentBranchIdx = target.branch ?? 0;
+  if (traceView === "timeline") await ensureTimeline();
   renderEpisode();
   await ensureTokens();
   if (line === currentLine && requestVersion === episodeOpenVersion) renderEpisode();
@@ -2125,6 +2167,9 @@ function closeDrawer() {
   $("#drawer-backdrop").hidden = true;
   $("#tm-back").hidden = true;
   currentEpisode = null;
+  currentTimeline = null;
+  pendingTimelineNode = null;
+  pendingTimelineCall = null;
   currentLine = null;
   pendingHighlight = null;
 }
@@ -2367,6 +2412,22 @@ function errorBannersHtml(errors) {
   );
 }
 
+function normalizedCallUsage(usage = {}) {
+  let input = usage.prompt_tokens;
+  let cached = usage.cached_input_tokens;
+  if (cached == null) {
+    cached = usage.prompt_tokens_details?.cached_tokens;
+    if (input != null && cached) input = Math.max(0, input - cached);
+  }
+  return {
+    input,
+    cached,
+    output: usage.completion_tokens,
+    reasoning: usage.reasoning_tokens ?? usage.completion_tokens_details?.reasoning_tokens,
+    cost: usage.cost,
+  };
+}
+
 function renderMessages(ep, trace, branches) {
   const container = $("#tm-messages");
   entriesObserver?.disconnect();
@@ -2387,7 +2448,22 @@ function renderMessages(ep, trace, branches) {
   let maxAbsAdv = 0;
   for (const node of trace.nodes || [])
     for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
-  const callsByNode = new Map((trace.calls || []).map((c) => [c.node, c]));
+  const indexedCalls = (trace.calls || []).map((call, index) => ({ call, index }));
+  const callsByNode = new Map();
+  for (const item of indexedCalls) {
+    const calls = callsByNode.get(item.call.node) || [];
+    calls.push(item);
+    callsByNode.set(item.call.node, calls);
+  }
+  const callChipHtml = ({ call, index }) => {
+    const fields = [`call ${index + 1}`];
+    if (call.finish_reason) fields.push(call.finish_reason);
+    const { input, cached, output } = normalizedCallUsage(call.usage);
+    if (input != null) fields.push(`${fmtCompact(input)} in`);
+    if (cached != null) fields.push(`${fmtCompact(cached)} cache`);
+    if (output != null) fields.push(`${fmtCompact(output)} out`);
+    return `<span class="chip" data-call-index="${index}">${esc(fields.join(" · "))}</span>`;
+  };
   // agent highlights (sticky until the next view command or drawer close)
   const hl =
     pendingHighlight &&
@@ -2407,14 +2483,12 @@ function renderMessages(ep, trace, branches) {
   const entryHtml = (idx, i) => {
     const node = trace.nodes[idx];
     const role = node.message?.role ?? "?";
-    const call = callsByNode.get(idx);
     const marks = hlByNode.get(idx) || [];
     const chips = [];
     if (concatenated && node.parent != null && node.parent !== idx - 1) chips.push(`↳ branches from ${node.parent + 1}`);
     if (node.sampled) chips.push("sampled");
-    if (call?.finish_reason) chips.push(call.finish_reason);
-    if (call?.usage) chips.push(`${call.usage.prompt_tokens ?? "?"}→${call.usage.completion_tokens ?? "?"} tok`);
-    else if (node.token_ids?.length) chips.push(`${node.token_ids.length} tok`);
+    const nodeCalls = callsByNode.get(idx) || [];
+    if (!nodeCalls.length && node.token_ids?.length) chips.push(`${node.token_ids.length} tok`);
     const text = messageText(node.message);
     const contentMarks = marks.filter((h) => !h.field || h.field === "content");
     const contentMarked = contentMarks.some((h) => h.quote && findQuote(text, h.quote, h.prefix, h.suffix));
@@ -2431,11 +2505,12 @@ function renderMessages(ep, trace, branches) {
     if (reasoning) subs.push(reasoningBlock(reasoning, reasoningMarks));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
     const messageHtml =
-      `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}"${role === "system" && !marked ? "" : " open"}>` +
+      `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}" data-node="${idx}"${role === "system" && !marked ? "" : " open"}>` +
       `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
       `<span class="entry-role">${esc(role)}</span>` +
       `<span class="entry-preview">${preview(text, 180)}</span>` +
       chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("") +
+      nodeCalls.map(callChipHtml).join("") +
       `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>` +
       `<span class="entry-chev">›</span></summary>` +
       subs.join("") +
@@ -2449,11 +2524,23 @@ function renderMessages(ep, trace, branches) {
   // first chunk forces enough entries into the DOM to scroll to
   const CHUNK = 30;
   const lastMark = Math.max(-1, ...[...hlByNode.keys()].map((n) => path.indexOf(n)));
-  let rendered = Math.min(path.length, Math.max(CHUNK, lastMark + 3));
+  const targetPosition = pendingTimelineNode == null ? -1 : path.indexOf(pendingTimelineNode);
+  let rendered = Math.min(path.length, Math.max(CHUNK, lastMark + 3, targetPosition + 1));
+  const unlinkedCallsHtml = indexedCalls
+    .filter(({ call }) => !Number.isInteger(call.node) || call.node < 0 || call.node >= (trace.nodes || []).length)
+    .map(
+      (item) =>
+        `<details class="entry model-call" data-call-index="${item.index}" open>` +
+        `<summary><span class="entry-num">C${String(item.index + 1).padStart(2, "0")}</span>` +
+        `<span class="entry-role">model call</span><span class="entry-preview">${esc(item.call.model || "unlinked call")}</span>` +
+        `${callChipHtml(item)}<span class="entry-chev">›</span></summary></details>`,
+    )
+    .join("");
   container.innerHTML =
     (systemPosition === -1 ? toolsHtml : "") +
     path.slice(0, rendered).map(entryHtml).join("") +
     (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
+    unlinkedCallsHtml +
     errorsHtml;
   if (hl && !hl.scrolled) {
     const first = container.querySelector(".hl-entry");
@@ -2537,28 +2624,35 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("branches", branches.length));
     parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
 
-    const usage = { input: 0, output: 0, reasoning: 0, cached: 0 };
-    let hasUsage = false;
+    const usage = { input: null, output: null, reasoning: null, cached: null, maxContext: null, cost: null };
+    const addUsage = (field, value) => {
+      if (value != null) usage[field] = (usage[field] ?? 0) + value;
+    };
     for (const call of trace.calls || []) {
-      const u = call.usage || {};
-      if (u.prompt_tokens != null || u.completion_tokens != null) hasUsage = true;
-      usage.input += u.prompt_tokens ?? 0;
-      usage.output += u.completion_tokens ?? 0;
-      usage.reasoning += u.completion_tokens_details?.reasoning_tokens ?? 0;
-      usage.cached += u.prompt_tokens_details?.cached_tokens ?? 0;
+      const current = normalizedCallUsage(call.usage);
+      addUsage("input", current.input);
+      addUsage("cached", current.cached);
+      addUsage("output", current.output);
+      addUsage("reasoning", current.reasoning);
+      addUsage("cost", current.cost);
+      if (current.input != null) {
+        const context = current.input + (current.cached ?? 0);
+        usage.maxContext = Math.max(usage.maxContext ?? 0, context);
+      }
     }
+    const totalInput = usage.input == null ? null : usage.input + (usage.cached ?? 0);
+    const totalTokens = totalInput == null || usage.output == null ? null : totalInput + usage.output;
+    const hasUsage = usage.input != null || usage.cached != null || usage.output != null;
     if (hasUsage) {
       parts.push(`<div class="meta-sec">usage</div>`);
-      parts.push(metaRow("input tokens", fmtCompact(usage.input)));
-      parts.push(metaRow("output tokens", fmtCompact(usage.output)));
-      if (usage.reasoning) parts.push(metaRow("reasoning tokens", fmtCompact(usage.reasoning)));
-      if (usage.cached) parts.push(metaRow("cached tokens", fmtCompact(usage.cached)));
-      // API-priced runs report per-call cost; local deployments usually don't
-      const traceCost = (t) => (t.calls || []).reduce((acc, c) => acc + (c.usage?.cost ?? 0), 0);
-      const allTraces = ep.traces || [];
-      if (allTraces.some((t) => (t.calls || []).some((c) => c.usage?.cost != null)))
-        parts.push(metaRow("cost", fmtCost(allTraces.reduce((acc, t) => acc + traceCost(t), 0))));
-      parts.push(metaRow("total tokens", fmtCompact(usage.input + usage.output)));
+      if (usage.input != null) parts.push(metaRow("input tokens", fmtCompact(usage.input)));
+      if (usage.cached != null) parts.push(metaRow("cached input", fmtCompact(usage.cached)));
+      if (totalInput != null) parts.push(metaRow("total input", fmtCompact(totalInput)));
+      if (usage.output != null) parts.push(metaRow("output tokens", fmtCompact(usage.output)));
+      if (usage.reasoning != null) parts.push(metaRow("reasoning tokens", fmtCompact(usage.reasoning)));
+      if (usage.maxContext != null) parts.push(metaRow("max context length", fmtCompact(usage.maxContext)));
+      if (usage.cost != null) parts.push(metaRow("cost", fmtCost(usage.cost)));
+      if (totalTokens != null) parts.push(metaRow("total tokens", fmtCompact(totalTokens)));
     }
 
     parts.push(`<div class="meta-sec">state</div>`);
@@ -2598,6 +2692,122 @@ function renderMeta(ep, trace, branches) {
   $("#tm-meta").innerHTML = parts.join("");
 }
 
+function timelineClock(ts) {
+  if (ts == null) return "—";
+  return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function timelineTipAttr(payload) {
+  return ` data-timeline-tip="${esc(JSON.stringify(payload))}"`;
+}
+
+function appendTimelineUsage(rows, usage, aggregate = false) {
+  if (!usage) return;
+  if (aggregate && usage.model_calls != null) rows.push(["model calls", fmtNum(usage.model_calls)]);
+  if (usage.input_tokens != null) rows.push(["input tokens", fmtCompact(usage.input_tokens)]);
+  if (usage.cached_tokens != null) rows.push(["cached input", fmtCompact(usage.cached_tokens)]);
+  if (usage.total_input_tokens != null) rows.push(["total input", fmtCompact(usage.total_input_tokens)]);
+  if (usage.output_tokens != null) rows.push(["output tokens", fmtCompact(usage.output_tokens)]);
+  if (usage.reasoning_tokens != null) rows.push(["reasoning tokens", fmtCompact(usage.reasoning_tokens)]);
+  if (usage.max_context_tokens != null) rows.push(["max context length", fmtCompact(usage.max_context_tokens)]);
+  if (usage.total_tokens != null) rows.push(["total tokens", fmtCompact(usage.total_tokens)]);
+  if (usage.cost != null) rows.push(["cost", fmtCost(usage.cost)]);
+}
+
+function timelineSpanHtml(lane, span, start, total) {
+  const partial = span.started_at == null || span.ended_at == null;
+  const left = span.started_at == null ? 0 : Math.max(0, Math.min(100, ((span.started_at - start) / total) * 100));
+  const width = partial ? 0.35 : Math.max(0.35, Math.min(100 - left, ((span.ended_at - span.started_at) / total) * 100));
+  const rows = [
+    ["start", span.started_at == null ? "unknown" : timelineClock(span.started_at)],
+    ["end", span.ended_at == null ? (span.status === "running" ? "open" : "unknown") : timelineClock(span.ended_at)],
+    ["duration", partial ? "—" : fmtDuration(span.ended_at - span.started_at)],
+  ];
+  if (span.track === "activity") {
+    if (span.shared) rows.push(["branch role", "shared prefix"]);
+    const totalInput = span.input_tokens == null ? null : span.input_tokens + (span.cached_tokens || 0);
+    appendTimelineUsage(rows, {
+      input_tokens: span.input_tokens,
+      cached_tokens: span.cached_tokens,
+      total_input_tokens: totalInput,
+      output_tokens: span.output_tokens,
+      reasoning_tokens: span.reasoning_tokens,
+      max_context_tokens: totalInput,
+      total_tokens: totalInput == null || span.output_tokens == null ? null : totalInput + span.output_tokens,
+      cost: span.cost,
+    });
+  } else {
+    appendTimelineUsage(rows, lane.usage, true);
+  }
+  const tip = timelineTipAttr({
+    kind: span.track === "activity" ? "activity" : "lifecycle",
+    title: `${lane.label} — ${span.label}`,
+    snippet: span.snippet || "",
+    rows,
+    hint: span.track === "activity" ? "Click to open this call in the transcript." : "Click to open this trace transcript.",
+  });
+  const node = span.node_index == null ? "" : ` data-tl-node="${span.node_index}"`;
+  const call = span.call_index == null ? "" : ` data-tl-call="${span.call_index}"`;
+  return (
+    `<button class="tl-span ${esc(span.track)} ${esc(span.kind)} ${span.shared ? "shared" : ""} ${span.status === "running" ? "running" : ""} ${partial ? "untimed" : ""}"` +
+    ` style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%" data-tl-trace="${lane.trace_index}"${node}${call}${tip}></button>`
+  );
+}
+
+function timelineLaneHtml(lane, start, total) {
+  const grids = [25, 50, 75].map((left) => `<i class="tl-gridline" style="left:${left}%"></i>`).join("");
+  const spans = (lane.spans || []).map((span) => timelineSpanHtml(lane, span, start, total)).join("");
+  const duration = lane.started_at == null || lane.ended_at == null ? "—" : fmtDuration(lane.ended_at - lane.started_at);
+  const ended = lane.ended_at == null ? (lane.status === "running" ? "open" : "unknown") : timelineClock(lane.ended_at);
+  const model = lane.model
+    ? `<div class="tl-label-meta" title="${esc(lane.model)}">${esc(lane.model)}</div>`
+    : "";
+  return (
+    `<div class="tl-lane" data-tl-trace="${lane.trace_index}">` +
+    `<div class="tl-label" style="padding-left:${10 + (lane.depth || 0) * 18}px">` +
+    `${lane.depth ? '<span class="tl-tree">└</span>' : ""}<span class="tl-dot" style="background:${PALETTE[lane.trace_index % PALETTE.length]}"></span>` +
+    `<span class="tl-label-copy"><div class="tl-label-name" title="${esc(lane.label)}">${esc(lane.label)}</div>` +
+    `${model}</span></div>` +
+    `<div class="tl-track">${grids}${spans}</div>` +
+    `<div class="tl-time"><span>${duration}</span><span class="muted">${ended}</span></div>` +
+    `<div class="tl-outcome"><span class="tl-state ${esc(lane.status)}">${esc(lane.outcome || lane.status)}</span>` +
+    `${lane.reward == null ? "" : `<span class="tl-reward">reward ${fmtReward(lane.reward)}</span>`}</div></div>`
+  );
+}
+
+function renderTimeline() {
+  const target = $("#tm-timeline");
+  const timeline = currentTimeline;
+  if (!timeline) {
+    target.innerHTML = `<div class="chart-empty">loading timeline…</div>`;
+    return;
+  }
+  if (!(timeline.lanes || []).length) {
+    target.innerHTML = emptyState("no timeline", "this episode carries no agent traces");
+    return;
+  }
+  const starts = timeline.lanes.map((lane) => lane.started_at).filter((value) => value != null);
+  const ends = timeline.lanes.map((lane) => lane.ended_at ?? lane.started_at).filter((value) => value != null);
+  const start = starts.length ? Math.min(...starts) : 0;
+  const end = ends.length ? Math.max(...ends) : start + 1;
+  const total = Math.max(1, end - start);
+  const axis = [0, 0.25, 0.5, 0.75, 1]
+    .map((fraction) => `<span style="left:${fraction * 100}%">${fraction ? fmtDuration(total * fraction) : "0"}</span>`)
+    .join("");
+  target.innerHTML =
+    `<div class="tl-shell"><div class="tl-head"><span>branches</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
+    timeline.lanes.map((lane) => timelineLaneHtml(lane, start, total)).join("") +
+    `</div>`;
+}
+
+async function setTraceView(view) {
+  traceView = view;
+  setActive("#tm-view", "view", view);
+  if (view === "timeline") await ensureTimeline();
+  renderEpisode();
+  savePrefs();
+}
+
 function renderEpisode() {
   const ep = currentEpisode;
   if (!ep) return;
@@ -2608,14 +2818,10 @@ function renderEpisode() {
   if (currentBranchIdx >= branches.length) currentBranchIdx = 0;
   const traceTabs = $("#tm-trace-tabs");
   traceTabs.hidden = traces.length <= 1;
-  // multi-agent episodes: label each trace by its agent name (seat), index only
-  // as a tiebreak when names repeat or are missing
-  const names = traces.map((t) => t.agent?.name);
-  const label = (i) => (names[i] && names.indexOf(names[i]) === names.lastIndexOf(names[i]) ? names[i] : `${names[i] ?? "trace"} ${i}`);
   traceTabs.innerHTML =
     traces.length > 1
       ? traces
-          .map((_, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(label(i))}</button>`)
+          .map((trace, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(trace.agent?.name || "agent")}</button>`)
           .join("")
       : "";
   const branchTabs = $("#tm-branch-tabs");
@@ -2627,10 +2833,18 @@ function renderEpisode() {
           .join("") +
         `<button data-branch="-1" class="${currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
       : "";
-  $("#tm-tabs-row").hidden = traceTabs.hidden && branchTabs.hidden;
   setActive("#trace-view-mode", "mode", state.traces.viewMode);
   renderRolloutList();
-  renderMessages(ep, trace, branches);
+  const timeline = traceView === "timeline";
+  $("#tm-tabs-row").hidden = timeline || (traceTabs.hidden && branchTabs.hidden);
+  $("#tm-messages").hidden = timeline;
+  $("#tm-timeline").hidden = !timeline;
+  $("#token-signal").closest(".dd-select").hidden = timeline;
+  $("#tm-collapse").hidden = timeline;
+  $("#tm-expand").hidden = timeline;
+  setActive("#tm-view", "view", traceView);
+  if (timeline) renderTimeline();
+  else renderMessages(ep, trace, branches);
   renderMeta(ep, trace, branches);
 }
 
@@ -3654,6 +3868,75 @@ $("#trace-view-mode").addEventListener("click", async (e) => {
   renderEpisode();
   savePrefs();
 });
+$("#tm-view").addEventListener("click", (e) => {
+  const button = e.target.closest("[data-view]");
+  if (button && button.dataset.view !== traceView) setTraceView(button.dataset.view);
+});
+$("#tm-timeline").addEventListener("click", async (e) => {
+  const target = e.target.closest("[data-tl-trace]");
+  if (!target) return;
+  e.stopPropagation();
+  currentTraceIdx = +target.dataset.tlTrace;
+  const node = target.dataset.tlNode == null ? null : +target.dataset.tlNode;
+  const call = target.dataset.tlCall == null ? null : +target.dataset.tlCall;
+  if (node != null) {
+    const trace = currentEpisode?.traces?.[currentTraceIdx];
+    const branches = trace ? traceBranches(trace) : [];
+    const branch = branches.findIndex((path) => path.includes(node));
+    currentBranchIdx = branch >= 0 ? branch : -1;
+    pendingTimelineNode = node;
+    pendingTimelineCall = call;
+    state.traces.viewMode = "messages";
+  } else {
+    currentBranchIdx = 0;
+    pendingTimelineNode = null;
+    pendingTimelineCall = call;
+    if (call != null) state.traces.viewMode = "messages";
+  }
+  await setTraceView("transcript");
+  requestAnimationFrame(() => {
+    const entry =
+      pendingTimelineCall == null
+        ? pendingTimelineNode == null
+          ? null
+          : $(`#tm-messages [data-node="${pendingTimelineNode}"]`)
+        : $(`#tm-messages [data-call-index="${pendingTimelineCall}"]`);
+    entry?.scrollIntoView({ block: "center" });
+    const details = entry?.closest("details");
+    if (details) details.open = true;
+    pendingTimelineNode = null;
+    pendingTimelineCall = null;
+  });
+});
+const timelineTip = document.createElement("div");
+timelineTip.className = "tl-tooltip";
+timelineTip.hidden = true;
+document.body.appendChild(timelineTip);
+function moveTimelineTip(e) {
+  const gap = 12;
+  const left = Math.min(e.clientX + gap, window.innerWidth - timelineTip.offsetWidth - 8);
+  const top = Math.min(e.clientY + gap, window.innerHeight - timelineTip.offsetHeight - 8);
+  timelineTip.style.left = `${Math.max(8, left)}px`;
+  timelineTip.style.top = `${Math.max(8, top)}px`;
+}
+$("#tm-timeline").addEventListener("mouseover", (e) => {
+  const target = e.target.closest("[data-timeline-tip]");
+  if (!target) return;
+  const payload = JSON.parse(target.dataset.timelineTip);
+  timelineTip.innerHTML =
+    `<div class="tl-tooltip-kind">${esc(payload.kind)}</div><div class="tl-tooltip-title">${esc(payload.title)}</div>` +
+    `${payload.snippet ? `<div class="tl-tooltip-snippet">${esc(payload.snippet)}</div>` : ""}` +
+    `<dl>${payload.rows.map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>` +
+    `<div class="tl-tooltip-hint">${esc(payload.hint)}</div>`;
+  timelineTip.hidden = false;
+  moveTimelineTip(e);
+});
+$("#tm-timeline").addEventListener("mousemove", (e) => {
+  if (!timelineTip.hidden) moveTimelineTip(e);
+});
+$("#tm-timeline").addEventListener("mouseout", (e) => {
+  if (e.target.closest("[data-timeline-tip]") && !e.relatedTarget?.closest?.("[data-timeline-tip]")) timelineTip.hidden = true;
+});
 $("#tm-trace-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-trace]");
   if (btn) { currentTraceIdx = +btn.dataset.trace; currentBranchIdx = 0; renderEpisode(); }
@@ -3734,6 +4017,7 @@ function savePrefs() {
       traceErrorsOnly: state.traces.errorsOnly,
       traceSort: `${state.traces.sort}:${state.traces.order}`,
       traceViewMode: state.traces.viewMode,
+      traceView,
       logView: state.logs.view,
       logComponents: state.logs.components ? [...state.logs.components] : null,
       logLevel: state.logs.level,

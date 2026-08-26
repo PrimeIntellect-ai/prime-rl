@@ -203,6 +203,10 @@
     <div class="tm-head">
       <span class="tm-title">Trace Viewer</span>
       <button id="tm-back" class="btn" hidden title="back to the report">← report</button>
+      <div class="seg" id="tm-view">
+        <button data-view="transcript" class="active">Transcript</button>
+        <button data-view="timeline">Timeline</button>
+      </div>
       <div class="spacer"></div>
       <div class="seg" id="trace-view-mode">
         <button data-mode="messages" class="active">Messages</button>
@@ -224,6 +228,7 @@
       <div id="tm-branch-tabs" class="seg" hidden></div>
     </div>
     <div id="tm-messages"></div>
+    <div id="tm-timeline" hidden></div>
   </section>
   <aside id="tm-right">
     <div class="tm-head"><span class="tm-title">Overview</span></div>

@@ -278,6 +278,7 @@ def run_meta(run_dir: Path) -> dict:
         "type": run_type,
         "model": model_name(config),
         "dataset": (config.get("data") or {}).get("name"),
+        "has_validation": run_type == "sft" and config.get("val") is not None,
         "env": ((config.get("env") or {}).get("taskset") or {}).get("id"),
         "total_episodes": (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None,
         "max_steps": config.get("max_steps"),
@@ -365,7 +366,7 @@ def list_logfiles(run: str, attempt: str = "latest") -> dict:
         for path in sorted(attempt_dir.rglob("*.log")):
             component, label = log_component(path.relative_to(attempt_dir))
             add(path, component, label)
-    # The evals process writes its env-server logs outside attempt_N (logs/envs/eval/*.log).
+    # Include unscoped env logs from runs created before attempt-scoped eval logging.
     for path in sorted((run_dir / "logs" / "envs").rglob("*.log")):
         add(path, f"env:{path.stem}", f"{path.stem} (evals)")
     return {"attempt": attempt_num, "attempts": attempts, "files": files}
@@ -781,6 +782,306 @@ def traces_path(run: str, step: int, kind: str, subset: str) -> Path:
     raise HTTPException(404, "no traces for this step/kind/subset")
 
 
+def read_episode_record(path: Path, line: int) -> dict:
+    offsets = line_offsets(path)
+    if not 0 <= line < len(offsets):
+        raise HTTPException(404, "episode line out of range")
+    with path.open("rb") as f:
+        f.seek(offsets[line])
+        return orjson.loads(f.readline())
+
+
+def message_text(message: dict) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
+    return "" if content is None else str(content)
+
+
+def timeline_status(trace: dict) -> str:
+    if not trace.get("is_completed"):
+        return "running"
+    if not trace.get("ok") and (trace.get("errors") or trace.get("stop_condition") == "error"):
+        return "failed"
+    return "completed"
+
+
+def timeline_reward(trace: dict) -> float | None:
+    rewards = [reward for reward in (trace.get("rewards") or {}).values() if isinstance(reward, dict)]
+    if not rewards:
+        return None
+    return sum(
+        (reward.get("score") or 0) * (reward.get("weight") if reward.get("weight") is not None else 1)
+        for reward in rewards
+    )
+
+
+def trace_branch_paths(nodes: list[dict]) -> list[list[int]]:
+    """Return VF-native root-to-leaf branches in leaf-index order."""
+    if not nodes:
+        return []
+    parents = {parent for node in nodes if isinstance((parent := node.get("parent")), int) and 0 <= parent < len(nodes)}
+    paths = []
+    for leaf in (index for index in range(len(nodes)) if index not in parents):
+        path = []
+        seen = set()
+        node_index: int | None = leaf
+        while isinstance(node_index, int) and 0 <= node_index < len(nodes) and node_index not in seen:
+            seen.add(node_index)
+            path.append(node_index)
+            node_index = nodes[node_index].get("parent")
+        paths.append(list(reversed(path)))
+    return paths
+
+
+def token_usage(usage: dict) -> tuple[int | None, int | None, int | None]:
+    prompt_tokens = usage.get("prompt_tokens")
+    output_tokens = usage.get("completion_tokens")
+    if "cached_input_tokens" in usage:
+        return prompt_tokens, usage.get("cached_input_tokens"), output_tokens
+    cached_tokens = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+    input_tokens = (
+        max(0, prompt_tokens - cached_tokens) if prompt_tokens is not None and cached_tokens else prompt_tokens
+    )
+    return input_tokens, cached_tokens, output_tokens
+
+
+def activity_spans(
+    trace: dict,
+    node_indexes: set[int],
+    *,
+    include_unlinked: bool = False,
+    shared_node_indexes: set[int] | None = None,
+) -> list[dict]:
+    nodes = trace.get("nodes") or []
+    spans = []
+    for call_index, call in enumerate(trace.get("calls") or []):
+        node_index = call.get("node")
+        if node_index is None:
+            if not include_unlinked:
+                continue
+            node = {}
+        elif node_index not in node_indexes:
+            continue
+        else:
+            node = nodes[node_index]
+        call_time = call.get("time") or {}
+        started = call_time.get("start")
+        ended = call_time.get("end")
+        usage = call.get("usage") or {}
+        input_tokens, cached_tokens, output_tokens = token_usage(usage)
+        reasoning_tokens = usage.get("reasoning_tokens")
+        if reasoning_tokens is None:
+            reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+        text = " ".join(message_text(node.get("message") or {}).split())
+        spans.append(
+            {
+                "kind": "model_call",
+                "label": f"turn {len(spans) + 1}",
+                "track": "activity",
+                "call_index": call_index,
+                "node_index": node_index,
+                "shared": node_index in shared_node_indexes if shared_node_indexes is not None else False,
+                "started_at": started,
+                "ended_at": ended,
+                "status": "completed" if ended is not None or trace.get("is_completed") else "running",
+                "snippet": text[:240],
+                "input_tokens": input_tokens,
+                "cached_tokens": cached_tokens,
+                "output_tokens": output_tokens,
+                "reasoning_tokens": reasoning_tokens,
+                "cost": usage.get("cost"),
+            }
+        )
+    return sorted(spans, key=lambda span: span["started_at"] if span["started_at"] is not None else float("inf"))
+
+
+def lifecycle_spans(trace: dict) -> list[dict]:
+    timing = trace.get("timing") or {}
+    spans = []
+    for kind, label in (
+        ("boot", "boot"),
+        ("setup", "setup"),
+        ("agent", "agent"),
+        ("finalize", "finalize"),
+        ("scoring", "scoring"),
+    ):
+        span = timing.get(kind) or {}
+        if not span.get("start"):
+            continue
+        spans.append(
+            {
+                "kind": kind,
+                "label": label,
+                "track": "lifecycle",
+                "started_at": span["start"],
+                "ended_at": span.get("end") or None,
+                "status": "completed" if span.get("end") or trace.get("is_completed") else "running",
+            }
+        )
+    return spans
+
+
+def timeline_lane(
+    trace: dict,
+    trace_index: int,
+    *,
+    label: str,
+    depth: int,
+    branch: bool,
+    lifecycle: list[dict],
+    activities: list[dict],
+    started_at: float | None = None,
+) -> dict:
+    spans = lifecycle + activities
+    starts = [span["started_at"] for span in spans if span.get("started_at") is not None]
+    ends = [span["ended_at"] for span in spans if span.get("ended_at") is not None]
+    started = started_at if started_at is not None else min(starts or ends, default=None)
+    status = (
+        ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running")
+        if branch
+        else timeline_status(trace)
+    )
+    ended = max(ends, default=None) if status != "running" else None
+    agent = trace.get("agent") or {}
+    config = agent.get("config") or {}
+    client = config.get("client") or {}
+
+    def total(field: str) -> int | float | None:
+        values = [span[field] for span in activities if isinstance(span.get(field), (int, float))]
+        return sum(values) if values else None
+
+    input_tokens = total("input_tokens")
+    cached_tokens = total("cached_tokens")
+    output_tokens = total("output_tokens")
+    reasoning_tokens = total("reasoning_tokens")
+    total_input_tokens = input_tokens + (cached_tokens or 0) if input_tokens is not None else None
+    total_tokens = (
+        total_input_tokens + output_tokens if total_input_tokens is not None and output_tokens is not None else None
+    )
+    context_lengths = [
+        (span.get("input_tokens") or 0) + (span.get("cached_tokens") or 0)
+        for span in activities
+        if span.get("input_tokens") is not None
+    ]
+    return {
+        "trace_index": trace_index,
+        "label": label,
+        "model": config.get("model") or client.get("renderer_model_name") or "",
+        "depth": depth,
+        "started_at": started,
+        "ended_at": ended,
+        "status": status,
+        "outcome": status if branch else (trace.get("stop_condition") or status),
+        "reward": timeline_reward(trace),
+        "usage": {
+            "model_calls": len(activities),
+            "input_tokens": input_tokens,
+            "cached_tokens": cached_tokens,
+            "total_input_tokens": total_input_tokens,
+            "output_tokens": output_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "max_context_tokens": max(context_lengths, default=None),
+            "total_tokens": total_tokens,
+            "cost": total("cost"),
+        },
+        "spans": spans,
+    }
+
+
+def project_episode_timeline(episode: dict) -> dict:
+    lane_groups = []
+    for trace_index, trace in enumerate(episode.get("traces") or []):
+        nodes = trace.get("nodes") or []
+        branch_paths = trace_branch_paths(nodes)
+        node_branch_counts: dict[int, int] = {}
+        for path in branch_paths:
+            for node_index in path:
+                node_branch_counts[node_index] = node_branch_counts.get(node_index, 0) + 1
+        role = (trace.get("agent") or {}).get("name") or "agent"
+        parent = timeline_lane(
+            trace,
+            trace_index,
+            label=role,
+            depth=0,
+            branch=False,
+            lifecycle=lifecycle_spans(trace),
+            activities=activity_spans(trace, set(), include_unlinked=True),
+            started_at=(trace.get("timing") or {}).get("start"),
+        )
+        branches = []
+        for branch_index, path in enumerate(branch_paths):
+            node_indexes = set(path)
+            shared_node_indexes = {node_index for node_index in path if node_branch_counts.get(node_index, 0) > 1}
+            unique_node_indexes = node_indexes - shared_node_indexes
+            activities = activity_spans(
+                trace,
+                node_indexes,
+                shared_node_indexes=shared_node_indexes,
+            )
+            path_timestamps = [
+                nodes[node_index].get("timestamp")
+                for node_index in path
+                if nodes[node_index].get("timestamp") is not None
+            ]
+            unique_timestamps = [
+                nodes[node_index].get("timestamp")
+                for node_index in unique_node_indexes
+                if nodes[node_index].get("timestamp") is not None
+            ]
+            activity_starts = [span["started_at"] for span in activities if span["started_at"] is not None]
+            unique_activity_starts = [
+                span["started_at"] for span in activities if not span["shared"] and span["started_at"] is not None
+            ]
+            branch_start = min(activity_starts or path_timestamps, default=None)
+            sort_start = min(
+                unique_activity_starts or unique_timestamps or activity_starts or path_timestamps, default=None
+            )
+            branch_end = max(
+                [span["ended_at"] for span in activities if span.get("ended_at") is not None] + path_timestamps,
+                default=None,
+            )
+            branch_completed = bool(trace.get("is_completed"))
+            label = f"branch {branch_index}"
+            branch_lifecycle = (
+                [
+                    {
+                        "kind": "agent",
+                        "label": label,
+                        "track": "lifecycle",
+                        "started_at": branch_start,
+                        "ended_at": branch_end if branch_completed else None,
+                        "status": "completed" if branch_completed else "running",
+                        "node_index": path[-1],
+                    }
+                ]
+                if branch_start is not None
+                else []
+            )
+            branches.append(
+                (
+                    sort_start,
+                    branch_index,
+                    timeline_lane(
+                        trace,
+                        trace_index,
+                        label=label,
+                        depth=1,
+                        branch=True,
+                        lifecycle=branch_lifecycle,
+                        activities=activities,
+                    ),
+                )
+            )
+        branches.sort(key=lambda item: (item[0] if item[0] is not None else float("inf"), item[1]))
+        lane_groups.append((parent, [lane for _, _, lane in branches]))
+    lane_groups.sort(key=lambda group: group[0]["started_at"] if group[0]["started_at"] is not None else float("inf"))
+    lanes = [lane for parent, children in lane_groups for lane in (parent, *children)]
+    return {"lanes": lanes}
+
+
 @app.get("/api/runs/{run}/rollouts")
 def list_rollouts(run: str) -> dict:
     return {"steps": rollout_steps(get_run_dir(run))}
@@ -1145,6 +1446,11 @@ async def view_events() -> "StreamingResponse":
         media_type="text/event-stream",
         headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
     )
+
+
+@app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}/timeline")
+def get_episode_timeline(run: str, step: int, kind: str, subset: str, line: int) -> dict:
+    return project_episode_timeline(read_episode_at(traces_path(run, step, kind, subset), line))
 
 
 # -------------------------------------------------------------------------- static

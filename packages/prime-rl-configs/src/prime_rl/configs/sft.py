@@ -175,9 +175,8 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     """Training nodes."""
 
     num_infer_nodes: int = Field(0, ge=0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
-    """Inference nodes for online evals (alias: ``num_eval_nodes``). Submitted as a separate SLURM job, decoupled
-    from the trainer job. The eval job can outlive the trainer job while it evaluates
-    the final weight broadcast."""
+    """Inference nodes for online evals (alias: ``num_eval_nodes``). These nodes share
+    one SLURM allocation with the trainer nodes."""
 
     nodes_per_fsdp_group: int | None = None
     """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
@@ -394,18 +393,18 @@ class SFTConfig(BaseConfig):
                 raise ValueError("eval.retrigger_on_resume requires weight_broadcast.type = 'filesystem'.")
 
         if self.deployment.type == "multi_node":
-            # Decoupled deployment: the launcher submits a dedicated SLURM job running the
-            # inference pool (one engine per DP rank behind a router) plus the evals process.
+            # Dedicated nodes in the SFT allocation run the inference pool, router,
+            # env servers, and evals process.
             if self.inference is None:
                 raise ValueError(
-                    "Multi-node online evals require an [inference] block - the launcher submits "
-                    "a dedicated SLURM job running the inference pool and the evals process."
+                    "Multi-node online evals require an [inference] block - dedicated nodes in the "
+                    "SFT allocation run the inference pool and evals process."
                 )
             if self.deployment.num_infer_nodes < 1:
                 raise ValueError("Online evals on a multi-node deployment require deployment.num_infer_nodes >= 1.")
             if self.inference.router is None:
                 raise ValueError(
-                    "Multi-node online evals require an inference router - the eval job starts one "
+                    "Multi-node online evals require an inference router - the launcher starts one "
                     "router in front of the per-rank engines. Remove inference.router = 'None'."
                 )
             if self.inference.vllm.model != self.model.name:
@@ -426,10 +425,10 @@ class SFTConfig(BaseConfig):
             if self.max_steps is None:
                 warnings.warn(
                     "Online evals without max_steps: the evals process never sees a final checkpoint, "
-                    "so the eval SLURM job holds its allocation until its walltime.",
+                    "so the SFT SLURM job holds its allocation until its walltime.",
                     stacklevel=2,
                 )
-            # The client is wired at runtime by the eval sbatch script (the router and
+            # The client is wired at runtime by the SFT sbatch script (the router and
             # per-rank admin URLs are only known once SLURM assigns hosts).
             return self
 
