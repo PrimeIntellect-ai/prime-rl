@@ -266,6 +266,19 @@ class ModelConfig(BaseModelConfig):
     skip_masked_lm_head_tokens: bool = True
     """Skip the LM-head vocabulary projection (forward and backward) on tokens no loss component reads — prompt tokens, env observations and pack padding. The head is the only layer that can skip them; the backbone still runs on the full sequence because attention needs it. Saves head time and activation memory in proportion to the masked fraction of the batch, and leaves every value the loss reads unchanged. Requires the fused LM head (``fused_lm_head_token_chunk_size``); ignored by the vanilla head, which materializes full-length logits by construction."""
 
+    stop_grad_context_tokens: bool = False
+    """EXPERIMENTAL: stop gradients through context tokens in the backbone. The forward pass is unchanged (context K/V are still built with current weights, so every value the loss reads is identical), but the backward only propagates through tokens some loss component reads: the backbone's linear-layer backward GEMMs run on kept rows only. Unlike ``skip_masked_lm_head_tokens`` this changes the training gradient — the loss no longer shapes how the model represents context tokens (it still learns to attend to them: k/v projections keep their full gradient). Requires ``skip_masked_lm_head_tokens`` (reuses its keep mask) and a custom-impl model whose backbone accepts ``keep_mask`` (currently Qwen3 dense)."""
+
+    @model_validator(mode="after")
+    def stop_grad_context_requires_masked_head_skip(self):
+        if self.stop_grad_context_tokens:
+            if not self.skip_masked_lm_head_tokens or not isinstance(self.fused_lm_head_token_chunk_size, int):
+                raise ValueError(
+                    "model.stop_grad_context_tokens requires model.skip_masked_lm_head_tokens=true and a fused LM "
+                    "head (model.fused_lm_head_token_chunk_size set to an int) — it reuses the same keep mask."
+                )
+        return self
+
     @model_validator(mode="after")
     def trust_remote_code_only_with_hf(self):
         """Trust remote code only if the model is from HF."""

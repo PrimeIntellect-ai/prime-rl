@@ -7,6 +7,7 @@ from torch import nn
 
 from .norms import RMSNorm, RMSNormConfig
 from .rotary_emb import apply_rotary_pos_emb
+from .row_sparse import row_sparse_linear
 
 # flash-attention-2
 try:
@@ -124,11 +125,16 @@ class FlashAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        keep_index: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_proj(hidden_states)
+        # Under stop-grad-context, context-row q grads are exactly zero (their
+        # attention outputs are cut at the next layer input), so the q backward
+        # can run on kept rows only. k/v keep a full backward: kept queries
+        # attend to context k/v, so dK/dV on context rows feed the weight grads.
+        query_states = row_sparse_linear(self.q_proj, hidden_states, keep_index)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
@@ -159,8 +165,8 @@ class FlashAttention(nn.Module):
 
         return query_states, key_states, value_states
 
-    def output_proj(self, attn_output: torch.Tensor) -> torch.Tensor:
-        return self.o_proj(attn_output)
+    def output_proj(self, attn_output: torch.Tensor, keep_index: torch.Tensor | None = None) -> torch.Tensor:
+        return row_sparse_linear(self.o_proj, attn_output, keep_index)
 
     def forward(
         self,
@@ -168,8 +174,11 @@ class FlashAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        keep_index: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        query_states, key_states, value_states = self.attn_projections(hidden_states, position_embeddings)
+        query_states, key_states, value_states = self.attn_projections(
+            hidden_states, position_embeddings, keep_index=keep_index
+        )
 
         attn_output = self._attention_core(
             query_states,
@@ -178,7 +187,7 @@ class FlashAttention(nn.Module):
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
         )
-        attn_output = self.output_proj(attn_output)
+        attn_output = self.output_proj(attn_output, keep_index=keep_index)
         return attn_output, None
 
 

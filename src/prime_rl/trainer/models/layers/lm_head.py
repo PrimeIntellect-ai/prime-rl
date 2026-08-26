@@ -241,6 +241,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 def inject_prime_lm_head(
     model: nn.Module,
     chunk_size: int | None = None,
+    stop_grad_context: bool = False,
 ) -> None:
     """
     Inject a PrimeRL LM head into a model.
@@ -252,6 +253,8 @@ def inject_prime_lm_head(
         model: The model to wrap.
         chunk_size: When set to an int, uses FusedOutputLinear with sequence-token chunked
             logprob/entropy computation.
+        stop_grad_context: When True, also forward ``keep_mask`` to the backbone so it
+            can stop gradients through context rows (``model.stop_grad_context_tokens``).
     """
     # Guards so we have nicer error messages when a non-standard model is used
     assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"
@@ -267,6 +270,8 @@ def inject_prime_lm_head(
     # Check for Gemma-style softcapping - dispatch to specialized implementation.
     final_logit_softcapping = get_final_logit_softcapping(model.config)
     if final_logit_softcapping:
+        if stop_grad_context:
+            raise NotImplementedError("model.stop_grad_context_tokens is not supported for softcapped (Gemma) models")
         from prime_rl.trainer.models.layers.lm_head_gemma import inject_gemma_lm_head
 
         inject_gemma_lm_head(model, chunk_size, final_logit_softcapping)
@@ -285,10 +290,10 @@ def inject_prime_lm_head(
     model.lm_head.weight = old_lm_head.weight
     del old_lm_head
 
-    _patch_model_forward(model)
+    _patch_model_forward(model, stop_grad_context=stop_grad_context)
 
 
-def _patch_model_forward(model: nn.Module) -> None:
+def _patch_model_forward(model: nn.Module, stop_grad_context: bool = False) -> None:
     # Patch the forward method to use the new lm_head with labels and temperature
     def new_forward(
         self: nn.Module,
@@ -309,6 +314,9 @@ def _patch_model_forward(model: nn.Module) -> None:
         model_kwargs = {"input_ids": input_ids, "position_ids": position_ids, **kwargs}
         if inputs_embeds is not None:
             model_kwargs["inputs_embeds"] = inputs_embeds
+        if stop_grad_context:
+            # The backbone stops gradients through context rows (see row_sparse.py).
+            model_kwargs["keep_mask"] = keep_mask
         outputs = self.model(**model_kwargs)
         hidden_states = outputs.last_hidden_state
 

@@ -4,6 +4,8 @@ import torch
 from torch import nn
 from transformers.activations import ACT2FN
 
+from .row_sparse import row_sparse_linear
+
 
 @dataclass
 class MLPConfig:
@@ -24,6 +26,10 @@ class MLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.gate_act_fn = ACT2FN[config.gate_act]
 
-    def forward(self, x, routed_experts: torch.Tensor | None = None):
-        down_proj = self.down_proj(self.gate_act_fn(self.gate_proj(x)) * self.up_proj(x))
+    def forward(self, x, routed_experts: torch.Tensor | None = None, keep_index: torch.Tensor | None = None):
+        # Under stop-grad-context all three projections' upstream grads are zero
+        # on context rows, so their backward runs on kept rows only.
+        gate = row_sparse_linear(self.gate_proj, x, keep_index)
+        up = row_sparse_linear(self.up_proj, x, keep_index)
+        down_proj = row_sparse_linear(self.down_proj, self.gate_act_fn(gate) * up, keep_index)
         return down_proj
