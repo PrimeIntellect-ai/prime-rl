@@ -29,7 +29,8 @@ class EvalsEvalConfig(EvalConfig):
 
     cancel_on_new_checkpoint: bool = True
     """For online evals, cancel unfinished episodes when a newer trainer checkpoint is ready.
-    Disable to finish every triggered eval epoch before loading later weights."""
+    Disable to finish every triggered eval epoch before loading later weights. The trainer can
+    idle while it waits for slow evals."""
 
     @property
     def env_addresses(self) -> dict[tuple[str, str], str]:

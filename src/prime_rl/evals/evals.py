@@ -448,23 +448,7 @@ class Evals:
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the
         orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict."""
-        if batch.cancelled:
-            total_attempts = len(batch.episodes) + len(batch.failures) + batch.cancelled
-            metrics = {
-                f"eval/{batch.env_name}/all/cancelled": float(batch.cancelled),
-                f"eval/{batch.env_name}/all/cancelled_rate": batch.cancelled / total_attempts,
-                f"eval/{batch.env_name}/policy_version": float(batch.step),
-                "step": float(batch.step),
-            }
-            await monitors.log(metrics, step=batch.step)
-            self.eval_triggered_at.pop((batch.env_name, batch.step), None)
-            get_logger().warning(
-                f"Cancelled eval {batch.env_name} at step {batch.step} "
-                f"({batch.cancelled}/{total_attempts} episodes superseded); skipping partial score"
-            )
-            return
-
-        if not batch.episodes and not batch.failures:
+        if not batch.episodes and not batch.failures and not batch.cancelled:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
@@ -476,12 +460,15 @@ class Evals:
         metrics: dict[str, float] = {}
         for subset, pool in (("all", episodes), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-        total_attempts = len(episodes) + len(batch.failures)
+        total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
         metrics |= dispatch_failure_metrics(
             batch.failures,
             prefix=f"eval/{batch.env_name}/all",
             total_attempts=total_attempts,
         )
+        if batch.cancelled:
+            metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(batch.cancelled)
+            metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = batch.cancelled / total_attempts
         metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
         metrics["step"] = float(batch.step)
         await monitors.log(metrics, step=batch.step)
@@ -489,6 +476,13 @@ class Evals:
         eff, full = effective.metrics, episodes.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
+        if batch.cancelled:
+            get_logger().warning(
+                f"Partially evaluated {batch.env_name} (Step {batch.step}) | "
+                f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
+                f"Completed {len(episodes)}/{total_attempts} | Cancelled {batch.cancelled}/{total_attempts}"
+            )
+            return
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
