@@ -1,0 +1,131 @@
+# GLM-4.5-Air Scaleswe checkpoint RL on a Hillclimb Harbor dataset.
+#
+# Before launch, replace REPLACE_WITH_REGISTRY_DATASET with one dataset name
+# from hillclimb/datasets/registry.json on hillclimb-run-exports.
+
+max_steps = 1000
+seq_len = 131072
+output_dir = "/shared/parker/prime-rl-outputs"
+
+[run]
+name = "int4-rl-swe-air-scaleswe-hillclimb-tb21"
+
+[env_vars]
+HF_HOME = "/shared/parker/huggingface"
+HF_TOKEN_PATH = "/home/parker/.cache/huggingface/token"
+UV_CACHE_DIR = "/shared/parker/uv-cache"
+TRITON_CACHE_DIR = "/tmp/int4-air-hillclimb-tb21-triton"
+TMPDIR = "/tmp/int4-air-hillclimb-tb21"
+
+[slurm]
+job_name = "air-hillclimb-tb21"
+partition = "all"
+shared_fs = true
+project_dir = "/shared/parker/worktrees/prime-rl-hillclimb-glm45-air-20260826"
+pre_run_command = 'mkdir -p /tmp/int4-air-hillclimb-tb21 /shared/parker/huggingface /shared/parker/uv-cache /shared/parker/prime-rl-outputs ; timeout 120 prime sandbox delete --label "air-hillclimb-tb21" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 4
+
+[monitors.wandb]
+project = "hillclimb"
+name = "int4-rl-swe-air-scaleswe-hillclimb-tb21"
+
+[monitors.prime]
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[ckpt]
+interval = 20
+keep_last = 10
+
+[resume]
+
+[model]
+name = "PrimeIntellect/GLM-4.5-Air-Scaleswe"
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 4
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.ckpt]
+skip_optimizer = true
+
+[trainer.optim]
+type = "muon"
+
+[orchestrator]
+batch_size = 256
+group_size = 32
+max_off_policy_steps = 32
+
+[orchestrator.concurrency]
+initial_inflight = 384
+max_inflight = 2048
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.renderer]
+name = "glm-4.5"
+thinking_retention = "all"
+
+[[orchestrator.train.source]]
+name = "hillclimb"
+env.taskset.id = "harbor"
+env.taskset.repo = "PrimeIntellect-ai/prime-tasks-private@hillclimb-run-exports"
+env.taskset.registry_path = "hillclimb/datasets/registry.json"
+env.taskset.dataset = "REPLACE_WITH_REGISTRY_DATASET"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["air-hillclimb-tb21"]
+env.agent.timeout.rollout = 10800
+env.agent.timeout.scoring = 3600
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.source]]
+name = "terminal-bench-2-1"
+group_size = 1
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["air-hillclimb-tb21"]
+env.agent.timeout.rollout = 10800
+env.agent.timeout.scoring = 3600
+
+[inference]
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/int4-air-hillclimb-tb21-vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/int4-air-hillclimb-tb21-flashinfer"
+
+[inference.vllm]
+max_model_len = 131072
+tensor_parallel_size = 8
+enable_return_routed_experts = true
