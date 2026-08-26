@@ -86,7 +86,18 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
             # resolved concatenated document renders as a tree
             page.click("#tabs [data-tab=config]")
             page.wait_for_timeout(1500)
+            assert page.locator("#config-attempt-select").input_value() == "latest"
+            assert page.locator("#config-attempt-select option:checked").inner_text().startswith("latest (attempt ")
             assert page.eval_on_selector("#config-view", "e => e.innerText.length") > 100, "config view did not render"
+            if page.locator("#config-attempt-select option").count() > 2:
+                latest_config = page.locator("#config-view").inner_text()
+                first_attempt = page.locator("#config-attempt-select option").nth(1).get_attribute("value")
+                page.locator("#config-attempt-select").select_option(first_attempt, force=True)
+                page.wait_for_timeout(1000)
+                assert page.locator("#config-attempt-select").input_value() == first_attempt
+                assert page.locator("#config-view").inner_text() != latest_config
+                page.locator("#config-attempt-select").select_option("latest", force=True)
+                page.wait_for_timeout(1000)
             page.click("#config-format [data-fmt=json]")
             page.wait_for_timeout(1500)
             assert page.locator("#config-view .j-line").count() > 10, "resolved config tree did not render"
@@ -111,6 +122,8 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
             # logs: the merged pane shows lines
             page.click("#tabs [data-tab=logs]")
             page.wait_for_timeout(PAGE_SETTLE_MS)
+            assert page.locator("#attempt-select").input_value() == "latest"
+            assert page.locator("#attempt-select option:checked").inner_text().startswith("latest (attempt ")
             log_lines = page.locator(".log-pane .ll").count()
             assert log_lines > 10, f"log pane rendered only {log_lines} lines"
 

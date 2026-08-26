@@ -12,26 +12,67 @@ def get_log_dir(output_dir: Path) -> Path:
     return output_dir / "logs"
 
 
-def create_attempt_log_dir(run_dir: Path) -> Path:
-    """Create ``logs/attempt_<n>`` for this launch attempt and repoint ``logs/latest`` to it.
+def _attempt_numbers(parent: Path) -> set[int]:
+    return {
+        int(path.name.removeprefix("attempt_"))
+        for path in parent.glob("attempt_*")
+        if path.name.removeprefix("attempt_").isdigit()
+    }
 
-    Every launch — fresh or resumed — gets its own numbered log directory, so a resume
-    never overwrites an earlier attempt's logs. Returns the attempt directory."""
-    logs_dir = get_log_dir(run_dir)
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    attempts = (
-        int(p.name.removeprefix("attempt_"))
-        for p in logs_dir.glob("attempt_*")
-        if p.name.removeprefix("attempt_").isdigit()
-    )
-    attempt_dir = logs_dir / f"attempt_{1 + max(attempts, default=0)}"
-    attempt_dir.mkdir()
-    # Atomically repoint the relative ``latest`` symlink: create a temp link, then rename.
-    tmp_link = logs_dir / f".{attempt_dir.name}"
+
+def _point_latest(parent: Path, attempt_dir: Path) -> None:
+    """Atomically point ``parent/latest`` at a relative attempt directory."""
+    tmp_link = parent / f".{attempt_dir.name}"
     if tmp_link.is_symlink() or tmp_link.exists():
         tmp_link.unlink()
     os.symlink(attempt_dir.name, tmp_link)
-    os.replace(tmp_link, logs_dir / "latest")
+    os.replace(tmp_link, parent / "latest")
+
+
+def create_attempt_dirs(run_dir: Path) -> tuple[Path, Path]:
+    """Create matching config and log directories for one launch attempt.
+
+    Returns the concrete resolved-config and log directories. The ``latest``
+    symlink under each artifact root points to the new attempt.
+    """
+    configs_dir = run_dir / "configs"
+    logs_dir = get_log_dir(run_dir)
+    configs_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    attempts = _attempt_numbers(configs_dir) | _attempt_numbers(logs_dir)
+    attempt_name = f"attempt_{1 + max(attempts, default=0)}"
+    config_attempt_dir = configs_dir / attempt_name
+    log_dir = logs_dir / attempt_name
+    config_dir = config_attempt_dir / "resolved"
+    config_dir.mkdir(parents=True)
+    log_dir.mkdir()
+    _point_latest(configs_dir, config_attempt_dir)
+    _point_latest(logs_dir, log_dir)
+    return config_dir, log_dir
+
+
+def prepare_attempt_dirs(run_dir: Path) -> tuple[Path, Path]:
+    """Reuse a launcher-pinned attempt or allocate a new one."""
+    config_dir = os.environ.get("PRL_ATTEMPT_CONFIG_DIR")
+    log_dir = os.environ.get("PRL_ATTEMPT_LOG_DIR")
+    if config_dir is None and log_dir is None:
+        return create_attempt_dirs(run_dir)
+    if config_dir is None or log_dir is None:
+        raise RuntimeError("PRL_ATTEMPT_CONFIG_DIR and PRL_ATTEMPT_LOG_DIR must be set together")
+    resolved_config_dir = Path(config_dir)
+    attempt_log_dir = Path(log_dir)
+    resolved_config_dir.mkdir(parents=True, exist_ok=True)
+    attempt_log_dir.mkdir(parents=True, exist_ok=True)
+    return resolved_config_dir, attempt_log_dir
+
+
+def create_attempt_log_dir(run_dir: Path) -> Path:
+    """Create a log-only attempt for standalone processes without config dumps."""
+    logs_dir = get_log_dir(run_dir)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    attempt_dir = logs_dir / f"attempt_{1 + max(_attempt_numbers(logs_dir), default=0)}"
+    attempt_dir.mkdir()
+    _point_latest(logs_dir, attempt_dir)
     return attempt_dir
 
 
@@ -104,13 +145,21 @@ CACHE_DIR = home_dir() / ".cache" / "prime-rl"
 
 
 def get_config_dir(output_dir: Path) -> Path:
-    """Resolved per-component config dumps (JSON). The launch TOML copy lives one
-    level up, at `configs/<entrypoint>.toml`."""
-    return output_dir / "configs" / "resolved"
+    """Return the current attempt's resolved config directory.
+
+    The environment override pins child processes to their launch attempt. The
+    legacy path keeps tools compatible with runs created before config attempts.
+    """
+    if config_dir := os.environ.get("PRL_ATTEMPT_CONFIG_DIR"):
+        return Path(config_dir)
+    configs_dir = output_dir / "configs"
+    latest = configs_dir / "latest" / "resolved"
+    legacy = configs_dir / "resolved"
+    return legacy if legacy.is_dir() and not latest.exists() else latest
 
 
-def write_launch_toml(run_dir: Path, name: str) -> None:
-    """Copy the launch `@` TOML file(s) verbatim to `configs/<name>.toml`."""
+def write_launch_toml(config_dir: Path, name: str) -> None:
+    """Copy the launch `@` TOML file(s) to the current config attempt."""
     import sys
 
     argv = sys.argv[1:]
@@ -124,9 +173,9 @@ def write_launch_toml(run_dir: Path, name: str) -> None:
     if not tomls:
         return
     texts = [text for _, text in tomls] if len(tomls) == 1 else [f"# @ {p}\n{text}" for p, text in tomls]
-    config_dir = run_dir / "configs"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / f"{name}.toml").write_text("\n".join(texts))
+    attempt_dir = config_dir.parent
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    (attempt_dir / f"{name}.toml").write_text("\n".join(texts))
 
 
 def get_launcher_dir(output_dir: Path) -> Path:
@@ -192,7 +241,13 @@ def has_run_artifacts(run_dir: Path) -> bool:
     if not run_dir.exists():
         return False
     launcher_entries = {entry for pattern in LAUNCHER_ARTIFACTS for entry in run_dir.glob(pattern)}
-    return any(entry not in launcher_entries for entry in run_dir.iterdir())
+    for entry in run_dir.iterdir():
+        if entry in launcher_entries:
+            continue
+        if entry.name == "logs" and entry.is_dir() and not any(path.is_file() for path in entry.rglob("*")):
+            continue
+        return True
+    return False
 
 
 def validate_run_dir(

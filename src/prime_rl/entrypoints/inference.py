@@ -12,10 +12,10 @@ from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     format_log_message,
-    get_config_dir,
     get_launcher_dir,
     get_launcher_log_dir,
-    latest_log_dir,
+    prepare_attempt_dirs,
+    write_launch_toml,
 )
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
@@ -57,7 +57,7 @@ def write_config(
     return config_path
 
 
-def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: Path) -> None:
+def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path, script_path: Path) -> None:
     """Write the SLURM script to disk."""
     from jinja2 import Environment, FileSystemLoader
 
@@ -76,6 +76,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
     template_vars = dict(
         **config.slurm.template_vars,
         config_path=config_path,
+        config_dir=config_path.parent,
+        log_dir=log_dir,
         output_dir=config.output_dir,
         launcher_log_dir=get_launcher_log_dir(config.output_dir),
         gpus_per_node=config.deployment.gpus_per_node,
@@ -133,17 +135,17 @@ def inference_slurm(config: InferenceConfig):
 
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
 
-    config_dir = get_config_dir(config.output_dir)
+    config_dir, log_dir = prepare_attempt_dirs(config.output_dir)
+    write_launch_toml(config_dir, "inference")
     is_multi_node = config.deployment.type in ("multi_node", "disaggregated")
     exclude = {"deployment", "slurm", "dry_run"} if is_multi_node else {"slurm", "dry_run"}
     config_path = write_config(config, config_dir, exclude=exclude, engine_only=is_multi_node)
     logger.info(f"Wrote config to {config_path}")
 
     script_path = get_launcher_dir(config.output_dir) / INFERENCE_SBATCH
-    write_slurm_script(config, config_path, script_path)
+    write_slurm_script(config, config_path, log_dir, script_path)
     logger.info(f"Wrote SLURM script to {script_path}")
 
-    log_dir = latest_log_dir(config.output_dir)
     num_nodes = getattr(config.deployment, "num_nodes", 1)
     log_message = format_log_message(log_dir=log_dir, inference=True, job_log=True, num_infer_nodes=num_nodes)
 
