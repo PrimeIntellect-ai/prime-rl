@@ -6,11 +6,11 @@ from transformers.modeling_utils import PreTrainedModel
 
 
 @runtime_checkable
-class _PostMetaBufferInitModule(Protocol):
+class PostMetaBufferInitModule(Protocol):
     def init_buffers_post_meta(self) -> None: ...
 
 
-def _run_init_buffers_post_meta(module: nn.Module, exempt: tuple[type[nn.Module], ...] = ()) -> None:
+def run_init_buffers_post_meta(module: nn.Module, exempt: tuple[type[nn.Module], ...] = ()) -> None:
     """Walk every submodule of `module` (module itself excluded) and either call its
     `init_buffers_post_meta()` hook or, if it owns buffers but doesn't implement the hook, raise.
 
@@ -21,7 +21,7 @@ def _run_init_buffers_post_meta(module: nn.Module, exempt: tuple[type[nn.Module]
     for submodule in module.modules():
         if submodule is module or isinstance(submodule, exempt):
             continue
-        if isinstance(submodule, _PostMetaBufferInitModule):
+        if isinstance(submodule, PostMetaBufferInitModule):
             submodule.init_buffers_post_meta()
         elif next(submodule.buffers(recurse=False), None) is not None:
             raise TypeError(
@@ -172,11 +172,11 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         but need to be properly initialized after loading the model on meta device and then
         moving to the actual device. Dispatches to each submodule's own `init_buffers_post_meta`
         so every layer owns the reinitialization of the buffers it registers; submodules that own
-        buffers but don't implement the hook cause this to raise (see `_run_init_buffers_post_meta`).
+        buffers but don't implement the hook cause this to raise (see `run_init_buffers_post_meta`).
 
         This is called after loading the model from a checkpoint with meta device.
         """
-        _run_init_buffers_post_meta(self, exempt=self._init_buffers_post_meta_exempt)
+        run_init_buffers_post_meta(self, exempt=self._init_buffers_post_meta_exempt)
 
 
 __all__ = ["PreTrainedModelPrimeRL"]
