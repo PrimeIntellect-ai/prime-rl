@@ -7,7 +7,7 @@ description: How to launch prime-rl training runs — the `rl`, `sft`, `inferenc
 
 All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/to.toml` plus CLI overrides.
 
-SLURM launches write generated scripts and coordination files under `<run_dir>/launcher/`, with batch logs under `launcher/logs/`. Local launches do not create this directory. Every launch writes configs and `command.txt` under `configs/attempt_<n>/`. `configs/latest` points to the current attempt. The command uses shell-safe quoting and redacts sensitive CLI values.
+SLURM launches write generated scripts and coordination files under `<run_dir>/launcher/`, with batch logs under `launcher/logs/`. Local launches do not create this directory. Every launch writes configs and `command.txt` under `configs/attempt_<n>/`. `configs/latest` points to the current attempt. The command uses shell-safe quoting.
 
 ## Run directories
 

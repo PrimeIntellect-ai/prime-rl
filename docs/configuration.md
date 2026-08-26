@@ -256,6 +256,5 @@ uses. This is also what each standalone process reads. For example, the trainer
 reads `configs/latest/resolved/trainer.json`.
 
 `configs/latest/command.txt` records the shell-safe launch command and its CLI
-overrides. Sensitive CLI values are redacted. Each launch also remains under
-`configs/attempt_<n>/`. To compare configs, dry-run a known-good base and your
-overlay. Then diff the two attempts.
+overrides. Each launch also remains under `configs/attempt_<n>/`. To compare
+configs, dry-run a known-good base and your overlay. Then diff the two attempts.

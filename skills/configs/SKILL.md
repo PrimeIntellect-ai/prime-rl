@@ -29,8 +29,8 @@ uv run rl @ rl.toml --dry-run --output-dir /tmp/x --run.name check # write resol
 ```
 
 Each attempt also writes `configs/attempt_<n>/command.txt`. It records the
-shell-safe launch command, including CLI overrides. Sensitive CLI values are
-redacted. `configs/latest` points to the current attempt.
+shell-safe launch command, including CLI overrides. `configs/latest` points to
+the current attempt.
 
 ## Validators
 

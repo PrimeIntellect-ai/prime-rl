@@ -160,59 +160,13 @@ def get_config_dir(output_dir: Path) -> Path:
     return legacy if legacy.is_dir() and not latest.exists() else latest
 
 
-_SENSITIVE_CLI_SUFFIXES = (
-    "api-key",
-    "api_key",
-    "credential",
-    "credentials",
-    "env-vars",
-    "env_vars",
-    "password",
-    "secret",
-    "secret-key",
-    "secret_key",
-    "token",
-)
-
-
-def _is_sensitive_cli_flag(flag: str) -> bool:
-    name = flag.lstrip("-").split("=", 1)[0].lower()
-    return any(
-        name == suffix or name.endswith((f".{suffix}", f"-{suffix}", f"_{suffix}"))
-        for suffix in _SENSITIVE_CLI_SUFFIXES
-    )
-
-
-def _redact_cli_args(argv: list[str]) -> list[str]:
-    redacted = []
-    i = 0
-    while i < len(argv):
-        arg = argv[i]
-        if not arg.startswith("--") or not _is_sensitive_cli_flag(arg):
-            redacted.append(arg)
-            i += 1
-            continue
-        flag, separator, _ = arg.partition("=")
-        if separator:
-            redacted.append(f"{flag}=<redacted>")
-            i += 1
-            continue
-        redacted.append(flag)
-        if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
-            redacted.append("<redacted>")
-            i += 2
-        else:
-            i += 1
-    return redacted
-
-
 def write_launch_command(config_dir: Path, name: str) -> None:
     """Write the user-facing launch command once for a config attempt."""
     attempt_dir = config_dir.parent
     attempt_dir.mkdir(parents=True, exist_ok=True)
     command_path = attempt_dir / "command.txt"
     if not command_path.exists():
-        command = shlex.join(["uv", "run", name, *_redact_cli_args(sys.argv[1:])])
+        command = shlex.join(["uv", "run", name, *sys.argv[1:]])
         command_path.write_text(f"{command}\n")
 
 
