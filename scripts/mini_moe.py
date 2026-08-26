@@ -572,7 +572,6 @@ def verify_packed(arch: str, model_dir: Path, seed: int, attn: str) -> list[Chec
             "packed_vs_unpacked_max_logprob_diff",
             delta.max().item(),
             PACKED_LOGPROB_DIFF_THRESHOLD,
-            detail=f"n={delta.numel()} scored tokens",
         )
     ]
 
@@ -618,9 +617,8 @@ def verify_vllm(arch: str, model_dir: Path, seed: int, attn: str, moe_backend: s
     # Per-token, so a packed and an unpacked outlier on different tokens cannot cancel.
     delta = (kl_packed - kl_unpacked).abs()
 
-    scored = f"n={inference_logprobs.numel()} scored tokens"
     return [
-        Check("kl_unpacked_mean", kl_unpacked.mean().item(), KL_MEAN_THRESHOLD, detail=scored),
+        Check("kl_unpacked_mean", kl_unpacked.mean().item(), KL_MEAN_THRESHOLD),
         Check("kl_unpacked_max", kl_unpacked.max().item(), KL_MAX_THRESHOLD),
         Check("kl_packed_mean", kl_packed.mean().item(), KL_MEAN_THRESHOLD),
         Check("kl_packed_max", kl_packed.max().item(), KL_MAX_THRESHOLD),
