@@ -1,0 +1,159 @@
+# Nemotron 3.5 Lightning RL on a Hillclimb Harbor dataset, evaluated on
+# Terminal-Bench 2.1 with Terminus 2 for both training and evaluation.
+#
+# The training subset is pinned to the exact private-corpus commit whose root
+# registry.json contains 1,195 unique hillclimb-binary-reward-v1 tasks.
+#
+# Train from NVIDIA's BF16 checkpoint. The NVFP4 release is a deployment
+# checkpoint and is not suitable for prime-rl weight updates/broadcasts.
+
+max_steps = 1000
+seq_len = 131072
+output_dir = "/shared/parker/prime-rl-outputs"
+
+[run]
+name = "nemotron35-lightning-hillclimb-tb21"
+
+[env_vars]
+HF_HOME = "/shared/parker/huggingface"
+HF_TOKEN_PATH = "/home/parker/.cache/huggingface/token"
+UV_CACHE_DIR = "/shared/parker/uv-cache"
+CUDA_HOME = "/usr/local/cuda-12.9"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+TRITON_CACHE_DIR = "/tmp/nemotron35-lightning-hillclimb-tb21-triton"
+TMPDIR = "/tmp/nemotron35-lightning-hillclimb-tb21"
+
+[slurm]
+job_name = "nemotron35-lightning-hillclimb-tb21"
+partition = "all"
+shared_fs = true
+project_dir = "/shared/parker/worktrees/prime-rl-hillclimb-nemotron35-lightning-20260826"
+pre_run_command = 'mkdir -p /tmp/nemotron35-lightning-hillclimb-tb21 /shared/parker/huggingface /shared/parker/uv-cache /shared/parker/prime-rl-outputs ; CUDA_HOME=/usr/local/cuda-12.9 UV_CACHE_DIR=/shared/parker/uv-cache uv sync --frozen --all-extras --all-packages --group mamba-ssm ; timeout 120 prime sandbox delete --label "nemotron35-lightning-hillclimb-tb21" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 2
+
+[monitors.wandb]
+project = "hillclimb"
+name = "nemotron35-lightning-hillclimb-tb21"
+
+[monitors.prime]
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[ckpt]
+interval = 20
+keep_last = 10
+
+[resume]
+
+[model]
+name = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+
+[trainer]
+dist_timeout_seconds = 3600
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+cp = 8
+cp_style = "ulysses"
+ep = 8
+fused_lm_head_token_chunk_size = 1024
+optim_cpu_offload = true
+
+[trainer.model.ac]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.model.compile]
+
+[trainer.ckpt]
+skip_optimizer = true
+
+[trainer.optim]
+type = "adamw"
+
+[orchestrator]
+batch_size = 128
+group_size = 32
+max_off_policy_steps = 32
+
+[orchestrator.concurrency]
+initial_inflight = 512
+max_inflight = 2048
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.renderer]
+name = "nemotron-3"
+truncate_history_thinking = false
+
+[orchestrator.train.sampling]
+temperature = 1.0
+
+[[orchestrator.train.source]]
+name = "hillclimb"
+env.taskset.id = "harbor"
+env.taskset.repo = "PrimeIntellect-ai/prime-tasks-private@f44acccc88b095c88a7dec6479e3dacccef80ee8"
+env.taskset.registry_path = "registry.json"
+env.taskset.dataset = "hillclimb-binary-reward-v1"
+env.agent.harness.id = "terminus-2"
+env.agent.harness.version = "0.20.0"
+env.agent.runtime.labels = ["nemotron35-lightning-hillclimb-tb21"]
+env.agent.timeout.rollout = 10800
+env.agent.timeout.scoring = 3600
+env.agent.retries.max_retries = 2
+env.agent.retries.include = ["SandboxError", "ProviderError"]
+
+[orchestrator.eval]
+interval = 20
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+top_p = 0.95
+
+[[orchestrator.eval.source]]
+name = "terminal-bench-2-1"
+group_size = 3
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "terminus-2"
+env.agent.harness.version = "0.20.0"
+env.agent.runtime.labels = ["nemotron35-lightning-hillclimb-tb21"]
+env.agent.timeout.rollout = 10800
+env.agent.timeout.scoring = 3600
+env.agent.retries.max_retries = 2
+env.agent.retries.include = ["SandboxError", "ProviderError"]
+
+[inference]
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/nemotron35-lightning-hillclimb-tb21-vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/nemotron35-lightning-hillclimb-tb21-flashinfer"
+
+[inference.vllm]
+max_model_len = 131072
+tensor_parallel_size = 2
+data_parallel_size = 4
+gpu_memory_utilization = 0.85
+enable_prefix_caching = true
+enable_chunked_prefill = true
+kv_cache_dtype = "fp8"
+mamba_cache_mode = "align"
+max_num_batched_tokens = 131072
+enable_expert_parallel = true
+enable_return_routed_experts = true
