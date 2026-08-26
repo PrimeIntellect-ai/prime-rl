@@ -60,10 +60,19 @@
       <div class="seg" id="config-format">
         <button data-fmt="toml">TOML</button>
         <button data-fmt="json">JSON</button>
-        <button data-fmt="command">Command</button>
       </div>
       <input id="config-search" class="search" type="search" placeholder="regex search, e.g. lora|lr">
       <span id="config-hits" class="muted"></span>
+    </div>
+    <div id="config-command">
+      <div class="config-command-head">
+        <span class="t-label">command</span>
+        <button id="config-command-copy" class="btn" type="button">copy</button>
+      </div>
+      <div class="config-command-body">
+        <span class="config-command-prompt" aria-hidden="true">$</span>
+        <code id="config-command-text"></code>
+      </div>
     </div>
     <pre id="config-view"></pre>
   </section>

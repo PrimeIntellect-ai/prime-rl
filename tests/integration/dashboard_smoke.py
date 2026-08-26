@@ -89,6 +89,8 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
             assert page.locator("#config-attempt-select").input_value() == "latest"
             assert page.locator("#config-attempt-select option:checked").inner_text().startswith("latest (attempt ")
             assert page.eval_on_selector("#config-view", "e => e.innerText.length") > 100, "config view did not render"
+            command = page.locator("#config-command-text").inner_text()
+            assert command.startswith("uv run "), f"launch command did not render: {command!r}"
             if page.locator("#config-attempt-select option").count() > 2:
                 latest_config = page.locator("#config-view").inner_text()
                 first_attempt = page.locator("#config-attempt-select option").nth(1).get_attribute("value")
@@ -96,25 +98,19 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
                 page.wait_for_timeout(1000)
                 assert page.locator("#config-attempt-select").input_value() == first_attempt
                 assert page.locator("#config-view").inner_text() != latest_config
-                page.locator("#config-attempt-select").select_option("latest", force=True)
-                page.wait_for_timeout(1000)
-            page.click("#config-format [data-fmt=json]")
-            page.wait_for_timeout(1500)
-            assert page.locator("#config-view .j-line").count() > 10, "resolved config tree did not render"
-            page.click("#config-format [data-fmt=command]")
-            page.wait_for_timeout(500)
-            command = page.locator("#config-view").inner_text()
-            assert command.startswith("uv run "), f"launch command did not render: {command!r}"
-            if page.locator("#config-attempt-select option").count() > 2:
-                first_attempt = page.locator("#config-attempt-select option").nth(1).get_attribute("value")
-                page.locator("#config-attempt-select").select_option(first_attempt, force=True)
-                page.wait_for_timeout(500)
-                earlier_command = page.locator("#config-view").inner_text()
+                earlier_command = page.locator("#config-command-text").inner_text()
                 assert earlier_command.startswith("uv run ")
                 assert earlier_command != command, "attempt selector did not change the launch command"
                 page.locator("#config-attempt-select").select_option("latest", force=True)
-                page.wait_for_timeout(500)
-                assert page.locator("#config-view").inner_text() == command
+                page.wait_for_timeout(1000)
+                assert page.locator("#config-command-text").inner_text() == command
+            page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=base)
+            page.click("#config-command-copy")
+            page.wait_for_function("document.querySelector('#config-command-copy').classList.contains('copied')")
+            assert page.evaluate("navigator.clipboard.readText()") == command
+            page.click("#config-format [data-fmt=json]")
+            page.wait_for_timeout(1500)
+            assert page.locator("#config-view .j-line").count() > 10, "resolved config tree did not render"
 
             # traces: when the run saved rollouts, episodes must render and open
             rollout_steps = page.evaluate(

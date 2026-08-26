@@ -33,7 +33,7 @@ const state = {
   compare: { runs: [], data: new Map() },
   config: {
     loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
-    files: [], file: null, fmt: "toml", cache: new Map(),
+    files: [], file: null, fmt: "toml", commandText: "", cache: new Map(),
   },
   logs: {
     loaded: false, attempt: "latest", attempts: [], files: [], paneFile: {},
@@ -193,7 +193,7 @@ async function selectRun(name, deferTab = false) {
   if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
   state.config = {
     loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
-    files: [], file: null, fmt: state.config.fmt, cache: new Map(),
+    files: [], file: null, fmt: state.config.fmt, commandText: "", cache: new Map(),
   };
   state.logs = {
     ...state.logs, loaded: false, attempt: "latest", latestAttempt: null,
@@ -1333,13 +1333,6 @@ function renderToml(text) {
     .join("");
 }
 
-function renderPlain(text) {
-  return text
-    .split("\n")
-    .map((line) => `<div class="t-line">${esc(line)}</div>`)
-    .join("");
-}
-
 /* filter the config to matched subtrees, render the collapsible tree, then
    mark every hit by walking text nodes (keeps syntax spans intact) */
 function applyConfigSearch() {
@@ -1355,7 +1348,6 @@ function applyConfigSearch() {
   }
   if (!query) {
     if (parsed !== undefined) view.innerHTML = renderJsonNode(null, parsed, 0, true);
-    else if (state.config.fmt === "command") view.innerHTML = renderPlain(state.config.text ?? "");
     else view.innerHTML = renderToml(state.config.text ?? "");
     return;
   }
@@ -1378,40 +1370,34 @@ function applyConfigSearch() {
     if (pruned === undefined) return noHits();
     view.innerHTML = renderJsonNode(null, pruned, 0, true);
   } else {
-    if (state.config.fmt === "command") {
-      const kept = (state.config.text ?? "").split("\n").filter(test);
-      if (!kept.length) return noHits();
-      view.innerHTML = renderPlain(kept.join("\n"));
-    } else {
-      // TOML (launch config): a matching line keeps itself (plus its [section]
-      // header for context); a matching [section] header keeps the whole section
-      const lines = (state.config.text ?? "").split("\n");
-      const kept = [];
-      let header = null;
-      let headerKept = false;
-      let sectionMatched = false;
-      for (const line of lines) {
-        if (/^\s*\[/.test(line)) {
-          header = line;
-          headerKept = false;
-          sectionMatched = test(line);
-          if (sectionMatched) {
-            kept.push(line);
-            headerKept = true;
-          }
-          continue;
-        }
-        if (sectionMatched || test(line)) {
-          if (header !== null && !headerKept) {
-            kept.push(header);
-            headerKept = true;
-          }
+    // TOML (launch config): a matching line keeps itself (plus its [section]
+    // header for context); a matching [section] header keeps the whole section
+    const lines = (state.config.text ?? "").split("\n");
+    const kept = [];
+    let header = null;
+    let headerKept = false;
+    let sectionMatched = false;
+    for (const line of lines) {
+      if (/^\s*\[/.test(line)) {
+        header = line;
+        headerKept = false;
+        sectionMatched = test(line);
+        if (sectionMatched) {
           kept.push(line);
+          headerKept = true;
         }
+        continue;
       }
-      if (!kept.length) return noHits();
-      view.innerHTML = renderToml(kept.join("\n"));
+      if (sectionMatched || test(line)) {
+        if (header !== null && !headerKept) {
+          kept.push(header);
+          headerKept = true;
+        }
+        kept.push(line);
+      }
     }
+    if (!kept.length) return noHits();
+    view.innerHTML = renderToml(kept.join("\n"));
   }
   const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
   const nodes = [];
@@ -1445,7 +1431,7 @@ function applyConfigSearch() {
   view.querySelector("mark.hit")?.scrollIntoView({ block: "center" });
 }
 
-/* TOML = launch config, JSON = resolved dumps, command = shell-safe invocation */
+/* TOML = launch config, JSON = resolved dumps */
 function configFileFor(fmt) {
   const files = state.config.files || [];
   if (fmt === "toml") return files.find((f) => f.endsWith(".toml"));
@@ -1471,6 +1457,13 @@ function renderConfigAttempts() {
   syncDressedSelects();
 }
 
+function renderConfigCommand() {
+  const command = state.config.commandText.trimEnd();
+  $("#config-command").classList.toggle("empty", !command);
+  $("#config-command-text").textContent = command || "command unavailable for this attempt";
+  $("#config-command-copy").disabled = !command;
+}
+
 async function loadConfigAttempt() {
   const data = await api(
     `/api/runs/${encodeURIComponent(state.run)}/configs?attempt=${encodeURIComponent(state.config.attempt)}`
@@ -1479,18 +1472,21 @@ async function loadConfigAttempt() {
   state.config.attempts = data.attempts;
   state.config.files = data.files;
   renderConfigAttempts();
-  if (!data.files.length) {
+  const commandFile = configFileFor("command");
+  state.config.commandText = commandFile ? await fetchConfigText(commandFile) : "";
+  renderConfigCommand();
+  if (!configFileFor("toml") && !configFileFor("json")) {
     renderConfigFormat();
     $("#config-view").innerHTML = emptyState("no configs", "this attempt has no config files");
     return;
   }
   if (!configFileFor(state.config.fmt)) {
-    state.config.fmt = ["toml", "json", "command"].find((fmt) => configFileFor(fmt));
+    state.config.fmt = ["toml", "json"].find((fmt) => configFileFor(fmt));
   }
   state.config.file = configFileFor(state.config.fmt);
   renderConfigFormat();
   await loadConfig();
-  for (const fmt of ["toml", "json", "command"]) {
+  for (const fmt of ["toml", "json"]) {
     const file = configFileFor(fmt);
     if (file && file !== state.config.file) fetchConfigText(file);
   }
@@ -3587,6 +3583,10 @@ $("#config-format").addEventListener("click", (e) => {
   state.config.file = configFileFor(btn.dataset.fmt);
   renderConfigFormat();
   loadConfig();
+});
+$("#config-command-copy").addEventListener("click", (e) => {
+  const command = state.config.commandText.trimEnd();
+  if (command) copyText(command, e.currentTarget);
 });
 $("#config-search").addEventListener(
   "input",

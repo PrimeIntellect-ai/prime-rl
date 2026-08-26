@@ -12,8 +12,8 @@ skips the registry. See `skills/dashboard/SKILL.md` for discovery,
 kill/restart commands, and the local view-command/report contract.
 
 The Config and Logs views keep each launch attempt available. The Config view
-shows the launch TOML, resolved JSON, and command. Both views open at
-`latest (attempt <n>)` and let you select an earlier attempt.
+shows a copyable command above the launch TOML or resolved JSON. Both views
+open at `latest (attempt <n>)` and let you select an earlier attempt.
 
 GPU dependencies live behind the `gpu` extra, so this works anywhere — a
 cluster head node, a laptop against a mounted outputs dir:

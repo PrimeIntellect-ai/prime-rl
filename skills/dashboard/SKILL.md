@@ -13,7 +13,7 @@ laptop against a mounted outputs dir): GPU dependencies live behind the
 
 The Config and Logs views default to `latest (attempt <n>)`. Select an attempt
 to inspect the immutable config or log files from an earlier launch. The Config
-view shows the launch TOML, resolved JSON, and shell-safe launch command.
+view shows a copyable launch command above the launch TOML or resolved JSON.
 
 Every dashboard instance serves the dirs it was started with **plus** every dir
 in the per-user registry (`~/.cache/prime-rl/dashboard/dirs.json`, re-read
