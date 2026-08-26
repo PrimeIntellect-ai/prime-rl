@@ -28,6 +28,7 @@ import json
 import os
 import time
 import uuid
+from pathlib import Path
 from subprocess import Popen
 
 from prime_rl import monitors
@@ -51,7 +52,7 @@ from prime_rl.orchestrator.utils import eval_work, intercept_vf_logging, set_def
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_all_ckpt_steps, get_config_dir, get_log_dir
+from prime_rl.utils.pathing import create_attempt_log_dir, get_all_ckpt_steps, get_config_dir
 from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, cleanup_processes
 from prime_rl.utils.utils import clean_exit
 
@@ -67,8 +68,13 @@ STARTUP_BROADCAST_TIMEOUT_S = 1200
 
 
 class Evals:
-    def __init__(self, config: EvalsConfig) -> None:
+    def __init__(self, config: EvalsConfig, log_dir: Path | None = None) -> None:
         self.config = config
+        self.log_dir = log_dir or (
+            Path(os.environ["PRL_LOG_DIR"])
+            if "PRL_LOG_DIR" in os.environ
+            else create_attempt_log_dir(config.output_dir)
+        )
         setup_logger(config.log.level, json_logging=config.log.json_logging)
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
         mode = f"online (broadcasts_dir={config.online.broadcasts_dir})" if config.online is not None else "standalone"
@@ -209,7 +215,7 @@ class Evals:
         config = self.config
         addresses = config.eval.env_addresses
         config_dir = get_config_dir(config.output_dir) / "envs" / "eval"
-        log_dir = get_log_dir(config.output_dir) / "envs" / "eval"
+        log_dir = self.log_dir / "envs" / "eval"
         for source in config.eval.source:
             if source.serve.address is not None:
                 continue
@@ -461,8 +467,8 @@ class Evals:
 
 
 @clean_exit
-async def run_evals(config: EvalsConfig) -> None:
-    evals = Evals(config)
+async def run_evals(config: EvalsConfig, log_dir: Path | None = None) -> None:
+    evals = Evals(config, log_dir)
     try:
         await evals.run()
         # Finalize only on a clean exit — a crashed evals must not mark the run completed.
@@ -472,11 +478,9 @@ async def run_evals(config: EvalsConfig) -> None:
 
 
 def main() -> None:
-    from prime_rl.utils.config import cli
-    from prime_rl.utils.process import set_proc_title
+    from prime_rl.entrypoints.evals import main as entrypoint_main
 
-    set_proc_title("Evals")
-    asyncio.run(run_evals(cli(EvalsConfig)))
+    entrypoint_main()
 
 
 if __name__ == "__main__":

@@ -200,15 +200,15 @@ num_infer_gpus = 1  # inference
 
 The launcher starts the inference server, one env server per eval source, and an `evals` process next to the trainer. NCCL is the default weight transport. The trainer broadcasts weights at startup (fail-fast) and at every step an eval env is due, Every broadcast runs the same four-stage handshake in `broadcasts/step_{n}`: the trainer offers the version (`.sender_ready`) and blocks, the evals process acknowledges (`.receiver_ready`), then the trainer transfers (`.started`) and commits (`.finished`). It runs the due envs sequentially per broadcast, so every epoch measures exactly one policy version. Set `[weight_broadcast] type = "filesystem"` to reload weights from disk instead. LoRA and externally managed inference use filesystem broadcast automatically. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
 
-#### Multi-Node (Decoupled Trainer and Inference Pool)
+#### Multi-Node Trainer and Inference Pool
 
-On a `multi_node` deployment (SLURM), the trainer and the eval deployment are **two separate SLURM jobs**. `deployment.num_train_nodes` sizes the trainer job; `deployment.num_infer_nodes` sizes the eval job, which runs the inference pool (one vLLM engine per DP rank behind a single router, `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node), one env server per eval source, and the evals process:
+On a `multi_node` deployment, one SLURM job reserves `deployment.num_train_nodes + deployment.num_infer_nodes` nodes. The first `num_infer_nodes` run the inference pool, router, env servers, and evals process. The remaining nodes run the trainer. The inference pool runs one vLLM engine per DP rank behind one router, with `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node:
 
 ```toml
 [deployment]
 type = "multi_node"
-num_train_nodes = 2  # trainer job
-num_infer_nodes = 1  # eval job (inference pool + evals)
+num_train_nodes = 2  # trainer nodes
+num_infer_nodes = 1  # inference pool + evals
 
 [inference.vllm]
 tensor_parallel_size = 8
@@ -217,7 +217,7 @@ tensor_parallel_size = 8
 job_name = "my-run"
 ```
 
-The launcher submits the eval job after the trainer allocation starts. The trainer publishes its rank-0 hostname in the shared run directory, and the eval job uses it to join the NCCL weight-broadcast group. Each weight transfer is synchronous, but eval rollout execution overlaps with later training steps. After the final transfer, the trainer job releases its nodes while the eval job finishes the final epoch and exits. Without `max_steps`, the eval job never sees a final broadcast and holds its allocation until walltime. Trainer and evals log to one shared W&B run — the trainer creates it, and the evals process finalizes it. Any trainer-to-inference node layout works because `num_train_nodes` and `num_infer_nodes` are independent.
+The shared script passes the trainer rank-0 hostname directly to the evals process for NCCL weight broadcasts. Each transfer is synchronous, but eval rollout execution overlaps with later training steps. The allocation remains active while the final eval finishes. Without `max_steps`, evals never sees a final broadcast, so the job remains active until walltime. Trainer and evals log to one shared W&B run. The trainer creates it, and evals finalizes it.
 
 ### SFT-Specific Knobs
 
@@ -321,6 +321,7 @@ The launcher tees every process's stdout/stderr into `<run_dir>/logs/attempt_<n>
 <run_dir>/logs/latest/     # symlink -> attempt_<n>, one per launch
 ├── trainer.log                  # rank 0 only; symlink → trainer/node_0.log on multi-node
 ├── orchestrator.log             # single instance, single file
+├── evals.log                    # SFT online-eval process
 ├── inference.log                # symlink → inference/node_0.log on multi-node
 ├── trainer/
 │   ├── node_*.log               # per-node trainer stdout (multi-node only)
@@ -331,12 +332,12 @@ The launcher tees every process's stdout/stderr into `<run_dir>/logs/attempt_<n>
 └── envs/{train,eval}/<env_name>.log # one env server process per source (broker + its workers)
 ```
 
-Env logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`. For multi-rank trainer debugging, drop into `logs/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
+Env logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`. For multi-rank trainer debugging, drop into `logs/latest/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
 
 Live tailing from a single point (works on the head node for multi-node runs over a shared filesystem):
 
 ```bash
-tail -F <run_dir>/logs/latest/{trainer,orchestrator,inference}.log
+tail -F <run_dir>/logs/latest/{trainer,orchestrator,evals,inference}.log
 tail -F <run_dir>/logs/latest/trainer/node_*.log   # multi-node only
 tail -F <run_dir>/logs/latest/inference/router.log # multi-node only
 ```

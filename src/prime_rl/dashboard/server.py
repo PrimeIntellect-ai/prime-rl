@@ -365,7 +365,7 @@ def list_logfiles(run: str, attempt: str = "latest") -> dict:
         for path in sorted(attempt_dir.rglob("*.log")):
             component, label = log_component(path.relative_to(attempt_dir))
             add(path, component, label)
-    # The evals process writes its env-server logs outside attempt_N (logs/envs/eval/*.log).
+    # Include unscoped env logs from runs created before attempt-scoped eval logging.
     for path in sorted((run_dir / "logs" / "envs").rglob("*.log")):
         add(path, f"env:{path.stem}", f"{path.stem} (evals)")
     return {"attempt": attempt_num, "attempts": attempts, "files": files}

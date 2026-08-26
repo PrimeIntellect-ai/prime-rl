@@ -82,7 +82,7 @@ Verify liveness with `curl -sf <url>/api/runs` and hand the researcher the `url`
 {run_dir}/logs/latest/
 ├── trainer.log                # rank 0 stdout
 ├── orchestrator.log           # orchestrator stdout
-├── evals.log                  # SFT online-eval evals stdout (single-node; the decoupled multi-node eval job logs at {run_dir}/logs/evals.log)
+├── evals.log                  # SFT online-eval evals stdout
 ├── inference.log              # vLLM stdout
 ├── trainer/
 │   ├── node_*.log             # per-node (multi-node only)
