@@ -309,17 +309,15 @@ config values. None of these are visible from the test suite; all of them are on
 - **The real checkpoint's `config.json` is in the legacy flat format.** It carries a
   46-element `compress_ratios` list and no `layer_types` / `mlp_layer_types` / `rope_parameters`,
   while anything written by `save_pretrained` (including every filesystem broadcast directory) is
-  in the new format. Correcting a previous entry here: this is not a no-op for the real
-  checkpoint. `monkey_patch_deepseek_v4_compress_ratios` originally shadowed vLLM's shadow
-  `DeepseekV4Config.compress_ratios` with a **getter-only** property (computed from
-  `compress_rates`/`layer_types`, for checkpoints that lack `compress_ratios` entirely).
-  `PretrainedConfig.__init__`'s generic kwargs loop then tries to `setattr` the real checkpoint's
-  raw `compress_ratios` list onto that same name and crashes immediately, before touching any
-  GPU: `AttributeError: property of 'DeepseekV4Config' object has no setter`. Confirmed by
-  actually booting against the real checkpoint (previously this section was reasoning from the
-  config.json contents alone, not a live run). Fixed by giving the property a setter: the raw
-  checkpoint value wins when present, the `compress_rates`/`layer_types` computation is now only
-  the fallback for checkpoints that ship the modern schema.
+  in the new format. This asymmetry used to matter: `vllm/models/deepseek_v4/attention.py` reads
+  `config.compress_ratios[layer_id]` directly, which vLLM's own shadow `DeepseekV4Config`
+  (`vllm/transformers_utils/configs/deepseek_v4.py`) never derives from `compress_rates`/
+  `layer_types` on its own. Resolved by writing `compress_ratios` directly into this repo's own
+  `DeepseekV4Config` (`trainer/models/deepseek_v4/configuration_deepseek_v4.py`, right after
+  `layer_types` is finalized) so every checkpoint this repo ever saves already carries the field,
+  the same way the real checkpoint does — no vLLM-side runtime patch needed anymore
+  (`monkey_patch_deepseek_v4_compress_ratios` in `inference/patches.py` has been removed).
+  Confirmed against a real vLLM boot on both the real checkpoint and a freshly-rebuilt mini one.
 
 ## The pinned `deep_gemm` wheel is built against CUDA 13, the rest of the stack is CUDA 12
 

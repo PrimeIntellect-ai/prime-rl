@@ -200,6 +200,8 @@ class DeepseekV4Config(PretrainedConfig):
             ]
             layer_types = ["heavily_compressed_attention"] * min(num_hidden_layers, 2) + interleave
         self.layer_types = list(layer_types)
+        # We don't use this, but vLLM's attention code reads it directly.
+        self.compress_ratios = [self.compress_rates.get(lt, 0) for lt in self.layer_types]
 
         # MoE
         self.num_experts_per_tok = num_experts_per_tok
