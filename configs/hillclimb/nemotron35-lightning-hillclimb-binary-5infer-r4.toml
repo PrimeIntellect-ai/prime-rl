@@ -1,0 +1,65 @@
+# Compose after nemotron35-lightning-hillclimb-tb21.toml. Clean successor to
+# the r3 allocation after its trainer process was SIGKILLed before step 20.
+
+[run]
+name = "nemotron35-lightning-hillclimb-binary-5infer-r4"
+
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/nemotron35-lightning-hillclimb-binary-5infer-r4-triton"
+TMPDIR = "/tmp/nemotron35-lightning-hillclimb-binary-5infer-r4"
+
+[slurm]
+job_name = "n35l-hillclimb-binary-5i-r4"
+pre_run_command = 'mkdir -p /tmp/nemotron35-lightning-hillclimb-binary-5infer-r4 /shared/parker/huggingface /shared/parker/uv-cache /shared/parker/prime-rl-outputs /shared/parker/harbor-cache/hillclimb-f44acccc8 ; CUDA_HOME=/usr/local/cuda-12.9 UV_CACHE_DIR=/shared/parker/uv-cache /shared/parker/bin/uv sync --frozen --all-extras --all-packages --group mamba-ssm ; timeout 120 prime sandbox delete --label "nemotron35-lightning-hillclimb-binary-5infer-r4" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 5
+
+[monitors.wandb]
+project = "hillclimb"
+name = "nemotron35-lightning-hillclimb-binary-5infer-r4"
+
+[orchestrator]
+max_off_policy_steps = 16
+
+[orchestrator.concurrency]
+initial_inflight = 2048
+max_inflight = 2048
+
+[[orchestrator.train.source]]
+name = "hillclimb-binary"
+env.taskset.id = "hillclimb-static-rewards"
+env.taskset.repo = "PrimeIntellect-ai/prime-tasks-private@f44acccc88b095c88a7dec6479e3dacccef80ee8"
+env.taskset.registry_path = "registry.json"
+env.taskset.dataset = "hillclimb-binary-reward-v1"
+env.taskset.reward_mode = "binary"
+env.agent.harness.id = "terminus-2"
+env.agent.harness.version = "0.21.0"
+env.agent.runtime.labels = ["nemotron35-lightning-hillclimb-binary-5infer-r4"]
+env.agent.timeout.rollout = 10800
+env.agent.timeout.scoring = 3600
+env.agent.retries.max_retries = 2
+env.agent.retries.include = ["SandboxError", "ProviderError"]
+
+[[orchestrator.eval.source]]
+name = "terminal-bench-2-1"
+group_size = 3
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "terminus-2"
+env.agent.harness.version = "0.21.0"
+env.agent.runtime.labels = ["nemotron35-lightning-hillclimb-binary-5infer-r4"]
+env.agent.timeout.rollout = 10800
+env.agent.timeout.scoring = 3600
+env.agent.retries.max_retries = 2
+env.agent.retries.include = ["SandboxError", "ProviderError"]
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/nemotron35-lightning-hillclimb-binary-5infer-r4-vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/nemotron35-lightning-hillclimb-binary-5infer-r4-flashinfer"
+
+[inference.router]
+type = "vllm-router"
+policy = "cache_aware"
