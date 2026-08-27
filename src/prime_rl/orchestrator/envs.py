@@ -10,7 +10,7 @@ once, and each dispatched episode ships its task's data on the request
 (``task_data``); the server pydantic-validates it into the taskset's declared
 ``TaskData`` type and runs it. That keeps the server (and every worker in its
 pool) stateless about data — no per-worker dataset loads, no idx-addressed task
-cache — and gives the orchestrator real tasks to cycle, shuffle, and filter.
+cache — and gives the orchestrator real tasks to sample.
 
 The server answers one ``Episode`` per run request, whose traces we validate into
 ``Trace[WireTaskData]`` — real ``vf.Trace``\\ s (never loose dicts) whose task
@@ -20,6 +20,7 @@ keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Iterator, Sequence
 from itertools import islice
 from typing import Generic, TypeVar
@@ -29,14 +30,8 @@ from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
-from prime_rl.orchestrator.sampler import Sampler
-from prime_rl.orchestrator.types import Rollout
-from prime_rl.utils.logger import get_logger
-
-# Every wire trace validates into this type. WireTaskData (extra="allow") keeps the env's task
-# fields without importing the env package — the orchestrator never reads them typed (only
-# task.idx + task.model_dump).
-ROLLOUT_TYPE = Rollout[vf.WireTaskData]
+from prime_rl.orchestrator.generation_source import GenerationSource
+from prime_rl.utils.logger import format_time, get_logger
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
 # servers concurrently with the orchestrator, and a server imports its env package
@@ -74,21 +69,22 @@ class Env:
     async def start(self) -> None:
         """Connect to the env server and load the taskset client-side."""
         get_logger().debug(f"Connecting {self.name} to env server {self.address}")
+        t0 = time.perf_counter()
         self._env_client = EnvClient(address=self.address)
         # The server may still be coming up (the launcher spawns it concurrently with
         # the orchestrator), so poll until it answers.
         await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
         taskset = vf.load_taskset(self.config.env.taskset)
         if type(taskset).INFINITE:
-            self.tasks = iter(taskset.load())
+            self.tasks = iter(taskset)
             self.num_tasks = None
         else:
-            # Materialize off the event loop — load() may pull a dataset.
-            materialized = await asyncio.to_thread(lambda: list(taskset.load()))
+            # Materialize off the event loop — iterating may pull a dataset.
+            materialized = await asyncio.to_thread(lambda: list(taskset))
             self.tasks = iter(materialized)
             self.num_tasks = len(materialized)
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
-        get_logger().info(f"Env {self.name} ready: num_tasks={num_tasks}")
+        get_logger().info(f"Env {self.name} ready in {format_time(time.perf_counter() - t0)} (num_tasks={num_tasks})")
 
     def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
         sampling = {**self.sampling_args}
@@ -102,40 +98,39 @@ class Env:
         model_name: str,
         cache_salt: str | None,
         task_data: dict,
-    ) -> list[Rollout]:
-        """Run one episode; return its typed Traces. A zero-trace episode raises (the
-        dispatcher synthesizes the error marker); a not-``ok`` episode marks its clean
-        traces failed so partial episodes never train."""
+    ) -> vf.WireEpisode:
+        """Run and return one typed episode. A failed multi-trace episode marks
+        its otherwise-clean traces failed so partial episodes never train."""
         episode = await self.env_client.run(
             task_data=task_data,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        if not episode.traces:
-            error = episode.last_error
-            detail = f"{error.type}: {error.message}" if error is not None else "no traces and no error recorded"
-            raise RuntimeError(f"episode failed before any trace was produced — {detail}")
-        rollouts = [ROLLOUT_TYPE.model_construct(**dict(wire)) for wire in episode.traces]
-        for rollout in rollouts:
-            rollout.episode_id = episode.id
-            if not episode.ok and rollout.ok:
+        for trace in episode.traces:
+            if not episode.ok and trace.ok:
                 error = episode.last_error or vf.Error(
                     type="EpisodeFailed", message="A sibling trace in this episode failed"
                 )
-                rollout.errors = [*rollout.errors, error]
-                rollout.ok = False
-        return rollouts
+                trace.errors = [*trace.errors, error]
+                trace.ok = False
+        return episode
 
 
 class TrainEnv(Env):
     config: TrainSourceConfig
 
-    def __init__(self, config: TrainSourceConfig, address: str, sampler: Sampler, algorithm: Algorithm):
+    def __init__(
+        self,
+        config: TrainSourceConfig,
+        address: str,
+        generation_source: GenerationSource,
+        algorithm: Algorithm,
+    ):
         super().__init__(config, address)
-        self.sampler = sampler
+        self.generation_source = generation_source
         self.algorithm = algorithm
-        self.sampling_args = sampler.sampling_args(config.sampling.to_sampling_args())
+        self.sampling_args = generation_source.sampling_args(config.sampling.to_sampling_args())
 
 
 class EvalEnv(Env):
@@ -144,7 +139,7 @@ class EvalEnv(Env):
     def __init__(self, config: EvalSourceConfig, address: str):
         super().__init__(config, address)
         self.sampling_args = config.sampling.to_sampling_args()
-        self.examples: list[dict] = []
+        self.examples: list[vf.Task] = []
 
     async def start(self) -> None:
         await super().start()
@@ -153,7 +148,7 @@ class EvalEnv(Env):
             raise ValueError(f"Eval env {self.name} has an infinite taskset — set num_examples to bound it")
         # A fixed eval set, pulled off the tasks once and reused every epoch.
         tasks = list(self.tasks) if n < 0 else list(islice(self.tasks, n))
-        self.examples = [{"task": task} for task in tasks]
+        self.examples = tasks
 
 
 EnvT = TypeVar("EnvT", bound=Env)
@@ -184,12 +179,19 @@ class Envs(Generic[EnvT]):
     async def start(self) -> None:
         """Connect to all env servers in parallel — every address is known up front,
         so there's nothing to serialize on."""
+        # When several env.start()s load_dataset() concurrently, datasets' parallel arrow read
+        # (tqdm thread_map) races in ensure_lock's `del tqdm_class._lock` and crashes with
+        # `AttributeError: type object 'tqdm' has no attribute '_lock'`. Pre-seed the lock so it
+        # isn't created-and-deleted per call.
+        from datasets.utils import tqdm as hf_tqdm
+
+        hf_tqdm.set_lock(hf_tqdm.get_lock())
         await asyncio.gather(*(env.start() for env in self))
 
 
 class TrainEnvs(Envs[TrainEnv]):
-    """Collection of training environments, each paired with its rollout
-    :class:`Sampler` and runtime :class:`Algorithm`, built from the env's
+    """Collection of training environments, each paired with its
+    :class:`GenerationSource` and runtime :class:`Algorithm`, built from the env's
     resolved algorithm config."""
 
     def __init__(
@@ -197,17 +199,18 @@ class TrainEnvs(Envs[TrainEnv]):
         configs: Sequence[TrainSourceConfig],
         addresses: dict[tuple[str, str], str],
         *,
-        policy_pool,
+        clients,
         renderer_config=None,
     ):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainSourceConfig.algo must be resolved before env construction"
+            get_logger().info(f"Initializing {config.algo.type} algorithm for {config.resolved_name}")
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],
-                Sampler(config.algo.sampling, policy_pool, renderer_config),
-                build_algorithm(config.algo, policy_pool),
+                GenerationSource(config.algo.sampling, clients, renderer_config),
+                build_algorithm(config.algo, clients),
             )
             self._envs[env.name] = env
 

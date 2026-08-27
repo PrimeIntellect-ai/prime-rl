@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+import verifiers.v1 as vf
+
 from prime_rl.configs.algorithm import HierarchicalGRPOAlgoConfig
-from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
+from prime_rl.orchestrator.algo.routing import assign_advantages
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.orchestrator.clients import InferenceClient
 
 
 class HierarchicalGRPOAlgorithm(Algorithm):
@@ -24,17 +26,17 @@ class HierarchicalGRPOAlgorithm(Algorithm):
     within one episode. Other roles are compared across the full rollout group.
     A comparison group with one trace produces zero advantage."""
 
-    def __init__(self, config: HierarchicalGRPOAlgoConfig, policy_pool: InferencePool):
-        super().__init__(config, policy_pool)
+    def __init__(self, config: HierarchicalGRPOAlgoConfig, clients: InferenceClient):
+        super().__init__(config, clients)
         self.episode_agents = set(config.episode_agents)
 
-    async def score_group(self, group: list[Rollout]) -> None:
-        peers: dict[tuple[str, str | None], list[Rollout]] = defaultdict(list)
-        for rollout in group:
-            episode_scoped = rollout.agent.name in self.episode_agents
-            key = (rollout.agent.name, rollout.episode_id if episode_scoped else None)
-            peers[key].append(rollout)
+    async def score_group(self, episodes: list[vf.Episode]) -> None:
+        peers: dict[tuple[str, str | None], list[vf.Trace]] = defaultdict(list)
+        for episode, trace in iter_trainable_traces(episodes):
+            episode_scoped = trace.agent.name in self.episode_agents
+            key = (trace.agent.name, episode.id if episode_scoped else None)
+            peers[key].append(trace)
         for members in peers.values():
-            baseline = sum(rollout.reward for rollout in members) / len(members)
-            for rollout in members:
-                rollout.assign_advantages(rollout.reward - baseline)
+            baseline = sum(trace.reward for trace in members) / len(members)
+            for trace in members:
+                assign_advantages(trace, trace.reward - baseline)

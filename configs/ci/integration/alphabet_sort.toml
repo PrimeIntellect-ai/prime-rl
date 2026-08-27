@@ -19,28 +19,23 @@ lr = 1e-5
 batch_size = 128
 group_size = 8
 
+[orchestrator.concurrency]
+max_inflight = 128
+
 [orchestrator.train.sampling]
 max_completion_tokens = 384
 
 [[orchestrator.train.source]]
 name = "alphabet-sort"
-
-[orchestrator.train.source.env.taskset]
-id = "alphabet-sort"
-min_turns = 2
-max_turns = 2
-min_names_per_turn = 1
-max_names_per_turn = 3
-
-[orchestrator.train.source.env.taskset.task]
-similarity_power = 4
-power_per_turn = false
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "alphabet-sort"
+env.taskset.min_turns = 2
+env.taskset.max_turns = 2
+env.taskset.min_names_per_turn = 1
+env.taskset.max_names_per_turn = 3
+env.taskset.task.similarity_power = 4
+env.taskset.task.power_per_turn = false
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [inference]
 

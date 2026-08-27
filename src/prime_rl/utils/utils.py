@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import importlib
+import math
 import os
 import sys
 from collections import defaultdict
@@ -24,7 +25,6 @@ from prime_rl.utils.pathing import (
     get_log_dir,
     get_rollout_dir,
     get_step_path,
-    get_weights_dir,
     resolve_latest_ckpt_step,
     sync_wait_for_path,
     wait_for_path,
@@ -127,6 +127,31 @@ def format_num(num: float | int, precision: int = 2) -> str:
         return f"{sign}{num / 1e9:.{precision}f}B"
 
 
+def sanitize(obj: Any) -> tuple[Any, list[str]]:
+    """Recursively drop non-finite floats (NaN/inf), which are not valid JSON.
+    Returns the sanitized object and the dotted paths of the dropped values."""
+    dropped_paths: list[str] = []
+
+    def keep(item: Any, path: str) -> bool:
+        if isinstance(item, float) and not math.isfinite(item):
+            dropped_paths.append(path)
+            return False
+        return True
+
+    def walk(value: Any, path: str) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: walk(item, child)
+                for key, item in value.items()
+                if keep(item, child := f"{path}.{key}" if path else key)
+            }
+        if isinstance(value, list):
+            return [walk(item, child) for index, item in enumerate(value) if keep(item, child := f"{path}[{index}]")]
+        return value
+
+    return walk(obj, ""), dropped_paths
+
+
 def get_free_port() -> int:
     """Find and return a free port"""
     import socket
@@ -136,17 +161,6 @@ def get_free_port() -> int:
         s.listen(1)
         port = s.getsockname()[1]
     return port
-
-
-def get_latest_ckpt_step(weights_dir: Path) -> int | None:
-    step_dirs = list(weights_dir.glob("step_*"))
-    if len(step_dirs) == 0:
-        return None
-    steps = sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
-    for latest_step in steps[::-1]:
-        if Path(weights_dir / f"step_{latest_step}" / "STABLE").exists():
-            return latest_step
-    return None
 
 
 @contextmanager

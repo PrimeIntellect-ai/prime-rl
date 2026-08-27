@@ -18,9 +18,11 @@ num_train_nodes = 4
 num_infer_nodes = 1
 num_infer_replicas = 4
 
-[wandb]
+[monitors.wandb]
 project = "nemotron-3-super"
 name = "nemotron-3-super-swe"
+
+[monitors.prime]
 
 [weight_broadcast]
 type = "nccl"
@@ -47,7 +49,6 @@ cp = 8
 cp_style = "ulysses"
 ep = 8
 fused_lm_head_token_chunk_size = 1024
-optim_cpu_offload = true
 
 [trainer.model.ac]
 
@@ -57,7 +58,6 @@ max_inflight_activations = 1
 [trainer.model.compile]
 
 [trainer.ckpt]
-skip_gather_master_weights = true
 skip_optimizer = true
 
 [trainer.optim]
@@ -67,7 +67,10 @@ type = "adamw"
 batch_size = 256
 group_size = 16
 max_off_policy_steps = 32
-max_inflight_episodes = 1536
+
+[orchestrator.concurrency]
+initial_inflight = 1536
+max_inflight = 1536
 
 [orchestrator.algo]
 type = "grpo"
@@ -84,37 +87,21 @@ truncate_history_thinking = false
 
 [[orchestrator.train.source]]
 name = "scaleswe"
-
-[orchestrator.train.source.env.taskset]
-id = "scaleswe"
-
-[orchestrator.train.source.env.agent.harness]
-id = "rlm"
-summarize_at_tokens = [65536, 131072]
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["nemotron-3-super-swe"]
-
-[orchestrator.prime_monitor]
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "rlm"
+env.agent.harness.summarize_at_tokens = [65536, 131072]
+env.agent.runtime.labels = ["nemotron-3-super-swe"]
 
 [orchestrator.eval]
 interval = 20
 
 [[orchestrator.eval.source]]
 name = "swebench-verified"
-
-[orchestrator.eval.source.env.taskset]
-id = "swebench-verified"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "rlm"
-summarize_at_tokens = 98304
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["nemotron-3-super-swe"]
-
-[orchestrator.eval.source.env.agent.timeout]
-rollout = 3600
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "rlm"
+env.agent.harness.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["nemotron-3-super-swe"]
+env.agent.timeout.rollout = 3600
 
 [inference]
 # vLLM disables prefix caching by default for hybrid-Mamba models; SWE turns share long prefixes.

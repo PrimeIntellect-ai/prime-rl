@@ -1,0 +1,32 @@
+# Standalone SWE evals: SWE-bench Verified + Terminal-Bench 2, one epoch each,
+# against DeepSeek V4 Flash on Prime Inference.
+#
+#   export PRIME_API_KEY=<your Prime Inference key>
+#   uv run evals @ examples/evals/swe.toml
+#
+# The tasksets run in prime sandboxes (the default runtime), so the key also
+# authenticates sandbox creation. External API endpoints expose no vLLM
+# /metrics, so adaptive concurrency has no load signal - the band must be
+# pinned (min_inflight = max_inflight) or the evals process refuses to start.
+
+model = "deepseek/deepseek-v4-flash"
+
+[eval.client]
+base_url = "https://api.pinference.ai/api/v1"
+api_key_var = "PRIME_API_KEY"
+
+[eval.concurrency]
+min_inflight = 32
+max_inflight = 32
+
+[[eval.source]]
+name = "swebench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 3600
+
+[[eval.source]]
+name = "terminal-bench-2"
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 3600

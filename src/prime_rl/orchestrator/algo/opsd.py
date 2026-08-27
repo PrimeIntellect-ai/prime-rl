@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import verifiers.v1 as vf
+
 from prime_rl.configs.algorithm import OPSDAlgoConfig
-from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
+from prime_rl.orchestrator.algo.routing import assign_reference_logprobs
+from prime_rl.orchestrator.trajectories import iter_trainable_branches
+from prime_rl.orchestrator.utils import episode_env_name
 
 if TYPE_CHECKING:
     from renderers.base import Renderer
 
-    from prime_rl.orchestrator.types import Rollout
-    from prime_rl.transport import TrainingSample
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.orchestrator.clients import InferenceClient
 
 
 class OPSDAlgorithm(Algorithm):
@@ -30,8 +33,8 @@ class OPSDAlgorithm(Algorithm):
 
     action_loss_type = "ref_kl"
 
-    def __init__(self, config: OPSDAlgoConfig, policy_pool: InferencePool):
-        super().__init__(config, policy_pool)
+    def __init__(self, config: OPSDAlgoConfig, clients: InferenceClient):
+        super().__init__(config, clients)
         self.demo_key = config.demo_key
         self.template = config.template
         self.renderer_config = config.renderer
@@ -39,7 +42,7 @@ class OPSDAlgorithm(Algorithm):
         # Self-distillation: the teacher *is* the live policy. Scoring against
         # the shared policy pool tracks its current weights, model name, and
         # endpoint churn for free.
-        self.teacher_pool = self.policy_pool
+        self.teacher_clients = self.clients
 
     async def setup(self) -> None:
         """Build opsd's own hint-block renderer from config — it is not handed
@@ -48,30 +51,28 @@ class OPSDAlgorithm(Algorithm):
         identically to the policy's own prompts."""
         from renderers.base import create_renderer, load_tokenizer
 
-        self.renderer = create_renderer(load_tokenizer(self.policy_pool.model_name), self.renderer_config)
+        self.renderer = create_renderer(load_tokenizer(self.clients.model_name), self.renderer_config)
 
-    def _demonstration(self, rollout: Rollout) -> str:
-        demonstration = rollout.info.get(self.demo_key)
+    def _demonstration(self, episode: vf.Episode, trace: vf.Trace) -> str:
+        demonstration = trace.info.get(self.demo_key)
         if demonstration is None:
-            demonstration = getattr(rollout.task.data, self.demo_key, None)
+            demonstration = getattr(trace.task.data, self.demo_key, None)
         if demonstration is None:
+            env_name = episode_env_name(episode)
             raise ValueError(
                 f"opsd requires '{self.demo_key}' in the trace info dict or on the task "
-                f"(env '{rollout.env_name}', task {rollout.task.data.idx})."
+                f"(env '{env_name}', task {trace.task.data.idx})."
             )
         return demonstration
 
-    async def score_rollout(self, rollout: Rollout) -> None:
-        pool = self.teacher_pool
+    async def score_episode(self, episode: vf.Episode) -> None:
+        teacher = self.teacher_clients
         renderer = self.renderer
         assert renderer is not None, "renderer not built — Algorithm.setup() must run first"
-        hint = self.template.format(demonstration=self._demonstration(rollout))
-        hint_block = renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)
-
-        async def score_sample(sample: TrainingSample) -> None:
-            full_logprobs = await pool.score(hint_block + list(sample.token_ids))
-            # Drop the hint's own logprobs; the tail aligns full-length to
-            # sample.token_ids (demo-conditioned, the trainer's ref_kl target).
-            sample.ref_logprobs = full_logprobs[len(hint_block) :]
-
-        await asyncio.gather(*(score_sample(sample) for sample in rollout.samples))
+        for _, trace in iter_trainable_traces([episode]):
+            hint = self.template.format(demonstration=self._demonstration(episode, trace))
+            hint_block = renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)
+            branches = [branch for branch, _ in iter_trainable_branches(trace)]
+            scores = await asyncio.gather(*(teacher.score(hint_block + branch.token_ids) for branch in branches))
+            for branch, full_logprobs in zip(branches, scores, strict=True):
+                assign_reference_logprobs(branch, full_logprobs[len(hint_block) :])

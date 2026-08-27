@@ -79,14 +79,40 @@ class FakeDataset(StatefulIterableDataset):
         seq_len: int,
         length: Literal["fixed", "variable"] = "fixed",
         input_ids: Literal["increasing", "random"] = "random",
+        seed: int = 0,
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.seq_len = seq_len
         self.length = length
         self.input_ids = input_ids
+        self.seed = seed
+
+    def _draw_sample(self, generator: torch.Generator) -> tuple[int, list[int] | None]:
+        # Consume this samples "randomness" - fast forwarding must replay it to restore the generator state
+        seq_len = (
+            int(torch.randint(1, self.seq_len, (1,), generator=generator).item())
+            if self.length == "variable"
+            else self.seq_len
+        )
+        random_input_ids = (
+            torch.randint(0, self.vocab_size, (self.seq_len + 1,), generator=generator).long().tolist()
+            if self.input_ids == "random"
+            else None
+        )
+        return seq_len, random_input_ids
 
     def __iter__(self):
+        # use a rank seeded PRNG instead of torch global default PRNG because with num workers > 0
+        # the data loader reseeds the global PRNG per worker process
+        generator = torch.Generator().manual_seed(self.seed + self.data_rank)
+        if self.fast_forward:
+            # step counts globally emmited samples but this rank is only emitted every data_world_size-TH
+            already_emitted = len(range(self.data_rank, self.step, self.data_world_size))
+            for _ in range(already_emitted):
+                self._draw_sample(generator)
+            self.fast_forward = False
+
         while True:
             self.step += 1
 
@@ -94,12 +120,8 @@ class FakeDataset(StatefulIterableDataset):
             if (self.step - 1) % self.data_world_size != self.data_rank:
                 continue
 
-            seq_len = int(torch.randint(1, self.seq_len, (1,)).item()) if self.length == "variable" else self.seq_len
-            input_ids = (
-                [self.step - 1] * (seq_len + 1)
-                if self.input_ids == "increasing"
-                else torch.randint(0, self.vocab_size, (self.seq_len + 1,)).long().tolist()
-            )
+            seq_len, random_input_ids = self._draw_sample(generator)
+            input_ids = [self.step - 1] * (seq_len + 1) if random_input_ids is None else random_input_ids
             position_ids = list(range(seq_len))
             loss_mask = [True] * seq_len
             fake_sample = {
@@ -531,20 +553,19 @@ class CatDataset(StatefulIterableDataset):
 
 
 def cat_collate(samples: list[Sample]) -> Batch:
+    # CPU tensors only: this runs in dataloader workers then the trainer moves batches to the GPU with async copies from pinned memory
     (sample,) = samples
     mm_kwargs = sample.get("mm_kwargs")
     mm_token_type_ids = sample.get("mm_token_type_ids")
     return {
-        "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
-        "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
-        "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda").unsqueeze(0),
-        "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
-        "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long, device="cuda"),
-        "mm_kwargs": {key: value.to("cuda") for key, value in mm_kwargs.items()} if mm_kwargs is not None else None,
+        "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long).unsqueeze(0),
+        "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long).unsqueeze(0),
+        "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool).unsqueeze(0),
+        "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long).unsqueeze(0),
+        "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long),
+        "mm_kwargs": dict(mm_kwargs) if mm_kwargs is not None else None,
         "mm_token_type_ids": (
-            torch.tensor(mm_token_type_ids, dtype=torch.long, device="cuda").unsqueeze(0)
-            if mm_token_type_ids is not None
-            else None
+            torch.tensor(mm_token_type_ids, dtype=torch.long).unsqueeze(0) if mm_token_type_ids is not None else None
         ),
     }
 
@@ -633,6 +654,7 @@ def setup_dataset(
             seq_len=config.seq_len,
             length=config.length,
             input_ids=config.input_ids,
+            seed=config.seed,
         )
     elif config.type == "sft":
         if renderer is None:
@@ -656,4 +678,22 @@ def setup_dataset(
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
     packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
-    return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
+    return StatefulDataLoader(
+        packing_dataset,
+        batch_size=1,
+        collate_fn=cat_collate,
+        num_workers=config.num_workers,
+        pin_memory=True,
+    )
+
+
+def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
+    """Dataset position per worker for the startup log, parsed from ``StatefulDataLoader.state_dict()``.
+
+    The loader is the only source that is correct in every case: after a resume's
+    ``load_state_dict`` the restored position exists solely in the loader's stashed
+    state (it reaches the dataset copies inside workers when the iterator forks them;
+    the main-process dataset object stays at position zero). The keys are torchdata's
+    private worker-snapshot layout."""
+    snapshots = dataloader.state_dict()["_snapshot"]["_worker_snapshots"]
+    return {wid: snap["dataset_state"]["dataset"] for wid, snap in sorted(snapshots.items())}

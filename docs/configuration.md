@@ -106,10 +106,8 @@ uv run rl @ rl.toml --orchestrator.train.source.0.args \
 
 ```toml
 [[orchestrator.train.source]]
-
-[orchestrator.train.source.args]
-dataset_name = "openai/gsm8k"
-dataset_subset = "main"
+args.dataset_name = "openai/gsm8k"
+args.dataset_subset = "main"
 ```
 
 ### Optional Sub-Configs
@@ -153,42 +151,24 @@ Training and evaluation sources are arrays of tables. Set one source per environ
 [[orchestrator.train.source]]
 name = "gsm8k"
 ratio = 3  # 75% of batches
-
-[orchestrator.train.source.env.taskset]
-id = "gsm8k"
-split = "train"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "gsm8k"
+env.taskset.split = "train"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [[orchestrator.train.source]]
 name = "reverse-text"
 ratio = 1  # default — 25% of batches
-
-[orchestrator.train.source.env.taskset]
-id = "reverse-text"
-
-[orchestrator.train.source.env.agent.harness]
-id = "null"
-
-[orchestrator.train.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 
 [[orchestrator.eval.source]]
 name = "gsm8k-eval"
-
-[orchestrator.eval.source.env.taskset]
-id = "gsm8k"
-split = "test"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "null"
-
-[orchestrator.eval.source.env.agent.runtime]
-type = "subprocess"
+env.taskset.id = "gsm8k"
+env.taskset.split = "test"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
 ```
 
 `ratio` defaults to `1` (equal weight per env); values are relative weights normalized to probabilities across envs.
@@ -218,7 +198,7 @@ PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:False"
 VLLM_USE_DEEP_GEMM = "1"
 
 [orchestrator.env_vars]
-PI_USAGE_BASE_URL = "https://..."
+PRIME_LOG_LEVEL = "debug"
 ```
 
 The `rl` launcher applies these the same way in both single-node and multi-node (SLURM) runs. Precedence, low to high:
@@ -257,7 +237,7 @@ Start from a shipped base config, override two fields on the CLI, and dry-run:
 
 ```bash
 uv run rl @ examples/basic/reverse-text/rl.toml \
-  --wandb.name my-experiment \
+  --monitors.wandb.name my-experiment \
   --trainer.optim.lr 5e-6 \
   --output-dir /tmp/reverse-dry \
   --run.name check \
@@ -267,8 +247,14 @@ uv run rl @ examples/basic/reverse-text/rl.toml \
 Then inspect the resolved config:
 
 ```bash
-ls /tmp/reverse-dry/check/configs/
+ls /tmp/reverse-dry/check/configs/latest/resolved/
 # rl.json  trainer.json  orchestrator.json  inference.json
 ```
 
-Each per-process TOML reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/check/configs/trainer.json`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.
+Each per-process JSON contains the final, validated configuration that the run
+uses. This is also what each standalone process reads. For example, the trainer
+reads `configs/latest/resolved/trainer.json`.
+
+`configs/latest/command.txt` records the shell-safe launch command and its CLI
+overrides. Each launch also remains under `configs/attempt_<n>/`. To compare
+configs, dry-run a known-good base and your overlay. Then diff the two attempts.

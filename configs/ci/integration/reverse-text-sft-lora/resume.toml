@@ -5,9 +5,6 @@ max_steps = 10
 [resume]
 step = 5
 
-[ckpt.weights]
-save_adapter_separately = true
-
 [model]
 name = "PrimeIntellect/Qwen3-0.6B"
 

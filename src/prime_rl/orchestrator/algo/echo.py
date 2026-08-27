@@ -11,8 +11,7 @@ from prime_rl.utils.utils import import_object
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
-    from prime_rl.orchestrator.types import Rollout
-    from prime_rl.utils.client import InferencePool
+    from prime_rl.orchestrator.clients import InferenceClient
 
 
 class EchoAlgorithm(GRPOAlgorithm):
@@ -23,8 +22,8 @@ class EchoAlgorithm(GRPOAlgorithm):
     mask and its denominator. An optional user filter narrows the selection
     per rollout (e.g. dropping tool-output warnings)."""
 
-    def __init__(self, config: EchoAlgoConfig, policy_pool: InferencePool):
-        super().__init__(config, policy_pool)
+    def __init__(self, config: EchoAlgoConfig, clients: InferenceClient):
+        super().__init__(config, clients)
         self.role_weights = {
             role: role_config.alpha
             for role in ("system", "user", "assistant", "tool")
@@ -34,13 +33,13 @@ class EchoAlgorithm(GRPOAlgorithm):
         if config.filter is not None:
             self.filter_fn = partial(import_object(config.filter.import_path), **config.filter.kwargs)
 
-    async def score_rollout(self, rollout: Rollout) -> None:
-        # Observation weighting is rollout-local; the group-relative GRPO
-        # baseline is inherited unchanged as ``score_group``.
-        self._weight_observations(rollout)
+    async def score_episode(self, episode: vf.Episode) -> None:
+        for trace in episode.traces:
+            if not trace.has_error and trace.agent.trainable:
+                self._weight_observations(trace)
 
-    def _weight_observations(self, rollout: Rollout) -> None:
-        """Write each sample's ``ce_weights`` stream over the env-provided
+    def _weight_observations(self, trace: vf.Trace) -> None:
+        """Write graph-native ``ce`` weights over the env-provided
         observation tokens of later turns. Provenance is structural under v1:
         within a branch, the non-sampled nodes that follow the first model
         response (tool output, user feedback) are the env-provided
@@ -56,12 +55,10 @@ class EchoAlgorithm(GRPOAlgorithm):
         (role tags, separators, tool-response wraps) is excluded. Nodes without
         attribution (the default renderer, or relay turns with no token ids)
         fall back to weighting the whole non-sampled span."""
-        # Same branch selection as ``trace_to_samples``, so the zip with ``rollout.samples``
-        # stays aligned when fork dedup drops a branch.
-        trainable_branches = [branch for branch, _ in iter_trainable_branches(rollout)]
-        filter_masks = self._filter_masks(rollout, trainable_branches) if self.filter_fn is not None else None
-        for sample_idx, (sample, branch) in enumerate(zip(rollout.samples, trainable_branches)):
-            weights = [0.0] * len(sample.token_ids)
+        trainable_branches = [branch for branch, _ in iter_trainable_branches(trace)]
+        filter_masks = self._filter_masks(trace, trainable_branches) if self.filter_fn is not None else None
+        for branch_idx, branch in enumerate(trainable_branches):
+            weights = [0.0] * len(branch.token_ids)
             offset = 0
             seen_response = False
             for node in branch.nodes:
@@ -69,7 +66,7 @@ class EchoAlgorithm(GRPOAlgorithm):
                 role = node.message.role
                 if seen_response and not node.sampled and role in self.role_weights:
                     weight = self.role_weights[role]
-                    keep_mask = filter_masks[sample_idx] if filter_masks is not None else None
+                    keep_mask = filter_masks[branch_idx] if filter_masks is not None else None
                     # Per-token content granularity when the renderer attributed it; otherwise
                     # the whole node span (is_content empty -> fall back to current behavior).
                     has_content = len(node.is_content) == span
@@ -81,8 +78,16 @@ class EchoAlgorithm(GRPOAlgorithm):
                 if node.sampled:
                     seen_response = True
                 offset += span
-            if any(weights):
-                sample.ce_weights = weights
+            offset = 0
+            for node in branch.nodes:
+                end = offset + len(node.token_ids)
+                node_weights = weights[offset:end]
+                if any(node_weights):
+                    streams = dict(node.loss_weights or {})
+                    current = streams.get("ce", [0.0] * len(node.token_ids))
+                    streams["ce"] = [max(old, new) for old, new in zip(current, node_weights, strict=True)]
+                    node.loss_weights = streams
+                offset = end
 
     def _filter_masks(self, trace: vf.Trace, trainable_branches: list) -> list[list[bool]]:
         """Invoke the user echo filter and validate its shape: one keep-mask

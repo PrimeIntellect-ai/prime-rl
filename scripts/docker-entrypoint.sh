@@ -53,16 +53,10 @@ if [ -n "$PRIME_RL_REF" ]; then
         cp -a /app/.venv "$DEST/.venv"
     fi
     echo "[prime-rl] running uv sync --inexact (this may take a few minutes on cold checkout)"
-    # Mirror the image's uv sync extras — explicit instead
-    # of --all-extras so we don't pull in `disagg` / `quack` and trigger
-    # heavy source builds (deep-ep, deep-gemm, quack-kernels) at pod
-    # startup. --inexact keeps the seeded venv's pre-built wheels
-    # (flash-attn-3, mamba-ssm) in place; uv only rebuilds them if the
-    # override's lockfile pins different versions.
-    ( cd "$DEST" && uv sync --inexact --no-dev --all-packages \
-        --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute \
-        --extra gpt-oss \
-        --group mamba-ssm )
+    # --inexact keeps the seeded venv's pre-built wheels (flash-attn-3,
+    # deep-ep, mamba-ssm) in place; uv only rebuilds them if the override's
+    # lockfile pins different versions.
+    ( cd "$DEST" && uv sync --inexact --no-dev --all-packages --all-extras --group mamba-ssm )
     export VIRTUAL_ENV="$DEST/.venv"
     export PATH="$DEST/.venv/bin:$PATH"
     cd "$DEST"

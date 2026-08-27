@@ -7,7 +7,7 @@ from pydantic import ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
-from prime_rl.utils.config import find_package_resource
+from prime_rl.utils.config import default_output_dir, find_package_resource
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
 # TODO: Set thinking/ solution budget
@@ -111,14 +111,9 @@ class VllmConfig(BaseConfig):
     enable_lora: bool = False
     """Enable LoRA."""
 
-    max_loras: int = 8
-    """Maximum number of LoRAs."""
-
-    # TODO: The default value is very high because our areal impl for lora isn't ideal
-    # We add a lora with the same name instead of changing weights inplace
-    # Because we dont cancel requests that are past max_async, these requests could be using a LoRA that gets unloaded which will crash the inference server
-    max_cpu_loras: int = 100
-    """Maximum number of LoRAs on CPU."""
+    max_loras: int = 1
+    """Maximum number of concurrently served LoRAs. prime-rl serves one adapter and reloads
+    it in place every policy version (same name, same lora_int_id), so one slot suffices."""
 
     max_lora_rank: int | None = None
     """Maximum LoRA rank. Rounded up to the nearest value vLLM accepts."""
@@ -476,8 +471,8 @@ class InferenceConfig(BaseConfig):
     slurm: SlurmConfig | None = None
     """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
 
-    output_dir: Path = Path("outputs")
-    """Directory for SLURM logs and generated scripts."""
+    output_dir: Path = Field(default_factory=default_output_dir)
+    """Directory for SLURM logs and generated scripts. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""

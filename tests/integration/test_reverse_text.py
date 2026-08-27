@@ -2,13 +2,18 @@ from pathlib import Path
 from typing import Callable
 
 import pytest
+import torch
 
+from prime_rl.utils.weights import load_state_dict
 from tests.conftest import ProcessResult
+from tests.integration.dashboard_smoke import make_dashboard_test
 from tests.utils import (
     check_avg_mismatch_kl_in_range,
+    check_hf_load,
     check_no_error,
     check_reward_goes_up,
     check_reward_in_range,
+    convert_checkpoint,
     strip_escape_codes,
 )
 
@@ -46,9 +51,9 @@ def rl_process(
         "@",
         "configs/ci/integration/reverse-text/start.toml",
         "--clean",
-        "--wandb.project",
+        "--monitors.wandb.project",
         wandb_project,
-        "--wandb.name",
+        "--monitors.wandb.name",
         wandb_name,
         "--output-dir",
         output_dir.as_posix(),
@@ -75,9 +80,9 @@ def rl_resume_process(
         "rl",
         "@",
         "configs/ci/integration/reverse-text/resume.toml",
-        "--wandb.project",
+        "--monitors.wandb.project",
         wandb_project,
-        "--wandb.name",
+        "--monitors.wandb.name",
         wandb_name,
         "--output-dir",
         output_dir.as_posix(),
@@ -126,3 +131,26 @@ def test_reward_in_range_resume(rl_resume_process: ProcessResult, test_no_error_
     with open(run_dir / "logs" / "latest" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
     check_reward_in_range(orchestrator_stdout, min_threshold=0.6)
+
+
+def test_convert_final_checkpoint(rl_resume_process: ProcessResult, run_dir: Path, tmp_path: Path):
+    """The final DCP checkpoint converts to bf16 and fp8 (direct == chained), and the exports reload in HF."""
+    assert rl_resume_process.returncode == 0
+    step_dir = run_dir / "checkpoints" / "step_20"
+    convert_checkpoint("dcp_to_bf16", step_dir)
+    convert_checkpoint("dcp_to_fp8", step_dir)
+    check_hf_load(step_dir / "weights")
+
+    # Quantizing the bf16 export reproduces the direct dcp->fp8 export byte-for-byte.
+    convert_checkpoint("bf16_to_fp8", step_dir / "weights", tmp_path / "fp8-chained")
+    direct = load_state_dict(step_dir / "weights-FP8")
+    chained = load_state_dict(tmp_path / "fp8-chained")
+    assert set(direct) == set(chained)
+    for key in direct:
+        assert torch.equal(direct[key].view(torch.uint8), chained[key].view(torch.uint8)), key
+
+    convert_checkpoint("fp8_to_bf16", step_dir / "weights-FP8", tmp_path / "dequant")
+    check_hf_load(tmp_path / "dequant")
+
+
+test_dashboard = make_dashboard_test("rl_process", RUN_NAME)

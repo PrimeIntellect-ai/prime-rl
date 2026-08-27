@@ -7,11 +7,11 @@ from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.trainer.world import get_world
-from prime_rl.transport import (
+from prime_rl.transports.batch import (
+    BatchReceiver,
     MicroBatch,
-    MicroBatchReceiver,
     TransportConfig,
-    setup_micro_batch_receiver,
+    setup_batch_receiver,
 )
 
 
@@ -174,7 +174,7 @@ class DataLoader:
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
 
-        self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, dp_rank, start_step, config)
+        self.receiver: BatchReceiver = setup_batch_receiver(output_dir, dp_rank, start_step, config)
 
     def wait_for_batch(self) -> None:
         self.receiver.wait()

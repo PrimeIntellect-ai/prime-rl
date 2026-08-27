@@ -20,7 +20,7 @@ job_name = "swe-qwen30b"
 [ckpt]
 interval = 100
 
-[wandb]
+[monitors.wandb]
 project = "qwen30b-swe"
 
 [trainer.model]
@@ -43,35 +43,25 @@ lr = 1e-6
 
 [orchestrator]
 batch_size = 512
-oversampling_factor = 2
 max_off_policy_steps = 16
+
+[orchestrator.concurrency]
+initial_inflight = 1024
 
 [[orchestrator.train.source]]
 name = "swe"
-
-[orchestrator.train.source.env.taskset]
-id = "r2e-gym"
-
-[orchestrator.train.source.env.agent.harness]
-id = "bash"
-
-[orchestrator.train.source.env.agent.runtime]
-labels = ["qwen30b-swe", "swe"]
+env.taskset.id = "r2e-gym"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["qwen30b-swe", "swe"]
 
 [orchestrator.eval]
 interval = 25
 
 [[orchestrator.eval.source]]
 name = "swe-bench-verified"
-
-[orchestrator.eval.source.env.taskset]
-id = "swebench-verified"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "bash"
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["qwen30b-swe", "swe-bench-verified"]
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["qwen30b-swe", "swe-bench-verified"]
 
 [inference.vllm]
 tensor_parallel_size = 8

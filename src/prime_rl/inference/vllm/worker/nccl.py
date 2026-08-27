@@ -51,7 +51,7 @@ def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str,
         # Split concatenated tensor back into individual tensors
         offset = 0
         for key, shape, numel in tensor_info_list:
-            tensor = concatenated[offset : offset + numel].view(shape).clone()
+            tensor = concatenated[offset : offset + numel].view(shape)
             offset += numel
             try:
                 yield key, tensor

@@ -12,21 +12,21 @@ The `reverse-text` taskset is included through the Verifiers workspace. After sy
 uv run python -c "import reverse_text"
 ```
 
-First, let's start a `tmux` session which we will use throughout the experiment.
+We'll use two terminals: one for the inference server, one for everything else. To watch the run while it trains — metrics, resolved configs, rollout traces, and logs in one place — start the local dashboard and open http://localhost:7788:
 
 ```bash
-bash scripts/tmux.sh
+uv run dashboard
 ```
 
 Let's check how well `Qwen3-0.6B` does out-of-the-box on the `reverse-text` environment. 
 
 ```bash
-# Run this in the `Inference` pane
+# Run this in the inference terminal
 uv run inference --vllm.model Qwen/Qwen3-0.6B
 ```
 
 ```bash
-# Run this in the `Trainer` pane
+# Run this in the other terminal
 uv run eval reverse-text --harness.id null -m Qwen/Qwen3-0.6B --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
 ```
 
@@ -41,30 +41,26 @@ We will fine-tune `PrimeIntellect/Qwen3-0.6B` ([HF](https://huggingface.co/Prime
 To train on a single GPU, run
 
 ```bash
-# In the `Trainer` pane
+# Run this in the other terminal
 uv run sft @ examples/basic/reverse-text/sft.toml \
   --run.name sft \
-  --wandb.project ... \
-  --wandb.name ...
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ...
 ```
 
 To train on multiple GPUs, run
 
 ```bash
-# In the `Trainer` pane
+# Run this in the other terminal
 uv run torchrun \
   --local-ranks-filter 0 \
   --nproc-per-node ... \
   src/prime_rl/trainer/sft/train.py @ examples/basic/reverse-text/sft.toml \
-  --wandb.project ... \
-  --wandb.name ...
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ...
 ```
 
-This should write a weight checkpoint in `outputs/sft/weights/step_100`. Upload it to HF to be able to use it as the base model for RL.
-
-```bash
-uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-SFT outputs/sft/weights/step_100
-```
+This should write a DCP checkpoint in `outputs/sft/checkpoints/step_100`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT).
 
@@ -75,19 +71,15 @@ For the RL we will only do 20 steps at 8x16 rollouts, for a total batch size of 
 *Check out the logs of the RL run on [W&B](https://wandb.ai/primeintellect/examples?nw=yxjwjc556do).*
 
 ```bash
-# Run this in the `Trainer` pane
+# Run this in the other terminal
 uv run rl @ examples/basic/reverse-text/rl.toml \
   --model.name ... \
   --run.name rl \
-  --wandb.project ... \
-  --wandb.name ...
+  --monitors.wandb.project ... \
+  --monitors.wandb.name ...
 ```
 
-This will write a weight checkpoint in `outputs/rl/weights/step_20`. As before, let's upload it to HF.
-
-```bash
-uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-RL outputs/rl/weights/step_20
-```
+This will write a DCP checkpoint in `outputs/rl/checkpoints/step_20`.
 
 We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL).
 
@@ -96,12 +88,12 @@ We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL`
 Let's see how our final RL checkpoints perform on the `reverse-text` environment.
 
 ```bash
-# Run this in the `Inference` pane
+# Run this in the inference terminal
 uv run inference --vllm.model PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL
 ```
 
 ```bash
-# Run this in the `Trainer` pane
+# Run this in the other terminal
 uv run eval reverse-text --harness.id null -m PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL --client.base-url http://localhost:8000/v1 -n 20 -r 3 --sampling.max-tokens 1024 --no-push
 ```
 
@@ -134,17 +126,7 @@ Exec into the trainer pod and run SFT:
 ```bash
 kubectl exec -it my-exp-trainer-0 -- bash
 uv run sft @ /app/examples/basic/reverse-text/sft.toml --output-dir /data/outputs --run.name sft
-# This will save checkpoints to /data/outputs/sft/weights/step_100
-```
-
-Upload the checkpoint to HuggingFace or use it directly from shared storage:
-
-```bash
-# Option 1: Upload to HuggingFace (from within the pod)
-uv run hf upload <user>/Qwen3-0.6B-Reverse-Text-SFT /data/outputs/sft/weights/step_100
-
-# Option 2: Use local checkpoint path in RL config
-# Update the model.name in the RL configs to point to /data/outputs/sft/weights/step_100
+# This will save DCP checkpoints to /data/outputs/sft/checkpoints/step_100
 ```
 
 ### Step 3: Deploy RL Training
@@ -212,11 +194,11 @@ kubectl exec -it my-exp-trainer-0 -- bash
 
 # If inference server isn't running with the RL model, start it in another terminal:
 kubectl exec -it my-exp-inference-0 -- bash
-uv run inference --vllm.model /data/outputs/weights/step_20
+uv run inference --vllm.model /data/outputs/weights_hf/step_20
 
 # Back in trainer pod, run evaluation
 uv run eval reverse-text --harness.id null \
-  -m /data/outputs/weights/step_20 \
+  -m /data/outputs/weights_hf/step_20 \
   --client.base-url $INFERENCE_URL \
   -n 20 -r 3 --sampling.max-tokens 1024 --no-push
 ```

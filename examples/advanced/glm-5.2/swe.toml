@@ -3,7 +3,7 @@ seq_len = 131072
 [log]
 level = "debug"
 
-[wandb]
+[monitors.wandb]
 project = "glm5-pd-disag"
 
 [weight_broadcast]
@@ -43,7 +43,6 @@ name = "zai-org/GLM-5"
 impl = "custom"
 attn = "flash_attention_2" # dsa is skipping flash attn anyway
 fused_lm_head_token_chunk_size = 2048
-optim_cpu_offload = true
 ep = 8
 
 [trainer.model.ac]
@@ -56,7 +55,6 @@ max_inflight_activations = 1
 
 [trainer.ckpt]
 skip_optimizer = true
-skip_gather_master_weights = true
 
 [trainer.optim]
 type = "adamw"
@@ -66,8 +64,11 @@ weight_decay = 0.1
 [orchestrator]
 batch_size = 4096
 group_size = 16
-oversampling_factor = 3
 max_off_policy_steps = 16
+
+[orchestrator.concurrency]
+initial_inflight = 4096
+max_inflight = 8192
 
 [orchestrator.model]
 name = "zai-org/GLM-5-FP8"
@@ -77,21 +78,10 @@ interval = 20
 
 [[orchestrator.eval.source]]
 name = "swe-bench-verified"
-
-[orchestrator.eval.source.env.taskset]
-id = "swebench-verified"
-
-[orchestrator.eval.source.env.agent.harness]
-id = "bash"
-
-[orchestrator.eval.source.env.agent.runtime]
-labels = ["glm5-pd-disag", "swe-bench-verified"]
-
-[[orchestrator.post_batch_filters]]
-type = "gibberish"
-enforce = true
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["glm5-pd-disag", "swe-bench-verified"]
 
 [inference]
 # we need <0.85 bc glm5 layers are too large for 0.85
 use_deep_gemm = true
-

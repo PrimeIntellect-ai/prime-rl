@@ -1,38 +1,67 @@
-"""Train and eval rollout metrics.
-
-A rollout container (``TrainRollouts`` / ``EvalRollouts``) owns the rollout list and exposes
-``.effective`` (the clean subset, as the same container type) and ``.metrics`` (``TrainMetrics`` /
-``EvalMetrics``). The metrics object exposes each distributional / rate metric as a ``Stat`` — so
-``rollouts.metrics.num_input_tokens.mean()`` works — and assembles the full
-``{prefix}/{subset}/<metric>/<stat>`` wandb dict via ``.to_wandb(...)``.
-
-The wandb layout mirrors the episode/trace hierarchy, one aggregation per level:
-
-- ``{prefix}/{subset}/<metric>/<stat>`` — episode level, one value per episode summing its traces
-  (matching ``vf.Episode``'s aggregates). Only the count metrics live here.
-- ``{prefix}/{subset}/<agent>/<metric>/<stat>`` — agent level, one value per trace, grouped by agent
-  name (``vf.Episode.by_agent``) so agents never mix into one distribution. Everything trace-scoped
-  lives here: reward, rates, timing, custom metrics, the pipeline verdicts, the eval scores.
-
-A single-agent env has one trace per episode, so the count metrics coincide across levels.
-
-No I/O, no pandas — plain Python over the ``vf.Trace`` properties each rollout exposes.
-"""
+"""Episode-native train and evaluation metrics."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from typing import Any, Literal
 
-from prime_rl.orchestrator.utils import compute_pass_metrics
+import verifiers.v1 as vf
 
-if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import Rollout
+from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
+from prime_rl.orchestrator.types import DispatchFailure
+from prime_rl.orchestrator.utils import compute_pass_metrics, episode_env_name, episode_group_id
 
 Subset = Literal["all", "effective"]
 
 
+def dispatch_failure_metrics(failures: list[DispatchFailure], *, prefix: str, total_attempts: int) -> dict[str, float]:
+    """Metrics for requests that failed outside the verifier episode boundary."""
+    if total_attempts == 0:
+        return {}
+    out = {f"{prefix}/dispatch_failure/mean": len(failures) / total_attempts}
+    error_types = [failure.error.type for failure in failures]
+    out |= {
+        f"{prefix}/dispatch_failure/{error_type}": float(error_types.count(error_type))
+        for error_type in sorted(set(error_types))
+    }
+    return out
+
+
+@dataclass(frozen=True)
+class TraceRecord:
+    """A trace joined with its episode and training selection state.
+    ``cancelled`` marks episodes the pipeline voided (stale drop) — a
+    selection verdict disjoint from trace errors."""
+
+    episode: vf.Episode
+    trace: vf.Trace
+    sampled: bool
+    admitted: bool
+    cancelled: bool
+
+
+def _records(
+    episodes: list[vf.Episode],
+    sampled_trace_ids: set[str],
+    admitted: set[str],
+    cancelled: set[str],
+) -> list[TraceRecord]:
+    return [
+        TraceRecord(
+            episode=episode,
+            trace=trace,
+            sampled=trace.id in sampled_trace_ids,
+            admitted=episode.id in admitted,
+            cancelled=episode.id in cancelled,
+        )
+        for episode in episodes
+        for trace in episode.traces
+    ]
+
+
 class Stat:
-    """A distribution of per-rollout values with mean/max/min and p10/p90 accessors."""
+    """A distribution with mean, extrema, and percentile accessors."""
 
     def __init__(self, values: list[float]) -> None:
         self.values = values
@@ -47,14 +76,13 @@ class Stat:
         return float(min(self.values)) if self.values else 0.0
 
     def percentile(self, q: float) -> float:
-        """Linear-interpolated ``q``-th percentile (numpy's default method); 0.0 if empty."""
         if not self.values:
             return 0.0
-        s = sorted(self.values)
-        rank = q / 100 * (len(s) - 1)
-        lo = int(rank)
-        hi = min(lo + 1, len(s) - 1)
-        return float(s[lo] + (s[hi] - s[lo]) * (rank - lo))
+        values = sorted(self.values)
+        rank = q / 100 * (len(values) - 1)
+        low = int(rank)
+        high = min(low + 1, len(values) - 1)
+        return float(values[low] + (values[high] - values[low]) * (rank - low))
 
     def p10(self) -> float:
         return self.percentile(10)
@@ -63,7 +91,6 @@ class Stat:
         return self.percentile(90)
 
     def to_dict(self, prefix: str) -> dict[str, float]:
-        """``{prefix}/mean,max,min,p10,p90``; ``{}`` for an empty distribution."""
         if not self.values:
             return {}
         return {
@@ -76,11 +103,12 @@ class Stat:
 
 
 class StatGroup:
-    """A nested group of named ``Stat``s. ``to_dict`` emits ``{prefix}/<name>/<stat>`` for each
-    distribution and ``group[name]`` returns one; subclasses supply the names via ``stats()``."""
+    def __init__(self, records: list[TraceRecord]) -> None:
+        self.records = records
 
-    def __init__(self, rollouts: list[Rollout]) -> None:
-        self.rollouts = rollouts
+    @property
+    def traces(self) -> list[vf.Trace]:
+        return [record.trace for record in self.records]
 
     def stats(self) -> dict[str, Stat]:
         raise NotImplementedError
@@ -96,41 +124,35 @@ class StatGroup:
 
 
 class TimingMetrics(StatGroup):
-    """Per-phase rollout durations, nested so ``metrics.timing.setup.mean()`` reads naturally.
-    ``total`` is the per-rollout sum across all phases."""
-
     PHASES = ("setup", "agent", "finalize", "scoring")
 
     @property
     def setup(self) -> Stat:
-        return Stat([r.timing.setup.duration for r in self.rollouts])
+        return Stat([trace.timing.setup.duration for trace in self.traces])
 
     @property
     def agent(self) -> Stat:
-        return Stat([r.timing.agent.duration for r in self.rollouts])
+        return Stat([trace.timing.agent.duration for trace in self.traces])
 
     @property
     def agent_model(self) -> Stat:
-        """The share of the agent phase spent inside model calls (inference)."""
-        return Stat([r.timing.agent.model.duration for r in self.rollouts])
+        return Stat([trace.timing.agent.model.duration for trace in self.traces])
 
     @property
     def agent_harness(self) -> Stat:
-        """The share of the agent phase spent outside model calls (harness, tools,
-        user simulation)."""
-        return Stat([r.timing.agent.harness.duration for r in self.rollouts])
+        return Stat([trace.timing.agent.harness.duration for trace in self.traces])
 
     @property
     def finalize(self) -> Stat:
-        return Stat([r.timing.finalize.duration for r in self.rollouts])
+        return Stat([trace.timing.finalize.duration for trace in self.traces])
 
     @property
     def scoring(self) -> Stat:
-        return Stat([r.timing.scoring.duration for r in self.rollouts])
+        return Stat([trace.timing.scoring.duration for trace in self.traces])
 
     @property
     def total(self) -> Stat:
-        return Stat([sum(getattr(r.timing, p).duration for p in self.PHASES) for r in self.rollouts])
+        return Stat([sum(getattr(trace.timing, phase).duration for phase in self.PHASES) for trace in self.traces])
 
     def stats(self) -> dict[str, Stat]:
         return {
@@ -142,26 +164,24 @@ class TimingMetrics(StatGroup):
 
 
 class CustomMetrics(StatGroup):
-    """Per-key ``Stat``s over a dynamic per-rollout dict attribute (env ``@metric``s or reward
-    components), each over the rollouts that carry the key. Scoring seeds every expected key
-    with ``None`` before invoking it, so a ``None`` value means the signal never produced a
-    score and counts as 0.0 — the ``effective`` subset excludes errored rollouts and gives the
-    clean means. ``value`` extracts the float from each scored entry (rewards are ``vf.Reward``
-    records; metrics are plain floats)."""
-
-    def __init__(self, rollouts: list[Rollout], attr: str, value: Callable[[Any], float] = float) -> None:
-        super().__init__(rollouts)
+    def __init__(
+        self,
+        records: list[TraceRecord],
+        attr: str,
+        value: Callable[[Any], float] = float,
+    ) -> None:
+        super().__init__(records)
         self.attr = attr
         self.value = value
 
     def stats(self) -> dict[str, Stat]:
-        names = sorted({name for r in self.rollouts for name in getattr(r, self.attr)})
+        names = sorted({name for trace in self.traces for name in getattr(trace, self.attr)})
         return {
             name: Stat(
                 [
                     self.value(scores[name]) if scores[name] is not None else 0.0
-                    for r in self.rollouts
-                    if name in (scores := getattr(r, self.attr))
+                    for trace in self.traces
+                    if name in (scores := getattr(trace, self.attr))
                 ]
             )
             for name in names
@@ -169,78 +189,73 @@ class CustomMetrics(StatGroup):
 
 
 class TraceMetrics(StatGroup):
-    """Trace-level metrics for one agent, every one of them flat over that agent's traces: one
-    sample is one trace, so a fan-out (n same-agent traces in one episode, e.g. n solvers) simply
-    contributes n samples. Weighing whole episodes against each other is the episode level's job;
-    inside a seat the trace is the unit, which is also what the advantage computation samples."""
-
-    DISTRIBUTIONS = ("reward", "num_total_tokens", "num_input_tokens", "num_output_tokens", "num_turns", "num_branches")
+    DISTRIBUTIONS = (
+        "reward",
+        "num_total_tokens",
+        "num_input_tokens",
+        "num_output_tokens",
+        "num_turns",
+        "num_branches",
+    )
     RATES = ("is_truncated", "is_completed")
 
     def stats(self) -> dict[str, Stat]:
         return {
-            name: Stat([float(getattr(r, name)) for r in self.rollouts]) for name in (*self.DISTRIBUTIONS, *self.RATES)
+            name: Stat([float(getattr(trace, name)) for trace in self.traces])
+            for name in (*self.DISTRIBUTIONS, *self.RATES)
         }
 
     @property
     def timing(self) -> TimingMetrics:
-        return TimingMetrics(self.rollouts)
+        return TimingMetrics(self.records)
 
     @property
     def metrics(self) -> CustomMetrics:
-        """Env custom ``@metric`` outputs, keyed by name."""
-        return CustomMetrics(self.rollouts, "metrics")
+        return CustomMetrics(self.records, "metrics")
 
     @property
     def rewards(self) -> CustomMetrics:
-        """Per-component reward breakdown, keyed by name (each entry's weighted ``value``,
-        summed into the scalar ``reward``)."""
-        return CustomMetrics(self.rollouts, "rewards", value=lambda reward: reward.value)
+        return CustomMetrics(self.records, "rewards", value=lambda reward: reward.value)
 
     @property
     def has_error(self) -> Stat:
-        return Stat([float(r.has_error) for r in self.rollouts])
+        return Stat([float(trace.has_error) for trace in self.traces])
+
+    @property
+    def cancelled(self) -> Stat:
+        """Pipeline cancellations (stale drop) — disjoint from errors."""
+        return Stat([float(record.cancelled) for record in self.records])
 
     def stop_conditions(self) -> dict[str, float]:
-        """``generation_truncated`` over the agent's traces, then each recorded
-        ``stop_condition``'s rate over the traces that recorded one."""
         out = {
             "generation_truncated": sum(
-                1 for r in self.rollouts if r.is_truncated and r.stop_condition != "prompt_too_long"
+                trace.is_truncated and trace.stop_condition != "prompt_too_long" for trace in self.traces
             )
-            / len(self.rollouts)
+            / len(self.traces)
         }
-        conditions = [r.stop_condition for r in self.rollouts if r.stop_condition is not None]
+        conditions = [trace.stop_condition for trace in self.traces if trace.stop_condition is not None]
         for condition in sorted(set(conditions)):
             out[condition] = conditions.count(condition) / len(conditions)
         return out
 
     def error_types(self) -> dict[str, int]:
-        """Count of errored traces by error type (the trace's last error — e.g. ``Cancelled``,
-        ``ProviderError``)."""
-        types = [r.last_error.type for r in self.rollouts if r.has_error and r.last_error is not None]
-        return {t: types.count(t) for t in sorted(set(types))}
+        types = [trace.last_error.type for trace in self.traces if trace.has_error and trace.last_error is not None]
+        return {error_type: types.count(error_type) for error_type in sorted(set(types))}
 
     def solve_rates(self) -> dict[str, float]:
-        """Per-group solve rates over the agent's traces, assuming binary 0/1 rewards (unspecified
-        for other reward ranges): ``solved_none`` (the group earned no reward), ``solved_all``
-        (every trace scored 1.0), and ``solved_some`` (the mixed remainder — the GRPO-signal
-        groups)."""
         groups: dict = {}
-        for r in self.rollouts:
-            groups.setdefault(r.group_id, []).append(r)
-        n_groups = len(groups)
-        solved_none = sum(1 for g in groups.values() if sum(r.reward for r in g) == 0)
-        solved_all = sum(1 for g in groups.values() if all(r.reward == 1.0 for r in g))
+        for record in self.records:
+            groups.setdefault(episode_group_id(record.episode), []).append(record.trace)
+        num_groups = len(groups)
+        solved_none = sum(sum(trace.reward for trace in group) == 0 for group in groups.values())
+        solved_all = sum(all(trace.reward == 1.0 for trace in group) for group in groups.values())
         return {
-            "solved_none": solved_none / n_groups,
-            "solved_all": solved_all / n_groups,
-            "solved_some": 1 - (solved_none + solved_all) / n_groups,
+            "solved_none": solved_none / num_groups,
+            "solved_all": solved_all / num_groups,
+            "solved_some": 1 - (solved_none + solved_all) / num_groups,
         }
 
     def to_dict(self, prefix: str, *, subset: Subset) -> dict[str, float]:
-        """Full ``<stat>`` fan-out for the distributions; ``/mean`` only for the 0/1 rates.
-        Errors live only on the ``all`` subset (``effective`` drops them by construction)."""
         stats = self.stats()
         out: dict[str, float] = {}
         for name in self.DISTRIBUTIONS:
@@ -252,217 +267,280 @@ class TraceMetrics(StatGroup):
         out |= self.rewards.to_dict(f"{prefix}/rewards")
         if subset == "all":
             out[f"{prefix}/has_error/mean"] = self.has_error.mean()
-            out |= {f"{prefix}/error/{t}": float(count) for t, count in self.error_types().items()}
-        out |= {f"{prefix}/stop_condition/{k}": v for k, v in self.stop_conditions().items()}
-        out |= {f"{prefix}/{k}": v for k, v in self.solve_rates().items()}
+            out[f"{prefix}/cancelled/mean"] = self.cancelled.mean()
+            out |= {f"{prefix}/error/{key}": float(value) for key, value in self.error_types().items()}
+            out |= {f"{prefix}/{key}": value for key, value in self.solve_rates().items()}
+        out |= {f"{prefix}/stop_condition/{key}": value for key, value in self.stop_conditions().items()}
         return out
 
 
 class EpisodeMetrics:
-    """Metrics shared by train and eval over a rollout list. The count metrics (tokens/turns/
-    branches) are episode-level — one value per episode, summing its traces — and are the only
-    per-metric keys ``to_wandb`` emits at the env level; every trace-level metric is emitted per
-    agent via ``by_agent()``. The boolean ``Stat`` properties (0/1 distributions, ``.mean()`` is
-    the rate) serve the console log lines. ``TrainMetrics`` / ``EvalMetrics`` extend ``to_wandb``
-    with the train pipeline rates and the eval scores."""
-
-    def __init__(self, rollouts: list[Rollout]) -> None:
-        self.rollouts = rollouts
-
-    def episodes(self) -> list[list[Rollout]]:
-        """The subset's rollouts grouped into their episodes. A rollout without an
-        ``episode_id`` (synthesized error markers) is its own episode."""
-        grouped: dict[str, list[Rollout]] = {}
-        for r in self.rollouts:
-            grouped.setdefault(r.episode_id or r.id, []).append(r)
-        return list(grouped.values())
+    def __init__(
+        self,
+        episodes: list[vf.Episode],
+        records: list[TraceRecord],
+        cancelled: set[str] | None = None,
+    ) -> None:
+        self.episodes = episodes
+        self.records = records
+        self.cancelled_ids = cancelled if cancelled is not None else set()
 
     def by_agent(self) -> dict[str, TraceMetrics]:
-        """Per-agent metric views (``vf.Episode.by_agent`` over the subset's rollouts)."""
-        per_agent: dict[str, list[Rollout]] = {}
-        for r in self.rollouts:
-            per_agent.setdefault(r.agent.name, []).append(r)
-        return {name: TraceMetrics(rollouts) for name, rollouts in sorted(per_agent.items())}
+        per_agent: dict[str, list[TraceRecord]] = {}
+        for record in self.records:
+            per_agent.setdefault(record.trace.agent.name, []).append(record)
+        return {name: TraceMetrics(records) for name, records in sorted(per_agent.items())}
 
-    # Episode-level count metrics: one value per episode, summing its traces — the same
-    # aggregation as ``vf.Episode.num_turns`` / ``num_*_tokens``.
+    def _episode_stat(self, attr: str) -> Stat:
+        by_episode = {id(episode): 0.0 for episode in self.episodes}
+        for record in self.records:
+            by_episode[id(record.episode)] += float(getattr(record.trace, attr))
+        return Stat(list(by_episode.values()))
+
     @property
     def num_total_tokens(self) -> Stat:
-        return Stat([float(sum(r.num_total_tokens for r in episode)) for episode in self.episodes()])
+        return self._episode_stat("num_total_tokens")
 
     @property
     def num_input_tokens(self) -> Stat:
-        return Stat([float(sum(r.num_input_tokens for r in episode)) for episode in self.episodes()])
+        return self._episode_stat("num_input_tokens")
 
     @property
     def num_output_tokens(self) -> Stat:
-        return Stat([float(sum(r.num_output_tokens for r in episode)) for episode in self.episodes()])
+        return self._episode_stat("num_output_tokens")
 
     @property
     def num_turns(self) -> Stat:
-        return Stat([float(sum(r.num_turns for r in episode)) for episode in self.episodes()])
+        return self._episode_stat("num_turns")
 
     @property
     def num_branches(self) -> Stat:
-        return Stat([float(sum(r.num_branches for r in episode)) for episode in self.episodes()])
+        return self._episode_stat("num_branches")
 
-    # Boolean rate metrics for the console log lines (0/1 distributions — ``.mean()`` is the
-    # rate); to_wandb emits their per-agent counterparts instead.
     @property
     def is_truncated(self) -> Stat:
-        return Stat([float(r.is_truncated) for r in self.rollouts])
+        return Stat([float(record.trace.is_truncated) for record in self.records])
 
     @property
     def has_error(self) -> Stat:
-        return Stat([float(r.has_error) for r in self.rollouts])
+        return Stat(
+            [float(not episode.ok or any(trace.has_error for trace in episode.traces)) for episode in self.episodes]
+        )
+
+    @property
+    def cancelled(self) -> Stat:
+        """Per-episode pipeline-cancellation rate — same denominator as
+        ``has_error``. Read from the id-set, not the trace records, so
+        trace-less episodes still count."""
+        return Stat([float(episode.id in self.cancelled_ids) for episode in self.episodes])
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
-        """The common metric dict for one ``{prefix}/{subset}`` slice. Empty input → ``{}``."""
-        if not self.rollouts:
+        if not self.episodes:
             return {}
-        p = f"{prefix}/{subset}"
+        metric_prefix = f"{prefix}/{subset}"
         out: dict[str, float] = {}
-        out |= self.num_total_tokens.to_dict(f"{p}/num_total_tokens")
-        out |= self.num_input_tokens.to_dict(f"{p}/num_input_tokens")
-        out |= self.num_output_tokens.to_dict(f"{p}/num_output_tokens")
-        out |= self.num_turns.to_dict(f"{p}/num_turns")
-        out |= self.num_branches.to_dict(f"{p}/num_branches")
-        for agent, agent_metrics in self.by_agent().items():
-            out |= agent_metrics.to_dict(f"{p}/{agent}", subset=subset)
+        for name in ("num_total_tokens", "num_input_tokens", "num_output_tokens", "num_turns", "num_branches"):
+            out |= getattr(self, name).to_dict(f"{metric_prefix}/{name}")
+        if subset == "all":
+            out[f"{metric_prefix}/has_error/mean"] = self.has_error.mean()
+            out[f"{metric_prefix}/cancelled/mean"] = self.cancelled.mean()
+        for agent, metrics in self.by_agent().items():
+            out |= metrics.to_dict(f"{metric_prefix}/{agent}", subset=subset)
         return out
 
 
 class TrainMetrics(EpisodeMetrics):
-    """Common metrics plus the per-agent filter-pipeline rates. ``reward`` (flat over all traces)
-    serves the console log lines; the wandb reward stats are per-agent."""
-
     @property
     def reward(self) -> Stat:
-        return Stat([float(r.reward) for r in self.rollouts])
+        return Stat([float(record.trace.reward) for record in self.records])
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
-        # The pipeline verdicts are per-trace (an untrainable seat is 0.0 throughout, and filters
-        # only ever run on trainable survivors), so they read per agent like the rest.
         for agent, traces in self.by_agent().items():
-            p = f"{prefix}/{subset}/{agent}"
-            rollouts = traces.rollouts
-            out[f"{p}/is_trainable/mean"] = sum(float(r.is_trainable) for r in rollouts) / len(rollouts)
-            out[f"{p}/is_filtered/mean"] = sum(float(r.is_filtered) for r in rollouts) / len(rollouts)
-            names = sorted({name for r in rollouts for name in r.filter_results})
-            out |= {
-                f"{p}/filters/{name}/mean": sum(1 for r in rollouts if r.filter_results.get(name)) / len(rollouts)
-                for name in names
-            }
+            metric_prefix = f"{prefix}/{subset}/{agent}"
+            out[f"{metric_prefix}/is_trainable/mean"] = sum(
+                float(is_trainable(record.trace)) for record in traces.records
+            ) / len(traces.records)
+            out[f"{metric_prefix}/is_admitted/mean"] = sum(float(record.admitted) for record in traces.records) / len(
+                traces.records
+            )
         return out
 
 
-def pass_at_k(rollouts: list[Rollout]) -> dict[str, float]:
-    """pass@k / pass^k averaged over examples; ``{}`` for non-binary rewards."""
-    rewards = [r.reward for r in rollouts]
+def pass_at_k(records: list[TraceRecord]) -> dict[str, float]:
+    rewards = [record.trace.reward for record in records]
     if not set(rewards).issubset({0.0, 1.0}):
         return {}
     by_example: dict = {}
-    for r in rollouts:
-        by_example.setdefault(r.group_id, []).append(r.reward)
-    per_example = [compute_pass_metrics(rs) for rs in by_example.values()]
-    keys = sorted({k for d in per_example for k in d})
-    return {k: sum(d[k] for d in per_example if k in d) / sum(1 for d in per_example if k in d) for k in keys}
+    for record in records:
+        by_example.setdefault(episode_group_id(record.episode), []).append(record.trace.reward)
+    per_example = [compute_pass_metrics(group) for group in by_example.values()]
+    keys = sorted({key for result in per_example for key in result})
+    return {
+        key: sum(result[key] for result in per_example if key in result) / sum(key in result for result in per_example)
+        for key in keys
+    }
 
 
 class EvalMetrics(EpisodeMetrics):
-    """Common metrics plus the per-agent ``avg@<group_size>`` score and (on the effective subset,
-    for binary-reward tasks) pass@k / pass^k. Both score an agent's own traces, so they live in its
-    subtree like every other trace-level metric. ``group_size`` (the ``avg@k`` k, the run's rollouts
-    per example) is supplied by the container so the ``all`` and ``effective`` subsets — and every
-    agent — share one stable key."""
-
-    def __init__(self, rollouts: list[Rollout], group_size: int) -> None:
-        super().__init__(rollouts)
+    def __init__(self, episodes: list[vf.Episode], records: list[TraceRecord], group_size: int) -> None:
+        super().__init__(episodes, records)
         self.group_size = group_size
 
     @property
     def reward(self) -> Stat:
-        return Stat([float(r.reward) for r in self.rollouts])
+        return Stat([float(record.trace.reward) for record in self.records])
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
         for agent, traces in self.by_agent().items():
-            p = f"{prefix}/{subset}/{agent}"
-            out[f"{p}/avg@{self.group_size}"] = traces.stats()["reward"].mean()
+            metric_prefix = f"{prefix}/{subset}/{agent}"
+            out[f"{metric_prefix}/avg@{self.group_size}"] = traces.stats()["reward"].mean()
             if subset == "effective":
-                out |= {f"{p}/{k}": v for k, v in pass_at_k(traces.rollouts).items()}
+                out |= {f"{metric_prefix}/{key}": value for key, value in pass_at_k(traces.records).items()}
         return out
 
 
-class TrainRollouts:
-    """A list of train rollouts (everything that came back, errored + filtered + untrainable
-    included). ``effective`` is the clean trainable subset (a view of the same traces);
-    ``metrics`` builds ``TrainMetrics`` over them."""
-
-    def __init__(self, rollouts: list[Rollout] | None = None) -> None:
-        self.rollouts = rollouts if rollouts is not None else []
-
-    def append(self, rollout: Rollout) -> None:
-        self.rollouts.append(rollout)
-
-    def __len__(self) -> int:
-        return len(self.rollouts)
-
-    def __iter__(self) -> Iterator[Rollout]:
-        return iter(self.rollouts)
+class EpisodeCollection:
+    def __init__(
+        self,
+        episodes: list[vf.Episode] | None = None,
+        sampled_trace_ids: set[str] | None = None,
+        admitted: set[str] | None = None,
+        cancelled: set[str] | None = None,
+        predicate: Callable[[TraceRecord], bool] | None = None,
+    ) -> None:
+        self.episodes = episodes if episodes is not None else []
+        self.sampled_trace_ids = sampled_trace_ids if sampled_trace_ids is not None else set()
+        self.admitted = admitted if admitted is not None else {episode.id for episode in self.episodes}
+        self.cancelled = cancelled if cancelled is not None else set()
+        self._predicate = predicate
 
     @property
-    def effective(self) -> TrainRollouts:
-        return TrainRollouts([r for r in self.rollouts if not r.has_error and not r.is_filtered and r.agent.trainable])
+    def records(self) -> list[TraceRecord]:
+        records = _records(self.episodes, self.sampled_trace_ids, self.admitted, self.cancelled)
+        if self._predicate is None:
+            return records
+        return [record for record in records if self._predicate(record)]
 
-    def by_env(self) -> dict[str, TrainRollouts]:
-        grouped: dict[str, list[Rollout]] = {}
-        for r in self.rollouts:
-            grouped.setdefault(r.env_name, []).append(r)
-        return {env: TrainRollouts(rs) for env, rs in grouped.items()}
+    @property
+    def selected_episodes(self) -> list[vf.Episode]:
+        if self._predicate is None:
+            return self.episodes
+        selected = {id(record.episode) for record in self.records}
+        return [episode for episode in self.episodes if id(episode) in selected]
+
+    @property
+    def num_traces(self) -> int:
+        return len(self.records)
+
+    @property
+    def num_total_tokens(self) -> int:
+        return sum(record.trace.num_total_tokens for record in self.records)
+
+    @property
+    def vf_episodes(self) -> list[vf.Episode]:
+        if self._predicate is None:
+            return self.selected_episodes
+        by_episode: dict[int, list[vf.Trace]] = {}
+        for record in self.records:
+            trace = record.trace
+            advantage = scalar_advantage(trace)
+            if advantage is not None:
+                trace = trace.model_copy(update={"info": {**trace.info, "advantage": advantage}})
+            by_episode.setdefault(id(record.episode), []).append(trace)
+        return [
+            episode.model_copy(update={"traces": by_episode[id(episode)]})
+            for episode in self.selected_episodes
+            if id(episode) in by_episode
+        ]
+
+    def append(
+        self,
+        episode: vf.Episode,
+        *,
+        sampled_trace_ids: set[str] | None = None,
+        admitted: bool = True,
+        cancelled: bool = False,
+    ) -> None:
+        self.episodes.append(episode)
+        self.sampled_trace_ids.update(sampled_trace_ids or set())
+        if admitted:
+            self.admitted.add(episode.id)
+        if cancelled:
+            self.cancelled.add(episode.id)
+
+    def extend(
+        self,
+        episodes: list[vf.Episode],
+        *,
+        sampled_trace_ids: set[str] | None = None,
+        admitted: bool = True,
+        cancelled: bool = False,
+    ) -> None:
+        self.episodes.extend(episodes)
+        self.sampled_trace_ids.update(sampled_trace_ids or set())
+        if admitted:
+            self.admitted.update(episode.id for episode in episodes)
+        if cancelled:
+            self.cancelled.update(episode.id for episode in episodes)
+
+    def __len__(self) -> int:
+        return len(self.selected_episodes)
+
+    def __iter__(self) -> Iterator[vf.Episode]:
+        return iter(self.selected_episodes)
+
+
+class TrainEpisodes(EpisodeCollection):
+    @property
+    def effective(self) -> TrainEpisodes:
+        return TrainEpisodes(
+            self.episodes,
+            self.sampled_trace_ids,
+            self.admitted,
+            self.cancelled,
+            predicate=lambda record: (
+                record.admitted
+                and record.sampled
+                and not record.cancelled
+                and not record.trace.has_error
+                and record.trace.agent.trainable
+            ),
+        )
+
+    def by_env(self) -> dict[str, TrainEpisodes]:
+        grouped: dict[str, list[vf.Episode]] = {}
+        for episode in self.selected_episodes:
+            grouped.setdefault(episode_env_name(episode), []).append(episode)
+        return {
+            env_name: TrainEpisodes(episodes, self.sampled_trace_ids, self.admitted, self.cancelled, self._predicate)
+            for env_name, episodes in grouped.items()
+        }
 
     @property
     def metrics(self) -> TrainMetrics:
-        return TrainMetrics(self.rollouts)
+        return TrainMetrics(self.selected_episodes, self.records, self.cancelled)
 
 
-class EvalRollouts:
-    """A list of eval rollouts (errored + untrainable included). ``effective`` is the
-    non-errored trainable subset (a view).
-    ``group_size`` (rollouts per example, the ``avg@k`` k) is derived from the full epoch and carried
-    onto ``effective`` so both subsets share one stable key; ``metrics`` builds ``EvalMetrics``."""
-
-    def __init__(self, rollouts: list[Rollout] | None = None, group_size: int | None = None) -> None:
-        self.rollouts = rollouts if rollouts is not None else []
-        self._group_size = group_size
-
-    def __len__(self) -> int:
-        return len(self.rollouts)
-
-    def __iter__(self) -> Iterator[Rollout]:
-        return iter(self.rollouts)
+class EvalEpisodes(EpisodeCollection):
+    def __init__(
+        self,
+        episodes: list[vf.Episode],
+        group_size: int,
+        predicate: Callable[[TraceRecord], bool] | None = None,
+    ) -> None:
+        super().__init__(episodes, predicate=predicate)
+        self.group_size = group_size
 
     @property
-    def group_size(self) -> int:
-        """The largest group in trainable (policy) traces — equals the configured group size
-        whenever one example kept all its rollouts; untrainable traces don't count, so a
-        multi-agent episode doesn't inflate ``k``. A subview carries its parent's value so
-        ``avg@k`` doesn't drift across subsets."""
-        if self._group_size is not None:
-            return self._group_size
-        counts: dict = {}
-        for r in self.rollouts:
-            if r.agent.trainable:
-                counts[r.group_id] = counts.get(r.group_id, 0) + 1
-        return max(counts.values(), default=0)
-
-    @property
-    def effective(self) -> EvalRollouts:
-        return EvalRollouts(
-            [r for r in self.rollouts if not r.has_error and r.agent.trainable], group_size=self.group_size
+    def effective(self) -> EvalEpisodes:
+        return EvalEpisodes(
+            self.episodes,
+            self.group_size,
+            predicate=lambda record: not record.trace.has_error and record.trace.agent.trainable,
         )
 
     @property
     def metrics(self) -> EvalMetrics:
-        return EvalMetrics(self.rollouts, self.group_size)
+        return EvalMetrics(self.selected_episodes, self.records, self.group_size)
