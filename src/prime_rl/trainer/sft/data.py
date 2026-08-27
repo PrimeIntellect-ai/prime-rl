@@ -638,6 +638,85 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
         )
 
 
+
+
+def _trace_branches(nodes: list[dict]) -> list[list[dict]]:
+    """Every root-to-leaf message path of a trace's node graph, in leaf order —
+    one training sample per branch, so subagent side-threads and
+    pre-compaction histories all train (shared sampled prefixes are cheap
+    duplication offline; the online path dedups them by token mask)."""
+    parents = {i: n.get("parent") for i, n in enumerate(nodes)}
+    non_leaves = {p for p in parents.values() if p is not None}
+    branches = []
+    for leaf in range(len(nodes)):
+        if leaf in non_leaves:
+            continue
+        path, cur = [], leaf
+        while cur is not None:
+            path.append(cur)
+            cur = parents.get(cur)
+        branches.append([nodes[i]["message"] for i in reversed(path)])
+    return branches
+
+
+def _oai_message(msg: dict) -> dict:
+    out = {"role": msg["role"], "content": msg.get("content") or ""}
+    if msg.get("reasoning_content"):
+        out["reasoning_content"] = msg["reasoning_content"]
+    if msg.get("tool_calls"):
+        out["tool_calls"] = [
+            {"id": tc.get("id"), "type": "function",
+             "function": {"name": tc.get("name"), "arguments": tc.get("arguments") or "{}"}}
+            for tc in msg["tool_calls"]
+        ]
+    if msg["role"] == "tool":
+        out["tool_call_id"] = msg.get("tool_call_id")
+        if msg.get("name"):
+            out["name"] = msg["name"]
+    return out
+
+
+def load_verifiers_traces(config) -> Dataset:
+    """Expand a verifiers traces.jsonl into SFT message rows: every trace whose
+    agent stands trainable, every message-graph branch. Rows carry the same
+    `messages`/`tools` shape the SFT path consumes, so masking, rendering, and
+    packing reuse the proven pipeline; trace identity (agent name, episode ok,
+    branch bookkeeping) rides extra columns for provenance."""
+    rows = []
+    n_lines = n_untrainable = 0
+    with open(config.path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            n_lines += 1
+            record = json.loads(line)
+            # An episode line carries `traces`; a bare-trace line IS one trace.
+            traces = record.get("traces") if "traces" in record and "nodes" not in record else [record]
+            for trace in traces or []:
+                agent = trace.get("agent") or {}
+                if agent.get("trainable") is False:
+                    n_untrainable += 1
+                    continue
+                branches = [b for b in _trace_branches(trace.get("nodes") or []) if any(m.get("role") == "assistant" for m in b)]
+                for b_i, branch in enumerate(branches):
+                    rows.append(
+                        {
+                            "messages": [_oai_message(m) for m in branch],
+                            "tools": trace.get("tools") or [],
+                            "agent": agent.get("name") or "",
+                            "episode_ok": record.get("ok"),
+                            "branch": b_i,
+                            "n_branches": len(branches),
+                        }
+                    )
+    if not rows:
+        raise ValueError(f"no trainable samples in {config.path} ({n_lines} lines, {n_untrainable} untrainable traces)")
+    get_logger().info(
+        f"Expanded {config.path}: {n_lines} lines -> {len(rows)} samples ({n_untrainable} untrainable traces skipped)"
+    )
+    return Dataset.from_list(rows)
+
+
 def setup_dataset(
     tokenizer: PreTrainedTokenizer,
     config: DataConfig,
@@ -655,6 +734,20 @@ def setup_dataset(
             length=config.length,
             input_ids=config.input_ids,
             seed=config.seed,
+        )
+    elif config.type == "verifiers":
+        if renderer is None:
+            raise ValueError("Verifiers trace data requires a renderer.")
+        return SFTDataset(
+            load_verifiers_traces(config),
+            renderer,
+            shuffle=config.shuffle,
+            seed=config.seed,
+            seq_len=config.seq_len,
+            loss_mask_config=config.loss_mask,
+            non_dp_size=non_dp_size,
+            max_epochs=max_epochs,
+            multimodal=multimodal,
         )
     elif config.type == "sft":
         if renderer is None:

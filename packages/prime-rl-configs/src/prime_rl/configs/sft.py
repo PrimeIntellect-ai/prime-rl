@@ -144,7 +144,25 @@ class SFTValConfig(BaseConfig):
     data: SFTDataConfig
 
 
-DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
+class VerifiersDataConfig(BaseDataConfig):
+    type: Literal["verifiers"] = "verifiers"
+
+    path: str
+    """Path to a verifiers `traces.jsonl` — one episode record per line, as the
+    eval CLI (and any `write_episode` producer) emits. Bare-trace lines (a
+    message graph at top level) are accepted too."""
+
+    shuffle: bool = True
+    """Shuffle the expanded samples at the start of each epoch."""
+
+    seed: int = 0
+    """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
+
+    loss_mask: LossMaskConfig = LossMaskConfig()
+    """Which message types contribute to the loss."""
+
+
+DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig | VerifiersDataConfig, Field(discriminator="type")]
 
 
 class BaseDeploymentConfig(BaseConfig):
