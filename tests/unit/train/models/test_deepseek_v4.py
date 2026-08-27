@@ -592,8 +592,8 @@ def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):
     whole-model packing test built on documents this short would report green without ever
     exercising HCA.
 
-    Asserted as "no query reads anything", not as an entry count, so it holds whether the row
-    yields entries none of these queries may read or no entries at all.
+    Asserted as an entry count: compressing per document, a row of documents this short yields no
+    entries at all, so there is nothing for a query to read rather than entries it may not reach.
     """
     _, prime_model = get_model_pairs(dtype=torch.float32)
     compressor = _compressor_of_type(prime_model, DeepseekV4HCACompressor)
@@ -602,7 +602,7 @@ def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):
     hidden_states, q_residual = _compressor_inputs(_SHORT_DOC_LENS)
     _, position_ids, _ = _packed_inputs(_SHORT_DOC_LENS)
     _, packed_bias = compressor(hidden_states, q_residual, position_ids)
-    assert not (packed_bias == 0).any(), "no query may read a compressed entry, so none contributes"
+    assert packed_bias.shape[-1] == 0, "every document is too short to fill a window, so the row has no entries"
 
     for index, length in enumerate(_SHORT_DOC_LENS):
         span = _doc_slice(_SHORT_DOC_LENS, index)
