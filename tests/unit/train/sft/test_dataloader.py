@@ -134,11 +134,22 @@ def test_fake_dataset_single_rank_state_with_packing():
 
 
 @pytest.mark.parametrize("num_workers", [1, 2])
-@pytest.mark.parametrize("world_size", [1, 2])
-def test_dataloader_shards_across_ranks_and_workers(num_workers: int, world_size: int, dummy_renderer):
+@pytest.mark.parametrize(
+    ("world_size", "non_dp_size"),
+    [
+        pytest.param(1, 1, id="1dp"),
+        pytest.param(2, 1, id="2dp"),
+        pytest.param(2, 2, id="1dp-2cp"),
+        pytest.param(4, 2, id="2dp-2cp"),
+    ],
+)
+def test_dataloader_shards_across_ranks_and_workers(
+    num_workers: int, world_size: int, non_dp_size: int, dummy_renderer
+):
     rounds_before_resume = 3
     rounds_after_resume = 1
-    num_examples = 2 * world_size * num_workers
+    data_world_size = world_size // non_dp_size
+    num_examples = 2 * data_world_size * num_workers
     samples_before_resume = rounds_before_resume * num_workers
     samples_per_rank = (rounds_before_resume + rounds_after_resume) * num_workers
     samples_by_rank = []
@@ -173,6 +184,7 @@ def test_dataloader_shards_across_ranks_and_workers(num_workers: int, world_size
                 dummy_renderer,
                 shuffle=False,
                 seq_len=config.seq_len,
+                non_dp_size=non_dp_size,
             )
             return setup_dataloader(dataset, config)
 
@@ -185,7 +197,8 @@ def test_dataloader_shards_across_ranks_and_workers(num_workers: int, world_size
             sample = micro_batch["target_ids"][0, 0].item() - ord("0") - 2
             worker_id = index % num_workers
             worker_round = index // num_workers
-            position = worker_round * world_size * num_workers + rank * num_workers + worker_id
+            data_rank = rank // non_dp_size
+            position = worker_round * data_world_size * num_workers + data_rank * num_workers + worker_id
             progress = get_dataset_progress(dataloader)
             assert sample == position % num_examples
             assert progress["step"] == position + 1
@@ -213,8 +226,13 @@ def test_dataloader_shards_across_ranks_and_workers(num_workers: int, world_size
         del dataiter, dataloader
         gc.collect()
 
+    for data_rank in range(data_world_size):
+        cp_samples = samples_by_rank[data_rank * non_dp_size : (data_rank + 1) * non_dp_size]
+        assert all(samples == cp_samples[0] for samples in cp_samples)
+
+    unique_samples = [samples_by_rank[data_rank * non_dp_size] for data_rank in range(data_world_size)]
     expected = sorted(list(range(num_examples)) * 2)
-    assert sorted(sample for samples in samples_by_rank for sample in samples) == expected
+    assert sorted(sample for samples in unique_samples for sample in samples) == expected
 
 
 def test_dataloader_progress_is_monotonic_with_uneven_workers():
