@@ -1,7 +1,20 @@
 """Create and verify a mini MoE model for testing.
 
-Creates a small MoE model with random weights, saves it with a tokenizer,
-and verifies the HF <-> PrimeRL weight conversion roundtrip.
+Creates a small MoE model with random weights, saves it with a tokenizer, and verifies the HF <->
+PrimeRL weight conversion roundtrip. Compares KL divergences between prime-rl and HF
+implementations, and top-1 agreement (a noisy metric for random-init models).
+
+How this mirrors production:
+  1. bf16 weights, fp32 buffers (inv_freq, expert_bias, ...): the prod forward under FSDP mixed precision
+  2. fp32 MoE router gate, per the moe_router_dtype="float32" default
+  3. Grouped-mm experts, per the use_grouped_mm=True default (needs a recent GPU arch)
+  4. flash_attention_2 on both models, so a logits gap means the port, not two kernels
+  5. Prime LM head injected, as setup_model does
+  6. seq_lens passed explicitly, but as one document, so packed boundaries stay untested
+
+NOTE: should be taken as a very coarse sanity check against catastrophic incorrectness. Thresholds
+are loose and may pass even with moderate correctness bugs. Not a replacement for robust unit
+testing.
 
 Usage:
     # Create and verify
@@ -15,12 +28,20 @@ import argparse
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
+import transformers.utils.generic
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
+from transformers.dynamic_module_utils import get_class_from_dynamic_module
+from transformers.models.minimax_m2.modeling_minimax_m2 import (
+    MiniMaxM2RotaryEmbedding as NativeMiniMaxM2RotaryEmbedding,
+)
 from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
 )
+from transformers.utils.output_capturing import OutputRecorder
 
+from prime_rl.trainer.model import apply_fp32_moe_router
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
 from prime_rl.trainer.models.laguna import LagunaConfig
@@ -34,10 +55,39 @@ from prime_rl.utils.utils import default_dtype
 
 setup_logger("info")
 
+MINIMAX_M2_REPO = "MiniMaxAI/MiniMax-M2.1"
+
+
+def _patch_minimax_m2_hub_code() -> None:
+    """Backport three transformers refactors into the MiniMax-M2.1 hub modeling code.
+
+    The hub code has not changed since 2026-02-13 and predates transformers moving OutputRecorder
+    out of `utils.generic`, turning `compute_default_rope_parameters` into a per-class method on the
+    rotary embedding, and respelling `_tied_weights_keys` as a tied-key -> source mapping. Without
+    these the module fails to import, then to initialize its weights, then to save. The two
+    modernized attributes are borrowed from the native transformers and PrimeRL MiniMax-M2 classes.
+
+    The hub code, not transformers' native MiniMaxM2ForCausalLM, is the reference we want: real
+    MiniMax-M2.1 checkpoints use `block_sparse_moe.experts.{j}.w1/w2/w3`, which
+    `converting_minimax_m2.py` targets, whereas the native class uses fused
+    `mlp.experts.gate_up_proj`.
+    """
+    transformers.utils.generic.OutputRecorder = OutputRecorder
+
+    def hub_class(name: str) -> type:
+        return get_class_from_dynamic_module(f"{MINIMAX_M2_REPO}--modeling_minimax_m2.{name}", MINIMAX_M2_REPO)
+
+    hub_class("MiniMaxM2RotaryEmbedding").compute_default_rope_parameters = staticmethod(
+        NativeMiniMaxM2RotaryEmbedding.compute_default_rope_parameters
+    )
+    hub_class("MiniMaxM2ForCausalLM")._tied_weights_keys = PrimeRLMiniMaxM2ForCausalLM._tied_weights_keys
+
 
 def _qwen3_5_moe_vlm_config():
     """Build a tiny composite VLM config for Qwen3.5 MoE."""
-    config = AutoConfig.from_pretrained("Qwen/Qwen3.5-35B-A3B", trust_remote_code=True, attn_implementation="sdpa")
+    config = AutoConfig.from_pretrained(
+        "Qwen/Qwen3.5-35B-A3B", trust_remote_code=True, attn_implementation="flash_attention_2"
+    )
     config.use_cache = False
 
     tc = config.text_config
@@ -98,7 +148,6 @@ ARCH_PRESETS = {
             first_k_dense_replace=1,
             norm_topk_prob=True,
             use_qk_norm=False,
-            use_grouped_mm=False,
             pad_token_id=151329,
             eos_token_id=[151329, 151336, 151338],
         ),
@@ -127,12 +176,11 @@ ARCH_PRESETS = {
             use_routing_bias=True,
             use_qk_norm=True,
             qk_norm_type="per_layer",
-            use_grouped_mm=False,
-            auto_map={"AutoModelForCausalLM": "MiniMaxAI/MiniMax-M2.1--modeling_minimax_m2.MiniMaxM2ForCausalLM"},
+            auto_map={"AutoModelForCausalLM": f"{MINIMAX_M2_REPO}--modeling_minimax_m2.MiniMaxM2ForCausalLM"},
         ),
         "hf_model_class": None,  # uses AutoModelForCausalLM with trust_remote_code
         "prime_model_class": PrimeRLMiniMaxM2ForCausalLM,
-        "tokenizer_source": "MiniMaxAI/MiniMax-M2.1",
+        "tokenizer_source": MINIMAX_M2_REPO,
     },
     "laguna": {
         "config_class": LagunaConfig,
@@ -173,7 +221,6 @@ ARCH_PRESETS = {
             num_experts_per_tok=4,
             mlp_layer_types=["dense"] + ["sparse"] * 11,
             moe_routed_scaling_factor=2.5,
-            use_grouped_mm=False,
             pad_token_id=9,
             bos_token_id=2,
             eos_token_id=[2, 24],
@@ -222,6 +269,18 @@ def _create_hf_model_from_config(preset, config):
     return AutoModelForCausalLM.from_config(config, trust_remote_code=True)
 
 
+def _compare_distributions(hf_logits: torch.Tensor, prime_logits: torch.Tensor) -> tuple[float, float, float]:
+    "Report and return full-vocab KL mean, KL max, and top-1 agreement."
+    hf_logprobs = hf_logits.float().log_softmax(-1)
+    prime_logprobs = prime_logits.float().log_softmax(-1)
+    # F.kl_div computes KL(target || input), so the arguments read in the opposite order to the name
+    kl = F.kl_div(input=prime_logprobs, target=hf_logprobs, reduction="none", log_target=True).sum(-1)
+    top1 = (hf_logits.argmax(-1) == prime_logits.argmax(-1)).float().mean()
+    print(f"  HF vs PrimeRL KL(HF || PrimeRL) per token: mean {kl.mean().item():.3e}, max {kl.max().item():.3e}")
+    print(f"  HF vs PrimeRL top-1 agreement: {top1.item():.1%}")
+    return kl.mean().item(), kl.max().item(), top1.item()
+
+
 def _build_config(preset):
     """Build model config from preset (handles both config_class and config_fn styles)."""
     if "config_fn" in preset:
@@ -259,15 +318,20 @@ def verify(arch: str, model_dir: Path) -> None:
 
     trust_remote_code = preset["hf_model_class"] is None
     config = AutoConfig.from_pretrained(str(model_dir), trust_remote_code=trust_remote_code)
-    config._attn_implementation = "sdpa"
+    config._attn_implementation = "flash_attention_2"
     if hasattr(config, "text_config"):
-        config.text_config._attn_implementation = "sdpa"
+        config.text_config._attn_implementation = "flash_attention_2"
+    # The checkpoint is saved in float32, but flash attention only accepts fp16/bf16. `_from_config`
+    # reads `config.dtype`, which would otherwise override the ambient default dtype below.
+    config.dtype = torch.bfloat16
 
     text_config = getattr(config, "text_config", config)
     vocab_size = text_config.vocab_size
 
-    hf_model = _load_hf_model(preset, model_dir, config).to(device="cuda", dtype=torch.float32)
-    with torch.device("cuda"), default_dtype(torch.float32):
+    # `config.dtype` above already builds bf16 weights. Casting with `.to(dtype=...)` would also cast
+    # buffers, quantizing inv_freq and the routing bias that PrimeRL keeps in fp32.
+    hf_model = _load_hf_model(preset, model_dir, config).to(device="cuda")
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
         prime_model = preset["prime_model_class"]._from_config(config)
 
     with torch.no_grad():
@@ -276,26 +340,29 @@ def verify(arch: str, model_dir: Path) -> None:
         prime_model.load_state_dict(state_dict)
 
     inject_prime_lm_head(prime_model, chunk_size=None)
+    apply_fp32_moe_router(prime_model)
 
     # Use tokens in safe range (avoid special VLM token IDs)
     max_token = min(vocab_size, 200) if is_vlm else vocab_size
-    with torch.device("cuda"), default_dtype(torch.float32):
-        input_ids = torch.randint(0, max_token, (1, 64))
-        position_ids = torch.arange(1, 65).unsqueeze(0)
+    input_ids = torch.randint(0, max_token, (1, 64), device="cuda")
+    position_ids = torch.arange(1, 65, device="cuda").unsqueeze(0)
 
+    seq_lens = torch.tensor([input_ids.shape[1]], device=input_ids.device)
     hf_output = hf_model(input_ids=input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids)
+    prime_output = prime_model(input_ids, position_ids, seq_lens=seq_lens)
 
     if is_vlm:
-        # HF GatedDeltaNet has a dtype bug in float32 mode; just verify non-NaN output
         assert not torch.isnan(prime_output["logits"]).any(), "PrimeRL VLM output contains NaN"
         assert prime_output["logits"].shape == hf_output.logits.shape
-        print("  VLM forward pass verified (shape match, no NaN)")
-    else:
-        logits_diff = prime_output["logits"] - hf_output.logits
-        max_diff = logits_diff.abs().max().item()
-        print(f"  HF vs PrimeRL max logits diff: {max_diff:.6f}")
-        assert max_diff < 0.1, f"HF vs PrimeRL logits mismatch: max diff {max_diff}"
+
+    logits_diff = prime_output["logits"] - hf_output.logits
+    max_diff = logits_diff.abs().max().item()
+    print(f"  HF vs PrimeRL max logits diff: {max_diff:.6f}")
+    mean_kl, max_kl, top1 = _compare_distributions(hf_output.logits, prime_output["logits"])
+    assert mean_kl < 1e-3, f"HF vs PrimeRL distribution mismatch: mean KL {mean_kl}"
+    assert max_kl < 1e-2, f"HF vs PrimeRL distribution mismatch on one token: max KL {max_kl}"
+    assert top1 >= 0.75, f"HF vs PrimeRL top-1 agreement too low: {top1}"
+    assert max_diff < 1.0, f"HF vs PrimeRL logits mismatch: max diff {max_diff}"
 
     # Roundtrip weight conversion: HF -> PrimeRL -> HF
     # Normalize both through the same roundtrip to handle expert format differences
@@ -319,6 +386,9 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--verify-only", action="store_true", help="Skip creation, only verify an existing model")
     args = parser.parse_args()
+
+    if args.arch == "minimax_m2":
+        _patch_minimax_m2_hub_code()
 
     if not args.verify_only:
         create(args.arch, args.output_dir)

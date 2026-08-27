@@ -106,13 +106,17 @@ class LagunaFlashAttention(FlashAttention):
         self.attention_dropout = config.attention_dropout
         self.is_local_attention = config.layer_types[layer_idx] == "sliding_attention"
         self.sliding_window = config.sliding_window if self.is_local_attention else None
-        # Attention output gating, mirroring the upstream Laguna implementation:
-        #   True / "per-element" (Laguna M): one gate per (head, head_dim) channel
-        #   "per-head"           (Laguna S): one gate per head, broadcast across head_dim
-        #   False:                           no gating
+        # Attention output gating. Every current release states the mode explicitly ("per-head" for
+        # XS-2.1/S-2.1, "per-element" for M.1), so only the string selects per-element. Bare True
+        # appears only in the older XS.2, whose g_proj is [num_heads, hidden_size]; poolside
+        # re-released that same checkpoint as XS-2.1 with the field corrected to "per-head", so
+        # True means per-head.
+        #   "per-element":     one gate per (head, head_dim) channel
+        #   True / "per-head": one gate per head, broadcast across head_dim
+        #   False:             no gating
         gating = getattr(config, "gating", True)
         self.gating = bool(gating)
-        self.gate_per_head = gating == "per-head"
+        self.gate_per_head = gating != "per-element"
         if self.gating:
             gate_size = num_heads if self.gate_per_head else num_heads * self.head_dim
             self.g_proj = nn.Linear(config.hidden_size, gate_size, bias=False)
