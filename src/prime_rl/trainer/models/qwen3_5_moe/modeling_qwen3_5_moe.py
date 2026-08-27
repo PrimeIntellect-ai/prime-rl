@@ -26,6 +26,7 @@ from prime_rl.trainer.models.layers.attn import (
     flash_attn_varlen_func,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
+from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
@@ -421,6 +422,24 @@ def _get_gated_attention(config: Qwen3_5MoeConfig) -> nn.Module:
     return QWEN35MOE_ATTN_IMPL2CLASS[attn_impl](attn_config)
 
 
+class Qwen3_5MoeSharedExpert(FeedForward):
+    def __init__(self, config: Qwen3_5MoeConfig) -> None:
+        super().__init__(
+            dim=config.hidden_size,
+            hidden_dim=config.shared_expert_intermediate_size,
+            expert_type="gated",
+            activation=config.hidden_act,
+        )
+        self.output_gate = nn.Linear(config.hidden_size, 1, bias=False)
+
+    def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
+        return torch.sigmoid(self.output_gate(x)) * super().forward(x, routed_experts)
+
+    def init_weights(self, init_std: float = 0.02) -> None:
+        super().init_weights(init_std)
+        nn.init.trunc_normal_(self.output_gate.weight, mean=0.0, std=init_std)
+
+
 class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: Qwen3_5MoeConfig, layer_idx: int):
         super().__init__()
@@ -449,8 +468,7 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
             moe_args,
             dim=config.hidden_size,
             hidden_dim=config.moe_intermediate_size,
-            shared_expert_hidden_dim=config.shared_expert_intermediate_size,
-            gated_shared_expert=True,
+            shared_expert=Qwen3_5MoeSharedExpert(config),
         )
 
         # Layer norms with (1+weight) parameterization

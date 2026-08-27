@@ -30,7 +30,6 @@ from prime_rl.configs.trainer import (
     FP8Config,
     ModelConfig,
     MXFP8Config,
-    QuantizationConfig,
     TokenizerConfig,
 )
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
@@ -50,7 +49,7 @@ from prime_rl.trainer.models.layers.checkpointing import (
 )
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter, _load_fused_moe_kernel
+from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -445,39 +444,6 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
     # so absence of custom-impl MoE routers is the common case, not an error.
     if num_routers > 0:
         logger.info(f"Running {num_routers} MoE router gates in fp32")
-
-
-def apply_fused_moe_kernel(model: nn.Module, quantization: QuantizationConfig | None) -> None:
-    """
-    Route MoE routed-expert compute through the our fused bf16/mxfp8 MoE CUDA kernel.
-    Forward runs the kernel, backward recomputes the reference grouped-mm path.
-    """
-    logger = get_logger()
-    language_model = get_language_model(model)
-    num_moe_layers = 0
-
-    # MXFP8 with grouped GEMM is the one setting that quantizes the experts themselves, so this also picks the MXFP8 kernel."""
-    dtype = "mxfp8" if isinstance(quantization, MXFP8Config) and quantization.enable_grouped_gemm else "bf16"
-    kernel = _load_fused_moe_kernel()
-
-    for layer in language_model.layers:
-        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, MoE):
-            if mlp.score_before_experts:
-                raise ValueError(
-                    "model.moe_fused_kernel=true requires MoE layers with score_before_experts=false, because the fused kernel applies the routing scores to the expert outputs."
-                )
-            _, hidden_dim, dim = mlp.experts.w1.shape
-            reason = kernel.unsupported_shape_reason(dim, hidden_dim, mxfp8=dtype == "mxfp8")
-            if reason is not None:
-                raise ValueError(f"model.moe_fused_kernel=true does not support this model: {reason}")
-            mlp.fused_kernel = dtype
-            num_moe_layers += 1
-
-    if num_moe_layers == 0:
-        raise ValueError("model.moe_fused_kernel=true but no MoE layers found. Is this a custom-impl MoE model?")
-
-    logger.info(f"Using the fused {dtype} MoE kernel for {num_moe_layers} MoE layers")
 
 
 def get_full_offload_dtype_policy(

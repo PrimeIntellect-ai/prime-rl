@@ -187,7 +187,12 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
                 moe_args,
                 dim=config.hidden_size,
                 hidden_dim=config.moe_intermediate_size,
-                shared_expert_hidden_dim=config.shared_expert_intermediate_size,
+                shared_expert=FeedForward(
+                    dim=config.hidden_size,
+                    hidden_dim=config.shared_expert_intermediate_size,
+                    expert_type=moe_args.expert_type,
+                    activation=moe_args.activation,
+                ),
             )
         else:
             self.mlp = FeedForward(

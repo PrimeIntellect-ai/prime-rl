@@ -83,8 +83,7 @@ The work happens in the prime-kernels repo, not here. Inside `deps/prime-kernels
    `torch.library.custom_op` decorator: that defines a *Python* op, and `TORCH_LIBRARY`
    has already defined these C++ side — only the fake (meta) kernel is missing. A kernel
    used in training also needs `torch.library.register_autograd`, since a schema carries
-   no backward. (`flash_moe` is forward only; prime-rl wraps it in an `autograd.Function`
-   of its own.)
+   no backward. `flash_moe` is forward only and currently has no trainer integration.
 4. Nothing else: `setup.py` and the runtime registry both read the manifest.
 
 Rules the build assumes:
@@ -117,11 +116,8 @@ Then, in order:
 - Read the diff for **host-side contract changes**, not just kernel internals. A change to
   what the caller must pass (weight layout, scale packing, argument order) is silently wrong
   numbers, not a build error, and prime-rl's call sites have to absorb it.
-- Rebuild and re-run whatever exercises the kernel — the ABI is not checked for you. For
-  `flash_moe` that is `tests/unit/train/models/test_fused_moe.py`, which compares its
-  forward and its hand-written backward against the grouped-mm expert path; it is
-  `gpu`-marked and skips itself unless the kernel is available, so it only means anything
-  on a machine the kernel was built for.
+- Rebuild and re-run the kernel repository's numerical coverage plus every PrimeRL runtime
+  path that calls the changed kernel; the ABI is not checked for you.
 - The bump alone ships nothing: installs resolve `prime-kernels` from a release wheel, so the
   new code only reaches users once a release rebuilds the wheels and the pin below moves.
 

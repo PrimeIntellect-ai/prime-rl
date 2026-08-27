@@ -244,10 +244,10 @@ class NemotronHMoE(MoE):
         self.fc1_latent_proj = nn.Linear(hidden_size, latent_size, bias=False)
         self.fc2_latent_proj = nn.Linear(latent_size, hidden_size, bias=False)
 
-    def _prepare_expert_input(self, x: torch.Tensor) -> torch.Tensor:
+    def prepare_expert_input(self, x: torch.Tensor) -> torch.Tensor:
         return self.fc1_latent_proj(x)
 
-    def _prepare_expert_output(self, x: torch.Tensor) -> torch.Tensor:
+    def prepare_expert_output(self, x: torch.Tensor) -> torch.Tensor:
         return self.fc2_latent_proj(x)
 
 

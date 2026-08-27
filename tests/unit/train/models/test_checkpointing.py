@@ -37,23 +37,6 @@ class DummyMambaLayer(nn.Module):
         self.mamba = DummyMamba()
 
 
-class DummyMoEMlp(nn.Module):
-    def forward(self, hidden_states):
-        return hidden_states
-
-    def _run_routed_experts(self, hidden_states, *args):
-        return hidden_states
-
-    def _run_local_routed_experts(self, hidden_states, num_tokens_per_expert):
-        return hidden_states
-
-
-class DummyMoELayer(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.mlp = DummyMoEMlp()
-
-
 def test_get_supported_targets_treats_mamba_as_linear_attention():
     assert get_supported_targets(DummyMambaLayer()) == frozenset({"norm", "linear_attn"})
 
@@ -64,13 +47,3 @@ def test_sliding_attention_linear_attn_subsumes_attn_proj_hooks():
     set_selective_activation_checkpointing(layer, ["attn_proj", "linear_attn"])
 
     assert getattr(layer.self_attn, _PATCHED_METHODS_ATTR) == frozenset({"forward"})
-
-
-def test_routed_experts_checkpointing_patches_local_and_global_helpers():
-    layer = DummyMoELayer()
-
-    assert "routed_experts" in get_supported_targets(layer)
-
-    set_selective_activation_checkpointing(layer, ["routed_experts"])
-
-    assert getattr(layer.mlp, _PATCHED_METHODS_ATTR) == frozenset({"_run_local_routed_experts", "_run_routed_experts"})

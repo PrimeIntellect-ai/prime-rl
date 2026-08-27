@@ -1,7 +1,7 @@
 """HF<->prime weight conversion for Qwen3.5-MoE, as a declarative op chain.
 
-Per layer: router ``mlp.gate.weight`` <-> ``mlp.router.gate.weight`` and the
-routed experts from the source layout <-> stacked canonical projections.
+Per layer: the router and shared-expert output gate are nested under their
+PrimeRL modules, and routed experts use stacked canonical projections.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ def _conversion_chain(config, model_prefix: str) -> list[ConvOp]:
         p = f"{model_prefix}.layers.{i}"
         # Router: mlp.gate.weight -> mlp.router.gate.weight
         ops.append(Rename(f"{p}.mlp.gate.weight", f"{p}.mlp.router.gate.weight"))
+        ops.append(Rename(f"{p}.mlp.shared_expert_gate.weight", f"{p}.mlp.shared_expert.output_gate.weight"))
         ops.append(routed_experts_op(p, hf_experts="mlp.experts", prime_experts="mlp.experts", fused=True))
     return ops
 

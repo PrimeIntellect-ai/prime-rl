@@ -14,10 +14,7 @@ New model integration contract:
   up-projection work should be checkpointed separately from
   `attn_projections(...)`.
 - `mlp`: expose a dense `layer.mlp.forward(...)`. A module is treated as dense
-  when it does not define `_run_routed_experts` or `tokens_per_expert`.
-- `routed_experts`: expose `layer.mlp._run_local_routed_experts(...)` when
-  expert compute is separated from dispatch/combine. Integrations that own a
-  combined routed path may expose `layer.mlp._run_routed_experts(...)` instead.
+  when it does not define `tokens_per_expert`.
 - `linear_attn`: expose a token-mixer module on `layer.linear_attn` or
   `layer.mamba`, or reuse `layer.self_attn` when
   `layer.attention_type == "sliding_attention"`.
@@ -33,7 +30,7 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-SELECTIVE_AC_TARGETS = frozenset({"norm", "attn_proj", "mlp", "mla_up_proj", "routed_experts", "linear_attn"})
+SELECTIVE_AC_TARGETS = frozenset({"norm", "attn_proj", "mlp", "mla_up_proj", "linear_attn"})
 _PATCHED_METHODS_ATTR = "_prime_rl_selective_ac_patched_methods"
 
 
@@ -74,7 +71,7 @@ def _configure_norm_checkpointing(layer: nn.Module) -> None:
 
 
 def _is_dense_mlp(mlp: nn.Module) -> bool:
-    return not hasattr(mlp, "_run_routed_experts") and not hasattr(mlp, "tokens_per_expert")
+    return not hasattr(mlp, "tokens_per_expert")
 
 
 def _supports_attn_proj(self_attn: nn.Module | None) -> bool:
@@ -109,8 +106,6 @@ def get_supported_targets(layer: nn.Module) -> frozenset[str]:
         supported_targets.add("mla_up_proj")
     if mlp is not None and _is_dense_mlp(mlp):
         supported_targets.add("mlp")
-    if mlp is not None and (hasattr(mlp, "_run_routed_experts") or hasattr(mlp, "_run_local_routed_experts")):
-        supported_targets.add("routed_experts")
     if linear_attn is not None:
         supported_targets.add("linear_attn")
 
@@ -136,11 +131,6 @@ def set_selective_activation_checkpointing(layer: nn.Module, targets: Iterable[s
         checkpoint_method(self_attn, "mla_up_proj")
     if mlp is not None and "mlp" in enabled_targets:
         checkpoint_method(mlp, "forward")
-    if mlp is not None and "routed_experts" in enabled_targets:
-        if hasattr(mlp, "_run_routed_experts"):
-            checkpoint_method(mlp, "_run_routed_experts")
-        if hasattr(mlp, "_run_local_routed_experts"):
-            checkpoint_method(mlp, "_run_local_routed_experts")
     if linear_attn is not None and "linear_attn" in enabled_targets:
         checkpoint_method(linear_attn, "forward")
     if "norm" in enabled_targets:

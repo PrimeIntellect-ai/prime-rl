@@ -8,7 +8,7 @@ from prime_rl.trainer.models.layers.activations import ClampedSwiglu
 from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule, get_lora_num_tokens, get_multilora_scaling
 from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
-    _broadcast_expert_bias,
+    broadcast_expert_bias,
 )
 
 
@@ -810,9 +810,9 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
         lora_x = self.lora_dropout(x)
 
         gate = torch._grouped_mm(x.bfloat16(), gate_proj.bfloat16().transpose(-2, -1), offs=offsets)
-        gate = gate + _broadcast_expert_bias(gate_proj_bias, num_tokens_per_expert, gate.shape[0]).bfloat16()
+        gate = gate + broadcast_expert_bias(gate_proj_bias, num_tokens_per_expert, gate.shape[0]).bfloat16()
         up = torch._grouped_mm(x.bfloat16(), up_proj.bfloat16().transpose(-2, -1), offs=offsets)
-        up = up + _broadcast_expert_bias(up_proj_bias, num_tokens_per_expert, up.shape[0]).bfloat16()
+        up = up + broadcast_expert_bias(up_proj_bias, num_tokens_per_expert, up.shape[0]).bfloat16()
 
         gate_up_lora = _run_lora_grouped_mm(lora_x, gu_a, gu_b, offsets)
         gate = gate + scaling * gate_up_lora[..., ::2].bfloat16()
@@ -822,9 +822,7 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
         lora_h = self.lora_dropout(h)
 
         out_base = torch._grouped_mm(h, down_proj.bfloat16().transpose(-2, -1), offs=offsets)
-        out_base = (
-            out_base + _broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, out_base.shape[0]).bfloat16()
-        )
+        out_base = out_base + broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, out_base.shape[0]).bfloat16()
         out_lora = _run_lora_grouped_mm(lora_h, d_a, d_b, offsets)
         out = (out_base + scaling * out_lora.bfloat16()).type_as(x)
 

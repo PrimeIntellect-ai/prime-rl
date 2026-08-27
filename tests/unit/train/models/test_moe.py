@@ -8,7 +8,6 @@ from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
     MoE,
     MoEArgs,
-    _run_grouped_experts_impl,
 )
 
 
@@ -115,18 +114,7 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
 
     x = torch.randn(3, 4)
     counts = torch.tensor([2, 1])
-    actual = _run_grouped_experts_impl(
-        experts.up_proj.transpose(-2, -1),
-        experts.down_proj.transpose(-2, -1),
-        x,
-        counts,
-        gate_proj=experts.gate_proj.transpose(-2, -1) if experts.gate_proj is not None else None,
-        grouped_gemm=ReferenceGroupedGemm(),
-        activation=experts.activation,
-        gate_proj_bias=experts.gate_proj_bias,
-        up_proj_bias=experts.up_proj_bias,
-        down_proj_bias=experts.down_proj_bias,
-    )
+    actual = experts(x, counts)
 
     expected = []
     start = 0

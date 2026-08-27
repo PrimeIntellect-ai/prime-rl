@@ -36,7 +36,7 @@ class ActivationCheckpointConfig(BaseConfig):
     """Apply activation checkpointing to every N layers."""
 
     targets: list[str] = ["norm"]
-    """Selective checkpoint targets. ``norm`` checkpoints every norm module inside selected layers. ``attn_proj`` checkpoints projection-side attention work outside the kernel (input/output projections, attention-local norms, RoPE, gating, model-specific MLA projection helpers). ``mlp`` checkpoints the entire dense MLP forward (not for MoE). ``mla_up_proj`` checkpoints MLA Q/KV up-projection where supported. ``routed_experts`` checkpoints routed expert compute in MoE layers, including latent projections. ``linear_attn`` checkpoints non-softmax token mixers (NemotronH Mamba, Qwen3.5-MoE GatedDeltaNet, AFMoE sliding-window attention)."""
+    """Selective checkpoint targets. ``norm`` checkpoints every norm module inside selected layers. ``attn_proj`` checkpoints projection-side attention work outside the kernel (input/output projections, attention-local norms, RoPE, gating, model-specific MLA projection helpers). ``mlp`` checkpoints the entire dense MLP forward (not for MoE). ``mla_up_proj`` checkpoints MLA Q/KV up-projection where supported. ``linear_attn`` checkpoints non-softmax token mixers (NemotronH Mamba, Qwen3.5-MoE GatedDeltaNet, AFMoE sliding-window attention)."""
 
     @model_validator(mode="after")
     def validate_selective_targets(self):
@@ -150,7 +150,7 @@ _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     # in BF16 on the trainer while inference quantized it to FP8, causing
     # hidden-state drift before the MoE router.
     r"mlp\.gate\.",
-    "shared_expert_gate",  # Qwen3.5 MoE: nn.Linear(hidden, 1, bias=False)
+    r"shared_expert\.output_gate",  # Qwen3.5 MoE: nn.Linear(hidden, 1, bias=False)
     "eh_proj",
     "weights_proj",
     "in_proj_a",
