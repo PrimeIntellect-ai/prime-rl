@@ -19,9 +19,7 @@ class QuantizedActivation:
     pass
 
 
-class LowPrecisionRecipe(ABC):
-    """This recipe owns the linear layer creation + grouped gemms and acts as a base class for low precision types like MXFP8, FP8."""
-
+class LinearRecipe(ABC):
     name: str
 
     @abstractmethod
@@ -34,6 +32,10 @@ class LowPrecisionRecipe(ABC):
     def convert_linear(self, mod: nn.Linear) -> nn.Linear: ...
 
     """Convert a high-precision linear to this recipe's low-precision linear."""
+
+
+class GroupedGemmRecipe(ABC):
+    name: str
 
     @abstractmethod
     def build_grouped_layout(self, offs: Tensor, total_m: int) -> GroupedLayout: ...
@@ -58,7 +60,7 @@ class LowPrecisionRecipe(ABC):
 
 
 def replace_all_linear_with_low_precision_linear(
-    model: nn.Module, recipe: LowPrecisionRecipe, ignore_modules: list[str]
+    model: nn.Module, recipe: LinearRecipe, ignore_modules: list[str]
 ) -> None:
     """Generic replace linear. Replaces nn.Linear in a module with the specified recipe's linear implementation. Skips linears which are either on the ignore list or do not fit the requirements."""
     logger = get_logger()

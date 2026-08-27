@@ -51,12 +51,15 @@ from prime_rl.trainer.models.layers.checkpointing import (
     set_selective_activation_checkpointing,
     supports_selective_activation_checkpointing,
 )
-from prime_rl.trainer.models.layers.fp8_recipe import Fp8BlockwiseRecipe
+from prime_rl.trainer.models.layers.fp8_recipe import Fp8LinearRecipe
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.lowprecision import replace_all_linear_with_low_precision_linear
 from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRouter, _load_fused_moe_kernel
-from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
-from prime_rl.trainer.models.layers.mxfp8_recipe import Mxfp8Recipe
+from prime_rl.trainer.models.layers.mxfp8_recipe import (
+    Mxfp8GroupedGemmRecipe,
+    Mxfp8LinearRecipe,
+    apply_mxfp8_grouped_gemm_recipe,
+)
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -1209,7 +1212,7 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         return
 
     if isinstance(quant, FP8Config):
-        replace_all_linear_with_low_precision_linear(model, Fp8BlockwiseRecipe(), ignore_modules=quant.ignore_patterns)
+        replace_all_linear_with_low_precision_linear(model, Fp8LinearRecipe(), ignore_modules=quant.ignore_patterns)
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()
         if capability < (10, 0):
@@ -1217,10 +1220,10 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
                 f"MXFP8 quantization requires SM100 (Blackwell) or newer, but device is SM{capability[0]}{capability[1]}."
             )
         replace_all_linear_with_low_precision_linear(
-            model, Mxfp8Recipe(quant.recipe), ignore_modules=quant.ignore_patterns
+            model, Mxfp8LinearRecipe(quant.recipe), ignore_modules=quant.ignore_patterns
         )
         if quant.enable_grouped_gemm:
-            apply_mxfp8_moe_grouped_gemm(model, recipe=quant.recipe)
+            apply_mxfp8_grouped_gemm_recipe(model, Mxfp8GroupedGemmRecipe(quant.recipe))
 
 
 def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
