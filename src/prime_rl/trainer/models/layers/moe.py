@@ -171,11 +171,14 @@ def _run_experts_grouped_mm_impl(
     assert x.dim() == 2
 
     if fp8:
-        from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
+        from prime_rl.trainer.models.layers.lowprecision import FP8_BLOCKWISE_RECIPE
 
-        h = F.silu(grouped_fp8_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
-        h = h * grouped_fp8_gemm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offsets)
-        out = grouped_fp8_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
+        x_bf16 = x.bfloat16()
+        layout = FP8_BLOCKWISE_RECIPE.build_grouped_layout(offsets, x_bf16.size(0))
+        x_q = FP8_BLOCKWISE_RECIPE.quantize_grouped_activation(x_bf16, layout)
+        h = F.silu(FP8_BLOCKWISE_RECIPE.grouped_gemm(x_bf16, w1.bfloat16().transpose(-2, -1), layout, x_q=x_q))
+        h = h * FP8_BLOCKWISE_RECIPE.grouped_gemm(x_bf16, w3.bfloat16().transpose(-2, -1), layout, x_q=x_q)
+        out = FP8_BLOCKWISE_RECIPE.grouped_gemm(h, w2.bfloat16().transpose(-2, -1), layout).type_as(x)
     else:
         h = F.silu(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
         h = h * torch._grouped_mm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offs=offsets)
@@ -1123,10 +1126,12 @@ def _run_nongated_experts_grouped_mm_impl(
     assert x.dim() == 2
 
     if fp8:
-        from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
+        from prime_rl.trainer.models.layers.lowprecision import FP8_BLOCKWISE_RECIPE
 
-        h = relu2(grouped_fp8_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
-        out = grouped_fp8_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
+        x_bf16 = x.bfloat16()
+        layout = FP8_BLOCKWISE_RECIPE.build_grouped_layout(offsets, x_bf16.size(0))
+        h = relu2(FP8_BLOCKWISE_RECIPE.grouped_gemm(x_bf16, w1.bfloat16().transpose(-2, -1), layout))
+        out = FP8_BLOCKWISE_RECIPE.grouped_gemm(h, w2.bfloat16().transpose(-2, -1), layout).type_as(x)
     else:
         h = relu2(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
         out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)

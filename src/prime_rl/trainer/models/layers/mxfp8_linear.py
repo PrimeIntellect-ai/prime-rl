@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import re
-
 import torch
 from torch import nn
 from torchao.prototype.mx_formats import ScaleCalculationMode
 from torchao.prototype.mx_formats.mx_linear import _to_mxfp8_then_scaled_mm
 from torchao.quantization.quantize_.common import KernelPreference
-
-from prime_rl.configs.trainer import MXFP8Recipe
-from prime_rl.utils.logger import get_logger
 
 
 class MXFP8Linear(nn.Linear):
@@ -63,37 +58,3 @@ class MXFP8Linear(nn.Linear):
         new_mod.weight = mod.weight
         new_mod.bias = mod.bias
         return new_mod
-
-
-def replace_linear_with_mxfp8_linear(model: nn.Module, recipe: MXFP8Recipe, ignore_modules: list[str]) -> None:
-    wgrad_with_hp = recipe == "mxfp8_rceil_wgrad_with_hp"
-    logger = get_logger()
-    logger.info(f"Replacing linear layers with MXFP8 linear layers (recipe={recipe}, ignore={ignore_modules})")
-    replaced_modules: list[str] = []
-    skipped_modules: list[str] = []
-    skipped_unaligned: list[str] = []
-    for name, module in dict(model.named_modules()).items():
-        if not isinstance(module, nn.Linear):
-            continue
-        if any(re.search(pattern, name) for pattern in ignore_modules):
-            skipped_modules.append(name)
-            continue
-        if (module.in_features & 31) != 0 or (module.out_features & 31) != 0:
-            skipped_unaligned.append(f"{name}({module.in_features}->{module.out_features})")
-            continue
-        parent_name, attr_name = name.rsplit(".", 1) if "." in name else ("", name)
-        parent = model.get_submodule(parent_name) if parent_name else model
-        setattr(
-            parent,
-            attr_name,
-            MXFP8Linear.from_linear(module, kernel_preference=KernelPreference.AUTO, wgrad_with_hp=wgrad_with_hp),
-        )
-        replaced_modules.append(name)
-
-    logger.info(
-        f"Replaced {len(replaced_modules)} linear layers with MXFP8 linear "
-        f"(skipped {len(skipped_modules)} by name, {len(skipped_unaligned)} by 32-div); "
-        f"first replaced={replaced_modules[:3]}, "
-        f"first skipped(name)={skipped_modules[:3]}, "
-        f"first skipped(unaligned)={skipped_unaligned[:3]}"
-    )

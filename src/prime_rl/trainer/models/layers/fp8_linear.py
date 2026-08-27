@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 import torch
 from torch import nn
 
@@ -19,7 +17,6 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     per_token_cast_to_fp8_triton,
     ue8m0_for_device,
 )
-from prime_rl.utils.logger import get_logger
 
 
 class _FP8BlockwiseMM(torch.autograd.Function):
@@ -111,53 +108,3 @@ class Float8BlockwiseLinear(nn.Linear):
         new_mod.weight = mod.weight
         new_mod.bias = mod.bias
         return new_mod
-
-
-def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: list[str]) -> None:
-    """Replace nn.Linear in `model` with Float8BlockwiseLinear, skipping any
-    module whose qualified name matches an ignore pattern (substring or regex).
-
-    The default ignore list covers layers that should never be quantized:
-    - lm_head
-    - MoE routers and gates (router, mlp.gate., shared_expert_gate)
-    - sparse-MLA scalar projection (weights_proj)
-    - GLM-5.1 MTP head (eh_proj)
-    - hybrid-Mamba projections (in_proj_a, in_proj_b)
-
-    Independently of the name-based ignore list, we also skip any nn.Linear
-    whose in_features or out_features is not a multiple of 128. Float8BlockwiseLinear
-    documents that requirement and DeepGEMM's fp8_gemm_nt crashes at runtime
-    on unaligned dims — better to keep them in BF16 with a clear log line than
-    silently break in the kernel.
-
-    Conv1d, layer norms, and embedding tables are not nn.Linear and are
-    skipped automatically by the type check; we don't need to list them.
-    """
-    logger = get_logger()
-    logger.info(f"Replacing linear layers with FP8 blockwise linear layers (ignore={ignore_modules})")
-    replaced_modules = []
-    skipped_modules = []
-    skipped_unaligned: list[str] = []
-    named_modules = dict(model.named_modules())
-    for name, module in named_modules.items():
-        if not isinstance(module, nn.Linear):
-            continue
-        if any(re.search(pattern, name) for pattern in ignore_modules):
-            skipped_modules.append(name)
-            continue
-        if module.in_features % 128 != 0 or module.out_features % 128 != 0:
-            skipped_unaligned.append(f"{name}({module.in_features}->{module.out_features})")
-            continue
-        parent_name, attr_name = name.rsplit(".", 1) if "." in name else ("", name)
-        parent = model.get_submodule(parent_name) if parent_name else model
-        setattr(parent, attr_name, Float8BlockwiseLinear.from_linear(module))
-        replaced_modules.append(name)
-
-    logger.info(
-        f"Replaced {len(replaced_modules)} linear layers with FP8 blockwise linear "
-        f"(skipped {len(skipped_modules)} by name, "
-        f"{len(skipped_unaligned)} by 128-divisibility); "
-        f"first replaced={replaced_modules[:3]}, "
-        f"first skipped(name)={skipped_modules[:3]}, "
-        f"first skipped(unaligned)={skipped_unaligned[:3]}"
-    )
