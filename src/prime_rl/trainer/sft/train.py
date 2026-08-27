@@ -619,8 +619,10 @@ def train(config: SFTConfig):
         logger.success(step_message)
 
         # Log progress metrics
-        total_samples = sum(dataset.num_samples.values())
-        total_tokens = sum(dataset.num_tokens.values())
+        samples_by_source = dataset_progress["num_samples"]
+        tokens_by_source = dataset_progress["num_tokens"]
+        total_samples = sum(samples_by_source.values())
+        total_tokens = sum(tokens_by_source.values())
         progress_metrics = {
             "progress/epoch": dataset_progress["epoch"],
             "progress/num_samples": progress.total_samples,
@@ -628,15 +630,15 @@ def train(config: SFTConfig):
             "step": progress.step,
         }
         # At least two subsets/splits
-        if len(dataset.num_samples) > 1:
+        if len(samples_by_source) > 1:
             progress_metrics.update(
                 **{
                     f"progress/{subset_or_split}/ratio_samples": num_samples / total_samples
-                    for subset_or_split, num_samples in dataset.num_samples.items()
+                    for subset_or_split, num_samples in samples_by_source.items()
                 },
                 **{
                     f"progress/{subset_or_split}/ratio_tokens": num_tokens / total_tokens
-                    for subset_or_split, num_tokens in dataset.num_tokens.items()
+                    for subset_or_split, num_tokens in tokens_by_source.items()
                 },
             )
         asyncio.run(monitors.log(progress_metrics, step=progress.step))

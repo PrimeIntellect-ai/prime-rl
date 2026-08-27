@@ -43,11 +43,12 @@ class Batch(TypedDict):
 class StatefulIterableDataset(Stateful, IterableDataset):
     """SFT dataset are iterable (infinite) and stateful (can be checkpointed)."""
 
-    def __init__(self):
+    def __init__(self, non_dp_size: int = 1):
         self.step, self.epoch = 0, 0
         self.num_samples = defaultdict(int)
         self.num_tokens = defaultdict(int)
         self.fast_forward = False
+        self.non_dp_size = non_dp_size
         self._setup_world_info()
 
     def state_dict(self) -> dict:
@@ -66,8 +67,10 @@ class StatefulIterableDataset(Stateful, IterableDataset):
             num_workers = worker_info.num_workers
         else:
             worker_id, num_workers = 0, 1
-        self.data_rank = get_world().rank * num_workers + worker_id
-        self.data_world_size = get_world().world_size * num_workers
+        world = get_world()
+        assert world.world_size % self.non_dp_size == 0, "world_size must be divisible by non_dp_size"
+        self.data_rank = world.rank // self.non_dp_size * num_workers + worker_id
+        self.data_world_size = world.world_size // self.non_dp_size * num_workers
 
 
 class FakeDataset(StatefulIterableDataset):
@@ -103,6 +106,7 @@ class FakeDataset(StatefulIterableDataset):
         return seq_len, random_input_ids
 
     def __iter__(self):
+        self._setup_world_info()
         # use a rank seeded PRNG instead of torch global default PRNG because with num workers > 0
         # the data loader reseeds the global PRNG per worker process
         generator = torch.Generator().manual_seed(self.seed + self.data_rank)
@@ -215,7 +219,7 @@ class SFTDataset(StatefulIterableDataset):
         max_epochs: int | None = None,
         multimodal: bool = False,
     ):
-        super().__init__()
+        super().__init__(non_dp_size)
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
@@ -232,16 +236,6 @@ class SFTDataset(StatefulIterableDataset):
         if self.max_examples is not None:
             self.num_examples = min(self.num_examples, self.max_examples)
             self.dataset = self.dataset.take(self.max_examples)
-
-        # Get the data rank and world size
-        worker_info = get_worker_info()
-        worker_id, num_workers = 0, 1
-        if worker_info is not None:
-            worker_id = worker_info.id
-            num_workers = worker_info.num_workers
-        assert get_world().world_size % non_dp_size == 0, "world_size must be divisible by non_dp_size"
-        self.data_rank = get_world().rank // non_dp_size * num_workers + worker_id
-        self.data_world_size = get_world().world_size // non_dp_size * num_workers
 
     def _process(self, example: dict) -> dict | None:
         def resolve_messages(example: dict) -> list[dict]:
@@ -393,6 +387,7 @@ class SFTDataset(StatefulIterableDataset):
         }
 
     def __iter__(self):
+        self._setup_world_info()
         dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
         while True:
             self.step += 1
@@ -446,13 +441,22 @@ class CatDataset(StatefulIterableDataset):
         self.pending_sample: Sample | None = None
 
     def state_dict(self) -> dict:
-        state = {"dataset": self.dataset.state_dict()}
+        state = {
+            "dataset": self.dataset.state_dict(),
+            "progress": {
+                "num_samples": dict(self.dataset.num_samples),
+                "num_tokens": dict(self.dataset.num_tokens),
+            },
+        }
         if self.pending_sample is not None:
             state["pending_sample"] = self.pending_sample
         return state
 
     def load_state_dict(self, state_dict: dict):
         self.dataset.load_state_dict(state_dict["dataset"])
+        progress = state_dict.get("progress", {})
+        self.dataset.num_samples.update(progress.get("num_samples", {}))
+        self.dataset.num_tokens.update(progress.get("num_tokens", {}))
         self.pending_sample = state_dict.get("pending_sample")
 
     def __iter__(self):
@@ -700,7 +704,21 @@ def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
 
 
 def get_dataset_progress(dataloader: StatefulDataLoader) -> dict:
-    """Dataset position from the worker that produced the latest batch."""
+    """Dataset position and aggregate counters from dataloader workers."""
     snapshot = dataloader.state_dict()["_snapshot"]
-    worker_id = snapshot["_last_yielded_worker_id"]
-    return snapshot["_worker_snapshots"][f"worker_{worker_id}"]["dataset_state"]["dataset"]
+    worker_snapshots = snapshot["_worker_snapshots"]
+    positions = [worker_snapshot["dataset_state"]["dataset"] for worker_snapshot in worker_snapshots.values()]
+    furthest = max(positions, key=lambda position: position["step"])
+    num_samples = defaultdict(int)
+    num_tokens = defaultdict(int)
+    for worker_snapshot in worker_snapshots.values():
+        progress = worker_snapshot["dataset_state"].get("progress", {})
+        for name, count in progress.get("num_samples", {}).items():
+            num_samples[name] += count
+        for name, count in progress.get("num_tokens", {}).items():
+            num_tokens[name] += count
+    return {
+        **furthest,
+        "num_samples": dict(num_samples),
+        "num_tokens": dict(num_tokens),
+    }
