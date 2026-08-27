@@ -97,24 +97,32 @@ curl http://localhost:8000/v1/chat/completions \
 
 ### DeepSeek V4
 
-DeepSeek V4 needs three things no other model here does, and two of them fail confusingly:
+The `examples/advanced/deepseek-v4-flash/*.toml` configs already carry everything below, so prefer
+`uv run inference @ examples/advanced/deepseek-v4-flash/inference.toml` over assembling flags by
+hand. Upstream reference: https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash
 
-```bash
-CUDA_HOME=/usr/local/cuda-12.9 PATH=/usr/local/cuda-12.9/bin:$PATH \
-  uv run inference --vllm.model <ckpt> --use-deep-gemm --vllm.kv-cache-dtype fp8 --vllm.enforce-eager
-```
+- `kv_cache_dtype = "fp8"` is **architectural, not per-machine**. Every DeepSeek V4 attention class
+  sets `use_fp8_ds_mla_layout = True`, and the layout then asserts "DeepseekV4 fp8_ds_mla layout
+  only supports fp8 kv-cache" against the `auto` default. Pair it with `block_size = 256`, which
+  every NVIDIA configuration in the vLLM recipe uses.
+- **No chat template is needed.** The checkpoint ships none, and none is required: vLLM
+  auto-selects `tokenizer_mode = "deepseek_v4"` from the architecture and renders through
+  `DeepseekV4Renderer`, which wraps DeepSeek's own encoder. Do not write, vendor or invent one.
+- `tool_call_parser`/`reasoning_parser` resolve to `deepseek_v4` from the model name via
+  `utils/parsers.py`. Without the reasoning parser, `<think>` content is not split out of
+  `content`.
+- CUDA >= 12.3 on `CUDA_HOME`/`PATH` for the TileLang kernel JIT, **if** the machine's default
+  `nvcc` is older (it was 11.5 on the SM120 dev box; check before assuming).
 
-- `CUDA_HOME`/`PATH` pointing at CUDA >= 12.3: the TileLang kernel JIT needs it and the system
-  default `nvcc` may be much older.
-- `--use-deep-gemm` (top-level, not under `--vllm.`) is **mandatory, not an optimization**.
-  Without it `VLLM_USE_DEEP_GEMM=0`, and vLLM's manifold-hyper-connection pre-norm GEMM falls
-  back to a TileLang kernel that is numerically wrong above 1024 tokens per forward pass on
-  SM120, silently. See the DeepSeek V4 notes in `TODO.md`.
-- `--vllm.kv-cache-dtype fp8`: the attention backend does not support the `auto` default.
+If boot fails: try `--vllm.enforce-eager` first, which skips CUDA-graph capture. If output is
+subtly wrong above 1024 tokens per forward, try `--use-deep-gemm` (top-level, not under `--vllm.`);
+without it `VLLM_USE_DEEP_GEMM=0` and the manifold-hyper-connection pre-norm GEMM falls back to a
+TileLang kernel measured silently wrong past that length **on SM120**. Whether that also holds on
+Hopper is unverified, which is why the configs do not set it.
 
 Do **not** pass `--vllm.quantization`, and do not put a CUDA 13 runtime on `LD_LIBRARY_PATH` to
 "fix" the `deep_gemm` import error in the log. That error is expected: vLLM falls back to its own
-vendored DeepGEMM, which has the SM120 kernels the pinned CUDA 13 wheel lacks.
+vendored DeepGEMM.
 
 For RL, set `[weight_broadcast] type = "filesystem"`. NCCL and NIXL need
 `convert_layer_to_vllm_kernel`, which the DeepSeek V4 port does not implement.

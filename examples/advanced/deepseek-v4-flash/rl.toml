@@ -63,6 +63,10 @@ tensor_parallel_size = 8
 # multi-node expert-parallel inference validator when enable_expert_parallel is set.
 data_parallel_size = 8
 enable_expert_parallel = true
+# Both required by DeepSeek V4's sparse-MLA KV layout, not tuning choices. See the comments in
+# inference.toml for the assertion these avoid.
+kv_cache_dtype = "fp8"
+block_size = 256
 
 [orchestrator.renderer]
 name = "default"

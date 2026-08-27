@@ -268,22 +268,23 @@ config values. None of these are visible from the test suite; all of them are on
   (`[inference.vllm] quantization`), which `finalize_layerwise_reload` re-applies on every
   broadcast; the `quantize_in_weight_transfer` route needs `convert_layer_to_vllm_kernel`, which
   DeepSeek V4 does not implement.
-- **The checkpoint ships no chat template, so the rollouts cannot be rendered.**
-  `deepseek-ai/DeepSeek-V4-Flash-0731` has no `chat_template.jinja` in its repo and no
-  `chat_template` key in its `tokenizer_config.json` (checked on the Hub). The orchestrator's
-  environments call the chat completions endpoint, so vLLM answers every rollout request with a
-  502, and the orchestrator then dies reporting "10 consecutive zero-output batch equivalents",
-  which points at the curriculum rather than at the real cause. Reproduced locally and worked
-  around for the smoke test by writing a plain template into the checkpoint's
-  `tokenizer_config.json` in `scripts/mini_moe.py`. It has to go in the checkpoint, not in a
-  prime-rl config: `[inference.vllm] chat_template` is rejected by the shared-tokenizer
-  validator, and the shared `[tokenizer]` block does reach the engine but not the `vllm-router`
-  in front of it, which renders chat messages itself for `consistent_hash` routing and whose
-  launch command takes no template argument. Deliberately **not** applied to
-  `rl.toml`/`kl-check.toml`, since inventing a template for a real checkpoint degrades output
-  quality silently instead of erroring: pick DeepSeek's official template if one exists for this
-  model, an instruct variant of the checkpoint, or environments that drive the completions
-  endpoint.
+- **The checkpoint ships no chat template, and does not need one.** `deepseek-ai/DeepSeek-V4-Flash-0731`
+  has no `chat_template.jinja` and no `chat_template` key in its `tokenizer_config.json`, but vLLM
+  does not render this model through Jinja at all. `ModelConfig` auto-selects
+  `tokenizer_mode = "deepseek_v4"` from the `DeepseekV4ForCausalLM` architecture
+  (`vllm/config/model.py:625-634`) and dispatches to `DeepseekV4Renderer`
+  (`vllm/renderers/registry.py:24`), which wraps DeepSeek's own reference encoder. The vLLM recipe
+  documents the same thing. No template needs supplying, inventing or vendoring.
+  Two claims previously recorded here were wrong and are corrected for the record: the `vllm-router`
+  does **not** render chat messages (`vllm_router` 0.2.0 contains no template code at all and
+  `mini_lb.py:359-361` forwards `/v1/chat/completions` straight to the backend), and the missing
+  template was therefore never the reason a real-checkpoint run could not be rendered.
+  What was genuinely missing on the prime-rl side was the parser mapping: `utils/parsers.py` had
+  patterns for DeepSeek V3.1/V3.2 but none for V4, so `tool_call_parser` and `reasoning_parser`
+  resolved `"auto" -> None` and were dropped before reaching vLLM, leaving `<think>` content
+  unsplit from `content`. Fixed. `scripts/mini_moe.py` still writes a plain template into the mini
+  checkpoint; whether the mini checkpoint carries what `DeepseekV4Tokenizer` needs has not been
+  checked, so that workaround is left in place.
 - **NCCL weight broadcast breaks with `data_parallel_size > 1`.** With two DP replicas the
   orchestrator logs `inference_world_size=1, gpus_per_server=1` and only DP rank 0 gets a
   receiver installed, so the collective RPC reaches DP1 and fails with `'Worker' object has no
