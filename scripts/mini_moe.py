@@ -17,19 +17,17 @@ How this mirrors production:
 
 NOTE: should be taken as a very coarse sanity check against catastrophic incorrectness. Thresholds
 are loose and may pass even with moderate correctness bugs. Not a replacement for robust unit
-testing. The packing check is the exception: its correct value is exactly zero, so its bar sits far
-below any real boundary bug.
+testing.
 
 Usage:
     # Create and verify
     uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
 
-    # Verify only (on an existing checkpoint)
-    uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --verify-only
-
     # Also compare against vLLM
-    uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe \
-        --verify-only --check-vllm-kl
+    uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --check-vllm-kl
+
+Add --verify-only to skip re-creating the checkpoint when iterating on verification or modeling
+code against a fixed model already at --output-dir.
 """
 
 import argparse
@@ -77,6 +75,23 @@ setup_logger("info")
 
 MINIMAX_M2_REPO = "MiniMaxAI/MiniMax-M2.1"
 
+DOC_LEN = 512
+FILLER_LEN = 128
+VLLM_MAX_MODEL_LEN = 2048
+VLLM_GPU_MEMORY_UTILIZATION = 0.6
+
+HF_KL_MEAN_THRESHOLD = 0.001
+HF_KL_MAX_THRESHOLD = 0.01
+HF_TOP1_DISAGREEMENT_THRESHOLD = 0.1
+HF_LOGITS_DIFF_THRESHOLD = 1.0
+
+PACKED_LOGPROB_DIFF_THRESHOLD = 0.1
+
+VLLM_KL_MEAN_THRESHOLD = 0.01
+VLLM_KL_MAX_THRESHOLD = 0.1
+VLLM_KL_DELTA_MEAN_THRESHOLD = 0.001
+VLLM_KL_DELTA_MAX_THRESHOLD = 0.01
+
 
 def _patch_minimax_m2_hub_code() -> None:
     """Backport three transformers refactors into the MiniMax-M2.1 hub modeling code.
@@ -101,35 +116,6 @@ def _patch_minimax_m2_hub_code() -> None:
         NativeMiniMaxM2RotaryEmbedding.compute_default_rope_parameters
     )
     hub_class("MiniMaxM2ForCausalLM")._tied_weights_keys = PrimeRLMiniMaxM2ForCausalLM._tied_weights_keys
-
-
-DOC_LEN = 512
-FILLER_LEN = 128
-VLLM_MAX_MODEL_LEN = 2048
-VLLM_GPU_MEMORY_UTILIZATION = 0.6
-
-# Observed across seeds 0-3 on the production-mirroring forward. Packing spans all three text
-# presets; the vLLM rows span glm4_moe and minimax_m2 only, since vLLM cannot load the laguna
-# checkpoint (its hub code writes `mlp.shared_experts`, vLLM expects `mlp.shared_expert`).
-#   packed vs unpacked, max logprob diff   0.020 to 0.022 minimax, 0.031 to 0.043 glm4_moe,
-#                                          0.097 to 0.127 laguna
-#   mismatch KL vs vLLM, mean              1.1e-5 to 3.6e-5 minimax/glm4_moe, 1.2e-4 to 1.9e-4 laguna
-#   mismatch KL vs vLLM, max               2.8e-4 to 8.3e-4 minimax/glm4_moe, 5.4e-3 to 1.2e-2 laguna
-#   per-token |packed - unpacked| KL       1.0e-5 to 4.0e-5 mean, 2.1e-4 to 5.7e-4 max
-#                                          minimax/glm4_moe; laguna 1.6e-4 mean, 4.6e-3 to 1.3e-2 max
-# Laguna diverges from vLLM about 20x more than the others on the max, and is likewise the outlier
-# in the HF comparison, so its delta rows inherit that rather than showing a boundary problem: its
-# packed and unpacked means track each other, and the engine-free boundary gate sits at 0.12.
-# For scale, dropping the document boundary measures 3.14 on the packing row and 0.44 mean / 15.4
-# max on the packed KL rows.
-PACKED_LOGPROB_DIFF_THRESHOLD = 0.5
-# 0.015 is the KL-mismatch merge bar from docs/development.md. That number is measured on a trained
-# model over 20 steps of math, not on random weights, so it is borrowed as a sanity bound rather
-# than an equivalent measurement: a model that cannot clear it here certainly cannot clear it there.
-KL_MEAN_THRESHOLD = 0.015
-KL_MAX_THRESHOLD = 0.1
-KL_DELTA_MEAN_THRESHOLD = 0.001
-KL_DELTA_MAX_THRESHOLD = 0.05
 
 
 def _qwen3_5_moe_vlm_config():
@@ -475,11 +461,11 @@ def verify_hf(arch: str, model_dir: Path, seed: int) -> list[Check]:
 
     max_diff = (prime_output["logits"] - hf_output.logits).abs().max().item()
     mean_kl, max_kl, top1 = _compare_distributions(hf_output.logits, prime_output["logits"])
-    checks.append(Check("hf_vs_prime_kl_mean", mean_kl, 1e-3))
-    checks.append(Check("hf_vs_prime_kl_max", max_kl, 1e-2))
+    checks.append(Check("hf_vs_prime_kl_mean", mean_kl, HF_KL_MEAN_THRESHOLD))
+    checks.append(Check("hf_vs_prime_kl_max", max_kl, HF_KL_MAX_THRESHOLD))
     # Check.ok compares upward, so record the complement of the top-1 lower bound.
-    checks.append(Check("hf_vs_prime_top1_disagreement", 1 - top1, 0.25))
-    checks.append(Check("hf_vs_prime_max_logits_diff", max_diff, 1.0))
+    checks.append(Check("hf_vs_prime_top1_disagreement", 1 - top1, HF_TOP1_DISAGREEMENT_THRESHOLD))
+    checks.append(Check("hf_vs_prime_max_logits_diff", max_diff, HF_LOGITS_DIFF_THRESHOLD))
 
     # Roundtrip weight conversion: HF -> PrimeRL -> HF
     # Normalize both through the same roundtrip to handle expert format differences
@@ -512,14 +498,7 @@ def _trainer_logprobs(
 
 
 def _export_for_vllm(prime_model, model_dir: Path, out_dir: Path) -> None:
-    """Write a vLLM-loadable copy of the checkpoint using prime-rl's own HF conversion.
-
-    Poolside's hub code names laguna's shared expert `mlp.shared_experts` and hangs the router bias
-    off `mlp.gate`; neither matches their released weights or what vLLM looks for. `convert_to_hf`
-    emits the released spellings, and it is what both weight transports send during an RL run, so
-    the engine ends up loading what production would. A key the conversion chain drops will surface
-    here as a vLLM loading error rather than as a conversion bug.
-    """
+    """Write a vLLM-loadable copy of the checkpoint using prime-rl's own HF conversion."""
     with torch.no_grad():
         state_dict = prime_model.convert_to_hf(dict(prime_model.state_dict()))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -651,12 +630,12 @@ def verify_vllm(arch: str, model_dir: Path, seed: int, attn: str, moe_backend: s
     delta = (kl_packed - kl_unpacked).abs()
 
     return [
-        Check("kl_unpacked_mean", kl_unpacked.mean().item(), KL_MEAN_THRESHOLD),
-        Check("kl_unpacked_max", kl_unpacked.max().item(), KL_MAX_THRESHOLD),
-        Check("kl_packed_mean", kl_packed.mean().item(), KL_MEAN_THRESHOLD),
-        Check("kl_packed_max", kl_packed.max().item(), KL_MAX_THRESHOLD),
-        Check("kl_packed_minus_unpacked_mean", delta.mean().item(), KL_DELTA_MEAN_THRESHOLD),
-        Check("kl_packed_minus_unpacked_max", delta.max().item(), KL_DELTA_MAX_THRESHOLD),
+        Check("kl_unpacked_mean", kl_unpacked.mean().item(), VLLM_KL_MEAN_THRESHOLD),
+        Check("kl_unpacked_max", kl_unpacked.max().item(), VLLM_KL_MAX_THRESHOLD),
+        Check("kl_packed_mean", kl_packed.mean().item(), VLLM_KL_MEAN_THRESHOLD),
+        Check("kl_packed_max", kl_packed.max().item(), VLLM_KL_MAX_THRESHOLD),
+        Check("kl_packed_minus_unpacked_mean", delta.mean().item(), VLLM_KL_DELTA_MEAN_THRESHOLD),
+        Check("kl_packed_minus_unpacked_max", delta.max().item(), VLLM_KL_DELTA_MAX_THRESHOLD),
     ]
 
 
