@@ -6,7 +6,7 @@ including startup. The dispatcher pulls via ``next_task()`` until
 
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from itertools import zip_longest
 
 import verifiers.v1 as vf
@@ -36,6 +36,7 @@ class EvalSource:
             self.intervals[env.name] = env.config.interval
 
         self.queue: deque[TaskRequest] = deque()
+        self.completed: Counter[tuple[str, int, str, str]] = Counter()
 
         # A fresh run evaluates the base policy. Resumed runs apply interval
         # rules to the loaded checkpoint and later policies.
@@ -51,7 +52,7 @@ class EvalSource:
             return []
         fired: list[str] = []
         for name, interval in self.intervals.items():
-            if is_first or force or step % interval == 0:
+            if (is_first or force or step % interval == 0) and self.tasks_by_env[name]:
                 fired.append(name)
         # Round-robin across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates at example granularity. ``try_schedule``'s
@@ -64,6 +65,35 @@ class EvalSource:
                     continue
                 self.queue.append(TaskRequest(env_name=env_name, task=task, step=step))
         return fired
+
+    @staticmethod
+    def task_key(env_name: str, task: vf.Task, step: int) -> tuple[str, int, str, str]:
+        return env_name, step, task.key, task.hash
+
+    def mark_completed(self, env_name: str, task_key: str, task_hash: str, step: int) -> None:
+        self.completed[(env_name, step, task_key, task_hash)] += 1
+
+    def state_dict(self) -> dict:
+        return {"completed": dict(self.completed)}
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        if set(state_dict) != {"completed"}:
+            raise ValueError("Eval source checkpoint must contain only completed task groups")
+        self.completed = Counter(state_dict["completed"])
+        completed_steps = {key[1] for key, count in self.completed.items() if count}
+        if len(completed_steps) != 1:
+            raise ValueError("Eval source checkpoint must contain completed groups from exactly one eval step")
+        step = completed_steps.pop()
+        for env_name, tasks in self.tasks_by_env.items():
+            matched = Counter()
+            remaining = []
+            for task in tasks:
+                key = self.task_key(env_name, task, step)
+                if matched[key] < self.completed[key]:
+                    matched[key] += 1
+                else:
+                    remaining.append(task)
+            self.tasks_by_env[env_name] = remaining
 
     def next_task(self) -> TaskRequest | None:
         """Pop the next eval task, or ``None`` when the queue is empty."""

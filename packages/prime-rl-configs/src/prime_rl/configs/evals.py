@@ -4,7 +4,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalConfig
-from prime_rl.configs.shared import ClientConfig, LogConfig
+from prime_rl.configs.shared import ClientConfig, LogConfig, ResumeConfig
 from prime_rl.configs.trainer import WeightBroadcastConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
@@ -66,6 +66,13 @@ class OnlineConfig(BaseConfig):
     this step."""
 
 
+class CheckpointConfig(BaseConfig):
+    """Checkpoint progress for an interruptible standalone eval run."""
+
+    interval: int = Field(1, ge=1)
+    """Save after every N completed task groups."""
+
+
 class EvalsConfig(BaseConfig):
     """``uv run evals``: run the configured evals against a live inference server.
     Standalone (no ``[online]``), one epoch of every eval source runs against the
@@ -95,6 +102,12 @@ class EvalsConfig(BaseConfig):
     """Directory to write outputs to — rollout traces and logs are written as
     subdirectories. Shared with the trainer for online evals. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
+    ckpt: CheckpointConfig | None = None
+    """Checkpoint standalone eval progress. Checkpoint steps count completed task groups."""
+
+    resume: ResumeConfig | None = None
+    """Resume a standalone eval run from a group checkpoint. A bare block loads the latest checkpoint."""
+
     log: LogConfig = LogConfig()
 
     monitors: MonitorsConfig = MonitorsConfig()
@@ -115,5 +128,14 @@ class EvalsConfig(BaseConfig):
             raise ValueError(
                 "eval.skip_first_step only applies to online evals - a standalone run "
                 "would skip its only eval epoch. Remove it or add an [online] block."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_checkpointing_is_standalone_only(self):
+        if self.online is not None and (self.ckpt is not None or self.resume is not None):
+            raise ValueError(
+                "evals ckpt/resume only supports standalone evals - online evals are coordinated "
+                "with the trainer's live weight-broadcast lifecycle"
             )
         return self

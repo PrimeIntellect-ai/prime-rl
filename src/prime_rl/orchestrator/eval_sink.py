@@ -125,6 +125,41 @@ class EvalSink:
             for env_name, eval_step in set(batch_counts) | set(buffered)
         ]
 
+    def has_pending_group(self, group_id: str) -> bool:
+        return bool(
+            self.pending_groups.get(group_id)
+            or self.pending_group_failures.get(group_id)
+            or self.pending_group_cancellations.get(group_id)
+        )
+
+    def state_dict(self) -> dict:
+        """Return completed groups awaiting their epoch aggregate.
+
+        Partial groups are intentionally omitted: their requests are retried after
+        resume, keeping checkpoints independent of dispatcher and in-flight state.
+        """
+        return {
+            "pending_batches": {
+                key: [episode.to_record() for episode in episodes] for key, episodes in self.pending_batches.items()
+            },
+            "pending_batch_failures": dict(self.pending_batch_failures),
+            "pending_batch_cancellations": dict(self.pending_batch_cancellations),
+        }
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        expected = {"pending_batches", "pending_batch_failures", "pending_batch_cancellations"}
+        if set(state_dict) != expected:
+            raise ValueError(f"Eval sink checkpoint fields must be {sorted(expected)}")
+        self.pending_batches = defaultdict(
+            list,
+            {
+                key: [vf.WireEpisode.model_validate(record) for record in records]
+                for key, records in state_dict["pending_batches"].items()
+            },
+        )
+        self.pending_batch_failures = defaultdict(list, state_dict["pending_batch_failures"])
+        self.pending_batch_cancellations = defaultdict(int, state_dict["pending_batch_cancellations"])
+
     def process_group(self, group_id: str) -> None:
         group = self.pending_groups.pop(group_id, [])
         failures = self.pending_group_failures.pop(group_id, [])
