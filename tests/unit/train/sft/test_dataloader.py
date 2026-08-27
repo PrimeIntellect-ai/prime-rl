@@ -4,25 +4,10 @@ import os
 import pytest
 import torch
 from datasets import Dataset
-from renderers.base import RenderedTokens
 
 from prime_rl.configs.sft import FakeDataConfig, SFTDataConfig
 from prime_rl.trainer.sft.data import FakeDataset, SFTDataset, get_dataset_progress, get_dataset_state, setup_dataloader
 from prime_rl.trainer.world import reset_world
-
-
-class _DummyRenderer:
-    def render(self, messages, **kwargs):
-        token_id = ord(messages[-1]["content"][0]) + 2
-        token_ids = [0, *([token_id] * 6), 1]
-        return RenderedTokens(
-            token_ids=token_ids,
-            message_indices=[-1, *([len(messages) - 1] * 7)],
-            sampled_mask=[False, *([True] * 7)],
-        )
-
-    def get_stop_token_ids(self):
-        return [1]
 
 
 def setup_fake_dataloader(config: FakeDataConfig, non_dp_size: int = 1):
@@ -150,7 +135,7 @@ def test_fake_dataset_single_rank_state_with_packing():
 
 @pytest.mark.parametrize("num_workers", [1, 2])
 @pytest.mark.parametrize("world_size", [1, 2])
-def test_dataloader_shards_across_ranks_and_workers(num_workers: int, world_size: int):
+def test_dataloader_shards_across_ranks_and_workers(num_workers: int, world_size: int, dummy_renderer):
     rounds_before_resume = 3
     rounds_after_resume = 1
     num_examples = 2 * world_size * num_workers
@@ -185,7 +170,7 @@ def test_dataloader_shards_across_ranks_and_workers(num_workers: int, world_size
             )
             dataset = SFTDataset(
                 raw_dataset,
-                _DummyRenderer(),
+                dummy_renderer,
                 shuffle=False,
                 seq_len=config.seq_len,
             )
