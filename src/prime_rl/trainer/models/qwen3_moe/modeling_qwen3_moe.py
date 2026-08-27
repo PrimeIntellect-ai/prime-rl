@@ -69,7 +69,6 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
             load_balance_coeff=config.load_balance_coeff,
-            fp8=getattr(config, "fp8", False),
         )
         if (layer_idx not in config.mlp_only_layers) and (
             config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0

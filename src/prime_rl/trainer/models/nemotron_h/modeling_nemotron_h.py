@@ -258,12 +258,6 @@ class NemotronHMoELayer(GradientCheckpointingLayer):
         super().__init__()
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.layer_norm_epsilon))
         effective_latent_dim = config.moe_latent_size if config.moe_latent_size is not None else config.hidden_size
-        grouped_mm_fn = torch._grouped_mm
-        if getattr(config, "fp8", False):
-            from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
-
-            grouped_mm_fn = grouped_fp8_gemm
-
         router = TokenChoiceTopKRouter(
             dim=config.hidden_size,
             num_experts=config.n_routed_experts,
@@ -281,7 +275,6 @@ class NemotronHMoELayer(GradientCheckpointingLayer):
             num_experts=config.n_routed_experts,
             expert_type="non_gated",
             activation=config.mlp_hidden_act,
-            grouped_mm_fn=grouped_mm_fn,
         )
         shared_expert = FeedForward(
             dim=config.hidden_size,

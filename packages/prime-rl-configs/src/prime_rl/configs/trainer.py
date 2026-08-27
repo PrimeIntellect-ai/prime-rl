@@ -21,7 +21,6 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
-EPCommBackend: TypeAlias = Literal["torch", "deepep"]
 
 
 class GCConfig(BaseConfig):
@@ -161,19 +160,78 @@ _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
 
 class FP8Config(BaseConfig):
     type: Literal["fp8"] = "fp8"
-    enable_grouped_gemm: bool = True
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
+    """Dense linear module names excluded from DeepGEMM FP8 replacement."""
 
 
 class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
     recipe: MXFP8Recipe = "mxfp8_rceil"
-    enable_grouped_gemm: bool = True
-    enable_a2a: bool = True
+    """MXFP8 recipe for dense linear modules."""
+
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
+    """Dense linear module names excluded from torchao MXFP8 replacement."""
 
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
+
+
+class BF16MoEComputeConfig(BaseConfig):
+    """Run routed-expert grouped GEMMs in bfloat16."""
+
+    type: Literal["bf16"] = "bf16"
+
+
+class DeepGemmFP8MoEComputeConfig(BaseConfig):
+    """Run routed-expert grouped GEMMs with DeepGEMM FP8 kernels."""
+
+    type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
+
+
+class MXFP8MoEComputeConfig(BaseConfig):
+    """Run routed-expert grouped GEMMs with Prime's vendored MXFP8 implementation."""
+
+    type: Literal["mxfp8"] = "mxfp8"
+    recipe: MXFP8Recipe = "mxfp8_rceil"
+    """MXFP8 expert-compute recipe."""
+
+
+MoEComputeConfig: TypeAlias = Annotated[
+    BF16MoEComputeConfig | DeepGemmFP8MoEComputeConfig | MXFP8MoEComputeConfig,
+    Field(discriminator="type"),
+]
+
+
+class TorchMoEDispatchConfig(BaseConfig):
+    """Dispatch and combine routed tokens with torch all-to-all collectives."""
+
+    type: Literal["torch"] = "torch"
+    transport: Literal["bf16", "mxfp8"] = "bf16"
+    """Wire format for routed activations and their reverse-path gradients."""
+
+
+class DeepEPMoEDispatchConfig(BaseConfig):
+    """Dispatch and combine routed tokens with DeepEP."""
+
+    type: Literal["deepep"] = "deepep"
+    num_sms: int = Field(20, ge=1)
+    """SMs allocated to DeepEP communication kernels."""
+
+    token_chunk_size: int | None = Field(None, ge=1)
+    """Optional chunk size used to pipeline dispatch with local expert compute."""
+
+
+MoEDispatchConfig: TypeAlias = Annotated[
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
+    Field(discriminator="type"),
+]
+
+
+class MoERuntimeConfig(BaseConfig):
+    """Independent routed-expert compute and token-dispatch choices."""
+
+    compute: MoEComputeConfig = BF16MoEComputeConfig()
+    dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
 
 
 class ModelConfig(BaseModelConfig):
@@ -213,14 +271,8 @@ class ModelConfig(BaseModelConfig):
     ep: int | Literal["auto"] = "auto"
     """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves to ``min(fsdp_island_size, 8)`` for MoE models (where ``fsdp_island_size = world_size // dp_replicate``), and to 1 for non-MoE models. Set an explicit integer to override."""
 
-    ep_comm_backend: EPCommBackend = "torch"
-    """Communication backend for expert parallelism. ``torch`` uses TorchTitan all-to-all collectives; ``deepep`` uses DeepEP custom kernels."""
-
-    deepep_num_sms: int = Field(20, ge=1)
-    """SMs allocated for DeepEP intranode dispatch/combine kernels. Also determines internode RDMA channel count (``num_channels = num_sms / 2``). Lower values leave more SMs for compute; higher values speed up dispatch/combine. The optimal value depends on EP degree and hardware. Only used when ``ep_comm_backend='deepep'``."""
-
-    deepep_token_chunk_size: int | None = Field(None, ge=1)
-    """Token chunk size for DeepEP MoE pipelining. When set, DeepEP dispatch for chunk i+1 is launched while experts compute chunk i. Only used when ``ep_comm_backend='deepep'``."""
+    moe: MoERuntimeConfig = MoERuntimeConfig()
+    """Routed-expert compute and token-dispatch runtime."""
 
     cp: int = 1
     """Context parallelism degree. 1 disables CP."""
@@ -326,19 +378,19 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_ep_comm_backend(self):
-        if self.ep_comm_backend == "torch":
-            return self
-
-        if isinstance(self.ep, int) and self.ep <= 1:
-            raise ValueError(f"model.ep_comm_backend='{self.ep_comm_backend}' requires model.ep > 1.")
-
-        return self
-
-    @model_validator(mode="after")
-    def mxfp8_only_with_torch_ep_backend(self):
-        if isinstance(self.quantization, MXFP8Config) and self.ep_comm_backend != "torch":
-            raise ValueError("MXFP8 quantization requires model.ep_comm_backend='torch'.")
+    def validate_moe_runtime(self):
+        compute = self.moe.compute
+        dispatch = self.moe.dispatch
+        if isinstance(dispatch, DeepEPMoEDispatchConfig):
+            if isinstance(self.ep, int) and self.ep <= 1:
+                raise ValueError("model.moe.dispatch.type='deepep' requires model.ep > 1.")
+            if isinstance(compute, MXFP8MoEComputeConfig):
+                raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
+        elif dispatch.transport == "mxfp8":
+            if not isinstance(compute, MXFP8MoEComputeConfig):
+                raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
+            if isinstance(self.ep, int) and self.ep <= 1:
+                raise ValueError("MXFP8 transport requires model.ep > 1.")
         return self
 
 
@@ -635,7 +687,7 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
-        if self.model.ep_comm_backend == "deepep" and self.optim.max_norm is not None:
+        if self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping is not compatible with DeepEP. "
                 "Automatically setting optim.max_norm to None (disabled).",

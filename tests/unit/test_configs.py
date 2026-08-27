@@ -163,6 +163,90 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_moe_runtime_defaults_are_independent_from_dense_quantization():
+    config = TrainerModelConfig.model_validate({"quantization": {"type": "mxfp8"}})
+
+    assert config.quantization is not None and config.quantization.type == "mxfp8"
+    assert config.moe.compute.type == "bf16"
+    assert config.moe.dispatch.type == "torch"
+    assert config.moe.dispatch.transport == "bf16"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        {"moe": {"compute": {"type": "deepgemm_fp8"}}},
+        {"moe": {"compute": {"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"}}},
+        {"ep": 2, "moe": {"dispatch": {"type": "deepep", "num_sms": 16, "token_chunk_size": 1024}}},
+        {
+            "ep": 2,
+            "moe": {
+                "compute": {"type": "mxfp8"},
+                "dispatch": {"type": "torch", "transport": "mxfp8"},
+            },
+        },
+    ],
+)
+def test_supported_moe_runtime_configs(model):
+    TrainerModelConfig.model_validate(model)
+
+
+@pytest.mark.parametrize(
+    ("model", "message"),
+    [
+        ({"ep": 1, "moe": {"dispatch": {"type": "deepep"}}}, "requires model.ep > 1"),
+        (
+            {
+                "ep": 2,
+                "moe": {
+                    "compute": {"type": "bf16"},
+                    "dispatch": {"type": "torch", "transport": "mxfp8"},
+                },
+            },
+            "MXFP8 transport requires",
+        ),
+        (
+            {
+                "ep": 1,
+                "moe": {
+                    "compute": {"type": "mxfp8"},
+                    "dispatch": {"type": "torch", "transport": "mxfp8"},
+                },
+            },
+            "requires model.ep > 1",
+        ),
+        (
+            {
+                "ep": 2,
+                "moe": {
+                    "compute": {"type": "mxfp8"},
+                    "dispatch": {"type": "deepep"},
+                },
+            },
+            "does not support DeepEP",
+        ),
+    ],
+)
+def test_invalid_moe_runtime_configs_fail(model, message):
+    with pytest.raises(ValidationError, match=message):
+        TrainerModelConfig.model_validate(model)
+
+
+@pytest.mark.parametrize(
+    "removed",
+    [
+        {"ep_comm_backend": "torch"},
+        {"deepep_num_sms": 20},
+        {"deepep_token_chunk_size": 1024},
+        {"quantization": {"type": "fp8", "enable_grouped_gemm": True}},
+        {"quantization": {"type": "mxfp8", "enable_a2a": True}},
+    ],
+)
+def test_removed_moe_runtime_fields_are_rejected(removed):
+    with pytest.raises(ValidationError):
+        TrainerModelConfig.model_validate(removed)
+
+
 @pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
 def test_optimizer_state_offload_keeps_legacy_default(config_cls):
     config = config_cls.model_validate({})

@@ -10,7 +10,7 @@ CUDA kernels live in their own monorepo,
 git submodule `deps/prime-kernels`, alongside prime-rl's other submodules. That repo is the
 wheel root (`setup.py`, `pyproject.toml`) and `prime_kernels/` inside it is the importable
 package: one folder per kernel, holding the
-kernel's Python surface *and* its C++/CUDA sources under `csrc/`, all declared in the single
+kernel's Python surface and, for compiled kernels, its C++/CUDA sources under `csrc/`, all declared in the single
 manifest `prime_kernels/kernels.toml`. See `deps/prime-kernels/README.md` once the submodule
 is initialized.
 
@@ -38,9 +38,11 @@ it once at startup rather than failing a run halfway through. `unavailable_reaso
 the same answer for one kernel (`None` when it is usable), which is what a test's skip guard
 wants; `is_available` is just that call compared to `None`.
 
-`flash_moe` is the one kernel today: fused MoE forward (bf16 + mxfp8) on Blackwell
-tcgen05. Its trainer integration is currently dormant: there is no model configuration
-field or setup path that enables it.
+`flash_moe` is a compiled fused MoE forward kernel (bf16 + mxfp8) on Blackwell
+tcgen05. Its trainer integration is dormant. `mxfp8_moe` is a Python-only registered
+kernel package for MXFP8 grouped GEMM and torch EP transport on SM100; it owns the
+MoE-specific torchao-derived orchestration and exports explicit BF16 boundaries instead
+of tensor-subclass interception.
 
 What a kernel requires of its inputs — block sizes, alignments, shape constraints — belongs
 to prime-kernels, which exports it: `flash_moe.BLOCK_M`, `flash_moe.MXFP8_SCALE_BLOCK`, and
@@ -73,7 +75,9 @@ The work happens in the prime-kernels repo, not here. Inside `deps/prime-kernels
 
 1. Commit the sources under `prime_kernels/<name>/csrc/`.
 2. Add a `[<name>]` table to `prime_kernels/kernels.toml` — `sources`, `include-dirs`,
-   `arch`, `cxx-std`; paths are relative to the kernel folder.
+   `arch`, `cxx-std`; paths are relative to the kernel folder. A vendored Python kernel
+   uses `python-only = true`, may declare import checks in `requires`, and omits compiled
+   extension fields.
 3. Write `prime_kernels/<name>/__init__.py` — `from . import _C`, then per op a wrapper
    calling `torch.ops.<ns>.<op>` and a `torch.library.register_fake`. No
    `torch.library.custom_op` decorator: that defines a *Python* op, and `TORCH_LIBRARY`

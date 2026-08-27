@@ -15,9 +15,9 @@ New model integration contract:
   `attn_projections(...)`.
 - `mlp`: expose a dense `layer.mlp.forward(...)`. A module is treated as dense
   when it does not define `_run_routed_experts` or `tokens_per_expert`.
-- `routed_experts`: expose `layer.mlp._run_routed_experts(...)` for the MoE
-  expert path, and optionally `layer.mlp._run_local_routed_experts(...)` when
-  local expert compute is separated from dispatch/combine.
+- `routed_experts`: expose `layer.mlp._run_local_routed_experts(...)` when
+  expert compute is separated from dispatch/combine. Integrations that own a
+  combined routed path may expose `layer.mlp._run_routed_experts(...)` instead.
 - `linear_attn`: expose a token-mixer module on `layer.linear_attn` or
   `layer.mamba`, or reuse `layer.self_attn` when
   `layer.attention_type == "sliding_attention"`.

@@ -31,7 +31,7 @@ import torch.distributed as dist
 from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
-from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
+from prime_rl.configs.trainer import ModelConfig, MoERuntimeConfig, TokenizerConfig
 from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.model import setup_model, setup_processor, setup_tokenizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -53,7 +53,7 @@ CONVERSION_OVERRIDES = {
     "dp_replicate": 1,
     "cp": 1,
     "ep": "auto",
-    "ep_comm_backend": "torch",
+    "moe": MoERuntimeConfig(),
     "attn": "flash_attention_2",
 }
 

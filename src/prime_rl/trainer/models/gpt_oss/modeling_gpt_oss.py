@@ -36,7 +36,6 @@ from prime_rl.trainer.models.layers.moe import (
 class GptOssDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: GptOssConfig, layer_idx: int):
         super().__init__()
-        assert not getattr(config, "fp8", False), "FP8 training is not supported for GPT-OSS"
         self.hidden_size = config.hidden_size
         self.self_attn = GptOssAttention(config=config, layer_idx=layer_idx)
         router = TokenChoiceTopKRouter(

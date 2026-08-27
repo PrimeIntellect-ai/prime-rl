@@ -64,7 +64,6 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
             load_balance_coeff=1e-3,
-            fp8=getattr(config, "fp8", False),
         )
         if layer_idx >= config.first_k_dense_replace:
             self.mlp = MoE.from_args(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)

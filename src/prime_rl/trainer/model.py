@@ -20,8 +20,6 @@ from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
-from torch.distributed.tensor.parallel import parallelize_module
-from torchtitan.distributed.expert_parallel import ExpertParallel
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -35,7 +33,6 @@ from prime_rl.configs.trainer import (
     QuantizationConfig,
     TokenizerConfig,
 )
-from prime_rl.trainer.distributed import DeepEPExpertParallel, MXFP8AllToAllExpertParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -54,8 +51,8 @@ from prime_rl.trainer.models.layers.checkpointing import (
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter, _load_fused_moe_kernel
-from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
+from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -551,20 +548,6 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 
 
-def configure_moe_ep_backend(model: nn.Module, config: ModelConfig) -> None:
-    backend = config.ep_comm_backend
-    if backend == "deepep":
-        from prime_rl.trainer.distributed.deepep import configure_num_sms
-
-        configure_num_sms(config.deepep_num_sms)
-    language_model = get_language_model(model)
-    for transformer_block in language_model.layers:
-        if not isinstance(transformer_block.mlp, MoE):
-            continue
-        transformer_block.mlp.set_ep_comm_backend(backend)
-        transformer_block.mlp.set_deepep_token_chunk_size(config.deepep_token_chunk_size)
-
-
 def get_load_balance_stats(
     model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
 ) -> dict[str, Tensor | None]:
@@ -654,12 +637,6 @@ def get_model(
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
-    # MoEArgs.fp8 (read via getattr(config, "fp8") in the modeling files) gates the
-    # DeepGEMM FP8 grouped GEMM. MXFP8 grouped GEMM is applied by wrapping the expert
-    # weights with torchao (see apply_quantization), so it leaves this flag False and
-    # the experts keep calling torch._grouped_mm — which the wrapper tensor intercepts.
-    model_config.fp8 = isinstance(config.quantization, FP8Config) and config.quantization.enable_grouped_gemm
-
     if config.index_cache is not None:
         model_config.use_index_cache = True
         model_config.index_topk_freq = config.index_cache.topk_freq
@@ -1211,13 +1188,9 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
 
 
 def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
-    """Swap dense linears and MoE expert GEMMs to the configured low-precision path.
+    """Swap dense linear modules to the configured low-precision path.
 
-    Runs after the LM head is injected but before LoRA / EP / FSDP so the swapped
-    modules and wrapped parameters are picked up by the later parallelisms. The
-    FP8 grouped GEMM (DeepGEMM) is gated separately via ``model_config.fp8`` since
-    it lives inside the modeling code; here we only handle the dense-linear swap
-    and the torchao MXFP8 expert-weight wrapping.
+    Routed-expert compute is configured independently by ``model.moe.compute``.
     """
     quant = config.quantization
     if quant is None:
@@ -1232,28 +1205,6 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
                 f"MXFP8 quantization requires SM100 (Blackwell) or newer, but device is SM{capability[0]}{capability[1]}."
             )
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
-        if quant.enable_grouped_gemm:
-            apply_mxfp8_moe_grouped_gemm(model, recipe=quant.recipe)
-
-
-def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
-    language_model = get_language_model(model)
-    for transformer_block in language_model.layers:
-        block_mlp = getattr(transformer_block, "mlp", None)
-        if block_mlp is not None and isinstance(block_mlp, MoE):
-            if config.ep_comm_backend == "torch":
-                quant = config.quantization
-                if isinstance(quant, MXFP8Config) and quant.enable_a2a:
-                    parallelize_plan = MXFP8AllToAllExpertParallel()
-                else:
-                    parallelize_plan = ExpertParallel()
-            else:
-                parallelize_plan = DeepEPExpertParallel()
-            parallelize_module(
-                block_mlp.experts,
-                device_mesh=parallel_dims.get_mesh("ep"),
-                parallelize_plan=parallelize_plan,
-            )
 
 
 def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:
@@ -1346,7 +1297,6 @@ def setup_model(
 
     # 1. We load to meta device by default
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
-    configure_moe_ep_backend(model, config)
 
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
 
@@ -1359,7 +1309,6 @@ def setup_model(
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
-        configure_moe_ep_backend(model, config)
 
     lm_head_chunk_size: int | None = None
     if isinstance(config.fused_lm_head_token_chunk_size, int):
@@ -1385,8 +1334,8 @@ def setup_model(
     if config.debug.force_balanced_routing:
         apply_force_balanced_routing(model)
 
+    configure_moe_runtime(model, config, parallel_dims)
     if parallel_dims.ep_enabled:
-        apply_ep(model, config, parallel_dims)
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
         if config.lora is not None:
