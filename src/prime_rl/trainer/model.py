@@ -64,13 +64,6 @@ from prime_rl.utils.weights import (
     save_state_dict,
 )
 
-_PRIME_CONVERSION_MARKER = ".prime-v1"
-
-
-def _validate_prime_conversion_cache(path: Path) -> None:
-    if not (path / _PRIME_CONVERSION_MARKER).is_file():
-        raise RuntimeError(f"PrimeRL conversion cache {path} is missing the required {_PRIME_CONVERSION_MARKER} marker")
-
 
 def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
     """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
@@ -943,8 +936,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
         model_keys = dict.fromkeys(model.state_dict().keys())
 
-        if source_path.name == "prime":
-            _validate_prime_conversion_cache(source_path)
+        if source_path.name == "prime" and not (source_path / ".prime-v1").is_file():
+            raise RuntimeError(f"PrimeRL conversion cache {source_path} is missing the required .prime-v1 marker")
 
         snapshot_is_hf = model.is_hf_state_dict(snapshot_keys)
         snapshot_is_prime = model.is_prime_state_dict(snapshot_keys)
@@ -954,18 +947,14 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
                 "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
             )
             snapshot_path = convert_dir / "prime"
-            cache_exists = snapshot_path.exists()
-            torch.distributed.barrier()
-            if cache_exists:
-                _validate_prime_conversion_cache(snapshot_path)
-            elif get_world().is_master:
+            if not snapshot_path.exists() and get_world().is_master:
                 logger.debug(
                     f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
                 )
                 snapshot_state_dict = load_state_dict(source_path)
                 model.convert_to_prime(snapshot_state_dict)
                 save_state_dict(snapshot_state_dict, snapshot_path)
-                (snapshot_path / _PRIME_CONVERSION_MARKER).touch()
+                (snapshot_path / ".prime-v1").touch()
                 del snapshot_state_dict
 
         elif snapshot_is_prime and not snapshot_is_hf and model.is_hf_state_dict(model_keys):
@@ -984,8 +973,12 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
 
     # All ranks wait for master rank to finish conversion
     torch.distributed.barrier()
-    if isinstance(model, PreTrainedModelPrimeRL) and snapshot_path.name == "prime":
-        _validate_prime_conversion_cache(snapshot_path)
+    if (
+        isinstance(model, PreTrainedModelPrimeRL)
+        and snapshot_path.name == "prime"
+        and not (snapshot_path / ".prime-v1").is_file()
+    ):
+        raise RuntimeError(f"PrimeRL conversion cache {snapshot_path} is missing the required .prime-v1 marker")
 
     logger.info(f"Loading weights using HF DCP from {snapshot_path}")
     load_dcp_start_time = time.perf_counter()

@@ -16,7 +16,7 @@ _buffer: Buffer | None = None
 _handle_cache: dict[int, object] = {}
 _pending_dispatch_events: dict[int, EventOverlap] = {}
 _handle_counter = 0
-_pending_combine_event: EventOverlap | None = None
+_pending_combine_events: list[EventOverlap] = []
 _concatenate_stream: torch.cuda.Stream | None = None
 _deepep_cuda_ops_registered = False
 _deepep_cuda_lib: torch.library.Library | None = None
@@ -131,8 +131,6 @@ def _dispatch_backward(
 class _DeepEPCombine(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, handle_id: torch.Tensor) -> torch.Tensor:
-        global _pending_combine_event
-
         assert _buffer is not None, "DeepEP buffer must be initialized before combine."
         handle = _handle_cache.pop(handle_id.item(), None)
         assert handle is not None, f"Handle not found for handle_id={handle_id.item()}"
@@ -145,7 +143,7 @@ class _DeepEPCombine(torch.autograd.Function):
             async_finish=True,
             allocate_on_comm_stream=True,
         )
-        _pending_combine_event = after_event
+        _pending_combine_events.append(after_event)
         ctx.handle = handle
         return combined
 
@@ -174,11 +172,9 @@ class _DeepEPCombine(torch.autograd.Function):
 
 @torch.compiler.disable()
 def sync_combine() -> None:
-    global _pending_combine_event
-
-    if _pending_combine_event is not None:
-        _pending_combine_event.current_stream_wait()
-        _pending_combine_event = None
+    for event in _pending_combine_events:
+        event.current_stream_wait()
+    _pending_combine_events.clear()
 
 
 @torch.compiler.disable()
