@@ -288,6 +288,19 @@ def test_trainer_enable_token_export_cli_flag():
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
 
 
+def test_trainer_loss_defaults_to_ipo():
+    config = TrainerConfig.model_validate({})
+
+    assert config.loss.type == "ipo"
+    assert config.loss.eps == 0.1
+
+    with pytest.raises(ValidationError, match="ipo_threshold"):
+        TrainerConfig.model_validate({"loss": {"type": "ipo", "ipo_threshold": 0.2}})
+
+    with pytest.raises(ValidationError, match="default"):
+        TrainerConfig.model_validate({"loss": {"type": "default"}})
+
+
 def test_single_node_auto_inference_ports_follow_server_port():
     config = RLConfig.model_validate(
         {
