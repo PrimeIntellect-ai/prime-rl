@@ -55,7 +55,6 @@ CONVERSION_OVERRIDES = {
     "ep": "auto",
     "ep_comm_backend": "torch",
     "attn": "flash_attention_2",
-    "moe_fused_kernel": False,
 }
 
 RUN_CONFIG_NAMES = ("trainer.json", "sft.json")

@@ -4,11 +4,12 @@ import pytest
 import torch
 
 from prime_rl.configs.trainer import ModelConfig
-from prime_rl.trainer.model import load_dcp_from_hf
+from prime_rl.trainer.model import (
+    _validate_prime_conversion_cache,
+    load_dcp_from_hf,
+)
 from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
 from prime_rl.trainer.models.laguna.modeling_laguna import LagunaForCausalLM
-
-pytestmark = [pytest.mark.gpu]
 
 
 @pytest.fixture
@@ -32,6 +33,7 @@ def model() -> LagunaForCausalLM:
         return LagunaForCausalLM(config)
 
 
+@pytest.mark.gpu
 def test_load_dcp_from_hf_keeps_checkpoint_expert_bias(model, tmp_path, monkeypatch):
     """Checkpoint values for the persistent `expert_bias` buffer must survive loading."""
     expected = torch.tensor([0.1, 0.2, 0.3, 0.4])
@@ -48,3 +50,11 @@ def test_load_dcp_from_hf_keeps_checkpoint_expert_bias(model, tmp_path, monkeypa
 
     expert_bias = model.model.layers[1].mlp.expert_bias
     torch.testing.assert_close(expert_bias.cpu(), expected.to(expert_bias.dtype))
+
+
+def test_prime_conversion_cache_requires_marker(tmp_path):
+    with pytest.raises(RuntimeError, match=r"\.prime-v1"):
+        _validate_prime_conversion_cache(tmp_path)
+
+    (tmp_path / ".prime-v1").touch()
+    _validate_prime_conversion_cache(tmp_path)

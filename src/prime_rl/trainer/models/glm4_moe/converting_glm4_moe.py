@@ -6,13 +6,12 @@ GLM-4 MoE specifics:
 * Expert bias: HF ``mlp.gate.e_score_correction_bias`` -> prime
   ``mlp.expert_bias``.
 * Routed experts: HF per-expert ``mlp.experts.{e}.{gate,down,up}_proj.weight``
-  stack into prime ``mlp.experts.{w1,w2,w3}`` along dim 0; the fused
+  stack into prime ``mlp.experts.{gate,down,up}_proj`` along dim 0; the fused
   transformers-v5 ``mlp.experts.gate_up_proj`` / ``down_proj`` layout is also
   accepted on the way in (split along dim 1).
 * Shared experts: HF ``mlp.shared_experts.{gate,down,up}_proj.weight`` map to
-  prime ``mlp.shared_expert.{w1,w2,w3}`` (no ``.weight`` suffix on prime; this
-  is a plain rename forward). On the way back to HF, GLM strips a leading
-  singleton dim from each shared-expert tensor when present
+  prime ``mlp.shared_expert.{gate,down,up}_proj.weight``. On the way back to HF,
+  GLM strips a leading singleton dim from each shared-expert tensor when present
   (:class:`~prime_rl.trainer.models.conversion_ops.SqueezeLeading`,
   backward-only).
 * Prime-only runtime buffer ``mlp.tokens_per_expert`` is dropped on the way
@@ -55,7 +54,7 @@ def glm_moe_layer_ops(layer_idx: int) -> list[ConvOp]:
         # restored the HF key, so it precedes the Rename in the forward list
         # (apply_prime_to_hf plays the chain in reverse).
         ops.append(SqueezeLeading(f"{p}.shared_experts.{hf_proj}.weight"))
-        ops.append(Rename(f"{p}.shared_experts.{hf_proj}.weight", f"{p}.shared_expert.{wn}"))
+        ops.append(Rename(f"{p}.shared_experts.{hf_proj}.weight", f"{p}.shared_expert.{wn}.weight"))
     ops.append(Drop(f"{p}.tokens_per_expert"))
     return ops
 

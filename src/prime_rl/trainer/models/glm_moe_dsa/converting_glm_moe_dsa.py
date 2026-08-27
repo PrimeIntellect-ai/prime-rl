@@ -94,9 +94,9 @@ def convert_tt_layer_to_vllm_kernel(
     if expert_bias_key in state_dict:
         add(f"{prefix}.mlp.gate.e_score_correction_bias", state_dict[expert_bias_key])
 
-    w1_key = f"{prefix}.mlp.experts.w1"
-    w2_key = f"{prefix}.mlp.experts.w2"
-    w3_key = f"{prefix}.mlp.experts.w3"
+    w1_key = f"{prefix}.mlp.experts.gate_proj"
+    w2_key = f"{prefix}.mlp.experts.down_proj"
+    w3_key = f"{prefix}.mlp.experts.up_proj"
     if w1_key in state_dict and w2_key in state_dict and w3_key in state_dict:
         w1 = state_dict[w1_key]
         w2 = state_dict[w2_key]
@@ -124,9 +124,9 @@ def convert_tt_layer_to_vllm_kernel(
             out[f"{prefix}.mlp.experts.w13_weight"] = w13
             out[f"{prefix}.mlp.experts.w2_weight"] = w2
 
-    sw1_key = f"{prefix}.mlp.shared_expert.w1"
-    sw2_key = f"{prefix}.mlp.shared_expert.w2"
-    sw3_key = f"{prefix}.mlp.shared_expert.w3"
+    sw1_key = f"{prefix}.mlp.shared_expert.gate_proj.weight"
+    sw2_key = f"{prefix}.mlp.shared_expert.down_proj.weight"
+    sw3_key = f"{prefix}.mlp.shared_expert.up_proj.weight"
     if sw1_key in state_dict and sw2_key in state_dict and sw3_key in state_dict:
         sw1 = state_dict[sw1_key]
         sw2 = state_dict[sw2_key]

@@ -1,14 +1,9 @@
-# GPT-OSS model with PrimeRL custom MoE.
-#
-# This file mirrors HuggingFace's modeling_gpt_oss.py but swaps the experts module for
-# `GptOssGroupedExperts` so the LoRA detection logic in `prime_rl/trainer/lora.py` can
-# find and adapt the expert weights. Attention, rotary embedding, and RMSNorm are reused
-# from HF as-is - they correctly handle attention sinks and gpt-oss's split-rotate RoPE.
+# GPT-OSS model with PrimeRL grouped experts. Attention, rotary embedding, and
+# RMSNorm are reused from HuggingFace.
 
 from typing import Union
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor, nn
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
@@ -31,109 +26,43 @@ from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
     is_prime_state_dict,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.moe import GptOssGroupedExperts
-
-
-class GptOssTopKRouter(nn.Module):
-    """Token-choice top-k router matching HF's GptOssTopKRouter parameter naming.
-
-    Stores `weight` (num_experts, hidden_size) and `bias` (num_experts) as raw nn.Parameters
-    so the unsloth BF16 checkpoint loads with no key conversion. Returns the same outputs as
-    `TokenChoiceTopKRouter` so the surrounding MoE plumbing matches the rest of the repo.
-    """
-
-    def __init__(self, config: GptOssConfig):
-        super().__init__()
-        self.num_experts = config.num_local_experts
-        self.top_k = config.num_experts_per_tok
-        self.hidden_size = config.hidden_size
-        self.weight = nn.Parameter(torch.empty(self.num_experts, self.hidden_size))
-        self.bias = nn.Parameter(torch.empty(self.num_experts))
-
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """x: (T, hidden). Returns (top_scores, top_indices, num_tokens_per_expert).
-
-        Matches HF's softmax-after-topk semantics: we softmax the top-k logits only,
-        not the full distribution.
-        """
-        logits = F.linear(x, self.weight, self.bias)  # (T, num_experts)
-        top_logits, top_indices = torch.topk(logits, self.top_k, dim=-1)
-        top_scores = F.softmax(top_logits, dim=-1, dtype=top_logits.dtype)
-        num_tokens_per_expert = torch.histc(
-            top_indices.reshape(-1).float(),
-            bins=self.num_experts,
-            min=0,
-            max=self.num_experts,
-        )
-        return top_scores, top_indices, num_tokens_per_expert
-
-    def init_weights(self, init_std: float):
-        nn.init.trunc_normal_(self.weight, mean=0.0, std=init_std)
-        nn.init.zeros_(self.bias)
-
-
-class GptOssMoE(nn.Module):
-    """GPT-OSS sparse MLP: top-k router + grouped experts with biases.
-
-    Wraps `GptOssGroupedExperts` (which expects pre-permuted tokens + num_tokens_per_expert)
-    with the standard MoE permute/unpermute pipeline. Routing weights are applied AFTER
-    the expert computation, matching HF's `routing_weights[token_idx, top_k_pos]` index_add.
-    """
-
-    def __init__(self, config: GptOssConfig):
-        super().__init__()
-        # GptOssGroupedExperts has fused gate_up_proj + per-expert biases; the
-        # current FP8 grouped-GEMM path doesn't model that yet.
-        assert not getattr(config, "fp8", False), "FP8 training is not supported for GPT-OSS"
-        self.num_experts = config.num_local_experts
-        self.top_k = config.num_experts_per_tok
-        self.router = GptOssTopKRouter(config)
-        self.experts = GptOssGroupedExperts(
-            hidden_size=config.hidden_size,
-            intermediate_size=config.intermediate_size,
-            num_experts=self.num_experts,
-            use_grouped_mm=getattr(config, "use_grouped_mm", True),
-        )
-
-    def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        bs, slen, dim = hidden_states.shape
-        x = hidden_states.reshape(-1, dim)  # (T, dim)
-
-        top_scores, top_indices, num_tokens_per_expert = self.router(x)
-        # top_scores, top_indices: (T, top_k)
-
-        # Sort tokens by expert. Each token contributes top_k entries (one per chosen expert).
-        flat_expert_indices = top_indices.reshape(-1)  # (T*top_k,)
-        sorted_perm = torch.argsort(flat_expert_indices, stable=True)  # (T*top_k,)
-        # token id of each (token, k) entry, in expert-sorted order
-        token_indices_experts_sorted = sorted_perm // self.top_k
-        # routing weight for each (token, k) entry, in expert-sorted order
-        top_scores_experts_sorted = top_scores.reshape(-1)[sorted_perm]
-
-        # Gather inputs for each expert in expert-sorted order
-        gather_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
-        routed_input = torch.gather(x, dim=0, index=gather_indices)  # (T*top_k, dim)
-
-        routed_output = self.experts(routed_input, num_tokens_per_expert)  # (T*top_k, dim)
-
-        # Apply routing weights post-experts (HF: weighted_output = out * routing_weights)
-        routed_output = (routed_output.float() * top_scores_experts_sorted.reshape(-1, 1)).to(routed_output.dtype)
-
-        # Scatter-add back to original token positions
-        out = torch.zeros_like(x)
-        scatter_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
-        out = out.scatter_add(dim=0, index=scatter_indices, src=routed_output)
-
-        out = out.reshape(bs, slen, dim)
-        return out, top_scores  # router_scores returned only for compatibility; trainer ignores
+from prime_rl.trainer.models.layers.moe import (
+    GroupedExperts,
+    MoE,
+    TokenChoiceTopKRouter,
+)
 
 
 class GptOssDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: GptOssConfig, layer_idx: int):
         super().__init__()
+        assert not getattr(config, "fp8", False), "FP8 training is not supported for GPT-OSS"
         self.hidden_size = config.hidden_size
         self.self_attn = GptOssAttention(config=config, layer_idx=layer_idx)
-        self.mlp = GptOssMoE(config)
+        router = TokenChoiceTopKRouter(
+            dim=config.hidden_size,
+            num_experts=config.num_local_experts,
+            top_k=config.num_experts_per_tok,
+            score_func="topk_softmax",
+            route_norm=False,
+            route_scale=1.0,
+            gate_bias=True,
+        )
+        experts = GroupedExperts(
+            dim=config.hidden_size,
+            hidden_dim=config.intermediate_size,
+            num_experts=config.num_local_experts,
+            expert_type="gated",
+            activation="clamped_swiglu",
+            bias=True,
+        )
+        self.mlp = MoE(
+            router=router,
+            experts=experts,
+            shared_expert=None,
+            score_before_experts=False,
+            load_balance_coeff=None,
+        )
         self.input_layernorm = GptOssRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = GptOssRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -162,7 +91,7 @@ class GptOssDecoderLayer(GradientCheckpointingLayer):
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states, _ = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
         return hidden_states
 

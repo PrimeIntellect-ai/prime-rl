@@ -2,7 +2,7 @@
 
 Per layer: router ``block_sparse_moe.gate.weight`` <-> ``mlp.router.gate.weight``,
 the ``e_score_correction_bias`` <-> ``mlp.expert_bias``, and the routed experts
-(per-expert w1/w2/w3 ``nn.Linear`` <-> stacked w1/w2/w3). The prime-only runtime
+(per-expert w1/w2/w3 ``nn.Linear`` <-> stacked gate/down/up projections). The prime-only runtime
 buffer ``mlp.tokens_per_expert`` is dropped on the way to HF.
 """
 
@@ -11,8 +11,8 @@ from __future__ import annotations
 from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, Rename, routed_experts_op
 
 # HF stores per-expert projections under the literal names w1/w2/w3 (nn.Linear,
-# so each carries a `.weight` suffix); prime stacks them as w1/w2/w3.
-_MINIMAX_PROJ_ORDER = (("w1", "w1"), ("w2", "w2"), ("w3", "w3"))
+# so each carries a `.weight` suffix); PrimeRL uses canonical projection names.
+_MINIMAX_PROJ_ORDER = (("gate_proj", "w1"), ("down_proj", "w2"), ("up_proj", "w3"))
 
 
 def conversion_chain(config) -> list[ConvOp]:

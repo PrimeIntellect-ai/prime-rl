@@ -26,7 +26,7 @@ from prime_rl.trainer.models.layers.attn import (
     flash_attn_varlen_func,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
+from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -433,24 +433,26 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         elif self.layer_type == "full_attention":
             self.self_attn = _get_gated_attention(config)
 
-        # MoE: routed experts via shared MoE class (no shared experts in MoE itself)
         moe_args = MoEArgs(
             num_experts=config.num_experts,
-            num_shared_experts=0,
+            num_shared_experts=1,
+            expert_type="gated",
+            activation=config.hidden_act,
             score_func="softmax",
             route_norm=True,
             route_scale=1.0,
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
-            use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=config.load_balance_coeff,
             fp8=getattr(config, "fp8", False),
         )
-        self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
-
-        # Separate gated shared expert
-        self.shared_expert = FeedForward(dim=config.hidden_size, hidden_dim=config.shared_expert_intermediate_size)
-        self.shared_expert_gate = nn.Linear(config.hidden_size, 1, bias=False)
+        self.mlp = MoE.from_args(
+            moe_args,
+            dim=config.hidden_size,
+            hidden_dim=config.moe_intermediate_size,
+            shared_expert_hidden_dim=config.shared_expert_intermediate_size,
+            gated_shared_expert=True,
+        )
 
         # Layer norms with (1+weight) parameterization
         self.input_layernorm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -483,21 +485,9 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
 
         hidden_states = residual + hidden_states
 
-        # MLP: routed experts + gated shared expert
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-
-        # Routed experts
-        routed_output = self.mlp(hidden_states, routed_experts=routed_experts)
-
-        # Gated shared expert
-        bs, slen, dim = hidden_states.shape
-        hidden_flat = hidden_states.view(-1, dim)
-        shared_output = self.shared_expert(hidden_flat)
-        shared_output = F.sigmoid(self.shared_expert_gate(hidden_flat)) * shared_output
-        shared_output = shared_output.view(bs, slen, dim)
-
-        hidden_states = residual + routed_output + shared_output
+        hidden_states = residual + self.mlp(hidden_states, routed_experts=routed_experts)
         return hidden_states
 
 
@@ -643,16 +633,11 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any(
-            "mlp.experts.1.up_proj" in name
-            or "mlp.experts.gate_up_proj" in name
-            or "mlp.shared_expert.gate_proj" in name
-            for name in state_dict.keys()
-        )
+        return any("mlp.experts.1.up_proj" in name or "mlp.experts.gate_up_proj" in name for name in state_dict.keys())
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any("mlp.experts.w1" in name for name in state_dict.keys())
+        return any("mlp.experts.gate_proj" in name for name in state_dict.keys())
 
     @classmethod
     def conversion_chain(cls, config):
@@ -927,16 +912,11 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any(
-            "mlp.experts.gate_up_proj" in name
-            or "mlp.experts.1.up_proj" in name
-            or "mlp.shared_expert.gate_proj" in name
-            for name in state_dict
-        )
+        return any("mlp.experts.gate_up_proj" in name or "mlp.experts.1.up_proj" in name for name in state_dict)
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any("mlp.experts.w1" in name for name in state_dict)
+        return any("mlp.experts.gate_proj" in name for name in state_dict)
 
     # ------------------------------------------------------------------
     # Forward
