@@ -142,26 +142,45 @@ def monkey_patch_deepseek_v4_hash_moe_layer_types():
 
 
 def monkey_patch_deepseek_v4_compress_ratios():
-    """Backfill vLLM's expected legacy `compress_ratios` attribute from `compress_rates`.
+    """Give vLLM's `compress_ratios` a real value on every DeepSeek V4 checkpoint schema.
 
     `vllm/models/deepseek_v4/attention.py` reads `config.compress_ratios[layer_id]` (a flat,
-    one-entry-per-layer list), matching an older transformers schema. Current transformers
-    (and this repo's own port, `configuration_deepseek_v4.py`) instead expose `compress_rates`,
-    a `{layer_type: rate}` dict. `max(1, config.compress_ratios[layer_id])` in that vLLM code
-    treats any value `<= 1` as "no compression", so `1` is a safe default for layer types with
-    no entry (e.g. `sliding_attention`). Tracks the still-open, unmerged
-    vllm-project/vllm#42741 ("DeepSeek V4 model fails to load with transformers >= 4.57 --
-    compress_ratios attribute removed").
+    one-entry-per-layer list), matching an older transformers schema. Two checkpoint schemas
+    exist in the wild:
+
+    - Modern (this repo's own port, `configuration_deepseek_v4.py`): exposes `compress_rates`,
+      a `{layer_type: rate}` dict, and no `compress_ratios` at all -- `config.compress_ratios`
+      would raise `AttributeError` without a fallback. Tracks the still-open, unmerged
+      vllm-project/vllm#42741 ("DeepSeek V4 model fails to load with transformers >= 4.57 --
+      compress_ratios attribute removed").
+    - Legacy (the real `deepseek-ai/DeepSeek-V4-Flash-0731` checkpoint, confirmed on disk):
+      `config.json` ships the flat `compress_ratios` list directly. vLLM's shadow
+      `DeepseekV4Config` (`vllm/transformers_utils/configs/deepseek_v4.py`) has no field for it,
+      so `PretrainedConfig.__init__`'s generic kwargs loop tries to `setattr` it as a plain
+      instance attribute -- which a getter-only property can't accept, crashing with
+      `AttributeError: property of 'DeepseekV4Config' object has no setter`.
+
+    A property with a setter handles both: the setter stashes whatever raw value the checkpoint
+    provides (real list or nothing), and the getter returns it verbatim if present, falling back
+    to deriving one from `compress_rates`/`layer_types` (mapping any value `<= 1` to "no
+    compression", since that's what `max(1, config.compress_ratios[layer_id])` in vLLM's
+    attention code treats as a no-op) only when the checkpoint never supplied one.
     """
     from vllm.transformers_utils.configs.deepseek_v4 import DeepseekV4Config as VllmDeepseekV4Config
 
-    if hasattr(VllmDeepseekV4Config, "compress_ratios"):
+    if isinstance(VllmDeepseekV4Config.__dict__.get("compress_ratios"), property):
         return
 
-    def _compress_ratios(self):
+    def _get_compress_ratios(self):
+        override = self.__dict__.get("_compress_ratios")
+        if override is not None:
+            return override
         return [self.compress_rates.get(layer_type, 1) for layer_type in self.layer_types]
 
-    VllmDeepseekV4Config.compress_ratios = property(_compress_ratios)
+    def _set_compress_ratios(self, value):
+        self.__dict__["_compress_ratios"] = value
+
+    VllmDeepseekV4Config.compress_ratios = property(_get_compress_ratios, _set_compress_ratios)
 
 
 class _TolerantRopeCache(dict):

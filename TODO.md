@@ -249,7 +249,22 @@ config values. None of these are visible from the test suite; all of them are on
   reference at `hidden_size=4096` it agrees to a relative 3e-7 for every token count below 1024
   and returns garbage (relative error about 1.0, `sqrsum` left at zero) from exactly 1024 up. So
   without the flag, any forward pass with 1024 or more tokens gets silently corrupt mHC
-  activations. Not yet checked on Hopper.
+  activations.
+
+  Checked on Hopper (H200): a 2015-token prompt against the real checkpoint with
+  `--use-deep-gemm` produced coherent, non-garbled output, no NaNs. But on Hopper the flag turns
+  out to be required for an unrelated, more basic reason too: `deepseek-ai/DeepSeek-V4-Flash-0731`
+  quantizes with `scale_fmt: "ue8m0"`, and vLLM's CUTLASS-backed dense FP8 linear kernel
+  (`Fp8BlockScaledMMLinearKernel` in `vllm/model_executor/kernels/linear/scaled_mm/
+  BlockScaledMMLinearKernel.py`) hardcodes `use_ue8m0=False` for its activation quantizer,
+  regardless of the checkpoint's actual weight-scale format. With deep_gemm off, dense FP8
+  linears route to that CUTLASS kernel and crash outright during the memory-profiling forward
+  pass: `RuntimeError: dispatch_scaled_mm, .../scaled_mm_helper.hpp:17`. DeepGEMM's kernel already
+  handles UE8M0 (logged at startup: "Detected quantization_config.scale_fmt=ue8m0; enabling
+  UE8M0 for DeepGEMM"), so `--use-deep-gemm` sidesteps this entirely. Net effect: on this
+  checkpoint the flag isn't just about avoiding silent corruption above 1024 tokens, it's
+  required to boot at all. `examples/advanced/deepseek-v4-flash/{inference,rl,kl-check}.toml`
+  now all set `use_deep_gemm = true` (previously only `rl-mini-smoke.toml` had it).
 - **Filesystem weight broadcast silently downcast everything to bf16** (fixed here, but worth
   knowing it affected six models). `gather_weights_parallel` cast every DTensor to bf16 and the
   filesystem sender passed no exceptions, so `keep_in_fp32_for_weight_transfer`, which only the
@@ -294,9 +309,17 @@ config values. None of these are visible from the test suite; all of them are on
 - **The real checkpoint's `config.json` is in the legacy flat format.** It carries a
   46-element `compress_ratios` list and no `layer_types` / `mlp_layer_types` / `rope_parameters`,
   while anything written by `save_pretrained` (including every filesystem broadcast directory) is
-  in the new format. That asymmetry decides which of the vLLM compatibility patches in
-  `inference/patches.py` actually fire: `monkey_patch_deepseek_v4_compress_ratios` is a no-op on
-  the real checkpoint and load-bearing on a broadcast one.
+  in the new format. Correcting a previous entry here: this is not a no-op for the real
+  checkpoint. `monkey_patch_deepseek_v4_compress_ratios` originally shadowed vLLM's shadow
+  `DeepseekV4Config.compress_ratios` with a **getter-only** property (computed from
+  `compress_rates`/`layer_types`, for checkpoints that lack `compress_ratios` entirely).
+  `PretrainedConfig.__init__`'s generic kwargs loop then tries to `setattr` the real checkpoint's
+  raw `compress_ratios` list onto that same name and crashes immediately, before touching any
+  GPU: `AttributeError: property of 'DeepseekV4Config' object has no setter`. Confirmed by
+  actually booting against the real checkpoint (previously this section was reasoning from the
+  config.json contents alone, not a live run). Fixed by giving the property a setter: the raw
+  checkpoint value wins when present, the `compress_rates`/`layer_types` computation is now only
+  the fallback for checkpoints that ship the modern schema.
 
 ## The pinned `deep_gemm` wheel is built against CUDA 13, the rest of the stack is CUDA 12
 

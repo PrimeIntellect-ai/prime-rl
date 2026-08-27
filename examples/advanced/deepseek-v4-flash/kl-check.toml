@@ -54,6 +54,10 @@ env.taskset.id = "math-env"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
+[inference]
+# Mandatory for DeepSeek V4. See TODO.md.
+use_deep_gemm = true
+
 [inference.vllm]
 tensor_parallel_size = 8
 data_parallel_size = 8

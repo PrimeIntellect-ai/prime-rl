@@ -25,6 +25,9 @@
 #
 # Reference: https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash
 
+# Mandatory for DeepSeek V4. See TODO.md.
+use_deep_gemm = true
+
 [server]
 port = 8000
 
