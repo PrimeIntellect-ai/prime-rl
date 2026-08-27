@@ -638,8 +638,6 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
         )
 
 
-
-
 def _trace_branches(nodes: list[dict]) -> list[list[dict]]:
     """Every root-to-leaf message path of a trace's node graph, in leaf order —
     one training sample per branch, so subagent side-threads and
@@ -665,8 +663,11 @@ def _oai_message(msg: dict) -> dict:
         out["reasoning_content"] = msg["reasoning_content"]
     if msg.get("tool_calls"):
         out["tool_calls"] = [
-            {"id": tc.get("id"), "type": "function",
-             "function": {"name": tc.get("name"), "arguments": tc.get("arguments") or "{}"}}
+            {
+                "id": tc.get("id"),
+                "type": "function",
+                "function": {"name": tc.get("name"), "arguments": tc.get("arguments") or "{}"},
+            }
             for tc in msg["tool_calls"]
         ]
     if msg["role"] == "tool":
@@ -697,7 +698,9 @@ def load_verifiers_traces(config) -> Dataset:
                 if agent.get("trainable") is False:
                     n_untrainable += 1
                     continue
-                branches = [b for b in _trace_branches(trace.get("nodes") or []) if any(m.get("role") == "assistant" for m in b)]
+                branches = [
+                    b for b in _trace_branches(trace.get("nodes") or []) if any(m.get("role") == "assistant" for m in b)
+                ]
                 for b_i, branch in enumerate(branches):
                     rows.append(
                         {
