@@ -74,6 +74,27 @@ def test_init_sft_dataset(build_dummy_dataset, dummy_renderer):
     assert sft_dataset is not None
 
 
+def test_pretokenized_sft_example(dummy_renderer):
+    dataset = Dataset.from_list(
+        [
+            {
+                "input_ids": [10, 11, 12],
+                "target_ids": [11, 12, 13],
+                "loss_mask": [False, True, True],
+                "position_ids": [4, 5, 6],
+            }
+        ]
+    )
+
+    sample = next(iter(SFTDataset(dataset, dummy_renderer, shuffle=False)))
+
+    assert sample["input_ids"] == [10, 11, 12]
+    assert sample["target_ids"] == [11, 12, 13]
+    assert sample["loss_mask"] == [False, True, True]
+    assert sample["position_ids"] == [4, 5, 6]
+    assert sample["seq_lens"] == [3]
+
+
 def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
     """Tests that an error is raised if no supported SFT message fields are provided."""
     dataset = Dataset.from_list([{"text": "a0"}])

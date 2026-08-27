@@ -244,6 +244,33 @@ class SFTDataset(StatefulIterableDataset):
         self.data_world_size = get_world().world_size // non_dp_size * num_workers
 
     def _process(self, example: dict) -> dict | None:
+        if example.get("input_ids") is not None:
+            required = ("input_ids", "target_ids", "loss_mask")
+            missing = [key for key in required if example.get(key) is None]
+            if missing:
+                raise ValueError(f"Pretokenized SFT example is missing required fields: {missing}")
+
+            input_ids = list(example["input_ids"])
+            target_ids = list(example["target_ids"])
+            loss_mask = [bool(value) for value in example["loss_mask"]]
+            if not (len(input_ids) == len(target_ids) == len(loss_mask)):
+                raise ValueError(
+                    "Pretokenized SFT input_ids, target_ids, and loss_mask must have equal length, "
+                    f"got {len(input_ids)}, {len(target_ids)}, and {len(loss_mask)}"
+                )
+            if not any(loss_mask):
+                raise ValueError("Pretokenized SFT example has no trainable tokens")
+
+            return {
+                "input_ids": input_ids,
+                "target_ids": target_ids,
+                "loss_mask": loss_mask,
+                "position_ids": list(example.get("position_ids") or range(len(input_ids))),
+                "seq_lens": [len(input_ids)],
+                "mm_kwargs": None,
+                "mm_token_type_ids": None,
+            }
+
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
             # as a whole-chat training sample with an empty prompt. Null-check rather
