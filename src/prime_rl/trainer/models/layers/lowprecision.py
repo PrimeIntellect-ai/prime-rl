@@ -9,16 +9,6 @@ from torch import Tensor, nn
 from prime_rl.utils.logger import get_logger
 
 
-@dataclass(frozen=True)
-class GroupedLayout:
-    pass
-
-
-@dataclass(frozen=True)
-class QuantizedActivation:
-    pass
-
-
 class LinearRecipe(ABC):
     name: str
 
@@ -34,29 +24,31 @@ class LinearRecipe(ABC):
     """Convert a high-precision linear to this recipe's low-precision linear."""
 
 
-class GroupedGemmRecipe(ABC):
+@dataclass(frozen=True)
+class PreparedWeights:
+    pass
+
+
+@dataclass(frozen=True)
+class PreparedActivations:
+    pass
+
+
+class MoEExpertKernel(ABC):
+    """Computes fully routed MoE. Each backend can decide what pre/post processing needs to happen."""
     name: str
 
     @abstractmethod
-    def build_grouped_layout(self, offs: Tensor, total_m: int) -> GroupedLayout: ...
-
-    """Precompute the ragged group layout once."""
+    def preprocess_weights(self, w1: Tensor, w2: Tensor, w3: Tensor | None) -> PreparedWeights: ...
 
     @abstractmethod
-    def quantize_grouped_activation(self, x: Tensor, layout: GroupedLayout) -> QuantizedActivation: ...
-
-    """Quantize the tensor x under specified layout."""
+    def preprocess_activations(self, x: Tensor, num_tokens_per_expert: Tensor) -> PreparedActivations: ...
 
     @abstractmethod
-    def grouped_gemm(
-        self,
-        x: Tensor,
-        weight: Tensor,
-        layout: GroupedLayout,
-        x_q: QuantizedActivation | None = None,
-    ) -> Tensor: ...
+    def compute(self, weights: PreparedWeights, activations: PreparedActivations) -> Tensor: ...
 
-    """Perform a grouped matmul in the shape of: x (M, K) @ weight (G, K, N) -> (M, N) """
+    @abstractmethod
+    def postprocess_activations(self, out: Tensor, activations: PreparedActivations) -> Tensor: ...
 
 
 def replace_all_linear_with_low_precision_linear(

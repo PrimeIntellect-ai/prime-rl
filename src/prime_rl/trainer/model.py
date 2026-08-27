@@ -56,9 +56,9 @@ from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.lowprecision import replace_all_linear_with_low_precision_linear
 from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRouter, _load_fused_moe_kernel
 from prime_rl.trainer.models.layers.mxfp8_recipe import (
-    Mxfp8GroupedGemmRecipe,
     Mxfp8LinearRecipe,
-    apply_mxfp8_grouped_gemm_recipe,
+    Mxfp8MoEExpertKernel,
+    apply_mxfp8_moe_expert_kernel,
 )
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import get_world
@@ -1223,7 +1223,7 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
             model, Mxfp8LinearRecipe(quant.recipe), ignore_modules=quant.ignore_patterns
         )
         if quant.enable_grouped_gemm:
-            apply_mxfp8_grouped_gemm_recipe(model, Mxfp8GroupedGemmRecipe(quant.recipe))
+            apply_mxfp8_moe_expert_kernel(model, Mxfp8MoEExpertKernel(quant.recipe))
 
 
 def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):

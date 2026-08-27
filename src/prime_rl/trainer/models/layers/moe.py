@@ -16,7 +16,7 @@ from torch.distributed.tensor import DTensor
 from torchtitan.distributed.expert_parallel import expert_parallel
 
 from prime_rl.configs.trainer import EPCommBackend
-from prime_rl.trainer.models.layers.lowprecision import GroupedGemmRecipe
+from prime_rl.trainer.models.layers.lowprecision import MoEExpertKernel, relu2
 
 
 @dataclass
@@ -145,62 +145,48 @@ def _run_experts_grouped_mm(
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
 ) -> torch.Tensor:
-    return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert)
+    return _run_experts_with_kernel_impl(w1, w2, w3, x, num_tokens_per_expert)
 
 
 @expert_parallel
-def _run_experts_fp8_grouped_mm(
+def _run_nongated_experts_grouped_mm(
     w1: torch.Tensor,
     w2: torch.Tensor,
-    w3: torch.Tensor,
+    _w3: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
 ) -> torch.Tensor:
-    from prime_rl.trainer.models.layers.fp8_recipe import FP8_GROUPED_GEMM_RECIPE
-
-    return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert, recipe=FP8_GROUPED_GEMM_RECIPE)
+    return _run_experts_with_kernel_impl(w1, w2, None, x, num_tokens_per_expert)
 
 
-@expert_parallel
-def _run_experts_mxfp8_grouped_mm(
+def _run_experts_with_kernel_impl(
     w1: torch.Tensor,
     w2: torch.Tensor,
-    w3: torch.Tensor,
+    w3: torch.Tensor | None,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
+    kernel: MoEExpertKernel | None = None,
 ) -> torch.Tensor:
-    from prime_rl.trainer.models.layers.mxfp8_recipe import get_active_mxfp8_grouped_gemm_recipe
-
-    return _run_experts_grouped_mm_impl(
-        w1, w2, w3, x, num_tokens_per_expert, recipe=get_active_mxfp8_grouped_gemm_recipe()
-    )
-
-
-def _run_experts_grouped_mm_impl(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-    recipe: GroupedGemmRecipe | None = None,
-) -> torch.Tensor:
-    offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
+    """w3=None selects the non-gated (ReLU²) expert MLP; a real w3 selects the gated
+    (SiLU-GLU) one. kernel=None runs the bf16 default via torch._grouped_mm; any
+    MoEExpertKernel runs its own preprocess/compute/postprocess pipeline instead.
+    """
     # grouped mm between a 2D tensor and a 3D tensor
     assert x.dim() == 2
 
-    if recipe is not None:
-        x_bf16 = x.bfloat16()
-        layout = recipe.build_grouped_layout(offsets, x_bf16.size(0))
-        x_q = recipe.quantize_grouped_activation(x_bf16, layout)
-        h = F.silu(recipe.grouped_gemm(x_bf16, w1.bfloat16().transpose(-2, -1), layout, x_q=x_q))
-        h = h * recipe.grouped_gemm(x_bf16, w3.bfloat16().transpose(-2, -1), layout, x_q=x_q)
-        out = recipe.grouped_gemm(h, w2.bfloat16().transpose(-2, -1), layout).type_as(x)
-    else:
+    if kernel is not None:
+        weights = kernel.preprocess_weights(w1, w2, w3)
+        activations = kernel.preprocess_activations(x, num_tokens_per_expert)
+        out = kernel.compute(weights, activations)
+        return kernel.postprocess_activations(out, activations)
+
+    offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
+    if w3 is not None:
         h = F.silu(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
         h = h * torch._grouped_mm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offs=offsets)
-        out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
-
-    return out
+    else:
+        h = relu2(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
+    return torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
 
 
 _fused_moe = None
@@ -333,13 +319,13 @@ def _run_experts_fused_reference(
     top_scores_sorted = top_scores.reshape(-1)[order]
     token_idx = order // top_k
     if align_m is None:
-        routed_output = _run_experts_grouped_mm_impl(w1, w2, w3, x[token_idx], num_tokens_per_expert)
+        routed_output = _run_experts_with_kernel_impl(w1, w2, w3, x[token_idx], num_tokens_per_expert)
     else:
         counts = num_tokens_per_expert.to(torch.int64)
         aligned_counts, dst, buf_rows = _aligned_group_layout(counts, order.numel(), num_experts, align_m)
         x_pad = x.new_zeros(buf_rows, x.shape[1])
         x_pad[dst] = x[token_idx]
-        routed_output = _run_experts_grouped_mm_impl(w1, w2, w3, x_pad, aligned_counts)[dst]
+        routed_output = _run_experts_with_kernel_impl(w1, w2, w3, x_pad, aligned_counts)[dst]
     routed_output = (routed_output.float() * top_scores_sorted.reshape(-1, 1)).to(x.dtype)
     return torch.zeros_like(x).index_add(0, token_idx, routed_output)
 
@@ -463,34 +449,38 @@ class GroupedExperts(nn.Module):
         self.w3 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
         self.use_grouped_mm = use_grouped_mm
         self.fp8 = fp8
-        self.mxfp8 = False
+        self.moe_expert_kernel: MoEExpertKernel | None = None
         self.ep_comm_backend: EPCommBackend = "torch"
+        # Wrapped once here (not per forward call) so it stays a stable callable for
+        # torch.compile, and so the kernel is read from self at call time — expert_parallel's
+        # wrapper has a fixed (w1, w2, w3, x, num_tokens_per_expert) signature and can't
+        # forward extra arguments, so a free function can't take the kernel as a parameter.
+        self._run_with_kernel = expert_parallel(self._compute_with_kernel)
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
 
-    def set_mxfp8_grouped_gemm(self, enabled: bool) -> None:
-        self.mxfp8 = enabled
+    def set_moe_expert_kernel(self, kernel: MoEExpertKernel | None) -> None:
+        self.moe_expert_kernel = kernel
 
-    def _active_grouped_gemm_recipe(self) -> GroupedGemmRecipe | None:
+    def _active_kernel(self) -> MoEExpertKernel | None:
         if self.fp8:
-            from prime_rl.trainer.models.layers.fp8_recipe import FP8_GROUPED_GEMM_RECIPE
+            from prime_rl.trainer.models.layers.fp8_recipe import FP8_MOE_EXPERT_KERNEL
 
-            return FP8_GROUPED_GEMM_RECIPE
-        if self.mxfp8:
-            from prime_rl.trainer.models.layers.mxfp8_recipe import get_active_mxfp8_grouped_gemm_recipe
+            return FP8_MOE_EXPERT_KERNEL
+        return self.moe_expert_kernel
 
-            return get_active_mxfp8_grouped_gemm_recipe()
-        return None
+    def _compute_with_kernel(
+        self, w1: torch.Tensor, w2: torch.Tensor, w3: torch.Tensor, x: torch.Tensor, num_tokens_per_expert: torch.Tensor
+    ) -> torch.Tensor:
+        return _run_experts_with_kernel_impl(w1, w2, w3, x, num_tokens_per_expert, kernel=self._active_kernel())
 
     def _forward_deepep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         w1 = self.w1.to_local()
         w2 = self.w2.to_local()
         w3 = self.w3.to_local()
         if self.use_grouped_mm:
-            return _run_experts_grouped_mm_impl(
-                w1, w2, w3, x, num_tokens_per_expert, recipe=self._active_grouped_gemm_recipe()
-            )
+            return _run_experts_with_kernel_impl(w1, w2, w3, x, num_tokens_per_expert, kernel=self._active_kernel())
         return _run_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
 
     def forward(
@@ -502,10 +492,8 @@ class GroupedExperts(nn.Module):
             return self._forward_deepep(x, num_tokens_per_expert)
 
         if self.use_grouped_mm:
-            if self.fp8:
-                return _run_experts_fp8_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
-            if self.mxfp8:
-                return _run_experts_mxfp8_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
+            if self._active_kernel() is not None:
+                return self._run_with_kernel(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
             return _run_experts_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
         else:
             return _run_experts_for_loop(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
@@ -1108,11 +1096,6 @@ class MoE(nn.Module):
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
 
 
-@torch.compile(dynamic=True)
-def relu2(x: torch.Tensor) -> torch.Tensor:
-    return F.relu(x).square()
-
-
 def _run_nongated_experts_for_loop_impl(
     w1: torch.Tensor,
     w2: torch.Tensor,
@@ -1149,67 +1132,6 @@ def _run_nongated_experts_for_loop(
     return _run_nongated_experts_for_loop_impl(w1, w2, _w3, x, num_tokens_per_expert)
 
 
-def _run_nongated_experts_grouped_mm_impl(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    _w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-    recipe: GroupedGemmRecipe | None = None,
-) -> torch.Tensor:
-    offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
-    assert x.dim() == 2
-
-    if recipe is not None:
-        x_bf16 = x.bfloat16()
-        layout = recipe.build_grouped_layout(offsets, x_bf16.size(0))
-        h = relu2(recipe.grouped_gemm(x_bf16, w1.bfloat16().transpose(-2, -1), layout))
-        out = recipe.grouped_gemm(h, w2.bfloat16().transpose(-2, -1), layout).type_as(x)
-    else:
-        h = relu2(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
-        out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
-    return out
-
-
-@expert_parallel
-def _run_nongated_experts_grouped_mm(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    _w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    return _run_nongated_experts_grouped_mm_impl(w1, w2, _w3, x, num_tokens_per_expert)
-
-
-@expert_parallel
-def _run_nongated_experts_fp8_grouped_mm(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    _w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    from prime_rl.trainer.models.layers.fp8_recipe import FP8_GROUPED_GEMM_RECIPE
-
-    return _run_nongated_experts_grouped_mm_impl(w1, w2, _w3, x, num_tokens_per_expert, recipe=FP8_GROUPED_GEMM_RECIPE)
-
-
-@expert_parallel
-def _run_nongated_experts_mxfp8_grouped_mm(
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    _w3: torch.Tensor,
-    x: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    from prime_rl.trainer.models.layers.mxfp8_recipe import get_active_mxfp8_grouped_gemm_recipe
-
-    return _run_nongated_experts_grouped_mm_impl(
-        w1, w2, _w3, x, num_tokens_per_expert, recipe=get_active_mxfp8_grouped_gemm_recipe()
-    )
-
-
 class NonGatedGroupedExperts(nn.Module):
     def __init__(
         self,
@@ -1227,34 +1149,39 @@ class NonGatedGroupedExperts(nn.Module):
         self.w3 = nn.Parameter(torch.empty(0))
         self.use_grouped_mm = use_grouped_mm
         self.fp8 = fp8
-        self.mxfp8 = False
+        self.moe_expert_kernel: MoEExpertKernel | None = None
         self.ep_comm_backend: EPCommBackend = "torch"
+        self._run_with_kernel = expert_parallel(self._compute_with_kernel)
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
 
-    def set_mxfp8_grouped_gemm(self, enabled: bool) -> None:
-        self.mxfp8 = enabled
+    def set_moe_expert_kernel(self, kernel: MoEExpertKernel | None) -> None:
+        self.moe_expert_kernel = kernel
 
-    def _active_grouped_gemm_recipe(self) -> GroupedGemmRecipe | None:
+    def _active_kernel(self) -> MoEExpertKernel | None:
         if self.fp8:
-            from prime_rl.trainer.models.layers.fp8_recipe import FP8_GROUPED_GEMM_RECIPE
+            from prime_rl.trainer.models.layers.fp8_recipe import FP8_MOE_EXPERT_KERNEL
 
-            return FP8_GROUPED_GEMM_RECIPE
-        if self.mxfp8:
-            from prime_rl.trainer.models.layers.mxfp8_recipe import get_active_mxfp8_grouped_gemm_recipe
+            return FP8_MOE_EXPERT_KERNEL
+        return self.moe_expert_kernel
 
-            return get_active_mxfp8_grouped_gemm_recipe()
-        return None
+    def _compute_with_kernel(
+        self,
+        w1: torch.Tensor,
+        w2: torch.Tensor,
+        _w3: torch.Tensor,
+        x: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+    ) -> torch.Tensor:
+        return _run_experts_with_kernel_impl(w1, w2, None, x, num_tokens_per_expert, kernel=self._active_kernel())
 
     def _forward_deepep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         w1 = self.w1.to_local()
         w2 = self.w2.to_local()
         w3 = self.w3.to_local()
         if self.use_grouped_mm:
-            return _run_nongated_experts_grouped_mm_impl(
-                w1, w2, w3, x, num_tokens_per_expert, recipe=self._active_grouped_gemm_recipe()
-            )
+            return _run_experts_with_kernel_impl(w1, w2, None, x, num_tokens_per_expert, kernel=self._active_kernel())
         return _run_nongated_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
 
     def forward(
@@ -1265,10 +1192,8 @@ class NonGatedGroupedExperts(nn.Module):
         if self.ep_comm_backend == "deepep":
             return self._forward_deepep(x, num_tokens_per_expert)
         if self.use_grouped_mm:
-            if self.fp8:
-                return _run_nongated_experts_fp8_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
-            if self.mxfp8:
-                return _run_nongated_experts_mxfp8_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
+            if self._active_kernel() is not None:
+                return self._run_with_kernel(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
             return _run_nongated_experts_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
         else:
             return _run_nongated_experts_for_loop(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
