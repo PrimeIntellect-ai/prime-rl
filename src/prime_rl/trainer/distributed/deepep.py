@@ -14,6 +14,7 @@ from prime_rl.trainer.distributed.token_dispatcher import (
 
 _buffer: Buffer | None = None
 _handle_cache: dict[int, object] = {}
+_combine_backward_handles: dict[int, object] = {}
 _pending_dispatch_events: dict[int, EventOverlap] = {}
 _handle_counter = 0
 _pending_combine_events: list[EventOverlap] = []
@@ -52,10 +53,13 @@ def register_deepep_cuda_ops() -> None:
         "Tensor is_token_in_rank, Tensor num_tokens_per_expert) "
         "-> (Tensor, Tensor, Tensor, Tensor, Tensor)"
     )
+    _deepep_cuda_lib.define("combine(Tensor x, Tensor handle_id) -> Tensor")
 
     torch.library.impl(_deepep_cuda_lib, "dispatch", "CUDA")(_dispatch_op_impl)
+    torch.library.impl(_deepep_cuda_lib, "combine", "CUDA")(_combine_op_impl)
 
     torch.library.register_autograd("deepep::dispatch", _dispatch_backward, setup_context=_dispatch_setup_context)
+    torch.library.register_autograd("deepep::combine", _combine_backward, setup_context=_combine_setup_context)
 
     _deepep_cuda_ops_registered = True
 
@@ -128,46 +132,51 @@ def _dispatch_backward(
     return grad_x, None, grad_topk_weights, None, None, None, None
 
 
-class _DeepEPCombine(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x: torch.Tensor, handle_id: torch.Tensor) -> torch.Tensor:
-        assert _buffer is not None, "DeepEP buffer must be initialized before combine."
-        handle = _handle_cache.pop(handle_id.item(), None)
-        assert handle is not None, f"Handle not found for handle_id={handle_id.item()}"
+def _combine_op_impl(x: torch.Tensor, handle_id: torch.Tensor) -> torch.Tensor:
+    assert _buffer is not None, "DeepEP buffer must be initialized before combine."
+    handle_key = handle_id.item()
+    handle = _handle_cache.pop(handle_key, None)
+    assert handle is not None, f"Handle not found for handle_id={handle_key}"
 
-        previous_event = _new_event_overlap()
-        combined, _, after_event = _buffer.combine(
-            x=x,
-            handle=handle,
-            previous_event=previous_event,
-            async_finish=True,
-            allocate_on_comm_stream=True,
-        )
-        _pending_combine_events.append(after_event)
-        ctx.handle = handle
-        return combined
+    previous_event = _new_event_overlap()
+    combined, _, after_event = _buffer.combine(
+        x=x,
+        handle=handle,
+        previous_event=previous_event,
+        async_finish=True,
+        allocate_on_comm_stream=True,
+    )
+    _pending_combine_events.append(after_event)
+    if x.requires_grad:
+        _combine_backward_handles[handle_key] = handle
+    return combined
 
-    @staticmethod
-    def backward(ctx, grad_combined: torch.Tensor) -> tuple[torch.Tensor, None]:
-        handle = ctx.handle
-        assert handle is not None, "Handle not found in DeepEP combine backward."
 
-        previous_event = _new_event_overlap()
-        grad_x, _, _, _, _, after_event = _buffer.dispatch(
-            x=grad_combined,
-            topk_idx=None,
-            topk_weights=None,
-            num_tokens_per_rank=None,
-            num_tokens_per_rdma_rank=None,
-            is_token_in_rank=None,
-            num_tokens_per_expert=None,
-            handle=handle,
-            previous_event=previous_event,
-            async_finish=True,
-            allocate_on_comm_stream=True,
-        )
-        after_event.current_stream_wait()
-        return grad_x, None
+def _combine_setup_context(ctx, inputs, output) -> None:
+    _, handle_id = inputs
+    ctx.handle = _combine_backward_handles.pop(handle_id.item(), None)
+
+
+def _combine_backward(ctx, grad_combined: torch.Tensor) -> tuple[torch.Tensor, None]:
+    handle = ctx.handle
+    assert handle is not None, "Handle not found in DeepEP combine backward."
+
+    previous_event = _new_event_overlap()
+    grad_x, _, _, _, _, after_event = _buffer.dispatch(
+        x=grad_combined,
+        topk_idx=None,
+        topk_weights=None,
+        num_tokens_per_rank=None,
+        num_tokens_per_rdma_rank=None,
+        is_token_in_rank=None,
+        num_tokens_per_expert=None,
+        handle=handle,
+        previous_event=previous_event,
+        async_finish=True,
+        allocate_on_comm_stream=True,
+    )
+    after_event.current_stream_wait()
+    return grad_x, None
 
 
 @torch.compiler.disable()
@@ -355,7 +364,7 @@ def combine_tokens(hidden_states: torch.Tensor, state: _DispatchState) -> torch.
             hidden_states.dtype
         )
     hidden_states = _unpermute_tokens(hidden_states, state.permuted_indices, state.num_recv_tokens)
-    combined = _DeepEPCombine.apply(hidden_states, state.handle_id)
+    combined = torch.ops.deepep.combine(hidden_states, state.handle_id)
     return combined[: state.num_input_tokens]
 
 

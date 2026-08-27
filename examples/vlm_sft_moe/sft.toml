@@ -23,11 +23,8 @@ rank = 32
 alpha = 32
 target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "experts"]
 
-# MoE + mode="full" recomputes the router, whose non-deterministic top-k routing
-# raises CheckpointError; selective AC excluding routed_experts avoids that.
 [model.ac]
 mode = "selective"
-targets = ["norm", "attn_proj", "linear_attn"]
 
 [data]
 type = "sft"

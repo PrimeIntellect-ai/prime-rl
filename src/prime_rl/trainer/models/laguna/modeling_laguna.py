@@ -126,7 +126,7 @@ class LagunaFlashAttention(FlashAttention):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        query_states, key_states, value_states = self.attn_projections(hidden_states, position_embeddings)
+        query_states, key_states, value_states = self._project_qkv(hidden_states, position_embeddings)
         attn_output = self._attention_core(
             query_states,
             key_states,

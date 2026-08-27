@@ -84,14 +84,11 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             )
         elif isinstance(dispatch, TorchMoEDispatchConfig):
             if dispatch.transport == "mxfp8":
-                import prime_kernels
-
                 token_dispatcher = MXFP8TorchTokenDispatcher(
                     num_experts=moe.experts.num_experts,
                     top_k=moe.router.top_k,
                     token_group_alignment=grouped_gemm.token_group_alignment,
                     group=ep_mesh.get_group(),
-                    kernel=prime_kernels.load("mxfp8_moe"),
                 )
             else:
                 token_dispatcher = TorchTokenDispatcher(

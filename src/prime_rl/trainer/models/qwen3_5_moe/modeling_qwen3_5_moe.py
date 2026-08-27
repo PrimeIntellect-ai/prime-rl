@@ -278,7 +278,7 @@ class Qwen3_5MoeGatedAttentionBase(nn.Module):
         self.q_norm = Qwen3_5MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = Qwen3_5MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
-    def output_proj(
+    def _gate_and_project_output(
         self,
         attn_output: torch.Tensor,
         gate: torch.Tensor,
@@ -336,7 +336,7 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
     ) -> torch.Tensor:
         return self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
 
-    def attn_projections(
+    def _project_qkv(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
@@ -369,7 +369,7 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
     ) -> tuple[torch.Tensor, None]:
-        query_states, key_states, value_states, gate = self.attn_projections(hidden_states, position_embeddings)
+        query_states, key_states, value_states, gate = self._project_qkv(hidden_states, position_embeddings)
         attn_output = self._attention_core(
             query_states,
             key_states,
@@ -377,7 +377,7 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
         )
-        return self.output_proj(attn_output, gate), None
+        return self._gate_and_project_output(attn_output, gate), None
 
 
 QWEN35MOE_ATTN_IMPL2CLASS = {

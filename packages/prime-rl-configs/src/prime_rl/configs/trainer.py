@@ -30,20 +30,13 @@ class GCConfig(BaseConfig):
 
 class ActivationCheckpointConfig(BaseConfig):
     mode: Literal["full", "selective"] = "full"
-    """``full`` checkpoints whole transformer blocks; ``selective`` checkpoints only the subcomponents listed in ``targets`` inside supported custom decoder layers."""
+    """Both modes checkpoint whole transformer blocks. ``selective`` additionally retains expensive operations selected by PrimeRL's fixed operator policy."""
 
     freq: int = Field(1, ge=1)
     """Apply activation checkpointing to every N layers."""
 
-    targets: list[str] = ["norm"]
-    """Selective checkpoint targets. ``norm`` checkpoints every norm module inside selected layers. ``attn_proj`` checkpoints projection-side attention work outside the kernel (input/output projections, attention-local norms, RoPE, gating, model-specific MLA projection helpers). ``mlp`` checkpoints the entire dense MLP forward (not for MoE). ``mla_up_proj`` checkpoints MLA Q/KV up-projection where supported. ``linear_attn`` checkpoints non-softmax token mixers (NemotronH Mamba, Qwen3.5-MoE GatedDeltaNet, AFMoE sliding-window attention)."""
-
-    @model_validator(mode="after")
-    def validate_selective_targets(self):
-        self.targets = list(dict.fromkeys(self.targets))
-        if self.mode == "selective" and not self.targets:
-            raise ValueError("Selective activation checkpointing requires at least one target.")
-        return self
+    preserve_rng_state: bool = True
+    """Preserve random-number-generator state across recomputation."""
 
 
 class ActivationOffloadingConfig(BaseConfig):
@@ -345,12 +338,6 @@ class ModelConfig(BaseModelConfig):
         """Automatically enable activation checkpointing when activation offloading is enabled."""
         if self.ac_offloading is not None and self.ac is None:
             self.ac = ActivationCheckpointConfig()
-        return self
-
-    @model_validator(mode="after")
-    def selective_ac_only_with_custom_impl(self):
-        if self.ac is not None and self.ac.mode == "selective" and self.impl not in ("custom", "auto"):
-            raise ValueError("Selective activation checkpointing requires model.impl='custom' or 'auto'")
         return self
 
     @model_validator(mode="after")
