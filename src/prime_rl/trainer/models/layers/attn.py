@@ -120,7 +120,7 @@ class FlashAttention(nn.Module):
         out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
         return out.contiguous().view(1, out.shape[0], -1)
 
-    def attn_projections(
+    def _project_qkv(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
@@ -159,9 +159,6 @@ class FlashAttention(nn.Module):
 
         return query_states, key_states, value_states
 
-    def output_proj(self, attn_output: torch.Tensor) -> torch.Tensor:
-        return self.o_proj(attn_output)
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -169,7 +166,7 @@ class FlashAttention(nn.Module):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        query_states, key_states, value_states = self.attn_projections(hidden_states, position_embeddings)
+        query_states, key_states, value_states = self._project_qkv(hidden_states, position_embeddings)
 
         attn_output = self._attention_core(
             query_states,
@@ -178,7 +175,7 @@ class FlashAttention(nn.Module):
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
         )
-        attn_output = self.output_proj(attn_output)
+        attn_output = self.o_proj(attn_output)
         return attn_output, None
 
 
@@ -195,16 +192,14 @@ def substitute_ring_attn(
     attn_impl: str = "flash_attention_2",
 ) -> None:
     """Patch _compute_attention on FlashAttention variants to use ring attention."""
-    from ring_flash_attn import llama3_flash_attn_varlen_func
-
-    from .ring_attn import ring_fa3_varlen_func, ring_fa4_varlen_func
+    from .ring_attn import ring_fa2_varlen_func, ring_fa3_varlen_func, ring_fa4_varlen_func
 
     if attn_impl == "flash_attention_4":
         ring_func = ring_fa4_varlen_func
     elif attn_impl == "flash_attention_3":
         ring_func = ring_fa3_varlen_func
     else:
-        ring_func = llama3_flash_attn_varlen_func
+        ring_func = ring_fa2_varlen_func
 
     def _ring_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
         from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS

@@ -7,10 +7,10 @@ from typing import Literal
 
 import torch
 import torch.distributed as dist
-import torch.distributed.nn as dist_nn
 import torch.nn as nn
 from ring_flash_attn import update_ring_flash_attn_params
 
+from prime_rl.trainer.distributed.collectives import all_gather
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 CPStyle = Literal["ring", "ulysses"]
@@ -126,9 +126,7 @@ def shard_position_ids_for_cp(position_ids: torch.Tensor, cp_rank: int, cp_world
 
 
 def gather_for_cp(t: torch.Tensor, cp_group: dist.ProcessGroup) -> torch.Tensor:
-    gathered_t = dist_nn.all_gather(t, group=cp_group)
-
-    return torch.cat(gathered_t, dim=1)
+    return all_gather(t, 1, cp_group)
 
 
 def gather_for_cp_wo_grad(t: torch.Tensor, cp_world_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
