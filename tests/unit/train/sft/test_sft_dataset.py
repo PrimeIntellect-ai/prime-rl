@@ -409,6 +409,9 @@ def _sft_sample(
     *,
     mm_kwargs: dict[str, torch.Tensor] | None = None,
     mm_token_type_ids: list[int] | None = None,
+    step: int = 0,
+    epoch: int = 0,
+    source: str = "test",
 ) -> dict:
     return {
         "input_ids": input_ids,
@@ -418,6 +421,12 @@ def _sft_sample(
         "seq_lens": [len(input_ids)],
         "mm_kwargs": mm_kwargs,
         "mm_token_type_ids": mm_token_type_ids,
+        "progress": {
+            "step": step,
+            "epoch": epoch,
+            "num_samples": {source: 1},
+            "num_tokens": {source: len(input_ids)},
+        },
     }
 
 
@@ -456,7 +465,7 @@ def test_cat_dataset_packs_multimodal_samples():
 def test_cat_dataset_packs_text_and_multimodal_samples_together():
     dataset = CatDataset(
         [
-            _sft_sample([1]),
+            _sft_sample([1], step=1, source="a"),
             _sft_sample(
                 [2, 3],
                 mm_kwargs={
@@ -464,9 +473,11 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
                     "image_grid_thw": torch.tensor([[1, 1, 2]]),
                 },
                 mm_token_type_ids=[0, 1],
+                step=2,
+                source="b",
             ),
-            _sft_sample([4]),
-            _sft_sample([5, 6]),
+            _sft_sample([4], step=3, source="a"),
+            _sft_sample([5, 6], step=4, epoch=1, source="b"),
         ],
         seq_len=5,
     )
@@ -480,8 +491,20 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
     assert packed["seq_lens"] == [1, 2, 2]
     assert packed["mm_kwargs"] is not None
     assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0]
+    assert packed["progress"] == {
+        "step": 3,
+        "epoch": 0,
+        "num_samples": {"a": 2, "b": 1},
+        "num_tokens": {"a": 2, "b": 2},
+    }
     assert text_pack["input_ids"] == [5, 6, 0, 0, 0]
     assert text_pack["loss_mask"] == [True, True, False, False, False]
     assert text_pack["seq_lens"] == [5]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
+    assert text_pack["progress"] == {
+        "step": 4,
+        "epoch": 1,
+        "num_samples": {"b": 1},
+        "num_tokens": {"b": 2},
+    }

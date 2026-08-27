@@ -1,6 +1,7 @@
 import json
 import uuid
 from collections import defaultdict
+from copy import deepcopy
 from typing import Any, Literal, TypedDict, cast
 
 import numpy as np
@@ -20,6 +21,13 @@ from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messa
 from prime_rl.utils.logger import get_logger
 
 
+class DataProgress(TypedDict):
+    step: int
+    epoch: int
+    num_samples: dict[str | None, int]
+    num_tokens: dict[str | None, int]
+
+
 class Sample(TypedDict):
     input_ids: list[int]
     position_ids: list[int]
@@ -28,6 +36,7 @@ class Sample(TypedDict):
     seq_lens: list[int]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: list[int] | None
+    progress: DataProgress
 
 
 class Batch(TypedDict):
@@ -38,6 +47,7 @@ class Batch(TypedDict):
     seq_lens: Int[Tensor, "packed"]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
+    progress: DataProgress
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -45,8 +55,6 @@ class StatefulIterableDataset(Stateful, IterableDataset):
 
     def __init__(self, non_dp_size: int = 1):
         self.step, self.epoch = 0, 0
-        self.num_samples = defaultdict(int)
-        self.num_tokens = defaultdict(int)
         self.fast_forward = False
         self.non_dp_size = non_dp_size
         self._setup_world_info()
@@ -137,9 +145,13 @@ class FakeDataset(StatefulIterableDataset):
                 "seq_lens": [seq_len],
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
+                "progress": {
+                    "step": self.step,
+                    "epoch": self.epoch,
+                    "num_samples": {"fake": 1},
+                    "num_tokens": {"fake": len(input_ids)},
+                },
             }
-            self.num_samples["fake"] += 1
-            self.num_tokens["fake"] += len(input_ids)
             yield fake_sample
 
 
@@ -427,8 +439,12 @@ class SFTDataset(StatefulIterableDataset):
                 + (f" from {subset_or_split} " if subset_or_split else " ")
                 + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
             )
-            self.num_samples[subset_or_split] += 1
-            self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
+            processed_example["progress"] = {
+                "step": self.step,
+                "epoch": self.epoch,
+                "num_samples": {subset_or_split: 1},
+                "num_tokens": {subset_or_split: len(processed_example.get("input_ids", []))},
+            }
             yield processed_example
 
 
@@ -442,22 +458,13 @@ class CatDataset(StatefulIterableDataset):
         self.pending_sample: Sample | None = None
 
     def state_dict(self) -> dict:
-        state = {
-            "dataset": self.dataset.state_dict(),
-            "progress": {
-                "num_samples": dict(self.dataset.num_samples),
-                "num_tokens": dict(self.dataset.num_tokens),
-            },
-        }
+        state = {"dataset": self.dataset.state_dict()}
         if self.pending_sample is not None:
             state["pending_sample"] = self.pending_sample
         return state
 
     def load_state_dict(self, state_dict: dict):
         self.dataset.load_state_dict(state_dict["dataset"])
-        progress = state_dict.get("progress", {})
-        self.dataset.num_samples.update(progress.get("num_samples", {}))
-        self.dataset.num_tokens.update(progress.get("num_tokens", {}))
         self.pending_sample = state_dict.get("pending_sample")
 
     def __iter__(self):
@@ -492,6 +499,7 @@ class CatDataset(StatefulIterableDataset):
                 assert isinstance(value, list)
                 packed_samples[key].extend(value)
             packed_samples["seq_lens"].append(sample_len)
+            packed_samples["progress"].append(sample["progress"])
 
             sample_mm_kwargs = sample.get("mm_kwargs")
             sample_mm_type_ids = sample.get("mm_token_type_ids")
@@ -554,6 +562,21 @@ class CatDataset(StatefulIterableDataset):
             result["mm_token_type_ids"] = packed["mm_token_type_ids"][:seq_len] + [0] * pad_len
         else:
             result["mm_token_type_ids"] = None
+        positions = packed["progress"]
+        furthest = max(positions, key=lambda progress: progress["step"])
+        num_samples = defaultdict(int)
+        num_tokens = defaultdict(int)
+        for progress in positions:
+            for name, count in progress["num_samples"].items():
+                num_samples[name] += count
+            for name, count in progress["num_tokens"].items():
+                num_tokens[name] += count
+        result["progress"] = {
+            "step": furthest["step"],
+            "epoch": furthest["epoch"],
+            "num_samples": dict(num_samples),
+            "num_tokens": dict(num_tokens),
+        }
         return result
 
 
@@ -572,6 +595,7 @@ def cat_collate(samples: list[Sample]) -> Batch:
         "mm_token_type_ids": (
             torch.tensor(mm_token_type_ids, dtype=torch.long).unsqueeze(0) if mm_token_type_ids is not None else None
         ),
+        "progress": sample["progress"],
     }
 
 
@@ -682,9 +706,45 @@ def setup_dataset(
         raise ValueError(f"Invalid dataset type: {config.type}")
 
 
-def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
+def _empty_progress() -> DataProgress:
+    return {"step": 0, "epoch": 0, "num_samples": {}, "num_tokens": {}}
+
+
+def _update_progress(total: DataProgress, update: DataProgress) -> None:
+    if update["step"] > total["step"]:
+        total["step"] = update["step"]
+        total["epoch"] = update["epoch"]
+    for key in ("num_samples", "num_tokens"):
+        for name, count in update[key].items():
+            total[key][name] = total[key].get(name, 0) + count
+
+
+class SFTDataLoader(StatefulDataLoader):
+    """Track progress from batches yielded to the trainer."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.progress = _empty_progress()
+
+    def __iter__(self):
+        for batch in super().__iter__():
+            _update_progress(self.progress, batch["progress"])
+            yield batch
+
+    def state_dict(self) -> dict[str, Any]:
+        state = super().state_dict()
+        state["prime_rl_progress"] = deepcopy(self.progress)
+        return state
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        state_dict = state_dict.copy()
+        self.progress = deepcopy(state_dict.pop("prime_rl_progress", _empty_progress()))
+        super().load_state_dict(state_dict)
+
+
+def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> SFTDataLoader:
     packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
-    return StatefulDataLoader(
+    return SFTDataLoader(
         packing_dataset,
         batch_size=1,
         collate_fn=cat_collate,
@@ -705,22 +765,6 @@ def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
     return {wid: snap["dataset_state"]["dataset"] for wid, snap in sorted(snapshots.items())}
 
 
-def get_dataset_progress(dataloader: StatefulDataLoader) -> dict:
-    """Dataset position and aggregate counters from dataloader workers."""
-    snapshot = dataloader.state_dict()["_snapshot"]
-    worker_snapshots = snapshot["_worker_snapshots"]
-    positions = [worker_snapshot["dataset_state"]["dataset"] for worker_snapshot in worker_snapshots.values()]
-    furthest = max(positions, key=lambda position: position["step"])
-    num_samples = defaultdict(int)
-    num_tokens = defaultdict(int)
-    for worker_snapshot in worker_snapshots.values():
-        progress = worker_snapshot["dataset_state"].get("progress", {})
-        for name, count in progress.get("num_samples", {}).items():
-            num_samples[name] += count
-        for name, count in progress.get("num_tokens", {}).items():
-            num_tokens[name] += count
-    return {
-        **furthest,
-        "num_samples": dict(num_samples),
-        "num_tokens": dict(num_tokens),
-    }
+def get_dataset_progress(dataloader: SFTDataLoader) -> DataProgress:
+    """Return progress from batches yielded to the trainer."""
+    return deepcopy(dataloader.progress)
