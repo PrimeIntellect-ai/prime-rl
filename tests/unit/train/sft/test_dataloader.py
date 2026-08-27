@@ -3,10 +3,26 @@ import os
 
 import pytest
 import torch
+from datasets import Dataset
+from renderers.base import RenderedTokens
 
-from prime_rl.configs.sft import FakeDataConfig
-from prime_rl.trainer.sft.data import FakeDataset, get_dataset_progress, get_dataset_state, setup_dataloader
+from prime_rl.configs.sft import FakeDataConfig, SFTDataConfig
+from prime_rl.trainer.sft.data import FakeDataset, SFTDataset, get_dataset_progress, get_dataset_state, setup_dataloader
 from prime_rl.trainer.world import reset_world
+
+
+class _DummyRenderer:
+    def render(self, messages, **kwargs):
+        token_id = ord(messages[-1]["content"][0]) + 2
+        token_ids = [0, *([token_id] * 6), 1]
+        return RenderedTokens(
+            token_ids=token_ids,
+            message_indices=[-1, *([len(messages) - 1] * 7)],
+            sampled_mask=[False, *([True] * 7)],
+        )
+
+    def get_stop_token_ids(self):
+        return [1]
 
 
 def setup_fake_dataloader(config: FakeDataConfig):
@@ -146,6 +162,7 @@ def test_fake_dataset_single_rank_state_with_packing():
 def test_dataloader_shards_across_ranks_and_workers(num_workers: int, world_size: int):
     rounds_before_resume = 3
     rounds_after_resume = 1
+    num_examples = 2 * world_size * num_workers
     samples_before_resume = rounds_before_resume * num_workers
     samples_per_rank = (rounds_before_resume + rounds_after_resume) * num_workers
     samples_by_rank = []
@@ -157,24 +174,49 @@ def test_dataloader_shards_across_ranks_and_workers(num_workers: int, world_size
         os.environ["LOCAL_RANK"] = str(rank)
         os.environ["LOCAL_WORLD_SIZE"] = str(world_size)
 
-        config = FakeDataConfig(
+        config = SFTDataConfig(
             batch_size=1,
             micro_batch_size=1,
-            seq_len=8,
+            seq_len=7,
             num_workers=num_workers,
-            length="fixed",
-            input_ids="increasing",
+            shuffle=False,
         )
-        _, dataloader = setup_fake_dataloader(config)
+
+        def setup_epoch_dataloader():
+            raw_dataset = Dataset.from_list(
+                [
+                    {
+                        "messages": [{"role": "assistant", "content": str(index) * 6}],
+                        "__split": "fake",
+                    }
+                    for index in range(num_examples)
+                ]
+            )
+            dataset = SFTDataset(
+                raw_dataset,
+                _DummyRenderer(),
+                shuffle=False,
+                seq_len=config.seq_len,
+            )
+            return setup_dataloader(dataset, config)
+
+        dataloader = setup_epoch_dataloader()
         dataiter = iter(dataloader)
+        epochs = set()
 
         def next_sample(dataiter, dataloader, index: int) -> int:
             micro_batch = next(dataiter)
-            sample = micro_batch["input_ids"].unique().item()
+            sample = micro_batch["target_ids"][0, 0].item() - ord("0") - 2
+            worker_id = index % num_workers
+            worker_round = index // num_workers
+            position = worker_round * world_size * num_workers + rank * num_workers + worker_id
             progress = get_dataset_progress(dataloader)
-            assert progress["step"] == sample + 1
+            assert sample == position % num_examples
+            assert progress["step"] == position + 1
+            assert progress["epoch"] == position // num_examples
             assert progress["num_samples"] == {"fake": index + 1}
-            assert progress["num_tokens"] == {"fake": (index + 1) * (config.seq_len + 1)}
+            assert progress["num_tokens"] == {"fake": (index + 1) * config.seq_len}
+            epochs.add(progress["epoch"])
             return sample
 
         samples = [next_sample(dataiter, dataloader, index) for index in range(samples_before_resume)]
@@ -183,7 +225,7 @@ def test_dataloader_shards_across_ranks_and_workers(num_workers: int, world_size
         del dataiter, dataloader
         gc.collect()
 
-        _, dataloader = setup_fake_dataloader(config)
+        dataloader = setup_epoch_dataloader()
         dataloader.load_state_dict(state_dict)
         dataiter = iter(dataloader)
         samples.extend(
@@ -191,10 +233,11 @@ def test_dataloader_shards_across_ranks_and_workers(num_workers: int, world_size
         )
 
         samples_by_rank.append(samples)
+        assert epochs == {0, 1}
         del dataiter, dataloader
         gc.collect()
 
-    expected = list(range((rounds_before_resume + rounds_after_resume) * world_size * num_workers))
+    expected = sorted(list(range(num_examples)) * 2)
     assert sorted(sample for samples in samples_by_rank for sample in samples) == expected
 
 
