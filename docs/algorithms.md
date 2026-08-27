@@ -226,6 +226,42 @@ The knobs (under `[trainer.loss]` with `type = "default"`):
 
 Set `[trainer.loss] type = "default"` and configure via the knobs above. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
 
+### Kimi k1.5 Loss
+
+`[trainer.loss] type = "kimi_k15"` replaces the `rl` component with the online policy mirror descent surrogate from [Kimi k1.5](https://arxiv.org/abs/2501.12599) (eq. 3). Each iteration treats the sampling policy $\mu$ as the reference and optimizes a relative-entropy-regularized objective, whose gradient is REINFORCE against the group-mean reward baseline plus an $\ell_2$ penalty on the log-ratio:
+
+$$
+\mathcal{L}(\theta) = -\sum_{j,i,t} \hat{A}_{i}^{(j)} \log \pi(y_{i,t}^{(j)}) \; + \; \frac{\tau}{2} \sum_{j,i,t} \log^2\!\left(\frac{\pi(y_{i,t}^{(j)})}{\mu(y_{i,t}^{(j)})}\right).
+$$
+
+Two properties set it apart from the other loss types. The policy gradient is the plain score function rather than an importance ratio — the paper samples from the iteration's reference policy and lets the $\ell_2$ term, not a ratio correction, absorb the off-policy discrepancy. And the penalty is unmasked and two-sided, so no trust region drops tokens: deviation is priced instead of clipped.
+
+Pair it with `[orchestrator.algo] type = "grpo"`, whose advantage is the reward minus the per-group mean with no standard-deviation scaling — exactly the $r - \bar{r}$ baseline the paper specifies.
+
+| Knob | Default | What it does |
+|---|---|---|
+| `tau` | 0.2 | Relative-entropy regularization strength. Enters the gradient as `tau / 2`. |
+| `adv_tau` | 1.0 | Temperature on the advantage term. |
+| `sequence_regularizer` | false | Square the rollout's summed log-ratio instead of each token's. The paper writes the penalty over sequence log-probabilities, but that sum random-walks with length and swamps the policy gradient on long agentic rollouts, so the per-token form is the default. |
+
+### PMD-Mean Loss
+
+`[trainer.loss] type = "pmd_mean"` replaces the `rl` component with a policy mirror descent step taken against a *sequence-level* target log-ratio. The rollout's mean advantage, divided by `pmd_tau`, is the log-ratio the sequence should end up at; the gap between that target and the sequence's actual summed log-ratio becomes a detached per-sequence coefficient on the score function:
+
+$$
+s^{(j)} = \sum_t \log\frac{\pi(y_t^{(j)})}{\mu(y_t^{(j)})}, \qquad
+\hat{s}^{(j)} = \frac{1}{|y^{(j)}|}\sum_t \hat{A}_t^{(j)} \Big/ \tau, \qquad
+\mathcal{L} = \sum_{j,t} \big(s^{(j)} - \hat{s}^{(j)}\big)\,\log \pi(y_t^{(j)}).
+$$
+
+Because the coefficient is detached, the gradient is the score function scaled by the residual: the update pushes the whole sequence toward its target log-ratio rather than optimizing each token against its own advantage. A sequence already at its target contributes no gradient, and the sign of the residual decides whether the sequence is pushed up or down.
+
+| Knob | Default | What it does |
+|---|---|---|
+| `pmd_tau` | 1.0 | Temperature converting the sequence-mean advantage into the target log-ratio. Smaller values ask for a larger move per unit of advantage. Must be positive. |
+
+Reported metrics: `pmd_squared_error` (half the squared residual), `pmd_residual`, `pmd_abs_residual`, `sequence_log_ratio`, and `target_log_ratio`.
+
 ### Custom Loss
 
 `[trainer.loss] type = "custom"` replaces the `rl` component. The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates. `inputs.loss_mask` selects exactly the rl member tokens (for a plain GRPO run, all trainable tokens).
