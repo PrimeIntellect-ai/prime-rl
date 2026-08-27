@@ -697,3 +697,10 @@ def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
     private worker-snapshot layout."""
     snapshots = dataloader.state_dict()["_snapshot"]["_worker_snapshots"]
     return {wid: snap["dataset_state"]["dataset"] for wid, snap in sorted(snapshots.items())}
+
+
+def get_dataset_progress(dataloader: StatefulDataLoader) -> dict:
+    """Dataset position from the worker that produced the latest batch."""
+    snapshot = dataloader.state_dict()["_snapshot"]
+    worker_id = snapshot["_last_yielded_worker_id"]
+    return snapshot["_worker_snapshots"][f"worker_{worker_id}"]["dataset_state"]["dataset"]

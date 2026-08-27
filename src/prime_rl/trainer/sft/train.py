@@ -40,7 +40,13 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.sft.data import get_dataset_state, load_sft_dataset, setup_dataloader, setup_dataset
+from prime_rl.trainer.sft.data import (
+    get_dataset_progress,
+    get_dataset_state,
+    load_sft_dataset,
+    setup_dataloader,
+    setup_dataset,
+)
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -590,7 +596,8 @@ def train(config: SFTConfig):
         num_local_tokens = config.data.seq_len * (config.data.batch_size // dp_size)
         num_tokens = dp_size * num_local_tokens
         progress.total_tokens += num_tokens
-        progress.total_samples = dataset.step
+        dataset_progress = get_dataset_progress(dataloader)
+        progress.total_samples = dataset_progress["step"]
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
@@ -615,7 +622,7 @@ def train(config: SFTConfig):
         total_samples = sum(dataset.num_samples.values())
         total_tokens = sum(dataset.num_tokens.values())
         progress_metrics = {
-            "progress/epoch": dataset.epoch,
+            "progress/epoch": dataset_progress["epoch"],
             "progress/num_samples": progress.total_samples,
             "progress/num_tokens": progress.total_tokens,
             "step": progress.step,
