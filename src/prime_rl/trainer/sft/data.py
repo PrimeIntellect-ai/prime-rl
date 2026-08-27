@@ -83,8 +83,9 @@ class FakeDataset(StatefulIterableDataset):
         length: Literal["fixed", "variable"] = "fixed",
         input_ids: Literal["increasing", "random"] = "random",
         seed: int = 0,
+        non_dp_size: int = 1,
     ):
-        super().__init__()
+        super().__init__(non_dp_size)
         self.vocab_size = vocab_size
         self.seq_len = seq_len
         self.length = length
@@ -659,6 +660,7 @@ def setup_dataset(
             length=config.length,
             input_ids=config.input_ids,
             seed=config.seed,
+            non_dp_size=non_dp_size,
         )
     elif config.type == "sft":
         if renderer is None:
