@@ -56,7 +56,6 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
 
         moe_args = MoEArgs(
             num_experts=config.n_routed_experts,
-            num_shared_experts=config.n_shared_experts,
             expert_type="gated",
             activation=config.hidden_act,
             score_func="sigmoid",
@@ -67,7 +66,20 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
             load_balance_coeff=1e-3,
         )
         if layer_idx >= config.first_k_dense_replace:
-            self.mlp = MoE.from_args(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            shared_expert = None
+            if config.n_shared_experts > 0:
+                shared_expert = FeedForward(
+                    dim=config.hidden_size,
+                    hidden_dim=config.moe_intermediate_size * config.n_shared_experts,
+                    expert_type=moe_args.expert_type,
+                    activation=moe_args.activation,
+                )
+            self.mlp = MoE.from_args(
+                moe_args,
+                dim=config.hidden_size,
+                hidden_dim=config.moe_intermediate_size,
+                shared_expert=shared_expert,
+            )
         else:
             self.mlp = FeedForward(
                 dim=config.hidden_size,

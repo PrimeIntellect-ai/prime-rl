@@ -454,7 +454,6 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
 
         moe_args = MoEArgs(
             num_experts=config.num_experts,
-            num_shared_experts=1,
             expert_type="gated",
             activation=config.hidden_act,
             score_func="softmax",

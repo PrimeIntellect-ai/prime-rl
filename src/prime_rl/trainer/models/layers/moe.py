@@ -23,7 +23,6 @@ ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax"]
 @dataclass
 class MoEArgs:
     num_experts: int = 8
-    num_shared_experts: int = 1
 
     # experts
     expert_type: ExpertType = "gated"
@@ -286,7 +285,7 @@ class MoE(nn.Module):
         dim: int,
         hidden_dim: int,
         *,
-        shared_expert: FeedForward | None = None,
+        shared_expert: FeedForward | None,
     ) -> "MoE":
         experts = GroupedExperts(
             dim=dim,
@@ -303,14 +302,6 @@ class MoE(nn.Module):
             route_norm=args.route_norm,
             route_scale=args.route_scale,
         )
-        if shared_expert is None and args.num_shared_experts > 0:
-            shared_expert = FeedForward(
-                dim=dim,
-                hidden_dim=hidden_dim * args.num_shared_experts,
-                expert_type=args.expert_type,
-                activation=args.activation,
-            )
-
         return cls(
             router=router,
             experts=experts,

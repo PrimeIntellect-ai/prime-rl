@@ -244,7 +244,6 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         self.moe_enabled = layer_idx >= config.num_dense_layers
         moe_args = MoEArgs(
             num_experts=config.num_experts,
-            num_shared_experts=config.num_shared_experts,
             expert_type="gated",
             activation=config.hidden_act,
             score_func=config.score_func,
@@ -255,7 +254,20 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
             load_balance_coeff=config.load_balance_coeff,
         )
         if self.moe_enabled:
-            self.mlp = MoE.from_args(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            shared_expert = None
+            if config.num_shared_experts > 0:
+                shared_expert = FeedForward(
+                    dim=config.hidden_size,
+                    hidden_dim=config.moe_intermediate_size * config.num_shared_experts,
+                    expert_type=moe_args.expert_type,
+                    activation=moe_args.activation,
+                )
+            self.mlp = MoE.from_args(
+                moe_args,
+                dim=config.hidden_size,
+                hidden_dim=config.moe_intermediate_size,
+                shared_expert=shared_expert,
+            )
         else:
             self.mlp = FeedForward(
                 dim=config.hidden_size,

@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
 from prime_rl.trainer.models.layers.activations import ActivationDispatch
+from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
     MoE,
@@ -139,17 +140,24 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
     torch.testing.assert_close(actual, torch.cat(expected).float())
 
     with torch.device("meta"):
+        shared_expert = FeedForward(
+            dim=4,
+            hidden_dim=8,
+            expert_type=expert_type,
+            activation=activation,
+        )
         moe = MoE.from_args(
             MoEArgs(
                 num_experts=2,
-                num_shared_experts=1,
                 expert_type=expert_type,
                 activation=activation,
                 load_balance_coeff=None,
             ),
             dim=4,
             hidden_dim=8,
+            shared_expert=shared_expert,
         )
+    assert moe.shared_expert is shared_expert
     assert (moe.experts.gate_proj is not None) == has_gate
     assert moe.experts.activation is ActivationDispatch[activation]
     assert (moe.shared_expert.gate_proj is not None) == has_gate

@@ -171,7 +171,6 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
         if self.mlp_layer_type == "sparse":
             moe_args = MoEArgs(
                 num_experts=config.num_experts,
-                num_shared_experts=1,
                 expert_type="gated",
                 activation=config.hidden_act,
                 score_func="sigmoid",

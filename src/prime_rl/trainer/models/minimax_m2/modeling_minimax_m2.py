@@ -42,7 +42,6 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
 
         moe_args = MoEArgs(
             num_experts=config.num_local_experts,
-            num_shared_experts=0,
             expert_type="gated",
             activation=config.hidden_act,
             score_func=config.scoring_func,
@@ -52,7 +51,12 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             load_balance_coeff=1e-3 if config.use_routing_bias else None,
         )
-        self.mlp = MoE.from_args(moe_args, dim=config.hidden_size, hidden_dim=config.intermediate_size)
+        self.mlp = MoE.from_args(
+            moe_args,
+            dim=config.hidden_size,
+            hidden_dim=config.intermediate_size,
+            shared_expert=None,
+        )
 
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))

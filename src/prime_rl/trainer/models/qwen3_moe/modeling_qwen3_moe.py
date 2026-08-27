@@ -60,7 +60,6 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
 
         moe_args = MoEArgs(
             num_experts=config.num_experts,
-            num_shared_experts=0,
             expert_type="gated",
             activation=config.hidden_act,
             score_func="softmax",
@@ -73,7 +72,12 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
         if (layer_idx not in config.mlp_only_layers) and (
             config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
         ):
-            self.mlp = MoE.from_args(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            self.mlp = MoE.from_args(
+                moe_args,
+                dim=config.hidden_size,
+                hidden_dim=config.moe_intermediate_size,
+                shared_expert=None,
+            )
         else:
             self.mlp = FeedForward(
                 dim=config.hidden_size,
