@@ -35,6 +35,7 @@ from subprocess import Popen
 from prime_rl import monitors
 from prime_rl.configs.evals import EvalsConfig
 from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig
+from prime_rl.evals.ckpt import CheckpointManager
 from prime_rl.orchestrator.clients import AdminClients, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMetrics, DispatcherMode
@@ -49,7 +50,13 @@ from prime_rl.orchestrator.patches import (
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation, Policy
-from prime_rl.orchestrator.utils import eval_work, intercept_vf_logging, set_default_executor
+from prime_rl.orchestrator.utils import (
+    episode_env_name,
+    episode_group_id,
+    eval_work,
+    intercept_vf_logging,
+    set_default_executor,
+)
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
@@ -84,6 +91,8 @@ class Evals:
         # The last weight-checkpoint step already handled (evaluated or skipped).
         self.last_step = (config.online.resume_step if config.online is not None else None) or 0
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
+        self.ckpt_manager = CheckpointManager(config.output_dir)
+        self.completed_groups = 0
         self.env_server_procs: list[Popen] = []
         self.dispatcher_task: asyncio.Task | None = None
 
@@ -147,6 +156,21 @@ class Evals:
         is_resumed = config.online is not None and config.online.resume_step is not None
         self.eval_source = EvalSource(self.eval_envs, config.eval, is_resumed=is_resumed)
         self.eval_sink = EvalSink(eval_envs=self.eval_envs)
+        if config.resume is not None:
+            if config.resume.dir is not None:
+                resume_step = config.resume.dir_step
+                resume_path = config.resume.dir / "evals"
+            else:
+                resume_step = config.resume.step or self.ckpt_manager.latest_step()
+                resume_path = None
+            self.ckpt_manager.load(
+                resume_step,
+                self.eval_source,
+                self.eval_sink,
+                path=resume_path,
+            )
+            self.completed_groups = resume_step
+            get_logger().info(f"Resuming evals after {self.completed_groups} completed task groups")
         self.policy = Policy(version=0, model_name=config.model)
 
         # Pessimistic per-episode token cost for the controller's starting cap,
@@ -252,6 +276,9 @@ class Evals:
             await self.maybe_run_evals(step=0)
         else:
             await self.watch()
+
+        if self.config.ckpt is not None and self.completed_groups > 0:
+            self.save_checkpoint()
 
         # The periodic logger and the collector log to the W&B run, so they
         # must stop before finalize marks the run finished.
@@ -383,8 +410,9 @@ class Evals:
         for env_name in fired:
             self.eval_triggered_at[(env_name, step)] = now
         total_rollouts = sum(
-            self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
-            for env_name in fired
+            self.eval_envs.get(request.env_name).config.group_size
+            for request in self.eval_source.queue
+            if request.step == step and request.env_name in fired
         )
 
         # The dispatcher only schedules eval in PREFER_EVAL, so nothing dispatches
@@ -428,15 +456,26 @@ class Evals:
 
             if isinstance(item, GroupCancellation):
                 eval_batch = self.eval_sink.cancel(item)
+                group_completed = False
             elif isinstance(item, DispatchFailure):
                 eval_batch = self.eval_sink.fail(item)
+                group_completed = not self.eval_sink.has_pending_group(item.group_id)
+                completed_task = (item.env_name, item.task_key, item.task_hash, item.step)
             else:
                 item_step = eval_work(item).step
                 await monitors.log([item], item_step, "eval", "all")
                 eval_batch = self.eval_sink.add(item)
+                group_id = episode_group_id(item)
+                group_completed = not self.eval_sink.has_pending_group(group_id)
+                completed_task = (episode_env_name(item), item.task.key, item.task.hash, item_step)
             if eval_batch is not None:
                 await self.finalize_eval_batch(eval_batch)
                 pending.discard(eval_batch.env_name)
+            if group_completed:
+                self.eval_source.mark_completed(*completed_task)
+                self.completed_groups += 1
+                if self.config.ckpt is not None and self.completed_groups % self.config.ckpt.interval == 0:
+                    self.save_checkpoint()
 
         if cancellation_task is not None:
             cancelled = await cancellation_task
@@ -444,6 +483,9 @@ class Evals:
                 f"Cancelled {cancelled} unfinished eval episodes for step {step}; "
                 f"advancing to checkpoint {superseding_step}"
             )
+
+    def save_checkpoint(self) -> None:
+        self.ckpt_manager.save(self.completed_groups, self.eval_source, self.eval_sink)
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the
