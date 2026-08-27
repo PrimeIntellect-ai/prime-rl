@@ -630,12 +630,12 @@ def verify_vllm(arch: str, model_dir: Path, seed: int, attn: str, moe_backend: s
     delta = (kl_packed - kl_unpacked).abs()
 
     return [
-        Check("kl_unpacked_mean", kl_unpacked.mean().item(), VLLM_KL_MEAN_THRESHOLD),
-        Check("kl_unpacked_max", kl_unpacked.max().item(), VLLM_KL_MAX_THRESHOLD),
-        Check("kl_packed_mean", kl_packed.mean().item(), VLLM_KL_MEAN_THRESHOLD),
-        Check("kl_packed_max", kl_packed.max().item(), VLLM_KL_MAX_THRESHOLD),
-        Check("kl_packed_minus_unpacked_mean", delta.mean().item(), VLLM_KL_DELTA_MEAN_THRESHOLD),
-        Check("kl_packed_minus_unpacked_max", delta.max().item(), VLLM_KL_DELTA_MAX_THRESHOLD),
+        Check("vllm_kl_unpacked_mean", kl_unpacked.mean().item(), VLLM_KL_MEAN_THRESHOLD),
+        Check("vllm_kl_unpacked_max", kl_unpacked.max().item(), VLLM_KL_MAX_THRESHOLD),
+        Check("vllm_kl_packed_mean", kl_packed.mean().item(), VLLM_KL_MEAN_THRESHOLD),
+        Check("vllm_kl_packed_max", kl_packed.max().item(), VLLM_KL_MAX_THRESHOLD),
+        Check("vllm_kl_packed_minus_unpacked_mean", delta.mean().item(), VLLM_KL_DELTA_MEAN_THRESHOLD),
+        Check("vllm_kl_packed_minus_unpacked_max", delta.max().item(), VLLM_KL_DELTA_MAX_THRESHOLD),
     ]
 
 
