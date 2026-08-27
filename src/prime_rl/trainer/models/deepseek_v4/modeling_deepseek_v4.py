@@ -16,12 +16,7 @@ from transformers.modeling_outputs import MoeModelOutputWithPast
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.deepseek_v4.attention import (
-    CompressionLayout,
-    DeepseekV4Attention,
-    build_compression_layout,
-    build_sliding_window_mask,
-)
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4HyperHead
@@ -60,11 +55,9 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]],
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.Tensor | None = None,
         input_ids: torch.Tensor | None = None,
         routed_experts: torch.Tensor | None = None,
-        compression_layouts: dict[int, CompressionLayout] | None = None,
+        packed: PackedContext | None = None,
     ) -> torch.Tensor:
         dtype = hidden_states.dtype
 
@@ -72,9 +65,7 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
         attn_output, _ = self.self_attn(
             self.input_layernorm(collapsed),
             position_embeddings=position_embeddings,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            compression_layouts=compression_layouts,
+            packed=packed,
         )
         hidden_states = post.to(dtype).unsqueeze(-1) * attn_output.unsqueeze(-2) + torch.matmul(
             comb.to(dtype).transpose(-1, -2), hidden_states
@@ -253,25 +244,23 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             seq_lens.to(device=inputs_embeds.device), total_tokens=inputs_embeds.shape[1]
         )
 
-        # Every layer type attends over the same local window; the compressed variants add
-        # their own out-of-window entries and the per-query bias that gates them.
-        attention_mask = build_sliding_window_mask(
-            inputs_embeds.shape[1],
-            self.config.sliding_window,
-            inputs_embeds.dtype,
-            inputs_embeds.device,
+        # Every layer type attends over the same local window; the compressed variants add their
+        # own out-of-window entries and the per-query bias that gates them. One layout per distinct
+        # compress rate, shared by every layer that pools at that rate; sliding layers own no
+        # compressor and contribute no rate.
+        packed = PackedContext.build(
             cu_seqlens=cu_seqlens,
+            position_ids=position_ids,
+            total_tokens=inputs_embeds.shape[1],
+            compress_rates={
+                self.config.compress_rates[layer_type]
+                for layer_type in set(self.config.layer_types)
+                if layer_type in self.config.compress_rates
+            },
+            sliding_window=self.config.sliding_window,
+            dtype=inputs_embeds.dtype,
+            device=inputs_embeds.device,
         )
-        # One layout per distinct compress rate, shared by every layer that pools at that rate.
-        # Sliding layers own no compressor and contribute no rate.
-        compress_rates = {
-            self.config.compress_rates[layer_type]
-            for layer_type in set(self.config.layer_types)
-            if layer_type in self.config.compress_rates
-        }
-        compression_layouts = {
-            rate: build_compression_layout(cu_seqlens, rate, inputs_embeds.shape[1]) for rate in compress_rates
-        }
         position_embeddings = {
             rope_type: self.rotary_emb(inputs_embeds, position_ids, rope_type)
             for rope_type in self.rotary_emb.layer_types
@@ -283,11 +272,9 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
                 input_ids=input_ids,
                 routed_experts=routed_experts_layer,
-                compression_layouts=compression_layouts,
+                packed=packed,
             )
 
         hidden_states = self.norm(self.hc_head(hidden_states))

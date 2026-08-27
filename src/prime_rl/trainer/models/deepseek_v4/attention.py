@@ -162,6 +162,84 @@ def build_compression_layout(cu_seqlens: Tensor, compress_rate: int, total_token
     )
 
 
+@dataclass(frozen=True)
+class PackedContext:
+    """Every artifact a layer derives from the packed row's document map, carried together.
+
+    The sliding mask, the query positions and the compressed-entry layouts all encode the same
+    boundaries, and they are only correct together. Passed as three optional arguments they can
+    contradict each other: a mask built without `cu_seqlens` spans rollouts while a layout does
+    not, and a row-global `position_ids` feeds `causal_threshold` a count that a per-document
+    `entry_local` cannot be compared against. Neither mistake is reachable through `build`, which
+    derives all three from one `cu_seqlens`.
+
+    Built once per model forward and shared by every layer, since none of it depends on depth.
+    """
+
+    attention_mask: Tensor
+    position_ids: Tensor
+    compression_layouts: dict[int, CompressionLayout]
+
+    def __post_init__(self) -> None:
+        total_tokens = self.position_ids.shape[-1]
+        if self.attention_mask.shape[-2] != total_tokens:
+            raise ValueError(
+                f"attention_mask covers {self.attention_mask.shape[-2]} query rows but "
+                f"position_ids has {total_tokens} tokens"
+            )
+        for rate, layout in self.compression_layouts.items():
+            if layout.doc_of_token.shape[0] != total_tokens:
+                raise ValueError(
+                    f"the rate-{rate} layout maps {layout.doc_of_token.shape[0]} tokens to "
+                    f"documents but position_ids has {total_tokens}"
+                )
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        cu_seqlens: Tensor,
+        position_ids: Tensor,
+        total_tokens: int,
+        compress_rates: set[int],
+        sliding_window: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> "PackedContext":
+        """The one construction path: every field comes from the same `cu_seqlens`."""
+        return cls(
+            attention_mask=build_sliding_window_mask(
+                total_tokens, sliding_window, dtype, device, cu_seqlens=cu_seqlens
+            ),
+            position_ids=position_ids,
+            compression_layouts={
+                rate: build_compression_layout(cu_seqlens, rate, total_tokens) for rate in compress_rates
+            },
+        )
+
+    @classmethod
+    def single_document(
+        cls,
+        *,
+        total_tokens: int,
+        batch_size: int,
+        compress_rates: set[int],
+        sliding_window: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> "PackedContext":
+        """The reading available to a caller that supplies no boundaries at all."""
+        return cls.build(
+            cu_seqlens=torch.tensor([0, total_tokens], device=device),
+            position_ids=torch.arange(total_tokens, device=device).expand(batch_size, -1),
+            total_tokens=total_tokens,
+            compress_rates=compress_rates,
+            sliding_window=sliding_window,
+            dtype=dtype,
+            device=device,
+        )
+
+
 def _cu_seqlens_from_position_ids(position_ids: Tensor, total_tokens: int) -> Tensor:
     """Recover document boundaries from where `position_ids` stop advancing by one.
 
@@ -533,10 +611,9 @@ class DeepseekV4Attention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]],
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.Tensor | None = None,
-        compression_layouts: dict[int, CompressionLayout] | None = None,
+        packed: PackedContext | None = None,
     ) -> tuple[torch.Tensor, None]:
+        """`packed` carries the row's document boundaries; without one the row is a single document."""
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
         cos, sin = position_embeddings[self.rope_layer_type]
@@ -548,15 +625,21 @@ class DeepseekV4Attention(nn.Module):
         kv = self.kv_norm(self.kv_proj(hidden_states)).view(*hidden_shape).transpose(1, 2)
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin)
 
-        if attention_mask is None:
-            attention_mask = build_sliding_window_mask(kv.shape[2], self.sliding_window, kv.dtype, kv.device)
+        if packed is None:
+            packed = PackedContext.single_document(
+                total_tokens=input_shape[1],
+                batch_size=input_shape[0],
+                compress_rates={self.compressor.compress_rate} if self.compressor is not None else set(),
+                sliding_window=self.sliding_window,
+                dtype=kv.dtype,
+                device=kv.device,
+            )
+        attention_mask = packed.attention_mask
 
         if self.compressor is not None:
-            if position_ids is None:
-                # Single document, as in the `cu_seqlens`-less mask above.
-                position_ids = torch.arange(input_shape[1], device=hidden_states.device).expand(input_shape[0], -1)
-            layout = compression_layouts[self.compressor.compress_rate] if compression_layouts else None
-            compressed_kv, block_bias = self.compressor(hidden_states, q_residual, position_ids, layout)
+            # A missing rate is a wiring bug: the context was built for a different model.
+            layout = packed.compression_layouts[self.compressor.compress_rate]
+            compressed_kv, block_bias = self.compressor(hidden_states, q_residual, packed.position_ids, layout)
             kv = torch.cat([kv, compressed_kv], dim=2)
             # The compressed entries live outside the local window, so the sliding mask says
             # nothing about them; `block_bias` carries their per-query causality and the
@@ -599,6 +682,7 @@ __all__ = [
     "DeepseekV4HCACompressor",
     "DeepseekV4Indexer",
     "DeepseekV4IndexerScorer",
+    "PackedContext",
     "build_compression_layout",
     "build_sliding_window_mask",
     "eager_attention_with_sinks",

@@ -30,6 +30,7 @@ from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import (
     CompressionLayout,
     DeepseekV4Attention,
+    PackedContext,
     build_compression_layout,
     build_sliding_window_mask,
 )
@@ -402,18 +403,18 @@ def test_sliding_attention_matches_hf(_torch_rms_norm):
     hf_module, prime_module = _attention_pair()
     hf_input, prime_input = _hidden_states()
     position_embeddings = _position_embeddings()
-    mask = build_sliding_window_mask(_SEQ, _ATTN["sliding_window"], torch.bfloat16, torch.device("cuda"))
+    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
 
     hf_output, _ = hf_module(
         hf_input,
         position_embeddings=position_embeddings,
-        position_ids=_position_ids(),
-        attention_mask=mask,
+        position_ids=packed.position_ids,
+        attention_mask=packed.attention_mask,
     )
     prime_output, prime_weights = prime_module(
         prime_input,
         position_embeddings=position_embeddings,
-        attention_mask=mask,
+        packed=packed,
     )
 
     assert prime_weights is None, "prime-rl attention modules return `None` for attn_weights"
@@ -433,9 +434,9 @@ def test_sliding_attention_builds_its_own_mask():
     _, prime_module = _attention_pair()
     _, hidden = _hidden_states()
     position_embeddings = _position_embeddings()
-    mask = build_sliding_window_mask(_SEQ, _ATTN["sliding_window"], torch.bfloat16, torch.device("cuda"))
+    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
 
-    explicit, _ = prime_module(hidden, position_embeddings=position_embeddings, attention_mask=mask)
+    explicit, _ = prime_module(hidden, position_embeddings=position_embeddings, packed=packed)
     implicit, _ = prime_module(hidden, position_embeddings=position_embeddings)
 
     torch.testing.assert_close(implicit, explicit, rtol=0, atol=0)
@@ -462,23 +463,20 @@ def test_csa_attention_matches_hf(_torch_rms_norm):
     hf_module, prime_module = _attention_pair(_CSA_LAYER)
     hf_input, prime_input = _hidden_states()
     position_embeddings = _position_embeddings()
-    position_ids = _position_ids()
-    # HF concatenates the compressor's per-batch block bias onto the mask, so the local
-    # window mask has to carry a batch dimension of its own here.
-    mask = build_sliding_window_mask(_SEQ, _ATTN["sliding_window"], torch.bfloat16, torch.device("cuda"))
-    mask = mask.expand(_BATCH, 1, _SEQ, _SEQ)
+    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
 
     hf_output, _ = hf_module(
         hf_input,
         position_embeddings=position_embeddings,
-        position_ids=position_ids,
-        attention_mask=mask,
+        position_ids=packed.position_ids,
+        # HF concatenates the compressor's per-batch block bias onto the mask, so the local
+        # window mask has to carry a batch dimension of its own here.
+        attention_mask=packed.attention_mask.expand(_BATCH, 1, _SEQ, _SEQ),
     )
     prime_output, _ = prime_module(
         prime_input,
         position_embeddings=position_embeddings,
-        attention_mask=mask,
-        position_ids=position_ids,
+        packed=packed,
     )
 
     assert prime_output.shape == (_BATCH, _SEQ, _ATTN["hidden_size"])
@@ -497,8 +495,9 @@ def test_csa_attention_defaults_to_sequential_positions():
     _, prime_module = _attention_pair(_CSA_LAYER)
     _, hidden = _hidden_states()
     position_embeddings = _position_embeddings()
+    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
 
-    explicit, _ = prime_module(hidden, position_embeddings=position_embeddings, position_ids=_position_ids())
+    explicit, _ = prime_module(hidden, position_embeddings=position_embeddings, packed=packed)
     implicit, _ = prime_module(hidden, position_embeddings=position_embeddings)
 
     torch.testing.assert_close(implicit, explicit, rtol=0, atol=0)
@@ -604,22 +603,19 @@ def test_hca_attention_matches_hf(_torch_rms_norm):
     hf_module, prime_module = _attention_pair(_HCA_LAYER)
     hf_input, prime_input = _hidden_states()
     position_embeddings = _position_embeddings()
-    position_ids = _position_ids()
-    # As in the CSA case, HF concatenates a per-batch block bias onto the mask.
-    mask = build_sliding_window_mask(_SEQ, _ATTN["sliding_window"], torch.bfloat16, torch.device("cuda"))
-    mask = mask.expand(_BATCH, 1, _SEQ, _SEQ)
+    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
 
     hf_output, _ = hf_module(
         hf_input,
         position_embeddings=position_embeddings,
-        position_ids=position_ids,
-        attention_mask=mask,
+        position_ids=packed.position_ids,
+        # As in the CSA case, HF concatenates a per-batch block bias onto the mask.
+        attention_mask=packed.attention_mask.expand(_BATCH, 1, _SEQ, _SEQ),
     )
     prime_output, _ = prime_module(
         prime_input,
         position_embeddings=position_embeddings,
-        attention_mask=mask,
-        position_ids=position_ids,
+        packed=packed,
     )
 
     assert prime_output.shape == (_BATCH, _SEQ, _ATTN["hidden_size"])
@@ -1146,6 +1142,28 @@ def _alone_position_ids(length: int, batch: int = _BATCH) -> torch.Tensor:
     return torch.arange(length, device="cuda").unsqueeze(0).expand(batch, -1)
 
 
+def _compress_rates(module: nn.Module) -> set[int]:
+    """The rates an attention layer needs a layout for: its compressor's, or none at all."""
+    return set() if module.compressor is None else {module.compressor.compress_rate}
+
+
+def _packed_context(module: nn.Module, doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedContext:
+    """The context `DeepseekV4Model` would hand `module` for a row laid out as `doc_lens`.
+
+    `_SINGLE_DOC` gives back what the layer builds for itself when passed no context at all, so
+    the two are comparable. `dtype` is the mask's, and has to be the one the caller runs at.
+    """
+    return PackedContext.build(
+        cu_seqlens=_cu_seqlens(doc_lens),
+        position_ids=_packed_position_ids(doc_lens),
+        total_tokens=sum(doc_lens),
+        compress_rates=_compress_rates(module),
+        sliding_window=_ATTN["sliding_window"],
+        dtype=dtype,
+        device=torch.device("cuda"),
+    )
+
+
 def _fp32_hidden_states(seq_len: int = _SEQ) -> tuple[torch.Tensor, torch.Tensor]:
     """Two leaves carrying identical values, one for the packed run and one for the lone runs."""
     with torch.device("cuda"):
@@ -1167,12 +1185,6 @@ def _fp32_position_embeddings(position_ids: torch.Tensor) -> dict[str, tuple[tor
         rotary = DeepseekV4RotaryEmbedding(prime_config)
         probe = torch.zeros(*position_ids.shape, _ATTN["hidden_size"])
     return {rope_type: rotary(probe, position_ids, rope_type) for rope_type in ("main", "compress")}
-
-
-def _fp32_sliding_mask(seq_len: int, cu_seqlens: torch.Tensor | None = None) -> torch.Tensor:
-    return build_sliding_window_mask(
-        seq_len, _ATTN["sliding_window"], torch.float32, torch.device("cuda"), cu_seqlens=cu_seqlens
-    )
 
 
 def _take_grads(module: nn.Module) -> dict[str, torch.Tensor | None]:
@@ -1528,27 +1540,26 @@ def _assert_attention_matches_per_document(module: nn.Module, doc_lens: tuple[in
     """A packed attention layer must equal the same layer run on each document separately.
 
     Forward and backward, with one random weight drawn over the packed output and sliced per
-    document so the two losses are the same function. The lone runs pass no layout at all, which
+    document so the two losses are the same function. The lone runs pass no context at all, which
     is the contract's default of a single document and the shape a rollout arrives in at
     inference time.
     """
     compress_rate = module.compressor.compress_rate
     packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
-    position_ids = _packed_position_ids(doc_lens)
-    layouts = _layouts(doc_lens)
+    packed = _packed_context(module, doc_lens, torch.float32)
 
     q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
-    _, block_bias = module.compressor(packed_input.detach(), q_residual, position_ids, layout=layouts[compress_rate])
+    _, block_bias = module.compressor(
+        packed_input.detach(), q_residual, packed.position_ids, layout=packed.compression_layouts[compress_rate]
+    )
     assert (block_bias[:, :, _doc_slice(doc_lens, 1)] == 0).any(), (
         "vacuous probe: no query of the second document reads a compressed entry"
     )
 
     packed_output, _ = module(
         packed_input,
-        position_embeddings=_fp32_position_embeddings(position_ids),
-        attention_mask=_fp32_sliding_mask(sum(doc_lens), cu_seqlens=_cu_seqlens(doc_lens)),
-        position_ids=position_ids,
-        compression_layouts=layouts,
+        position_embeddings=_fp32_position_embeddings(packed.position_ids),
+        packed=packed,
     )
     with torch.device("cuda"):
         weight = torch.randn_like(packed_output)
@@ -1561,8 +1572,6 @@ def _assert_attention_matches_per_document(module: nn.Module, doc_lens: tuple[in
         alone_output, _ = module(
             alone_input[:, span],
             position_embeddings=_fp32_position_embeddings(alone_position_ids),
-            attention_mask=_fp32_sliding_mask(length),
-            position_ids=alone_position_ids,
         )
         torch.testing.assert_close(
             packed_output[:, span],
@@ -1580,14 +1589,12 @@ def _assert_attention_matches_per_document(module: nn.Module, doc_lens: tuple[in
 def _assert_attention_is_finite(module: nn.Module, doc_lens: tuple[int, ...]) -> None:
     """Run one packed forward and backward and require every number that comes out to be finite."""
     packed_input, _ = _fp32_hidden_states(sum(doc_lens))
-    position_ids = _packed_position_ids(doc_lens)
+    packed = _packed_context(module, doc_lens, torch.float32)
 
     output, _ = module(
         packed_input,
-        position_embeddings=_fp32_position_embeddings(position_ids),
-        attention_mask=_fp32_sliding_mask(sum(doc_lens), cu_seqlens=_cu_seqlens(doc_lens)),
-        position_ids=position_ids,
-        compression_layouts=_layouts(doc_lens),
+        position_embeddings=_fp32_position_embeddings(packed.position_ids),
+        packed=packed,
     )
     assert torch.isfinite(output).all(), "the attention output is not finite"
 
