@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from torch import Tensor, nn
+
 from prime_rl.utils.logger import get_logger
 
 

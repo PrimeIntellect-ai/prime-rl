@@ -51,14 +51,12 @@ from prime_rl.trainer.models.layers.checkpointing import (
     set_selective_activation_checkpointing,
     supports_selective_activation_checkpointing,
 )
+from prime_rl.trainer.models.layers.fp8_recipe import Fp8BlockwiseRecipe
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.lowprecision import (
-    Fp8BlockwiseRecipe,
-    Mxfp8Recipe,
-    replace_all_linear_with_low_precision_linear,
-)
+from prime_rl.trainer.models.layers.lowprecision import replace_all_linear_with_low_precision_linear
 from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRouter, _load_fused_moe_kernel
 from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
+from prime_rl.trainer.models.layers.mxfp8_recipe import Mxfp8Recipe
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger

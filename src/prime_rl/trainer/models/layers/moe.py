@@ -171,7 +171,7 @@ def _run_experts_grouped_mm_impl(
     assert x.dim() == 2
 
     if fp8:
-        from prime_rl.trainer.models.layers.lowprecision import FP8_BLOCKWISE_RECIPE
+        from prime_rl.trainer.models.layers.fp8_recipe import FP8_BLOCKWISE_RECIPE
 
         x_bf16 = x.bfloat16()
         layout = FP8_BLOCKWISE_RECIPE.build_grouped_layout(offsets, x_bf16.size(0))
@@ -1126,7 +1126,7 @@ def _run_nongated_experts_grouped_mm_impl(
     assert x.dim() == 2
 
     if fp8:
-        from prime_rl.trainer.models.layers.lowprecision import FP8_BLOCKWISE_RECIPE
+        from prime_rl.trainer.models.layers.fp8_recipe import FP8_BLOCKWISE_RECIPE
 
         x_bf16 = x.bfloat16()
         layout = FP8_BLOCKWISE_RECIPE.build_grouped_layout(offsets, x_bf16.size(0))

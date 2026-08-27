@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 from torch import Tensor, nn
 
 from prime_rl.trainer.models.layers.fp8_grouped_gemm import (
-    compute_grouped_layout,
     cast_grouped_input_to_fp8,
+    compute_grouped_layout,
     grouped_fp8_gemm,
 )
 from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear
@@ -33,7 +35,7 @@ class Fp8BlockwiseRecipe(LowPrecisionRecipe):
     def is_linear_shape_supported(self, in_features: int, out_features: int) -> bool:
         return in_features % 128 == 0 and out_features % 128 == 0
 
-    def linear_from_linear(self, mod: nn.Linear) -> nn.Linear:
+    def convert_linear(self, mod: nn.Linear) -> nn.Linear:
         return Float8BlockwiseLinear.from_linear(mod)
 
     def build_grouped_layout(self, offs: Tensor, total_m: int) -> GroupedLayout:
@@ -56,5 +58,4 @@ class Fp8BlockwiseRecipe(LowPrecisionRecipe):
         return grouped_fp8_gemm(x, weight, layout.offs, layout=layout.layout, x_fp8_cache=x_fp8_cache)
 
 
-# Global stateless instance
 FP8_BLOCKWISE_RECIPE = Fp8BlockwiseRecipe()
