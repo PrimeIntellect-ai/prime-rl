@@ -108,7 +108,7 @@ def test_generate_qwen3_vl_sends_raw_content_and_uses_expanded_prompt_ids():
             sampling_params={"max_tokens": 16},
             # Explicit cap so generate() skips the /v1/models discovery round-trip.
             max_prompt_len=1_000_000,
-            raw_multimodal=True,
+            process_multimodal=False,
         )
     )
 
