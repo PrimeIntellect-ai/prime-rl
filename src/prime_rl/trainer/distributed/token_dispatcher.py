@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from types import ModuleType
 from typing import Generic, Protocol, TypeVar
 
 import torch
