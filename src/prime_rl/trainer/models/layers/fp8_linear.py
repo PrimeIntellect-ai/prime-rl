@@ -7,10 +7,10 @@ from torch import nn
 
 try:
     import deep_gemm
-except ImportError:
-    deep_gemm = None  # CPU-only environments don't ship deep_gemm; FP8 paths
-    # are GPU-only at runtime, so leaving the symbol None is safe — only the
-    # autograd Function bodies below actually call into it.
+except (ImportError, AssertionError):
+    deep_gemm = None  # CPU-only environments don't ship deep_gemm, or lack the CUDA
+    # toolchain deep_gemm asserts on at import time; FP8 paths are GPU-only at runtime,
+    # so leaving the symbol None is safe — only the autograd Function bodies below call into it.
 
 from prime_rl.trainer.models.kernels.fp8_utils import (
     per_block_cast_to_fp8_tp_triton,
