@@ -15,7 +15,6 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
@@ -32,6 +31,7 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
+from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -42,11 +42,6 @@ from prime_rl.trainer.models import (
     supports_custom_impl,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
-from prime_rl.trainer.models.layers.checkpointing import (
-    get_supported_targets,
-    set_selective_activation_checkpointing,
-    supports_selective_activation_checkpointing,
-)
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
@@ -1091,50 +1086,20 @@ def reshard_module(model: nn.Module):
 
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
-    logger = get_logger()
     language_model = get_language_model(model)
-    target_list = sorted(frozenset(ac_config.targets))
-    selective_layers = 0
-    full_layers = 0
-    fallback_layer_types: set[str] = set()
-    model_supported_targets: set[str] = set()
+    wrap_block = get_activation_checkpoint_wrapper(ac_config)
+    checkpointed_layers = 0
 
     for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
         if layer_id % ac_config.freq != 0:
             continue
 
-        if ac_config.mode == "selective" and supports_selective_activation_checkpointing(transformer_block):
-            model_supported_targets.update(get_supported_targets(transformer_block))
-            set_selective_activation_checkpointing(transformer_block, target_list)
-            selective_layers += 1
-        else:
-            if ac_config.mode == "selective":
-                fallback_layer_types.add(type(transformer_block).__name__)
-            transformer_block = checkpoint_wrapper(transformer_block, preserve_rng_state=False)
-            full_layers += 1
+        language_model.layers.register_module(layer_name, wrap_block(transformer_block))
+        checkpointed_layers += 1
 
-        language_model.layers.register_module(layer_name, transformer_block)
-
-    if ac_config.mode == "selective":
-        unsupported_targets = frozenset(target_list) - model_supported_targets
-        if unsupported_targets:
-            raise ValueError(
-                f"Selective activation checkpoint targets {sorted(unsupported_targets)} are not supported "
-                f"by the selected model layers. Supported targets across the model: {sorted(model_supported_targets)}"
-            )
-        if fallback_layer_types:
-            logger.warning(
-                "Selective activation checkpointing is not supported for layer types "
-                f"{sorted(fallback_layer_types)}; falling back to full checkpointing for those layers."
-            )
-        logger.info(
-            "Applied selective activation checkpointing "
-            f"(freq={ac_config.freq}, targets={target_list}, selective_layers={selective_layers}, "
-            f"full_fallback_layers={full_layers})"
-        )
-        return
-
-    logger.info(f"Applied activation checkpointing (freq={ac_config.freq})")
+    get_logger().info(
+        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers (freq={ac_config.freq})"
+    )
 
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
