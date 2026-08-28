@@ -40,22 +40,25 @@ class _SparseMLA(torch.autograd.Function):
     """Autograd wrapper for tilelang sparse MLA forward/backward kernels."""
 
     @staticmethod
-    def forward(ctx, q, kv, indices, sm_scale):
-        out, lse = sparse_mla_fwd_interface(q, kv, indices, sm_scale=sm_scale)
+    def forward(ctx, q, kv, indices, sm_scale, d_v):
+        out, lse = sparse_mla_fwd_interface(q, kv, indices, sm_scale=sm_scale, d_v=d_v)
         ctx.save_for_backward(q, kv, out, indices, lse)
         ctx.sm_scale = sm_scale
+        ctx.d_v = d_v
         return out
 
     @staticmethod
     def backward(ctx, do):
         q, kv, out, indices, lse = ctx.saved_tensors
-        dq, dkv = sparse_mla_bwd(q, kv, out, do.contiguous(), indices, lse, sm_scale=ctx.sm_scale)
-        return dq, dkv, None, None
+        dq, dkv = sparse_mla_bwd(q, kv, out, do.contiguous(), indices, lse, sm_scale=ctx.sm_scale, d_v=ctx.d_v)
+        return dq, dkv, None, None, None
 
 
 def apply_rope_interleave_single(
     t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, unsqueeze_dim: int = 1
 ) -> torch.Tensor:
+    if t.shape[-1] == 0:
+        return t
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
     b, h, s, d = t.shape
@@ -268,6 +271,6 @@ class GlmMoeDsaAttention(nn.Module):
             position_embeddings_full=position_embeddings,
         )
 
-        out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling)
+        out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling, self.v_head_dim)
         cached_indices = indices if self.use_index_cache else None
         return self.output_proj(out, w_v), cached_indices
