@@ -1,13 +1,13 @@
 output_dir = "outputs/gemma4-26b-a4b-intellect3-32k-fa4-full-epoch"
-clean_output_dir = true
+clean = true
 max_steps = 4019
-loss_impl = "liger_fused"
 
 [deployment]
 type = "single_node"
-num_gpus = 8
+num_train_gpus = 8
+num_infer_gpus = 0
 
-[wandb]
+[monitors.wandb]
 entity = "primeintellect"
 project = "gemma4-sft"
 name = "gemma4-26b-a4b-base-intellect3-32k-fa4-full-epoch"
@@ -45,7 +45,6 @@ splits = ["train"]
 batch_size = 8
 micro_batch_size = 1
 seq_len = 32768
-pack_function = "cat"
 shuffle = true
 seed = 42
 
