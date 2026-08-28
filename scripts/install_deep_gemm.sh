@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # Build and install DeepGEMM from source for FP8 MoE inference + FP8 training.
 #
-# Pinned to d30fc36 — the commit our FP8 grouped-GEMM training path requires
-# (newer than the 477618c that vLLM 0.17/0.19 used). The matching prebuilt
-# wheel lives at tools/wheels/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl
-# and is what `pyproject.toml` consumes by default; this script is for
-# rebuilding when torch / CUDA / vllm bumps invalidate that wheel.
+# Pinned to 891d57b. The release assets in `[tool.uv.sources]` use this commit.
+# Use this script to rebuild when torch, CUDA, or vLLM invalidates those wheels.
 #
 # Requires CUDA 12.8+ and a Hopper/Blackwell GPU.
 #
@@ -14,7 +11,7 @@
 #   bash scripts/install_deep_gemm.sh --wheel-dir tools/wheels   # build wheel only
 #
 # Options:
-#   --ref REF             DeepGEMM commit hash (default: d30fc36)
+#   --ref REF             DeepGEMM commit hash (default: 891d57b)
 #   --wheel-dir DIR       Output wheel to DIR instead of installing
 
 set -euo pipefail
@@ -23,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 DEEPGEMM_GIT_REPO="https://github.com/deepseek-ai/DeepGEMM.git"
-DEEPGEMM_GIT_REF="d30fc36c8f229f4f873b90a492f6e19e6e610923"
+DEEPGEMM_GIT_REF="891d57b4db1071624b5c8fa0d1e51cb317fa709f"
 WHEEL_DIR=""
 
 while [[ $# -gt 0 ]]; do
