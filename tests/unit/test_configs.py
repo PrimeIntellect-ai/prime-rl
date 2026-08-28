@@ -194,7 +194,6 @@ def test_supported_moe_runtime_configs(model):
 @pytest.mark.parametrize(
     ("model", "message"),
     [
-        ({"ep": 1, "moe": {"dispatch": {"type": "deepep"}}}, "requires model.ep > 1"),
         (
             {
                 "ep": 2,
@@ -204,16 +203,6 @@ def test_supported_moe_runtime_configs(model):
                 },
             },
             "MXFP8 transport requires",
-        ),
-        (
-            {
-                "ep": 1,
-                "moe": {
-                    "compute": {"type": "mxfp8"},
-                    "dispatch": {"type": "torch", "transport": "mxfp8"},
-                },
-            },
-            "requires model.ep > 1",
         ),
         (
             {

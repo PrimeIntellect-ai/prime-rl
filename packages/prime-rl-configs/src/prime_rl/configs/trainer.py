@@ -379,18 +379,17 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def validate_moe_runtime(self):
+        if self.ep == 1:
+            return self
+
         compute = self.moe.compute
         dispatch = self.moe.dispatch
         if isinstance(dispatch, DeepEPMoEDispatchConfig):
-            if isinstance(self.ep, int) and self.ep <= 1:
-                raise ValueError("model.moe.dispatch.type='deepep' requires model.ep > 1.")
             if isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
         elif dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
-            if isinstance(self.ep, int) and self.ep <= 1:
-                raise ValueError("MXFP8 transport requires model.ep > 1.")
         return self
 
 
@@ -687,7 +686,7 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
-        if self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
+        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping is not compatible with DeepEP. "
                 "Automatically setting optim.max_norm to None (disabled).",
