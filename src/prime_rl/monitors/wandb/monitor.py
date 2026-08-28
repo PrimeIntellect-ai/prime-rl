@@ -42,6 +42,9 @@ class WandbMonitor(Monitor):
             self.logger.debug(f"Found WANDB_ARGS in environment variables {wandb_args}")
             sys.argv = json.loads(wandb_args)
 
+        # W&B advertises Weave on every init when it sees openai/verifiers imported.
+        os.environ.setdefault("WANDB_DISABLE_WEAVE", "1")
+
         # WANDB_MODE=disabled/offline takes precedence over shared mode — shared mode
         # requires a server connection and can't work offline.
         shared_mode = os.environ.get("WANDB_SHARED_MODE") == "1" and os.environ.get("WANDB_MODE") not in (

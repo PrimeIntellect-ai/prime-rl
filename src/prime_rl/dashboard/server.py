@@ -1,4 +1,4 @@
-"""Local dashboard for prime-rl runs: logs, metrics, and rollout traces.
+"""Local dashboard for prime-rl runs: logs, metrics, rollout traces, and reports.
 
 This package is fully AI-generated and maintained by agents - it is not meant to be read or edited by humans. Change it by asking an agent, and verify through the browser smoke tests.
 
@@ -11,6 +11,7 @@ Multiple output directories can be tracked at once.
 """
 
 import argparse
+import asyncio
 import hashlib
 import os
 import sys
@@ -22,12 +23,13 @@ from pathlib import Path
 import orjson
 
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
+from prime_rl.utils.config import default_output_dir
 from prime_rl.utils.process import set_proc_title
 
 try:
     import uvicorn
     from fastapi import FastAPI, HTTPException, Query
-    from fastapi.responses import FileResponse
+    from fastapi.responses import FileResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
 except ModuleNotFoundError as error:  # the dashboard ships as an extra
     raise SystemExit("the dashboard needs the 'dashboard' extra - install with `uv sync --extra dashboard`") from error
@@ -37,7 +39,7 @@ MASTER_LOGS = {"trainer.log", "orchestrator.log", "inference.log", "evals.log"}
 MAX_LOG_CHUNK = 2_000_000
 
 app = FastAPI()
-output_dirs: list[Path] = [Path("outputs")]
+output_dirs: list[Path] = [default_output_dir()]
 
 # run id -> run dir, rebuilt on every /api/runs poll; ids are the run name,
 # qualified with the output dir's basename when two dirs hold the same name
@@ -64,7 +66,7 @@ def _lru_put(cache: OrderedDict, key, value) -> None:
 
 
 # Append-only file caches keyed by absolute path: line-start offsets and per-episode summaries.
-_offsets_cache: OrderedDict[Path, tuple[int, list[int]]] = OrderedDict()
+_offsets_cache: OrderedDict[Path, tuple[int, bytes, list[int]]] = OrderedDict()
 _summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
@@ -206,10 +208,27 @@ def model_name(config: dict) -> str | None:
     return model if isinstance(model, str) else (model or {}).get("name")
 
 
-def resolved_config_dir(run_dir: Path) -> Path:
-    """Where the resolved JSON dumps live: `configs/resolved/`, or `configs/` on
-    runs from before the launch-TOML split."""
+def config_attempt_numbers(run_dir: Path) -> list[int]:
+    return [n for n, _ in numbered_dirs(run_dir / "configs", "attempt_")]
+
+
+def config_attempt_dir(run_dir: Path, attempt: str = "latest") -> tuple[Path, int | None]:
+    """Return one config attempt root, with a fallback for legacy run layouts."""
     configs = run_dir / "configs"
+    attempts = config_attempt_numbers(run_dir)
+    if not attempts:
+        return configs, None
+    if attempt == "latest":
+        latest = (configs / "latest").resolve()
+        attempt_num = int(latest.name.removeprefix("attempt_")) if latest.is_dir() else attempts[-1]
+    else:
+        attempt_num = int(attempt)
+    return configs / f"attempt_{attempt_num}", attempt_num
+
+
+def resolved_config_dir(run_dir: Path, attempt: str = "latest") -> Path:
+    """Return resolved JSON dumps for one attempt or a legacy run."""
+    configs, _ = config_attempt_dir(run_dir, attempt)
     resolved = configs / "resolved"
     return resolved if resolved.is_dir() else configs
 
@@ -276,6 +295,7 @@ def run_meta(run_dir: Path) -> dict:
         "type": run_type,
         "model": model_name(config),
         "dataset": (config.get("data") or {}).get("name"),
+        "has_validation": run_type == "sft" and config.get("val") is not None,
         "env": ((config.get("env") or {}).get("taskset") or {}).get("id"),
         "total_episodes": (config.get("num_tasks") or 0) * (config.get("num_rollouts") or 0) or None,
         "max_steps": config.get("max_steps"),
@@ -363,7 +383,7 @@ def list_logfiles(run: str, attempt: str = "latest") -> dict:
         for path in sorted(attempt_dir.rglob("*.log")):
             component, label = log_component(path.relative_to(attempt_dir))
             add(path, component, label)
-    # The evals process writes its env-server logs outside attempt_N (logs/envs/eval/*.log).
+    # Include unscoped env logs from runs created before attempt-scoped eval logging.
     for path in sorted((run_dir / "logs" / "envs").rglob("*.log")):
         add(path, f"env:{path.stem}", f"{path.stem} (evals)")
     return {"attempt": attempt_num, "attempts": attempts, "files": files}
@@ -405,27 +425,73 @@ def config_rank(name: str) -> tuple[int, str]:
 
 
 @app.get("/api/runs/{run}/configs")
-def list_configs(run: str) -> dict:
+def list_configs(run: str, attempt: str = "latest") -> dict:
     """Two views of a run's config: each launch TOML (verbatim, as the run was
     started) and one "resolved" document concatenating every resolved JSON dump."""
     run_dir = get_run_dir(run)
-    configs_dir = run_dir / "configs"
+    configs_dir, attempt_num = config_attempt_dir(run_dir, attempt)
     files = sorted((p.name for p in configs_dir.glob("*.toml")), key=config_rank) if configs_dir.is_dir() else []
-    if any(resolved_config_dir(run_dir).rglob("*.json")):
+    if any(resolved_config_dir(run_dir, attempt).rglob("*.json")):
         files.append("resolved")
-    return {"files": files}
+    if (configs_dir / "command.txt").is_file():
+        files.append("command.txt")
+    return {"attempt": attempt_num, "attempts": config_attempt_numbers(run_dir), "files": files}
 
 
 @app.get("/api/runs/{run}/config")
-def read_config(run: str, file: str) -> dict:
+def read_config(run: str, file: str, attempt: str = "latest") -> dict:
     run_dir = get_run_dir(run)
     if file == "resolved":
-        base = resolved_config_dir(run_dir)
+        base = resolved_config_dir(run_dir, attempt)
         names = sorted((str(p.relative_to(base).with_suffix("")) for p in base.rglob("*.json")), key=config_rank)
         doc = {name: read_json(base / f"{name}.json") for name in names}
         return {"file": file, "content": orjson.dumps(doc).decode()}
-    path = safe_child(run_dir / "configs", file, suffix=".toml")
+    configs_dir, _ = config_attempt_dir(run_dir, attempt)
+    path = safe_child(configs_dir, file, suffix=".txt" if file == "command.txt" else ".toml")
     return {"file": file, "content": path.read_text()}
+
+
+# ------------------------------------------------------------------------- reports
+
+
+def report_title(path: Path) -> str | None:
+    """`title:` from the frontmatter block, scanning only the first bytes of the file."""
+    try:
+        with path.open("r", errors="replace") as f:
+            head = f.read(4096)
+    except OSError:
+        return None
+    if not head.startswith("---"):
+        return None
+    for line in head.splitlines()[1:]:
+        if line.strip() == "---":
+            break
+        key, _, value = line.partition(":")
+        if key.strip() == "title":
+            return value.strip().strip("\"'") or None
+    return None
+
+
+@app.get("/api/runs/{run}/reports")
+def list_reports(run: str) -> dict:
+    """Markdown reports under <run>/reports/, newest first."""
+    reports_dir = get_run_dir(run) / "reports"
+    rows = []
+    for path in reports_dir.glob("*.md") if reports_dir.is_dir() else []:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        rows.append({"file": path.name, "title": report_title(path), "mtime": stat.st_mtime, "size": stat.st_size})
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
+    return {"reports": rows}
+
+
+@app.get("/api/runs/{run}/report")
+def read_report(run: str, file: str) -> dict:
+    path = safe_child(get_run_dir(run) / "reports", file, suffix=".md")
+    stat = path.stat()
+    return {"file": file, "text": path.read_text(errors="replace"), "mtime": stat.st_mtime, "size": stat.st_size}
 
 
 # ------------------------------------------------------------------------- metrics
@@ -510,9 +576,13 @@ def rollout_steps(run_dir: Path) -> list[dict]:
 def line_offsets(path: Path) -> list[int]:
     size = path.stat().st_size
     with _lock:
-        cached_size, offsets = _lru_get(_offsets_cache, path) or (0, [])
-        if cached_size > size:  # rewritten (e.g. resume cleanup): rebuild
-            cached_size, offsets = 0, []
+        cached_size, checkpoint, offsets = _lru_get(_offsets_cache, path) or (0, b"", [])
+        if cached_size > size or (cached_size and file_checkpoint(path, cached_size) != checkpoint):
+            # The bytes immediately before the old EOF changed: this is a rewrite,
+            # not an append. Invalidate offsets and their derived summaries together.
+            cached_size, checkpoint, offsets = 0, b"", []
+            _summaries_cache.pop(path, None)
+            _sidecar_written.pop(path, None)
         if cached_size == size:
             return offsets
     # re-scan from the last recorded line (it may have been partial) into a local
@@ -528,14 +598,21 @@ def line_offsets(path: Path) -> list[int]:
             if line.strip():
                 found.append(pos)
             pos += len(line)
+        scanned_size = f.tell()
     with _lock:
-        cached_size, current = _lru_get(_offsets_cache, path) or (0, offsets)
-        if cached_size > size:
-            current = []
+        cached_size, checkpoint, current = _lru_get(_offsets_cache, path) or (0, b"", offsets)
+        current_matches = not cached_size or file_checkpoint(path, cached_size) == checkpoint
+        if cached_size > scanned_size and current_matches:
+            return current  # a concurrent reader already scanned farther
+        if not current_matches:
+            cached_size, current = 0, []
+            _summaries_cache.pop(path, None)
+            _sidecar_written.pop(path, None)
         for offset in found:
             if not current or offset > current[-1]:
                 current.append(offset)
-        _lru_put(_offsets_cache, path, (max(size, cached_size), current))
+        cached_size = max(scanned_size, cached_size)
+        _lru_put(_offsets_cache, path, (cached_size, file_checkpoint(path, cached_size), current))
     return current
 
 
@@ -647,7 +724,7 @@ def episode_summaries(path: Path) -> list[dict]:
                 summaries.append({"line": line_no, "id": None, "error": "unparseable"})
     with _lock:
         _lru_put(_summaries_cache, path, (len(offsets), summaries))
-    write_sidecar(path, offsets, summaries)
+    write_sidecar(path, summaries)
     return summaries
 
 
@@ -665,25 +742,46 @@ def sidecar_path(path: Path) -> Path:
     return SIDECAR_DIR / f"{digest}.json"
 
 
+def file_checkpoint(path: Path, end: int) -> bytes:
+    """Bytes immediately before a previously observed EOF.
+
+    Appends preserve this window; rewrites and truncate-then-regrow resumes do
+    not. Checking 64 bytes stays constant-time even for multi-gigabyte traces.
+    """
+    with path.open("rb") as f:
+        start = max(0, end - 64)
+        f.seek(start)
+        return f.read(end - start)
+
+
 def load_sidecar(path: Path) -> list[dict] | None:
     data = read_json(sidecar_path(path))
     try:
-        if data.get("path") != str(path.resolve()) or path.stat().st_size < data["size"]:
-            return None  # different file, or rewritten smaller (relaunch)
+        if (
+            data.get("path") != str(path.resolve())
+            or path.stat().st_size < data["size"]
+            or data.get("checkpoint") != file_checkpoint(path, data["size"]).hex()
+        ):
+            return None
         return data["summaries"]
     except (KeyError, OSError):
         return None
 
 
-def write_sidecar(path: Path, offsets: list[int], summaries: list[dict]) -> None:
+def write_sidecar(path: Path, summaries: list[dict]) -> None:
     now = time.monotonic()
     last_time, last_count = _sidecar_written.get(path, (0.0, -1))
     if len(summaries) == last_count or now - last_time < SIDECAR_WRITE_INTERVAL_S:
         return
     _sidecar_written[path] = (now, len(summaries))
     SIDECAR_DIR.mkdir(parents=True, exist_ok=True)
-    consumed = offsets[len(summaries) - 1] if summaries else 0
-    payload = {"path": str(path.resolve()), "size": consumed, "summaries": summaries}
+    size = path.stat().st_size
+    payload = {
+        "path": str(path.resolve()),
+        "size": size,
+        "checkpoint": file_checkpoint(path, size).hex(),
+        "summaries": summaries,
+    }
     target = sidecar_path(path)
     tmp = target.with_suffix(".tmp")
     tmp.write_bytes(orjson.dumps(payload))
@@ -704,6 +802,306 @@ def traces_path(run: str, step: int, kind: str, subset: str) -> Path:
     raise HTTPException(404, "no traces for this step/kind/subset")
 
 
+def read_episode_record(path: Path, line: int) -> dict:
+    offsets = line_offsets(path)
+    if not 0 <= line < len(offsets):
+        raise HTTPException(404, "episode line out of range")
+    with path.open("rb") as f:
+        f.seek(offsets[line])
+        return orjson.loads(f.readline())
+
+
+def message_text(message: dict) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
+    return "" if content is None else str(content)
+
+
+def timeline_status(trace: dict) -> str:
+    if not trace.get("is_completed"):
+        return "running"
+    if not trace.get("ok") and (trace.get("errors") or trace.get("stop_condition") == "error"):
+        return "failed"
+    return "completed"
+
+
+def timeline_reward(trace: dict) -> float | None:
+    rewards = [reward for reward in (trace.get("rewards") or {}).values() if isinstance(reward, dict)]
+    if not rewards:
+        return None
+    return sum(
+        (reward.get("score") or 0) * (reward.get("weight") if reward.get("weight") is not None else 1)
+        for reward in rewards
+    )
+
+
+def trace_branch_paths(nodes: list[dict]) -> list[list[int]]:
+    """Return VF-native root-to-leaf branches in leaf-index order."""
+    if not nodes:
+        return []
+    parents = {parent for node in nodes if isinstance((parent := node.get("parent")), int) and 0 <= parent < len(nodes)}
+    paths = []
+    for leaf in (index for index in range(len(nodes)) if index not in parents):
+        path = []
+        seen = set()
+        node_index: int | None = leaf
+        while isinstance(node_index, int) and 0 <= node_index < len(nodes) and node_index not in seen:
+            seen.add(node_index)
+            path.append(node_index)
+            node_index = nodes[node_index].get("parent")
+        paths.append(list(reversed(path)))
+    return paths
+
+
+def token_usage(usage: dict) -> tuple[int | None, int | None, int | None]:
+    prompt_tokens = usage.get("prompt_tokens")
+    output_tokens = usage.get("completion_tokens")
+    if "cached_input_tokens" in usage:
+        return prompt_tokens, usage.get("cached_input_tokens"), output_tokens
+    cached_tokens = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+    input_tokens = (
+        max(0, prompt_tokens - cached_tokens) if prompt_tokens is not None and cached_tokens else prompt_tokens
+    )
+    return input_tokens, cached_tokens, output_tokens
+
+
+def activity_spans(
+    trace: dict,
+    node_indexes: set[int],
+    *,
+    include_unlinked: bool = False,
+    shared_node_indexes: set[int] | None = None,
+) -> list[dict]:
+    nodes = trace.get("nodes") or []
+    spans = []
+    for call_index, call in enumerate(trace.get("calls") or []):
+        node_index = call.get("node")
+        if node_index is None:
+            if not include_unlinked:
+                continue
+            node = {}
+        elif node_index not in node_indexes:
+            continue
+        else:
+            node = nodes[node_index]
+        call_time = call.get("time") or {}
+        started = call_time.get("start")
+        ended = call_time.get("end")
+        usage = call.get("usage") or {}
+        input_tokens, cached_tokens, output_tokens = token_usage(usage)
+        reasoning_tokens = usage.get("reasoning_tokens")
+        if reasoning_tokens is None:
+            reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+        text = " ".join(message_text(node.get("message") or {}).split())
+        spans.append(
+            {
+                "kind": "model_call",
+                "label": f"turn {len(spans) + 1}",
+                "track": "activity",
+                "call_index": call_index,
+                "node_index": node_index,
+                "shared": node_index in shared_node_indexes if shared_node_indexes is not None else False,
+                "started_at": started,
+                "ended_at": ended,
+                "status": "completed" if ended is not None or trace.get("is_completed") else "running",
+                "snippet": text[:240],
+                "input_tokens": input_tokens,
+                "cached_tokens": cached_tokens,
+                "output_tokens": output_tokens,
+                "reasoning_tokens": reasoning_tokens,
+                "cost": usage.get("cost"),
+            }
+        )
+    return sorted(spans, key=lambda span: span["started_at"] if span["started_at"] is not None else float("inf"))
+
+
+def lifecycle_spans(trace: dict) -> list[dict]:
+    timing = trace.get("timing") or {}
+    spans = []
+    for kind, label in (
+        ("boot", "boot"),
+        ("setup", "setup"),
+        ("agent", "agent"),
+        ("finalize", "finalize"),
+        ("scoring", "scoring"),
+    ):
+        span = timing.get(kind) or {}
+        if not span.get("start"):
+            continue
+        spans.append(
+            {
+                "kind": kind,
+                "label": label,
+                "track": "lifecycle",
+                "started_at": span["start"],
+                "ended_at": span.get("end") or None,
+                "status": "completed" if span.get("end") or trace.get("is_completed") else "running",
+            }
+        )
+    return spans
+
+
+def timeline_lane(
+    trace: dict,
+    trace_index: int,
+    *,
+    label: str,
+    depth: int,
+    branch: bool,
+    lifecycle: list[dict],
+    activities: list[dict],
+    started_at: float | None = None,
+) -> dict:
+    spans = lifecycle + activities
+    starts = [span["started_at"] for span in spans if span.get("started_at") is not None]
+    ends = [span["ended_at"] for span in spans if span.get("ended_at") is not None]
+    started = started_at if started_at is not None else min(starts or ends, default=None)
+    status = (
+        ("completed" if all(span["status"] == "completed" for span in lifecycle + activities) else "running")
+        if branch
+        else timeline_status(trace)
+    )
+    ended = max(ends, default=None) if status != "running" else None
+    agent = trace.get("agent") or {}
+    config = agent.get("config") or {}
+    client = config.get("client") or {}
+
+    def total(field: str) -> int | float | None:
+        values = [span[field] for span in activities if isinstance(span.get(field), (int, float))]
+        return sum(values) if values else None
+
+    input_tokens = total("input_tokens")
+    cached_tokens = total("cached_tokens")
+    output_tokens = total("output_tokens")
+    reasoning_tokens = total("reasoning_tokens")
+    total_input_tokens = input_tokens + (cached_tokens or 0) if input_tokens is not None else None
+    total_tokens = (
+        total_input_tokens + output_tokens if total_input_tokens is not None and output_tokens is not None else None
+    )
+    context_lengths = [
+        (span.get("input_tokens") or 0) + (span.get("cached_tokens") or 0)
+        for span in activities
+        if span.get("input_tokens") is not None
+    ]
+    return {
+        "trace_index": trace_index,
+        "label": label,
+        "model": config.get("model") or client.get("renderer_model_name") or "",
+        "depth": depth,
+        "started_at": started,
+        "ended_at": ended,
+        "status": status,
+        "outcome": status if branch else (trace.get("stop_condition") or status),
+        "reward": timeline_reward(trace),
+        "usage": {
+            "model_calls": len(activities),
+            "input_tokens": input_tokens,
+            "cached_tokens": cached_tokens,
+            "total_input_tokens": total_input_tokens,
+            "output_tokens": output_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "max_context_tokens": max(context_lengths, default=None),
+            "total_tokens": total_tokens,
+            "cost": total("cost"),
+        },
+        "spans": spans,
+    }
+
+
+def project_episode_timeline(episode: dict) -> dict:
+    lane_groups = []
+    for trace_index, trace in enumerate(episode.get("traces") or []):
+        nodes = trace.get("nodes") or []
+        branch_paths = trace_branch_paths(nodes)
+        node_branch_counts: dict[int, int] = {}
+        for path in branch_paths:
+            for node_index in path:
+                node_branch_counts[node_index] = node_branch_counts.get(node_index, 0) + 1
+        role = (trace.get("agent") or {}).get("name") or "agent"
+        parent = timeline_lane(
+            trace,
+            trace_index,
+            label=role,
+            depth=0,
+            branch=False,
+            lifecycle=lifecycle_spans(trace),
+            activities=activity_spans(trace, set(), include_unlinked=True),
+            started_at=(trace.get("timing") or {}).get("start"),
+        )
+        branches = []
+        for branch_index, path in enumerate(branch_paths):
+            node_indexes = set(path)
+            shared_node_indexes = {node_index for node_index in path if node_branch_counts.get(node_index, 0) > 1}
+            unique_node_indexes = node_indexes - shared_node_indexes
+            activities = activity_spans(
+                trace,
+                node_indexes,
+                shared_node_indexes=shared_node_indexes,
+            )
+            path_timestamps = [
+                nodes[node_index].get("timestamp")
+                for node_index in path
+                if nodes[node_index].get("timestamp") is not None
+            ]
+            unique_timestamps = [
+                nodes[node_index].get("timestamp")
+                for node_index in unique_node_indexes
+                if nodes[node_index].get("timestamp") is not None
+            ]
+            activity_starts = [span["started_at"] for span in activities if span["started_at"] is not None]
+            unique_activity_starts = [
+                span["started_at"] for span in activities if not span["shared"] and span["started_at"] is not None
+            ]
+            branch_start = min(activity_starts or path_timestamps, default=None)
+            sort_start = min(
+                unique_activity_starts or unique_timestamps or activity_starts or path_timestamps, default=None
+            )
+            branch_end = max(
+                [span["ended_at"] for span in activities if span.get("ended_at") is not None] + path_timestamps,
+                default=None,
+            )
+            branch_completed = bool(trace.get("is_completed"))
+            label = f"branch {branch_index}"
+            branch_lifecycle = (
+                [
+                    {
+                        "kind": "agent",
+                        "label": label,
+                        "track": "lifecycle",
+                        "started_at": branch_start,
+                        "ended_at": branch_end if branch_completed else None,
+                        "status": "completed" if branch_completed else "running",
+                        "node_index": path[-1],
+                    }
+                ]
+                if branch_start is not None
+                else []
+            )
+            branches.append(
+                (
+                    sort_start,
+                    branch_index,
+                    timeline_lane(
+                        trace,
+                        trace_index,
+                        label=label,
+                        depth=1,
+                        branch=True,
+                        lifecycle=branch_lifecycle,
+                        activities=activities,
+                    ),
+                )
+            )
+        branches.sort(key=lambda item: (item[0] if item[0] is not None else float("inf"), item[1]))
+        lane_groups.append((parent, [lane for _, _, lane in branches]))
+    lane_groups.sort(key=lambda group: group[0]["started_at"] if group[0]["started_at"] is not None else float("inf"))
+    lanes = [lane for parent, children in lane_groups for lane in (parent, *children)]
+    return {"lanes": lanes}
+
+
 @app.get("/api/runs/{run}/rollouts")
 def list_rollouts(run: str) -> dict:
     return {"steps": rollout_steps(get_run_dir(run))}
@@ -715,7 +1113,8 @@ def list_episodes(
     step: int,
     kind: str,
     subset: str,
-    limit: int = Query(default=5000, le=5000),
+    limit: int = Query(default=5000, ge=1, le=5000),
+    episode: str | None = None,
     env: str | None = None,
     errors_only: bool = False,
     sort: str = "line",
@@ -728,6 +1127,8 @@ def list_episodes(
         return unchanged
     summaries = episode_summaries(path)
     envs = sorted({s["env"] for s in summaries if s.get("env")})
+    if episode is not None:
+        summaries = [s for s in summaries if s.get("id") == episode]
     if env:
         summaries = [s for s in summaries if s.get("env") == env]
     if errors_only:
@@ -766,6 +1167,56 @@ def decode_pieces(model: str, ids: list[int]) -> list[str] | None:
     return pieces
 
 
+def trace_node_paths(trace: dict) -> list[list[int]]:
+    """Root-to-leaf node indexes in the same order as the trace viewer."""
+    nodes = trace.get("nodes") or []
+    has_child = {node.get("parent") for node in nodes if isinstance(node, dict) and isinstance(node.get("parent"), int)}
+    paths = []
+    for leaf in (index for index in range(len(nodes)) if index not in has_child):
+        path = []
+        seen = set()
+        index = leaf
+        while isinstance(index, int) and 0 <= index < len(nodes) and index not in seen:
+            seen.add(index)
+            path.append(index)
+            parent = nodes[index].get("parent") if isinstance(nodes[index], dict) else None
+            index = parent if isinstance(parent, int) else None
+        paths.append(list(reversed(path)))
+    return paths
+
+
+def rendered_token_text(trace: dict, model: str | None) -> dict:
+    """Decode recorded post-renderer IDs as full branch sequences."""
+    nodes = trace.get("nodes") or []
+    paths = trace_node_paths(trace)
+    if not any(isinstance(node, dict) and node.get("token_ids") for node in nodes):
+        return {"status": "missing_token_ids", "model": model, "paths": []}
+    if not model:
+        return {"status": "missing_model", "model": None, "paths": []}
+    tokenizer = get_tokenizer(model)
+    if tokenizer is None:
+        return {"status": "tokenizer_unavailable", "model": model, "paths": []}
+
+    def decode_path(path: list[int]) -> dict:
+        ids = [token_id for index in path for token_id in (nodes[index].get("token_ids") or [])]
+        try:
+            text = tokenizer.decode(ids, skip_special_tokens=False)
+        except Exception:
+            text = None
+        return {"nodes": path, "token_count": len(ids), "text": text}
+
+    rendered_paths = [decode_path(path) for path in paths]
+    all_nodes = list(range(len(nodes)))
+    all_nodes_rendered = decode_path(all_nodes)
+    status = "ok" if all(path["text"] is not None for path in rendered_paths + [all_nodes_rendered]) else "decode_error"
+    return {
+        "status": status,
+        "model": model,
+        "paths": rendered_paths,
+        "all_nodes": all_nodes_rendered,
+    }
+
+
 @app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/series")
 def episode_series(run: str, step: int, kind: str, subset: str, etag: str | None = None, after: int = 0) -> dict:
     """Per-episode series over a traces file (x = episode order): reward, shape, and the
@@ -795,27 +1246,231 @@ def episode_series(run: str, step: int, kind: str, subset: str, etag: str | None
     return {"etag": current_etag, "count": len(summaries), "after": max(0, after), "series": series}
 
 
-@app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}")
-def get_episode(run: str, step: int, kind: str, subset: str, line: int, tokens: bool = False) -> dict:
-    path = traces_path(run, step, kind, subset)
+def read_episode_at(path: Path, line: int) -> dict:
     offsets = line_offsets(path)
     if not 0 <= line < len(offsets):
         raise HTTPException(404, "episode line out of range")
     with path.open("rb") as f:
         f.seek(offsets[line])
-        rec = orjson.loads(f.readline())
-    if not tokens:
+        return orjson.loads(f.readline())
+
+
+@app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}")
+def get_episode(
+    run: str,
+    step: int,
+    kind: str,
+    subset: str,
+    line: int,
+    tokens: bool = False,
+    rendered: bool = False,
+) -> dict:
+    path = traces_path(run, step, kind, subset)
+    rec = read_episode_at(path, line)
+    if not tokens and not rendered:
         return rec
     fallback_model = model_name(main_config(get_run_dir(run))[1])
     for trace in rec.get("traces") or []:
         client = ((trace.get("agent") or {}).get("config") or {}).get("client") or {}
         model = client.get("renderer_model_name") or fallback_model
-        if not model:
-            continue
-        for node in trace.get("nodes") or []:
-            if node.get("token_ids"):
-                node["token_strs"] = decode_pieces(model, node["token_ids"])
+        if tokens and model:
+            for node in trace.get("nodes") or []:
+                if node.get("token_ids"):
+                    node["token_strs"] = decode_pieces(model, node["token_ids"])
+        if rendered:
+            trace["rendered_tokens"] = rendered_token_text(trace, model)
     return rec
+
+
+# --------------------------------------------------------------------- view command
+#
+# The agent-facing control plane: a local agent that already knows the on-disk
+# address of what it wants shown POSTs that address here, and every connected
+# browser tab navigates there. One-way fan-out over SSE — no WebSocket dependency,
+# and the browser's EventSource reconnects on its own. The dashboard stays a
+# filesystem reader: commands carry addresses and short highlight anchors, never
+# report or episode payloads.
+
+VIEW_TABS = {"metrics", "config", "traces", "logs", "report"}
+VIEW_KEYS = {"run", "tab", "step", "kind", "subset", "episode", "line", "trace", "branch", "report", "highlight"}
+HIGHLIGHT_KEYS = {"node", "quote", "prefix", "suffix", "reason", "field"}
+
+_view_command: dict | None = None
+_view_seq = 0
+_view_clients: set["asyncio.Queue"] = set()
+_view_url = ""  # actual serve url, stamped by main() for the 409 body
+MAX_VIEW_QUEUE = 32
+
+
+def normalize_view_int(obj: dict, key: str, minimum: int) -> int | None:
+    value = obj.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise HTTPException(400, f"{key} must be an integer")
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"{key} must be an integer") from None
+    if isinstance(value, float) and not value.is_integer():
+        raise HTTPException(400, f"{key} must be an integer")
+    if normalized < minimum:
+        raise HTTPException(400, f"{key} must be >= {minimum}")
+    obj[key] = normalized
+    return normalized
+
+
+def validate_view_command(cmd: dict) -> dict:
+    """Check the command against the filesystem so the agent cannot point at nothing.
+    Returns the command with an episode id resolved to its line number."""
+    unknown = set(cmd) - VIEW_KEYS
+    if unknown:
+        raise HTTPException(400, f"unknown fields: {sorted(unknown)} (known: {sorted(VIEW_KEYS)})")
+    run = cmd.get("run")
+    if not isinstance(run, str) or not run:
+        raise HTTPException(400, "run must be a non-empty string")
+    run_dir = get_run_dir(run)
+    tab = cmd.get("tab")
+    if tab is not None and tab not in VIEW_TABS:
+        raise HTTPException(400, f"tab must be one of {sorted(VIEW_TABS)}")
+    report = cmd.get("report")
+    if report is not None:
+        if not isinstance(report, str) or not report:
+            raise HTTPException(400, "report must be a non-empty string")
+        name = report if report.endswith(".md") else f"{report}.md"
+        safe_child(run_dir / "reports", name, suffix=".md")
+        cmd["report"] = name
+
+    step = normalize_view_int(cmd, "step", 0)
+    line = normalize_view_int(cmd, "line", 0)
+    trace_index = normalize_view_int(cmd, "trace", 0)
+    branch_index = normalize_view_int(cmd, "branch", -1)
+    episode = cmd.get("episode")
+    if episode is not None and (not isinstance(episode, str) or not episode):
+        raise HTTPException(400, "episode must be a non-empty string")
+
+    kind, subset = cmd.get("kind"), cmd.get("subset")
+    address = (step, kind, subset)
+    if any(value is not None for value in address) and not all(value is not None for value in address):
+        raise HTTPException(400, "trace addressing needs step, kind, and subset together")
+    path = traces_path(run, step, kind, subset) if all(value is not None for value in address) else None
+
+    needs_episode = episode is not None or line is not None
+    if needs_episode and path is None:
+        raise HTTPException(400, "episode addressing needs step, kind, and subset")
+    if any(value is not None for value in (trace_index, branch_index)) or cmd.get("highlight") is not None:
+        if not needs_episode:
+            raise HTTPException(400, "trace, branch, and highlight need an episode or line")
+
+    rec = None
+    if episode is not None:
+        matches = [s["line"] for s in episode_summaries(path) if s.get("id") == episode]
+        if not matches:
+            raise HTTPException(404, f"episode id {episode!r} not found in {kind}/{subset} at step {step}")
+        if len(matches) > 1:
+            raise HTTPException(409, f"episode id {episode!r} is not unique in {kind}/{subset} at step {step}")
+        line = cmd["line"] = matches[0]
+    if line is not None:
+        rec = read_episode_at(path, line)
+
+    selected_trace = None
+    if rec is not None and (trace_index is not None or branch_index is not None or cmd.get("highlight") is not None):
+        traces = rec.get("traces") or []
+        trace_index = trace_index or 0
+        if not 0 <= trace_index < len(traces):
+            raise HTTPException(404, f"trace {trace_index} not found in episode")
+        selected_trace = traces[trace_index]
+    if branch_index is not None:
+        nodes = selected_trace.get("nodes") or []
+        parents = {node.get("parent") for node in nodes if "parent" in node}
+        branches = [i for i in range(len(nodes)) if i not in parents]
+        if branch_index != -1 and not 0 <= branch_index < len(branches):
+            raise HTTPException(404, f"branch {branch_index} not found in trace {trace_index}")
+
+    highlight = cmd.get("highlight")
+    if highlight is not None:
+        if not isinstance(highlight, list) or not all(isinstance(h, dict) for h in highlight):
+            raise HTTPException(400, "highlight must be a list of objects")
+        if len(highlight) > 50:
+            raise HTTPException(400, "highlight may contain at most 50 entries")
+        nodes = selected_trace.get("nodes") or []
+        for h in highlight:
+            unknown = set(h) - HIGHLIGHT_KEYS
+            if unknown:
+                raise HTTPException(
+                    400, f"unknown highlight fields: {sorted(unknown)} (known: {sorted(HIGHLIGHT_KEYS)})"
+                )
+            node = normalize_view_int(h, "node", 0)
+            if node is None or node >= len(nodes):
+                raise HTTPException(404, f"highlight node {node} not found in trace {trace_index}")
+            quote = h.get("quote")
+            if not isinstance(quote, str) or not quote.strip():
+                raise HTTPException(400, "highlight quote must be a non-empty string")
+            for key in ("prefix", "suffix", "reason"):
+                if key in h and not isinstance(h[key], str):
+                    raise HTTPException(400, f"highlight {key} must be a string")
+            if h.get("field") not in (None, "content", "reasoning"):
+                raise HTTPException(400, "highlight field must be content|reasoning")
+    return cmd
+
+
+def _view_event(cmd: dict) -> str:
+    return f"data: {orjson.dumps(cmd).decode()}\n\n"
+
+
+@app.post("/api/view")
+async def post_view(cmd: dict) -> dict:
+    global _view_command, _view_seq
+    # validation walks the filesystem (and may summarize a traces file on first
+    # touch) — keep it off the event loop so open SSE streams never stall
+    cmd = await asyncio.to_thread(validate_view_command, cmd)
+    _view_seq += 1
+    cmd["seq"] = _view_seq
+    cmd["ts"] = time.time()
+    _view_command = cmd
+    for queue in _view_clients:
+        if queue.full():
+            queue.get_nowait()
+        queue.put_nowait(cmd)
+    if not _view_clients:
+        # stored for late-joining tabs, but the agent must not pretend it pointed
+        # at something a human saw
+        raise HTTPException(
+            409, {"error": "no dashboard tab is connected", "url": _view_url, "stored": True, "seq": _view_seq}
+        )
+    return {"ok": True, "seq": _view_seq, "clients": len(_view_clients), "line": cmd.get("line")}
+
+
+@app.get("/api/view/events")
+async def view_events() -> "StreamingResponse":
+    queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_VIEW_QUEUE)
+
+    async def stream():
+        _view_clients.add(queue)
+        try:
+            yield "retry: 2000\n\n"
+            if _view_command is not None:
+                # catch-up for a late tab: flagged so the client can decide whether
+                # a stored command is still worth replaying
+                yield _view_event({**_view_command, "replay": True})
+            while True:
+                try:
+                    yield _view_event(await asyncio.wait_for(queue.get(), timeout=15))
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"  # flushes dead connections out of the client count
+        finally:
+            _view_clients.discard(queue)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+    )
+
+
+@app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}/{line}/timeline")
+def get_episode_timeline(run: str, step: int, kind: str, subset: str, line: int) -> dict:
+    return project_episode_timeline(read_episode_at(traces_path(run, step, kind, subset), line))
 
 
 # -------------------------------------------------------------------------- static
@@ -853,6 +1508,9 @@ def free_port(host: str, start: int) -> int:
 
     for port in range(start, start + 100):
         with socket.socket() as sock:
+            # match uvicorn's own listener: without SO_REUSEADDR a just-killed
+            # dashboard's TIME_WAIT sockets push restarts onto the next port
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind((host, port))
             except OSError:
@@ -886,9 +1544,9 @@ def release_daemon() -> None:
 
 
 def main() -> None:
-    global output_dirs, isolated
+    global output_dirs, isolated, _view_url
     parser = argparse.ArgumentParser(description="prime-rl run dashboard")
-    parser.add_argument("output_dirs", nargs="*", default=[Path("outputs")], type=Path, metavar="output_dir")
+    parser.add_argument("output_dirs", nargs="*", default=[default_output_dir()], type=Path, metavar="output_dir")
     parser.add_argument("--port", type=int, default=7788)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
@@ -914,6 +1572,7 @@ def main() -> None:
         print(f"port {args.port} is taken - serving on {port}", file=sys.stderr)
     args.port = port
     url = f"http://localhost:{args.port}"
+    _view_url = url
     # first non-isolated instance owns discovery; extras and --isolated still serve
     claimed = False if isolated else claim_daemon(url)
     live = None

@@ -9,7 +9,7 @@ description: Monitor an ongoing prime-rl training run — find the output direct
 
 ### On launch
 
-1. Find the run dir and read the resolved configs at `{run_dir}/configs/resolved/` (start with `rl.json`, or `orchestrator.json` on local runs). The launch TOML is copied verbatim to `{run_dir}/configs/rl.toml`. The run dir is `{output_dir}/{run_name}` — `run.name` auto-generates as `<envs>--<model>--<short-id>`, so if you only know the output dir, pick the most recently modified subdirectory (`ls -t {output_dir} | head -1`) or read `run.name` from the launch command.
+1. Find the run dir and read the resolved configs at `{run_dir}/configs/latest/resolved/` (start with `rl.json`, or `orchestrator.json` on local runs). Read the launch command from `{run_dir}/configs/latest/command.txt`. The launch TOML is copied verbatim to `{run_dir}/configs/latest/rl.toml`. The run dir is `{output_dir}/{run_name}` — `run.name` auto-generates as `<envs>--<model>--<short-id>`, so if you only know the output dir, pick the most recently modified subdirectory (`ls -t {output_dir} | head -1`) or read `run.name` from the launch command.
 2. Confirm all processes are alive and the run is making progress.
 3. Write the initial summary into `{run_dir}/STATUS.md`.
 
@@ -48,15 +48,15 @@ In W&B, each project auto-gets an **"overview" saved view** (train / eval / stab
 
 ### Where to find things
 
-- `{run_dir}/configs/` — the launch TOML copied verbatim (`rl.toml`/`sft.toml`), plus `resolved/` with the per-component resolved configs, written as JSON so explicit None settings round-trip.
+- `{run_dir}/configs/latest/` — the current attempt's command, launch TOML, and `resolved/` JSON files. Each launch stays under `configs/attempt_<n>/`.
 - `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
-- `{run_dir}/rollouts/step_N/{train,eval}/` — saved episodes (see Episodes below).
+- `{run_dir}/rollouts/step_{n}/{train,eval}/` — saved episodes (see Episodes below).
 
 ### Dashboard
 
-`uv run dashboard [output_dir ...]` (default `outputs/`; several dirs can be tracked at
+`uv run dashboard [output_dir ...]` (default `outputs/`, or `$PRL_OUTPUT_DIR` if set; several dirs can be tracked at
 once) serves a local web dashboard at `http://localhost:7788` with four views per run:
-metrics (the W&B overview sections, read from `metrics.jsonl`), the resolved config
+metrics (the W&B overview sections, read from `metrics.jsonl`), per-attempt config
 files, a rollout trace viewer with a per-token advantage/logprob view, and merged
 component logs. It only reads the run dirs — safe to run against a live run.
 `--port`/`--host` pick the bind address; a taken port automatically bumps to the next
@@ -82,7 +82,7 @@ Verify liveness with `curl -sf <url>/api/runs` and hand the researcher the `url`
 {run_dir}/logs/latest/
 ├── trainer.log                # rank 0 stdout
 ├── orchestrator.log           # orchestrator stdout
-├── evals.log                  # SFT online-eval evals stdout (single-node; the decoupled multi-node eval job logs at {run_dir}/logs/evals.log)
+├── evals.log                  # SFT online-eval evals stdout
 ├── inference.log              # vLLM stdout
 ├── trainer/
 │   ├── node_*.log             # per-node (multi-node only)
@@ -92,6 +92,8 @@ Verify liveness with `curl -sf <url>/api/runs` and hand the researcher the `url`
 │   └── router.log             # the single global router (multi-node only; single-node logs it in inference.log)
 └── envs/{train,eval}/{env_name}.log    # one log file per env
 ```
+
+SLURM batch logs are under `{run_dir}/launcher/logs/*job_*.log`.
 
 Usually tailing `trainer.log`, `orchestrator.log`, and `inference.log` is enough. Drop into per-node or per-rank logs only when debugging. All logs are loguru with `HH:mm:ss  LEVEL  message`; levels: `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`.
 
@@ -133,7 +135,7 @@ All metrics print to the console log (and W&B when configured).
 |--------|-------------|
 | `mismatch_kl/{all,env}/{mean,std,max}` | KL between trainer and (old) inference policy over trainable tokens |
 | `entropy/{all,env}/{mean,std,max}` | policy entropy over trainable tokens |
-| `masked_advantage_{positive,negative}/mean` | fraction of DPPO-masked tokens with +/- advantage |
+| `is_masked/mean` | fraction of tokens masked by the IPO trust region |
 | `optim/grad_norm` | spikes may precede divergence |
 
 **Performance** — trainer and orchestrator step independently, so comparing step times shows who's waiting on whom.
@@ -160,8 +162,8 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 ### Episodes
 
 ```
-{run_dir}/rollouts/step_N/{train,eval}/all/traces.jsonl        # appended per episode as it completes
-{run_dir}/rollouts/step_N/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
+{run_dir}/rollouts/step_{n}/{train,eval}/all/traces.jsonl        # appended per episode as it completes
+{run_dir}/rollouts/step_{n}/{train,eval}/effective/traces.jsonl  # written per finalized batch / eval epoch
 ```
 
 JSONL files of native `vf.Episode` records (training tensors excluded), one line per episode.
@@ -180,7 +182,7 @@ jq '.traces[].rewards' {run_dir}/rollouts/step_42/train/effective/traces.jsonl
 jq 'select(.ok | not) | {id, env: .env.id, errors}' {run_dir}/rollouts/step_*/train/all/traces.jsonl
 ```
 
-The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_N/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the episode subtrees.
+The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_{n}/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the episode subtrees.
 
 ### Common failure modes
 

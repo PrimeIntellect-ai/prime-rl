@@ -1,4 +1,4 @@
-/* prime-rl dashboard frontend: metrics (wandb-overview replica), merged logs, trace viewer.
+/* prime-rl dashboard frontend: metrics, configs, merged logs, traces, and cited reports.
    This package is fully AI-generated and maintained by agents - it is not meant to be read or edited by humans. Change it by asking an agent, and verify through the browser smoke tests. */
 
 const $ = (sel) => document.querySelector(sel);
@@ -12,7 +12,7 @@ const api = async (path) => {
 /* accent-first line palette, then the prime-context chart palette */
 const PALETTE = ["#b6ff3c", "#b7a6fa", "#78f8a5", "#fcdaa4", "#4a9eff", "#ff6b4a", "#bcbcbc"];
 const SINGLE_SERIES = "#b6ff3c";
-const POLL_MS = 3000;
+const POLL_MS = 5000;
 const prefs = JSON.parse(localStorage.getItem("prl-dash") || "{}");
 
 const state = {
@@ -31,7 +31,10 @@ const state = {
     paneOrder: prefs.paneOrder ?? {},
   },
   compare: { runs: [], data: new Map() },
-  config: { loaded: false, files: [], file: null, fmt: "toml", cache: new Map() },
+  config: {
+    loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
+    files: [], file: null, fmt: "toml", commandText: "", cache: new Map(),
+  },
   logs: {
     loaded: false, attempt: "latest", attempts: [], files: [], paneFile: {},
     components: prefs.logComponents ? new Set(prefs.logComponents) : null,
@@ -45,11 +48,14 @@ const state = {
     errorsOnly: prefs.traceErrorsOnly ?? false,
     sort: (prefs.traceSort ?? "line:asc").split(":")[0],
     order: (prefs.traceSort ?? "line:asc").split(":")[1],
+    viewMode: prefs.tokenSignal === "rendered" ? "rendered" : (prefs.traceViewMode ?? "messages"),
   },
+  report: { loaded: false, files: [], file: null, wanted: null, text: null, mtime: null, citations: {}, order: [], verify: new Map() },
+  follow: prefs.follow ?? true,
 };
 
 function fmtNum(v) {
-  if (v == null || Number.isNaN(v)) return "–";
+  if (v == null || Number.isNaN(v)) return "n/a";
   if (v === 0) return "0";
   const abs = Math.abs(v);
   if (abs >= 1e6 || abs < 1e-3) return v.toExponential(2);
@@ -57,10 +63,10 @@ function fmtNum(v) {
   if (Number.isInteger(v)) return String(v);
   return v.toPrecision(4).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
 }
-const fmtReward = (v) => (v == null || Number.isNaN(v) ? "–" : v.toFixed(3));
+const fmtReward = (v) => (v == null || Number.isNaN(v) ? "n/a" : v.toFixed(3));
 /* compact human counts that never overflow: 1.1K, 2.2M, 3.3B */
 function fmtCompact(n) {
-  if (n == null || Number.isNaN(n)) return "–";
+  if (n == null || Number.isNaN(n)) return "n/a";
   const abs = Math.abs(n);
   if (abs >= 1e9) return `${+(n / 1e9).toFixed(abs >= 1e10 ? 0 : 1)}B`;
   if (abs >= 1e6) return `${+(n / 1e6).toFixed(abs >= 1e7 ? 0 : 1)}M`;
@@ -68,7 +74,7 @@ function fmtCompact(n) {
   return String(n);
 }
 function fmtCost(v) {
-  if (v == null || Number.isNaN(v)) return "–";
+  if (v == null || Number.isNaN(v)) return "n/a";
   return `$${v >= 1 ? v.toFixed(2) : v.toFixed(4)}`;
 }
 
@@ -120,7 +126,7 @@ async function loadRuns() {
   syncDressedSelects();
   const fresh = state.runs.find((r) => r.name === current);
   if (fresh && state.meta) {
-    Object.assign(state.meta, { updated: fresh.updated, started: fresh.started, last_step: fresh.last_step });
+    Object.assign(state.meta, fresh);
     renderOverview();
   }
 }
@@ -167,12 +173,11 @@ function applyRunTypeControls() {
   $("#trace-subset").hidden = isEval;
   $("#tm-step-prev").hidden = isEval;
   $("#tm-step-next").hidden = isEval;
-  $("#tm-kind").hidden = isEval || state.meta?.type === "sft";
-  $("#tm-subset").hidden = isEval;
-  $(".tm-filterhead").hidden = isEval;
+  $("#tm-kind-row").hidden = isEval || state.meta?.type === "sft";
+  $("#tm-subset-row").hidden = isEval;
 }
 
-async function selectRun(name) {
+async function selectRun(name, deferTab = false) {
   if (!name) return;
   state.run = name;
   state.compare = { runs: [], data: new Map() };
@@ -181,23 +186,37 @@ async function selectRun(name) {
   state.meta = state.runs.find((r) => r.name === name) ?? (await api(`/api/runs/${encodeURIComponent(name)}`));
   state.metrics = {
     ...state.metrics,
-    loaded: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
+    loaded: false, fetching: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
     timeKeys: new Set(), timeZero: null, maxStep: null,
     evalEtag: null, evalCount: 0, evalCost: null,
   };
   if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
-  state.config = { loaded: false, files: [], file: null, fmt: state.config.fmt, cache: new Map() };
-  state.logs = { ...state.logs, loaded: false, attempt: "latest", files: [], paneFile: {}, maximized: null, buffers: new Map() };
-  state.traces = { ...state.traces, loaded: false, steps: [], step: null, env: "", episodes: [], etag: null, kind: "train", subset: state.traces.preferred };
+  state.config = {
+    loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
+    files: [], file: null, fmt: state.config.fmt, commandText: "", cache: new Map(),
+  };
+  state.logs = {
+    ...state.logs, loaded: false, attempt: "latest", latestAttempt: null,
+    files: [], paneFile: {}, maximized: null, buffers: new Map(),
+  };
+  state.traces = {
+    ...state.traces,
+    loaded: false, fetching: false, steps: [], step: null, env: "", episodes: [], etag: null,
+    kind: "train", subset: state.traces.preferred,
+  };
+  state.report = {
+    ...state.report,
+    loaded: false, files: [], file: null, text: null, mtime: null, citations: {}, order: [], verify: new Map(),
+  };
   applyRunTypeControls();
   renderOverview();
   renderCompareMenu();
   updateHash();
-  await activateTab(state.tab, true);
+  if (!deferTab) await activateTab(state.tab, true);
 }
 
 function fmtDuration(secs) {
-  if (secs == null || !isFinite(secs) || secs < 0) return "–";
+  if (secs == null || !isFinite(secs) || secs < 0) return "n/a";
   const d = Math.floor(secs / 86400);
   const h = Math.floor((secs % 86400) / 3600);
   const m = Math.floor((secs % 3600) / 60);
@@ -211,7 +230,7 @@ function fmtDuration(secs) {
 }
 
 function fmtAgo(ts) {
-  if (!ts) return "–";
+  if (!ts) return "n/a";
   const secs = Date.now() / 1000 - ts;
   if (secs < 90) return "just now";
   if (secs < 3600) return `${Math.round(secs / 60)} min ago`;
@@ -233,8 +252,8 @@ function runStatus(step) {
 
 /* unbounded env lists: show the first two, fold the rest into "+N" (full list
    in the tooltip) */
-function envListField(envs) {
-  if (!envs?.length) return `<span class="val">–</span>`;
+function envListField(envs, empty = "n/a") {
+  if (!envs?.length) return `<span class="val">${empty}</span>`;
   const display = envs.length > 2 ? `${envs.slice(0, 2).join(", ")} +${envs.length - 2}` : envs.join(", ");
   return `<span class="val" title="${esc(envs.join(", "))}">${esc(display)}</span>`;
 }
@@ -250,7 +269,7 @@ function renderOverview() {
   const step = currentStep();
   const status = runStatus(step);
   const durationEnd = status === "running" ? Date.now() / 1000 : meta.updated;
-  const duration = meta.started && durationEnd ? fmtDuration(durationEnd - meta.started) : "–";
+  const duration = meta.started && durationEnd ? fmtDuration(durationEnd - meta.started) : "n/a";
   const field = ([label, value]) => `<div class="ov-field"><span class="lbl">${label}</span>${value}</div>`;
   // rollout dirs can run one step past max_steps (the final ship drains late
   // arrivals), so the headline caps at the configured horizon
@@ -258,18 +277,19 @@ function renderOverview() {
   const stepText = `${shownStep != null ? shownStep.toLocaleString() : "–"}/${meta.max_steps ? meta.max_steps.toLocaleString() : "∞"}`;
   const left = [
     ["status", `<span class="badge st-${status}">${status}</span>`],
-    ["type", `<span class="val">${esc((meta.type ?? "–").toUpperCase())}</span>`],
+    ["type", `<span class="val">${esc((meta.type ?? "n/a").toUpperCase())}</span>`],
     meta.type === "eval"
-      ? ["episodes", `<span class="val">${step != null ? step.toLocaleString() : "–"}</span>`]
+      ? ["episodes", `<span class="val">${step != null ? step.toLocaleString() : "n/a"}</span>`]
       : ["step", `<span class="val">${stepText}</span>`],
-    ["model", `<span class="val" title="${esc(meta.model ?? "")}">${esc(meta.model ?? "–")}</span>`],
+    ["model", `<span class="val" title="${esc(meta.model ?? "")}">${esc(meta.model ?? "n/a")}</span>`],
     ...(meta.type === "eval"
-      ? [["env", `<span class="val" title="${esc(meta.env ?? "")}">${esc(meta.env ?? "–")}</span>`]]
+      ? [["env", `<span class="val" title="${esc(meta.env ?? "")}">${esc(meta.env ?? "n/a")}</span>`]]
       : [
           meta.type === "sft"
-            ? ["dataset", `<span class="val" title="${esc(meta.dataset ?? "")}">${esc(meta.dataset ?? "–")}</span>`]
+            ? ["dataset", `<span class="val" title="${esc(meta.dataset ?? "")}">${esc(meta.dataset ?? "n/a")}</span>`]
             : ["train envs", envListField(meta.train_envs)],
-          ["eval envs", envListField(meta.eval_envs)],
+          // an empty eval env list is a known "none", not missing data
+          ["eval envs", envListField(meta.eval_envs, "–")],
         ]),
   ];
   const right = [
@@ -288,7 +308,9 @@ function renderOverview() {
 }
 
 function updateHash() {
-  location.hash = `#run=${encodeURIComponent(state.run || "")}&tab=${state.tab}`;
+  const parts = [`run=${encodeURIComponent(state.run || "")}`, `tab=${state.tab}`];
+  if (state.tab === "report" && state.report.file) parts.push(`report=${encodeURIComponent(state.report.file)}`);
+  location.hash = `#${parts.join("&")}`;
 }
 
 async function activateTab(tab, force = false) {
@@ -297,10 +319,20 @@ async function activateTab(tab, force = false) {
   setActive("#tabs", "tab", tab);
   document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== `tab-${tab}`));
   updateHash();
-  if (tab === "metrics" && !state.metrics.loaded) await initMetrics();
+  if (tab === "metrics") {
+    if (!state.metrics.loaded) await initMetrics();
+    else if (state.live) await fetchMetrics();
+  }
   if (tab === "config" && !state.config.loaded) await initConfig();
   if (tab === "logs" && !state.logs.loaded) await initLogs();
-  if (tab === "traces" && !state.traces.loaded) await initTraces();
+  if (tab === "traces") {
+    if (!state.traces.loaded) await initTraces();
+    else if (state.live) await refreshTraces();
+  }
+  if (tab === "report") {
+    if (!state.report.loaded) await initReport();
+    else if (state.live) await refreshReport();
+  }
 }
 
 /* ---------------------------------------------------------------- metrics */
@@ -384,6 +416,7 @@ async function fetchMetrics() {
   let showedProgress = false;
   try {
     for (let first = true; ; first = false) {
+      const requestedOffset = m.offset;
       const [data, compared] = await Promise.all([
         api(`/api/runs/${encodeURIComponent(state.run)}/metrics?offset=${m.offset}`),
         first ? fetchCompares() : false,
@@ -400,7 +433,9 @@ async function fetchMetrics() {
         if (m.byKey.size !== m.renderedKeys) renderMetricsBody();
         else updateCharts(compared ? null : touched); // compares may touch any panel
       }
-      if (data.offset >= (data.size ?? data.offset)) break;
+      // A writer can leave one incomplete JSONL record at EOF. Wait for the
+      // next poll instead of repeatedly requesting the same partial record.
+      if (data.offset >= (data.size ?? data.offset) || data.offset === requestedOffset) break;
       showedProgress = true;
       $("#metrics-status").textContent = `loading metrics · ${Math.round((data.offset / data.size) * 100)}%`;
     }
@@ -464,7 +499,7 @@ function renderEvalCards(body) {
     );
   }
   const fmtVal = (key, v) => {
-    if (v == null) return "–";
+    if (v == null) return "n/a";
     if (key === "cost") return fmtCost(v);
     if (key.startsWith("timing/")) return fmtDuration(v);
     if (key.endsWith("tokens")) return fmtCompact(Math.round(v));
@@ -541,6 +576,7 @@ function buildSections(meta) {
       { regex: `eval/${envPattern}/effective/[^/]+/avg@.*` },
       { regex: `eval/${envPattern}/effective/[^/]+/reward/mean`, split: true },
       { regex: `eval/${envPattern}/all/[^/]+/reward/mean`, split: true },
+      { regex: `eval/${envPattern}/all/cancelled/mean` },
       ...COMMON_METRICS.map((m) => ({ regex: `eval/${envPattern}/${m}` })),
       ...COMMON_REGEXES.map((r) => ({ regex: `eval/${envPattern}/${r}` })),
     ],
@@ -548,7 +584,10 @@ function buildSections(meta) {
   const sections = [];
   const evalEnvs = meta.eval_envs || [];
   if (meta.type === "sft") {
-    sections.push({ name: "train", panels: SFT_TRAIN_METRICS.map((m) => ({ metric: m })) });
+    const trainMetrics = meta.has_validation
+      ? SFT_TRAIN_METRICS
+      : SFT_TRAIN_METRICS.filter((m) => !m.startsWith("val/"));
+    sections.push({ name: "train", panels: trainMetrics.map((m) => ({ metric: m })) });
     if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true)));
     else sections.push(evalSection("eval", ".*"));
     sections.push({ name: "stability", panels: SFT_STABILITY_METRICS.map((m) => ({ metric: m })) });
@@ -655,6 +694,15 @@ function groupColors(groups) {
   return groups.length > 1 ? groups.map((_, i) => PALETTE[i % PALETTE.length]) : [SINGLE_SERIES];
 }
 
+function singletonPoints(series, color) {
+  return {
+    show: () => series.points.size === 1,
+    size: 6,
+    width: 0,
+    fill: color,
+  };
+}
+
 /* flatten groups into uPlot series defs + data columns + tooltip meta */
 function buildChartLayout(entry, timeAxis) {
   const groups = panelGroups(entry.series);
@@ -679,7 +727,7 @@ function buildChartLayout(entry, timeAxis) {
         width: 1.25,
         dash: si > 0 ? [6, 4] : undefined,
         spanGaps: true,
-        points: { show: false },
+        points: singletonPoints(strand.main, color),
       });
       const m = { label: labels[mainIdx] || "value", stat: statOf(strand.main.key) ?? "value", color, dataIdx: cols.length };
       meta.push(m);
@@ -688,7 +736,14 @@ function buildChartLayout(entry, timeAxis) {
       const bandIdx = {};
       for (const s of aux) {
         cols.push({ s, role: "aux" });
-        uSeries.push({ stroke: hexToRgba(color, 0.55), width: 1, dash: [3, 3], spanGaps: true, points: { show: false } });
+        const auxColor = hexToRgba(color, 0.55);
+        uSeries.push({
+          stroke: auxColor,
+          width: 1,
+          dash: [3, 3],
+          spanGaps: true,
+          points: singletonPoints(s, auxColor),
+        });
         if (s === strand.lo) bandIdx.lo = cols.length;
         if (s === strand.hi) bandIdx.hi = cols.length;
       }
@@ -1107,7 +1162,7 @@ function renderMetricsBody() {
   if (state.meta?.type === "eval") return renderEvalCards(body);
   activeFilter = makeFilter(state.metrics.search.trim());
   if (!state.meta?.has_metrics && !m.byKey.size) {
-    body.innerHTML = emptyState("no metrics", "this run has no metrics.jsonl yet");
+    body.innerHTML = emptyState("no metrics yet");
     $("#metrics-status").textContent = "";
     return;
   }
@@ -1121,7 +1176,7 @@ function renderMetricsBody() {
       }
       if (!grid.children.length) {
         // a configured eval env stays visible before its first eval fires
-        if (section.configured && !activeFilter) grid.innerHTML = `<div class="chart-empty">no eval data yet</div>`;
+        if (section.configured && !activeFilter) grid.innerHTML = `<div class="chart-empty">no data yet</div>`;
         else div.remove();
       } else applyPaneOrder(grid);
     }
@@ -1172,19 +1227,23 @@ async function initMetrics() {
 /* ----------------------------------------------------------------- config */
 
 
-/* both views are fetched once per run, so the TOML/JSON toggle never waits on
-   the network */
+/* config artifacts are fetched once per attempt, so format changes never wait
+   on the network */
 async function fetchConfigText(file) {
   const cache = state.config.cache;
-  if (cache.has(file)) return cache.get(file);
-  const data = await api(`/api/runs/${encodeURIComponent(state.run)}/config?file=${encodeURIComponent(file)}`);
+  const key = `${state.config.attempt}:${file}`;
+  if (cache.has(key)) return cache.get(key);
+  const data = await api(
+    `/api/runs/${encodeURIComponent(state.run)}/config?file=${encodeURIComponent(file)}` +
+    `&attempt=${encodeURIComponent(state.config.attempt)}`
+  );
   let text = data.content;
   try {
     text = JSON.stringify(JSON.parse(text), null, 2);
   } catch {
     /* show raw content if not valid JSON */
   }
-  cache.set(file, text);
+  cache.set(key, text);
   return text;
 }
 
@@ -1299,6 +1358,10 @@ function applyConfigSearch() {
   } catch {
     re = new RegExp(escRe(query), "gi");
   }
+  const test = (line) => {
+    re.lastIndex = 0;
+    return re.test(line);
+  };
   const noHits = () => {
     view.innerHTML = emptyState("no hits", "nothing in this config matches the filter");
     hitsEl.textContent = "no hits";
@@ -1311,10 +1374,6 @@ function applyConfigSearch() {
     // TOML (launch config): a matching line keeps itself (plus its [section]
     // header for context); a matching [section] header keeps the whole section
     const lines = (state.config.text ?? "").split("\n");
-    const test = (line) => {
-      re.lastIndex = 0;
-      return re.test(line);
-    };
     const kept = [];
     let header = null;
     let headerKept = false;
@@ -1373,10 +1432,12 @@ function applyConfigSearch() {
   view.querySelector("mark.hit")?.scrollIntoView({ block: "center" });
 }
 
-/* TOML = the launch config as it was passed, JSON = the concatenated resolved dumps */
+/* TOML = launch config, JSON = resolved dumps */
 function configFileFor(fmt) {
   const files = state.config.files || [];
-  return fmt === "toml" ? files.find((f) => f.endsWith(".toml")) : files.find((f) => f === "resolved");
+  if (fmt === "toml") return files.find((f) => f.endsWith(".toml"));
+  if (fmt === "json") return files.find((f) => f === "resolved");
+  return files.find((f) => f === "command.txt");
 }
 
 function renderConfigFormat() {
@@ -1386,21 +1447,55 @@ function renderConfigFormat() {
   }
 }
 
-async function initConfig() {
-  state.config.loaded = true;
-  const data = await api(`/api/runs/${encodeURIComponent(state.run)}/configs`);
+function renderConfigAttempts() {
+  const config = state.config;
+  const latest = config.latestAttempt == null ? "latest" : `latest (attempt ${config.latestAttempt})`;
+  $("#config-attempt-select").innerHTML =
+    `<option value="latest" ${config.attempt === "latest" ? "selected" : ""}>${latest}</option>` +
+    config.attempts
+      .map((a) => `<option value="${a}" ${String(a) === String(config.attempt) ? "selected" : ""}>attempt ${a}</option>`)
+      .join("");
+  syncDressedSelects();
+}
+
+function renderConfigCommand() {
+  const command = state.config.commandText.trimEnd();
+  $("#config-command").classList.toggle("empty", !command);
+  $("#config-command-text").textContent = command || "command unavailable for this attempt";
+  $("#config-command-copy").disabled = !command;
+}
+
+async function loadConfigAttempt() {
+  const data = await api(
+    `/api/runs/${encodeURIComponent(state.run)}/configs?attempt=${encodeURIComponent(state.config.attempt)}`
+  );
+  state.config.latestAttempt = state.config.attempt === "latest" ? data.attempt : state.config.latestAttempt;
+  state.config.attempts = data.attempts;
   state.config.files = data.files;
-  if (!data.files.length) {
+  renderConfigAttempts();
+  const commandFile = configFileFor("command");
+  state.config.commandText = commandFile ? await fetchConfigText(commandFile) : "";
+  renderConfigCommand();
+  if (!configFileFor("toml") && !configFileFor("json")) {
     renderConfigFormat();
-    $("#config-view").innerHTML = emptyState("no configs", "this run has no configs/ directory");
+    $("#config-view").innerHTML = emptyState("no configs", "this attempt has no config files");
     return;
   }
-  if (!configFileFor(state.config.fmt)) state.config.fmt = configFileFor("toml") ? "toml" : "json";
+  if (!configFileFor(state.config.fmt)) {
+    state.config.fmt = ["toml", "json"].find((fmt) => configFileFor(fmt));
+  }
   state.config.file = configFileFor(state.config.fmt);
   renderConfigFormat();
   await loadConfig();
-  const other = configFileFor(state.config.fmt === "toml" ? "json" : "toml");
-  if (other) fetchConfigText(other); // warm the other side of the toggle
+  for (const fmt of ["toml", "json"]) {
+    const file = configFileFor(fmt);
+    if (file && file !== state.config.file) fetchConfigText(file);
+  }
+}
+
+async function initConfig() {
+  state.config.loaded = true;
+  await loadConfigAttempt();
 }
 
 /* ------------------------------------------------------------------- logs */
@@ -1533,9 +1628,12 @@ function dressLogPaneSelects() {
 
 function renderLogPanes() {
   const logs = state.logs;
-  $("#attempt-select").innerHTML = logs.attempts
-    .map((a) => `<option value="${a}" ${String(a) === String(logs.attempt) ? "selected" : ""}>attempt ${a}</option>`)
-    .join("");
+  const latest = logs.latestAttempt == null ? "latest" : `latest (attempt ${logs.latestAttempt})`;
+  $("#attempt-select").innerHTML =
+    `<option value="latest" ${logs.attempt === "latest" ? "selected" : ""}>${latest}</option>` +
+    logs.attempts
+      .map((a) => `<option value="${a}" ${String(a) === String(logs.attempt) ? "selected" : ""}>attempt ${a}</option>`)
+      .join("");
   renderLogCompMenu();
   const container = $("#log-panes");
   container.innerHTML = "";
@@ -1710,7 +1808,7 @@ async function loadLogfiles() {
   const logs = state.logs;
   const data = await api(`/api/runs/${encodeURIComponent(state.run)}/logfiles?attempt=${logs.attempt}`);
   logs.attempts = data.attempts;
-  logs.attempt = data.attempt;
+  if (logs.attempt === "latest") logs.latestAttempt = data.attempt;
   logs.files = data.files;
   renderLogPanes();
   dressLogPaneSelects();
@@ -1726,26 +1824,25 @@ async function initLogs() {
 
 async function loadRollouts() {
   const traces = state.traces;
+  const previousTarget = latestPreferredStep(traces.steps, traces.kind, traces.preferred);
+  const wasFollowing = traces.step == null || traces.step === previousTarget?.step;
   const data = await api(`/api/runs/${encodeURIComponent(state.run)}/rollouts`);
   traces.steps = data.steps;
-  if (traces.step == null && data.steps.length) {
-    // default to the newest step that already shipped the preferred subset —
-    // the newest step is usually in-flight with only "all" (no advantages yet)
-    const preferred = traces.preferred;
-    const newestFirst = [...data.steps].reverse();
-    const shipped =
-      newestFirst.find((s) => s.available[`${traces.kind}/${preferred}`]) ??
-      newestFirst.find((s) => Object.keys(s.available).some((k) => k.endsWith(`/${preferred}`)));
-    traces.step = (shipped ?? data.steps[data.steps.length - 1]).step;
-    adjustKindSubset();
-  } else if (traces.step != null) {
-    // the preferred subset may have shipped since the last poll (a live step's
-    // effective file lands late) — re-adjust and reload when it changes
-    const before = `${traces.kind}/${traces.subset}`;
-    adjustKindSubset();
-    if (`${traces.kind}/${traces.subset}` !== before) await loadEpisodes();
-  }
+  const target = latestPreferredStep(data.steps, traces.kind, traces.preferred);
+  // Follow new work while the user is on the latest preferred step. Keep a
+  // manually selected historical step stable, especially while its modal is open.
+  if (target && wasFollowing && $("#trace-modal").hidden) traces.step = target.step;
+  adjustKindSubset();
   renderStepControl();
+}
+
+function latestPreferredStep(steps, kind, preferred) {
+  const newestFirst = [...steps].reverse();
+  return (
+    newestFirst.find((s) => s.available[`${kind}/${preferred}`]) ??
+    newestFirst.find((s) => Object.keys(s.available).some((key) => key.endsWith(`/${preferred}`))) ??
+    newestFirst[0]
+  );
 }
 
 function stepInfo(step) {
@@ -1793,6 +1890,7 @@ function renderStepControl() {
         ` title="${title}${hasEval ? " · eval" : ""}"></span>`
     );
   }
+  if (!cells.length) cells.push(`<span class="sb-cell placeholder"></span>`);
   const signature = cells.join("");
   if (signature === traces.stepControlSignature) return;
   traces.stepControlSignature = signature;
@@ -1803,7 +1901,7 @@ function renderStepControl() {
   const hasEval = info && (info.available["eval/all"] || info.available["eval/effective"]);
   $("#step-label").innerHTML =
     traces.step == null
-      ? ""
+      ? `<span class="muted">no steps yet</span>`
       : `step ${traces.step}${steps.length > 1 ? `<span class="muted">/${steps[steps.length - 1].step}</span>` : ""}` +
         (hasEval ? ' <span class="eval-dot" title="eval rollouts"></span>' : "");
 }
@@ -1817,19 +1915,18 @@ function selectStepByIndex(index) {
   loadEpisodes();
 }
 
+// the table chrome stays in place; the message renders as a spanning row so
+// arriving traces cause no layout shift
 function showTraceEmpty(title, detail) {
-  $("#episode-table-wrap").hidden = true;
-  const el = $("#trace-empty");
-  el.hidden = false;
-  el.innerHTML = emptyState(title, detail);
+  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="10">${emptyState(title, detail)}</td></tr>`;
 }
 
 async function loadEpisodes() {
   const traces = state.traces;
-  updateTraceFilterBtn();
+  syncTraceFilterControls();
   if (traces.step == null) {
     $("#trace-status").textContent = "";
-    showTraceEmpty("no traces", "this run has no saved traces yet");
+    showTraceEmpty("no traces yet");
     return;
   }
   const qs = new URLSearchParams({ sort: traces.sort, order: traces.order, errors_only: traces.errorsOnly });
@@ -1851,13 +1948,12 @@ async function loadEpisodes() {
   traces.etag = data.etag;
   traces.etagKey = etagKey;
   traces.episodes = data.episodes;
-  $("#trace-empty").hidden = true;
-  $("#episode-table-wrap").hidden = false;
-  const envSel = $("#trace-env");
   const currentEnv = traces.env;
-  envSel.innerHTML =
-    `<option value="">all envs</option>` +
-    data.envs.map((e) => `<option value="${esc(e)}" ${e === currentEnv ? "selected" : ""}>${esc(e)}</option>`).join("");
+  for (const sel of ["#trace-env", "#tm-env"])
+    $(sel).innerHTML =
+      `<option value="">all envs</option>` +
+      data.envs.map((e) => `<option value="${esc(e)}" ${e === currentEnv ? "selected" : ""}>${esc(e)}</option>`).join("");
+  syncDressedSelects();
   if (!data.total) {
     $("#trace-status").textContent = "";
     showTraceEmpty("no episodes", "nothing matches the current filters");
@@ -1914,9 +2010,20 @@ function renderEpisodeRows(reset = false) {
 
 async function initTraces() {
   state.traces.loaded = true;
-  await loadRollouts();
-  adjustKindSubset();
-  await loadEpisodes();
+  await refreshTraces();
+}
+
+async function refreshTraces() {
+  const traces = state.traces;
+  if (traces.fetching) return;
+  traces.fetching = true;
+  try {
+    await loadRollouts();
+    if (state.traces !== traces) return;
+    await loadEpisodes();
+  } finally {
+    traces.fetching = false;
+  }
 }
 
 /* ----------------------------------------------------------- episode view */
@@ -1925,6 +2032,12 @@ let currentEpisode = null;
 let currentLine = null;
 let currentTraceIdx = 0;
 let currentBranchIdx = 0;
+let episodeOpenVersion = 0;
+let episodeEnrichmentVersion = 0;
+let currentTimeline = null;
+let traceView = prefs.traceView === "timeline" ? "timeline" : "transcript";
+let pendingTimelineNode = null;
+let pendingTimelineCall = null;
 
 const COPY_SVG =
   `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">` +
@@ -1946,7 +2059,7 @@ function filteredRollouts() {
 
 function tmItemHtml(e) {
   return (
-    `<div class="tm-item ${e.line === currentLine ? "active" : ""}" data-line="${e.line}">` +
+    `<div class="tm-item ${e.line === currentLine ? "active" : ""}${e.num_errors || !e.ok ? " err" : ""}" data-line="${e.line}">` +
     `<span class="tm-num">#${e.line}</span><span class="tm-env muted" title="${esc(e.env ?? "")}">${esc(e.env ?? "")}</span>` +
     `<span class="tm-reward ${rewardClass(e.reward)}">${fmtReward(e.reward)}</span></div>`
   );
@@ -2029,46 +2142,89 @@ async function modalStep(delta) {
   }
 }
 
-function fetchEpisode(line, withTokens) {
+function fetchEpisode(line, withTokens, withRendered = false) {
   const traces = state.traces;
-  const qs = withTokens ? "?tokens=true" : "";
+  const params = new URLSearchParams();
+  if (withTokens) params.set("tokens", "true");
+  if (withRendered) params.set("rendered", "true");
+  const qs = params.size ? `?${params}` : "";
   return api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}${qs}`);
 }
 
-/* token strings multiply the payload of a big episode, so they are fetched only
-   while a token signal is selected — the plain view ships the raw record */
-async function ensureTokens() {
-  if (!currentEpisode || currentEpisode._hasTokens || !$("#token-signal").value) return;
+function fetchEpisodeTimeline(line) {
+  const traces = state.traces;
+  return api(`/api/runs/${encodeURIComponent(state.run)}/rollouts/${traces.step}/${traces.kind}/${traces.subset}/${line}/timeline`);
+}
+
+async function ensureTimeline() {
+  if (currentTimeline || currentLine == null) return;
   const line = currentLine;
-  const episode = await fetchEpisode(line, true);
-  if (line !== currentLine) return;
-  episode._hasTokens = true;
+  const requestVersion = episodeOpenVersion;
+  const timeline = await fetchEpisodeTimeline(line);
+  if (line !== currentLine || requestVersion !== episodeOpenVersion) return;
+  currentTimeline = timeline;
+}
+
+/* token strings multiply the payload of a big episode, so they are fetched only
+   for token signals or the rendered-token view — the plain view ships the raw record */
+async function ensureTokens() {
+  if (!currentEpisode) return;
+  const wantsPieces = !!$("#token-signal").value;
+  const wantsRendered = state.traces.viewMode === "rendered";
+  if ((!wantsPieces || currentEpisode._hasTokens) && (!wantsRendered || currentEpisode._hasRendered)) return;
+  const line = currentLine;
+  const withTokens = wantsPieces || !!currentEpisode._hasTokens;
+  const withRendered = wantsRendered || !!currentEpisode._hasRendered;
+  const requestVersion = ++episodeEnrichmentVersion;
+  const episode = await fetchEpisode(line, withTokens, withRendered);
+  if (line !== currentLine || requestVersion !== episodeEnrichmentVersion) return;
+  episode._hasTokens = withTokens;
+  episode._hasRendered = withRendered;
   currentEpisode = episode;
 }
 
-async function openEpisode(line) {
+async function openEpisode(line, target = {}) {
+  const requestVersion = ++episodeOpenVersion;
+  episodeEnrichmentVersion++;
   $("#trace-modal").hidden = false;
   $("#drawer-backdrop").hidden = false;
   currentLine = line;
+  currentEpisode = null;
   renderModalStep();
   renderRolloutList();
   $("#tm-messages").innerHTML = `<div class="chart-empty">loading episode…</div>`;
+  $("#tm-timeline").innerHTML = `<div class="chart-empty">loading timeline…</div>`;
   $("#tm-meta").innerHTML = "";
+  currentTimeline = null;
+  pendingTimelineNode = null;
+  pendingTimelineCall = null;
   const withTokens = !!$("#token-signal").value;
-  const episode = await fetchEpisode(line, withTokens);
-  if (line !== currentLine) return; // user already moved to another rollout
+  const withRendered = state.traces.viewMode === "rendered";
+  const episode = await fetchEpisode(line, withTokens, withRendered);
+  if (line !== currentLine || requestVersion !== episodeOpenVersion) return;
   episode._hasTokens = withTokens;
+  episode._hasRendered = withRendered;
   currentEpisode = episode;
-  currentTraceIdx = 0;
-  currentBranchIdx = 0;
+  currentTraceIdx = target.trace ?? 0;
+  currentBranchIdx = target.branch ?? 0;
+  if (traceView === "timeline") await ensureTimeline();
   renderEpisode();
+  await ensureTokens();
+  if (line === currentLine && requestVersion === episodeOpenVersion) renderEpisode();
 }
 
 function closeDrawer() {
+  episodeOpenVersion++;
+  episodeEnrichmentVersion++;
   $("#trace-modal").hidden = true;
   $("#drawer-backdrop").hidden = true;
+  $("#tm-back").hidden = true;
   currentEpisode = null;
+  currentTimeline = null;
+  pendingTimelineNode = null;
+  pendingTimelineCall = null;
   currentLine = null;
+  pendingHighlight = null;
 }
 
 function traceBranches(trace) {
@@ -2104,6 +2260,10 @@ function messageText(message) {
   return content == null ? "" : JSON.stringify(content);
 }
 
+function reasoningText(content) {
+  return typeof content === "string" ? content : content == null ? "" : JSON.stringify(content, null, 2);
+}
+
 /* logprobs may cover only masked positions; map token index -> logprob index */
 function alignedSignal(node, values) {
   const n = (node.token_ids || []).length;
@@ -2123,7 +2283,7 @@ function renderTokenNode(node, signal, maxAbsAdv) {
   const logprobAt = alignedSignal(node, node.logprobs);
   const advantageAt = alignedSignal(node, node.advantages);
   const spans = ids.map((id, i) => {
-    const text = strs ? strs[i] : ` ${id} `;
+    const text = strs?.[i] ?? ` ${id} `;
     const logprob = logprobAt(i), advantage = advantageAt(i);
     let bg = "";
     if (signal === "advantage" && advantage != null && maxAbsAdv > 0) {
@@ -2174,68 +2334,279 @@ function toolCallHtml(toolCall) {
   return `<div class="tool-call">${esc(name)}(${esc(args)})</div>`;
 }
 
-function reasoningBlock(content) {
-  const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+function reasoningBlock(content, marks = null) {
+  const text = reasoningText(content);
+  // a highlight whose quote lives in the reasoning marks it and opens the block
+  const marked = (marks || []).some((h) => h.quote && findQuote(text, h.quote, h.prefix, h.suffix));
   return (
-    `<details class="sub"><summary><span class="sub-name">Reasoning</span>` +
+    `<details class="sub"${marked ? " open" : ""}><summary><span class="sub-name">Reasoning</span>` +
     `<span class="entry-preview">${preview(text, 140)}</span>` +
-    `<span class="entry-chev">›</span></summary><div class="entry-body">${esc(text)}</div></details>`
+    `<span class="entry-chev">›</span></summary>` +
+    `<div class="entry-body">${marked ? quoteMarkedHtml(text, marks) : esc(text)}</div></details>`
+  );
+}
+
+function normalizedTools(tools) {
+  if (tools == null) return [];
+  return Array.isArray(tools) ? tools : [tools];
+}
+
+function toolParts(tool, index) {
+  if (!tool || typeof tool !== "object" || Array.isArray(tool))
+    return { name: `tool ${index + 1}`, description: "Malformed tool definition", parameters: tool };
+  const value = tool.function && typeof tool.function === "object" ? tool.function : tool;
+  return {
+    name: typeof value.name === "string" && value.name ? value.name : `tool ${index + 1}`,
+    description: typeof value.description === "string" ? value.description : "No description recorded.",
+    parameters: value.parameters ?? value.input_schema ?? value.schema ?? null,
+  };
+}
+
+function toolDefinitionsHtml(trace) {
+  const tools = normalizedTools(trace.tools);
+  if (!tools.length) return "";
+  const names = tools.map((tool, i) => toolParts(tool, i).name);
+  const body = tools.map((tool, i) => {
+    const parts = toolParts(tool, i);
+    const schema = parts.parameters == null ? "No parameters/schema recorded." :
+      typeof parts.parameters === "string" ? parts.parameters : JSON.stringify(parts.parameters, null, 2);
+    return (
+      `<details class="tool-definition"><summary><span class="tool-def-name">${esc(parts.name)}</span>` +
+      `<span class="entry-preview">${preview(parts.description, 140)}</span>` +
+      `<button class="icon-btn" data-copy-tool="${i}" title="copy full tool definition">${COPY_SVG}</button>` +
+      `<span class="entry-chev">›</span></summary>` +
+      `<div class="tool-description">${esc(parts.description)}</div>` +
+      `<div class="schema-head"><span>Parameters / JSON schema</span>` +
+      `<button class="icon-btn" data-copy-schema="${i}" title="copy parameters/schema">${COPY_SVG}</button></div>` +
+      `<pre class="tool-schema">${esc(schema)}</pre></details>`
+    );
+  }).join("");
+  return (
+    `<details class="tool-definitions"><summary><span class="context-label">Tool definitions</span>` +
+    `<span class="chip">${tools.length} tool${tools.length === 1 ? "" : "s"}</span>` +
+    `<span class="entry-preview">${esc(names.join(", "))}</span>` +
+    `<button class="icon-btn" data-copy-tools title="copy all tool definitions">${COPY_SVG}</button>` +
+    `<span class="entry-chev">›</span></summary>` +
+    body + `</details>`
+  );
+}
+
+function renderedTokensHtml(trace, branches) {
+  const rendered = trace.rendered_tokens;
+  const errors = errorBannersHtml(episodeErrors(currentEpisode, trace));
+  if (!rendered) return emptyState("rendered text not loaded", "select this view again to load recorded token IDs") + errors;
+  const signal = $("#token-signal").value;
+  const path = currentPath(trace, branches);
+  const tokenCount = path.reduce((count, index) => count + (trace.nodes[index]?.token_ids?.length || 0), 0);
+  const unavailable = {
+    missing_token_ids: ["no recorded token IDs", "This trace cannot provide post-renderer text because its nodes have no token_ids."],
+    missing_model: ["tokenizer model unavailable", "Neither renderer_model_name nor the run model was recorded."],
+    tokenizer_unavailable: ["tokenizer unavailable", `Could not load the recorded renderer tokenizer${rendered.model ? ` (${rendered.model})` : ""}. Token IDs remain authoritative.`],
+    decode_error: ["recorded tokens could not be decoded", "The tokenizer was found, but it could not decode this recorded sequence."],
+  };
+  const selected = currentBranchIdx === -1 ? rendered.all_nodes : rendered.paths?.[currentBranchIdx];
+  if (signal && tokenCount) {
+    let maxAbsAdv = 0;
+    for (const node of trace.nodes || [])
+      for (const advantage of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(advantage));
+    const body = path.map((index) => renderTokenNode(trace.nodes[index], signal, maxAbsAdv)).join("");
+    return (
+      `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
+      `<span class="chip">${fmtCompact(tokenCount)} tokens</span>` +
+      (selected?.text != null ? `<span class="entry-preview">${preview(selected.text, 180)}</span>` : `<span class="entry-preview"></span>`) +
+      (selected?.text != null ? `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` : "") +
+      `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button>` +
+      `<span class="entry-chev">›</span></summary>` +
+      `<pre class="rendered-text">${body}</pre></details>` + errors
+    );
+  }
+  if (selected?.text == null) {
+    const [title, detail] = unavailable[rendered.status] ?? ["rendered text unavailable", "The recorded token sequence could not be decoded."];
+    return emptyState(title, detail) + errors;
+  }
+  return (
+    `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
+    `<span class="chip">${fmtCompact(selected.token_count)} tokens</span>` +
+    `<span class="entry-preview">${preview(selected.text, 180)}</span>` +
+    `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` +
+    `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button>` +
+    `<span class="entry-chev">›</span></summary>` +
+    `<pre class="rendered-text">${esc(selected.text)}</pre></details>` + errors
   );
 }
 
 let entriesObserver = null;
 
-function renderMessages(trace, branches) {
+function episodeErrors(ep, trace) {
+  return [...(ep.errors || []), ...(trace?.errors || [])];
+}
+
+function errorBannersHtml(errors) {
+  if (!errors.length) return "";
+  return (
+    `<div class="trace-errors">` +
+    errors
+      .map((error) => {
+        const record = error && typeof error === "object" ? error : { message: String(error) };
+        const type = record.type ?? "Error";
+        const message = record.message ?? "No error message";
+        const traceback = Array.isArray(record.traceback) ? record.traceback.join("") : record.traceback;
+        return (
+          `<section class="trace-error-banner">` +
+          `<div class="trace-error-message"><span class="trace-error-type">${esc(type)}</span> ${esc(message)}</div>` +
+          (traceback
+            ? `<details class="trace-error-tb"><summary><span>traceback</span><span class="entry-chev">›</span></summary><pre>${esc(traceback)}</pre></details>`
+            : "") +
+          `</section>`
+        );
+      })
+      .join("") +
+    `</div>`
+  );
+}
+
+function normalizedCallUsage(usage = {}) {
+  let input = usage.prompt_tokens;
+  let cached = usage.cached_input_tokens;
+  if (cached == null) {
+    cached = usage.prompt_tokens_details?.cached_tokens;
+    if (input != null && cached) input = Math.max(0, input - cached);
+  }
+  return {
+    input,
+    cached,
+    output: usage.completion_tokens,
+    reasoning: usage.reasoning_tokens ?? usage.completion_tokens_details?.reasoning_tokens,
+    cost: usage.cost,
+  };
+}
+
+function renderMessages(ep, trace, branches) {
   const container = $("#tm-messages");
   entriesObserver?.disconnect();
+  const errorsHtml = errorBannersHtml(episodeErrors(ep, trace));
   if (!trace) {
-    container.innerHTML = emptyState("no traces", "this episode carries no trace data");
+    container.innerHTML = emptyState("no traces", "this episode carries no trace data") + errorsHtml;
+    return;
+  }
+  if (state.traces.viewMode === "rendered") {
+    container.innerHTML = renderedTokensHtml(trace, branches);
     return;
   }
   const signal = $("#token-signal").value;
   const path = currentPath(trace, branches);
   const concatenated = currentBranchIdx === -1;
+  const toolsHtml = toolDefinitionsHtml(trace);
+  const systemPosition = path.findIndex((idx) => trace.nodes[idx]?.message?.role === "system");
   let maxAbsAdv = 0;
   for (const node of trace.nodes || [])
     for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
-  const callsByNode = new Map((trace.calls || []).map((c) => [c.node, c]));
+  const indexedCalls = (trace.calls || []).map((call, index) => ({ call, index }));
+  const callsByNode = new Map();
+  for (const item of indexedCalls) {
+    const calls = callsByNode.get(item.call.node) || [];
+    calls.push(item);
+    callsByNode.set(item.call.node, calls);
+  }
+  const callChipHtml = ({ call, index }) => {
+    const fields = [`call ${index + 1}`];
+    if (call.finish_reason) fields.push(call.finish_reason);
+    const { input, cached, output } = normalizedCallUsage(call.usage);
+    if (input != null) fields.push(`${fmtCompact(input)} in`);
+    if (cached != null) fields.push(`${fmtCompact(cached)} cache`);
+    if (output != null) fields.push(`${fmtCompact(output)} out`);
+    return `<span class="chip" data-call-index="${index}">${esc(fields.join(" · "))}</span>`;
+  };
+  // agent highlights (sticky until the next view command or drawer close)
+  const hl =
+    pendingHighlight &&
+    pendingHighlight.run === state.run &&
+    pendingHighlight.step === state.traces.step &&
+    pendingHighlight.kind === state.traces.kind &&
+    pendingHighlight.subset === state.traces.subset &&
+    pendingHighlight.line === currentLine &&
+    pendingHighlight.trace === currentTraceIdx
+      ? pendingHighlight
+      : null;
+  const hlByNode = new Map();
+  for (const h of hl?.highlights || []) {
+    if (!hlByNode.has(h.node)) hlByNode.set(h.node, []);
+    hlByNode.get(h.node).push(h);
+  }
   const entryHtml = (idx, i) => {
     const node = trace.nodes[idx];
     const role = node.message?.role ?? "?";
-    const call = callsByNode.get(idx);
+    const marks = hlByNode.get(idx) || [];
     const chips = [];
     if (concatenated && node.parent != null && node.parent !== idx - 1) chips.push(`↳ branches from ${node.parent + 1}`);
     if (node.sampled) chips.push("sampled");
-    if (call?.finish_reason) chips.push(call.finish_reason);
-    if (call?.usage) chips.push(`${call.usage.prompt_tokens ?? "?"}→${call.usage.completion_tokens ?? "?"} tok`);
-    else if (node.token_ids?.length) chips.push(`${node.token_ids.length} tok`);
+    const nodeCalls = callsByNode.get(idx) || [];
+    if (!nodeCalls.length && node.token_ids?.length) chips.push(`${node.token_ids.length} tok`);
     const text = messageText(node.message);
-    const body = signal && node.token_ids?.length ? renderTokenNode(node, signal, maxAbsAdv) : esc(text);
-    const subs = [];
+    const contentMarks = marks.filter((h) => !h.field || h.field === "content");
+    const contentMarked = contentMarks.some((h) => h.quote && findQuote(text, h.quote, h.prefix, h.suffix));
+    const reasoningMarks = marks.filter((h) => !h.field || h.field === "reasoning");
     const reasoning = node.message?.reasoning_content ?? node.message?.reasoning;
-    if (reasoning) subs.push(reasoningBlock(reasoning));
+    const reasoningMarked = reasoningMarks.some(
+      (h) => h.quote && findQuote(reasoningText(reasoning), h.quote, h.prefix, h.suffix)
+    );
+    const marked = contentMarked || reasoningMarked;
+    const body = contentMarked
+      ? quoteMarkedHtml(text, contentMarks)
+      : signal && node.token_ids?.length ? renderTokenNode(node, signal, maxAbsAdv) : esc(text);
+    const subs = [];
+    if (reasoning) subs.push(reasoningBlock(reasoning, reasoningMarks));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
-    return (
-      `<details class="entry ${esc(role)}"${role === "system" ? "" : " open"}>` +
+    const messageHtml =
+      `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}" data-node="${idx}"${role === "system" && !marked ? "" : " open"}>` +
       `<summary><span class="entry-num">${String(i + 1).padStart(2, "0")}</span>` +
       `<span class="entry-role">${esc(role)}</span>` +
       `<span class="entry-preview">${preview(text, 180)}</span>` +
       chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("") +
+      nodeCalls.map(callChipHtml).join("") +
       `<button class="icon-btn" data-copy="${idx}" title="copy message">${COPY_SVG}</button>` +
       `<span class="entry-chev">›</span></summary>` +
       subs.join("") +
       (body ? `<div class="entry-body">${body}</div>` : "") +
       toolCalls.join("") +
-      `</details>`
-    );
+      `</details>`;
+    return messageHtml + (i === systemPosition ? toolsHtml : "");
   };
   // long traces render in chunks as the reader scrolls — a 1MB episode with
-  // hundreds of turns paints the first screen immediately
+  // hundreds of turns paints the first screen immediately; a highlight past the
+  // first chunk forces enough entries into the DOM to scroll to
   const CHUNK = 30;
-  let rendered = Math.min(path.length, CHUNK);
+  const lastMark = Math.max(-1, ...[...hlByNode.keys()].map((n) => path.indexOf(n)));
+  const targetPosition = pendingTimelineNode == null ? -1 : path.indexOf(pendingTimelineNode);
+  let rendered = Math.min(path.length, Math.max(CHUNK, lastMark + 3, targetPosition + 1));
+  const unlinkedCallsHtml = indexedCalls
+    .filter(({ call }) => !Number.isInteger(call.node) || call.node < 0 || call.node >= (trace.nodes || []).length)
+    .map(
+      (item) =>
+        `<details class="entry model-call" data-call-index="${item.index}" open>` +
+        `<summary><span class="entry-num">C${String(item.index + 1).padStart(2, "0")}</span>` +
+        `<span class="entry-role">model call</span><span class="entry-preview">${esc(item.call.model || "unlinked call")}</span>` +
+        `${callChipHtml(item)}<span class="entry-chev">›</span></summary></details>`,
+    )
+    .join("");
   container.innerHTML =
+    (systemPosition === -1 ? toolsHtml : "") +
     path.slice(0, rendered).map(entryHtml).join("") +
-    (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "");
+    (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
+    unlinkedCallsHtml +
+    errorsHtml;
+  if (hl && !hl.scrolled) {
+    const first = container.querySelector(".hl-entry");
+    // consume the one-shot flag only when the scroll lands: openEpisode renders
+    // twice (enrichment re-render), which detaches the first render's node
+    // before its scheduled scroll fires
+    if (first)
+      requestAnimationFrame(() => {
+        if (!first.isConnected) return;
+        hl.scrolled = true;
+        first.scrollIntoView({ block: "start", behavior: "smooth" });
+      });
+  }
   if (rendered < path.length) {
     const sentinel = container.querySelector("#tm-more");
     entriesObserver = new IntersectionObserver((hits) => {
@@ -2306,28 +2677,35 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("branches", branches.length));
     parts.push(metaRow("tool calls", nodes.reduce((acc, n) => acc + (n.message?.tool_calls?.length || 0), 0)));
 
-    const usage = { input: 0, output: 0, reasoning: 0, cached: 0 };
-    let hasUsage = false;
+    const usage = { input: null, output: null, reasoning: null, cached: null, maxContext: null, cost: null };
+    const addUsage = (field, value) => {
+      if (value != null) usage[field] = (usage[field] ?? 0) + value;
+    };
     for (const call of trace.calls || []) {
-      const u = call.usage || {};
-      if (u.prompt_tokens != null || u.completion_tokens != null) hasUsage = true;
-      usage.input += u.prompt_tokens ?? 0;
-      usage.output += u.completion_tokens ?? 0;
-      usage.reasoning += u.completion_tokens_details?.reasoning_tokens ?? 0;
-      usage.cached += u.prompt_tokens_details?.cached_tokens ?? 0;
+      const current = normalizedCallUsage(call.usage);
+      addUsage("input", current.input);
+      addUsage("cached", current.cached);
+      addUsage("output", current.output);
+      addUsage("reasoning", current.reasoning);
+      addUsage("cost", current.cost);
+      if (current.input != null) {
+        const context = current.input + (current.cached ?? 0);
+        usage.maxContext = Math.max(usage.maxContext ?? 0, context);
+      }
     }
+    const totalInput = usage.input == null ? null : usage.input + (usage.cached ?? 0);
+    const totalTokens = totalInput == null || usage.output == null ? null : totalInput + usage.output;
+    const hasUsage = usage.input != null || usage.cached != null || usage.output != null;
     if (hasUsage) {
       parts.push(`<div class="meta-sec">usage</div>`);
-      parts.push(metaRow("input tokens", fmtCompact(usage.input)));
-      parts.push(metaRow("output tokens", fmtCompact(usage.output)));
-      if (usage.reasoning) parts.push(metaRow("reasoning tokens", fmtCompact(usage.reasoning)));
-      if (usage.cached) parts.push(metaRow("cached tokens", fmtCompact(usage.cached)));
-      // API-priced runs report per-call cost; local deployments usually don't
-      const traceCost = (t) => (t.calls || []).reduce((acc, c) => acc + (c.usage?.cost ?? 0), 0);
-      const allTraces = ep.traces || [];
-      if (allTraces.some((t) => (t.calls || []).some((c) => c.usage?.cost != null)))
-        parts.push(metaRow("cost", fmtCost(allTraces.reduce((acc, t) => acc + traceCost(t), 0))));
-      parts.push(metaRow("total tokens", fmtCompact(usage.input + usage.output)));
+      if (usage.input != null) parts.push(metaRow("input tokens", fmtCompact(usage.input)));
+      if (usage.cached != null) parts.push(metaRow("cached input", fmtCompact(usage.cached)));
+      if (totalInput != null) parts.push(metaRow("total input", fmtCompact(totalInput)));
+      if (usage.output != null) parts.push(metaRow("output tokens", fmtCompact(usage.output)));
+      if (usage.reasoning != null) parts.push(metaRow("reasoning tokens", fmtCompact(usage.reasoning)));
+      if (usage.maxContext != null) parts.push(metaRow("max context length", fmtCompact(usage.maxContext)));
+      if (usage.cost != null) parts.push(metaRow("cost", fmtCost(usage.cost)));
+      if (totalTokens != null) parts.push(metaRow("total tokens", fmtCompact(totalTokens)));
     }
 
     parts.push(`<div class="meta-sec">state</div>`);
@@ -2361,16 +2739,126 @@ function renderMeta(ep, trace, branches) {
   parts.push(metaRow("episode ID", ep.id, true));
   if (trace?.id) parts.push(metaRow("trace ID", trace.id, true));
   if (ep.group?.id) parts.push(metaRow("group ID", ep.group.id, true));
+  if (ep.task?.key) parts.push(metaRow("task ID", ep.task.key, true));
   if (trace?.agent?.runtime?.id) parts.push(metaRow("runtime ID", trace.agent.runtime.id, true));
 
-  const errors = [...(ep.errors || []), ...(trace?.errors || [])];
-  if (errors.length)
-    parts.push(
-      `<details class="meta-fold" open><summary>errors (${errors.length})</summary>` +
-        `<pre class="json">${esc(JSON.stringify(errors, null, 2))}</pre></details>`
-    );
-
   $("#tm-meta").innerHTML = parts.join("");
+}
+
+function timelineClock(ts) {
+  if (ts == null) return "—";
+  return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function timelineTipAttr(payload) {
+  return ` data-timeline-tip="${esc(JSON.stringify(payload))}"`;
+}
+
+function appendTimelineUsage(rows, usage, aggregate = false) {
+  if (!usage) return;
+  if (aggregate && usage.model_calls != null) rows.push(["model calls", fmtNum(usage.model_calls)]);
+  if (usage.input_tokens != null) rows.push(["input tokens", fmtCompact(usage.input_tokens)]);
+  if (usage.cached_tokens != null) rows.push(["cached input", fmtCompact(usage.cached_tokens)]);
+  if (usage.total_input_tokens != null) rows.push(["total input", fmtCompact(usage.total_input_tokens)]);
+  if (usage.output_tokens != null) rows.push(["output tokens", fmtCompact(usage.output_tokens)]);
+  if (usage.reasoning_tokens != null) rows.push(["reasoning tokens", fmtCompact(usage.reasoning_tokens)]);
+  if (usage.max_context_tokens != null) rows.push(["max context length", fmtCompact(usage.max_context_tokens)]);
+  if (usage.total_tokens != null) rows.push(["total tokens", fmtCompact(usage.total_tokens)]);
+  if (usage.cost != null) rows.push(["cost", fmtCost(usage.cost)]);
+}
+
+function timelineSpanHtml(lane, span, start, total) {
+  const partial = span.started_at == null || span.ended_at == null;
+  const left = span.started_at == null ? 0 : Math.max(0, Math.min(100, ((span.started_at - start) / total) * 100));
+  const width = partial ? 0.35 : Math.max(0.35, Math.min(100 - left, ((span.ended_at - span.started_at) / total) * 100));
+  const rows = [
+    ["start", span.started_at == null ? "unknown" : timelineClock(span.started_at)],
+    ["end", span.ended_at == null ? (span.status === "running" ? "open" : "unknown") : timelineClock(span.ended_at)],
+    ["duration", partial ? "—" : fmtDuration(span.ended_at - span.started_at)],
+  ];
+  if (span.track === "activity") {
+    if (span.shared) rows.push(["branch role", "shared prefix"]);
+    const totalInput = span.input_tokens == null ? null : span.input_tokens + (span.cached_tokens || 0);
+    appendTimelineUsage(rows, {
+      input_tokens: span.input_tokens,
+      cached_tokens: span.cached_tokens,
+      total_input_tokens: totalInput,
+      output_tokens: span.output_tokens,
+      reasoning_tokens: span.reasoning_tokens,
+      max_context_tokens: totalInput,
+      total_tokens: totalInput == null || span.output_tokens == null ? null : totalInput + span.output_tokens,
+      cost: span.cost,
+    });
+  } else {
+    appendTimelineUsage(rows, lane.usage, true);
+  }
+  const tip = timelineTipAttr({
+    kind: span.track === "activity" ? "activity" : "lifecycle",
+    title: `${lane.label} — ${span.label}`,
+    snippet: span.snippet || "",
+    rows,
+    hint: span.track === "activity" ? "Click to open this call in the transcript." : "Click to open this trace transcript.",
+  });
+  const node = span.node_index == null ? "" : ` data-tl-node="${span.node_index}"`;
+  const call = span.call_index == null ? "" : ` data-tl-call="${span.call_index}"`;
+  return (
+    `<button class="tl-span ${esc(span.track)} ${esc(span.kind)} ${span.shared ? "shared" : ""} ${span.status === "running" ? "running" : ""} ${partial ? "untimed" : ""}"` +
+    ` style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%" data-tl-trace="${lane.trace_index}"${node}${call}${tip}></button>`
+  );
+}
+
+function timelineLaneHtml(lane, start, total) {
+  const grids = [25, 50, 75].map((left) => `<i class="tl-gridline" style="left:${left}%"></i>`).join("");
+  const spans = (lane.spans || []).map((span) => timelineSpanHtml(lane, span, start, total)).join("");
+  const duration = lane.started_at == null || lane.ended_at == null ? "—" : fmtDuration(lane.ended_at - lane.started_at);
+  const ended = lane.ended_at == null ? (lane.status === "running" ? "open" : "unknown") : timelineClock(lane.ended_at);
+  const model = lane.model
+    ? `<div class="tl-label-meta" title="${esc(lane.model)}">${esc(lane.model)}</div>`
+    : "";
+  return (
+    `<div class="tl-lane" data-tl-trace="${lane.trace_index}">` +
+    `<div class="tl-label" style="padding-left:${10 + (lane.depth || 0) * 18}px">` +
+    `${lane.depth ? '<span class="tl-tree">└</span>' : ""}<span class="tl-dot" style="background:${PALETTE[lane.trace_index % PALETTE.length]}"></span>` +
+    `<span class="tl-label-copy"><div class="tl-label-name" title="${esc(lane.label)}">${esc(lane.label)}</div>` +
+    `${model}</span></div>` +
+    `<div class="tl-track">${grids}${spans}</div>` +
+    `<div class="tl-time"><span>${duration}</span><span class="muted">${ended}</span></div>` +
+    `<div class="tl-outcome"><span class="tl-state ${esc(lane.status)}">${esc(lane.outcome || lane.status)}</span>` +
+    `${lane.reward == null ? "" : `<span class="tl-reward">reward ${fmtReward(lane.reward)}</span>`}</div></div>`
+  );
+}
+
+function renderTimeline() {
+  const target = $("#tm-timeline");
+  const timeline = currentTimeline;
+  if (!timeline) {
+    target.innerHTML = `<div class="chart-empty">loading timeline…</div>`;
+    return;
+  }
+  if (!(timeline.lanes || []).length) {
+    target.innerHTML = emptyState("no timeline", "this episode carries no agent traces");
+    return;
+  }
+  const starts = timeline.lanes.map((lane) => lane.started_at).filter((value) => value != null);
+  const ends = timeline.lanes.map((lane) => lane.ended_at ?? lane.started_at).filter((value) => value != null);
+  const start = starts.length ? Math.min(...starts) : 0;
+  const end = ends.length ? Math.max(...ends) : start + 1;
+  const total = Math.max(1, end - start);
+  const axis = [0, 0.25, 0.5, 0.75, 1]
+    .map((fraction) => `<span style="left:${fraction * 100}%">${fraction ? fmtDuration(total * fraction) : "0"}</span>`)
+    .join("");
+  target.innerHTML =
+    `<div class="tl-shell"><div class="tl-head"><span>branches</span><div class="tl-axis">${axis}</div><span>duration / end</span><span>state / outcome</span></div>` +
+    timeline.lanes.map((lane) => timelineLaneHtml(lane, start, total)).join("") +
+    `</div>`;
+}
+
+async function setTraceView(view) {
+  traceView = view;
+  setActive("#tm-view", "view", view);
+  if (view === "timeline") await ensureTimeline();
+  renderEpisode();
+  savePrefs();
 }
 
 function renderEpisode() {
@@ -2383,14 +2871,10 @@ function renderEpisode() {
   if (currentBranchIdx >= branches.length) currentBranchIdx = 0;
   const traceTabs = $("#tm-trace-tabs");
   traceTabs.hidden = traces.length <= 1;
-  // multi-agent episodes: label each trace by its agent name (seat), index only
-  // as a tiebreak when names repeat or are missing
-  const names = traces.map((t) => t.agent?.name);
-  const label = (i) => (names[i] && names.indexOf(names[i]) === names.lastIndexOf(names[i]) ? names[i] : `${names[i] ?? "trace"} ${i}`);
   traceTabs.innerHTML =
     traces.length > 1
       ? traces
-          .map((_, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(label(i))}</button>`)
+          .map((trace, i) => `<button data-trace="${i}" class="${i === currentTraceIdx ? "active" : ""}">${esc(trace.agent?.name || "agent")}</button>`)
           .join("")
       : "";
   const branchTabs = $("#tm-branch-tabs");
@@ -2402,16 +2886,606 @@ function renderEpisode() {
           .join("") +
         `<button data-branch="-1" class="${currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
       : "";
-  $("#tm-tabs-row").hidden = traceTabs.hidden && branchTabs.hidden;
+  setActive("#trace-view-mode", "mode", state.traces.viewMode);
   renderRolloutList();
-  renderMessages(trace, branches);
+  const timeline = traceView === "timeline";
+  $("#tm-tabs-row").hidden = timeline || (traceTabs.hidden && branchTabs.hidden);
+  $("#tm-messages").hidden = timeline;
+  $("#tm-timeline").hidden = !timeline;
+  $("#token-signal").closest(".dd-select").hidden = timeline;
+  $("#tm-collapse").hidden = timeline;
+  $("#tm-expand").hidden = timeline;
+  setActive("#tm-view", "view", traceView);
+  if (timeline) renderTimeline();
+  else renderMessages(ep, trace, branches);
   renderMeta(ep, trace, branches);
 }
+
+/* ----------------------------------------------------------------- report */
+/* Markdown from <run>/reports/*.md. Prose is free; claims are
+   addressed: [^id] markers reference JSON citation lines, each one a trace
+   address plus a verbatim quote the frontend re-checks against the files. */
+
+async function initReport() {
+  state.report.loaded = true;
+  await refreshReport();
+}
+
+async function refreshReport() {
+  const rep = state.report;
+  const data = await api(`/api/runs/${encodeURIComponent(state.run)}/reports`);
+  if (state.report !== rep) return;
+  rep.files = data.reports;
+  if (!rep.files.length) {
+    rep.file = null;
+    rep.text = null;
+    renderReportSelect();
+    $("#report-verify").textContent = "";
+    $("#report-status").textContent = "";
+    $("#report-body").innerHTML = emptyState("no reports yet", "markdown files in <run>/reports/ appear here");
+    return;
+  }
+  const wanted = rep.wanted && rep.files.find((f) => f.file === rep.wanted)?.file;
+  rep.wanted = null;
+  const target = wanted || (rep.file && rep.files.find((f) => f.file === rep.file)?.file) || rep.files[0].file;
+  const entry = rep.files.find((f) => f.file === target);
+  const changed = target !== rep.file || entry.mtime !== rep.mtime;
+  rep.file = target;
+  renderReportSelect();
+  if (changed) await loadReport();
+}
+
+async function loadReport() {
+  const rep = state.report;
+  const file = rep.file;
+  const data = await api(`/api/runs/${encodeURIComponent(state.run)}/report?file=${encodeURIComponent(file)}`);
+  if (state.report !== rep || rep.file !== file) return;
+  rep.text = data.text;
+  rep.mtime = data.mtime;
+  renderReport();
+  if (state.tab === "report") updateHash();
+}
+
+function renderReportSelect() {
+  const rep = state.report;
+  const sel = $("#report-select");
+  sel.disabled = !rep.files.length;
+  sel.innerHTML = rep.files.length
+    ? rep.files
+        .map((f) => `<option value="${esc(f.file)}" ${f.file === rep.file ? "selected" : ""}>${esc(f.title || f.file)}</option>`)
+        .join("")
+    : `<option>no reports</option>`;
+  syncDressedSelects();
+}
+
+function renderReport() {
+  const rep = state.report;
+  const { title, body, citations } = parseReport(rep.text || "");
+  rep.citations = citations;
+  rep.verify = new Map();
+  rep.lookup = { summaries: new Map(), episodes: new Map() };
+  const ctx = { citations, order: [] };
+  const html = mdToHtml(body, ctx);
+  rep.order = ctx.order;
+  $("#report-body").innerHTML =
+    (title ? `<h1 class="report-title">${esc(title)}</h1>` : "") +
+    (html || emptyState("empty report", "this report has no content yet"));
+  const entry = rep.files.find((f) => f.file === rep.file);
+  $("#report-status").textContent = entry ? `${rep.file} · ${fmtAgo(entry.mtime)}` : (rep.file ?? "");
+  $("#report-verify").textContent = rep.order.length ? "verifying citations…" : "";
+  verifyCitations();
+}
+
+/* frontmatter title + [^id]: {json} citation definitions, stripped from the body */
+function parseReport(text) {
+  let title = null;
+  let body = text;
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
+  if (fm) {
+    body = text.slice(fm[0].length);
+    const t = /^title:\s*(.+)$/m.exec(fm[1]);
+    if (t) title = t[1].trim().replace(/^["']|["']$/g, "");
+  }
+  const citations = {};
+  body = body.replace(/^\[\^([\w-]+)\]:[ \t]*(\{.*\})[ \t]*$/gm, (_, id, json) => {
+    try {
+      citations[id] = JSON.parse(json);
+    } catch {
+      citations[id] = { _invalid: json };
+    }
+    return "";
+  });
+  return { title, body, citations };
+}
+
+/* markdown subset renderer (headings, lists, tables, fences, quotes, inline
+   marks) over fully escaped text — reports never inject markup */
+function mdToHtml(src, ctx) {
+  const lines = src.split("\n");
+  const out = [];
+  let para = [];
+  const flush = () => {
+    if (para.length) out.push(`<p>${renderInline(para.join(" "), ctx)}</p>`);
+    para = [];
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = /^(```|~~~)\s*(\S*)\s*$/.exec(line);
+    if (fence) {
+      flush();
+      const buf = [];
+      for (i++; i < lines.length && !lines[i].startsWith(fence[1]); i++) buf.push(lines[i]);
+      out.push(`<pre class="md-code"${fence[2] ? ` data-lang="${esc(fence[2])}"` : ""}><code>${esc(buf.join("\n"))}</code></pre>`);
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      flush();
+      const level = heading[1].length;
+      out.push(`<h${level}>${renderInline(heading[2], ctx)}</h${level}>`);
+      continue;
+    }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line) && !para.length) {
+      out.push("<hr>");
+      continue;
+    }
+    if (/^\s*>/.test(line)) {
+      flush();
+      const buf = [];
+      for (; i < lines.length && /^\s*>/.test(lines[i]); i++) buf.push(lines[i].replace(/^\s*>\s?/, ""));
+      i--;
+      out.push(`<blockquote>${mdToHtml(buf.join("\n"), ctx)}</blockquote>`);
+      continue;
+    }
+    if (line.includes("|") && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1] || "") && (lines[i + 1] || "").includes("-")) {
+      flush();
+      const cells = (row) => row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+      const head = cells(line);
+      const rows = [];
+      for (i += 2; i < lines.length && lines[i].includes("|"); i++) rows.push(cells(lines[i]));
+      i--;
+      out.push(
+        `<div class="md-table-wrap"><table class="md-table"><thead><tr>` +
+          head.map((h) => `<th>${renderInline(h, ctx)}</th>`).join("") +
+          `</tr></thead><tbody>` +
+          rows.map((r) => `<tr>${head.map((_, j) => `<td>${renderInline(r[j] ?? "", ctx)}</td>`).join("")}</tr>`).join("") +
+          `</tbody></table></div>`
+      );
+      continue;
+    }
+    const li = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(line);
+    if (li) {
+      flush();
+      const ordered = /\d/.test(li[2][0]);
+      const items = [];
+      for (; i < lines.length; i++) {
+        const m = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(lines[i]);
+        if (!m) {
+          // indented continuation lines fold into the previous item
+          if (/^\s{2,}\S/.test(lines[i]) && items.length) {
+            items[items.length - 1].text += " " + lines[i].trim();
+            continue;
+          }
+          break;
+        }
+        if (m[1].length >= 2 && items.length) (items[items.length - 1].subs ??= []).push(m[3]);
+        else items.push({ text: m[3] });
+      }
+      i--;
+      const tag = ordered ? "ol" : "ul";
+      out.push(
+        `<${tag}>` +
+          items
+            .map(
+              (it) =>
+                `<li>${renderInline(it.text, ctx)}` +
+                (it.subs ? `<ul>${it.subs.map((s) => `<li>${renderInline(s, ctx)}</li>`).join("")}</ul>` : "") +
+                `</li>`
+            )
+            .join("") +
+          `</${tag}>`
+      );
+      continue;
+    }
+    if (!line.trim()) {
+      flush();
+      continue;
+    }
+    para.push(line.trim());
+  }
+  flush();
+  return out.join("\n");
+}
+
+function renderInline(text, ctx) {
+  let s = esc(text);
+  const codes = [];
+  s = s.replace(/`([^`]+)`/g, (_, c) => {
+    codes.push(c);
+    return `\x00${codes.length - 1}\x00`;
+  });
+  s = s.replace(/\[\^([\w-]+)\]/g, (_, id) => citeChipHtml(id, ctx));
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+|#[^)\s]*)\)/g, `<a href="$2" target="_blank" rel="noopener">$1</a>`);
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  s = s.replace(/(^|[\s(])_([^_\n]+)_/g, "$1<em>$2</em>");
+  s = s.replace(/\x00(\d+)\x00/g, (_, i) => `<code>${codes[+i]}</code>`);
+  return s;
+}
+
+function citeChipHtml(id, ctx) {
+  let n = ctx.order.indexOf(id) + 1;
+  if (!n) n = ctx.order.push(id);
+  if (!ctx.citations[id])
+    return `<sup class="cite-chip missing" data-cite="${esc(id)}" title="[^${esc(id)}] has no citation definition">?</sup>`;
+  return `<sup class="cite-chip" data-cite="${esc(id)}" title="citation ${esc(id)}">${n}</sup>`;
+}
+
+/* Whitespace-insensitive exact quote search; returns [start, end) ranges in
+   the original text so highlights survive reflowed whitespace. When the quote
+   repeats inside the text, optional prefix/suffix (verbatim adjacent text) pick
+   the right occurrence. */
+function findQuotes(text, quote, prefix = "", suffix = "") {
+  const map = [];
+  let normed = "";
+  for (let i = 0; i < text.length; i++) {
+    const ws = /\s/.test(text[i]);
+    if (ws && (!normed || normed.endsWith(" "))) continue;
+    normed += ws ? " " : text[i];
+    map.push(i);
+  }
+  const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+  const q = norm(quote);
+  if (!q) return [];
+  const pre = norm(prefix);
+  const post = norm(suffix);
+  const ranges = [];
+  for (let at = normed.indexOf(q); at >= 0; at = normed.indexOf(q, at + 1)) {
+    if (pre && !normed.slice(0, at).trimEnd().endsWith(pre)) continue;
+    if (post && !normed.slice(at + q.length).trimStart().startsWith(post)) continue;
+    ranges.push([map[at], map[at + q.length - 1] + 1]);
+  }
+  return ranges;
+}
+
+const findQuote = (...args) => findQuotes(...args)[0] || null;
+
+function quoteMarkedHtml(text, marks) {
+  const ranges = [];
+  for (const h of marks) {
+    const r = h.quote ? findQuote(text, h.quote, h.prefix, h.suffix) : null;
+    if (r) ranges.push([...r, h.reason]);
+  }
+  if (!ranges.length) return esc(text);
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+    else merged.push([...r]);
+  }
+  let out = "";
+  let pos = 0;
+  for (const [s, e, tip] of merged) {
+    out += esc(text.slice(pos, s)) + `<mark class="hl-quote"${tip ? ` data-tip="${esc(tip)}"` : ""}>${esc(text.slice(s, e))}</mark>`;
+    pos = e;
+  }
+  return out + esc(text.slice(pos));
+}
+
+/* Citation resolution uses the same read endpoints as the trace viewer. Lookup
+   promises live only for the current report render: duplicate references share
+   work, while a changed report or rewritten trace never inherits stale evidence. */
+const CITATION_KEYS = new Set([
+  "run", "step", "kind", "subset", "episode", "trace", "branch",
+  "node", "field", "quote", "prefix", "suffix", "note",
+]);
+
+async function resolveCitation(c, cache) {
+  if (!c) return { matched: false, reason: "missing citation definition" };
+  if (typeof c !== "object" || c._invalid) return { matched: false, reason: "invalid citation JSON" };
+  const unknown = Object.keys(c).filter((key) => !CITATION_KEYS.has(key));
+  if (unknown.length) return { matched: false, reason: `unknown fields: ${unknown.join(", ")}` };
+  const run = c.run || state.run;
+  if (typeof run !== "string" || !run) return { matched: false, reason: "citation needs a run" };
+  if (!Number.isInteger(c.step) || !["train", "eval"].includes(c.kind) || !["all", "effective"].includes(c.subset))
+    return { matched: false, reason: "citation needs a valid step, kind, and subset" };
+  for (const key of ["trace", "node"])
+    if (c[key] != null && (!Number.isInteger(c[key]) || c[key] < 0)) return { matched: false, reason: `${key} must be a non-negative integer` };
+  if (c.branch != null && (!Number.isInteger(c.branch) || c.branch < -1))
+    return { matched: false, reason: "branch must be an integer >= -1" };
+  if (c.field != null && !["content", "reasoning"].includes(c.field))
+    return { matched: false, reason: "field must be content or reasoning" };
+  if (typeof c.episode !== "string" || !c.episode) return { matched: false, reason: "citation needs an episode id" };
+  if (typeof c.quote !== "string" || !c.quote.trim()) return { matched: false, reason: "citation needs a verbatim quote" };
+  if (typeof c.note !== "string" || !c.note.trim()) return { matched: false, reason: "citation needs a note" };
+  for (const key of ["prefix", "suffix"])
+    if (c[key] != null && typeof c[key] !== "string") return { matched: false, reason: `${key} must be a string` };
+  const base = `/api/runs/${encodeURIComponent(run)}/rollouts/${c.step}/${c.kind}/${c.subset}`;
+  const summaryKey = `${base}?episode=${encodeURIComponent(c.episode)}&limit=2`;
+  if (!cache.summaries.has(summaryKey))
+    cache.summaries.set(
+      summaryKey,
+      api(summaryKey).catch((err) => {
+        cache.summaries.delete(summaryKey);
+        throw err;
+      })
+    );
+  const list = await cache.summaries.get(summaryKey);
+  if (!list.total) return { matched: false, reason: `episode ${c.episode} not found` };
+  if (list.total > 1) return { matched: false, reason: `episode ${c.episode} is not unique` };
+  const line = list.episodes[0].line;
+  const epKey = `${base}/${line}`;
+  if (!cache.episodes.has(epKey))
+    cache.episodes.set(
+      epKey,
+      api(epKey).catch((err) => {
+        cache.episodes.delete(epKey);
+        throw err;
+      })
+    );
+  const ep = await cache.episodes.get(epKey);
+  const trace = (ep.traces || [])[c.trace ?? 0];
+  if (!trace) return { matched: false, reason: "trace not found", line };
+  let nodes = c.node != null ? [[c.node, (trace.nodes || [])[c.node]]] : (trace.nodes || []).map((n, i) => [i, n]);
+  nodes = nodes.filter(([, n]) => n);
+  if (c.branch != null && c.branch !== -1) {
+    const branch = traceBranches(trace)[c.branch];
+    if (!branch) return { matched: false, reason: "branch not found", line };
+    nodes = nodes.filter(([i]) => branch.includes(i));
+  }
+  if (!nodes.length) return { matched: false, reason: `node ${c.node} not found`, line };
+  const matches = [];
+  for (const [i, node] of nodes) {
+    const fields = [
+      ["content", messageText(node.message)],
+      ["reasoning", reasoningText(node.message?.reasoning_content ?? node.message?.reasoning)],
+    ].filter(([field]) => !c.field || c.field === field);
+    for (const [field, text] of fields) {
+      for (const _ of findQuotes(text, c.quote, c.prefix, c.suffix)) matches.push({ nodeIdx: i, field });
+    }
+  }
+  if (!matches.length)
+    return { matched: false, reason: c.node != null ? "quote not found in node" : "quote not found in any node", line };
+  if (matches.length > 1) return { matched: false, reason: "quote is ambiguous — add node and prefix or suffix", line };
+  return { matched: true, line, ...matches[0] };
+}
+
+function paintCitation(id, res) {
+  document.querySelectorAll(`.cite-chip[data-cite="${CSS.escape(id)}"]`).forEach((el) => {
+    el.classList.toggle("ok", !!res.matched);
+    el.classList.toggle("bad", !res.matched);
+    el.title = res.matched ? "quote verified against the trace" : `⚠ ${res.reason || "quote not found"}`;
+  });
+}
+
+async function verifyCitations() {
+  const rep = state.report;
+  const citations = rep.citations;
+  const cache = rep.lookup;
+  const ids = rep.order;
+  if (!ids.length) return;
+  let verified = 0;
+  let broken = 0;
+  for (const id of ids) {
+    let res;
+    try {
+      res = await resolveCitation(citations[id], cache);
+    } catch (err) {
+      res = { matched: false, reason: String(err) };
+    }
+    if (state.report !== rep || rep.lookup !== cache) return;
+    rep.verify.set(id, res);
+    if (res.matched) verified++;
+    else broken++;
+    paintCitation(id, res);
+    $("#report-verify").textContent = `${verified}/${ids.length} verified${broken ? ` · ${broken} broken` : ""}`;
+  }
+}
+
+/* ------------------------------------------------------ citation click */
+/* a chip is a link: clicking jumps straight to the trace with the quote
+   highlighted; the citation's note surfaces on hover over the mark */
+
+async function openCitation(id) {
+  const c = state.report.citations[id];
+  const rep = state.report;
+  const cache = rep.lookup;
+  let res = rep.verify.get(id);
+  if (!res) {
+    try {
+      res = await resolveCitation(c, cache);
+    } catch (err) {
+      res = { matched: false, reason: String(err) };
+    }
+    if (state.report !== rep || rep.lookup !== cache) return;
+    rep.verify.set(id, res);
+    paintCitation(id, res);
+  }
+  if (!res.matched) return toastMsg(`[^${esc(id)}] is broken: ${esc(res.reason || "quote not found")}`);
+  await applyViewCommand({
+    run: c.run || state.run,
+    tab: "traces",
+    step: c.step,
+    kind: c.kind,
+    subset: c.subset,
+    episode: c.episode,
+    line: res.line,
+    trace: c.trace,
+    branch: c.branch ?? -1,
+    highlight: [{ node: res.nodeIdx, field: res.field, quote: c.quote, prefix: c.prefix, suffix: c.suffix, reason: c.note }],
+  });
+  $("#tm-back").hidden = $("#trace-modal").hidden; // way back to the report
+}
+
+/* ----------------------------------------------------------- view command */
+/* SSE from /api/view/events: a local agent POSTs an on-disk address, every
+   connected tab navigates there through the same functions clicks use. */
+
+let pendingHighlight = null;
+let lastViewSeq = 0;
+let hadHashRun = false;
+let applyingView = false;
+const viewCommandQueue = [];
+let viewDrain = Promise.resolve();
+const MAX_PENDING_VIEW_COMMANDS = 32;
+
+function primeTraceCommand(cmd) {
+  const traces = state.traces;
+  if (cmd.step != null) traces.step = cmd.step;
+  if (cmd.kind) traces.kind = cmd.kind;
+  if (cmd.subset) {
+    traces.subset = cmd.subset;
+    traces.preferred = cmd.subset;
+  }
+  traces.env = "";
+  traces.errorsOnly = false;
+  if (cmd.highlight?.length) traces.viewMode = "messages";
+  pendingHighlight = null;
+}
+
+async function applyOneViewCommand(cmd) {
+  let runChanged = false;
+  if (cmd.run && cmd.run !== state.run) {
+    if (!state.runs.some((r) => r.name === cmd.run)) await loadRuns();
+    if (!state.runs.some((r) => r.name === cmd.run)) return toastMsg(`unknown run ${esc(cmd.run)}`);
+    await selectRun(cmd.run, true);
+    runChanged = true;
+  }
+  if (cmd.report) {
+    state.report.wanted = cmd.report;
+    state.report.loaded = false;
+  }
+  const traceCommand = ["step", "kind", "subset", "episode", "line", "trace", "branch", "highlight"].some(
+    (key) => cmd[key] != null
+  );
+  if (traceCommand) primeTraceCommand(cmd); // target the requested file before the traces tab initializes
+  if (cmd.tab && (cmd.tab !== state.tab || cmd.report || runChanged)) await activateTab(cmd.tab, true);
+  else if (cmd.report && state.tab === "report") await initReport();
+  else if (runChanged) await activateTab(state.tab, true);
+  if (traceCommand) await applyTraceCommand(cmd);
+}
+
+async function drainViewCommands() {
+  while (viewCommandQueue.length) {
+    const cmd = viewCommandQueue.shift();
+    try {
+      await applyOneViewCommand(cmd);
+    } catch (err) {
+      console.warn("view command failed", err);
+    }
+  }
+  applyingView = false;
+}
+
+function applyViewCommand(cmd) {
+  viewCommandQueue.push(cmd);
+  if (viewCommandQueue.length > MAX_PENDING_VIEW_COMMANDS) viewCommandQueue.shift();
+  if (!applyingView) {
+    applyingView = true;
+    viewDrain = drainViewCommands();
+  }
+  return viewDrain;
+}
+
+async function applyTraceCommand(cmd) {
+  const traces = state.traces;
+  if (!traces.loaded) await initTraces();
+  adjustKindSubset();
+  renderStepControl();
+  await loadEpisodes();
+  if (cmd.line == null && cmd.episode == null) return;
+  const episodes = traces.episodes || [];
+  const target = cmd.episode != null ? episodes.find((e) => e.id === cmd.episode) : episodes.find((e) => e.line === cmd.line);
+  const line = target?.line ?? cmd.line;
+  if (line == null) return toastMsg(`episode ${esc(cmd.episode ?? "?")} not found at this address`);
+  pendingHighlight = {
+    run: state.run,
+    step: traces.step,
+    kind: traces.kind,
+    subset: traces.subset,
+    line,
+    trace: cmd.trace ?? 0,
+    highlights: (cmd.highlight || []).filter((h) => h && h.node != null),
+    scrolled: false,
+  };
+  await openEpisode(line, { trace: cmd.trace, branch: cmd.branch });
+}
+
+let toastEl = null;
+let toastTimer = 0;
+
+function toastMsg(html, ms = 6000) {
+  if (!toastEl) {
+    toastEl = document.createElement("div");
+    toastEl.id = "view-toast";
+    toastEl.hidden = true;
+    document.body.appendChild(toastEl);
+    toastEl.addEventListener("click", (e) => {
+      if (e.target.closest(".toast-dismiss")) toastEl.hidden = true;
+      const go = e.target.closest("[data-cmd]");
+      if (go) {
+        toastEl.hidden = true;
+        applyViewCommand(JSON.parse(go.dataset.cmd));
+      }
+    });
+  }
+  toastEl.innerHTML = html;
+  toastEl.hidden = false;
+  clearTimeout(toastTimer);
+  if (ms) toastTimer = setTimeout(() => (toastEl.hidden = true), ms);
+}
+
+function showViewToast(cmd) {
+  const label = [cmd.run, cmd.tab, cmd.step != null ? `step ${cmd.step}` : null, cmd.episode ?? cmd.report]
+    .filter(Boolean)
+    .join(" · ");
+  toastMsg(
+    `<span class="t-label">agent</span><span class="toast-text">${esc(label)}</span>` +
+      `<button class="btn" data-cmd="${esc(JSON.stringify(cmd))}">go</button><button class="btn toast-dismiss">✕</button>`,
+    30000
+  );
+}
+
+function connectViewEvents() {
+  const source = new EventSource("/api/view/events");
+  source.onmessage = (e) => {
+    let cmd;
+    try {
+      cmd = JSON.parse(e.data);
+    } catch {
+      return;
+    }
+    if (!cmd || (cmd.seq && cmd.seq <= lastViewSeq)) return;
+    if (cmd.seq) lastViewSeq = cmd.seq;
+    // a stored command replays on connect: apply it only to a fresh bare tab —
+    // a deep link or reload states its own target, and stale pointers stay dead
+    if (cmd.replay && (hadHashRun || Date.now() / 1000 - (cmd.ts || 0) > 900)) return;
+    if (!state.follow) return showViewToast(cmd);
+    applyViewCommand(cmd);
+  };
+}
+
+$("#follow-toggle").addEventListener("change", (e) => {
+  state.follow = e.target.checked;
+  savePrefs();
+});
+$("#report-select").addEventListener("change", async (e) => {
+  state.report.file = e.target.value;
+  await loadReport();
+});
+$("#report-body").addEventListener("click", (e) => {
+  const chip = e.target.closest(".cite-chip");
+  if (chip) openCitation(chip.dataset.cite);
+});
 
 /* ---------------------------------------------------------------- wiring */
 
 $("#run-select").addEventListener("change", (e) => selectRun(e.target.value));
-$("#live-toggle").addEventListener("change", (e) => (state.live = e.target.checked));
+$("#live-toggle").addEventListener("change", async (e) => {
+  state.live = e.target.checked;
+  if (state.live) await pollDashboard();
+});
 $("#compare-menu").addEventListener("change", (e) => {
   const box = e.target.closest("[data-compare]");
   if (box) toggleCompare(box.dataset.compare, box.checked);
@@ -2480,9 +3554,16 @@ function dressSelect(select) {
   dressedSelects.add(select);
   syncDressedSelects();
 }
-function updateTraceFilterBtn() {
+/* the table and the trace viewer carry the same filter dropdown over one
+   shared state — a change in either view shows up in both */
+function syncTraceFilterControls() {
   const t = state.traces;
-  $("#trace-filter-btn").classList.toggle("active", !!(t.env || t.errorsOnly || t.sort !== "line"));
+  for (const sel of ["#trace-env", "#tm-env"]) $(sel).value = t.env;
+  for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = `${t.sort}:${t.order}`;
+  for (const sel of ["#trace-errors", "#tm-errors"]) $(sel).checked = t.errorsOnly;
+  for (const sel of ["#trace-filter-btn", "#tm-filter-btn"])
+    $(sel).classList.toggle("active", !!(t.env || t.errorsOnly || t.sort !== "line"));
+  syncDressedSelects();
 }
 
 document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => activateTab(b.dataset.tab)));
@@ -2503,6 +3584,10 @@ $("#config-format").addEventListener("click", (e) => {
   state.config.file = configFileFor(btn.dataset.fmt);
   renderConfigFormat();
   loadConfig();
+});
+$("#config-command-copy").addEventListener("click", (e) => {
+  const command = state.config.commandText.trimEnd();
+  if (command) copyText(command, e.currentTarget);
 });
 $("#config-search").addEventListener(
   "input",
@@ -2606,6 +3691,11 @@ $("#attempt-select").addEventListener("change", async (e) => {
   state.logs.paneFile = {};
   await loadLogfiles();
   await pollLogs();
+});
+$("#config-attempt-select").addEventListener("change", async (e) => {
+  state.config.attempt = e.target.value;
+  state.config.file = null;
+  await loadConfigAttempt();
 });
 $("#log-panes").addEventListener("change", async (e) => {
   const select = e.target.closest(".lp-file");
@@ -2717,6 +3807,14 @@ async function setTraceSubset(subset, inModal = false) {
   if (inModal) await reopenFirstEpisode();
 }
 
+/* filter changes keep the open viewer in sync: hold the current episode when
+   it survives the filter, land on the first one otherwise */
+async function refreshModalList() {
+  if ($("#trace-modal").hidden) return;
+  if (filteredRollouts().some((e) => e.line === currentLine)) renderRolloutList();
+  else await reopenFirstEpisode();
+}
+
 /* after a filter change inside the viewer, land on the first episode of the
    new subset (line numbers don't correspond across files) */
 async function reopenFirstEpisode() {
@@ -2744,13 +3842,26 @@ for (const [sel, inModal] of [["#trace-subset", false], ["#tm-subset", true]])
       setTraceSubset(b.dataset.subset, inModal);
     })
   );
-$("#trace-env").addEventListener("change", (e) => { state.traces.env = e.target.value; loadEpisodes(); });
-$("#trace-errors").addEventListener("change", (e) => { state.traces.errorsOnly = e.target.checked; loadEpisodes(); savePrefs(); });
-$("#trace-sort").addEventListener("change", (e) => {
-  [state.traces.sort, state.traces.order] = e.target.value.split(":");
-  loadEpisodes();
-  savePrefs();
-});
+for (const sel of ["#trace-env", "#tm-env"])
+  $(sel).addEventListener("change", async (e) => {
+    state.traces.env = e.target.value;
+    await loadEpisodes();
+    await refreshModalList();
+  });
+for (const sel of ["#trace-errors", "#tm-errors"])
+  $(sel).addEventListener("change", async (e) => {
+    state.traces.errorsOnly = e.target.checked;
+    await loadEpisodes();
+    savePrefs();
+    await refreshModalList();
+  });
+for (const sel of ["#trace-sort", "#tm-sort"])
+  $(sel).addEventListener("change", async (e) => {
+    [state.traces.sort, state.traces.order] = e.target.value.split(":");
+    await loadEpisodes();
+    savePrefs();
+    await refreshModalList();
+  });
 $("#episode-table").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-line]");
   if (row) openEpisode(+row.dataset.line);
@@ -2772,6 +3883,10 @@ $("#episode-table-wrap").addEventListener(
 );
 $("#tm-list").addEventListener("scroll", rafThrottle(renderRolloutWindow));
 $("#drawer-close").addEventListener("click", closeDrawer);
+$("#tm-back").addEventListener("click", () => {
+  closeDrawer();
+  activateTab("report");
+});
 $("#drawer-backdrop").addEventListener("click", closeDrawer);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") return closeDrawer();
@@ -2789,21 +3904,100 @@ tokTip.className = "tok-tip";
 tokTip.hidden = true;
 document.body.appendChild(tokTip);
 $("#tm-messages").addEventListener("mouseover", (e) => {
-  const tok = e.target.closest(".tok[data-tip]");
+  const tok = e.target.closest("[data-tip]");
   if (!tok) return;
   tokTip.textContent = tok.dataset.tip;
+  tokTip.classList.toggle("note", tok.matches("mark.hl-quote")); // citation notes wrap
   tokTip.hidden = false;
   const rect = tok.getBoundingClientRect();
   tokTip.style.left = `${Math.min(rect.left, window.innerWidth - tokTip.offsetWidth - 12)}px`;
   tokTip.style.top = `${rect.top - tokTip.offsetHeight - 6}px`;
 });
 $("#tm-messages").addEventListener("mouseout", (e) => {
-  if (e.target.closest(".tok[data-tip]")) tokTip.hidden = true;
+  if (e.target.closest("[data-tip]")) tokTip.hidden = true;
 });
 $("#token-signal").addEventListener("change", async () => {
   await ensureTokens();
   renderEpisode();
   savePrefs();
+});
+$("#trace-view-mode").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-mode]");
+  if (!btn || btn.dataset.mode === state.traces.viewMode) return;
+  state.traces.viewMode = btn.dataset.mode;
+  setActive("#trace-view-mode", "mode", state.traces.viewMode);
+  await ensureTokens();
+  renderEpisode();
+  savePrefs();
+});
+$("#tm-view").addEventListener("click", (e) => {
+  const button = e.target.closest("[data-view]");
+  if (button && button.dataset.view !== traceView) setTraceView(button.dataset.view);
+});
+$("#tm-timeline").addEventListener("click", async (e) => {
+  const target = e.target.closest("[data-tl-trace]");
+  if (!target) return;
+  e.stopPropagation();
+  currentTraceIdx = +target.dataset.tlTrace;
+  const node = target.dataset.tlNode == null ? null : +target.dataset.tlNode;
+  const call = target.dataset.tlCall == null ? null : +target.dataset.tlCall;
+  if (node != null) {
+    const trace = currentEpisode?.traces?.[currentTraceIdx];
+    const branches = trace ? traceBranches(trace) : [];
+    const branch = branches.findIndex((path) => path.includes(node));
+    currentBranchIdx = branch >= 0 ? branch : -1;
+    pendingTimelineNode = node;
+    pendingTimelineCall = call;
+    state.traces.viewMode = "messages";
+  } else {
+    currentBranchIdx = 0;
+    pendingTimelineNode = null;
+    pendingTimelineCall = call;
+    if (call != null) state.traces.viewMode = "messages";
+  }
+  await setTraceView("transcript");
+  requestAnimationFrame(() => {
+    const entry =
+      pendingTimelineCall == null
+        ? pendingTimelineNode == null
+          ? null
+          : $(`#tm-messages [data-node="${pendingTimelineNode}"]`)
+        : $(`#tm-messages [data-call-index="${pendingTimelineCall}"]`);
+    entry?.scrollIntoView({ block: "center" });
+    const details = entry?.closest("details");
+    if (details) details.open = true;
+    pendingTimelineNode = null;
+    pendingTimelineCall = null;
+  });
+});
+const timelineTip = document.createElement("div");
+timelineTip.className = "tl-tooltip";
+timelineTip.hidden = true;
+document.body.appendChild(timelineTip);
+function moveTimelineTip(e) {
+  const gap = 12;
+  const left = Math.min(e.clientX + gap, window.innerWidth - timelineTip.offsetWidth - 8);
+  const top = Math.min(e.clientY + gap, window.innerHeight - timelineTip.offsetHeight - 8);
+  timelineTip.style.left = `${Math.max(8, left)}px`;
+  timelineTip.style.top = `${Math.max(8, top)}px`;
+}
+$("#tm-timeline").addEventListener("mouseover", (e) => {
+  const target = e.target.closest("[data-timeline-tip]");
+  if (!target) return;
+  const payload = JSON.parse(target.dataset.timelineTip);
+  timelineTip.innerHTML =
+    `<div class="tl-tooltip-kind">${esc(payload.kind)}</div><div class="tl-tooltip-title">${esc(payload.title)}</div>` +
+    `${payload.snippet ? `<div class="tl-tooltip-snippet">${esc(payload.snippet)}</div>` : ""}` +
+    `<dl>${payload.rows.map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>` +
+    `<div class="tl-tooltip-hint">${esc(payload.hint)}</div>`;
+  timelineTip.hidden = false;
+  moveTimelineTip(e);
+});
+$("#tm-timeline").addEventListener("mousemove", (e) => {
+  if (!timelineTip.hidden) moveTimelineTip(e);
+});
+$("#tm-timeline").addEventListener("mouseout", (e) => {
+  if (e.target.closest("[data-timeline-tip]") && !e.relatedTarget?.closest?.("[data-timeline-tip]")) timelineTip.hidden = true;
 });
 $("#tm-trace-tabs").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-trace]");
@@ -2817,21 +4011,42 @@ $("#tm-list").addEventListener("click", (e) => {
   const item = e.target.closest("[data-line]");
   if (item) openEpisode(+item.dataset.line);
 });
-$("#tm-prev").addEventListener("click", () => stepRollout(-1));
-$("#tm-next").addEventListener("click", () => stepRollout(1));
 $("#tm-collapse").addEventListener("click", () =>
-  document.querySelectorAll("#tm-messages details.entry").forEach((d) => (d.open = false))
+  document.querySelectorAll("#tm-messages details").forEach((d) => (d.open = false))
 );
 $("#tm-expand").addEventListener("click", () =>
   document.querySelectorAll("#tm-messages details").forEach((d) => (d.open = true))
 );
 $("#tm-messages").addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-copy]");
+  const btn = e.target.closest("[data-copy], [data-copy-tool], [data-copy-schema], [data-copy-tools], [data-copy-rendered]");
   if (!btn) return;
   e.preventDefault();
   e.stopPropagation();
-  const node = currentEpisode?.traces?.[currentTraceIdx]?.nodes?.[+btn.dataset.copy];
-  if (node) copyText(messageText(node.message), btn);
+  const trace = currentEpisode?.traces?.[currentTraceIdx];
+  if (!trace) return;
+  if (btn.dataset.copy != null) {
+    const node = trace.nodes?.[+btn.dataset.copy];
+    if (node) copyText(messageText(node.message), btn);
+    return;
+  }
+  const tools = normalizedTools(trace.tools);
+  if (btn.hasAttribute("data-copy-tools")) return copyText(JSON.stringify(tools, null, 2), btn);
+  if (btn.dataset.copyTool != null) return copyText(JSON.stringify(tools[+btn.dataset.copyTool], null, 2), btn);
+  if (btn.dataset.copySchema != null) {
+    const schema = toolParts(tools[+btn.dataset.copySchema], +btn.dataset.copySchema).parameters;
+    return copyText(typeof schema === "string" ? schema : JSON.stringify(schema, null, 2), btn);
+  }
+  if (btn.dataset.copyRendered) {
+    const rendered = trace.rendered_tokens;
+    const selected = currentBranchIdx === -1 ? rendered?.all_nodes : rendered?.paths?.[currentBranchIdx];
+    if (btn.dataset.copyRendered === "text") {
+      if (selected?.text != null) copyText(selected.text, btn);
+      return;
+    }
+    const path = currentPath(trace, traceBranches(trace));
+    const ids = path.flatMap((index) => trace.nodes?.[index]?.token_ids || []);
+    return copyText(JSON.stringify(ids), btn);
+  }
 });
 $("#tm-meta").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-copytext]");
@@ -2863,12 +4078,15 @@ function savePrefs() {
       collapsedSections: [...state.metrics.collapsedSections],
       traceErrorsOnly: state.traces.errorsOnly,
       traceSort: `${state.traces.sort}:${state.traces.order}`,
+      traceViewMode: state.traces.viewMode,
+      traceView,
       logView: state.logs.view,
       logComponents: state.logs.components ? [...state.logs.components] : null,
       logLevel: state.logs.level,
       logSearch: $("#log-search").value,
       configSearch: $("#config-search").value,
       tokenSignal: $("#token-signal").value,
+      follow: state.follow,
     })
   );
 }
@@ -2885,12 +4103,10 @@ $("#smooth-range").addEventListener("input", (e) => {
   savePrefs();
 });
 
-let tickCount = 0;
 let ticking = false;
-setInterval(async () => {
+async function pollDashboard() {
   if (!state.live || ticking) return;
   ticking = true;
-  tickCount++;
   try {
     // keep the run list fresh so new runs register without a page refresh;
     // it runs concurrently with the tab poll (they're independent requests)
@@ -2905,17 +4121,20 @@ setInterval(async () => {
     syncDressedSelects();
     if (state.tab === "metrics" && state.metrics.loaded) await fetchMetrics();
     else if (state.tab === "logs" && state.logs.loaded) await pollLogs();
-    else if (state.tab === "traces" && state.traces.loaded) {
-      await loadRollouts();
-      if (tickCount % 5 === 0) await loadEpisodes();
-    }
+    else if (state.tab === "traces" && state.traces.loaded) await refreshTraces();
+    else if (state.tab === "report" && state.report.loaded) await refreshReport();
     await runsRefresh;
   } catch (err) {
     console.warn("poll failed", err);
   } finally {
     ticking = false;
   }
-}, POLL_MS);
+}
+
+setInterval(pollDashboard, POLL_MS);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) pollDashboard();
+});
 
 (async function init() {
   $("#smooth-range").value = state.metrics.smooth;
@@ -2925,11 +4144,11 @@ setInterval(async () => {
   renderLogLevel();
   $("#log-search").value = prefs.logSearch ?? "";
   $("#config-search").value = prefs.configSearch ?? "";
-  $("#token-signal").value = prefs.tokenSignal ?? "";
-  for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#attempt-select", "#token-signal"])
+  $("#token-signal").value = prefs.tokenSignal === "rendered" ? "" : (prefs.tokenSignal ?? "");
+  $("#follow-toggle").checked = state.follow;
+  for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
     dressSelect($(sel));
-  $("#trace-sort").value = `${state.traces.sort}:${state.traces.order}`;
-  $("#trace-errors").checked = state.traces.errorsOnly;
+  syncTraceFilterControls();
   setActive("#metrics-mode", "mode", state.metrics.mode);
   setActive("#all-layout", "layout", state.metrics.allLayout);
   $("#all-layout").hidden = state.metrics.mode !== "all";
@@ -2937,6 +4156,8 @@ setInterval(async () => {
   applyPaneSize();
   const params = new URLSearchParams(location.hash.slice(1));
   state.tab = params.get("tab") || "metrics";
+  state.report.wanted = params.get("report");
+  hadHashRun = !!params.get("run");
   setActive("#tabs", "tab", state.tab);
   document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== `tab-${state.tab}`));
   await loadRuns();
@@ -2944,4 +4165,5 @@ setInterval(async () => {
   const run = state.runs.find((r) => r.name === wanted)?.name ?? state.runs[0]?.name;
   if (run) await selectRun(run);
   else $("#metrics-body").innerHTML = emptyState("no runs found", `nothing to show in ${state.outputDir ?? "the output directory"}`);
+  connectViewEvents();
 })();

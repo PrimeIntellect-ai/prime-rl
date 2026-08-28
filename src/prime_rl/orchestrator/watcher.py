@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 
 from prime_rl.orchestrator.types import Policy, VersionObserver
 from prime_rl.transports.weights import WeightReceiver
@@ -38,6 +39,19 @@ class WeightWatcher:
         self.task: asyncio.Task | None = None
         self.update_lock = asyncio.Lock()
         self.stopped = asyncio.Event()
+        self.update_hooks: list[Callable[[int], Awaitable[None]]] = []
+
+    def on_update(self, hook: Callable[[int], Awaitable[None]]) -> None:
+        """Register an async hook that runs after inference applies new weights."""
+        self.update_hooks.append(hook)
+
+    async def sync_startup(self, step: int, timeout: float) -> None:
+        """Apply the startup policy and notify the registered update hooks."""
+        async with self.update_lock:
+            await self.receiver.sync_startup(step, timeout)
+            self.ckpt_step = step
+            self.policy.version = step
+            await self._notify_update(step)
 
     async def start(self) -> None:
         self.task = asyncio.current_task()
@@ -72,12 +86,9 @@ class WeightWatcher:
             await self.receiver.wait_published(next_step, cancelled=self.stopped.is_set)
             self.last_wait_for_ckpt_time = time.perf_counter() - t0
 
-            # Publish confirmed: the policy version advances here, before the
-            # apply — inference pauses during the update, so nothing can generate
-            # under the new number from the old weights, and a ship held on this
-            # version releases without waiting out the inference weight reload.
+            # Record the published version before notifying pending observers.
+            # ``policy.version`` advances only after inference applies it.
             self.ckpt_step = next_step
-            self.policy.version = next_step
 
             # Drain stale rollouts BEFORE pausing the inference engines.
             # Aborting a rollout triggers vLLM's KV-connector cleanup (NIXL's
@@ -102,17 +113,22 @@ class WeightWatcher:
             await self.receiver.receive(next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
+            self.policy.version = next_step
             get_logger().debug(
                 f"Updated inference weights to policy v{next_step} in {format_time(self.last_update_weights_time)}"
             )
 
-            for observer in self.observers:
-                try:
-                    await observer.on_new_version(next_step)
-                except Exception as exc:
-                    get_logger().warning(
-                        f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
-                    )
+            await self._notify_update(next_step)
+
+    async def _notify_update(self, step: int) -> None:
+        for observer in self.observers:
+            try:
+                await observer.on_new_version(step)
+            except Exception as exc:
+                get_logger().warning(f"Observer {type(observer).__name__}.on_new_version({step}) raised: {exc!r}")
+
+        for hook in self.update_hooks:
+            await hook(step)
 
     def gauges(self) -> dict[str, float]:
         return {

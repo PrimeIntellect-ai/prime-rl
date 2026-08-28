@@ -16,7 +16,7 @@ from prime_rl.configs.shared import (
     TransportConfig,
     ZMQTransportConfig,
 )
-from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.config import BaseConfig, default_output_dir
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
@@ -492,26 +492,10 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the optimizer state from checkpoint."""
 
 
-class DefaultLossConfig(BaseConfig):
-    type: Literal["default"] = "default"
-
-    dppo_mask_low: float = Field(0.2, ge=0)
-    """Lower DPPO masking threshold."""
-
-    dppo_mask_high: float = Field(0.2, ge=0)
-    """Upper DPPO masking threshold."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
-
-    kl_tau: float = Field(1e-3, ge=0)
-    """Temperature for the KL term."""
-
-
 class IPOLossConfig(BaseConfig):
     type: Literal["ipo"] = "ipo"
-    ipo_threshold: float = Field(0.1, ge=0)
-    """Upper DPPO masking threshold."""
+    eps: float = Field(0.1, ge=0)
+    """Maximum absolute probability change before a token is masked."""
 
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
@@ -530,7 +514,7 @@ class CustomLossConfig(BaseConfig):
     """Kwargs forwarded to the loss function."""
 
 
-LossConfig: TypeAlias = Annotated[DefaultLossConfig | IPOLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[IPOLossConfig | CustomLossConfig, Field(discriminator="type")]
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -581,6 +565,9 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     session_id: str = "default"
     """ModelExpress session ID."""
 
+    overlap_transfer_and_replay: bool = False
+    """Allocate two staging arenas so inference can replay one weight group while receiving the next."""
+
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
@@ -595,7 +582,7 @@ class TrainerConfig(BaseConfig):
 
     data: DataLoaderConfig = DataLoaderConfig()
 
-    loss: LossConfig = DefaultLossConfig()
+    loss: LossConfig = IPOLossConfig()
     """Loss config for the rl loss component (see ``setup_rl_loss_fn``). The ce / ref_kl components are fixed and do not read this."""
 
     optim: OptimizerConfig = AdamWConfig()
@@ -619,8 +606,8 @@ class TrainerConfig(BaseConfig):
     monitors: MonitorsConfig = MonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
 
-    output_dir: Path = Path("outputs")
-    """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
+    output_dir: Path = Field(default_factory=default_output_dir)
+    """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
     matmul_precision: Literal["highest", "high", "medium"] = "high"
     """Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``."""

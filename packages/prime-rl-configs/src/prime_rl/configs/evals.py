@@ -6,7 +6,7 @@ from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalConfig
 from prime_rl.configs.shared import ClientConfig, LogConfig
 from prime_rl.configs.trainer import WeightBroadcastConfig
-from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.config import BaseConfig, default_output_dir
 
 
 class EvalsEvalConfig(EvalConfig):
@@ -26,6 +26,11 @@ class EvalsEvalConfig(EvalConfig):
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight episode concurrency (``[eval.concurrency]``), sized by the
     same controller as the orchestrator's ``[orchestrator.concurrency]``."""
+
+    cancel_on_new_checkpoint: bool = True
+    """For online evals, cancel unfinished episodes when a newer trainer checkpoint is ready.
+    Disable to finish every triggered eval epoch before loading later weights. The trainer can
+    idle while it waits for slow evals."""
 
     @property
     def env_addresses(self) -> dict[tuple[str, str], str]:
@@ -86,9 +91,9 @@ class EvalsConfig(BaseConfig):
     """Weight transport for online evals. The ``sft`` launcher fills this from its
     resolved trainer transport. None uses filesystem reloads."""
 
-    output_dir: Path = Path("outputs")
+    output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — rollout traces and logs are written as
-    subdirectories. Shared with the trainer for online evals."""
+    subdirectories. Shared with the trainer for online evals. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
     log: LogConfig = LogConfig()
 

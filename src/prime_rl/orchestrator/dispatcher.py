@@ -18,7 +18,7 @@
   the weight update) drops train groups already past ``max_off_policy_steps`` — a
   compute-saving early cancel; the sink's queue sweep is what guarantees the
   bound. Eval episodes are measurements for the policy version they started
-  with, so they are allowed to finish even if training advances. Train
+  with. Online evals may explicitly cancel them when a newer checkpoint is ready. Train
   episodes sampled from a frozen model never go stale — their generation
   source doesn't change with policy updates.
 """
@@ -210,6 +210,8 @@ class Dispatcher:
         # *why* — the orchestrator toggles this based on step / policy lead.
         self.dispatch_allowed = asyncio.Event()
         self.dispatch_allowed.set()
+        self.policy_update_pending = False
+        self.scheduling_lock = asyncio.Lock()
 
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
@@ -371,6 +373,12 @@ class Dispatcher:
         the resulting aborts are processed while the engine is still stepping —
         otherwise the orphaned KV transfers crash the decode engine on resume
         (see ``WeightWatcher.apply_policy_update``)."""
+        self.policy_update_pending = True
+        # Wait for a scheduling call that started before the pending update.
+        # No rollout can cross the inference weight swap after this barrier.
+        async with self.scheduling_lock:
+            pass
+
         if self.train_envs is None or self.progress is None:
             return
         min_version = min_fresh_version(self.progress.step, self.max_off_policy_steps)
@@ -392,7 +400,8 @@ class Dispatcher:
             )
 
     async def on_new_version(self, step: int) -> None:
-        """No-op: the dispatcher drains in ``on_version_pending`` (pre-pause)."""
+        """Resume rollout scheduling after inference applies the new policy."""
+        self.policy_update_pending = False
 
     async def fill_inflight(self) -> None:
         """Schedule new rollouts up to ``max_inflight``, honoring
@@ -401,28 +410,33 @@ class Dispatcher:
         respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
         ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
         while True:
+            if self.policy_update_pending:
+                return
             if self.available_permits <= 0 or self.admission_budget() <= 0:
                 return
 
-            if self.mode == DispatcherMode.PREFER_EVAL:
-                # PREFER_EVAL is only entered when the orchestrator triggers
-                # eval, which requires ``eval_source`` to be configured
-                assert self.eval_source is not None
-                if not self.eval_has_work:
-                    # Eval source + all eval groups fully dispatched. Flip
-                    # to PREFER_TRAIN so any remaining permits go to train
-                    # while the in-flight eval tail completes naturally
-                    self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
-                    continue
-                scheduled = await self.try_schedule("eval")
-                if not scheduled:
+            async with self.scheduling_lock:
+                if self.policy_update_pending:
                     return
-            else:  # PREFER_TRAIN — respects the orchestrator's dispatch gate
-                if not self.dispatch_allowed.is_set():
-                    return
-                scheduled = await self.try_schedule("train")
-                if not scheduled:
-                    return
+                if self.mode == DispatcherMode.PREFER_EVAL:
+                    # PREFER_EVAL is only entered when the orchestrator triggers
+                    # eval, which requires ``eval_source`` to be configured
+                    assert self.eval_source is not None
+                    if not self.eval_has_work:
+                        # Eval source + all eval groups fully dispatched. Flip
+                        # to PREFER_TRAIN so any remaining permits go to train
+                        # while the in-flight eval tail completes naturally
+                        self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
+                        continue
+                    scheduled = await self.try_schedule("eval")
+                    if not scheduled:
+                        return
+                else:  # PREFER_TRAIN — respects the orchestrator's dispatch gate
+                    if not self.dispatch_allowed.is_set():
+                        return
+                    scheduled = await self.try_schedule("train")
+                    if not scheduled:
+                        return
 
     def switch_mode(self, new_mode: DispatcherMode, *, reason: str) -> None:
         if new_mode == self.mode:
@@ -688,6 +702,7 @@ class Dispatcher:
                     kind=kind,
                     env_name=env_name,
                     group_id=str(group_id),
+                    step=group.step if group is not None else claimed[-1][1].step,
                     count=cancelled,
                     reason=reason,
                 )
@@ -729,6 +744,40 @@ class Dispatcher:
             self.groups.pop(gid, None)
         if train_tasks:
             await safe_cancel_all(train_tasks)
+        return cancelled
+
+    async def cancel_eval_step(self, step: int) -> int:
+        """Cancel queued and active eval groups for a superseded checkpoint.
+
+        Scheduling remains paused until ``on_new_version`` runs after the
+        replacement weights are live.
+        """
+        if self.eval_source is None or self.eval_envs is None:
+            return 0
+
+        self.policy_update_pending = True
+        async with self.scheduling_lock:
+            queued = self.eval_source.cancel_step(step)
+            group_ids = [gid for gid, group in self.groups.items() if group.kind == "eval" and group.step == step]
+
+        cancelled = 0
+        for group_id in group_ids:
+            cancelled += await self.drop_group(group_id, reason="superseded")
+
+        for request in queued:
+            count = self.eval_envs.get(request.env_name).config.group_size
+            cancelled += count
+            self.metrics.record_cancellation(kind="eval", env_name=request.env_name, n=count)
+            await self.out_q.put(
+                GroupCancellation(
+                    kind="eval",
+                    env_name=request.env_name,
+                    group_id=str(uuid.uuid4()),
+                    step=request.step,
+                    count=count,
+                    reason="superseded",
+                )
+            )
         return cancelled
 
     # ── metrics ────────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@ from pydantic import ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
-from prime_rl.utils.config import find_package_resource
+from prime_rl.utils.config import default_output_dir, find_package_resource
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
 # TODO: Set thinking/ solution budget
@@ -471,8 +471,8 @@ class InferenceConfig(BaseConfig):
     slurm: SlurmConfig | None = None
     """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
 
-    output_dir: Path = Path("outputs")
-    """Directory for SLURM logs and generated scripts."""
+    output_dir: Path = Field(default_factory=default_output_dir)
+    """Directory for SLURM logs and generated scripts. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""

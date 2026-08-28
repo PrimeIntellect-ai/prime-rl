@@ -1,7 +1,7 @@
 """EvalSource: trigger-driven, finite-per-epoch pull of eval examples.
 
-The orchestrator pokes ``trigger(step)`` after each ship + once at
-startup; the dispatcher pulls via ``next_task()`` until
+The policy watcher calls ``trigger(step)`` after each applied policy,
+including startup. The dispatcher pulls via ``next_task()`` until
 ``bool(source) == False``. Constructed only when eval is configured."""
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ class EvalSource:
 
         self.queue: deque[TaskRequest] = deque()
 
-        # On resume we skip the startup eval; on fresh start the first
-        # trigger fires every env (subject to ``skip_first_step``)
+        # A fresh run evaluates the base policy. Resumed runs apply interval
+        # rules to the loaded checkpoint and later policies.
         self.first_trigger = not is_resumed
 
     def trigger(self, step: int, *, force: bool = False) -> list[str]:
@@ -70,6 +70,12 @@ class EvalSource:
         if not self.queue:
             return None
         return self.queue.popleft()
+
+    def cancel_step(self, step: int) -> list[TaskRequest]:
+        """Remove and return queued examples for a superseded eval step."""
+        cancelled = [request for request in self.queue if request.step == step]
+        self.queue = deque(request for request in self.queue if request.step != step)
+        return cancelled
 
     def __bool__(self) -> bool:
         return bool(self.queue)

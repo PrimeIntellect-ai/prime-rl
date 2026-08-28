@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
+from prime_rl.configs.trainer import IPOLossConfig, TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
 
 SCHEMA_VERSION = 1
@@ -181,7 +181,6 @@ def _compute_export_tensors(
 
     inference_logprobs = micro_batch["inference_logprobs"].to(trainer_logprobs.device)
     loss_mask = micro_batch["loss_mask"].to(trainer_logprobs.device)
-    advantages = micro_batch["advantages"].to(trainer_logprobs.device)
     with torch.no_grad():
         log_ratio, ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(trainer_logprobs, inference_logprobs)
         prob_delta = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
@@ -189,15 +188,12 @@ def _compute_export_tensors(
         fields["importance_ratio"] = ratio
         fields["mismatch_kl"] = mismatch_kl
         fields["prob_delta"] = prob_delta
-        if isinstance(loss_config, DefaultLossConfig):
-            invalid_high = prob_delta > loss_config.dppo_mask_high
-            invalid_low = prob_delta < -loss_config.dppo_mask_low
-            positive_advantages = advantages > 0
-            negative_advantages = advantages < 0
-            invalid = torch.where(positive_advantages, invalid_high, invalid_low)
-            fields["is_masked"] = loss_mask & invalid
-            fields["is_masked_high"] = loss_mask & positive_advantages & invalid_high
-            fields["is_masked_low"] = loss_mask & negative_advantages & invalid_low
+        if isinstance(loss_config, IPOLossConfig):
+            invalid_high = prob_delta > loss_config.eps
+            invalid_low = prob_delta < -loss_config.eps
+            fields["is_masked"] = loss_mask & (invalid_high | invalid_low)
+            fields["is_masked_high"] = loss_mask & invalid_high
+            fields["is_masked_low"] = loss_mask & invalid_low
     return fields
 
 

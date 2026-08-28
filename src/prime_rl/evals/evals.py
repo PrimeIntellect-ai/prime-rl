@@ -13,8 +13,9 @@ inside the handshake until the receiver acknowledges.
 Scheduling reuses the orchestrator pipeline unchanged: an eval-only
 ``Dispatcher`` admits episodes under the adaptive ``ConcurrencyController``,
 fed by the ``InferenceMetricsCollector``'s ``/metrics`` polls. Eval episodes
-are version-pinned measurements, so an overload cut only blocks admission and
-the in-flight pool drains through natural completions.
+are version-pinned measurements. By default, a newer online checkpoint cancels
+unfinished episodes from the prior version; callers can disable this when they need
+every epoch to drain.
 
 Env servers: sources without an explicit ``serve.address`` get an env server
 spawned by the evals process at their derived address; sources with one are
@@ -28,6 +29,7 @@ import json
 import os
 import time
 import uuid
+from pathlib import Path
 from subprocess import Popen
 
 from prime_rl import monitors
@@ -51,7 +53,7 @@ from prime_rl.orchestrator.utils import eval_work, intercept_vf_logging, set_def
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_all_ckpt_steps, get_config_dir, get_log_dir
+from prime_rl.utils.pathing import create_attempt_log_dir, get_all_ckpt_steps, get_config_dir
 from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, cleanup_processes
 from prime_rl.utils.utils import clean_exit
 
@@ -67,8 +69,13 @@ STARTUP_BROADCAST_TIMEOUT_S = 1200
 
 
 class Evals:
-    def __init__(self, config: EvalsConfig) -> None:
+    def __init__(self, config: EvalsConfig, log_dir: Path | None = None) -> None:
         self.config = config
+        self.log_dir = log_dir or (
+            Path(os.environ["PRL_LOG_DIR"])
+            if "PRL_LOG_DIR" in os.environ
+            else create_attempt_log_dir(config.output_dir)
+        )
         setup_logger(config.log.level, json_logging=config.log.json_logging)
         intercept_vf_logging(logger="verifiers.v1", level="WARN")
         mode = f"online (broadcasts_dir={config.online.broadcasts_dir})" if config.online is not None else "standalone"
@@ -209,7 +216,7 @@ class Evals:
         config = self.config
         addresses = config.eval.env_addresses
         config_dir = get_config_dir(config.output_dir) / "envs" / "eval"
-        log_dir = get_log_dir(config.output_dir) / "envs" / "eval"
+        log_dir = self.log_dir / "envs" / "eval"
         for source in config.eval.source:
             if source.serve.address is not None:
                 continue
@@ -316,6 +323,20 @@ class Evals:
                 break
             await asyncio.sleep(POLL_INTERVAL_S)
 
+    def next_published_step(self, step: int) -> int | None:
+        """Return the first newer checkpoint offered by the trainer."""
+        assert self.config.online is not None
+        assert self.config.online.broadcasts_dir is not None
+        assert self.receiver is not None
+        return next(
+            (
+                candidate
+                for candidate in get_all_ckpt_steps(self.config.online.broadcasts_dir)
+                if candidate > step and self.receiver.is_published(candidate)
+            ),
+            None,
+        )
+
     def deleted_due_steps(self, steps: list[int], newest_published: int | None) -> set[int]:
         """Eval-due steps up to the newest published broadcast that are missing from
         the broadcasts dir — the trainer wrote them (it broadcasts at every due step),
@@ -350,7 +371,10 @@ class Evals:
             # Every offered version must be received: the trainer blocks inside
             # the handshake, so a failed receive fails the run loudly.
             get_logger().info(f"Updating inference weights to broadcast step {step} ({broadcast_dir})")
+            await self.dispatcher.on_version_pending(step)
             await self.receiver.receive(step)
+            self.policy.version = step
+            await self.dispatcher.on_new_version(step)
 
         if not fired:
             return
@@ -365,34 +389,66 @@ class Evals:
 
         # The dispatcher only schedules eval in PREFER_EVAL, so nothing dispatches
         # between the trigger above and the weight reload completing.
-        self.policy.version = step
+        if not reload_weights:
+            self.policy.version = step
         get_logger().info(f"Starting evals in {', '.join(fired)} at step {step} ({total_rollouts} total rollouts)")
         self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=f"eval was triggered at step {step}")
-        await self.consume_epoch(fired)
+        await self.consume_epoch(fired, step)
 
-    async def consume_epoch(self, fired: list[str]) -> None:
-        """Consume dispatcher episodes until every fired env's epoch finalizes,
-        routing them through the sink and monitors."""
-        # An env with no examples emits no episodes, so its epoch can never finalize.
+    async def consume_epoch(self, fired: list[str], step: int) -> None:
+        """Consume one epoch, preempting it when a newer checkpoint is ready."""
         pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) > 0}
+        cancellation_task: asyncio.Task[int] | None = None
+        superseding_step: int | None = None
+        online = self.config.online
+
         while pending:
-            item = await self.dispatcher.out_q.get()
+            if (
+                cancellation_task is None
+                and online is not None
+                and self.config.eval.cancel_on_new_checkpoint
+                and (superseding_step := self.next_published_step(step)) is not None
+            ):
+                get_logger().warning(
+                    f"Checkpoint {superseding_step} is ready - cancelling unfinished eval episodes for step {step}"
+                )
+                cancellation_task = asyncio.create_task(
+                    self.dispatcher.cancel_eval_step(step), name=f"cancel-eval-step-{step}"
+                )
+
+            try:
+                if online is not None and self.config.eval.cancel_on_new_checkpoint:
+                    item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=POLL_INTERVAL_S)
+                else:
+                    item = await self.dispatcher.out_q.get()
+            except asyncio.TimeoutError:
+                if cancellation_task is not None and cancellation_task.done():
+                    cancellation_task.result()
+                continue
+
             if isinstance(item, GroupCancellation):
-                raise RuntimeError("Eval dispatcher emitted a group cancellation")
-            if isinstance(item, DispatchFailure):
+                eval_batch = self.eval_sink.cancel(item)
+            elif isinstance(item, DispatchFailure):
                 eval_batch = self.eval_sink.fail(item)
             else:
-                step = eval_work(item).step
-                await monitors.log([item], step, "eval", "all")
+                item_step = eval_work(item).step
+                await monitors.log([item], item_step, "eval", "all")
                 eval_batch = self.eval_sink.add(item)
             if eval_batch is not None:
                 await self.finalize_eval_batch(eval_batch)
                 pending.discard(eval_batch.env_name)
 
+        if cancellation_task is not None:
+            cancelled = await cancellation_task
+            get_logger().warning(
+                f"Cancelled {cancelled} unfinished eval episodes for step {step}; "
+                f"advancing to checkpoint {superseding_step}"
+            )
+
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the
         orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict."""
-        if not batch.episodes and not batch.failures:
+        if not batch.episodes and not batch.failures and not batch.cancelled:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
@@ -404,12 +460,15 @@ class Evals:
         metrics: dict[str, float] = {}
         for subset, pool in (("all", episodes), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-        total_attempts = len(episodes) + len(batch.failures)
+        total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
         metrics |= dispatch_failure_metrics(
             batch.failures,
             prefix=f"eval/{batch.env_name}/all",
             total_attempts=total_attempts,
         )
+        if batch.cancelled:
+            metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(batch.cancelled)
+            metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = batch.cancelled / total_attempts
         metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
         metrics["step"] = float(batch.step)
         await monitors.log(metrics, step=batch.step)
@@ -417,6 +476,13 @@ class Evals:
         eff, full = effective.metrics, episodes.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
+        if batch.cancelled:
+            get_logger().warning(
+                f"Partially evaluated {batch.env_name} (Step {batch.step}) | "
+                f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
+                f"Completed {len(episodes)}/{total_attempts} | Cancelled {batch.cancelled}/{total_attempts}"
+            )
+            return
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
@@ -461,8 +527,8 @@ class Evals:
 
 
 @clean_exit
-async def run_evals(config: EvalsConfig) -> None:
-    evals = Evals(config)
+async def run_evals(config: EvalsConfig, log_dir: Path | None = None) -> None:
+    evals = Evals(config, log_dir)
     try:
         await evals.run()
         # Finalize only on a clean exit — a crashed evals must not mark the run completed.
@@ -472,11 +538,9 @@ async def run_evals(config: EvalsConfig) -> None:
 
 
 def main() -> None:
-    from prime_rl.utils.config import cli
-    from prime_rl.utils.process import set_proc_title
+    from prime_rl.entrypoints.evals import main as entrypoint_main
 
-    set_proc_title("Evals")
-    asyncio.run(run_evals(cli(EvalsConfig)))
+    entrypoint_main()
 
 
 if __name__ == "__main__":

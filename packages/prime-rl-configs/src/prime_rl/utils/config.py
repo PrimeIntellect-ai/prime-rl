@@ -1,9 +1,15 @@
+import os
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
 from pydantic_config import BaseConfig as BaseConfig  # noqa: F401
 from pydantic_config import cli  # noqa: F401
+
+
+def default_output_dir() -> Path:
+    """Default output directory: ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
+    return Path(os.environ.get("PRL_OUTPUT_DIR", "outputs"))
 
 
 def dump_resolved_config(config: BaseModel, exclude: set[str] | None = None) -> dict:

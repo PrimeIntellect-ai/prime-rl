@@ -179,6 +179,13 @@ class Envs(Generic[EnvT]):
     async def start(self) -> None:
         """Connect to all env servers in parallel — every address is known up front,
         so there's nothing to serialize on."""
+        # When several env.start()s load_dataset() concurrently, datasets' parallel arrow read
+        # (tqdm thread_map) races in ensure_lock's `del tqdm_class._lock` and crashes with
+        # `AttributeError: type object 'tqdm' has no attribute '_lock'`. Pre-seed the lock so it
+        # isn't created-and-deleted per call.
+        from datasets.utils import tqdm as hf_tqdm
+
+        hf_tqdm.set_lock(hf_tqdm.get_lock())
         await asyncio.gather(*(env.start() for env in self))
 
 
