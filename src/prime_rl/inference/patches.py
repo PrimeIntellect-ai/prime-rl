@@ -18,7 +18,6 @@ def apply_shared_vllm_patches():
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_rope_unhashable_cache_key()
-    monkey_patch_deepseek_v4_kv_norm_weight_mapper()
     monkey_patch_deepseek_v4_rope_force_fp32_cache()
     monkey_patch_deepseek_v4_hc_prenorm_gemm_fallback()
     monkey_patch_deepseek_v4_bf16_o_proj()
@@ -149,38 +148,6 @@ def monkey_patch_deepseek_v4_rope_unhashable_cache_key():
         return
 
     rotary_embedding._ROPE_DICT = _TolerantRopeCache(rotary_embedding._ROPE_DICT)
-
-
-def monkey_patch_deepseek_v4_kv_norm_weight_mapper():
-    """Add the missing `attn.norm` -> `attn.kv_norm` rename to vLLM's weight mapper.
-
-    vLLM's `DeepseekV4ForCausalLM.hf_to_vllm_mapper` (`vllm/models/deepseek_v4/nvidia/model.py`,
-    `_make_deepseek_v4_weights_mapper`) renames the real on-disk `q_norm` correctly (vLLM's own
-    attention module also calls this attribute `q_norm`, so no rename is needed there), but has
-    no rule at all for the real on-disk `norm` (kv norm) leaf, which vLLM's own model calls
-    `kv_norm` (matching this repo's port, confirmed via `self.kv_norm = RMSNorm(...)` in
-    `vllm/models/deepseek_v4/attention.py`). Without it, loading fails with
-    `KeyError: 'layers.N.attn.norm.weight'` for any real DeepSeek V4 checkpoint, not just a
-    locally-built one.
-    """
-    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
-
-    original_factory = dsv4_model._make_deepseek_v4_weights_mapper
-
-    if getattr(original_factory, "_prime_rl_adds_kv_norm", False):
-        return
-
-    def _patched_factory(expert_dtype: str):
-        mapper = original_factory(expert_dtype)
-        mapper.orig_to_new_substr[".attn.norm."] = ".attn.kv_norm."
-        return mapper
-
-    _patched_factory._prime_rl_adds_kv_norm = True
-    dsv4_model._make_deepseek_v4_weights_mapper = _patched_factory
-    # The class attribute was already evaluated at class-definition time with the original
-    # (unpatched) factory; recompute it. Per-instance overrides in `__init__` call the
-    # module-level name directly, so they pick up the patch automatically.
-    dsv4_model.DeepseekV4ForCausalLM.hf_to_vllm_mapper = _patched_factory("fp4")
 
 
 def monkey_patch_deepseek_v4_rope_force_fp32_cache():

@@ -43,13 +43,16 @@ def to_on_disk_naming(state_dict: StateDict) -> StateDict:
     """`save_pretrained`'s key naming -> the naming a real DeepSeek V4 checkpoint ships.
 
     `transformers`' reverse conversion (`core_model_loading.revert_weight_conversion`, what
-    `save_pretrained` applies) gets every per-layer key right but three top-level ones wrong,
-    measured against the real `deepseek-ai/DeepSeek-V4-Flash-0731`
-    `model.safetensors.index.json`: 0 of its 72317 keys carry a `model.` prefix, its embedding
-    is `embed.weight`, and its final hyper-connection head is flat (`hc_head_fn`,
-    `hc_head_base`, `hc_head_scale`), matching the per-layer `hc_attn_*` / `hc_ffn_*` pattern
-    that does convert correctly. `save_pretrained` leaves the prefix on, keeps
-    `embed_tokens.weight`, and leaves the head nested as `hc_head.hc_*`.
+    `save_pretrained` applies) gets every per-layer key right but four wrong, measured against
+    the real `deepseek-ai/DeepSeek-V4-Flash-0731` `model.safetensors.index.json`: 0 of its
+    72317 keys carry a `model.` prefix, its embedding is `embed.weight`, its final
+    hyper-connection head is flat (`hc_head_fn`, `hc_head_base`, `hc_head_scale`, matching the
+    per-layer `hc_attn_*` / `hc_ffn_*` pattern that does convert correctly), and each layer's
+    top-level attention kv-norm is `attn.kv_norm.weight` (matching vLLM's own `self.kv_norm`,
+    `vllm/models/deepseek_v4/attention.py`). `save_pretrained` leaves the `model.` prefix on,
+    keeps `embed_tokens.weight`, leaves the head nested as `hc_head.hc_*`, and emits the kv-norm
+    as bare `attn.norm.weight` instead (the compressor's own norm, `attn.compressor.norm.weight`
+    / `attn.indexer.compressor.norm.weight`, converts correctly and is left alone).
 
     Applied to locally generated checkpoints so they match the real format, and to in-memory
     state dicts in the tests so `conversion_chain` is exercised against the naming it actually
@@ -62,6 +65,7 @@ def to_on_disk_naming(state_dict: StateDict) -> StateDict:
         new_key = new_key.replace("hc_head.hc_fn", "hc_head_fn")
         new_key = new_key.replace("hc_head.hc_base", "hc_head_base")
         new_key = new_key.replace("hc_head.hc_scale", "hc_head_scale")
+        new_key = new_key.replace(".attn.norm.weight", ".attn.kv_norm.weight")
         renamed[new_key] = tensor
     return renamed
 
@@ -72,7 +76,6 @@ def _on_disk_attn_ops(layer_idx: int, layer_type: str) -> list[ConvOp]:
     ops: list[ConvOp] = [
         PrefixRename(f"{p}.attn.", f"{p}.self_attn."),
         Rename(f"{p}.self_attn.wkv.weight", f"{p}.self_attn.kv_proj.weight"),
-        Rename(f"{p}.self_attn.norm.weight", f"{p}.self_attn.kv_norm.weight"),
         Rename(f"{p}.self_attn.q_norm.weight", f"{p}.self_attn.q_a_norm.weight"),
         Rename(f"{p}.self_attn.wq_a.weight", f"{p}.self_attn.q_a_proj.weight"),
         Rename(f"{p}.self_attn.wq_b.weight", f"{p}.self_attn.q_b_proj.weight"),
