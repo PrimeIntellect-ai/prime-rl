@@ -39,17 +39,14 @@ def assert_cp_style_supports_model(cp_style: CPStyle, model: nn.Module) -> None:
     """Refuse `cp_style='ring'` on models that have linear/SSM attention layers.
 
     Ring CP is a softmax-attention algorithm (sequence ring all-gather of K/V).
-    For non-softmax layers (DeltaNet, Mamba) we'd need a fundamentally different
-    CP scheme, which is not implemented. Use `cp_style='ulysses'` for those:
-    ulysses' all-to-all is purely on Q/K/V tensors, so the linear/SSM kernel
-    runs unchanged on a sequence shard.
+    Non-softmax layers need model-owned sequence/head redistribution, which the
+    supported hybrid models implement for Ulysses.
     """
     if cp_style == "ring" and _has_linear_attn_layer(model):
         raise ValueError(
             "cp_style='ring' is not supported for models with linear-attention "
             "or Mamba/SSM layers (e.g. Qwen3.5 hybrid, NemotronH). Use "
-            "cp_style='ulysses' instead — its all-to-all on Q/K/V works "
-            "out-of-the-box with non-softmax kernels."
+            "cp_style='ulysses' instead."
         )
 
 

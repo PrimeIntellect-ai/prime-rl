@@ -4,40 +4,14 @@ import types
 import pytest
 import torch
 
-from prime_rl.trainer.models.layers import cp_mamba
+from prime_rl.trainer.models.nemotron_h import NemotronHConfig
+from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
 
 pytestmark = [pytest.mark.gpu]
 
 
-class _FakeMixer(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.intermediate_size = 1
-        self.conv_dim = 3
-        self.num_heads = 1
-        self.n_groups = 1
-        self.ssm_state_size = 1
-        self.head_dim = 1
-        self.chunk_size = 1
-        self.time_step_limit = None
-        self.variance_epsilon = 1e-5
-        self.activation = "silu"
-
-        self.in_proj = torch.nn.Linear(1, 5, bias=False)
-        self.in_proj.weight.data.copy_(torch.tensor([[1.0], [1.0], [1.0], [1.0], [1.0]]))
-        self.A_log = torch.nn.Parameter(torch.zeros(1))
-        self.D = torch.nn.Parameter(torch.ones(1))
-        self.dt_bias = torch.nn.Parameter(torch.zeros(1))
-        self.conv1d = torch.nn.Conv1d(3, 3, kernel_size=2, groups=3, bias=False)
-        self.conv1d.weight.data.fill_(1.0)
-        self.norm = types.SimpleNamespace(
-            weight=torch.ones(1, device="cuda"), variance_epsilon=self.variance_epsilon, group_size=1
-        )
-        self.out_proj = torch.nn.Identity()
-
-
 def _install_fake_scan(monkeypatch, seen_seq_idx: list[torch.Tensor]) -> None:
-    def fake_scan(hidden_states, time_step, A, B, C, **kwargs):
+    def fake_scan(hidden_states, time_step, state_decay, state_input, state_output, **kwargs):
         assert kwargs["return_final_states"] is False
         seen_seq_idx.append(kwargs["seq_idx"].clone())
         return hidden_states
@@ -50,36 +24,51 @@ def _install_fake_scan(monkeypatch, seen_seq_idx: list[torch.Tensor]) -> None:
     monkeypatch.setitem(sys.modules, "mamba_ssm.ops.triton.ssd_combined", ssd_combined)
 
 
-def test_mamba_cp_forward_resets_conv_and_scan_at_packed_boundaries(monkeypatch):
-    """Changing document A must not change document B under Ulysses CP."""
-    seen_seq_idx: list[torch.Tensor] = []
+def _make_mamba(monkeypatch, seen_seq_idx: list[torch.Tensor]) -> NemotronHMamba2:
     _install_fake_scan(monkeypatch, seen_seq_idx)
-    monkeypatch.setattr(cp_mamba, "seq_to_head_parallel", lambda value, *_: value)
-    monkeypatch.setattr(cp_mamba, "head_to_seq_parallel", lambda value, *_: value)
+    config = NemotronHConfig(
+        hidden_size=1,
+        hybrid_override_pattern="M",
+        mamba_num_heads=1,
+        mamba_head_dim=1,
+        n_groups=1,
+        ssm_state_size=1,
+        conv_kernel=2,
+        chunk_size=1,
+        use_conv_bias=False,
+    )
+    mamba = NemotronHMamba2(config).cuda()
+    mamba.in_proj.weight.data.fill_(1.0)
+    mamba.conv1d.weight.data.fill_(1.0)
+    mamba.norm.weight.data.fill_(1.0)
+    mamba.out_proj = torch.nn.Identity()
+    return mamba
 
-    mixer = _FakeMixer().cuda()
+
+def test_mamba_resets_conv_and_scan_at_packed_boundaries(monkeypatch):
+    """Changing one document must not change the following document."""
+    seen_seq_idx: list[torch.Tensor] = []
+    mamba = _make_mamba(monkeypatch, seen_seq_idx)
     cu_seqlens = torch.tensor([0, 2, 4], dtype=torch.int32, device="cuda")
     first = torch.tensor([[[1.0], [2.0], [3.0], [4.0]]], device="cuda")
     second = first.clone()
     second[0, 1, 0] = 200.0
 
-    first_out = cp_mamba.mamba_cp_forward(mixer, first, None, 0, 1, cu_seqlens)
-    second_out = cp_mamba.mamba_cp_forward(mixer, second, None, 0, 1, cu_seqlens)
+    first_output = mamba(first, cu_seqlens)
+    second_output = mamba(second, cu_seqlens)
 
-    assert torch.equal(seen_seq_idx[0], torch.tensor([[0, 0, 1, 1]], dtype=torch.int32, device="cuda"))
-    assert torch.equal(seen_seq_idx[1], seen_seq_idx[0])
-    torch.testing.assert_close(first_out[:, 2:], second_out[:, 2:])
+    expected_seq_idx = torch.tensor([[0, 0, 1, 1]], dtype=torch.int32, device="cuda")
+    assert torch.equal(seen_seq_idx[0], expected_seq_idx)
+    assert torch.equal(seen_seq_idx[1], expected_seq_idx)
+    torch.testing.assert_close(first_output[:, 2:], second_output[:, 2:])
 
 
-def test_mamba_cp_forward_builds_seq_idx_for_uneven_packs(monkeypatch):
+def test_mamba_builds_sequence_ids_for_uneven_packs(monkeypatch):
     seen_seq_idx: list[torch.Tensor] = []
-    _install_fake_scan(monkeypatch, seen_seq_idx)
-    monkeypatch.setattr(cp_mamba, "seq_to_head_parallel", lambda value, *_: value)
-    monkeypatch.setattr(cp_mamba, "head_to_seq_parallel", lambda value, *_: value)
-
+    mamba = _make_mamba(monkeypatch, seen_seq_idx)
     cu_seqlens = torch.tensor([0, 1, 4, 6], dtype=torch.int32, device="cuda")
     hidden_states = torch.arange(6, dtype=torch.float32, device="cuda").reshape(1, 6, 1)
 
-    cp_mamba.mamba_cp_forward(_FakeMixer().cuda(), hidden_states, None, 0, 1, cu_seqlens)
+    mamba(hidden_states, cu_seqlens)
 
     assert torch.equal(seen_seq_idx[0], torch.tensor([[0, 1, 1, 1, 2, 2]], dtype=torch.int32, device="cuda"))
