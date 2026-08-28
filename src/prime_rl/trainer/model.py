@@ -20,8 +20,6 @@ from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
-from torch.distributed.tensor.parallel import parallelize_module
-from torchtitan.distributed.expert_parallel import ExpertParallel
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -32,10 +30,8 @@ from prime_rl.configs.trainer import (
     FP8Config,
     ModelConfig,
     MXFP8Config,
-    QuantizationConfig,
     TokenizerConfig,
 )
-from prime_rl.trainer.distributed import DeepEPExpertParallel, MXFP8AllToAllExpertParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -53,9 +49,9 @@ from prime_rl.trainer.models.layers.checkpointing import (
 )
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRouter, _load_fused_moe_kernel
-from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
+from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
+from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -403,8 +399,8 @@ def freeze_moe_router(model: nn.Module) -> None:
         if mlp is None:
             continue
 
-        # Custom implementation: MoE/LatentMoE class with router attribute
-        if isinstance(mlp, (MoE, LatentMoE)):
+        # Custom implementation
+        if isinstance(mlp, MoE):
             for param in mlp.router.parameters():
                 param.requires_grad = False
                 num_frozen += 1
@@ -431,7 +427,7 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
 
     for layer in language_model.layers:
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, (MoE, LatentMoE)):
+        if isinstance(mlp, MoE):
             mlp.router.to(torch.float32)
             if isinstance(mlp.router, TokenChoiceTopKRouter):
                 mlp.router.fp32_gate = True
@@ -441,39 +437,6 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
     # so absence of custom-impl MoE routers is the common case, not an error.
     if num_routers > 0:
         logger.info(f"Running {num_routers} MoE router gates in fp32")
-
-
-def apply_fused_moe_kernel(model: nn.Module, quantization: QuantizationConfig | None) -> None:
-    """
-    Route MoE routed-expert compute through the our fused bf16/mxfp8 MoE CUDA kernel.
-    Forward runs the kernel, backward recomputes the reference grouped-mm path.
-    """
-    logger = get_logger()
-    language_model = get_language_model(model)
-    num_moe_layers = 0
-
-    # MXFP8 with grouped GEMM is the one setting that quantizes the experts themselves, so this also picks the MXFP8 kernel."""
-    dtype = "mxfp8" if isinstance(quantization, MXFP8Config) and quantization.enable_grouped_gemm else "bf16"
-    kernel = _load_fused_moe_kernel()
-
-    for layer in language_model.layers:
-        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, MoE):
-            if mlp.score_before_experts:
-                raise ValueError(
-                    "model.moe_fused_kernel=true requires MoE layers with score_before_experts=false, because the fused kernel applies the routing scores to the expert outputs."
-                )
-            _, hidden_dim, dim = mlp.experts.w1.shape
-            reason = kernel.unsupported_shape_reason(dim, hidden_dim, mxfp8=dtype == "mxfp8")
-            if reason is not None:
-                raise ValueError(f"model.moe_fused_kernel=true does not support this model: {reason}")
-            mlp.fused_kernel = dtype
-            num_moe_layers += 1
-
-    if num_moe_layers == 0:
-        raise ValueError("model.moe_fused_kernel=true but no MoE layers found. Is this a custom-impl MoE model?")
-
-    logger.info(f"Using the fused {dtype} MoE kernel for {num_moe_layers} MoE layers")
 
 
 def get_full_offload_dtype_policy(
@@ -489,7 +452,7 @@ def get_full_offload_dtype_policy(
     language_model = get_language_model(model)
     for layer in language_model.layers:
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, (MoE, LatentMoE)):
+        if isinstance(mlp, MoE):
             for param in mlp.router.parameters():
                 if param.is_floating_point():
                     policy[id(param)] = (torch.float32, torch.float32)
@@ -527,7 +490,7 @@ def apply_force_balanced_routing(model: nn.Module) -> None:
 
     for layer in language_model.layers:
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, (MoE, LatentMoE)):
+        if isinstance(mlp, MoE):
             mlp.router.force_balanced = True
             num_routers += 1
 
@@ -542,20 +505,6 @@ def apply_force_balanced_routing(model: nn.Module) -> None:
 
 def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
-
-
-def configure_moe_ep_backend(model: nn.Module, config: ModelConfig) -> None:
-    backend = config.ep_comm_backend
-    if backend == "deepep":
-        from prime_rl.trainer.distributed.deepep import configure_num_sms
-
-        configure_num_sms(config.deepep_num_sms)
-    language_model = get_language_model(model)
-    for transformer_block in language_model.layers:
-        if not isinstance(transformer_block.mlp, (MoE, LatentMoE)):
-            continue
-        transformer_block.mlp.set_ep_comm_backend(backend)
-        transformer_block.mlp.set_deepep_token_chunk_size(config.deepep_token_chunk_size)
 
 
 def get_load_balance_stats(
@@ -647,13 +596,6 @@ def get_model(
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
-    model_config.use_grouped_mm = config.moe_use_grouped_mm
-    # MoEArgs.fp8 (read via getattr(config, "fp8") in the modeling files) gates the
-    # DeepGEMM FP8 grouped GEMM. MXFP8 grouped GEMM is applied by wrapping the expert
-    # weights with torchao (see apply_quantization), so it leaves this flag False and
-    # the experts keep calling torch._grouped_mm — which the wrapper tensor intercepts.
-    model_config.fp8 = isinstance(config.quantization, FP8Config) and config.quantization.enable_grouped_gemm
-
     if config.index_cache is not None:
         model_config.use_index_cache = True
         model_config.index_topk_freq = config.index_cache.topk_freq
@@ -855,12 +797,12 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block in transformer_layers:
         block_mlp = getattr(transformer_block, "mlp", None)
-        if parallel_dims.ep_enabled and block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
+        if parallel_dims.ep_enabled and block_mlp is not None and isinstance(block_mlp, MoE):
             fully_shard(block_mlp.experts, mesh=dp_mod_ep_mesh, **fsdp_config)
 
             block_mlp.experts.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
 
-        if config.moe_router_dtype == "float32" and isinstance(block_mlp, (MoE, LatentMoE)):
+        if config.moe_router_dtype == "float32" and isinstance(block_mlp, MoE):
             # Own FSDP unit with an fp32 policy so the gate weight is not cast to
             # bf16 for forward and its gradients reduce in fp32.
             fully_shard(
@@ -923,7 +865,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
         if next_transformer_block is not None:
             next_mlp = getattr(next_transformer_block, "mlp", None)
-            if next_mlp is not None and isinstance(next_mlp, (MoE, LatentMoE)):
+            if next_mlp is not None and isinstance(next_mlp, MoE):
                 prefetch_modules = [next_transformer_block]
                 if isinstance(next_mlp.router, FSDPModule):
                     prefetch_modules.append(next_mlp.router)
@@ -948,7 +890,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
         if prev_transformer_block is not None:
             prev_mlp = getattr(prev_transformer_block, "mlp", None)
-            if prev_mlp is not None and isinstance(prev_mlp, (MoE, LatentMoE)):
+            if prev_mlp is not None and isinstance(prev_mlp, MoE):
                 prefetch_modules = [prev_transformer_block, prev_mlp.experts]
                 if isinstance(prev_mlp.router, FSDPModule):
                     prefetch_modules.append(prev_mlp.router)
@@ -994,6 +936,9 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
         model_keys = dict.fromkeys(model.state_dict().keys())
 
+        if source_path.name == "prime" and not (source_path / ".prime-v1").is_file():
+            raise RuntimeError(f"PrimeRL conversion cache {source_path} is missing the required .prime-v1 marker")
+
         snapshot_is_hf = model.is_hf_state_dict(snapshot_keys)
         snapshot_is_prime = model.is_prime_state_dict(snapshot_keys)
 
@@ -1009,6 +954,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
                 snapshot_state_dict = load_state_dict(source_path)
                 model.convert_to_prime(snapshot_state_dict)
                 save_state_dict(snapshot_state_dict, snapshot_path)
+                (snapshot_path / ".prime-v1").touch()
                 del snapshot_state_dict
 
         elif snapshot_is_prime and not snapshot_is_hf and model.is_hf_state_dict(model_keys):
@@ -1027,6 +973,12 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
 
     # All ranks wait for master rank to finish conversion
     torch.distributed.barrier()
+    if (
+        isinstance(model, PreTrainedModelPrimeRL)
+        and snapshot_path.name == "prime"
+        and not (snapshot_path / ".prime-v1").is_file()
+    ):
+        raise RuntimeError(f"PrimeRL conversion cache {snapshot_path} is missing the required .prime-v1 marker")
 
     logger.info(f"Loading weights using HF DCP from {snapshot_path}")
     load_dcp_start_time = time.perf_counter()
@@ -1079,7 +1031,9 @@ def can_reinit_empty_buffers(model: nn.Module):
         if not (name.startswith("model.layers.") and name.endswith("mlp.tokens_per_expert"))
     ]
     buffer_names = [
-        name for name in buffer_names if not (name.startswith("model.layers.") and name.endswith("mlp.expert_bias"))
+        name
+        for name in buffer_names
+        if not (name.startswith("model.layers.") and name.endswith("mlp.router.selection_bias"))
     ]
     # HF standard transformer model
     if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
@@ -1195,13 +1149,9 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
 
 
 def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
-    """Swap dense linears and MoE expert GEMMs to the configured low-precision path.
+    """Swap dense linear modules to the configured low-precision path.
 
-    Runs after the LM head is injected but before LoRA / EP / FSDP so the swapped
-    modules and wrapped parameters are picked up by the later parallelisms. The
-    FP8 grouped GEMM (DeepGEMM) is gated separately via ``model_config.fp8`` since
-    it lives inside the modeling code; here we only handle the dense-linear swap
-    and the torchao MXFP8 expert-weight wrapping.
+    Routed-expert compute is configured independently by ``model.moe.compute``.
     """
     quant = config.quantization
     if quant is None:
@@ -1216,28 +1166,6 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
                 f"MXFP8 quantization requires SM100 (Blackwell), but device is SM{capability[0]}{capability[1]}."
             )
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
-        if quant.enable_grouped_gemm:
-            apply_mxfp8_moe_grouped_gemm(model, recipe=quant.recipe)
-
-
-def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
-    language_model = get_language_model(model)
-    for transformer_block in language_model.layers:
-        block_mlp = getattr(transformer_block, "mlp", None)
-        if block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
-            if config.ep_comm_backend == "torch":
-                quant = config.quantization
-                if isinstance(quant, MXFP8Config) and quant.enable_a2a:
-                    parallelize_plan = MXFP8AllToAllExpertParallel()
-                else:
-                    parallelize_plan = ExpertParallel()
-            else:
-                parallelize_plan = DeepEPExpertParallel()
-            parallelize_module(
-                block_mlp.experts,
-                device_mesh=parallel_dims.get_mesh("ep"),
-                parallelize_plan=parallelize_plan,
-            )
 
 
 def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:
@@ -1266,7 +1194,7 @@ def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
 
 def _reset_runtime_moe_buffers(model: nn.Module) -> None:
     for module in model.modules():
-        if isinstance(module, (MoE, LatentMoE)) and module.tokens_per_expert.device.type != "meta":
+        if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
             module.tokens_per_expert.zero_()
 
 
@@ -1330,7 +1258,6 @@ def setup_model(
 
     # 1. We load to meta device by default
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
-    configure_moe_ep_backend(model, config)
 
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
 
@@ -1343,7 +1270,6 @@ def setup_model(
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
-        configure_moe_ep_backend(model, config)
 
     lm_head_chunk_size: int | None = None
     if isinstance(config.fused_lm_head_token_chunk_size, int):
@@ -1361,14 +1287,6 @@ def setup_model(
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
 
-    if config.moe_fused_kernel:
-        if parallel_dims.ep_enabled:
-            raise ValueError(
-                "model.moe_fused_kernel=true requires ep=1: the fused kernel bypasses the EP "
-                "all-to-all and indexes experts with global ids."
-            )
-        apply_fused_moe_kernel(model, config.quantization)
-
     # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
     # never trainable. Freeze it so optimizer state stays symmetric across checkpoint
     # save/resume. No-op for models without a sparse indexer.
@@ -1377,8 +1295,8 @@ def setup_model(
     if config.debug.force_balanced_routing:
         apply_force_balanced_routing(model)
 
+    configure_moe_runtime(model, config, parallel_dims)
     if parallel_dims.ep_enabled:
-        apply_ep(model, config, parallel_dims)
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
         if config.lora is not None:

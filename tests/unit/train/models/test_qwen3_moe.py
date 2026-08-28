@@ -34,7 +34,6 @@ def get_model_pairs():
         rope_theta=1000000.0,
         use_qk_norm=True,
         mlp_only_layers=[1],
-        use_grouped_mm=False,
     )
     # TODO: We should test this path because it's the most performant
     # But the grad seems to be off in attn because of precision

@@ -30,7 +30,6 @@ def get_model_pairs():
         linear_value_head_dim=32,
         linear_num_key_heads=4,
         linear_num_value_heads=8,
-        use_grouped_mm=False,
     )
     config._attn_implementation = "flash_attention_2"
     with torch.device("cuda"), default_dtype(torch.bfloat16):
@@ -77,6 +76,10 @@ def test_qwen3_5_moe_roundtrip():
     # Get original HF state_dict and the PrimeRL-converted version
     original_hf_sd = hf_model.state_dict()
     prime_sd = prime_model.state_dict()
+    assert prime_model.is_hf_state_dict(original_hf_sd)
+    assert not prime_model.is_prime_state_dict(original_hf_sd)
+    assert prime_model.is_prime_state_dict(prime_sd)
+    assert not prime_model.is_hf_state_dict(prime_sd)
 
     # Convert PrimeRL → per-expert HF format
     converted_hf_sd = prime_model.convert_to_hf(dict(prime_sd))
@@ -168,7 +171,6 @@ def test_qwen3_5_moe_context_parallel_setup_hook():
         linear_value_head_dim=8,
         linear_num_key_heads=4,
         linear_num_value_heads=8,
-        use_grouped_mm=False,
     )
     config._attn_implementation = "flash_attention_2"
     with torch.device("meta"):

@@ -61,7 +61,7 @@ class NixlAgent:
         return self._agent.prep_xfer_dlist(
             agent_name=peer.remote_agent_name if peer is not None else "",
             xfer_list=list(descs),
-            mem_type="cuda",
+            mem_type="VRAM",
             backends=["UCX"],
         )
 

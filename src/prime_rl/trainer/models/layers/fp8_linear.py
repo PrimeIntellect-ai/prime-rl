@@ -116,7 +116,7 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
 
     The default ignore list covers layers that should never be quantized:
     - lm_head
-    - MoE routers and gates (router, mlp.gate., shared_expert_gate)
+    - MoE routers and gates (router, mlp.gate., shared_expert.output_gate)
     - sparse-MLA scalar projection (weights_proj)
     - GLM-5.1 MTP head (eh_proj)
     - hybrid-Mamba projections (in_proj_a, in_proj_b)
