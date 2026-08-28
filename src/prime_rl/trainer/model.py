@@ -53,7 +53,7 @@ from prime_rl.trainer.models.layers.checkpointing import (
 )
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, TokenChoiceTopKRouter, _load_fused_moe_kernel
+from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter, _load_fused_moe_kernel
 from prime_rl.trainer.models.layers.mxfp8_grouped_gemm import apply_mxfp8_moe_grouped_gemm
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -403,8 +403,8 @@ def freeze_moe_router(model: nn.Module) -> None:
         if mlp is None:
             continue
 
-        # Custom implementation: MoE/LatentMoE class with router attribute
-        if isinstance(mlp, (MoE, LatentMoE)):
+        # Custom implementation
+        if isinstance(mlp, MoE):
             for param in mlp.router.parameters():
                 param.requires_grad = False
                 num_frozen += 1
@@ -431,7 +431,7 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
 
     for layer in language_model.layers:
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, (MoE, LatentMoE)):
+        if isinstance(mlp, MoE):
             mlp.router.to(torch.float32)
             if isinstance(mlp.router, TokenChoiceTopKRouter):
                 mlp.router.fp32_gate = True
@@ -489,7 +489,7 @@ def get_full_offload_dtype_policy(
     language_model = get_language_model(model)
     for layer in language_model.layers:
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, (MoE, LatentMoE)):
+        if isinstance(mlp, MoE):
             for param in mlp.router.parameters():
                 if param.is_floating_point():
                     policy[id(param)] = (torch.float32, torch.float32)
@@ -527,7 +527,7 @@ def apply_force_balanced_routing(model: nn.Module) -> None:
 
     for layer in language_model.layers:
         mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, (MoE, LatentMoE)):
+        if isinstance(mlp, MoE):
             mlp.router.force_balanced = True
             num_routers += 1
 
@@ -552,7 +552,7 @@ def configure_moe_ep_backend(model: nn.Module, config: ModelConfig) -> None:
         configure_num_sms(config.deepep_num_sms)
     language_model = get_language_model(model)
     for transformer_block in language_model.layers:
-        if not isinstance(transformer_block.mlp, (MoE, LatentMoE)):
+        if not isinstance(transformer_block.mlp, MoE):
             continue
         transformer_block.mlp.set_ep_comm_backend(backend)
         transformer_block.mlp.set_deepep_token_chunk_size(config.deepep_token_chunk_size)
@@ -647,7 +647,6 @@ def get_model(
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
-    model_config.use_grouped_mm = config.moe_use_grouped_mm
     # MoEArgs.fp8 (read via getattr(config, "fp8") in the modeling files) gates the
     # DeepGEMM FP8 grouped GEMM. MXFP8 grouped GEMM is applied by wrapping the expert
     # weights with torchao (see apply_quantization), so it leaves this flag False and
@@ -855,12 +854,12 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block in transformer_layers:
         block_mlp = getattr(transformer_block, "mlp", None)
-        if parallel_dims.ep_enabled and block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
+        if parallel_dims.ep_enabled and block_mlp is not None and isinstance(block_mlp, MoE):
             fully_shard(block_mlp.experts, mesh=dp_mod_ep_mesh, **fsdp_config)
 
             block_mlp.experts.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
 
-        if config.moe_router_dtype == "float32" and isinstance(block_mlp, (MoE, LatentMoE)):
+        if config.moe_router_dtype == "float32" and isinstance(block_mlp, MoE):
             # Own FSDP unit with an fp32 policy so the gate weight is not cast to
             # bf16 for forward and its gradients reduce in fp32.
             fully_shard(
@@ -923,7 +922,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
         if next_transformer_block is not None:
             next_mlp = getattr(next_transformer_block, "mlp", None)
-            if next_mlp is not None and isinstance(next_mlp, (MoE, LatentMoE)):
+            if next_mlp is not None and isinstance(next_mlp, MoE):
                 prefetch_modules = [next_transformer_block]
                 if isinstance(next_mlp.router, FSDPModule):
                     prefetch_modules.append(next_mlp.router)
@@ -948,7 +947,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
         if prev_transformer_block is not None:
             prev_mlp = getattr(prev_transformer_block, "mlp", None)
-            if prev_mlp is not None and isinstance(prev_mlp, (MoE, LatentMoE)):
+            if prev_mlp is not None and isinstance(prev_mlp, MoE):
                 prefetch_modules = [prev_transformer_block, prev_mlp.experts]
                 if isinstance(prev_mlp.router, FSDPModule):
                     prefetch_modules.append(prev_mlp.router)
@@ -1224,7 +1223,7 @@ def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims)
     language_model = get_language_model(model)
     for transformer_block in language_model.layers:
         block_mlp = getattr(transformer_block, "mlp", None)
-        if block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
+        if block_mlp is not None and isinstance(block_mlp, MoE):
             if config.ep_comm_backend == "torch":
                 quant = config.quantization
                 if isinstance(quant, MXFP8Config) and quant.enable_a2a:
@@ -1266,7 +1265,7 @@ def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
 
 def _reset_runtime_moe_buffers(model: nn.Module) -> None:
     for module in model.modules():
-        if isinstance(module, (MoE, LatentMoE)) and module.tokens_per_expert.device.type != "meta":
+        if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
             module.tokens_per_expert.zero_()
 
 
@@ -1360,14 +1359,6 @@ def setup_model(
 
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
-
-    if config.moe_fused_kernel:
-        if parallel_dims.ep_enabled:
-            raise ValueError(
-                "model.moe_fused_kernel=true requires ep=1: the fused kernel bypasses the EP "
-                "all-to-all and indexes experts with global ids."
-            )
-        apply_fused_moe_kernel(model, config.quantization)
 
     # The DSA sparse-attention indexer runs its forward under torch.no_grad(), so it is
     # never trainable. Freeze it so optimizer state stays symmetric across checkpoint

@@ -177,13 +177,16 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
                 route_scale=config.moe_routed_scaling_factor,
                 score_before_experts=False,
                 top_k=config.num_experts_per_tok,
-                use_grouped_mm=config.use_grouped_mm,
                 load_balance_coeff=config.load_balance_coeff,
                 fp8=getattr(config, "fp8", False),
             )
             if config.moe_router_logit_softcapping:
                 raise NotImplementedError("Laguna router logit softcapping is not supported by PrimeRL MoE yet.")
-            self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            self.mlp = MoE.from_args(
+                moe_args,
+                dim=config.hidden_size,
+                hidden_dim=config.moe_intermediate_size,
+            )
             self.shared_expert = FeedForward(
                 dim=config.hidden_size,
                 hidden_dim=config.shared_expert_intermediate_size,

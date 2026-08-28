@@ -72,7 +72,6 @@ class LagunaConfig(PretrainedConfig):
         moe_apply_router_weight_on_input: bool = False,
         moe_router_logit_softcapping: float = 0.0,
         load_balance_coeff: float | None = 1e-3,
-        use_grouped_mm: bool = True,
         **kwargs,
     ):
         raw_rope_parameters = rope_parameters if rope_parameters is not None else rope_scaling
@@ -107,7 +106,6 @@ class LagunaConfig(PretrainedConfig):
         self.moe_apply_router_weight_on_input = moe_apply_router_weight_on_input
         self.moe_router_logit_softcapping = moe_router_logit_softcapping
         self.load_balance_coeff = load_balance_coeff
-        self.use_grouped_mm = use_grouped_mm
 
         super().__init__(
             pad_token_id=pad_token_id,

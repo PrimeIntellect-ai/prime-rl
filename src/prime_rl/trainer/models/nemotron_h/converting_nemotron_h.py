@@ -5,13 +5,10 @@ split into prime's ``mamba`` / ``self_attn`` / ``mlp`` by layer type, the
 checkpoint uses a ``backbone.`` prefix, and the MoE router bias is shifted by
 its per-tensor min on the way in (and intentionally *not* restored on the way
 out — a lossy roundtrip the chain reproduces via a :class:`MapValue` whose
-backward is the identity). Experts are up/down only (no gate); a dummy ``w3``
-of shape ``(0,)`` is synthesised for expert-parallel compatibility.
+backward is the identity). Experts are up/down only, with no gate projection.
 """
 
 from __future__ import annotations
-
-import torch
 
 from prime_rl.trainer.models.conversion_ops import (
     Conditional,
@@ -21,18 +18,8 @@ from prime_rl.trainer.models.conversion_ops import (
     PrefixRename,
     Rename,
     Stack,
-    Synthetic,
     key_present,
 )
-
-
-def _empty_w3(prefix: str):
-    def factory(sd):
-        w1 = f"{prefix}.mlp.experts.w1"
-        device = sd[w1].device if w1 in sd else "cpu"
-        return torch.empty(0, device=device)
-
-    return factory
 
 
 def _moe_layer_ops(prefix: str) -> list[ConvOp]:
@@ -61,7 +48,6 @@ def _moe_layer_ops(prefix: str) -> list[ConvOp]:
                 Stack(stacked=f"{prefix}.mlp.experts.w2", item=f"{prefix}.mixer.experts.{{e}}.down_proj.weight"),
             ],
         ),
-        Synthetic(f"{prefix}.mlp.experts.w3", factory=_empty_w3(prefix)),
         PrefixRename(f"{prefix}.mixer.shared_experts.", f"{prefix}.mlp.shared_expert."),
         PrefixRename(f"{prefix}.mixer.fc1_latent_proj.", f"{prefix}.mlp.fc1_latent_proj."),
         PrefixRename(f"{prefix}.mixer.fc2_latent_proj.", f"{prefix}.mlp.fc2_latent_proj."),
@@ -74,9 +60,8 @@ def _layer_op(prefix: str) -> ConvOp:
     namespace is disambiguated by which sub-key is present (and, on the way
     back, by which prime namespace is present, so the predicates work both
     directions). Mamba/attention keep a bulk ``PrefixRename`` (robust to params
-    we didn't enumerate); MoE needs its specific ops (and the gated
-    ``Synthetic`` w3, which is why this is a Conditional rather than a plain
-    catch-all)."""
+    we didn't enumerate); MoE needs its specific ops, which is why this is a
+    Conditional rather than a plain catch-all."""
     is_attention = lambda sd: (  # noqa: E731
         f"{prefix}.mixer.q_proj.weight" in sd or f"{prefix}.self_attn.q_proj.weight" in sd
     )

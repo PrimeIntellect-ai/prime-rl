@@ -242,6 +242,7 @@ class _GroupedFP8Gemm(torch.autograd.Function):
 def grouped_fp8_gemm(
     x: torch.Tensor,
     weight: torch.Tensor,
+    *,
     offs: torch.Tensor,
 ) -> torch.Tensor:
     """FP8 grouped GEMM, drop-in replacement for torch._grouped_mm.
