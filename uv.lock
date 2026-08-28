@@ -138,7 +138,7 @@ members = [
 ]
 overrides = [
     { name = "nvidia-cudnn-cu12", specifier = ">=9.15" },
-    { name = "nvidia-cutlass-dsl", specifier = ">=4.4.1" },
+    { name = "nvidia-cutlass-dsl", specifier = "==4.6.0" },
     { name = "openenv-core" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.13.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.13.0", index = "https://download.pytorch.org/whl/cu129" },
@@ -1307,46 +1307,46 @@ wheels = [
 
 [[package]]
 name = "deep-ep"
-version = "1.1.0+1fd57b0"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" }
+version = "1.2.1+29d31c0"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl", hash = "sha256:fdfa7e1f79ed152948fb86330d4fcbf560d7d50fd78d3a96caf83d4bd1b61521" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl", hash = "sha256:09a8638bf1c5d7957beace5c8fd5ba639a08185e7963dfe98ce91a6f60836115" },
 ]
 
 [[package]]
 name = "deep-ep"
 version = "1.2.1+29d31c0"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", hash = "sha256:a52b709d62c4dfc46a018b988724a7c10894125091aef596bf6d68e94c2b564e" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", hash = "sha256:2625fae3ffb55bcc51955c0ded7f143bf10fa4a601eeb235b629db834180be5c" },
 ]
 
 [[package]]
 name = "deep-gemm"
 version = "2.5.0+891d57b"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl", hash = "sha256:a1cbc53414e26b70f9e283e4d57bbe48ba2a3ec84254a72052af8e06f6d0fb1a" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl", hash = "sha256:1b0a483a83718db25177d8a9bea9db49679ffd4bfbe5c5cb58a1fbbdf123a735" },
 ]
 
 [[package]]
 name = "deep-gemm"
 version = "2.5.0+891d57b"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl", hash = "sha256:3a9e4472b86e8e7e2c77cc76951c886bbe7a23a1f5908958969ab5b9c707a2f3" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl", hash = "sha256:de941ae3474718eaefbbdf01900694fac2d33b8d45ac4b8342b92fdc8d3ac5ce" },
 ]
 
 [[package]]
@@ -1865,8 +1865,8 @@ wheels = [
 
 [[package]]
 name = "flash-attn-4"
-version = "4.0.0b11.dev11+g96bd151"
-source = { git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151#96bd151b00add1dc5744115cfc350c0a809c3fa2" }
+version = "4.0.0b20.dev2+g82d6441"
+source = { git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=82d6441#82d6441eec5d4dfec120153db2c0145ae855a083" }
 dependencies = [
     { name = "apache-tvm-ffi" },
     { name = "einops" },
@@ -4114,6 +4114,15 @@ wheels = [
 ]
 
 [[package]]
+name = "nvidia-cuda-nvdisasm"
+version = "13.3.73"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/92/be/e9de501cb71b10f7654381a485fa4ebf470ea25c3dce018cccaecf8a8f9a/nvidia_cuda_nvdisasm-13.3.73-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:dd4751884f9016b9b6dbf007abdeb5681d0a2edc731dd3d2fda9d6d878e88f73", size = 4744517, upload-time = "2026-06-29T16:48:33.527Z" },
+    { url = "https://files.pythonhosted.org/packages/86/3e/88460ebd737e559e8e9843db7a63f8ced9ec7be1882344438819dd13aebc/nvidia_cuda_nvdisasm-13.3.73-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:fa17084b07c0dca68a42892f771b4b1b40fbe9b91660209623e61cea611cae8c", size = 4782824, upload-time = "2026-06-29T16:49:05.109Z" },
+]
+
+[[package]]
 name = "nvidia-cuda-nvrtc-cu12"
 version = "12.9.86"
 source = { registry = "https://pypi.org/simple" }
@@ -4219,27 +4228,63 @@ wheels = [
 
 [[package]]
 name = "nvidia-cutlass-dsl"
-version = "4.5.2"
+version = "4.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "nvidia-cutlass-dsl-libs-base" },
+    { name = "nvidia-cutlass-dsl-libs-cu12" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f0/15/575d7df4fe2f3406f1cfc68be72aeff2834f8a696daf1cd5bee8017e4507/nvidia_cutlass_dsl-4.5.2-py3-none-any.whl", hash = "sha256:68ed1b63ca74aae87955012da9dfd7fdaae471329d0028b229b841c7192ccf52", size = 10179, upload-time = "2026-05-25T03:38:56.364Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/1c/fbddb760a0228df87a9e9d1e60b76ecbe6e18035f5853efe0b4563651b2b/nvidia_cutlass_dsl-4.6.0-py3-none-any.whl", hash = "sha256:e3e0e4d8df20d82c8401fa013f4d82021f41daa5fca3d24b55d4a677f2308ca8", size = 10459, upload-time = "2026-07-02T03:23:18.43Z" },
 ]
 
 [[package]]
 name = "nvidia-cutlass-dsl-libs-base"
-version = "4.5.2"
+version = "4.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cuda-python" },
     { name = "numpy" },
+    { name = "nvidia-cuda-nvdisasm" },
+    { name = "nvidia-cutlass-dsl-libs-core" },
+    { name = "protobuf" },
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b1/ef/e827e3c67d72adbf4e8f680bdf03b1b67723d9e1ae7c3d0a1751f39f69ce/nvidia_cutlass_dsl_libs_base-4.5.2-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:d2a3c412287e356fbe48fe9f845d6d33cd35dea5e20d7e4f628c20957967cacd", size = 75643473, upload-time = "2026-05-25T03:49:15.857Z" },
-    { url = "https://files.pythonhosted.org/packages/97/68/c1247ab848f26c4ab56e562eea0e3f31fc14c9aaf0d883afaa92d8f05592/nvidia_cutlass_dsl_libs_base-4.5.2-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:15ef6a59193667e663934ef4873f8ccad37455e9b7c3c419c3072113b8aedf61", size = 74513226, upload-time = "2026-05-25T03:51:32.496Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/f8/22653971fcab2a7ed581934f7a2708c9873fa6a8e8eb285422c8eed4ae01/nvidia_cutlass_dsl_libs_base-4.6.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:6412572899b1c6d182e516b20f2b0a21874ec88d25234e6040fb2a4381de7a1a", size = 3321728, upload-time = "2026-07-02T03:25:28.888Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/38/e91f66739d2f8711d1a2457e68cd86d6fbae307ce66ce270a405d4dc6dc7/nvidia_cutlass_dsl_libs_base-4.6.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:e41cd5db4de4b535c30ae9ca4412b957800a62560019ae91fa51cf3ea89bf254", size = 2824817, upload-time = "2026-07-02T03:25:53.814Z" },
+]
+
+[[package]]
+name = "nvidia-cutlass-dsl-libs-core"
+version = "4.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cuda-python" },
+    { name = "numpy" },
+    { name = "nvidia-cuda-nvdisasm" },
+    { name = "protobuf" },
+    { name = "typing-extensions" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/84/94/e4e2404ac06a477096ccf8127bf5d391510d36cafb4be86c8c15b4873b0d/nvidia_cutlass_dsl_libs_core-4.6.0-py3-none-any.whl", hash = "sha256:f9ea6d313a03cb11fa177da32e8747ad0cac51358850810f36aa6c4736192c27", size = 767713, upload-time = "2026-07-02T03:23:39.876Z" },
+]
+
+[[package]]
+name = "nvidia-cutlass-dsl-libs-cu12"
+version = "4.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cuda-python" },
+    { name = "numpy" },
+    { name = "nvidia-cuda-nvdisasm" },
+    { name = "nvidia-cutlass-dsl-libs-base" },
+    { name = "protobuf" },
+    { name = "typing-extensions" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/11/38/62def848b65bf067f434df7680c7e8c48519b25bbd3f03f9cdff3606353b/nvidia_cutlass_dsl_libs_cu12-4.6.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:87f132ccc30946949868989f3b1b1adaa714ccdf5c636e5379b54909cc29576c", size = 86992102, upload-time = "2026-07-02T03:29:41.47Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/64/f3f8962a9b91dd9368b90e23b2ac81614d6e9df72b55365ec0c216c3f8f9/nvidia_cutlass_dsl_libs_cu12-4.6.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:abc341ff0fce40ed0bdadf160f6afac07fb9d01768d4daebd1628c330b3e4210", size = 88436835, upload-time = "2026-07-02T03:30:13.676Z" },
 ]
 
 [[package]]
@@ -4930,8 +4975,8 @@ wheels = [
 
 [[package]]
 name = "prime-kernels"
-version = "0.1.0+cu128torch2.11.0"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl" }
+version = "0.1.0+cu129torch2.13.0"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/prime_kernels-0.1.0+cu129torch2.13.0-cp312-cp312-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
@@ -4939,7 +4984,7 @@ dependencies = [
     { name = "torch", version = "2.13.0+cu129", source = { registry = "https://download.pytorch.org/whl/cu129" } },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl", hash = "sha256:3ad8ce3a744c9b0f3bb9c649de44b2d99f9cab88a168b2e9d7f4c1c1a29dd19f" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/prime_kernels-0.1.0+cu129torch2.13.0-cp312-cp312-linux_aarch64.whl", hash = "sha256:a5f13d5cdb2bcd08584a95f1e854571a21c9b240272e16d98f5215934e294af8" },
 ]
 
 [package.metadata]
@@ -4947,8 +4992,8 @@ requires-dist = [{ name = "torch", specifier = ">=2.9.0" }]
 
 [[package]]
 name = "prime-kernels"
-version = "0.1.0+cu128torch2.11.0"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl" }
+version = "0.1.0+cu129torch2.13.0"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/prime_kernels-0.1.0+cu129torch2.13.0-cp312-cp312-linux_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -4956,7 +5001,7 @@ dependencies = [
     { name = "torch", version = "2.13.0+cu129", source = { registry = "https://download.pytorch.org/whl/cu129" } },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl", hash = "sha256:6ce9fc5a8561d9b7c8283d11fb0fdac8e7981897c7308e9f520a9e4540cf805c" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/prime_kernels-0.1.0+cu129torch2.13.0-cp312-cp312-linux_x86_64.whl", hash = "sha256:23b1caba5114f82cecdd83050d114a4928bd13a4979e2ba46b1a527d39f8397f" },
 ]
 
 [package.metadata]
@@ -5027,10 +5072,10 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
-    { name = "deep-ep", version = "1.1.0+1fd57b0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "dion", marker = "sys_platform == 'linux'" },
     { name = "flash-attn", version = "2.8.3+cu126torch2.13", source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.47/flash_attn-2.8.3+cu126torch2.13-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "flash-attn", version = "2.8.3+cu126torch2.13", source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.48/flash_attn-2.8.3+cu126torch2.13-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
@@ -5047,8 +5092,8 @@ all = [
     { name = "tilelang", marker = "sys_platform == 'linux'" },
     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.13.0+cu129", source = { registry = "https://download.pytorch.org/whl/cu129" }, marker = "sys_platform == 'linux'" },
-    { name = "torchao", version = "0.17.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "torchao", version = "0.17.0+git02105d46c", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "torchaudio", marker = "sys_platform == 'linux'" },
     { name = "torchdata", marker = "sys_platform == 'linux'" },
     { name = "torchtitan", marker = "sys_platform == 'linux'" },
@@ -5063,10 +5108,10 @@ dashboard = [
     { name = "uvicorn" },
 ]
 disagg = [
-    { name = "deep-ep", version = "1.1.0+1fd57b0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-gemm", version = "2.5.0+891d57b", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "nixl", marker = "sys_platform == 'linux'" },
     { name = "nixl-cu12", version = "0.10.1", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "vllm-router", version = "0.2.0", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
@@ -5095,8 +5140,8 @@ gpu = [
     { name = "tilelang", marker = "sys_platform == 'linux'" },
     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.13.0+cu129", source = { registry = "https://download.pytorch.org/whl/cu129" }, marker = "sys_platform == 'linux'" },
-    { name = "torchao", version = "0.17.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "torchao", version = "0.17.0+git02105d46c", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "torchaudio", marker = "sys_platform == 'linux'" },
     { name = "torchdata", marker = "sys_platform == 'linux'" },
     { name = "torchtitan", marker = "sys_platform == 'linux'" },
@@ -5105,8 +5150,8 @@ gpu = [
     { name = "vllm", version = "0.27.1+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.27.1/vllm-0.27.1+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 kernels = [
-    { name = "prime-kernels", version = "0.1.0+cu128torch2.11.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "prime-kernels", version = "0.1.0+cu128torch2.11.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "prime-kernels", version = "0.1.0+cu129torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/prime_kernels-0.1.0+cu129torch2.13.0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "prime-kernels", version = "0.1.0+cu129torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/prime_kernels-0.1.0+cu129torch2.13.0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 quack = [
     { name = "quack-kernels", marker = "sys_platform == 'linux'" },
@@ -5131,18 +5176,18 @@ requires-dist = [
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "deep-ep", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl" },
+    { name = "deep-ep", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" },
     { name = "deep-ep", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
-    { name = "deep-ep", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
-    { name = "deep-gemm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" },
+    { name = "deep-ep", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
+    { name = "deep-gemm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl" },
     { name = "deep-gemm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
-    { name = "deep-gemm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" },
+    { name = "deep-gemm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" },
     { name = "dion", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
     { name = "fastapi", marker = "extra == 'dashboard'", specifier = ">=0.115" },
     { name = "flash-attn", marker = "platform_machine == 'aarch64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.48/flash_attn-2.8.3+cu126torch2.13-cp312-cp312-linux_aarch64.whl" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.47/flash_attn-2.8.3+cu126torch2.13-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "sys_platform == 'linux' and extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu129" },
-    { name = "flash-attn-4", marker = "sys_platform == 'linux' and extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151" },
+    { name = "flash-attn-4", marker = "sys_platform == 'linux' and extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=82d6441" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/fla-org/flash-linear-attention" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "kernels", marker = "sys_platform == 'linux' and extra == 'gpt-oss'" },
@@ -5159,9 +5204,9 @@ requires-dist = [
     { name = "orjson", specifier = ">=3.11.0" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "prime", specifier = ">=0.6.19" },
-    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl" },
+    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/prime_kernels-0.1.0+cu129torch2.13.0-cp312-cp312-linux_aarch64.whl" },
     { name = "prime-kernels", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'kernels'" },
-    { name = "prime-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl" },
+    { name = "prime-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/prime_kernels-0.1.0+cu129torch2.13.0-cp312-cp312-linux_x86_64.whl" },
     { name = "prime-pydantic-config", editable = "deps/pydantic-config" },
     { name = "prime-rl", extras = ["disagg"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn"], marker = "extra == 'all'" },
@@ -5182,8 +5227,9 @@ requires-dist = [
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "tilelang", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.1.8" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=2.13.0", index = "https://download.pytorch.org/whl/cu129" },
-    { name = "torchao", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl" },
-    { name = "torchao", marker = "platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.17.0" },
+    { name = "torchao", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" },
+    { name = "torchao", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.17.0" },
+    { name = "torchao", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" },
     { name = "torchaudio", marker = "sys_platform == 'linux' and extra == 'gpu'", index = "https://download.pytorch.org/whl/cu129" },
     { name = "torchdata", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.11.0" },
     { name = "torchtitan", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/pytorch/torchtitan?rev=23e4dfc" },
@@ -7303,24 +7349,13 @@ wheels = [
 
 [[package]]
 name = "torchao"
-version = "0.17.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.18.0+git5f2baf9d5"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c9/37/ef37ca885265e5f79a168616767dd416a3cea1cc3b28bb6b503ce4a5b652/torchao-0.17.0-py3-none-any.whl", hash = "sha256:02eba449036715b9ae784fbaa1a6f97994bb7b0421ce92d1d5d1c08e5bd6d349", size = 1200680, upload-time = "2026-03-30T22:25:54.457Z" },
-]
-
-[[package]]
-name = "torchao"
-version = "0.17.0+git02105d46c"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl" }
-resolution-markers = [
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
-]
-wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl", hash = "sha256:899ee5ac05292a5ffac1e44817c524b63fff850c6d5f679d3087f6770ba628c6" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl", hash = "sha256:a67a55e4ec7db1718bee28458792b47c13716a342668e692c35bbc0791165304" },
 ]
 
 [package.metadata]
@@ -7341,7 +7376,48 @@ requires-dist = [
     { name = "parameterized", marker = "extra == 'dev'" },
     { name = "pre-commit", marker = "extra == 'dev'" },
     { name = "pycocotools", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = "==8.4.2" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.3" },
+    { name = "pyyaml", marker = "extra == 'dev'" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.11.6" },
+    { name = "sentencepiece", marker = "extra == 'dev'" },
+    { name = "tabulate", marker = "extra == 'dev'" },
+    { name = "tiktoken", marker = "extra == 'dev'" },
+    { name = "tqdm", marker = "extra == 'dev'" },
+    { name = "transformers", marker = "extra == 'dev'" },
+    { name = "unittest-xml-reporting", marker = "extra == 'dev'" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "torchao"
+version = "0.18.0+git5f2baf9d5"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+wheels = [
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl", hash = "sha256:49a1eabd116a3b429cd8dd2868599d06ee65e8d4b2e772934bd6951a777b3b59" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bitsandbytes", marker = "extra == 'dev'" },
+    { name = "blobfile", marker = "extra == 'dev'" },
+    { name = "cmake", marker = "extra == 'dev'", specifier = ">=3.19.0,<4.0.0" },
+    { name = "diskcache", marker = "extra == 'dev'" },
+    { name = "expecttest", marker = "extra == 'dev'" },
+    { name = "fire", marker = "extra == 'dev'" },
+    { name = "hypothesis", marker = "extra == 'dev'" },
+    { name = "importlib-metadata", marker = "extra == 'dev'" },
+    { name = "lm-eval", marker = "extra == 'dev'" },
+    { name = "matplotlib", marker = "extra == 'dev'" },
+    { name = "ninja", marker = "extra == 'dev'" },
+    { name = "packaging", marker = "extra == 'dev'" },
+    { name = "pandas", marker = "extra == 'dev'" },
+    { name = "parameterized", marker = "extra == 'dev'" },
+    { name = "pre-commit", marker = "extra == 'dev'" },
+    { name = "pycocotools", marker = "extra == 'dev'" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.3" },
     { name = "pyyaml", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.11.6" },
     { name = "sentencepiece", marker = "extra == 'dev'" },

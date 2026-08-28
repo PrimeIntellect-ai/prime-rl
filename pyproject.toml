@@ -140,7 +140,11 @@ environments = [
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
-    "nvidia-cutlass-dsl>=4.4.1",
+    # Exact, not a floor: vllm 0.27.1 hard-requires quack-kernels==0.6.1, which hard-requires
+    # nvidia-cutlass-dsl==4.6.0 — non-negotiable from that side. flash-attn-4's cute utils
+    # needed a newer rev to match (see the flash-attn-4 pin below); bump this only alongside
+    # both of those pins, together.
+    "nvidia-cutlass-dsl==4.6.0",
     "transformers==5.6.2",
     "torch>=2.13.0",
     "openenv-core",
@@ -226,9 +230,12 @@ torch = [{ index = "pytorch-cu129", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu129", marker = "sys_platform == 'linux'" }]
 torchaudio = [{ index = "pytorch-cu129", marker = "sys_platform == 'linux'" }]
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "23e4dfc" }
-torchao = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" }
+torchao = [
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+]
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
-flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
+flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "82d6441" }
 vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
@@ -238,16 +245,16 @@ vllm = [
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.27.1/vllm-0.27.1+cu129-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.1.0+1fd57b0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-gemm = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 prime-kernels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/prime_kernels-0.1.0+cu129torch2.13.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-5d17dda/prime_kernels-0.1.0+cu129torch2.13.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }

@@ -14,9 +14,10 @@ kernel's Python surface *and* its C++/CUDA sources under `csrc/`, all declared i
 manifest `prime_kernels/kernels.toml`. See `deps/prime-kernels/README.md` once the submodule
 is initialized.
 
-Nothing about a kernel lives in prime-rl. prime-rl pins a prime-kernels commit, builds the
-wheel from it, and installs the result — and stays a pure-Python wheel itself; never add
-compiled extensions to it.
+Nothing about a kernel lives in prime-rl. prime-rl pins a prime-kernels commit for the
+submodule (source-level changes, local rebuilds) and a prime-kernels *release* for installs
+— prime-kernels builds and publishes its own wheels; prime-rl never compiles CUDA itself and
+stays a pure-Python wheel — never add compiled extensions to it.
 
 Living under `deps/` means `tool.ruff.extend-exclude = ["deps"]` in `pyproject.toml`
 already covers it — prime-rl lints none of it.
@@ -118,66 +119,58 @@ Then, in order:
   `gpu`-marked and skips itself unless the kernel is available, so it only means anything
   on a machine the kernel was built for.
 - The bump alone ships nothing: installs resolve `prime-kernels` from a release wheel, so the
-  new code only reaches users once a release rebuilds the wheels and the pin below moves.
+  new code only reaches users once prime-kernels cuts a release and the pin below moves.
 
 ## Prebuilt wheels
 
-[`build_kernels.yaml`](../../.github/workflows/build_kernels.yaml) builds every prebuilt
-kernel wheel `[tool.uv.sources]` pins — `prime-kernels`, `deep-ep`, `deep-gemm` and
-`torchao` — for x86_64 and aarch64 in the CUDA devel image (no GPU needed — nvcc cross
-compiles every shipped arch). It inits the `deps/prime-kernels` submodule itself, runs on
-every bump of it (or of the deep-ep/deep-gemm build scripts), and attaches the wheels to a
-release when given a `release_tag`. A torch or CUDA bump is therefore a workflow dispatch,
-not a hunt for a machine with the right GPU.
-
-Its `paths` trigger is `deps/prime-kernels` (the gitlink), **not** `deps/prime-kernels/**` —
-no file under it is tracked by prime-rl, so a `**` pattern would match nothing and submodule
-bumps would build no wheels.
-
-Every release gets them: [`tag-and-release.yaml`](../../.github/workflows/tag-and-release.yaml)
-calls this workflow after the tag is cut and **before** it promotes the draft, so a published
-release always carries its wheels. To backfill a release that predates this, dispatch by hand:
-
-```bash
-gh workflow run build_kernels.yaml -f release_tag=vX.Y.Z -f ref=vX.Y.Z
-```
+Building and releasing wheels is no longer prime-rl's job. The
+[prime-kernels](https://github.com/PrimeIntellect-ai/prime-kernels) repo's own
+`build_kernels.yaml` builds every wheel prime-rl's `[tool.uv.sources]` pins —
+`prime-kernels` (from its own `kernels.toml`), `deep-ep` and `deep-gemm` (from pinned
+deepseek-ai revs), and `torchao` (from a pinned pytorch/ao rev) — for x86_64 and aarch64,
+runs a GPU smoke test against the results, and attaches everything to a
+[prime-kernels release](https://github.com/PrimeIntellect-ai/prime-kernels/releases) when
+dispatched with a `release_tag`. A torch or CUDA bump is a dispatch against that repo, not a
+hunt for a machine with the right GPU, and not something that touches prime-rl's own CI at
+all — `gh workflow run build_kernels.yaml --repo PrimeIntellect-ai/prime-kernels -f
+release_tag=vX.Y.Z`.
 
 The wheel version carries the ABI it was built against, e.g.
-`prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl` — it imports only under
-that exact torch, so the build installs the torch pinned in `uv.lock`, not the newest one.
-The base version comes from `deps/prime-kernels/pyproject.toml` in the prime-kernels repo.
+`prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl` — it imports only under
+that exact torch, so a prime-kernels release build installs whatever torch *it* is pinned to
+build against, not prime-rl's.
 
 ### Pinning installs at the prebuilt wheels
 
 `uv sync --extra kernels` installs `prime-kernels` from the wheels named in
-`[tool.uv.sources]` — the pattern deep-ep, deep-gemm and vllm already use, and the only form
-the extra may take, since a sync must never compile:
+`[tool.uv.sources]` — the pattern deep-ep, deep-gemm, torchao and vllm already use, and the
+only form the extra may take, since a sync must never compile:
 
 ```toml
 [tool.uv.sources]
 prime-kernels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.8.0/prime_kernels-0.1.0+cu128torch2.11.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 ```
 
-The wheels are prime-rl release assets — the kernels live in their own repo, but they ship
-with prime-rl's releases. To move the pin, the build prints both lines, ready to paste, in
-its job summary. Then `uv lock`.
+The wheels are **prime-kernels** release assets now, not prime-rl's own — `gh release view
+vX.Y.Z --repo PrimeIntellect-ai/prime-kernels --json assets` gives the exact filenames, ABI
+suffix and all, to paste into all four `[tool.uv.sources]` entries. Then `uv lock`.
 
-The pin necessarily trails by one release: a release's own assets do not exist until that
-release is built, so `vX.Y.Z` can only point at wheels from an already published tag. Move it
-whenever the kernels or the torch/CUDA pin change — a stale pin ships stale kernels, and a
-pin whose torch no longer matches the lock fails at import, not at install.
+The pin necessarily trails by one prime-kernels release: a release's own assets do not exist
+until that release is built, so `vX.Y.Z` can only point at wheels from an already published
+tag. Move it whenever the kernels or the torch/CUDA pin change — a stale pin ships stale
+kernels, and a pin whose torch no longer matches the lock fails at import, not at install.
 
 ## Gotchas
 
-- prime-kernels' `pyproject.toml` mirrors prime-rl's own `torch>=2.9.0`; keep the two
-  identical, and build against the torch in `uv.lock` (`build_kernels.yaml` reads it) — the
-  wheel imports only under the torch it was compiled against.
+- prime-kernels' `pyproject.toml` mirrors prime-rl's own torch floor; keep the two
+  identical — a prime-kernels wheel imports only under the torch it was compiled against,
+  and that build is pinned in prime-kernels' own CI, not read from prime-rl's `uv.lock`.
 - Never reintroduce `prime-kernels` as a path source: uv cannot read a source tree's metadata
   without building it, so every `uv lock` would then need nvcc. A release-asset URL has static
   metadata and does not.
-- A fresh clone without the submodule still installs and trains — only the source build needs
-  it. `build_kernels.yaml` inits it and sets `PRIME_KERNELS_REQUIRE=1`, so a wheel is never
-  published with kernels silently skipped.
+- A fresh clone of prime-rl without the `deps/prime-kernels` submodule still installs and
+  trains — only a local source build needs it. On the prime-kernels side, its own CI sets
+  `PRIME_KERNELS_REQUIRE=1`, so a wheel is never published with kernels silently skipped.
