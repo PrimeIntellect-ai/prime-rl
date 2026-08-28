@@ -1,3 +1,4 @@
+import os
 import pickle
 from typing import TYPE_CHECKING, Generator, cast
 
@@ -34,6 +35,7 @@ def receive_integer(communicator: PyNcclCommunicator) -> int:
 
 def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str, torch.Tensor], None, None]:
     """Stream tensors in a state dict broadcasted over NCCL."""
+    stage_on_cpu = os.environ.get("PRIME_RL_NCCL_RECEIVE_TO_CPU", "0") == "1"
     size_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
     communicator.broadcast(size_tensor, src=0)
     state_tensor = torch.empty(cast(int, size_tensor.item()), dtype=torch.uint8).to(communicator.device)
@@ -48,17 +50,24 @@ def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str,
         concatenated = torch.empty(total_elements, dtype=dtype, device=communicator.device)
         communicator.broadcast(concatenated, src=0)
 
+        # Some checkpoint-format loaders retain views from several layers while
+        # resolving nested modules. Keep those retained views off the GPU when
+        # requested so only the current NCCL receive buffer consumes device
+        # memory. Model loaders already support CPU checkpoint tensors.
+        source = concatenated.cpu() if stage_on_cpu else concatenated
+        del concatenated
+
         # Split concatenated tensor back into individual tensors
         offset = 0
         for key, shape, numel in tensor_info_list:
-            tensor = concatenated[offset : offset + numel].view(shape)
+            tensor = source[offset : offset + numel].view(shape)
             offset += numel
             try:
                 yield key, tensor
             finally:
                 del tensor
 
-        del concatenated
+        del source
 
 
 class NCCLWeightBroadcastReceiver:
