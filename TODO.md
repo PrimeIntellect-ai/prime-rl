@@ -340,6 +340,40 @@ config values. None of these are visible from the test suite; all of them are on
   `tests/unit/train/models/test_deepseek_v4.py`. Verified directly against
   `deepseek-ai/DeepSeek-V4-Flash-0731`'s real `config.json` that `layer_types` now matches the
   transformers-native reference exactly.
+- **The full 43-layer real checkpoint does not fit for training on a single 8xH200 node.**
+  Confirmed by direct CUDA OOM under both CPU-offload strategies this repo supports, once the
+  compress_ratios fix above unblocked the load in the first place. This is a hardware ceiling,
+  not a bug: `examples/advanced/deepseek-v4-flash/rl.toml` already specs `num_train_nodes = 4`
+  (32 GPUs) for this exact checkpoint.
+  - Plain FSDP+EP (`optimization_dtype = "float32"`) keeps the entire fp32 parameter shard
+    resident on GPU: `284.6e9 params * 4 bytes / 8 GPUs ≈ 132.5 GiB/GPU` (total params derived
+    from the real config's per-layer shapes: ~278B in routed/shared experts across 43 MoE
+    layers, ~5.4B in attention incl. compressor/indexer, ~1.1B in the untied embedding/lm_head).
+    Confirmed via a direct OOM at ~135 GiB allocated out of 143.8 GiB -- no room for even the
+    first layer's activations.
+  - `full_offload = true` + `optim.type = "sign_sgd"` (the lowest-memory optimizer full offload
+    supports, since it carries no momentum/variance) move the fp32 masters/gradients/optimizer
+    step to CPU RAM (confirmed: "132.40 GiB of pageable FP32 masters" logged per rank, matching
+    the math above), but this does not reduce peak GPU memory here: the persistent bf16
+    parameter shard (~66 GiB) plus the bf16 gradient buffer FSDP2 must hold before handing it to
+    the CPU optimizer (~66 GiB) sum back to ~132 GiB. Confirmed via a second OOM (3 GiB
+    allocation failure, ~132 GiB already allocated).
+  - `debug.num_layers=4` was verified clean on the real checkpoint with `full_offload`: finite
+    loss, `nan_count=0`, peak memory 31/139.8 GiB. This confirms dequantization, the
+    compress_ratios fix, and `ep=8` are all correct together against real weights -- the ceiling
+    above is specifically about the full 43-layer parameter count, not a correctness gap.
+  - Separately, `load_dcp_from_hf`'s one-time HF -> prime-rl format conversion
+    (`trainer/model.py`) reads and dequantizes the checkpoint's *entire* on-disk state dict on a
+    single rank before any GPU work, regardless of `debug.num_layers` -- for this checkpoint that
+    took ~90 minutes (156GB fp8/MXFP4 -> ~530GB dequantized), blowing past the default 3600s
+    `dist_timeout_seconds`. Needs `--dist-timeout-seconds 14400`-ish on the first run only; the
+    converted result is cached to `<snapshot>/prime/` and reused (with the default timeout) by
+    every subsequent run regardless of truncation. Not fixed: the conversion could skip
+    non-truncated-model keys to make truncated runs meaningfully cheap to load, but as a
+    one-time, cached cost it wasn't worth the (model-agnostic, cross-architecture-risk) code
+    change for this session's purposes.
+  See `examples/advanced/deepseek-v4-flash/sft-flash-smoke.toml` for the exact working
+  single-node command and full derivation.
 
 ## The pinned `deep_gemm` wheel is built against CUDA 13, the rest of the stack is CUDA 12
 
