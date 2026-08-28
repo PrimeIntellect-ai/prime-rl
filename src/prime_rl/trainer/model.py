@@ -653,11 +653,6 @@ def get_model(
     else:
         impl_to_use = config.impl
 
-    if impl_to_use != "custom" and getattr(model_config, "requires_custom_impl", False):
-        logger.warning(
-            f"{model_config.model_type} should use model.impl='custom'; the HuggingFace implementation is unsupported"
-        )
-
     if config.attn in ("flash_attention_3", "flash_attention_4") and impl_to_use == "hf":
         raise ValueError(
             f"{config.attn} requires model.impl='custom' or 'auto' (resolved to 'custom'), "
@@ -1155,23 +1150,16 @@ def _validate_flash_attn_4_installed() -> None:
 
 
 def resolve_auto_attn(config: ModelConfig) -> None:
-    """Resolve ``attn='auto'`` to a concrete flash attention implementation based on GPU architecture.
-
-    A model can require a specific implementation. Otherwise, use FA4 on datacenter
-    Blackwell (SM100), FA3 on Hopper (SM90), and FA2 on other architectures.
-    """
+    """Resolve ``attn='auto'`` from the GPU architecture."""
     if config.attn != "auto":
         return
-    model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
-    resolved = getattr(model_config, "required_attn_implementation", None)
     major, minor = torch.cuda.get_device_capability()
-    if resolved is None:
-        if (major, minor) == (10, 0):
-            resolved = "flash_attention_4"
-        elif major == 9:
-            resolved = "flash_attention_3"
-        else:
-            resolved = "flash_attention_2"
+    if (major, minor) == (10, 0):
+        resolved = "flash_attention_4"
+    elif major == 9:
+        resolved = "flash_attention_3"
+    else:
+        resolved = "flash_attention_2"
     logger = get_logger()
     logger.info(f"Auto-resolved attn='auto' to '{resolved}' (SM{major}{minor})")
     config.attn = resolved

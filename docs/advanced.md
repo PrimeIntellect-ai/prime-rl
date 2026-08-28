@@ -37,7 +37,7 @@ impl = "custom"        # or "hf" to force the HF path
 
 Selective activation checkpointing works with either implementation. The custom path additionally enables EP, CP, low-precision training, and grouped MoE kernels. Forcing `impl = "hf"` is mostly useful when debugging and disables those model-specific runtime features.
 
-GPT-OSS uses FlashAttention 4 for learned attention sinks. With `attn = "auto"`, the trainer selects it automatically.
+GPT-OSS owns its FlashAttention 4 path because learned attention sinks are part of the model semantics.
 
 ### Low-precision training
 

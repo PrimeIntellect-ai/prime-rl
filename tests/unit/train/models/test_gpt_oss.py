@@ -7,7 +7,7 @@ from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM as HF
 
 from prime_rl.trainer.models.gpt_oss import GptOssConfig
 from prime_rl.trainer.models.gpt_oss import GptOssForCausalLM as PrimeRLGptOssForCausalLM
-from prime_rl.trainer.models.gpt_oss.modeling_gpt_oss import (
+from prime_rl.trainer.models.gpt_oss.attention import (
     GptOssAttention,
     substitute_gpt_oss_ring_attention,
     substitute_gpt_oss_ulysses_attention,
@@ -155,9 +155,7 @@ def test_gpt_oss_context_parallel_attention(cp_style: str):
         if cp_style == "ring":
             substitute_gpt_oss_ring_attention(process_group, heads_k_stride=1)
         else:
-            from flash_attn.cute import flash_attn_varlen_func
-
-            substitute_gpt_oss_ulysses_attention(process_group, torch._dynamo.disable(flash_attn_varlen_func))
+            substitute_gpt_oss_ulysses_attention(process_group)
 
         local_slice = slice(local_rank * 4, (local_rank + 1) * 4)
         local_query = query[local_slice].detach().clone().requires_grad_()

@@ -4,8 +4,6 @@ from transformers.configuration_utils import PretrainedConfig
 class GptOssConfig(PretrainedConfig):
     model_type = "gpt_oss"
     attribute_map = {"num_experts": "num_local_experts"}
-    required_attn_implementation = "flash_attention_4"
-    requires_custom_impl = True
 
     base_model_tp_plan = {
         "layers.*.self_attn.q_proj": "colwise",
