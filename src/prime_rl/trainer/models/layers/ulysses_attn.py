@@ -221,14 +221,6 @@ def substitute_ulysses_attn(
 
     AfmoeFlashAttention._compute_attention = _ulysses_compute_attention
 
-    from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeGatedFlashAttention
-
-    Qwen3_5MoeGatedFlashAttention._compute_attention = _ulysses_compute_attention
-
-    from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedFlashAttention
-
-    Qwen3_5GatedFlashAttention._compute_attention = _ulysses_compute_attention
-
 
 def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
     """Patch HF's `_flash_attention_forward` to use Ulysses all-to-all + local FA2.
