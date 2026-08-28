@@ -7,7 +7,7 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
 
 from prime_rl.trainer.model import can_reinit_empty_buffers
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
+from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -79,7 +79,7 @@ def test_vlm_forward():
     """Custom VLM produces logits for both text-only and multimodal inputs."""
     config = _tiny_vlm_config()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = Qwen3_5MoeForCausalLM(config)
+        model = Qwen3_5ForCausalLM(config)
     inject_prime_lm_head(model)
 
     vocab = config.text_config.vocab_size
@@ -111,7 +111,7 @@ def test_vlm_backward():
     """Gradients flow through both vision scatter and text model."""
     config = _tiny_vlm_config()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = Qwen3_5MoeForCausalLM(config)
+        model = Qwen3_5ForCausalLM(config)
     inject_prime_lm_head(model)
 
     pixel_values, image_grid_thw, n_img_tokens = _make_image_inputs(config)
@@ -142,7 +142,7 @@ def test_vlm_weight_load_from_hf():
     config = _tiny_vlm_config()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         hf_model = HFQwen3_5MoeVLM._from_config(config)
-        prime_model = Qwen3_5MoeForCausalLM(config)
+        prime_model = Qwen3_5ForCausalLM(config)
 
     # Copy weights: HF -> PrimeRL (with MoE conversion)
     with torch.no_grad():
@@ -155,6 +155,16 @@ def test_vlm_weight_load_from_hf():
     for name, param in hf_model.model.visual.named_parameters():
         prime_param = dict(prime_model.model.visual.named_parameters())[name]
         assert torch.equal(param, prime_param), f"Vision weight mismatch: {name}"
+
+    pixel_values, image_grid_thw, _ = _make_image_inputs(config)
+    with torch.no_grad():
+        hf_image_embeds = hf_model.model.visual(
+            pixel_values,
+            grid_thw=image_grid_thw,
+            return_dict=True,
+        ).pooler_output
+        prime_image_embeds = prime_model.model.visual(pixel_values, image_grid_thw).pooler_output
+    torch.testing.assert_close(prime_image_embeds, hf_image_embeds, atol=0.03, rtol=0.01)
 
     # Verify model produces output after weight loading
     input_ids = torch.randint(0, 200, (1, 20), device="cuda")
@@ -169,7 +179,7 @@ def test_vlm_weight_roundtrip():
     config = _tiny_vlm_config()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         hf_model = HFQwen3_5MoeVLM._from_config(config)
-        prime_model = Qwen3_5MoeForCausalLM(config)
+        prime_model = Qwen3_5ForCausalLM(config)
 
     hf_sd = hf_model.state_dict()
     original_vision_key = "model.visual.blocks.0.mlp.linear_fc1.weight"
@@ -202,7 +212,7 @@ def test_vlm_router_replay():
     """routed_experts bypasses router computation in VLM multimodal forward."""
     config = _tiny_vlm_config()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = Qwen3_5MoeForCausalLM(config)
+        model = Qwen3_5ForCausalLM(config)
     inject_prime_lm_head(model)
 
     vocab = config.text_config.vocab_size
@@ -235,7 +245,7 @@ def test_vlm_meta_device_and_buffer_reinit():
     """Model can be created on meta device and buffers reinitialized."""
     config = _tiny_vlm_config()
     with torch.device("meta"):
-        model = Qwen3_5MoeForCausalLM.from_config(config)
+        model = Qwen3_5ForCausalLM.from_config(config, trust_remote_code=False)
 
     assert can_reinit_empty_buffers(model)
 
@@ -243,8 +253,11 @@ def test_vlm_meta_device_and_buffer_reinit():
     model.init_buffers_post_meta()
 
     lm_inv = model.model.language_model.rotary_emb.inv_freq
+    lm_original_inv = model.model.language_model.rotary_emb.original_inv_freq
     vis_inv = model.model.visual.rotary_pos_emb.inv_freq
     assert lm_inv.device.type == "cuda"
+    assert lm_original_inv.device.type == "cuda"
     assert vis_inv.device.type == "cuda"
     assert lm_inv.abs().sum() > 0
+    assert lm_original_inv.abs().sum() > 0
     assert vis_inv.abs().sum() > 0

@@ -28,7 +28,7 @@ from prime_rl.trainer.models.laguna import LagunaForCausalLM as PrimeRLLagunaFor
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2ForCausalLM as PrimeRLMiniMaxM2ForCausalLM
-from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeVLM
+from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM as PrimeRLQwen3_5MoeVLM
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.utils import default_dtype
 
@@ -264,6 +264,9 @@ def verify(arch: str, model_dir: Path) -> None:
     vocab_size = text_config.vocab_size
 
     hf_model = _load_hf_model(preset, model_dir, config).to(device="cuda", dtype=torch.float32)
+    config._attn_implementation = "flash_attention_2"
+    if hasattr(config, "text_config"):
+        config.text_config._attn_implementation = "flash_attention_2"
     with torch.device("cuda"), default_dtype(torch.float32):
         prime_model = preset["prime_model_class"]._from_config(config)
 
@@ -281,7 +284,11 @@ def verify(arch: str, model_dir: Path) -> None:
         position_ids = torch.arange(1, 65).unsqueeze(0)
 
     hf_output = hf_model(input_ids=input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids)
+    prime_output = prime_model(
+        input_ids,
+        position_ids,
+        seq_lens=torch.tensor([input_ids.shape[1]], device=input_ids.device),
+    )
 
     if is_vlm:
         # HF GatedDeltaNet has a dtype bug in float32 mode; just verify non-NaN output
