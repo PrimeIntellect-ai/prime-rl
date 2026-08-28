@@ -126,11 +126,15 @@ Open items:
   `hidden_act` must be `"silu"`, `mlp_bias` must be `False` (the shared `MLP` never adds a bias
   regardless of the flag), `fp8` is rejected (the fp8 grouped GEMM assumes a different weight
   layout).
-- **Expert parallelism and LoRA don't support `DeepseekV4Experts`'s fused weight layout yet.**
-  torchtitan's `ExpertParallel._partition_fn` shards by the literal names `w1`/`w2`/`w3`, so
-  `ep=True` needs a partition function for `gate_up_proj`/`down_proj`; `lora.py` dispatches on
-  the three known expert classes, so a LoRA run would silently leave the routed experts frozen.
-  `GptOssGroupedExperts` has the same EP gap.
+- **LoRA doesn't support `DeepseekV4Experts` yet.** `lora.py` dispatches on the three known
+  expert classes, so a LoRA run would silently leave the routed experts frozen.
+- **Expert parallelism for `DeepseekV4Experts` works.** It holds split `w1`/`w2`/`w3` params
+  (post `eff76d9e7`, which un-fused what this note previously described as a
+  `gate_up_proj`/`down_proj` layout), matching the literal names torchtitan's
+  `ExpertParallel._partition_fn` shards by. Verified with an `ep=8` SFT smoke run on
+  `examples/advanced/deepseek-v4-flash/sft-mini-ep-check.toml` (20 steps, finite loss,
+  `nan_count=0` throughout, nonzero varying grad norms). `GptOssGroupedExperts` still has an EP
+  gap for its own fused layout, unaffected by this.
 - **No router aux loss.** `output_router_logits`, `router_aux_loss_coef`, `router_jitter_noise`
   are carried by the config and read by nothing.
 - **No vLLM kernel weight transfer.** `convert_layer_to_vllm_kernel` is not overridden, so the
