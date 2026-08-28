@@ -120,6 +120,7 @@ def ulysses_flash_attn_varlen_func(
     softmax_scale: float | None = None,
     dropout_p: float = 0.0,
     deterministic: bool | None = None,
+    learnable_sink: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Run varlen flash attention under Ulysses CP.
 
@@ -146,11 +147,17 @@ def ulysses_flash_attn_varlen_func(
         kwargs["dropout_p"] = dropout_p
     if deterministic is not None:
         kwargs["deterministic"] = deterministic
+    if learnable_sink is not None:
+        local_heads = q.shape[1]
+        rank = dist.get_rank(cp_group)
+        kwargs["learnable_sink"] = learnable_sink[rank * local_heads : (rank + 1) * local_heads]
 
     if flash_attn_version == 4:
         # FA4 takes cu_seqlens as keyword args (qv positional collides otherwise).
         kwargs["cu_seqlens_q"] = cu_seqlens_q
         kwargs["cu_seqlens_k"] = cu_seqlens_k
+        kwargs["max_seqlen_q"] = max_seqlen_q
+        kwargs["max_seqlen_k"] = max_seqlen_k
         out = flash_fn(q, k, v, **kwargs)
     else:
         out = flash_fn(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, **kwargs)
@@ -228,6 +235,10 @@ def substitute_ulysses_attn(
     from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedFlashAttention
 
     Qwen3_5GatedFlashAttention._compute_attention = _ulysses_compute_attention
+
+    from prime_rl.trainer.models.gpt_oss.attention import substitute_gpt_oss_ulysses_attention
+
+    substitute_gpt_oss_ulysses_attention(process_group)
 
 
 def substitute_hf_ulysses_attn(process_group: dist.ProcessGroup) -> None:
