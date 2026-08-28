@@ -23,9 +23,9 @@ from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
 
 from .test_deepseek_v4 import (
-    _IdentityMLP,
     _assert_close,
     _configs,
+    _IdentityMLP,
     _on_disk_state_dict,
     _randomize,
     _run_pair,
@@ -172,7 +172,7 @@ def _get_dequantized_model_pairs(tmp_path: Path, quantize_experts: bool):
     return hf_model, prime_model
 
 
-def test_dequantized_attention_matches_hf(_torch_rms_norm, tmp_path):
+def test_dequantized_attention_matches_hf(_torch_rms_norm, tmp_path):  # noqa: F811
     """Dense-fp8 attention only, MLP swapped for an identity so it can't mask anything.
 
     `_BASE`'s layer stack carries all three attention types (sliding, CSA, HCA), so this
@@ -190,7 +190,7 @@ def test_dequantized_attention_matches_hf(_torch_rms_norm, tmp_path):
     _assert_close(prime_logits, hf_logits, hf_model, prime_model, logits_rtol=1e-4, grad_rtol=1e-4)
 
 
-def test_dequantized_full_model_matches_hf(_torch_rms_norm, tmp_path):
+def test_dequantized_full_model_matches_hf(_torch_rms_norm, tmp_path):  # noqa: F811
     """Full model: dense fp8 (attention, shared experts) + packed MXFP4 (routed experts).
 
     `_BASE` mixes hash-routed and gate-routed MoE layers, so this exercises the packed-MXFP4
