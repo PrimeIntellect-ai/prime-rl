@@ -16,7 +16,7 @@
 #
 # Options:
 #   --workspace DIR       Build directory (default: ./ep_kernels_workspace)
-#   --deepep-ref REF      DeepEP commit hash (default: 73b6ea4)
+#   --deepep-ref REF      DeepEP commit hash (default: 29d31c0)
 #   --nvshmem-ver VER     NVSHMEM version (default: 3.3.24)
 #   --configure-drivers   Also configure IBGDA drivers (requires sudo, needs reboot)
 
@@ -25,7 +25,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
-DEEPEP_COMMIT_HASH="73b6ea4"
+DEEPEP_COMMIT_HASH="29d31c0"
 NVSHMEM_VER="3.3.24"
 WORKSPACE="$REPO_ROOT/ep_kernels_workspace"
 CONFIGURE_DRIVERS=0

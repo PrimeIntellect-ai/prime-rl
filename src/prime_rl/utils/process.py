@@ -2,6 +2,8 @@ import contextlib
 import os
 import signal
 import subprocess
+import sysconfig
+from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
 
@@ -11,6 +13,12 @@ import setproctitle
 from prime_rl.utils.logger import get_logger
 
 PRIME_RL_PROC_PREFIX = "PRL"
+
+# Triton 3.7 bundles a CUDA 13 assembler for Blackwell. Use the CUDA 12 assembler
+# that PyTorch installs so CUDA 12 drivers do not load CUDA 13 JIT output.
+_torch_ptxas = Path(sysconfig.get_path("purelib")) / "nvidia/cuda_nvcc/bin/ptxas"
+if _torch_ptxas.is_file():
+    os.environ.setdefault("TRITON_PTXAS_BLACKWELL_PATH", str(_torch_ptxas))
 
 
 # Applied to every launched component (trainer, orchestrator, inference).
