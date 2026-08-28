@@ -15,7 +15,10 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
-from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeVisionModel
+from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
+    Qwen3_5MoeVisionModel,
+    Qwen3_5MoeVisionRotaryEmbedding,
+)
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, logging
 
@@ -34,6 +37,19 @@ from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
 from .converting_qwen3_5_moe import conversion_chain
 from .mrope import build_qwen3_5_mrope_position_ids
+
+
+def _init_vision_rope_buffers_post_meta(self: Qwen3_5MoeVisionRotaryEmbedding) -> None:
+    inv_freq = 1.0 / (
+        self.theta ** (torch.arange(0, self.dim, 2, dtype=torch.float32, device=self.inv_freq.device) / self.dim)
+    )
+    self.inv_freq.copy_(inv_freq)
+
+
+# Qwen3_5MoeVisionRotaryEmbedding is upstream transformers code; Qwen3_5MoeVisionModel.__init__
+# hardcodes its construction, so we can't subclass-and-inject like elsewhere. Attach the
+# buffer-init hook to the class directly instead.
+Qwen3_5MoeVisionRotaryEmbedding.init_buffers_post_meta = _init_vision_rope_buffers_post_meta
 
 logger = logging.get_logger(__name__)
 
@@ -601,6 +617,10 @@ class Qwen3_5MoeRotaryEmbedding(nn.Module):
             freqs_t[..., idx] = freqs[dim, ..., idx]
         return freqs_t
 
+    def init_buffers_post_meta(self) -> None:
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, self.inv_freq.device)
+        self.inv_freq.copy_(inv_freq)
+
 
 def _create_rotary_emb(config: Qwen3_5MoeConfig) -> Qwen3_5MoeRotaryEmbedding:
     return Qwen3_5MoeRotaryEmbedding(config)
@@ -993,30 +1013,6 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature,
         )
-
-    # ------------------------------------------------------------------
-    # Buffer init after meta-device loading
-    # ------------------------------------------------------------------
-
-    def init_buffers_post_meta(self):
-        if self._is_vlm:
-            lm_rope = self.model.language_model.rotary_emb
-        else:
-            lm_rope = self.model.rotary_emb
-
-        if hasattr(lm_rope, "rope_init_fn"):
-            inv_freq, lm_rope.attention_scaling = lm_rope.rope_init_fn(lm_rope.config, lm_rope.inv_freq.device)
-            lm_rope.inv_freq.copy_(inv_freq)
-
-        if self._is_vlm:
-            vis_rope = self.model.visual.rotary_pos_emb
-            if hasattr(vis_rope, "inv_freq"):
-                dim = vis_rope.inv_freq.shape[0]
-                inv_freq = 1.0 / (
-                    10000.0
-                    ** (torch.arange(0, dim * 2, 2, dtype=torch.float32, device=vis_rope.inv_freq.device) / (dim * 2))
-                )
-                vis_rope.inv_freq.copy_(inv_freq)
 
 
 __all__ = [

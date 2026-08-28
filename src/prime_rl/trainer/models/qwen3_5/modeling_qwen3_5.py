@@ -12,7 +12,7 @@ from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 from transformers.models.qwen3_5.modeling_qwen3_5 import (
     Qwen3_5PreTrainedModel as HFQwen3_5PreTrainedModel,
 )
-from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel, Qwen3_5VisionRotaryEmbedding
 from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 
@@ -30,6 +30,19 @@ from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import (
 from prime_rl.trainer.models.qwen3_5_moe.mrope import build_qwen3_5_mrope_position_ids
 from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+
+
+def _init_vision_rope_buffers_post_meta(self: Qwen3_5VisionRotaryEmbedding) -> None:
+    inv_freq = 1.0 / (
+        self.theta ** (torch.arange(0, self.dim, 2, dtype=torch.float32, device=self.inv_freq.device) / self.dim)
+    )
+    self.inv_freq.copy_(inv_freq)
+
+
+# Qwen3_5VisionRotaryEmbedding is upstream transformers code; Qwen3_5VisionModel.__init__
+# hardcodes its construction, so we can't subclass-and-inject like elsewhere. Attach the
+# buffer-init hook to the class directly instead.
+Qwen3_5VisionRotaryEmbedding.init_buffers_post_meta = _init_vision_rope_buffers_post_meta
 
 
 class Qwen3_5GatedFlashAttention(Qwen3_5MoeGatedFlashAttention):
@@ -451,26 +464,6 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature,
         )
-
-    def init_buffers_post_meta(self):
-        if self._is_vlm:
-            lm_rope = self.model.language_model.rotary_emb
-        else:
-            lm_rope = self.model.rotary_emb
-
-        if hasattr(lm_rope, "rope_init_fn"):
-            inv_freq, lm_rope.attention_scaling = lm_rope.rope_init_fn(lm_rope.config, lm_rope.inv_freq.device)
-            lm_rope.inv_freq.copy_(inv_freq)
-
-        if self._is_vlm:
-            vis_rope = self.model.visual.rotary_pos_emb
-            if hasattr(vis_rope, "inv_freq"):
-                dim = vis_rope.inv_freq.shape[0]
-                inv_freq = 1.0 / (
-                    10000.0
-                    ** (torch.arange(0, dim * 2, 2, dtype=torch.float32, device=vis_rope.inv_freq.device) / (dim * 2))
-                )
-                vis_rope.inv_freq.copy_(inv_freq)
 
 
 __all__ = [

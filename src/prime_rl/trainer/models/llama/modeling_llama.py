@@ -312,13 +312,3 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature,
         )
-
-    def init_buffers_post_meta(self):
-        buffer_names = [name for name, _ in self.named_buffers()]
-        # HF standard transformer model
-        if "model.rotary_emb.inv_freq" in buffer_names:
-            rotary_emb = self.model.rotary_emb
-            inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(
-                rotary_emb.config, rotary_emb.inv_freq.device
-            )
-            rotary_emb.inv_freq.copy_(inv_freq)

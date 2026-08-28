@@ -186,5 +186,36 @@ def test_qwen3_5_moe_context_parallel_setup_hook():
     assert linear_layer.linear_attn.cp_world_size == 2
 
 
+def test_qwen3_5_moe_init_buffers_post_meta():
+    config = Qwen3_5MoeConfig(
+        vocab_size=256,
+        hidden_size=256,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=64,
+        moe_intermediate_size=128,
+        shared_expert_intermediate_size=128,
+        num_experts=8,
+        num_experts_per_tok=2,
+        max_position_embeddings=512,
+        rms_norm_eps=1e-6,
+        linear_conv_kernel_dim=4,
+        linear_key_head_dim=32,
+        linear_value_head_dim=32,
+        linear_num_key_heads=4,
+        linear_num_value_heads=8,
+        use_grouped_mm=False,
+    )
+    with torch.device("meta"):
+        model = PrimeRLQwen3_5MoeForCausalLM(config)
+    model.to_empty(device="cuda")
+
+    model.init_buffers_post_meta()
+
+    for name, buffer in model.named_buffers():
+        assert torch.isfinite(buffer).all(), f"buffer {name} is not finite after init_buffers_post_meta"
+
+
 if __name__ == "__main__":
     test_qwen3_5_moe()

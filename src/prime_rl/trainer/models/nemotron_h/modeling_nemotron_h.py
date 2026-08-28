@@ -514,9 +514,6 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
             temperature=temperature,
         )
 
-    def init_buffers_post_meta(self):
-        pass
-
 
 __all__ = [
     "NemotronHForCausalLM",
