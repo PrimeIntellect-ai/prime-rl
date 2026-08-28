@@ -135,7 +135,7 @@ All metrics print to the console log (and W&B when configured).
 |--------|-------------|
 | `mismatch_kl/{all,env}/{mean,std,max}` | KL between trainer and (old) inference policy over trainable tokens |
 | `entropy/{all,env}/{mean,std,max}` | policy entropy over trainable tokens |
-| `masked_advantage_{positive,negative}/mean` | fraction of DPPO-masked tokens with +/- advantage |
+| `is_masked/mean` | fraction of tokens masked by the IPO trust region |
 | `optim/grad_norm` | spikes may precede divergence |
 
 **Performance** — trainer and orchestrator step independently, so comparing step times shows who's waiting on whom.

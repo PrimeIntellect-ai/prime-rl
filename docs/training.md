@@ -125,7 +125,7 @@ Pulled from the console logs and mirrored to W&B.
 
 - `mismatch_kl/{all,env}/{mean,std,max}` — KL between trainer's current policy and the (older) inference policy that generated the rollouts. A sustained, growing mean is the early-warning sign for off-policy collapse.
 - `entropy/{all,env}/mean` — too low means mode-collapse; too high means the model isn't committing.
-- `masked_advantage_{positive,negative}/mean` — fraction of DPPO-masked tokens, split by sign.
+- `is_masked/mean` — fraction of tokens masked by the IPO trust region.
 - `optim/grad_norm` — spikes precede divergence; check the loss config or lower the LR.
 
 **Performance** (trainer + orchestrator step independently):
