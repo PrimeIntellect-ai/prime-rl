@@ -21,12 +21,12 @@ def _build_prime_layer_state(layer_idx: int = 0) -> dict[str, torch.Tensor]:
         f"{prefix}.mlp.down_proj.weight": torch.randn(6, 8),
         f"{prefix}.mlp.router.gate.weight": torch.randn(4, 6),
         f"{prefix}.mlp.expert_bias": torch.randn(4),
-        f"{prefix}.mlp.experts.w1": torch.randn(2, 3, 6),
-        f"{prefix}.mlp.experts.w2": torch.randn(2, 6, 3),
-        f"{prefix}.mlp.experts.w3": torch.randn(2, 3, 6),
-        f"{prefix}.mlp.shared_expert.w1": torch.randn(1, 3, 6),
-        f"{prefix}.mlp.shared_expert.w2": torch.randn(1, 6, 3),
-        f"{prefix}.mlp.shared_expert.w3": torch.randn(1, 3, 6),
+        f"{prefix}.mlp.experts.gate_proj": torch.randn(2, 3, 6),
+        f"{prefix}.mlp.experts.up_proj": torch.randn(2, 3, 6),
+        f"{prefix}.mlp.experts.down_proj": torch.randn(2, 6, 3),
+        f"{prefix}.mlp.shared_expert.gate_proj.weight": torch.randn(3, 6),
+        f"{prefix}.mlp.shared_expert.up_proj.weight": torch.randn(3, 6),
+        f"{prefix}.mlp.shared_expert.down_proj.weight": torch.randn(6, 3),
     }
 
 

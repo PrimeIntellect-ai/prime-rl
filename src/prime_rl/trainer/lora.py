@@ -18,7 +18,7 @@ from prime_rl.trainer.models.layers.lora.multi_moe import (
     MultiLoRAGroupedExperts,
     MultiLoRANonGatedGroupedExperts,
 )
-from prime_rl.trainer.models.layers.moe import GptOssGroupedExperts, GroupedExperts, NonGatedGroupedExperts
+from prime_rl.trainer.models.layers.moe import GroupedExperts
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -156,8 +156,8 @@ def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[s
     target_modules = []
 
     for name, module in model.named_modules():
-        # Check if module is Linear or one of the supported expert classes
-        if not isinstance(module, (nn.Linear, GroupedExperts, NonGatedGroupedExperts, GptOssGroupedExperts)):
+        # Check if module is Linear or a supported expert class
+        if not isinstance(module, (nn.Linear, GroupedExperts)):
             continue
 
         for pattern in target_patterns:
@@ -224,6 +224,9 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     lora_state = setup_lora_state(config, torch.device("cuda", get_world().local_rank))
     if isinstance(model, PreTrainedModelPrimeRL):
         lora_state.register_adapter_state_dict_converter(type(model).convert_adapter_to_hf)
+    uses_gpt_oss_moe_adapter = (
+        isinstance(model, PreTrainedModelPrimeRL) and getattr(model.config, "model_type", None) == "gpt_oss"
+    )
 
     from torch.distributed.fsdp import FSDPModule
 
@@ -256,25 +259,13 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             )
         # Handle GroupedExperts (MoE)
         elif isinstance(base_module, GroupedExperts):
-            lora_module = MultiLoRAGroupedExperts(
-                base_layer=base_module,
-                rank=config.rank,
-                n_adapters=1,
-                alpha=config.alpha,
-                dropout=config.dropout,
-            )
-        # Handle NonGatedGroupedExperts (relu2 experts used by NemotronH's LatentMoE)
-        elif isinstance(base_module, NonGatedGroupedExperts):
-            lora_module = MultiLoRANonGatedGroupedExperts(
-                base_layer=base_module,
-                rank=config.rank,
-                n_adapters=1,
-                alpha=config.alpha,
-                dropout=config.dropout,
-            )
-        # Handle GptOssGroupedExperts (gpt-oss fused gate_up + biases)
-        elif isinstance(base_module, GptOssGroupedExperts):
-            lora_module = MultiLoRAGptOssGroupedExperts(
+            if uses_gpt_oss_moe_adapter:
+                wrapper = MultiLoRAGptOssGroupedExperts
+            elif base_module.gate_proj is not None:
+                wrapper = MultiLoRAGroupedExperts
+            else:
+                wrapper = MultiLoRANonGatedGroupedExperts
+            lora_module = wrapper(
                 base_layer=base_module,
                 rank=config.rank,
                 n_adapters=1,
@@ -284,7 +275,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         else:
             logger.warning(
                 f"Module {module_name} is type {type(base_module).__name__}, "
-                f"expected nn.Linear, GroupedExperts, NonGatedGroupedExperts, or GptOssGroupedExperts. Skipping."
+                "expected nn.Linear or GroupedExperts. Skipping."
             )
             continue
 

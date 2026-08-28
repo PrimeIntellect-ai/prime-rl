@@ -18,8 +18,8 @@ from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
 from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
-from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
+from prime_rl.trainer.models.layers.mlp import FeedForward
+from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -171,32 +171,34 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
         if self.mlp_layer_type == "sparse":
             moe_args = MoEArgs(
                 num_experts=config.num_experts,
-                num_shared_experts=0,
+                expert_type="gated",
+                activation=config.hidden_act,
                 score_func="sigmoid",
                 route_norm=True,
                 route_scale=config.moe_routed_scaling_factor,
                 score_before_experts=False,
                 top_k=config.num_experts_per_tok,
-                use_grouped_mm=config.use_grouped_mm,
                 load_balance_coeff=config.load_balance_coeff,
-                fp8=getattr(config, "fp8", False),
             )
             if config.moe_router_logit_softcapping:
                 raise NotImplementedError("Laguna router logit softcapping is not supported by PrimeRL MoE yet.")
-            self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
-            self.shared_expert = FeedForward(
+            self.mlp = MoE.from_args(
+                moe_args,
                 dim=config.hidden_size,
-                hidden_dim=config.shared_expert_intermediate_size,
+                hidden_dim=config.moe_intermediate_size,
+                shared_expert=FeedForward(
+                    dim=config.hidden_size,
+                    hidden_dim=config.shared_expert_intermediate_size,
+                    expert_type=moe_args.expert_type,
+                    activation=moe_args.activation,
+                ),
             )
         else:
-            mlp_config = MLPConfig(
-                hidden_size=config.hidden_size,
-                intermediate_size=config.intermediate_size,
-                gate_act=config.hidden_act,
-                bias=False,
+            self.mlp = FeedForward(
+                dim=config.hidden_size,
+                hidden_dim=config.intermediate_size,
+                activation=config.hidden_act,
             )
-            self.mlp = MLP(mlp_config)
-            self.shared_expert = None
 
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
@@ -224,10 +226,6 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
         residual = hidden_states
         mlp_input = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(mlp_input, routed_experts=routed_experts)
-        if self.shared_expert is not None:
-            bs, slen, dim = hidden_states.shape
-            shared_output = self.shared_expert(mlp_input.view(-1, dim)).view(bs, slen, dim)
-            hidden_states = hidden_states + shared_output
         hidden_states = residual + hidden_states
         return hidden_states
 
@@ -257,7 +255,7 @@ class LagunaPreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any("mlp.experts.w1" in name for name in state_dict)
+        return any("mlp.experts.gate_proj" in name for name in state_dict)
 
     @classmethod
     def conversion_chain(cls, config):

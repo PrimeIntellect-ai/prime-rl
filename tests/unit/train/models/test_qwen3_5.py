@@ -75,7 +75,6 @@ def _tiny_moe_config(attn_impl: str = "flash_attention_2") -> Qwen3_5MoeConfig:
         shared_expert_intermediate_size=128,
         num_experts=4,
         num_experts_per_tok=2,
-        use_grouped_mm=False,
     )
     config._attn_implementation = attn_impl
     return config

@@ -1,27 +1,58 @@
-"""State-dict conversion for GPT-OSS.
-
-The custom prime-rl GPT-OSS implementation mirrors HuggingFace's parameter naming
-exactly (gate_up_proj/gate_up_proj_bias/down_proj/down_proj_bias plus router.weight
-and router.bias as nn.Parameters). So loading the unsloth BF16 checkpoint requires
-no key conversion - HF and prime formats are identical for this model.
-"""
+"""HF <-> PrimeRL weight conversion for GPT-OSS."""
 
 from torch import Tensor
 
-from prime_rl.trainer.models.conversion_ops import ConvOp
+from prime_rl.trainer.models.conversion_ops import ConvOp, Rename
+
+
+class GptOssExperts(ConvOp):
+    def __init__(self, prefix: str) -> None:
+        self.prefix = prefix
+
+    def hf_to_prime(self, state_dict: dict[str, Tensor]) -> None:
+        gate_up_name = f"{self.prefix}.gate_up_proj"
+        gate_up = state_dict.pop(gate_up_name)
+        gate_up_bias = state_dict.pop(f"{self.prefix}.gate_up_proj_bias")
+        state_dict[f"{self.prefix}.gate_proj"] = gate_up[..., ::2].transpose(-2, -1)
+        state_dict[f"{self.prefix}.up_proj"] = gate_up[..., 1::2].transpose(-2, -1)
+        state_dict[f"{self.prefix}.gate_proj_bias"] = gate_up_bias[..., ::2]
+        state_dict[f"{self.prefix}.up_proj_bias"] = gate_up_bias[..., 1::2]
+        state_dict[f"{self.prefix}.down_proj"] = state_dict[f"{self.prefix}.down_proj"].transpose(-2, -1)
+
+    def prime_to_hf(self, state_dict: dict[str, Tensor]) -> None:
+        gate_name = f"{self.prefix}.gate_proj"
+        gate = state_dict.pop(gate_name).transpose(-2, -1)
+        up = state_dict.pop(f"{self.prefix}.up_proj").transpose(-2, -1)
+        gate_bias = state_dict.pop(f"{self.prefix}.gate_proj_bias")
+        up_bias = state_dict.pop(f"{self.prefix}.up_proj_bias")
+        state_dict[f"{self.prefix}.gate_up_proj"] = gate.new_empty((*gate.shape[:-1], 2 * gate.shape[-1]))
+        state_dict[f"{self.prefix}.gate_up_proj"][..., ::2] = gate
+        state_dict[f"{self.prefix}.gate_up_proj"][..., 1::2] = up
+        state_dict[f"{self.prefix}.gate_up_proj_bias"] = gate_bias.new_empty(
+            (*gate_bias.shape[:-1], 2 * gate_bias.shape[-1])
+        )
+        state_dict[f"{self.prefix}.gate_up_proj_bias"][..., ::2] = gate_bias
+        state_dict[f"{self.prefix}.gate_up_proj_bias"][..., 1::2] = up_bias
+        state_dict[f"{self.prefix}.down_proj"] = state_dict[f"{self.prefix}.down_proj"].transpose(-2, -1)
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
-    return any("mlp.experts.gate_up_proj" in name for name in state_dict.keys())
+    return any("mlp.experts.gate_up_proj" in name for name in state_dict)
 
 
 def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
-    # Prime format equals HF format for GPT-OSS, so we never claim to be a separate
-    # prime format - this disables the auto-conversion path in load_dcp_from_hf and
-    # lets DCP load HF safetensors directly.
-    return False
+    return any("mlp.experts.gate_proj" in name for name in state_dict)
 
 
 def conversion_chain(config) -> list[ConvOp]:
-    # HF and prime layouts coincide for GPT-OSS, so the conversion is the identity.
-    return []
+    operations: list[ConvOp] = []
+    for layer_idx in range(config.num_hidden_layers):
+        prefix = f"model.layers.{layer_idx}.mlp"
+        operations.extend(
+            [
+                Rename(f"{prefix}.router.weight", f"{prefix}.router.gate.weight"),
+                Rename(f"{prefix}.router.bias", f"{prefix}.router.gate.bias"),
+                GptOssExperts(f"{prefix}.experts"),
+            ]
+        )
+    return operations

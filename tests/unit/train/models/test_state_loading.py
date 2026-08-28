@@ -8,8 +8,6 @@ from prime_rl.trainer.model import load_dcp_from_hf
 from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
 from prime_rl.trainer.models.laguna.modeling_laguna import LagunaForCausalLM
 
-pytestmark = [pytest.mark.gpu]
-
 
 @pytest.fixture
 def model() -> LagunaForCausalLM:
@@ -32,6 +30,7 @@ def model() -> LagunaForCausalLM:
         return LagunaForCausalLM(config)
 
 
+@pytest.mark.gpu
 def test_load_dcp_from_hf_keeps_checkpoint_expert_bias(model, tmp_path, monkeypatch):
     """Checkpoint values for the persistent `expert_bias` buffer must survive loading."""
     expected = torch.tensor([0.1, 0.2, 0.3, 0.4])

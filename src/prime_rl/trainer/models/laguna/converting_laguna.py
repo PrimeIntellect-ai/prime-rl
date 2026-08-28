@@ -9,10 +9,10 @@ Laguna specifics:
   canonical ``mlp.experts.e_score_correction_bias``.
 * Routed experts: HF per-expert ``mlp.experts.{e}.{gate,down,up}_proj.weight``
   *or* the fused ``mlp.experts.gate_up_proj`` / ``down_proj`` layout stack into
-  prime ``mlp.experts.{w1,w2,w3}`` (w1=gate, w2=down, w3=up).
+  prime ``mlp.experts.{gate,down,up}_proj``.
 * Shared expert: the HF input is *either* ``mlp.shared_expert.*`` *or*
   ``mlp.shared_experts.*`` (singular wins); it maps to prime
-  ``shared_expert.{w1,w2,w3}.weight`` (no ``mlp.`` prefix, keeps ``.weight``).
+  ``mlp.shared_expert.{gate,down,up}_proj.weight``.
   Backward always emits the singular ``mlp.shared_expert.*``.
 * Prime-only ``mlp.tokens_per_expert`` is dropped on the way back to HF.
 """
@@ -58,7 +58,7 @@ def conversion_chain(config) -> list[ConvOp]:
         # Shared expert. Base Renames handle the singular input + singular
         # backward; the conditional adds the forward-only plural alternate.
         for wn, hf_proj in GATE_DOWN_UP:
-            ops.append(Rename(f"{p}.mlp.shared_expert.{hf_proj}.weight", f"{p}.shared_expert.{wn}.weight"))
+            ops.append(Rename(f"{p}.mlp.shared_expert.{hf_proj}.weight", f"{p}.mlp.shared_expert.{wn}.weight"))
         ops.append(
             Conditional(
                 predicate=lambda sd, p=p: (
@@ -66,7 +66,7 @@ def conversion_chain(config) -> list[ConvOp]:
                     and f"{p}.mlp.shared_expert.gate_proj.weight" not in sd
                 ),
                 then=[
-                    Rename(f"{p}.mlp.shared_experts.{hf_proj}.weight", f"{p}.shared_expert.{wn}.weight")
+                    Rename(f"{p}.mlp.shared_experts.{hf_proj}.weight", f"{p}.mlp.shared_expert.{wn}.weight")
                     for wn, hf_proj in GATE_DOWN_UP
                 ],
             )
