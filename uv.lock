@@ -138,7 +138,7 @@ members = [
 ]
 overrides = [
     { name = "nvidia-cudnn-cu12", specifier = ">=9.15" },
-    { name = "nvidia-cutlass-dsl", specifier = ">=4.4.1" },
+    { name = "nvidia-cutlass-dsl", specifier = "==4.6.0" },
     { name = "openenv-core" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.13.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.13.0", index = "https://download.pytorch.org/whl/cu129" },
@@ -1865,8 +1865,8 @@ wheels = [
 
 [[package]]
 name = "flash-attn-4"
-version = "4.0.0b11.dev11+g96bd151"
-source = { git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151#96bd151b00add1dc5744115cfc350c0a809c3fa2" }
+version = "4.0.0b20.dev2+g82d6441"
+source = { git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=82d6441#82d6441eec5d4dfec120153db2c0145ae855a083" }
 dependencies = [
     { name = "apache-tvm-ffi" },
     { name = "einops" },
@@ -4114,6 +4114,15 @@ wheels = [
 ]
 
 [[package]]
+name = "nvidia-cuda-nvdisasm"
+version = "13.3.73"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/92/be/e9de501cb71b10f7654381a485fa4ebf470ea25c3dce018cccaecf8a8f9a/nvidia_cuda_nvdisasm-13.3.73-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:dd4751884f9016b9b6dbf007abdeb5681d0a2edc731dd3d2fda9d6d878e88f73", size = 4744517, upload-time = "2026-06-29T16:48:33.527Z" },
+    { url = "https://files.pythonhosted.org/packages/86/3e/88460ebd737e559e8e9843db7a63f8ced9ec7be1882344438819dd13aebc/nvidia_cuda_nvdisasm-13.3.73-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:fa17084b07c0dca68a42892f771b4b1b40fbe9b91660209623e61cea611cae8c", size = 4782824, upload-time = "2026-06-29T16:49:05.109Z" },
+]
+
+[[package]]
 name = "nvidia-cuda-nvrtc-cu12"
 version = "12.9.86"
 source = { registry = "https://pypi.org/simple" }
@@ -4219,27 +4228,63 @@ wheels = [
 
 [[package]]
 name = "nvidia-cutlass-dsl"
-version = "4.5.2"
+version = "4.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "nvidia-cutlass-dsl-libs-base" },
+    { name = "nvidia-cutlass-dsl-libs-cu12" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f0/15/575d7df4fe2f3406f1cfc68be72aeff2834f8a696daf1cd5bee8017e4507/nvidia_cutlass_dsl-4.5.2-py3-none-any.whl", hash = "sha256:68ed1b63ca74aae87955012da9dfd7fdaae471329d0028b229b841c7192ccf52", size = 10179, upload-time = "2026-05-25T03:38:56.364Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/1c/fbddb760a0228df87a9e9d1e60b76ecbe6e18035f5853efe0b4563651b2b/nvidia_cutlass_dsl-4.6.0-py3-none-any.whl", hash = "sha256:e3e0e4d8df20d82c8401fa013f4d82021f41daa5fca3d24b55d4a677f2308ca8", size = 10459, upload-time = "2026-07-02T03:23:18.43Z" },
 ]
 
 [[package]]
 name = "nvidia-cutlass-dsl-libs-base"
-version = "4.5.2"
+version = "4.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cuda-python" },
     { name = "numpy" },
+    { name = "nvidia-cuda-nvdisasm" },
+    { name = "nvidia-cutlass-dsl-libs-core" },
+    { name = "protobuf" },
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b1/ef/e827e3c67d72adbf4e8f680bdf03b1b67723d9e1ae7c3d0a1751f39f69ce/nvidia_cutlass_dsl_libs_base-4.5.2-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:d2a3c412287e356fbe48fe9f845d6d33cd35dea5e20d7e4f628c20957967cacd", size = 75643473, upload-time = "2026-05-25T03:49:15.857Z" },
-    { url = "https://files.pythonhosted.org/packages/97/68/c1247ab848f26c4ab56e562eea0e3f31fc14c9aaf0d883afaa92d8f05592/nvidia_cutlass_dsl_libs_base-4.5.2-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:15ef6a59193667e663934ef4873f8ccad37455e9b7c3c419c3072113b8aedf61", size = 74513226, upload-time = "2026-05-25T03:51:32.496Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/f8/22653971fcab2a7ed581934f7a2708c9873fa6a8e8eb285422c8eed4ae01/nvidia_cutlass_dsl_libs_base-4.6.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:6412572899b1c6d182e516b20f2b0a21874ec88d25234e6040fb2a4381de7a1a", size = 3321728, upload-time = "2026-07-02T03:25:28.888Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/38/e91f66739d2f8711d1a2457e68cd86d6fbae307ce66ce270a405d4dc6dc7/nvidia_cutlass_dsl_libs_base-4.6.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:e41cd5db4de4b535c30ae9ca4412b957800a62560019ae91fa51cf3ea89bf254", size = 2824817, upload-time = "2026-07-02T03:25:53.814Z" },
+]
+
+[[package]]
+name = "nvidia-cutlass-dsl-libs-core"
+version = "4.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cuda-python" },
+    { name = "numpy" },
+    { name = "nvidia-cuda-nvdisasm" },
+    { name = "protobuf" },
+    { name = "typing-extensions" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/84/94/e4e2404ac06a477096ccf8127bf5d391510d36cafb4be86c8c15b4873b0d/nvidia_cutlass_dsl_libs_core-4.6.0-py3-none-any.whl", hash = "sha256:f9ea6d313a03cb11fa177da32e8747ad0cac51358850810f36aa6c4736192c27", size = 767713, upload-time = "2026-07-02T03:23:39.876Z" },
+]
+
+[[package]]
+name = "nvidia-cutlass-dsl-libs-cu12"
+version = "4.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cuda-python" },
+    { name = "numpy" },
+    { name = "nvidia-cuda-nvdisasm" },
+    { name = "nvidia-cutlass-dsl-libs-base" },
+    { name = "protobuf" },
+    { name = "typing-extensions" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/11/38/62def848b65bf067f434df7680c7e8c48519b25bbd3f03f9cdff3606353b/nvidia_cutlass_dsl_libs_cu12-4.6.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:87f132ccc30946949868989f3b1b1adaa714ccdf5c636e5379b54909cc29576c", size = 86992102, upload-time = "2026-07-02T03:29:41.47Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/64/f3f8962a9b91dd9368b90e23b2ac81614d6e9df72b55365ec0c216c3f8f9/nvidia_cutlass_dsl_libs_cu12-4.6.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:abc341ff0fce40ed0bdadf160f6afac07fb9d01768d4daebd1628c330b3e4210", size = 88436835, upload-time = "2026-07-02T03:30:13.676Z" },
 ]
 
 [[package]]
@@ -5142,7 +5187,7 @@ requires-dist = [
     { name = "flash-attn", marker = "platform_machine == 'aarch64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.48/flash_attn-2.8.3+cu126torch2.13-cp312-cp312-linux_aarch64.whl" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.47/flash_attn-2.8.3+cu126torch2.13-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "sys_platform == 'linux' and extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu129" },
-    { name = "flash-attn-4", marker = "sys_platform == 'linux' and extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151" },
+    { name = "flash-attn-4", marker = "sys_platform == 'linux' and extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=82d6441" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/fla-org/flash-linear-attention" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "kernels", marker = "sys_platform == 'linux' and extra == 'gpt-oss'" },

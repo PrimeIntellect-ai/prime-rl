@@ -140,7 +140,11 @@ environments = [
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
-    "nvidia-cutlass-dsl>=4.4.1",
+    # Exact, not a floor: vllm 0.27.1 hard-requires quack-kernels==0.6.1, which hard-requires
+    # nvidia-cutlass-dsl==4.6.0 — non-negotiable from that side. flash-attn-4's cute utils
+    # needed a newer rev to match (see the flash-attn-4 pin below); bump this only alongside
+    # both of those pins, together.
+    "nvidia-cutlass-dsl==4.6.0",
     "transformers==5.6.2",
     "torch>=2.13.0",
     "openenv-core",
@@ -231,7 +235,7 @@ torchao = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
-flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
+flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "82d6441" }
 vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
