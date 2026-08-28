@@ -322,6 +322,24 @@ config values. None of these are visible from the test suite; all of them are on
   the same way the real checkpoint does — no vLLM-side runtime patch needed anymore
   (`monkey_patch_deepseek_v4_compress_ratios` in `inference/patches.py` has been removed).
   Confirmed against a real vLLM boot on both the real checkpoint and a freshly-rebuilt mini one.
+- **The trainer's own `DeepseekV4Config` never read the legacy schema either, and this one
+  blocked training, not just inference.** Separately from the vLLM-side fix above, the
+  trainer's `DeepseekV4Config` (`trainer/models/deepseek_v4/configuration_deepseek_v4.py`) is
+  registered via `AutoConfig.register("deepseek_v4", ...)` and used for every real-checkpoint
+  trainer load, but its `__init__` never translated `compress_ratios`/`num_hash_layers` into
+  `layer_types`/`mlp_layer_types` (unlike upstream `transformers`' own `DeepseekV4Config`,
+  which does). Loading the real checkpoint built the wrong per-layer attention schedule
+  outright: layers 0/1/41/42 should be `sliding_attention` but came out
+  `heavily_compressed_attention`, and the rest of the stack was phase-shifted between
+  `compressed_sparse_attention`/`heavily_compressed_attention`. This blocked any
+  real-checkpoint SFT/RL trainer run, truncated or not. Fixed: `layer_types` now derives from
+  `compress_ratios` via a reverse lookup over `compress_rates` when the modern fields aren't
+  given, generalizing upstream's hardcoded translation to this repo's configurable
+  `compress_rates` dict. Regression test:
+  `test_deepseek_v4_config_translates_legacy_compress_ratios` in
+  `tests/unit/train/models/test_deepseek_v4.py`. Verified directly against
+  `deepseek-ai/DeepSeek-V4-Flash-0731`'s real `config.json` that `layer_types` now matches the
+  transformers-native reference exactly.
 
 ## The pinned `deep_gemm` wheel is built against CUDA 13, the rest of the stack is CUDA 12
 
