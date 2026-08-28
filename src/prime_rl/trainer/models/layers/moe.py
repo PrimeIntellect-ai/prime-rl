@@ -169,7 +169,10 @@ class TokenChoiceTopKRouter(nn.Module):
     ):
         super().__init__()
         self.gate = nn.Linear(dim, num_experts, bias=gate_bias)
-        self.register_buffer("selection_bias", torch.zeros(num_experts) if selection_bias else None)
+        self.register_buffer(
+            "selection_bias",
+            torch.zeros(num_experts, dtype=torch.float32) if selection_bias else None,
+        )
         self.num_experts = num_experts
         self.top_k = top_k
         self.score_func = score_func
