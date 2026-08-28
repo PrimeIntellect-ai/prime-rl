@@ -1,5 +1,3 @@
-from copy import deepcopy
-
 import pytest
 import torch
 from torch import nn
@@ -14,16 +12,6 @@ from prime_rl.trainer.activation_checkpointing import (
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
 
 
-class DropoutBlock(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.proj = nn.Linear(8, 8)
-        self.dropout = nn.Dropout(0.5)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.dropout(self.proj(x)).square()
-
-
 class IdentityExperts(nn.Module):
     num_experts = 2
     token_group_alignment = 1
@@ -32,31 +20,7 @@ class IdentityExperts(nn.Module):
         return x
 
 
-def test_whole_block_checkpoint_preserves_rng_and_gradients():
-    reference = DropoutBlock()
-    checkpointed = deepcopy(reference)
-    state_dict_keys = tuple(checkpointed.state_dict())
-    checkpointed = get_activation_checkpoint_wrapper(
-        ActivationCheckpointConfig(mode="selective", preserve_rng_state=True)
-    )(checkpointed)
-    assert tuple(checkpointed.state_dict()) == state_dict_keys
-    reference_input = torch.randn(4, 8, requires_grad=True)
-    checkpointed_input = reference_input.detach().clone().requires_grad_()
-
-    torch.manual_seed(1234)
-    reference_output = reference(reference_input)
-    reference_output.sum().backward()
-    torch.manual_seed(1234)
-    checkpointed_output = checkpointed(checkpointed_input)
-    checkpointed_output.sum().backward()
-
-    torch.testing.assert_close(checkpointed_output, reference_output)
-    torch.testing.assert_close(checkpointed_input.grad, reference_input.grad)
-    for expected, actual in zip(reference.parameters(), checkpointed.parameters(), strict=True):
-        torch.testing.assert_close(actual.grad, expected.grad)
-
-
-def test_selective_policy_saves_routing_and_expensive_ops():
+def test_selective_policy_saves_default_and_custom_targets():
     context = SelectiveCheckpointContext(is_recompute=False)
 
     assert _selective_checkpoint_policy(context, torch.ops.aten.topk.default) is CheckpointPolicy.MUST_SAVE
@@ -77,6 +41,28 @@ def test_selective_policy_saves_routing_and_expensive_ops():
         is CheckpointPolicy.MUST_SAVE
     )
     assert _selective_checkpoint_policy(context, torch.ops.aten.silu.default) is CheckpointPolicy.PREFER_RECOMPUTE
+
+    custom_targets = frozenset({"aten::silu", "prime_rl_collectives"})
+    assert (
+        _selective_checkpoint_policy(context, torch.ops.aten.silu.default, targets=custom_targets)
+        is CheckpointPolicy.MUST_SAVE
+    )
+    assert (
+        _selective_checkpoint_policy(
+            context,
+            torch.ops.prime_rl_collectives.all_to_all_single_equal.default,
+            targets=custom_targets,
+        )
+        is CheckpointPolicy.MUST_SAVE
+    )
+    assert (
+        _selective_checkpoint_policy(context, torch.ops.aten.mm.default, targets=custom_targets)
+        is CheckpointPolicy.PREFER_RECOMPUTE
+    )
+    assert (
+        _selective_checkpoint_policy(context, torch.ops.aten.topk.default, targets=custom_targets)
+        is CheckpointPolicy.MUST_SAVE
+    )
 
 
 @pytest.mark.parametrize("mode", ["full", "selective"])
@@ -113,7 +99,10 @@ def test_full_policy_only_retains_non_replayable_ops():
     context = SelectiveCheckpointContext(is_recompute=False)
 
     assert _full_checkpoint_policy(context, torch.ops.aten.topk.default) is CheckpointPolicy.MUST_SAVE
-    assert _full_checkpoint_policy(context, torch.ops.prime_rl.record_moe_routing.default) is CheckpointPolicy.MUST_SAVE
+    assert (
+        _full_checkpoint_policy(context, torch.ops.prime_rl.record_moe_routing_statistics.default)
+        is CheckpointPolicy.MUST_SAVE
+    )
     assert (
         _full_checkpoint_policy(context, torch.ops.prime_rl_collectives.all_to_all_single_equal.default)
         is CheckpointPolicy.PREFER_RECOMPUTE

@@ -30,13 +30,13 @@ class GCConfig(BaseConfig):
 
 class ActivationCheckpointConfig(BaseConfig):
     mode: Literal["full", "selective"] = "full"
-    """Both modes checkpoint whole transformer blocks. ``selective`` additionally retains expensive operations selected by PrimeRL's fixed operator policy."""
+    """Both modes checkpoint whole transformer blocks. ``selective`` additionally retains selected operations."""
 
     freq: int = Field(1, ge=1)
     """Apply activation checkpointing to every N layers."""
 
-    preserve_rng_state: bool = True
-    """Preserve random-number-generator state across recomputation."""
+    targets: list[str] | None = None
+    """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
 
 
 class ActivationOffloadingConfig(BaseConfig):
