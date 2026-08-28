@@ -5,13 +5,6 @@ import re
 import torch
 from torch import nn
 
-try:
-    import deep_gemm
-except ImportError:
-    deep_gemm = None  # CPU-only environments don't ship deep_gemm; FP8 paths
-    # are GPU-only at runtime, so leaving the symbol None is safe — only the
-    # autograd Function bodies below actually call into it.
-
 from prime_rl.trainer.models.kernels.fp8_utils import (
     per_block_cast_to_fp8_tp_triton,
     per_block_cast_to_fp8_triton,
@@ -25,6 +18,8 @@ from prime_rl.utils.logger import get_logger
 class _FP8BlockwiseMM(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, block_size, out_dtype=torch.bfloat16):
+        import deep_gemm
+
         x_shape = x.shape
         x_2d = x.reshape(-1, x_shape[-1]).contiguous()
         use_ue8m0 = ue8m0_for_device(x.device)
@@ -41,6 +36,8 @@ class _FP8BlockwiseMM(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
+        import deep_gemm
+
         x_2d, weight = ctx.saved_tensors
         block_size = ctx.block_size
         grad_output_2d = grad_output.reshape(-1, grad_output.shape[-1]).contiguous()
