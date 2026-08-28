@@ -4,9 +4,8 @@ import time
 from pathlib import Path
 from typing import cast
 
-# Disable transformers hub kernel interception by default. The `kernels` package, when installed,
-# causes transformers to auto-replace modules (e.g. mamba-ssm) with hub kernel versions that may
-# have incompatible CUDA requirements. We only enable it explicitly for models that need it (GPT-OSS).
+# Disable transformers hub kernel interception. Installed hub kernels can otherwise replace
+# modules with implementations that have incompatible CUDA requirements.
 os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
 import torch
@@ -561,20 +560,6 @@ def get_model(
                 "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
 
-    # GPT-OSS only supports FlashAttention via kernels-community/vllm-flash-attn3, which requires Hopper (SM 90).
-    HOPPER_MAJOR = 9
-    if getattr(model_config, "model_type", "") == "gpt_oss":
-        major, minor = torch.cuda.get_device_capability()
-        if major != HOPPER_MAJOR:
-            raise ValueError(
-                f"GPT-OSS requires Hopper (SM 90) for flash attention, detected SM {major}{minor}. "
-                f"GPT-OSS is not supported on non-Hopper GPUs."
-            )
-        # Enable hub kernels for GPT-OSS (disabled by default to avoid interfering with other models).
-        import transformers.integrations.hub_kernels as _hub_kernels
-
-        _hub_kernels._kernels_enabled = True
-
     # Qwen3.6 and Qwen3.8 reuse the Qwen3.5 architecture, so match on model_type, not repo name.
     if getattr(model_config, "model_type", "").startswith("qwen3_5"):
         _patch_qwen3_5_text_position_ids()
@@ -667,6 +652,11 @@ def get_model(
         logger.info(f"Auto-selected implementation: {impl_to_use}")
     else:
         impl_to_use = config.impl
+
+    if impl_to_use != "custom" and getattr(model_config, "requires_custom_impl", False):
+        logger.warning(
+            f"{model_config.model_type} should use model.impl='custom'; the HuggingFace implementation is unsupported"
+        )
 
     if config.attn in ("flash_attention_3", "flash_attention_4") and impl_to_use == "hf":
         raise ValueError(
@@ -1032,11 +1022,6 @@ def can_reinit_empty_buffers(model: nn.Module):
     if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":
         return True
 
-    # GPT-OSS (has original_inv_freq alongside inv_freq from dynamic rope scaling)
-    gpt_oss_buffers = {"model.rotary_emb.inv_freq", "model.rotary_emb.original_inv_freq"}
-    if set(buffer_names) == gpt_oss_buffers:
-        return True
-
     # Gemma3 model (has embed_scale and local rotary emb)
     gemma3_buffers = {"model.embed_tokens.embed_scale", "model.rotary_emb.inv_freq", "model.rotary_emb_local.inv_freq"}
     if set(buffer_names) == gemma3_buffers:
@@ -1051,21 +1036,9 @@ def fix_model_post_empty(model: nn.Module):
     # HF standard transformer model
     if "model.rotary_emb.inv_freq" in buffer_names:
         rotary_emb = model.model.rotary_emb
-        if hasattr(rotary_emb, "rope_init_fn"):
-            rope_init_fn = rotary_emb.rope_init_fn
-        else:
-            # GPT-OSS stores rope_init_fn only as a local in __init__; re-derive it
-            from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
-
-            rope_init_fn = (
-                ROPE_INIT_FUNCTIONS[rotary_emb.rope_type]
-                if rotary_emb.rope_type != "default"
-                else rotary_emb.compute_default_rope_parameters
-            )
+        rope_init_fn = rotary_emb.rope_init_fn
         inv_freq, rotary_emb.attention_scaling = rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
-        if "model.rotary_emb.original_inv_freq" in buffer_names:
-            rotary_emb.original_inv_freq.copy_(inv_freq)
     # Gemma3 local rotary emb
     if "model.rotary_emb_local.inv_freq" in buffer_names:
         rotary_emb_local = model.model.rotary_emb_local
@@ -1184,19 +1157,21 @@ def _validate_flash_attn_4_installed() -> None:
 def resolve_auto_attn(config: ModelConfig) -> None:
     """Resolve ``attn='auto'`` to a concrete flash attention implementation based on GPU architecture.
 
-    FA4 on datacenter Blackwell (SM100), FA3 on Hopper (SM90), FA2 otherwise.
-    Workstation Blackwell GPUs (e.g. RTX PRO 6000, SM120) lack FA4 kernels and
-    can't run the Hopper-only FA3 kernels, so they fall back to FA2.
+    A model can require a specific implementation. Otherwise, use FA4 on datacenter
+    Blackwell (SM100), FA3 on Hopper (SM90), and FA2 on other architectures.
     """
     if config.attn != "auto":
         return
+    model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    resolved = getattr(model_config, "required_attn_implementation", None)
     major, minor = torch.cuda.get_device_capability()
-    if (major, minor) == (10, 0):
-        resolved = "flash_attention_4"
-    elif major == 9:
-        resolved = "flash_attention_3"
-    else:
-        resolved = "flash_attention_2"
+    if resolved is None:
+        if (major, minor) == (10, 0):
+            resolved = "flash_attention_4"
+        elif major == 9:
+            resolved = "flash_attention_3"
+        else:
+            resolved = "flash_attention_2"
     logger = get_logger()
     logger.info(f"Auto-resolved attn='auto' to '{resolved}' (SM{major}{minor})")
     config.attn = resolved
