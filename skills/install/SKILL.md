@@ -59,10 +59,10 @@ See the `kernels` skill.
 ### NemotronH (Mamba SSD kernels)
 
 ```bash
-CUDA_HOME=/usr/local/cuda uv pip install mamba-ssm
+CUDA_HOME=/usr/local/cuda uv sync --all-extras --group mamba-ssm
 ```
 
-Requires `nvcc`. Without `mamba-ssm`, NemotronH falls back to HF's pure-PyTorch SSD path, which computes softplus in bf16 and yields ~0.4 KL divergence vs vLLM. Do **not** install `causal-conv1d` unless your GPU arch matches the prebuilt kernels — the code falls back to `nn.Conv1d` when it's absent.
+Requires `nvcc`. The custom Nemotron-H implementation uses `mamba-ssm` directly and fails at model construction when the package is unavailable. Its packed convolution comes from the `flash-linear-attention` dependency included by the `gpu` extra; `causal-conv1d` is not required.
 
 ### Trainer DeepEP backend
 

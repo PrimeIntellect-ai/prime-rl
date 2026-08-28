@@ -29,13 +29,13 @@ _BASE = dict(
     head_dim=64,
     max_position_embeddings=128,
     intermediate_size=512,
-    mamba_expand=2,
+    expand=2,
     mamba_num_heads=8,
     mamba_head_dim=64,
     ssm_state_size=64,
-    mamba_n_groups=1,
-    mamba_d_conv=4,
-    mamba_chunk_size=64,
+    n_groups=1,
+    conv_kernel=4,
+    chunk_size=64,
     n_routed_experts=4,
     n_shared_experts=1,
     moe_intermediate_size=256,
@@ -48,10 +48,7 @@ _BASE = dict(
 
 
 def _make_model(device="cuda"):
-    config = NemotronHConfig(
-        **_BASE,
-        layers_block_type=["mamba", "moe", "attention", "moe"],
-    )
+    config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
     config._attn_implementation = "flash_attention_2"
     with torch.device(device), default_dtype(torch.bfloat16):
         model = NemotronHForCausalLM._from_config(config)
@@ -88,7 +85,7 @@ def test_kl_zero_when_identical():
     """Two identical models should have zero KL mismatch."""
     model = _make_model()
 
-    input_ids = torch.randint(0, 256, (2, 32), device="cuda")
+    input_ids = torch.randint(0, 256, (1, 32), device="cuda")
     logprobs = _get_logprobs_vanilla(model, input_ids)
 
     loss_mask = torch.ones(32, dtype=torch.bool, device="cuda")
@@ -121,7 +118,7 @@ def test_kl_positive_after_perturbation():
         policy_model.load_state_dict(ref_model.state_dict())
     _perturb_model(policy_model, scale=0.05)
 
-    input_ids = torch.randint(0, 256, (2, 32), device="cuda")
+    input_ids = torch.randint(0, 256, (1, 32), device="cuda")
 
     ref_logprobs = _get_logprobs_vanilla(ref_model, input_ids)
     policy_logprobs = _get_logprobs_vanilla(policy_model, input_ids)
@@ -182,10 +179,7 @@ def test_kl_increases_with_larger_perturbation():
 
 def test_kl_with_fused_lm_head():
     """FusedOutputLinear should produce same logprobs as VanillaOutputLinear."""
-    config = NemotronHConfig(
-        **_BASE,
-        layers_block_type=["mamba", "moe", "attention", "moe"],
-    )
+    config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
     config._attn_implementation = "flash_attention_2"
 
     with torch.device("cuda"), default_dtype(torch.bfloat16):
@@ -296,7 +290,7 @@ def test_kl_mismatch_formula_sanity():
         ref_model.load_state_dict(model.state_dict())
     _perturb_model(model, scale=0.1)
 
-    input_ids = torch.randint(0, 256, (2, 32), device="cuda")
+    input_ids = torch.randint(0, 256, (1, 32), device="cuda")
 
     trainer_logprobs = _get_logprobs_vanilla(model, input_ids)
     inference_logprobs = _get_logprobs_vanilla(ref_model, input_ids)

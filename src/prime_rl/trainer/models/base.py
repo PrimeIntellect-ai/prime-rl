@@ -107,8 +107,8 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
 
         Unlike convert_to_hf, this operates on a partial state dict containing only LoRA
         adapter parameters (e.g. `model.layers.N.<submodule>.<proj>.lora_A.weight`). Models
-        whose HF naming differs from PrimeRL naming at the submodule level (e.g. NemotronH's
-        unified `mixer` attribute) should override this to perform the rename.
+        whose HF naming differs from PrimeRL naming at the submodule level should override
+        this to perform the rename.
 
         Implementations may mutate state_dict in-place or return a new dict; callers must
         use the returned value. Default implementation is a no-op.

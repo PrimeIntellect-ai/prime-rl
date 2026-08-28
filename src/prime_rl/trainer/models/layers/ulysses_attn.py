@@ -15,9 +15,8 @@ Ulysses is the simpler alternative to ring attention for context parallelism:
     [S/cp, H,    D]  ◀── all-to-all ──   [S, H/cp, D]
                          (seq ↔ heads)
 
-Key benefit: the attention kernel itself does not need to be CP-aware. The
-all-to-all is purely on Q/K/V tensors, so this works out of the box with
-softmax flash-attn, linear attention, mamba, etc., without rewriting kernels.
+The softmax-attention kernel itself does not need to be CP-aware. Hybrid models
+use the same sequence/head redistribution in their owned recurrent modules.
 
 GQA models with fewer KV heads than cp_size (e.g. NemotronH: 32 query heads, 2
 KV heads) are handled by replicating each KV head cp_size / num_key_value_heads

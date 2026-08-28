@@ -143,7 +143,7 @@ def _patch_qwen3_5_linear_attn_varlen():
 
     HF's forward hardcodes seq_idx=None for causal_conv1d and omits cu_seqlens
     for chunk_gated_delta_rule, so packed RL training sees ~0.23 Mismatch KL vs
-    vLLM (target <0.01). Mirrors the NemotronH mamba fix.
+    vLLM (target <0.01).
     """
     import torch.nn.functional as F
     from transformers.models.qwen3_5.modeling_qwen3_5 import (
@@ -623,15 +623,6 @@ def get_model(
     # The FSDP MixedPrecisionPolicy handles compute dtype separately.
 
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
-
-    # NemotronH: transformers' Mamba2 mixer __init__ calls lazy_load_kernel("mamba-ssm" /
-    # "causal-conv1d") whenever config.use_mamba_kernels is set. That hub-kernel path is gated only
-    # by whether the `kernels` package is importable (NOT by USE_HUB_KERNELS) and resolves from the
-    # HF Hub, which hard-crashes under HF_HUB_OFFLINE=1. prime-rl swaps in its own mamba_ssm Triton
-    # SSD kernels via _patch_mamba2_use_triton_ssd, so the hub kernels are redundant; disable them
-    # to keep model init offline-safe.
-    if getattr(model_config, "model_type", "") == "nemotron_h":
-        model_config.use_mamba_kernels = False
 
     if config.debug.num_layers is not None:
         # VLM configs nest num_hidden_layers under text_config

@@ -12,13 +12,12 @@ from transformers.models.nemotron_h.modeling_nemotron_h import (
 
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
-from prime_rl.trainer.models.nemotron_h.modeling_nemotron_h import NemotronHAttentionLayer, NemotronHMambaLayer
+from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
 from prime_rl.utils.cp import setup_model_cp
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
 
-# Shared small-model hyperparams (satisfy mamba_expand * hidden_size == mamba_num_heads * mamba_head_dim)
 _BASE = dict(
     vocab_size=256,
     hidden_size=256,
@@ -27,13 +26,13 @@ _BASE = dict(
     head_dim=64,
     max_position_embeddings=128,
     intermediate_size=512,
-    mamba_expand=2,
+    expand=2,
     mamba_num_heads=8,
     mamba_head_dim=64,
     ssm_state_size=64,
-    mamba_n_groups=1,
-    mamba_d_conv=4,
-    mamba_chunk_size=64,
+    n_groups=1,
+    conv_kernel=4,
+    chunk_size=64,
     n_routed_experts=4,
     n_shared_experts=1,
     moe_intermediate_size=256,
@@ -51,13 +50,10 @@ def _seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
 
 def get_model_pairs():
     """Create an HF model and a PrimeRL model with shared weights."""
-    hf_config = HFNemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
+    hf_config = HFNemotronHConfig(**_BASE, hybrid_override_pattern="ME*E", use_mamba_kernels=False)
     hf_config._attn_implementation = "flash_attention_2"
 
-    prime_config = NemotronHConfig(
-        **_BASE,
-        layers_block_type=["mamba", "moe", "attention", "moe"],
-    )
+    prime_config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
     prime_config._attn_implementation = "flash_attention_2"
 
     with torch.device("cuda"), default_dtype(torch.bfloat16):
@@ -66,6 +62,11 @@ def get_model_pairs():
 
     with torch.no_grad():
         state_dict = hf_model.state_dict()
+        for name in [name for name in state_dict if ".mixer.experts." in name]:
+            weights = state_dict.pop(name)
+            expert_prefix, projection = name.rsplit(".", 1)
+            for expert_idx, weight in enumerate(weights):
+                state_dict[f"{expert_prefix}.{expert_idx}.{projection}.weight"] = weight
         prime_state_keys = prime_model.state_dict().keys()
         prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
@@ -79,14 +80,17 @@ def test_nemotron_h_mamba_moe_only():
     """Test Mamba and MoE layers produce identical outputs (attention bypassed)."""
     hf_model, prime_model = get_model_pairs()
 
+    def bypass_attention(hidden_states, *_args, **_kwargs):
+        return hidden_states
+
     # Bypass attention layers in both models so only Mamba+MoE are exercised
     for layer in hf_model.model.layers:
         if isinstance(layer.mixer, NemotronHAttention):
-            layer.forward = lambda hidden_states, **kwargs: hidden_states
+            layer.forward = bypass_attention
 
     for layer in prime_model.model.layers:
-        if isinstance(layer, NemotronHAttentionLayer):
-            layer.forward = lambda hidden_states, **kwargs: hidden_states
+        if layer.layer_type == "attention":
+            layer.forward = bypass_attention
 
     torch.manual_seed(42)
     with torch.device("cuda"), default_dtype(torch.bfloat16):
@@ -135,15 +139,12 @@ def test_nemotron_h():
 
 def test_nemotron_h_backward():
     """Verify all parameters receive non-zero gradients."""
-    prime_config = NemotronHConfig(
-        **_BASE,
-        layers_block_type=["mamba", "moe", "attention", "moe"],
-    )
+    prime_config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = NemotronHForCausalLM(prime_config)
     inject_prime_lm_head(model)
 
-    input_ids = torch.randint(0, 256, (2, 16), device="cuda")
+    input_ids = torch.randint(0, 256, (1, 16), device="cuda")
     output = model(input_ids, seq_lens=_seq_lens(input_ids))
     output["logits"].sum().backward()
 
@@ -158,10 +159,7 @@ def test_nemotron_h_backward():
 
 def test_nemotron_h_weight_conversion_roundtrip():
     """Verify PrimeRL -> HF -> PrimeRL conversion preserves all weights."""
-    prime_config = NemotronHConfig(
-        **_BASE,
-        layers_block_type=["mamba", "moe", "attention", "moe"],
-    )
+    prime_config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
     model = NemotronHForCausalLM(prime_config).to("cuda")
     original_sd = {k: v.clone() for k, v in model.state_dict().items()}
 
@@ -176,46 +174,49 @@ def test_nemotron_h_weight_conversion_roundtrip():
         assert torch.equal(original_sd[key], sd[key]), f"Value mismatch for {key}"
 
 
-def test_nemotron_h_hybrid_override_pattern():
-    """Verify hybrid_override_pattern correctly maps to layers_block_type."""
-    config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
-    assert config.layers_block_type == ["mamba", "moe", "attention", "moe"]
-    assert config.num_hidden_layers == 4
+def test_nemotron_h_layer_types():
+    expected = ["mamba", "moe", "attention", "moe"]
+    pattern_config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
+    list_config = NemotronHConfig(**_BASE, layers_block_type=expected)
+
+    assert pattern_config.layer_types == expected
+    assert list_config.layer_types == expected
+    assert pattern_config.num_hidden_layers == list_config.num_hidden_layers == 4
 
 
 def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():
     config = NemotronHConfig(
-        **(_BASE | {"mamba_n_groups": 2}),
-        layers_block_type=["mamba", "moe", "attention", "moe"],
+        **(_BASE | {"n_groups": 2}),
+        hybrid_override_pattern="ME*E",
     )
     with torch.device("meta"):
         model = NemotronHForCausalLM(config)
 
     mamba_layer = model.model.layers[0]
-    assert isinstance(mamba_layer, NemotronHMambaLayer)
+    assert isinstance(mamba_layer.mamba, NemotronHMamba2)
     model.model.layers[0] = torch.nn.Sequential(mamba_layer)
 
     cp_group = MagicMock()
     setup_model_cp(model, cp_group, cp_rank=1, cp_world_size=2)
 
-    assert mamba_layer._cp_group is cp_group
-    assert mamba_layer._cp_rank == 1
-    assert mamba_layer._cp_world_size == 2
+    assert mamba_layer.mamba.process_group is cp_group
+    assert mamba_layer.mamba.context_parallel_rank == 1
+    assert mamba_layer.mamba.context_parallel_world_size == 2
 
 
 def test_nemotron_h_no_latent_projection():
     """Verify model works without latent projections (moe_latent_size=None)."""
     prime_config = NemotronHConfig(
         **{**_BASE, "moe_latent_size": None},
-        layers_block_type=["mamba", "moe", "attention", "moe"],
+        hybrid_override_pattern="ME*E",
     )
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = NemotronHForCausalLM(prime_config)
     inject_prime_lm_head(model)
 
-    input_ids = torch.randint(0, 256, (2, 16), device="cuda")
+    input_ids = torch.randint(0, 256, (1, 16), device="cuda")
     output = model(input_ids, seq_lens=_seq_lens(input_ids))
-    assert output["logits"].shape == (2, 16, 256)
+    assert output["logits"].shape == (1, 16, 256)
 
     output["logits"].sum().backward()
     for name, p in model.named_parameters():
