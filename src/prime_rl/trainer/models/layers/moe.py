@@ -47,10 +47,14 @@ def broadcast_expert_bias(
     num_tokens_per_expert: torch.Tensor,
     target_rows: int,
 ) -> torch.Tensor:
-    bias = torch.repeat_interleave(bias, num_tokens_per_expert.to(torch.int64), dim=0)
-    if bias.shape[0] < target_rows:
-        bias = F.pad(bias, (0, 0, 0, target_rows - bias.shape[0]))
-    return bias
+    repeats = num_tokens_per_expert.to(torch.int64)
+    padding_rows = repeats.new_tensor(target_rows) - repeats.sum()
+    return torch.repeat_interleave(
+        torch.cat((bias, bias.new_zeros((1, bias.shape[1])))),
+        torch.cat((repeats, padding_rows.unsqueeze(0))),
+        dim=0,
+        output_size=target_rows,
+    )
 
 
 class GroupedExperts(nn.Module):

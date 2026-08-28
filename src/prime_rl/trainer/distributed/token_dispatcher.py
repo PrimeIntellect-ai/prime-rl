@@ -1,6 +1,7 @@
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Protocol
+from typing import Generic, Protocol, TypeVar
 
 import torch
 import torch.distributed as dist
@@ -23,6 +24,49 @@ class TokenDispatcher(Protocol):
     ) -> torch.Tensor: ...
 
     def synchronize(self) -> None: ...
+
+
+DispatchState = TypeVar("DispatchState")
+
+
+class TokenDispatcherBase(ABC, Generic[DispatchState]):
+    def __init__(self, num_experts: int, token_group_alignment: int) -> None:
+        self.num_experts = num_experts
+        self.token_group_alignment = token_group_alignment
+
+    @abstractmethod
+    def dispatch(
+        self,
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+        *,
+        score_before_experts: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, DispatchState]: ...
+
+    @abstractmethod
+    def combine(self, routed_output: torch.Tensor, state: DispatchState) -> torch.Tensor: ...
+
+    def run(
+        self,
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+        experts: ExpertFunction,
+        *,
+        score_before_experts: bool,
+    ) -> torch.Tensor:
+        routed_input, num_tokens_per_expert, state = self.dispatch(
+            x,
+            top_scores,
+            selected_experts_indices,
+            score_before_experts=score_before_experts,
+        )
+        routed_output = experts(routed_input, num_tokens_per_expert)
+        return self.combine(routed_output, state)
+
+    def synchronize(self) -> None:
+        return None
 
 
 @dataclass(frozen=True)
@@ -154,11 +198,10 @@ def _scatter_routed_output(
     return output.scatter_add(0, routed_indices, routed_output)
 
 
-class LocalTokenDispatcher:
+class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):
     def __init__(self, num_experts: int, top_k: int, token_group_alignment: int) -> None:
-        self.num_experts = num_experts
+        super().__init__(num_experts, token_group_alignment)
         self.top_k = top_k
-        self.token_group_alignment = token_group_alignment
 
     def dispatch(
         self,
@@ -205,29 +248,8 @@ class LocalTokenDispatcher:
             scores_after_experts=state.scores_after_experts,
         )
 
-    def run(
-        self,
-        x: torch.Tensor,
-        top_scores: torch.Tensor,
-        selected_experts_indices: torch.Tensor,
-        experts: ExpertFunction,
-        *,
-        score_before_experts: bool,
-    ) -> torch.Tensor:
-        routed_input, num_tokens_per_expert, state = self.dispatch(
-            x,
-            top_scores,
-            selected_experts_indices,
-            score_before_experts=score_before_experts,
-        )
-        routed_output = experts(routed_input, num_tokens_per_expert)
-        return self.combine(routed_output, state)
 
-    def synchronize(self) -> None:
-        return None
-
-
-class TorchTokenDispatcher(LocalTokenDispatcher):
+class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
     def __init__(
         self,
         num_experts: int,
@@ -235,7 +257,8 @@ class TorchTokenDispatcher(LocalTokenDispatcher):
         token_group_alignment: int,
         group: ProcessGroup,
     ) -> None:
-        super().__init__(num_experts, top_k, token_group_alignment)
+        super().__init__(num_experts, token_group_alignment)
+        self.top_k = top_k
         self.group = group
 
     def _dispatch_tokens(
