@@ -492,26 +492,10 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the optimizer state from checkpoint."""
 
 
-class DefaultLossConfig(BaseConfig):
-    type: Literal["default"] = "default"
-
-    dppo_mask_low: float = Field(0.2, ge=0)
-    """Lower DPPO masking threshold."""
-
-    dppo_mask_high: float = Field(0.2, ge=0)
-    """Upper DPPO masking threshold."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
-
-    kl_tau: float = Field(1e-3, ge=0)
-    """Temperature for the KL term."""
-
-
 class IPOLossConfig(BaseConfig):
     type: Literal["ipo"] = "ipo"
-    ipo_threshold: float = Field(0.1, ge=0)
-    """Upper DPPO masking threshold."""
+    eps: float = Field(0.1, ge=0)
+    """Maximum absolute probability change before a token is masked."""
 
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
@@ -530,7 +514,7 @@ class CustomLossConfig(BaseConfig):
     """Kwargs forwarded to the loss function."""
 
 
-LossConfig: TypeAlias = Annotated[DefaultLossConfig | IPOLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[IPOLossConfig | CustomLossConfig, Field(discriminator="type")]
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -581,6 +565,9 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     session_id: str = "default"
     """ModelExpress session ID."""
 
+    overlap_transfer_and_replay: bool = False
+    """Allocate two staging arenas so inference can replay one weight group while receiving the next."""
+
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
@@ -595,7 +582,7 @@ class TrainerConfig(BaseConfig):
 
     data: DataLoaderConfig = DataLoaderConfig()
 
-    loss: LossConfig = DefaultLossConfig()
+    loss: LossConfig = IPOLossConfig()
     """Loss config for the rl loss component (see ``setup_rl_loss_fn``). The ce / ref_kl components are fixed and do not read this."""
 
     optim: OptimizerConfig = AdamWConfig()

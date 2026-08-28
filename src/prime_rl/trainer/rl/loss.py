@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, IPOLossConfig, LossConfig
+from prime_rl.configs.trainer import CustomLossConfig, IPOLossConfig, LossConfig
 from prime_rl.utils.utils import import_object
 
 
@@ -106,64 +106,9 @@ def compute_importance_ratio_and_mismatch_kl(
     return log_importance_ratio, importance_ratio, mismatch_kl
 
 
-def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
-    """
-    DPPO+KL loss for RL training, combining:
-    - DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879)
-    - Kimi-K2.5 KL Loss (https://arxiv.org/pdf/2602.02276)
-
-    The mask is conditioned on the advantage sign: for positive advantages,
-    we mask tokens whose probability increased too much (trust region violation
-    in the upweight direction); for negative advantages, we mask tokens whose
-    probability decreased too much (trust region violation in the downweight
-    direction).
-    """
-    trainer_logprobs = inputs.trainer_logprobs
-    inference_logprobs = inputs.inference_logprobs
-    advantages = inputs.advantages
-    loss_mask = inputs.loss_mask
-
-    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-        trainer_logprobs, inference_logprobs
-    )
-
-    probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
-    dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
-    dppo_invalid_mask_low = probs_diff < -loss_config.dppo_mask_low
-    positive_advantages = advantages > 0
-    negative_advantages = advantages < 0
-    dppo_invalid_mask = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
-
-    is_masked = dppo_invalid_mask
-    is_masked_high = positive_advantages & dppo_invalid_mask_high
-    is_masked_low = negative_advantages & dppo_invalid_mask_low
-    drop_mask = loss_mask & is_masked
-    keep_mask = loss_mask & ~is_masked
-
-    advantages = loss_config.adv_tau * advantages
-    pg_loss = keep_mask * advantages * importance_ratio
-    kl_loss = loss_mask * log_importance_ratio**2
-    per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
-    if inputs.loss_weights is not None:
-        per_token_loss = per_token_loss * inputs.loss_weights
-    loss = per_token_loss.sum()
-
-    metrics = {
-        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
-        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
-        "is_masked": _safe_mean(is_masked, loss_mask),
-        "is_masked_low": _safe_mean(is_masked_low, loss_mask),
-        "is_masked_high": _safe_mean(is_masked_high, loss_mask),
-        "masked_advantage_positive": _safe_mean(positive_advantages, drop_mask),
-        "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
-    }
-
-    return LossOutputs(loss=loss, metrics=metrics)
-
-
 def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
     """IPO loss type: a symmetric trust region (mask tokens whose probability
-    moved more than ``ipo_threshold`` in absolute terms), policy gradient via
+    moved more than ``eps`` in absolute terms), policy gradient via
     the importance ratio, and a squared-log-ratio KL regularizer."""
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
@@ -176,7 +121,7 @@ def ipo_loss_fn(inputs: LossInputs, loss_config: IPOLossConfig) -> LossOutputs:
 
     abs_probs_diff = torch.abs(torch.exp(trainer_logprobs) - torch.exp(inference_logprobs))
 
-    is_masked = abs_probs_diff > loss_config.ipo_threshold
+    is_masked = abs_probs_diff > loss_config.eps
     keep_mask = loss_mask & ~is_masked
 
     advantages = loss_config.adv_tau * advantages
@@ -261,8 +206,8 @@ def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
 
 def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
     """Build the loss fn for the rl component from ``trainer.loss``:
-    ``default_loss_fn`` (``DefaultLossConfig``), ``ipo_loss_fn``
-    (``IPOLossConfig``), or the imported function (``CustomLossConfig``).
+    ``ipo_loss_fn`` (``IPOLossConfig``) or the imported function
+    (``CustomLossConfig``).
     The ce / ref_kl loss types are fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
         custom_fn = import_object(loss_config.import_path)
@@ -270,14 +215,10 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return custom_fn(inputs, **kwargs)
-    elif isinstance(loss_config, IPOLossConfig):
-
-        def rl_fn(inputs: LossInputs) -> LossOutputs:
-            return ipo_loss_fn(inputs, loss_config)
     else:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
-            return default_loss_fn(inputs, loss_config)
+            return ipo_loss_fn(inputs, loss_config)
 
     return rl_fn
 

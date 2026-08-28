@@ -1,4 +1,4 @@
-"""Device memory sizing and registerable allocation for NIXL arenas."""
+"""Registerable device memory allocation for NIXL arenas."""
 
 from __future__ import annotations
 
@@ -18,17 +18,6 @@ from torch.utils.cpp_extension import load_inline  # noqa: E402
 
 _pool: torch.cuda.MemPool | None = None
 _allocator: torch.cuda.memory.CUDAPluggableAllocator | None = None
-
-
-def size_device_buffers(
-    buffer_bytes: int,
-    max_buffers: int,
-    device: torch.device,
-    extra_headroom_bytes: int,
-) -> int:
-    free_bytes, total_bytes = torch.get_device_module(device).mem_get_info(device)
-    headroom_bytes = max(4 * 1024**3, int(total_bytes * 0.02)) + extra_headroom_bytes
-    return max(1, min(max_buffers, (free_bytes - headroom_bytes) // buffer_bytes))
 
 
 def _get_pool() -> torch.cuda.MemPool:

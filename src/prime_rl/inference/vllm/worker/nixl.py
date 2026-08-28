@@ -14,17 +14,21 @@ from typing import TYPE_CHECKING, Any, cast
 
 import torch
 import torch.nn as nn
-from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
-from prime_rl.transports.weights.nixl.agent import MemDesc, NixlAgent, make_agent_name, set_ucx_env_defaults
-from prime_rl.transports.weights.nixl.device_memory import (
-    size_device_buffers,
-    use_registerable_pool,
+from prime_rl.transports.weights.nixl.agent import (
+    MemDesc,
+    NixlAgent,
+    NixlPeer,
+    PreparedRead,
+    group_notification,
+    make_agent_name,
+    set_ucx_env_defaults,
 )
+from prime_rl.transports.weights.nixl.device_memory import use_registerable_pool
 from prime_rl.transports.weights.nixl.graph import (
     Destination,
     OperationChain,
@@ -45,7 +49,6 @@ else:
     Worker = object
 
 logger = init_logger("vllm.inference.vllm.worker_nixl")
-_BUFFER_POLL_INTERVAL = 0.01
 
 
 @dataclass
@@ -70,13 +73,14 @@ class LayerWeightTransferPlan:
 class WeightTransferGroup:
     name: str
     layers: list[LayerWeightTransferPlan]
-    pulls: list[tuple[Any, Any, list[int]]]
+    pulls: list[PreparedRead]
 
 
 @dataclass
 class WeightTransferPlan:
     receive_arenas: dict[torch.dtype, torch.Tensor]
     receive_buffer_count: int
+    trainer_peers: list[NixlPeer]
     groups: list[WeightTransferGroup]
 
 
@@ -105,7 +109,7 @@ class NIXLWeightUpdateWorker(Worker):
         del inference_world_size, quantize_in_weight_transfer
         global_rank = rank_offset + self.device.index
         server_url = f"{host}:{port}"
-        set_ucx_env_defaults()
+        set_ucx_env_defaults(self.device.index)
         self.nixl_agent = NixlAgent(make_agent_name("inference", global_rank))
         self.model_express = ModelExpressSession(
             client=MxClient(server_url=server_url),
@@ -114,6 +118,7 @@ class NIXLWeightUpdateWorker(Worker):
             session_id=session_id,
             worker_id=f"inference-{global_rank}",
         )
+        self.model_express.publish(nixl_metadata=self.nixl_agent.get_metadata())
         self.weight_transfer_timeout = timeout
         self.weight_transfer_plan: WeightTransferPlan | None = None
         logger.info(
@@ -131,30 +136,13 @@ class NIXLWeightUpdateWorker(Worker):
         trainer_ref = self.model_express.wait_for(
             "trainer",
             count=1,
-            status=None,
             timeout=self.weight_transfer_timeout,
         )[0]
         table = TrainerTensorTable.decode(self.model_express.fetch(trainer_ref).nixl_metadata)
         copies = self.trace_weight_loads(table)
         plan = self.build_transfer_plan(table, copies)
-        self.buffer_sessions = []
-        for buffer_index in range(table.staging_buffer_count):
-            session = ModelExpressSession(
-                client=self.model_express.client,
-                role="inference",
-                rank=self.model_express.rank,
-                session_id=f"{self.model_express.session_id}:layers:{buffer_index}",
-                worker_id=f"inference-buffer-{self.model_express.rank}-{buffer_index}",
-            )
-            session.publish()
-            session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-            self.buffer_sessions.append(session)
-        # Join the current generation directly. Publishing a transient READY
-        # before the first pull would let the trainer mistake initialization
-        # for a completed acknowledgement.
-        self.model_express.publish(nixl_metadata=self.nixl_agent.get_metadata())
-        self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
         self.weight_transfer_plan = plan
+        self.group_generations = [0] * len(plan.groups)
         logger.info(
             "Initialized NIXL transfer plan on rank %d with %d groups",
             self.model_express.rank,
@@ -260,14 +248,16 @@ class NIXLWeightUpdateWorker(Worker):
             copies,
             replay_plans,
         )
-        receive_buffer_count = self.choose_receive_buffer_count(
-            receive_buffer_elements,
-            table.staging_buffer_count,
-        )
+        receive_buffer_count = table.staging_buffer_count
         receive_arenas = self.allocate_receive_arenas(
             receive_buffer_elements,
             receive_buffer_count,
         )
+        peers: list[NixlPeer] = []
+        for agent in table.agents:
+            peer = self.nixl_agent.add_remote_agent(agent.metadata)
+            self.nixl_agent.make_connection(peer)
+            peers.append(peer)
         groups = self.build_transfer_groups(
             table,
             copies,
@@ -275,10 +265,12 @@ class NIXLWeightUpdateWorker(Worker):
             receive_buffer_elements,
             receive_arenas,
             receive_buffer_count,
+            peers,
         )
         return WeightTransferPlan(
             receive_arenas=receive_arenas,
             receive_buffer_count=receive_buffer_count,
+            trainer_peers=peers,
             groups=groups,
         )
 
@@ -315,32 +307,6 @@ class NIXLWeightUpdateWorker(Worker):
             group_elements[source_dtype][tensor_groups[source.name]] += prod(replay_plans[id(copy)].source_shape)
         return {dtype: max(elements, default=0) for dtype, elements in group_elements.items()}
 
-    def choose_receive_buffer_count(
-        self,
-        receive_buffer_elements: dict[torch.dtype, int],
-        staging_buffer_count: int,
-    ) -> int:
-        receive_buffer_bytes = max(
-            1,
-            sum(elements * dtype.itemsize for dtype, elements in receive_buffer_elements.items()),
-        )
-        device_module = self.device_module
-        allocated_bytes = device_module.memory_allocated(self.device)
-        peak_growth_bytes = max(
-            0,
-            device_module.max_memory_allocated(self.device) - allocated_bytes,
-        )
-        free_bytes, _ = device_module.mem_get_info(self.device)
-        max_receive_buffers = min(2, staging_buffer_count) if peak_growth_bytes else 1
-        if peak_growth_bytes or free_bytes < receive_buffer_bytes:
-            device_module.empty_cache()
-        return size_device_buffers(
-            receive_buffer_bytes,
-            max_receive_buffers,
-            self.device,
-            extra_headroom_bytes=receive_buffer_bytes + peak_growth_bytes,
-        )
-
     def allocate_receive_arenas(
         self,
         receive_buffer_elements: dict[torch.dtype, int],
@@ -368,6 +334,7 @@ class NIXLWeightUpdateWorker(Worker):
         receive_buffer_elements: dict[torch.dtype, int],
         receive_arenas: dict[torch.dtype, torch.Tensor],
         receive_buffer_count: int,
+        peers: list[NixlPeer],
     ) -> list[WeightTransferGroup]:
         tensors = {tensor.name: tensor for group in table.groups for tensor in group.tensors}
         tensor_groups = {
@@ -396,7 +363,6 @@ class NIXLWeightUpdateWorker(Worker):
                 )
 
         agent_devices = {agent_index: agent.device_id for agent_index, agent in enumerate(table.agents)}
-        peer_names: dict[int, str] = {}
         transfer_groups: list[WeightTransferGroup] = []
 
         for group_index, group in enumerate(table.groups):
@@ -438,10 +404,9 @@ class NIXLWeightUpdateWorker(Worker):
                         persistent_plans_by_layer,
                     ),
                     pulls=self.prepare_group_pulls(
-                        table,
                         local_descs,
                         remote_descs,
-                        peer_names,
+                        peers,
                     ),
                 )
             )
@@ -492,40 +457,37 @@ class NIXLWeightUpdateWorker(Worker):
 
     def prepare_group_pulls(
         self,
-        table: TrainerTensorTable,
         local_descs: dict[int, list[MemDesc]],
         remote_descs: dict[int, list[MemDesc]],
-        peer_names: dict[int, str],
-    ) -> list[tuple[Any, Any, list[int]]]:
-        pulls: list[tuple[Any, Any, list[int]]] = []
-        for agent_index, remote in sorted(remote_descs.items()):
-            peer_name = peer_names.get(agent_index)
-            if peer_name is None:
-                peer_name = self.nixl_agent.add_remote_agent(table.agents[agent_index].metadata)
-                self.nixl_agent.make_connection(peer_name)
-                peer_names[agent_index] = peer_name
+        peers: list[NixlPeer],
+    ) -> list[PreparedRead]:
+        pulls: list[PreparedRead] = []
+        agent_indices = sorted(remote_descs)
+        rotation = self.model_express.rank % len(agent_indices) if agent_indices else 0
+        agent_indices = agent_indices[rotation:] + agent_indices[:rotation]
+        for agent_index in agent_indices:
+            remote = remote_descs[agent_index]
+            peer = peers[agent_index]
             local_prepared = self.nixl_agent.prepare_xfer_dlist(local_descs[agent_index])
-            remote_prepared = self.nixl_agent.prepare_xfer_dlist(remote, agent_name=peer_name)
-            pulls.append((local_prepared, remote_prepared, list(range(len(remote)))))
+            remote_prepared = self.nixl_agent.prepare_xfer_dlist(remote, peer=peer)
+            pulls.append(
+                self.nixl_agent.prepare_read(
+                    local_prepared,
+                    list(range(len(remote))),
+                    remote_prepared,
+                )
+            )
         return pulls
 
     @torch.no_grad()
     def update_weights_from_path(self, weight_dir: str | None = None) -> None:
         del weight_dir
         plan = self.initialize_transfer()
-        self.model_express.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
-        self.model_express.wait_for(
-            "trainer",
-            count=1,
-            status=p2p_pb2.SOURCE_STATUS_READY,
-            timeout=self.weight_transfer_timeout,
-        )
 
         started = time.perf_counter()
         self.apply_transfer_plan(plan)
         update_mla_absorbed_weights(self.raw_model)
         self.device_module.synchronize(self.device)
-        self.model_express.set_status(p2p_pb2.SOURCE_STATUS_READY)
         logger.info(
             "Applied NIXL policy update on rank %d in %.2fs",
             self.model_express.rank,
@@ -548,44 +510,30 @@ class NIXLWeightUpdateWorker(Worker):
 
         def pull_group(group_index: int) -> WeightTransferGroup:
             transfer_group = plan.groups[group_index]
-            session = self.buffer_sessions[group_index % len(self.buffer_sessions)]
-            session.wait_for(
-                "trainer",
-                count=1,
-                status=p2p_pb2.SOURCE_STATUS_READY,
+            notification = group_notification(group_index, self.group_generations[group_index])
+            self.nixl_agent.wait_for_notification(
+                plan.trainer_peers,
+                notification,
                 timeout=self.weight_transfer_timeout,
-                poll_interval=_BUFFER_POLL_INTERVAL,
                 cancelled=cancelled.is_set,
             )
 
-            for local, remote, indices in transfer_group.pulls:
-                handle = self.nixl_agent.post_read(local, indices, remote)
+            for read in transfer_group.pulls:
+                self.nixl_agent.post_read(read, notification)
+            for read in transfer_group.pulls:
                 self.nixl_agent.wait(
-                    handle,
+                    read,
                     context=f"weight pull for {transfer_group.name}",
                     timeout=self.weight_transfer_timeout,
                     cancelled=cancelled.is_set,
                 )
-            return transfer_group
 
-        def acknowledge_group(group_index: int) -> None:
-            session = self.buffer_sessions[group_index % len(self.buffer_sessions)]
-            session.set_status(p2p_pb2.SOURCE_STATUS_READY)
-            session.wait_for(
-                "trainer",
-                count=1,
-                status=p2p_pb2.SOURCE_STATUS_INITIALIZING,
-                timeout=self.weight_transfer_timeout,
-                poll_interval=_BUFFER_POLL_INTERVAL,
-                cancelled=cancelled.is_set,
-            )
-            session.set_status(p2p_pb2.SOURCE_STATUS_INITIALIZING)
+            self.group_generations[group_index] += 1
+            return transfer_group
 
         def prefetch_group(group_index: int) -> WeightTransferGroup:
             self.device_module.set_device(self.device)
-            transfer_group = pull_group(group_index)
-            acknowledge_group(group_index)
-            return transfer_group
+            return pull_group(group_index)
 
         def replay_group(transfer_group: WeightTransferGroup) -> None:
             for layer_plan in transfer_group.layers:
@@ -631,9 +579,6 @@ class NIXLWeightUpdateWorker(Worker):
 
                     replay_group(transfer_group)
                     self.device_module.synchronize(self.device)
-
-                    if not pipelined:
-                        acknowledge_group(group_index)
             finally:
                 cancelled.set()
                 if executor is not None:
