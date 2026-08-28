@@ -307,7 +307,8 @@ def _ring_backward(
             comm.all_gather(kv_buffer_copy[0], k[:, left:right].contiguous())
             comm.all_gather(kv_buffer_copy[1], v[:, left:right].contiguous())
 
-        lse_i = softmax_lse[:, q_slice].contiguous() if softmax_lse.dim() == 3 else softmax_lse[q_slice].contiguous()
+        # Varlen FA2, FA3, and FA4 all return LSE as [heads, total_tokens].
+        lse_i = softmax_lse[q_slice].contiguous()
         flash_backward(
             dout=dout[:, q_slice],
             q=q[:, q_slice],
