@@ -9,8 +9,6 @@ DEEPSEEK_V4_LAYER_TYPES = (
     "heavily_compressed_attention",
 )
 
-DEEPSEEK_V4_MLP_LAYER_TYPES = ("hash_moe", "moe")
-
 
 @strict
 class DeepseekV4Config(PretrainedConfig):
@@ -24,8 +22,8 @@ class DeepseekV4Config(PretrainedConfig):
     2. Attention is a per-layer mix of compressed variants selected by `layer_types`,
        with the per-type compression rate given by `compress_rates` and a Lightning
        Indexer sized by `index_n_heads` / `index_head_dim` / `index_topk`.
-    3. The MLP schedule in `mlp_layer_types` bootstraps the first few layers with a
-       frozen hash router before switching to standard top-k routed MoE.
+    3. The MLP schedule bootstraps the first `num_hash_layers` layers with a frozen hash
+       router before switching to standard top-k routed MoE.
 
     Args:
         vocab_size: Vocabulary size.
@@ -65,11 +63,8 @@ class DeepseekV4Config(PretrainedConfig):
         scoring_func: Router activation, one of `sqrtsoftplus`, `softmax`, `sigmoid`.
         norm_topk_prob: Whether to renormalize the top-k routing probabilities.
         routed_scaling_factor: Scaling factor applied to the routed expert output.
-        mlp_layer_types: Per-layer MLP schedule, entries drawn from
-            `DEEPSEEK_V4_MLP_LAYER_TYPES`. Defaults to `num_hash_layers` hash-routed
-            layers followed by standard MoE layers.
-        num_hash_layers: Number of leading `hash_moe` layers used to build the
-            `mlp_layer_types` default.
+        num_hash_layers: Number of leading hash-routed layers; the remaining layers use
+            standard top-k routed MoE.
         swiglu_limit: Clamp applied to the expert gate/up pre-activations.
         hc_mult: Number of parallel residual streams carried by mHC.
         hc_sinkhorn_iters: Sinkhorn-Knopp iterations used to project the mHC combine
@@ -133,7 +128,6 @@ class DeepseekV4Config(PretrainedConfig):
         scoring_func: str = "sqrtsoftplus",
         norm_topk_prob: bool = True,
         routed_scaling_factor: float = 1.5,
-        mlp_layer_types: list[str] | None = None,
         num_hash_layers: int = 3,
         swiglu_limit: float = 10.0,
         hc_mult: int = 4,
@@ -239,11 +233,11 @@ class DeepseekV4Config(PretrainedConfig):
         # Set after the base __init__: its `validate_layer_type` hook is registered at
         # class-decoration time on `PretrainedConfig` (so a subclass override never runs)
         # and only accepts the generic "dense" / "sparse" labels, not V4's hash_moe / moe.
-        if mlp_layer_types is None:
-            mlp_layer_types = ["hash_moe"] * min(num_hidden_layers, num_hash_layers) + ["moe"] * max(
-                0, num_hidden_layers - num_hash_layers
-            )
-        self.mlp_layer_types = list(mlp_layer_types)
+        # Only exists for duck-typing with HF's real modeling code (see `to_dict`) --
+        # `num_hash_layers` is this class's own source of truth.
+        self.mlp_layer_types = ["hash_moe"] * min(num_hidden_layers, num_hash_layers) + ["moe"] * max(
+            0, num_hidden_layers - num_hash_layers
+        )
         self.rope_parameters = self._nest_rope_parameters(raw_rope_parameters)
         self.validate_architecture()
 
@@ -314,28 +308,40 @@ class DeepseekV4Config(PretrainedConfig):
             finally:
                 self.rope_parameters = rope_parameters_dict
 
+    def to_dict(self) -> dict[str, Any]:
+        """Drop the derived `mlp_layer_types` duck-typing shim before serializing.
+
+        `num_hash_layers` is the on-disk source of truth (matching the real checkpoint);
+        `mlp_layer_types` only exists in memory so HF's real `DeepseekV4SparseMoeBlock`
+        (which reads `config.mlp_layer_types[layer_idx]` directly) still works when this
+        config is handed to it, e.g. in HF-parity tests.
+        """
+        output = super().to_dict()
+        output.pop("mlp_layer_types", None)
+        return output
+
     def validate_layer_type(self) -> None:
-        """Narrow `@strict`'s generic layer-type check to V4's own vocabularies.
+        """Narrow `@strict`'s generic layer-type check to V4's own attention vocabulary.
 
         Re-decorating this class with `@strict` (matching upstream HF's own
         `DeepseekV4Config`) makes `@strict` rediscover validators scoped to this
         class, so this override is what actually runs — unlike a plain method
         override on an undecorated subclass, whose `validate()` closure would
         keep calling the base `PretrainedConfig.validate_layer_type`, which only
-        allows `mlp_layer_types` entries of `("sparse", "dense")`, not V4's
-        `hash_moe` / `moe`.
+        allows `layer_types` entries of the generic attention vocabulary, not V4's
+        compressed variants.
         """
-        for name, types, allowed in (
-            ("layer_types", self.layer_types, DEEPSEEK_V4_LAYER_TYPES),
-            ("mlp_layer_types", self.mlp_layer_types, DEEPSEEK_V4_MLP_LAYER_TYPES),
-        ):
-            if len(types) != self.num_hidden_layers:
-                raise ValueError(
-                    f"{name} length ({len(types)}) must equal num_hidden_layers ({self.num_hidden_layers})."
-                )
-            unknown = sorted({layer_type for layer_type in types if layer_type not in allowed})
-            if unknown:
-                raise ValueError(f"{name} entries must be one of {allowed}; got {unknown}.")
+        if len(self.layer_types) != self.num_hidden_layers:
+            raise ValueError(
+                f"layer_types length ({len(self.layer_types)}) must equal num_hidden_layers ({self.num_hidden_layers})."
+            )
+        unknown = sorted({layer_type for layer_type in self.layer_types if layer_type not in DEEPSEEK_V4_LAYER_TYPES})
+        if unknown:
+            raise ValueError(f"layer_types entries must be one of {DEEPSEEK_V4_LAYER_TYPES}; got {unknown}.")
+        if not 0 <= self.num_hash_layers <= self.num_hidden_layers:
+            raise ValueError(
+                f"num_hash_layers ({self.num_hash_layers}) must be between 0 and num_hidden_layers ({self.num_hidden_layers})."
+            )
 
 
 __all__ = ["DeepseekV4Config"]

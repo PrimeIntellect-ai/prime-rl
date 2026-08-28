@@ -739,7 +739,7 @@ _MOE = dict(
     # Small enough that the parameter spread `_randomize` draws actually reaches the
     # clamp; the 10.0 default would leave that branch untested.
     swiglu_limit=0.1,
-    mlp_layer_types=["moe", "moe"],
+    num_hash_layers=0,
     rms_norm_eps=1e-6,
 )
 _MOE_TOKENS = _BATCH * _SEQ
@@ -948,7 +948,7 @@ def test_moe_init_weights():
 
 
 # A vocabulary small enough that a 32-token batch hits most rows of the table several times.
-_HASH_MOE = dict(_MOE, mlp_layer_types=["hash_moe", "moe"], vocab_size=16)
+_HASH_MOE = dict(_MOE, num_hash_layers=1, vocab_size=16)
 _HASH_LAYER = 0
 
 
@@ -1701,7 +1701,7 @@ _MODEL = dict(
     scoring_func="sqrtsoftplus",
     routed_scaling_factor=1.5,
     swiglu_limit=10.0,
-    mlp_layer_types=["moe", "moe", "moe", "moe"],
+    num_hash_layers=0,
     hc_mult=4,
     hc_sinkhorn_iters=20,
     hc_eps=1e-6,

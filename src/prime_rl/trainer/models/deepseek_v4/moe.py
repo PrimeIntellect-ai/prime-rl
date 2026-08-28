@@ -1,8 +1,8 @@
 """DeepSeek V4 mixture of experts: router, routed experts and shared expert.
 
-Both MLP layer types live here. `mlp_layer_types[layer_idx]` picks between standard
-token-choice routing and the hash routing of the bootstrap layers, which replaces the
-learned selection with a frozen token-id lookup but keeps the learned gating weights.
+Both MLP layer types live here. `num_hash_layers` picks between standard token-choice
+routing and the hash routing of the bootstrap layers, which replaces the learned
+selection with a frozen token-id lookup but keeps the learned gating weights.
 """
 
 from functools import partial
@@ -232,7 +232,7 @@ class DeepseekV4MLP(MLP):
 
 
 class DeepseekV4MoE(MoE):
-    """A V4 MoE layer, hash-routed or standard according to `config.mlp_layer_types`.
+    """A V4 MoE layer, hash-routed or standard according to `config.num_hash_layers`.
 
     Subclasses the shared `MoE` so `apply_ep` / `setup_fsdp` keep recognizing it, then
     swaps in the three V4-specific pieces. `MoE.forward`'s orchestration is unchanged.
@@ -250,7 +250,7 @@ class DeepseekV4MoE(MoE):
         )
         assert not getattr(config, "fp8", False), "FP8 training is not supported for DeepSeek V4"
 
-        is_hash = config.mlp_layer_types[layer_idx] == "hash_moe"
+        is_hash = layer_idx < config.num_hash_layers
 
         moe_args = MoEArgs(
             num_experts=config.n_routed_experts,

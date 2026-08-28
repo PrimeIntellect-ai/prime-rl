@@ -53,7 +53,7 @@ _BASE = dict(
     scoring_func="sqrtsoftplus",
     routed_scaling_factor=1.5,
     swiglu_limit=10.0,
-    mlp_layer_types=["hash_moe", "hash_moe", "moe", "moe", "moe"],
+    num_hash_layers=2,
     hc_mult=4,
     hc_sinkhorn_iters=20,
     hc_eps=1e-6,
@@ -272,9 +272,7 @@ def test_deepseek_v4_float32(_torch_rms_norm):
 def test_deepseek_v4_hash_layers_route_on_token_ids():
     """The bootstrap layers read `input_ids`, so identical hidden states still route apart."""
     _, prime_model = get_model_pairs()
-    hash_layers = [
-        layer for layer, mlp_type in zip(prime_model.model.layers, _BASE["mlp_layer_types"]) if mlp_type == "hash_moe"
-    ]
+    hash_layers = prime_model.model.layers[: _BASE["num_hash_layers"]]
     assert hash_layers, "config must contain a hash-routed layer"
 
     counts = []

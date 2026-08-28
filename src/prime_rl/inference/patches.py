@@ -17,7 +17,6 @@ def apply_shared_vllm_patches():
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
-    monkey_patch_deepseek_v4_hash_moe_layer_types()
     monkey_patch_deepseek_v4_rope_unhashable_cache_key()
     monkey_patch_deepseek_v4_kv_norm_weight_mapper()
     monkey_patch_deepseek_v4_rope_force_fp32_cache()
@@ -109,35 +108,6 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     _update_from_kv_xfer_finished._prime_rl_tolerates_freed = True
     Scheduler._update_from_kv_xfer_finished = _update_from_kv_xfer_finished
     logger.warning("Patched Scheduler._update_from_kv_xfer_finished to tolerate freed (aborted) KV-transfer reqs.")
-
-
-def monkey_patch_deepseek_v4_hash_moe_layer_types():
-    """Accept DeepSeek V4's real `hash_moe`/`moe` values for `mlp_layer_types`.
-
-    vLLM ships its own `DeepseekV4Config` (`vllm/transformers_utils/configs/deepseek_v4.py`)
-    that shadows and pre-empts transformers' real `DeepseekV4Config` in the global `AutoConfig`
-    registry, but never inherits its narrowed `validate_layer_type` override -- it falls through
-    to the generic base-class check, which only allows `sparse`/`dense`. DeepSeek V4's real
-    architecture uses `hash_moe` (hash-routed bootstrap layers) and `moe` (score-routed layers)
-    instead, confirmed against the real `deepseek-ai/DeepSeek-V4-Flash-Base` checkpoint
-    (`num_hash_layers: 3`) -- not a value this repo invented. `validate_layer_type`
-    (`transformers/configuration_utils.py`) looks up `ALLOWED_MLP_LAYER_TYPES`/
-    `ALLOWED_LAYER_TYPES` as module globals at call time, so extending them here is sufficient;
-    no need to subclass or replace vLLM's shadow class. Confirmed present, unfixed, on vLLM
-    0.26.0 (installed), 0.27.1 (latest release), and current main.
-    """
-    from transformers import configuration_utils
-
-    if "hash_moe" in configuration_utils.ALLOWED_MLP_LAYER_TYPES:
-        return
-
-    configuration_utils.ALLOWED_MLP_LAYER_TYPES = configuration_utils.ALLOWED_MLP_LAYER_TYPES + (
-        "hash_moe",
-        "moe",
-    )
-    configuration_utils.ALLOWED_LAYER_TYPES = (
-        configuration_utils.ALLOWED_ATTN_LAYER_TYPES + configuration_utils.ALLOWED_MLP_LAYER_TYPES
-    )
 
 
 class _TolerantRopeCache(dict):

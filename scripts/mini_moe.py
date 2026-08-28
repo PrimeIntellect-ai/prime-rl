@@ -128,13 +128,6 @@ ARCH_PRESETS = {
             n_routed_experts=16,
             num_experts_per_tok=4,
             n_shared_experts=1,
-            mlp_layer_types=["hash_moe", "hash_moe", "moe", "moe", "moe"],
-            # Must agree with the leading "hash_moe" count in mlp_layer_types above: vLLM's
-            # own model determines which layers are hash-routed from this plain layer-index
-            # threshold (`extract_layer_index(prefix) < config.num_hash_layers`), not from
-            # mlp_layer_types -- a mismatch makes it build the wrong gate parameters for
-            # layers in between (e.g. `tid2eid` instead of `e_score_correction_bias`),
-            # which then don't match what's actually in the checkpoint.
             num_hash_layers=2,
             use_grouped_mm=False,
         ),
