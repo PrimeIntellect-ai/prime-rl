@@ -5,7 +5,7 @@ Laguna specifics:
 * Router: HF ``mlp.gate.weight`` maps to prime ``mlp.router.gate.weight``.
 * Expert bias: the HF input is *either* ``mlp.experts.e_score_correction_bias``
   *or* ``mlp.gate.e_score_correction_bias`` (the former wins when both are
-  present); it maps to prime ``mlp.expert_bias``. Backward always emits the
+  present); it maps to prime ``mlp.router.selection_bias``. Backward always emits the
   canonical ``mlp.experts.e_score_correction_bias``.
 * Routed experts: HF per-expert ``mlp.experts.{e}.{gate,down,up}_proj.weight``
   *or* the fused ``mlp.experts.gate_up_proj`` / ``down_proj`` layout stack into
@@ -41,14 +41,14 @@ def conversion_chain(config) -> list[ConvOp]:
         # the (always-singular) backward; the conditional adds the forward-only
         # `gate.` alternate, firing only when the canonical input is absent so it
         # matches the imperative's "experts wins" preference.
-        ops.append(Rename(f"{p}.mlp.experts.e_score_correction_bias", f"{p}.mlp.expert_bias"))
+        ops.append(Rename(f"{p}.mlp.experts.e_score_correction_bias", f"{p}.mlp.router.selection_bias"))
         ops.append(
             Conditional(
                 predicate=lambda sd, p=p: (
                     f"{p}.mlp.gate.e_score_correction_bias" in sd
                     and f"{p}.mlp.experts.e_score_correction_bias" not in sd
                 ),
-                then=[Rename(f"{p}.mlp.gate.e_score_correction_bias", f"{p}.mlp.expert_bias")],
+                then=[Rename(f"{p}.mlp.gate.e_score_correction_bias", f"{p}.mlp.router.selection_bias")],
             )
         )
 

@@ -145,7 +145,7 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return name.endswith("mlp.expert_bias")
+        return name.endswith("mlp.router.selection_bias")
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

@@ -1031,7 +1031,9 @@ def can_reinit_empty_buffers(model: nn.Module):
         if not (name.startswith("model.layers.") and name.endswith("mlp.tokens_per_expert"))
     ]
     buffer_names = [
-        name for name in buffer_names if not (name.startswith("model.layers.") and name.endswith("mlp.expert_bias"))
+        name
+        for name in buffer_names
+        if not (name.startswith("model.layers.") and name.endswith("mlp.router.selection_bias"))
     ]
     # HF standard transformer model
     if len(buffer_names) == 1 and buffer_names[0] == "model.rotary_emb.inv_freq":

@@ -182,13 +182,13 @@ class TokenChoiceTopKRouter(nn.Module):
         self.fp32_gate = False
 
     def forward(
-        self, x: torch.Tensor, expert_bias: torch.Tensor | None = None, routed_experts: torch.Tensor | None = None
+        self,
+        x: torch.Tensor,
+        routed_experts: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs*slen, dim)``.
-            expert_bias (torch.Tensor | None, optional): Optional bias tensor for experts with shape ``(num_experts,)``.
-                Used for load balancing. Defaults to None.
             routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs * slen, top_k)``.
 
         Returns:
@@ -238,8 +238,6 @@ class TokenChoiceTopKRouter(nn.Module):
             selection_scores = scores
             if self.selection_bias is not None:
                 selection_scores = selection_scores + self.selection_bias
-            if expert_bias is not None:
-                selection_scores = selection_scores + expert_bias
             _, selected_experts_indices = torch.topk(
                 selection_scores,
                 k=self.top_k,
@@ -305,6 +303,7 @@ class MoE(nn.Module):
             score_func=args.score_func,
             route_norm=args.route_norm,
             route_scale=args.route_scale,
+            selection_bias=args.load_balance_coeff is not None,
         )
         return cls(
             router=router,
@@ -336,19 +335,12 @@ class MoE(nn.Module):
         )
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
         # NOTE: tokens_per_expert is accumulated in the model forward pass.
-        #       expert_bias is updated outside the model in an optimizer step pre hook
+        #       router.selection_bias is updated outside the model in an optimizer step pre hook
         #       to work with gradient accumulation.
         self.load_balance_coeff = load_balance_coeff
         if self.load_balance_coeff is not None:
             assert self.load_balance_coeff > 0.0
-            self.register_buffer(
-                "expert_bias",
-                torch.zeros(experts.num_experts, dtype=torch.float32),
-                persistent=True,
-            )
-        else:
-            self.expert_bias = None
-        # tokens_per_expert will be used to track expert usage and to update the expert bias for load balancing
+        # tokens_per_expert tracks expert usage for selection-bias updates and metrics.
         self.register_buffer(
             "tokens_per_expert",
             torch.zeros(experts.num_experts, dtype=torch.float32),
@@ -394,10 +386,9 @@ class MoE(nn.Module):
             selected_experts_indices,
             num_tokens_per_expert,
             routing_confidence_sum,
-        ) = self.router(x, self.expert_bias, routed_experts=routed_experts)
+        ) = self.router(x, routed_experts=routed_experts)
 
-        # tokens_per_expert will be used to update the expert bias for load balancing.
-        # and also to count the expert usage
+        # Accumulate expert usage for selection-bias updates and metrics.
         with torch.no_grad():
             self.tokens_per_expert.add_(num_tokens_per_expert)
             self.routing_confidence_sum.add_(routing_confidence_sum)
@@ -436,5 +427,5 @@ class MoE(nn.Module):
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
-            if self.load_balance_coeff is not None:
-                self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
+            if self.router.selection_bias is not None:
+                self.router.selection_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)

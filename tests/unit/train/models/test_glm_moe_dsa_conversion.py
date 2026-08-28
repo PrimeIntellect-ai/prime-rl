@@ -20,7 +20,7 @@ def _build_prime_layer_state(layer_idx: int = 0) -> dict[str, torch.Tensor]:
         f"{prefix}.mlp.up_proj.weight": torch.randn(8, 6),
         f"{prefix}.mlp.down_proj.weight": torch.randn(6, 8),
         f"{prefix}.mlp.router.gate.weight": torch.randn(4, 6),
-        f"{prefix}.mlp.expert_bias": torch.randn(4),
+        f"{prefix}.mlp.router.selection_bias": torch.randn(4),
         f"{prefix}.mlp.experts.gate_proj": torch.randn(2, 3, 6),
         f"{prefix}.mlp.experts.up_proj": torch.randn(2, 3, 6),
         f"{prefix}.mlp.experts.down_proj": torch.randn(2, 6, 3),

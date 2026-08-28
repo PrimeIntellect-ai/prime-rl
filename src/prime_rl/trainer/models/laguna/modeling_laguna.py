@@ -400,8 +400,8 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
         for module in self.modules():
             if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
                 module.tokens_per_expert.zero_()
-                if module.expert_bias is not None:
-                    module.expert_bias.zero_()
+                if module.router.selection_bias is not None:
+                    module.router.selection_bias.zero_()
 
 
 __all__ = [

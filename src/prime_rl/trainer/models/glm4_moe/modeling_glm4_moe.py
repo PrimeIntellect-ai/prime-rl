@@ -135,7 +135,7 @@ class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return name.endswith("mlp.expert_bias")
+        return name.endswith("mlp.router.selection_bias")
 
     def _init_weights(self, module):
         super()._init_weights(module)
