@@ -21,10 +21,10 @@ ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax"]
 
 
 @torch.library.custom_op(
-    "prime_rl::record_moe_routing",
+    "prime_rl::record_moe_routing_statistics",
     mutates_args=("tokens_per_expert", "routing_confidence_sum"),
 )
-def _record_moe_routing(
+def record_moe_routing_statistics(
     tokens_per_expert: torch.Tensor,
     routing_confidence_sum: torch.Tensor,
     token_counts: torch.Tensor,
@@ -34,8 +34,8 @@ def _record_moe_routing(
     routing_confidence_sum.add_(confidence)
 
 
-@_record_moe_routing.register_fake
-def _record_moe_routing_fake(
+@record_moe_routing_statistics.register_fake
+def _record_moe_routing_statistics_fake(
     tokens_per_expert: torch.Tensor,
     routing_confidence_sum: torch.Tensor,
     token_counts: torch.Tensor,
@@ -417,7 +417,7 @@ class MoE(nn.Module):
 
         # Accumulate expert usage for selection-bias updates and metrics.
         with torch.no_grad():
-            _record_moe_routing(
+            record_moe_routing_statistics(
                 self.tokens_per_expert,
                 self.routing_confidence_sum,
                 num_tokens_per_expert,

@@ -135,8 +135,9 @@ AC and AC offloading are enabled by default (full mode). Both AC modes retain st
 ```toml
 [trainer.model.ac]
 mode = "selective"
-preserve_rng_state = true
 ```
+
+Set `targets` to operator names (for example, `"aten::mm"`) or namespaces (for example, `"prime_rl_collectives"`) to replace the default selective targets. Correctness-required operations remain retained.
 
 Activation offloading still applies to tensors saved by autograd, but tensors retained by the checkpoint policy remain on the accelerator.
 

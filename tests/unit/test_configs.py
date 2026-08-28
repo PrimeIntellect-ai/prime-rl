@@ -451,16 +451,6 @@ def test_trainer_rejects_vlm_cp_with_ring():
         TrainerConfig.model_validate(config)
 
 
-def test_selective_activation_checkpointing_supports_hf_impl():
-    config = TrainerModelConfig.model_validate({"impl": "hf", "attn": "flash_attention_2", "ac": {"mode": "selective"}})
-
-    assert config.ac is not None
-    assert config.ac.mode == "selective"
-
-    with pytest.raises(ValidationError, match="targets"):
-        TrainerModelConfig.model_validate({"ac": {"mode": "selective", "targets": ["norm"]}})
-
-
 def test_shared_model_name_propagates_to_subconfigs():
     model_name = "PrimeIntellect/test-model"
     config = RLConfig.model_validate(

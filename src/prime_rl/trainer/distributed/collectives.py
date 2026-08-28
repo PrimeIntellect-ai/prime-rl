@@ -1,12 +1,9 @@
 """Autograd and compile-friendly distributed collectives."""
 
+import prime_kernels
 import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
-
-
-def _resolve_group(group_name: str) -> ProcessGroup:
-    return dist.distributed_c10d._resolve_process_group(group_name)
 
 
 @torch.library.custom_op("prime_rl_collectives::all_to_all_single", mutates_args=())
@@ -24,7 +21,7 @@ def _all_to_all_single(
         x.contiguous(),
         output_split_list,
         input_split_list,
-        group=_resolve_group(group_name),
+        group=dist.distributed_c10d._resolve_process_group(group_name),
     )
     return output
 
@@ -67,7 +64,11 @@ _all_to_all_single.register_autograd(_all_to_all_backward, setup_context=_all_to
 @torch.library.custom_op("prime_rl_collectives::all_to_all_single_equal", mutates_args=())
 def _all_to_all_single_equal(x: torch.Tensor, group_name: str) -> torch.Tensor:
     output = x.new_empty(x.shape)
-    dist.all_to_all_single(output, x.contiguous(), group=_resolve_group(group_name))
+    dist.all_to_all_single(
+        output,
+        x.contiguous(),
+        group=dist.distributed_c10d._resolve_process_group(group_name),
+    )
     return output
 
 
@@ -91,12 +92,6 @@ _all_to_all_single_equal.register_autograd(
 )
 
 
-def _mxfp8_kernel():
-    import prime_kernels
-
-    return prime_kernels.load("mxfp8_moe")
-
-
 @torch.library.custom_op("prime_rl_collectives::mxfp8_all_to_all", mutates_args=())
 def _mxfp8_all_to_all(
     x: torch.Tensor,
@@ -105,13 +100,13 @@ def _mxfp8_all_to_all(
     group_name: str,
     quantized: bool,
 ) -> torch.Tensor:
-    kernel = _mxfp8_kernel()
+    kernel = prime_kernels.load("mxfp8_moe")
     operation = kernel.all_to_all_dispatch if quantized else kernel.all_to_all_combine
     return operation(
         x,
         output_splits.tolist(),
         input_splits.tolist(),
-        _resolve_group(group_name),
+        dist.distributed_c10d._resolve_process_group(group_name),
     )
 
 
@@ -161,7 +156,11 @@ _mxfp8_all_to_all.register_autograd(
 def _all_gather(x: torch.Tensor, dim: int, group_size: int, group_name: str) -> torch.Tensor:
     gathered = x.movedim(dim, 0).contiguous()
     output = gathered.new_empty((gathered.shape[0] * group_size, *gathered.shape[1:]))
-    dist.all_gather_into_tensor(output, gathered, group=_resolve_group(group_name))
+    dist.all_gather_into_tensor(
+        output,
+        gathered,
+        group=dist.distributed_c10d._resolve_process_group(group_name),
+    )
     return output.movedim(0, dim).contiguous()
 
 
@@ -176,7 +175,11 @@ def _all_gather_fake(x: torch.Tensor, dim: int, group_size: int, group_name: str
 def _reduce_scatter_sum(x: torch.Tensor, dim: int, group_size: int, group_name: str) -> torch.Tensor:
     scattered = x.movedim(dim, 0).contiguous()
     output = scattered.new_empty((scattered.shape[0] // group_size, *scattered.shape[1:]))
-    dist.reduce_scatter_tensor(output, scattered, group=_resolve_group(group_name))
+    dist.reduce_scatter_tensor(
+        output,
+        scattered,
+        group=dist.distributed_c10d._resolve_process_group(group_name),
+    )
     return output.movedim(0, dim).contiguous()
 
 

@@ -1100,8 +1100,7 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
         checkpointed_layers += 1
 
     get_logger().info(
-        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers "
-        f"(freq={ac_config.freq}, preserve_rng_state={ac_config.preserve_rng_state})"
+        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers (freq={ac_config.freq})"
     )
 
 
