@@ -10,11 +10,11 @@ def setup_vllm_env(config: InferenceConfig):
     # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
-    # Force the V1 GPU model runner. vLLM routes Llama/Mistral/Qwen3 plus MoE archs
-    # (DeepseekV2, Qwen2Moe, GraniteMoe) to the V2 runner by default, but V2 doesn't
-    # support routed-experts capture (the NIXL PD path rejects it). setdefault so it
-    # stays overridable.
-    os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "0")
+    # Router replay needs the V1 GPU model runner: V2 silently never captures
+    # routed experts. Everything else follows vLLM's own V1/V2 resolution.
+    # setdefault so it stays overridable.
+    if config.vllm.enable_return_routed_experts:
+        os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "0")
 
     # vLLM 0.24.0 flipped VLLM_ENFORCE_STRICT_TOOL_CALLING's default to True, which
     # grammar-constrains generation (xgrammar structural tags) for tool_choice
