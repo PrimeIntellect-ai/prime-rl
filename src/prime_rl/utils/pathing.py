@@ -1,6 +1,8 @@
 import asyncio
 import os
+import shlex
 import shutil
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -158,10 +160,18 @@ def get_config_dir(output_dir: Path) -> Path:
     return legacy if legacy.is_dir() and not latest.exists() else latest
 
 
-def write_launch_toml(config_dir: Path, name: str) -> None:
-    """Copy the launch `@` TOML file(s) to the current config attempt."""
-    import sys
+def write_launch_command(config_dir: Path, name: str) -> None:
+    """Write the user-facing launch command once for a config attempt."""
+    attempt_dir = config_dir.parent
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    command_path = attempt_dir / "command.txt"
+    if not command_path.exists():
+        command = shlex.join(["uv", "run", name, *sys.argv[1:]])
+        command_path.write_text(f"{command}\n")
 
+
+def write_launch_toml(config_dir: Path, name: str) -> None:
+    """Copy the root `@` TOML file(s) to the config attempt."""
     argv = sys.argv[1:]
     paths = []
     for i, arg in enumerate(argv):
@@ -173,9 +183,13 @@ def write_launch_toml(config_dir: Path, name: str) -> None:
     if not tomls:
         return
     texts = [text for _, text in tomls] if len(tomls) == 1 else [f"# @ {p}\n{text}" for p, text in tomls]
-    attempt_dir = config_dir.parent
-    attempt_dir.mkdir(parents=True, exist_ok=True)
-    (attempt_dir / f"{name}.toml").write_text("\n".join(texts))
+    (config_dir.parent / f"{name}.toml").write_text("\n".join(texts))
+
+
+def write_launch_artifacts(config_dir: Path, name: str) -> None:
+    """Write the user command and launch TOML for a config attempt."""
+    write_launch_command(config_dir, name)
+    write_launch_toml(config_dir, name)
 
 
 def get_launcher_dir(output_dir: Path) -> Path:

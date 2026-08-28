@@ -33,7 +33,7 @@ const state = {
   compare: { runs: [], data: new Map() },
   config: {
     loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
-    files: [], file: null, fmt: "toml", cache: new Map(),
+    files: [], file: null, fmt: "toml", commandText: "", cache: new Map(),
   },
   logs: {
     loaded: false, attempt: "latest", attempts: [], files: [], paneFile: {},
@@ -193,7 +193,7 @@ async function selectRun(name, deferTab = false) {
   if (state.meta?.type === "eval") fetchEvalSeries(); // populates the overview cost early
   state.config = {
     loaded: false, attempt: "latest", latestAttempt: null, attempts: [],
-    files: [], file: null, fmt: state.config.fmt, cache: new Map(),
+    files: [], file: null, fmt: state.config.fmt, commandText: "", cache: new Map(),
   };
   state.logs = {
     ...state.logs, loaded: false, attempt: "latest", latestAttempt: null,
@@ -1227,8 +1227,8 @@ async function initMetrics() {
 /* ----------------------------------------------------------------- config */
 
 
-/* both views are fetched once per run, so the TOML/JSON toggle never waits on
-   the network */
+/* config artifacts are fetched once per attempt, so format changes never wait
+   on the network */
 async function fetchConfigText(file) {
   const cache = state.config.cache;
   const key = `${state.config.attempt}:${file}`;
@@ -1358,6 +1358,10 @@ function applyConfigSearch() {
   } catch {
     re = new RegExp(escRe(query), "gi");
   }
+  const test = (line) => {
+    re.lastIndex = 0;
+    return re.test(line);
+  };
   const noHits = () => {
     view.innerHTML = emptyState("no hits", "nothing in this config matches the filter");
     hitsEl.textContent = "no hits";
@@ -1370,10 +1374,6 @@ function applyConfigSearch() {
     // TOML (launch config): a matching line keeps itself (plus its [section]
     // header for context); a matching [section] header keeps the whole section
     const lines = (state.config.text ?? "").split("\n");
-    const test = (line) => {
-      re.lastIndex = 0;
-      return re.test(line);
-    };
     const kept = [];
     let header = null;
     let headerKept = false;
@@ -1432,10 +1432,12 @@ function applyConfigSearch() {
   view.querySelector("mark.hit")?.scrollIntoView({ block: "center" });
 }
 
-/* TOML = the launch config as it was passed, JSON = the concatenated resolved dumps */
+/* TOML = launch config, JSON = resolved dumps */
 function configFileFor(fmt) {
   const files = state.config.files || [];
-  return fmt === "toml" ? files.find((f) => f.endsWith(".toml")) : files.find((f) => f === "resolved");
+  if (fmt === "toml") return files.find((f) => f.endsWith(".toml"));
+  if (fmt === "json") return files.find((f) => f === "resolved");
+  return files.find((f) => f === "command.txt");
 }
 
 function renderConfigFormat() {
@@ -1456,6 +1458,13 @@ function renderConfigAttempts() {
   syncDressedSelects();
 }
 
+function renderConfigCommand() {
+  const command = state.config.commandText.trimEnd();
+  $("#config-command").classList.toggle("empty", !command);
+  $("#config-command-text").textContent = command || "command unavailable for this attempt";
+  $("#config-command-copy").disabled = !command;
+}
+
 async function loadConfigAttempt() {
   const data = await api(
     `/api/runs/${encodeURIComponent(state.run)}/configs?attempt=${encodeURIComponent(state.config.attempt)}`
@@ -1464,17 +1473,24 @@ async function loadConfigAttempt() {
   state.config.attempts = data.attempts;
   state.config.files = data.files;
   renderConfigAttempts();
-  if (!data.files.length) {
+  const commandFile = configFileFor("command");
+  state.config.commandText = commandFile ? await fetchConfigText(commandFile) : "";
+  renderConfigCommand();
+  if (!configFileFor("toml") && !configFileFor("json")) {
     renderConfigFormat();
     $("#config-view").innerHTML = emptyState("no configs", "this attempt has no config files");
     return;
   }
-  if (!configFileFor(state.config.fmt)) state.config.fmt = configFileFor("toml") ? "toml" : "json";
+  if (!configFileFor(state.config.fmt)) {
+    state.config.fmt = ["toml", "json"].find((fmt) => configFileFor(fmt));
+  }
   state.config.file = configFileFor(state.config.fmt);
   renderConfigFormat();
   await loadConfig();
-  const other = configFileFor(state.config.fmt === "toml" ? "json" : "toml");
-  if (other) fetchConfigText(other); // warm the other side of the toggle
+  for (const fmt of ["toml", "json"]) {
+    const file = configFileFor(fmt);
+    if (file && file !== state.config.file) fetchConfigText(file);
+  }
 }
 
 async function initConfig() {
@@ -3568,6 +3584,10 @@ $("#config-format").addEventListener("click", (e) => {
   state.config.file = configFileFor(btn.dataset.fmt);
   renderConfigFormat();
   loadConfig();
+});
+$("#config-command-copy").addEventListener("click", (e) => {
+  const command = state.config.commandText.trimEnd();
+  if (command) copyText(command, e.currentTarget);
 });
 $("#config-search").addEventListener(
   "input",

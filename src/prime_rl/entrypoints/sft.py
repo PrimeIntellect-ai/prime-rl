@@ -25,7 +25,7 @@ from prime_rl.utils.pathing import (
     prepare_attempt_dirs,
     resolve_latest_ckpt_step,
     validate_run_dir,
-    write_launch_toml,
+    write_launch_artifacts,
 )
 from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
@@ -237,7 +237,7 @@ def sft_slurm(config: SFTConfig):
     online_eval = config.deployment.type == "multi_node" and config.eval is not None
 
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
-    write_launch_toml(config_dir, "sft")
+    write_launch_artifacts(config_dir, "sft")
     config_path = config_dir / SFT_CONFIG
     exclude = (
         {"deployment", "slurm", "dry_run", "clean"}
@@ -298,7 +298,7 @@ def sft_local(config: SFTConfig):
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
-    write_launch_toml(config_dir, "sft")
+    write_launch_artifacts(config_dir, "sft")
     config_path = config_dir / SFT_CONFIG
     write_config(config, config_path)
     logger.info(f"Wrote config to {config_path}")

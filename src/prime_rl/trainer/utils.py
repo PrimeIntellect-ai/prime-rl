@@ -293,10 +293,6 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
     skip_prefixes = ("trainer_probs/", "inference_probs/")
     mean_max_only_prefixes = (
         "is_masked/",
-        "is_masked_low/",
-        "is_masked_high/",
-        "masked_advantage_positive/",
-        "masked_advantage_negative/",
         "mismatch_kl/",
         "masked_mismatch_kl/",
         "unmasked_mismatch_kl/",

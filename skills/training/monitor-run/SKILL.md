@@ -9,7 +9,7 @@ description: Monitor an ongoing prime-rl training run — find the output direct
 
 ### On launch
 
-1. Find the run dir and read the resolved configs at `{run_dir}/configs/latest/resolved/` (start with `rl.json`, or `orchestrator.json` on local runs). The launch TOML is copied verbatim to `{run_dir}/configs/latest/rl.toml`. The run dir is `{output_dir}/{run_name}` — `run.name` auto-generates as `<envs>--<model>--<short-id>`, so if you only know the output dir, pick the most recently modified subdirectory (`ls -t {output_dir} | head -1`) or read `run.name` from the launch command.
+1. Find the run dir and read the resolved configs at `{run_dir}/configs/latest/resolved/` (start with `rl.json`, or `orchestrator.json` on local runs). Read the launch command from `{run_dir}/configs/latest/command.txt`. The launch TOML is copied verbatim to `{run_dir}/configs/latest/rl.toml`. The run dir is `{output_dir}/{run_name}` — `run.name` auto-generates as `<envs>--<model>--<short-id>`, so if you only know the output dir, pick the most recently modified subdirectory (`ls -t {output_dir} | head -1`) or read `run.name` from the launch command.
 2. Confirm all processes are alive and the run is making progress.
 3. Write the initial summary into `{run_dir}/STATUS.md`.
 
@@ -48,7 +48,7 @@ In W&B, each project auto-gets an **"overview" saved view** (train / eval / stab
 
 ### Where to find things
 
-- `{run_dir}/configs/latest/` — the current attempt's launch TOML and `resolved/` JSON files. Each launch stays under `configs/attempt_<n>/`.
+- `{run_dir}/configs/latest/` — the current attempt's command, launch TOML, and `resolved/` JSON files. Each launch stays under `configs/attempt_<n>/`.
 - `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
 - `{run_dir}/rollouts/step_{n}/{train,eval}/` — saved episodes (see Episodes below).
 
@@ -135,7 +135,7 @@ All metrics print to the console log (and W&B when configured).
 |--------|-------------|
 | `mismatch_kl/{all,env}/{mean,std,max}` | KL between trainer and (old) inference policy over trainable tokens |
 | `entropy/{all,env}/{mean,std,max}` | policy entropy over trainable tokens |
-| `masked_advantage_{positive,negative}/mean` | fraction of DPPO-masked tokens with +/- advantage |
+| `is_masked/mean` | fraction of tokens masked by the IPO trust region |
 | `optim/grad_norm` | spikes may precede divergence |
 
 **Performance** — trainer and orchestrator step independently, so comparing step times shows who's waiting on whom.

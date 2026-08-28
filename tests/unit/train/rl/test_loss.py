@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig
+from prime_rl.configs.trainer import CustomLossConfig, IPOLossConfig
 from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_rl_loss_fn
 
 pytestmark = [pytest.mark.gpu]
@@ -14,7 +14,7 @@ def test_grpo_loss():
     advantages = [torch.randn(50).cuda(), torch.randn(30).cuda()]
     loss_mask = [torch.ones(50, dtype=torch.bool).cuda(), torch.ones(30, dtype=torch.bool).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig(dppo_mask_high=10.0))
+    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig(eps=10.0))
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
@@ -39,7 +39,7 @@ def test_gspo_loss():
     advantages = [torch.randn(40).cuda(), torch.randn(60).cuda()]
     loss_mask = [torch.ones(40, dtype=torch.bool).cuda(), torch.ones(60, dtype=torch.bool).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig(dppo_mask_high=10.0))
+    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig(eps=10.0))
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
@@ -93,7 +93,7 @@ def test_ce_component_matches_masked_nll():
     rl_weights = [torch.zeros(3, dtype=torch.float32).cuda()]
     ce_weights = [torch.tensor([1.0, 0.0, 1.0], dtype=torch.float32).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig())
+    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig())
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -124,7 +124,7 @@ def test_ce_component_applies_weights():
     rl_weights = [torch.zeros(3, dtype=torch.float32).cuda()]
     ce_weights = [torch.tensor([0.1, 0.0, 0.1], dtype=torch.float32).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig())
+    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig())
     loss, _ = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -152,7 +152,7 @@ def test_explicit_rl_weights_match_absent_stream():
     advantages = [torch.randn(50).cuda()]
     loss_mask = [torch.rand(50).cuda() > 0.3]
 
-    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig())
+    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig())
     kwargs = dict(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -188,7 +188,7 @@ def test_disjoint_components_in_one_sequence():
     ref_kl_weights = torch.zeros(n, dtype=torch.float32)
     ref_kl_weights[8:] = 1.0
 
-    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig(dppo_mask_high=10.0))
+    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig(eps=10.0))
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -220,7 +220,7 @@ def test_empty_components_keep_backward_valid():
     rl_weights = [torch.zeros(6, dtype=torch.float32).cuda()]
     ce_weights = [torch.zeros(6, dtype=torch.float32).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig())
+    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig())
     loss, _ = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -254,7 +254,7 @@ def test_overlapping_components_sum():
     loss_mask = [torch.ones(n, dtype=torch.bool).cuda()]
     ce_weights = [torch.full((n,), 0.5, dtype=torch.float32).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig(dppo_mask_high=10.0))
+    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig(eps=10.0))
     kwargs = dict(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
