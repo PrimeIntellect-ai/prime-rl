@@ -42,13 +42,13 @@ The custom path enables you to set EP, CP, selective activation checkpointing, l
 Set `[trainer.model.quantization]` to train dense linears and MoE expert GEMMs in low precision. Two backends are available via the `type` discriminator:
 
 - `type = "fp8"` — DeepGEMM FP8 blockwise (requires SM90+ / Hopper). Options: `enable_grouped_gemm` (FP8 MoE expert GEMM). Both default on.
-- `type = "mxfp8"` — torchao MXFP8 microscaling (requires SM100+ / Blackwell). Options: `enable_grouped_gemm`, `enable_a2a` (MXFP8 expert-parallel all-to-all), and `recipe` (`mxfp8_rceil` default or `mxfp8_rceil_wgrad_with_hp`).
+- `type = "mxfp8"` — torchao MXFP8 microscaling (requires SM100+ / Blackwell). Options: `enable_grouped_gemm`, `enable_a2a` (quantize expert-parallel dispatch/combine tokens to mxfp8 before the all-to-all instead of sending bf16; defaults off — the smaller payload only pays off when the interconnect is the bottleneck, e.g. multi-node over a slower fabric, whereas on a single node over NVLink it's usually pure overhead), and `recipe` (`mxfp8_rceil` default or `mxfp8_rceil_wgrad_with_hp`).
 
 ```toml
 [trainer.model.quantization]
 type = "mxfp8"
 recipe = "mxfp8_rceil"
-enable_a2a = true
+enable_a2a = false
 ```
 
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
