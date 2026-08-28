@@ -354,6 +354,24 @@ def test_deepseek_v4_conversion_matches_the_hf_key_set():
     assert set(state_dict) == set(prime_model.state_dict())
 
 
+def test_deepseek_v4_config_translates_legacy_compress_ratios():
+    """Real checkpoints ship the V3-flavoured legacy `compress_ratios`/`num_hash_layers` schema
+    instead of `layer_types`/`mlp_layer_types` (see NOTES-ds-v4-inference-preflight.md). HF's own
+    config translates these; prime-rl's must too, since prime-rl's model code reads
+    `layer_types`/`mlp_layer_types` directly rather than `compress_ratios`.
+    """
+    legacy_kwargs = dict(
+        num_hidden_layers=6,
+        compress_ratios=[0, 0, 4, 128, 4, 128],
+        num_hash_layers=2,
+    )
+    hf_config = HFDeepseekV4Config(**legacy_kwargs)
+    prime_config = DeepseekV4Config(**legacy_kwargs)
+
+    assert prime_config.layer_types == hf_config.layer_types
+    assert prime_config.mlp_layer_types == hf_config.mlp_layer_types
+
+
 def test_deepseek_v4_init_buffers_post_meta_restores_every_rotary():
     """Rotary tables are non-persistent and computed eagerly, so meta loading loses them."""
     _, prime_config = _configs()

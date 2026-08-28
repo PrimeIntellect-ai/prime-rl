@@ -150,6 +150,11 @@ class DeepseekV4Config(PretrainedConfig):
         eos_token_id: int | list[int] | None = 1,
         **kwargs,
     ):
+        # Real checkpoints ship the V3-flavoured legacy schema (a flat per-layer
+        # `compress_ratios` list of 0/CSA-rate/HCA-rate) instead of `layer_types`. Pop it before
+        # `super().__init__(**kwargs)` sees it, so it can't silently overwrite the derived
+        # `self.compress_ratios` below without ever informing `self.layer_types`.
+        legacy_compress_ratios = kwargs.pop("compress_ratios", None)
         raw_rope_parameters = rope_parameters if rope_parameters is not None else rope_scaling
 
         self.vocab_size = vocab_size
@@ -186,6 +191,9 @@ class DeepseekV4Config(PretrainedConfig):
             if compress_rates is not None
             else {"compressed_sparse_attention": 4, "heavily_compressed_attention": 128}
         )
+        if layer_types is None and legacy_compress_ratios is not None:
+            ratio_to_layer_type = {0: "sliding_attention", **{rate: lt for lt, rate in self.compress_rates.items()}}
+            layer_types = [ratio_to_layer_type[ratio] for ratio in legacy_compress_ratios[:num_hidden_layers]]
         if layer_types is None:
             # Two heavily-compressed bootstrap layers, then alternate sparse / heavy.
             interleave = [
