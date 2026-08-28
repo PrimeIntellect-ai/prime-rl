@@ -61,7 +61,7 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
 DEFAULT_SELECTIVE_TARGETS = DEFAULT_SELECTIVE_SAVE_NAMESPACES | DEFAULT_SELECTIVE_SAVE_OPERATIONS
 
 
-def _full_checkpoint_policy(
+def _mandatory_checkpoint_policy(
     _context: SelectiveCheckpointContext,
     operation: torch._ops.OpOverload | torch._ops.HigherOrderOperator,
     *args,
@@ -85,7 +85,7 @@ def _selective_checkpoint_policy(
     targets: frozenset[str] = DEFAULT_SELECTIVE_TARGETS,
     **kwargs,
 ) -> CheckpointPolicy:
-    runtime_policy = _full_checkpoint_policy(context, operation, *args, **kwargs)
+    runtime_policy = _mandatory_checkpoint_policy(context, operation, *args, **kwargs)
     if runtime_policy is CheckpointPolicy.MUST_SAVE:
         return runtime_policy
     if operation.namespace in targets or operation.name() in targets:
@@ -94,11 +94,11 @@ def _selective_checkpoint_policy(
 
 
 def get_activation_checkpoint_wrapper(config: ActivationCheckpointConfig) -> Callable[[nn.Module], nn.Module]:
-    if config.mode == "selective":
-        targets = DEFAULT_SELECTIVE_TARGETS if config.targets is None else frozenset(config.targets)
-        policy = partial(_selective_checkpoint_policy, targets=targets)
-    else:
-        policy = _full_checkpoint_policy
+    if config.mode == "full":
+        return partial(checkpoint_wrapper, checkpoint_impl=CheckpointImpl.NO_REENTRANT)
+
+    targets = DEFAULT_SELECTIVE_TARGETS if config.targets is None else frozenset(config.targets)
+    policy = partial(_selective_checkpoint_policy, targets=targets)
 
     return partial(
         checkpoint_wrapper,
