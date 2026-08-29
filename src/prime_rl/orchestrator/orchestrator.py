@@ -854,10 +854,9 @@ class Orchestrator:
         """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
         Every quality metric (Reward, Trainable, Turns, Branches, Max Off-Policy, Truncation) is
         computed over exactly the traces shipped to the trainer this step (``batch.cohort``).
-        ``Error``, ``Dispatch Failure``, ``Cancelled``, and ``Ratio`` describe the step's full arrival window —
-        over the shipped set they are 0/0/share-of-shipped by construction, so the window is the
-        only scope where they carry signal (and they stay disjoint: a cancellation is a pipeline
-        decision, an episode error came from the environment, and a dispatch failure produced no episode)."""
+        ``Error``, ``Cancelled``, and ``Ratio`` describe the step's full arrival window. Over the
+        shipped set they are 0/0/share-of-shipped by construction, so the window is the only scope
+        where they carry signal. A cancellation is a pipeline decision, not a rollout failure."""
         episodes = batch.episodes
         effective = batch.cohort.effective
         eff = effective.metrics
@@ -866,16 +865,13 @@ class Orchestrator:
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
         max_off_policy_steps = max((episode_staleness(episode, step)[0] for episode in effective), default=0)
-        num_attempts = len(episodes) + len(batch.failures)
-        dispatch_failure_rate = len(batch.failures) / num_attempts if num_attempts else 0.0
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
             f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Max Off-Policy {max_off_policy_steps} | "
-            f"Error {episodes.metrics.has_error.mean():.1%} | Dispatch Failure {dispatch_failure_rate:.1%} | "
-            f"Cancelled {episodes.metrics.cancelled.mean():.1%} | "
+            f"Error {episodes.metrics.has_error.mean():.1%} | Cancelled {episodes.metrics.cancelled.mean():.1%} | "
             f"Truncation {eff.is_truncated.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
@@ -884,10 +880,7 @@ class Orchestrator:
 
         window_by_env = episodes.by_env()
         shipped_by_env = effective.by_env()
-        failures_by_env: dict[str, list[DispatchFailure]] = {}
-        for failure in batch.failures:
-            failures_by_env.setdefault(failure.env_name, []).append(failure)
-        env_names = sorted(set(window_by_env) | set(shipped_by_env) | set(failures_by_env))
+        env_names = sorted(set(window_by_env) | set(shipped_by_env))
         name_width = max((len(name) for name in env_names), default=0)
         lines = [head]
         for env_name in env_names:
@@ -895,15 +888,11 @@ class Orchestrator:
             env_eff_pool = shipped_by_env.get(env_name, TrainEpisodes())
             env_eff = env_eff_pool.metrics
             ratio = (pool.num_traces / n_generated) if n_generated else 0.0
-            env_failures = failures_by_env.get(env_name, [])
-            env_attempts = len(pool) + len(env_failures)
-            env_failure_rate = len(env_failures) / env_attempts if env_attempts else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
                 f"Max Off-Policy {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
-                f"Error {pool.metrics.has_error.mean():.1%} | Dispatch Failure {env_failure_rate:.1%} | "
-                f"Cancelled {pool.metrics.cancelled.mean():.1%} | "
+                f"Error {pool.metrics.has_error.mean():.1%} | Cancelled {pool.metrics.cancelled.mean():.1%} | "
                 f"Truncation {env_eff.is_truncated.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
