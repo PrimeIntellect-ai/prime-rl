@@ -367,11 +367,8 @@ def verify(arch: str, model_dir: Path) -> None:
     with torch.device("cuda"), default_dtype(torch.float32):
         prime_model = preset["prime_model_class"]._from_config(config)
 
-    # Convert from the *on-disk* checkpoint, not from `hf_model.state_dict()`, because those
-    # are two different key namings for any model that transformers carries a conversion
-    # registry entry for (DeepSeek V4 does). The trainer reads raw on-disk state dicts in
-    # `load_dcp_from_hf`, so this is the naming `conversion_chain` has to handle, and feeding
-    # it the in-memory names instead hid a conversion chain that was a complete no-op.
+    # Load from disk rather than from `hf_model.state_dict()`: the two key namings need not
+    # agree, and the on-disk keys are what `conversion_chain` and the trainer actually see.
     disk_state_dict = load_state_dict(model_dir)
     with torch.no_grad():
         state_dict = {k: v.to(device="cuda", dtype=torch.float32) for k, v in disk_state_dict.items()}
