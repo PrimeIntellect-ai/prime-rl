@@ -26,6 +26,7 @@ class QwenVLAdapter:
             ("pixel_values", "image_grid_thw"),
         )
         merge_size = int(image_processor.merge_size)
+        # HF Qwen-VL / renderer pad count: T*H*W / merge_size^2.
         lengths = [int(grid.prod()) // (merge_size * merge_size) for grid in kwargs["image_grid_thw"].reshape(-1, 3)]
         if lengths != placeholder_lengths:
             raise ValueError(
