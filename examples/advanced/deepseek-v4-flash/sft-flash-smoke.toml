@@ -61,3 +61,7 @@ lr = 3e-6
 [deployment]
 num_train_gpus = 8
 num_infer_gpus = 0
+
+[slurm]
+job_name = "ds-v4-sft-smoke"
+partition = "all"
