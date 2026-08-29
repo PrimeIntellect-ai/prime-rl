@@ -16,23 +16,29 @@
 #
 # Options:
 #   --workspace DIR       Build directory (default: ./ep_kernels_workspace)
-#   --deepep-ref REF      DeepEP commit hash (default: 73b6ea4)
+#   --wheel-dir DIR       Wheel output directory (default: ./deps)
+#   --deepep-ref REF      DeepEP commit hash (default: 29d31c0)
 #   --nvshmem-ver VER     NVSHMEM version (default: 3.3.24)
 #   --configure-drivers   Also configure IBGDA drivers (requires sudo, needs reboot)
+#
+# Set TORCH_CUDA_ARCH_LIST to cross compile without a GPU (e.g. "9.0;10.0" in CI);
+# unset, the arch is detected from the GPU nvidia-smi reports.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
-DEEPEP_COMMIT_HASH="73b6ea4"
+DEEPEP_COMMIT_HASH="29d31c0"
 NVSHMEM_VER="3.3.24"
 WORKSPACE="$REPO_ROOT/ep_kernels_workspace"
+WHEEL_DIR="$REPO_ROOT/deps"
 CONFIGURE_DRIVERS=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --workspace)         WORKSPACE="$2";          shift 2 ;;
+        --wheel-dir)         WHEEL_DIR="$2";          shift 2 ;;
         --deepep-ref)        DEEPEP_COMMIT_HASH="$2"; shift 2 ;;
         --nvshmem-ver)       NVSHMEM_VER="$2";        shift 2 ;;
         --configure-drivers) CONFIGURE_DRIVERS=1;     shift   ;;
@@ -63,24 +69,26 @@ export CUDA_HOME
 NVCC_VER=$("$CUDA_HOME/bin/nvcc" --version | grep -oP 'release \K[\d.]+')
 echo "Torch CUDA: ${TORCH_CUDA_VER}, nvcc: ${NVCC_VER} (${CUDA_HOME})"
 
-# ── Auto-detect GPU architecture ──────────────────────────────────────────────
-GPU_NAME=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader,nounits -i 0 2>/dev/null)
-case "$GPU_NAME" in
-    *H100*|*H200*|*H800*)  TORCH_CUDA_ARCH_LIST="9.0" ;;
-    *B100*|*B200*|*GB200*)  TORCH_CUDA_ARCH_LIST="10.0" ;;
-    *)
-        echo "Could not auto-detect GPU arch from '$GPU_NAME'. Set TORCH_CUDA_ARCH_LIST manually." >&2
-        echo "  Hopper (H100/H200): TORCH_CUDA_ARCH_LIST=9.0" >&2
-        echo "  Blackwell (B200):   TORCH_CUDA_ARCH_LIST=10.0" >&2
-        exit 1
-        ;;
-esac
+# ── Auto-detect GPU architecture (honor a preset TORCH_CUDA_ARCH_LIST) ────────
+if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ]; then
+    GPU_NAME=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader,nounits -i 0 2>/dev/null)
+    case "$GPU_NAME" in
+        *H100*|*H200*|*H800*)  TORCH_CUDA_ARCH_LIST="9.0" ;;
+        *B100*|*B200*|*GB200*)  TORCH_CUDA_ARCH_LIST="10.0" ;;
+        *)
+            echo "Could not auto-detect GPU arch from '$GPU_NAME'. Set TORCH_CUDA_ARCH_LIST manually." >&2
+            echo "  Hopper (H100/H200): TORCH_CUDA_ARCH_LIST=9.0" >&2
+            echo "  Blackwell (B200):   TORCH_CUDA_ARCH_LIST=10.0" >&2
+            exit 1
+            ;;
+    esac
+fi
 export TORCH_CUDA_ARCH_LIST
 
 echo "================================================================"
 echo " Installing DeepEP kernels"
 echo " CUDA:       ${CUDA_HOME} (${NVCC_VER})"
-echo " GPU:        ${GPU_NAME} (arch ${TORCH_CUDA_ARCH_LIST})"
+echo " GPU:        ${GPU_NAME:-cross-compile} (arch ${TORCH_CUDA_ARCH_LIST})"
 echo " DeepEP:     ${DEEPEP_COMMIT_HASH}"
 echo " NVSHMEM:    ${NVSHMEM_VER}"
 echo " Workspace:  ${WORKSPACE}"
@@ -137,7 +145,6 @@ cd "$DEEPEP_DIR"
 git fetch origin
 git checkout "$DEEPEP_COMMIT_HASH"
 
-WHEEL_DIR="$REPO_ROOT/deps"
 mkdir -p "$WHEEL_DIR"
 python setup.py bdist_wheel --dist-dir "$WHEEL_DIR"
 

@@ -123,10 +123,13 @@ Then, in order:
 
 ## Prebuilt wheels
 
-[`build_kernels.yaml`](../../.github/workflows/build_kernels.yaml) builds the wheel for
-x86_64 and aarch64 in the CUDA devel image (no GPU needed — nvcc cross compiles). It inits
-the `deps/prime-kernels` submodule itself, runs on every bump of it, and attaches the wheels
-to a release when given a `release_tag`, alongside the deep-ep/deep-gemm/torchao wheels.
+[`build_kernels.yaml`](../../.github/workflows/build_kernels.yaml) builds every prebuilt
+kernel wheel `[tool.uv.sources]` pins — `prime-kernels`, `deep-ep`, `deep-gemm` and
+`torchao` — for x86_64 and aarch64 in the CUDA devel image (no GPU needed — nvcc cross
+compiles every shipped arch). It inits the `deps/prime-kernels` submodule itself, runs on
+every bump of it (or of the deep-ep/deep-gemm build scripts), and attaches the wheels to a
+release when given a `release_tag`. A torch or CUDA bump is therefore a workflow dispatch,
+not a hunt for a machine with the right GPU.
 
 Its `paths` trigger is `deps/prime-kernels` (the gitlink), **not** `deps/prime-kernels/**` —
 no file under it is tracked by prime-rl, so a `**` pattern would match nothing and submodule
