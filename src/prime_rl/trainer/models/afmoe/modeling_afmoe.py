@@ -20,7 +20,7 @@ from prime_rl.trainer.models.layers.attn import (
     flash_attn_varlen_func,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
+from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import (
@@ -242,28 +242,38 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         self.post_mlp_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
         self.moe_enabled = layer_idx >= config.num_dense_layers
-        mlp_config = MLPConfig(
-            hidden_size=config.hidden_size,
-            intermediate_size=config.intermediate_size,
-            gate_act=config.hidden_act,
-            bias=False,
-        )
         moe_args = MoEArgs(
             num_experts=config.num_experts,
-            num_shared_experts=config.num_shared_experts,
+            expert_type="gated",
+            activation=config.hidden_act,
             score_func=config.score_func,
             route_norm=config.route_norm,
             route_scale=config.route_scale,
             score_before_experts=getattr(config, "score_before_experts", False),
             top_k=config.num_experts_per_tok,
-            use_grouped_mm=getattr(config, "use_grouped_mm", True),
             load_balance_coeff=config.load_balance_coeff,
-            fp8=getattr(config, "fp8", False),
         )
         if self.moe_enabled:
-            self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            shared_expert = None
+            if config.num_shared_experts > 0:
+                shared_expert = FeedForward(
+                    dim=config.hidden_size,
+                    hidden_dim=config.moe_intermediate_size * config.num_shared_experts,
+                    expert_type=moe_args.expert_type,
+                    activation=moe_args.activation,
+                )
+            self.mlp = MoE.from_args(
+                moe_args,
+                dim=config.hidden_size,
+                hidden_dim=config.moe_intermediate_size,
+                shared_expert=shared_expert,
+            )
         else:
-            self.mlp = MLP(mlp_config)
+            self.mlp = FeedForward(
+                dim=config.hidden_size,
+                hidden_dim=config.intermediate_size,
+                activation=config.hidden_act,
+            )
 
     def forward(
         self,
@@ -325,7 +335,7 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, torch.Tensor]) -> bool:
-        return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
+        return any("mlp.experts.gate_proj" in module_name for module_name in state_dict.keys())
 
     @classmethod
     def conversion_chain(cls, config):

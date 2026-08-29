@@ -214,24 +214,6 @@ class SplitConcat(ConvOp):
 
 
 @dataclass
-class Synthetic(ConvOp):
-    """A prime-only tensor with no HF counterpart, created on forward and
-    dropped on backward (e.g. NemotronH's dummy ``experts.w3`` of shape (0,)).
-
-    ``factory`` builds the tensor from the current state dict (so it can match
-    device/dtype of a sibling)."""
-
-    prime: str
-    factory: Callable[[StateDict], Tensor]
-
-    def hf_to_prime(self, sd: StateDict) -> None:
-        sd[self.prime] = self.factory(sd)
-
-    def prime_to_hf(self, sd: StateDict) -> None:
-        sd.pop(self.prime, None)
-
-
-@dataclass
 class MapValue(ConvOp):
     """Apply a value transform to one key. ``forward`` runs HF->prime,
     ``backward`` runs prime->HF. Use for genuinely non-structural conversions
@@ -314,11 +296,11 @@ def key_present(name: str) -> Callable[[StateDict], bool]:
 
 
 # --------------------------------------------------------------------------- #
-# Shared composition helper for Llama-style routed experts (prime w1=gate,
-# w2=down, w3=up). Used by several models' converting_<model>.py.
+# Shared composition helper for Llama-style routed experts (prime gate_proj=gate,
+# down_proj=down, up_proj=up). Used by several models' converting_<model>.py.
 # --------------------------------------------------------------------------- #
 
-GATE_DOWN_UP = (("w1", "gate_proj"), ("w2", "down_proj"), ("w3", "up_proj"))
+GATE_DOWN_UP = (("gate_proj", "gate_proj"), ("down_proj", "down_proj"), ("up_proj", "up_proj"))
 
 
 def routed_experts_op(
@@ -335,14 +317,14 @@ def routed_experts_op(
     Per-expert HF weights <-> stacked prime tensors is a :class:`Stack` per
     proj. ``hf_experts``/``prime_experts`` are the (relative) expert container
     names (e.g. ``mlp.experts`` / ``block_sparse_moe.experts``); ``proj_order``
-    maps prime ``wN`` to the HF per-expert proj name.
+    maps prime projection names to the HF per-expert proj name.
 
     With ``fused`` set, the transformers-v5 fused ``gate_up_proj`` input is also
     accepted: a :class:`Conditional` on its presence splits it (dim 1) into
-    w1/w3 and renames ``down_proj`` -> w2; otherwise the per-expert ``Stack``s
-    run. Prime always stores split w1/w2/w3, so the backward path always goes
-    through the per-expert ``Stack`` unstack (the fused key is absent in prime,
-    so the conditional takes the else branch)."""
+    gate_proj/up_proj and renames ``down_proj``; otherwise the per-expert
+    ``Stack``s run. Prime always stores split gate/down/up projections, so the
+    backward path always goes through the per-expert ``Stack`` unstack (the
+    fused key is absent in prime, so the conditional takes the else branch)."""
     stacks = [
         Stack(
             stacked=f"{prefix}.{prime_experts}.{wn}",
@@ -356,9 +338,12 @@ def routed_experts_op(
     fused_then = [
         SplitConcat(
             combined=gate_up,
-            parts=[(f"{prefix}.{prime_experts}.w1", None), (f"{prefix}.{prime_experts}.w3", None)],
+            parts=[
+                (f"{prefix}.{prime_experts}.gate_proj", None),
+                (f"{prefix}.{prime_experts}.up_proj", None),
+            ],
             dim=1,
         ),
-        Rename(f"{prefix}.{hf_experts}.down_proj", f"{prefix}.{prime_experts}.w2"),
+        Rename(f"{prefix}.{hf_experts}.down_proj", f"{prefix}.{prime_experts}.down_proj"),
     ]
     return Conditional(key_present(gate_up), then=fused_then, else_=stacks)

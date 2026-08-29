@@ -99,11 +99,14 @@ EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP 
 ```toml
 [trainer.model]
 impl = "custom"
-ep = 8                     # explicit EP degree; must divide num_experts
-ep_comm_backend = "torch"  # or "deepep"
+ep = 8  # explicit EP degree; must divide num_experts
+
+[trainer.model.moe.dispatch]
+type = "torch"
+transport = "bf16"
 ```
 
-`ep_comm_backend = "deepep"` uses DeepEP's custom dispatch/combine kernels for speed, with two extra knobs (`deepep_num_sms`, `deepep_token_chunk_size`) — tune on your hardware.
+For DeepEP, set `type = "deepep"` and tune `num_sms` plus optional `token_chunk_size` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
 
 ### Context Parallelism
 

@@ -1,29 +1,42 @@
-from dataclasses import dataclass
+from typing import Literal
 
 import torch
 from torch import nn
-from transformers.activations import ACT2FN
+
+from prime_rl.trainer.models.layers.activations import ActivationDispatch, ActivationType
+
+ExpertType = Literal["gated", "non_gated"]
 
 
-@dataclass
-class MLPConfig:
-    hidden_size: int
-    intermediate_size: int
-    gate_act: str
-    bias: bool
+class FeedForward(nn.Module):
+    """Dense feed-forward layer using the canonical projection names."""
 
-
-class MLP(nn.Module):
-    def __init__(self, config: MLPConfig):
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int,
+        *,
+        expert_type: ExpertType = "gated",
+        activation: ActivationType = "silu",
+        bias: bool = False,
+    ) -> None:
         super().__init__()
-        self.config = config
-        self.hidden_size = config.hidden_size
-        self.intermediate_size = config.intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.gate_act_fn = ACT2FN[config.gate_act]
+        self.gate_proj = nn.Linear(dim, hidden_dim, bias=bias) if expert_type == "gated" else None
+        self.up_proj = nn.Linear(dim, hidden_dim, bias=bias)
+        self.down_proj = nn.Linear(hidden_dim, dim, bias=bias)
+        self.activation = ActivationDispatch[activation]
 
-    def forward(self, x, routed_experts: torch.Tensor | None = None):
-        down_proj = self.down_proj(self.gate_act_fn(self.gate_proj(x)) * self.up_proj(x))
-        return down_proj
+    def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
+        gate = self.gate_proj(x) if self.gate_proj is not None else None
+        up = self.up_proj(x)
+        return self.down_proj(self.activation.apply(gate, up))
+
+    def init_weights(self, init_std: float = 0.02) -> None:
+        first_projection = self.gate_proj if self.gate_proj is not None else self.up_proj
+        nn.init.trunc_normal_(first_projection.weight, mean=0.0, std=0.02)
+        remaining = (self.up_proj, self.down_proj) if self.gate_proj is not None else (self.down_proj,)
+        for linear in remaining:
+            nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
+        for linear in (self.gate_proj, self.up_proj, self.down_proj):
+            if linear is not None and linear.bias is not None:
+                nn.init.zeros_(linear.bias)

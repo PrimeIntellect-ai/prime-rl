@@ -8,8 +8,6 @@ from prime_rl.trainer.model import load_dcp_from_hf
 from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
 from prime_rl.trainer.models.laguna.modeling_laguna import LagunaForCausalLM
 
-pytestmark = [pytest.mark.gpu]
-
 
 @pytest.fixture
 def model() -> LagunaForCausalLM:
@@ -32,12 +30,13 @@ def model() -> LagunaForCausalLM:
         return LagunaForCausalLM(config)
 
 
-def test_load_dcp_from_hf_keeps_checkpoint_expert_bias(model, tmp_path, monkeypatch):
-    """Checkpoint values for the persistent `expert_bias` buffer must survive loading."""
+@pytest.mark.gpu
+def test_load_dcp_from_hf_keeps_checkpoint_selection_bias(model, tmp_path, monkeypatch):
+    """Checkpoint values for the persistent selection bias must survive loading."""
     expected = torch.tensor([0.1, 0.2, 0.3, 0.4])
 
     def fake_dcp_load(state_dict, storage_reader=None):
-        buffer = state_dict["model.layers.1.mlp.expert_bias"]
+        buffer = state_dict["model.layers.1.mlp.router.selection_bias"]
         buffer.copy_(expected.to(device=buffer.device, dtype=buffer.dtype))
 
     monkeypatch.setattr("prime_rl.trainer.model.dcp_load", fake_dcp_load)
@@ -46,5 +45,5 @@ def test_load_dcp_from_hf_keeps_checkpoint_expert_bias(model, tmp_path, monkeypa
 
     load_dcp_from_hf(model, ModelConfig(name=str(tmp_path)), parallel_dims=MagicMock())
 
-    expert_bias = model.model.layers[1].mlp.expert_bias
-    torch.testing.assert_close(expert_bias.cpu(), expected.to(expert_bias.dtype))
+    selection_bias = model.model.layers[1].mlp.router.selection_bias
+    torch.testing.assert_close(selection_bias.cpu(), expected.to(selection_bias.dtype))
