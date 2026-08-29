@@ -189,22 +189,22 @@ ATTN_IMPL2CLASS = {
 }
 
 
+ATTN_IMPL2FLASH_VERSION = {
+    "flash_attention_2": 2,
+    "flash_attention_3": 3,
+    "flash_attention_4": 4,
+}
+
+
 def substitute_ring_attn(
     process_group: torch.distributed.ProcessGroup,
     heads_k_stride: int,
     attn_impl: str = "flash_attention_2",
 ) -> None:
     """Patch _compute_attention on FlashAttention variants to use ring attention."""
-    from ring_flash_attn import llama3_flash_attn_varlen_func
+    from .ring_attn import ring_flash_attn_varlen_func
 
-    from .ring_attn import ring_fa3_varlen_func, ring_fa4_varlen_func
-
-    if attn_impl == "flash_attention_4":
-        ring_func = ring_fa4_varlen_func
-    elif attn_impl == "flash_attention_3":
-        ring_func = ring_fa3_varlen_func
-    else:
-        ring_func = llama3_flash_attn_varlen_func
+    flash_attn_version = ATTN_IMPL2FLASH_VERSION[attn_impl]
 
     def _ring_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
         from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
@@ -214,7 +214,7 @@ def substitute_ring_attn(
         if sliding_window is not None:
             window_size = (sliding_window - 1, 0)
 
-        out = ring_func(
+        out = ring_flash_attn_varlen_func(
             q,
             k,
             v,
@@ -227,6 +227,7 @@ def substitute_ring_attn(
             window_size=window_size,
             group=process_group,
             heads_k_stride=heads_k_stride,
+            flash_attn_version=flash_attn_version,
         )
         if isinstance(out, tuple):
             out = out[0]
