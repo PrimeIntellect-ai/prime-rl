@@ -1,6 +1,5 @@
 import os
 import signal
-import socket
 import subprocess
 from pathlib import Path
 from typing import Callable, Generator
@@ -10,6 +9,16 @@ import pytest
 from prime_rl.trainer.world import reset_world
 from prime_rl.utils.logger import reset_logger, setup_logger
 from prime_rl.utils.process import cleanup_process
+from tests.dtest import DTest, _free_port
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_call(item):
+    cls = getattr(item, "cls", None)
+    if cls and issubclass(cls, DTest):
+        dtest_instance = cls()
+        dtest_instance(item._request)
+        item.runtest = lambda: True  # dummy, so pytest doesn't also run the test body normally
 
 
 @pytest.fixture(autouse=True)
@@ -49,9 +58,7 @@ def cleanup_zombies():
 @pytest.fixture
 def free_port() -> int:
     """Fixture to get a free port per tests"""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
+    return _free_port()
 
 
 @pytest.fixture(scope="session")
