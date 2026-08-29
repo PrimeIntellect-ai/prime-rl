@@ -7,6 +7,7 @@ from prime_rl.transports.batch.filesystem import (
     FileSystemBatchSender,
 )
 from prime_rl.transports.batch.types import (
+    KeptTokens,
     MicroBatch,
     RoutedExperts,
     TrainingSample,
@@ -48,6 +49,7 @@ __all__ = [
     "BatchSender",
     "TrainingSample",
     "MicroBatch",
+    "KeptTokens",
     "RoutedExperts",
     "setup_batch_sender",
     "setup_batch_receiver",

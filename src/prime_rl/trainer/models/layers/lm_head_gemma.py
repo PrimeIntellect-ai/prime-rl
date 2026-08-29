@@ -23,9 +23,11 @@ class GemmaFusedOutputLinear(torch.nn.Linear):
         hidden_states: torch.Tensor,
         labels: torch.Tensor | None = None,
         temperature: Tensor | None = None,
+        kept_tokens: Tensor | None = None,
     ) -> PrimeLmOutput:
         assert labels is not None, "GemmaFusedOutputLinear requires labels for chunked logprob computation"
         assert temperature is not None, "GemmaFusedOutputLinear requires per-token temperatures"
+        assert kept_tokens is None, "kept-set replay is not supported with Gemma softcapped lm_heads"
 
         b, s, h = hidden_states.shape
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
@@ -47,7 +49,11 @@ class GemmaVanillaOutputLinear(torch.nn.Linear):
         self.softcap = softcap
 
     def forward(
-        self, hidden_states: torch.Tensor, labels: torch.Tensor | None = None, temperature: Tensor | None = None
+        self,
+        hidden_states: torch.Tensor,
+        labels: torch.Tensor | None = None,
+        temperature: Tensor | None = None,
+        kept_tokens: Tensor | None = None,
     ) -> PrimeLmOutput:
         logits = super().forward(hidden_states)
         logits = self.softcap * torch.tanh(logits / self.softcap)

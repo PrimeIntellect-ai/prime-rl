@@ -11,10 +11,13 @@ def setup_vllm_env(config: InferenceConfig):
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
     # Router replay needs the V1 GPU model runner: V2 silently never captures
-    # routed experts. Everything else follows vLLM's own V1/V2 resolution.
-    # setdefault so it stays overridable.
+    # routed experts. Sampling-mask capture (sampling replay) conversely exists
+    # only on V2 — config validation rejects enabling both. Everything else
+    # follows vLLM's own V1/V2 resolution. setdefault so it stays overridable.
     if config.vllm.enable_return_routed_experts:
         os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "0")
+    if config.enable_return_sampling_mask:
+        os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1")
 
     # vLLM 0.24.0 flipped VLLM_ENFORCE_STRICT_TOOL_CALLING's default to True, which
     # grammar-constrains generation (xgrammar structural tags) for tool_choice
