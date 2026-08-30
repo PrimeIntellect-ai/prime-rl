@@ -42,7 +42,8 @@ wants; `is_available` is just that call compared to `None`.
 tcgen05. Its trainer integration is dormant. `mxfp8_moe` is a Python-only registered
 kernel package for MXFP8 grouped GEMM and torch EP transport on SM100; it owns the
 MoE-specific torchao-derived orchestration and exports explicit BF16 boundaries instead
-of tensor-subclass interception.
+of tensor-subclass interception. `indexed_attention` is a Python-only TileLang forward
+and backward for token-indexed grouped-query attention on SM80, SM90, and SM100.
 
 What a kernel requires of its inputs — block sizes, alignments, shape constraints — belongs
 to prime-kernels, which exports it: `flash_moe.BLOCK_M`, `flash_moe.MXFP8_SCALE_BLOCK`, and
@@ -73,17 +74,19 @@ runtime — the build still succeeds. `PRIME_KERNELS=a,b` builds a subset;
 
 The work happens in the prime-kernels repo, not here. Inside `deps/prime-kernels/`:
 
-1. Commit the sources under `prime_kernels/<name>/csrc/`.
+1. Commit the implementation under `prime_kernels/<name>/`. Compiled kernels put their
+   C++/CUDA sources in `csrc/`; Python-only kernels keep their Python implementation here.
 2. Add a `[<name>]` table to `prime_kernels/kernels.toml` — `sources`, `include-dirs`,
    `arch`, `cxx-std`; paths are relative to the kernel folder. A vendored Python kernel
    uses `python-only = true`, may declare import checks in `requires`, and omits compiled
    extension fields.
-3. Write `prime_kernels/<name>/__init__.py` — `from . import _C`, then per op a wrapper
-   calling `torch.ops.<ns>.<op>` and a `torch.library.register_fake`. No
-   `torch.library.custom_op` decorator: that defines a *Python* op, and `TORCH_LIBRARY`
-   has already defined these C++ side — only the fake (meta) kernel is missing. A kernel
-   used in training also needs `torch.library.register_autograd`, since a schema carries
-   no backward. `flash_moe` is forward only and currently has no trainer integration.
+3. For a compiled kernel, write `prime_kernels/<name>/__init__.py` with `from . import _C`,
+   a wrapper calling `torch.ops.<ns>.<op>`, and a `torch.library.register_fake`. Do not use
+   `torch.library.custom_op` for a compiled op because `TORCH_LIBRARY` already defines it.
+   A Python-only implementation may define its dispatcher boundary with
+   `torch.library.custom_op`; it still needs a fake implementation and, when used for
+   training, registered autograd. `flash_moe` is forward only and currently has no trainer
+   integration.
 4. Nothing else: `setup.py` and the runtime registry both read the manifest.
 
 Rules the build assumes:
@@ -98,6 +101,10 @@ Rules the build assumes:
 - Only the Python surface and the compiled `_C` ship in the wheel; `csrc/` is build input.
 
 Then land it in prime-rl as a submodule bump.
+
+`prime_kernels.load` caches successful imports. Preload a Python-only kernel before a model
+layer is passed to `torch.compile`; subsequent calls through `load` are compile-friendly
+and still preserve the registry gate.
 
 ## Bumping the pin
 

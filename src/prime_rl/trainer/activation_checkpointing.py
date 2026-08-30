@@ -67,6 +67,7 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
         "prime_rl::fp8_blockwise_mm",
         "prime_rl::grouped_fp8_gemm",
         "prime_rl::sparse_mla",
+        "prime_kernels::indexed_attention_forward",
     }
 )
 DEFAULT_SELECTIVE_TARGETS = DEFAULT_SELECTIVE_SAVE_NAMESPACES | DEFAULT_SELECTIVE_SAVE_OPERATIONS
