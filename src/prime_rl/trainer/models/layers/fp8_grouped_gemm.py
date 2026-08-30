@@ -220,6 +220,7 @@ def _grouped_fp8_gemm_backward(
 
     return grad_x, grad_weight
 
+
 @_grouped_fp8_gemm_backward.register_fake
 def _grouped_fp8_gemm_backward_fake(
     grad_output: torch.Tensor,

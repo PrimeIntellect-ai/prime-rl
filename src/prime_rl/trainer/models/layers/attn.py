@@ -167,14 +167,7 @@ def substitute_ring_attn(
     attn_impl: str = "flash_attention_2",
 ) -> None:
     """Patch _compute_attention on FlashAttention variants to use ring attention."""
-    from .ring_attn import ring_fa2_varlen_func, ring_fa3_varlen_func, ring_fa4_varlen_func
-
-    if attn_impl == "flash_attention_4":
-        ring_func = ring_fa4_varlen_func
-    elif attn_impl == "flash_attention_3":
-        ring_func = ring_fa3_varlen_func
-    else:
-        ring_func = ring_fa2_varlen_func
+    from .ring_attn import ring_varlen_attention
 
     def _ring_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
         from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
@@ -184,7 +177,7 @@ def substitute_ring_attn(
         if sliding_window is not None:
             window_size = (sliding_window - 1, 0)
 
-        out = ring_func(
+        out = ring_varlen_attention(
             q,
             k,
             v,
@@ -197,9 +190,8 @@ def substitute_ring_attn(
             window_size=window_size,
             group=process_group,
             heads_k_stride=heads_k_stride,
+            attention_backend=attn_impl,
         )
-        if isinstance(out, tuple):
-            out = out[0]
         return out
 
     FlashAttention._compute_attention = _ring_compute_attention
