@@ -122,12 +122,23 @@ def _create_muon_optimizer(
     parallel_dims: ParallelDims,
     lr: float | None = None,
 ) -> Optimizer:
+    if parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
+        muon_mesh_size = parallel_dims.get_mesh("dp_shard_cp").size()
+    else:
+        muon_mesh_size = parallel_dims.world_mesh.size()
+
     def muon_enabled(n, p):
         if p.ndim < 2:
             return False
         if "lm_head" in n:
             return False
         if "embed_tokens" in n:
+            return False
+        # Muon distributes orthogonalization by sharding a parameter's leading dim
+        # across the mesh; dion asserts divisibility. Route indivisible params (e.g.
+        # small attention-gate projections) to adamw like the other muon-unsuitable
+        # params rather than crashing the step.
+        if p.shape[0] % muon_mesh_size != 0:
             return False
         return True
 
