@@ -276,11 +276,21 @@ def bwd(
     return sparse_mla_bwd_kernel
 
 
-def sparse_mla_bwd(q, kv, o, do, indices, lse, sm_scale=None):
+@torch.library.custom_op("prime_rl::sparse_mla_backward", mutates_args=())
+def sparse_mla_backward(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    out: torch.Tensor,
+    grad_out: torch.Tensor,
+    indices: torch.Tensor,
+    lse: torch.Tensor,
+    sm_scale: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
     assert q.is_contiguous()
     assert kv.is_contiguous()
     assert indices.is_contiguous()
     assert lse.is_contiguous()
+    grad_out = grad_out.contiguous()
     B, S, H, dim_plus_tail_dim = q.shape
     _, S_kv, kv_group, _ = kv.shape
     assert kv.shape[-1] == dim_plus_tail_dim
@@ -295,9 +305,22 @@ def sparse_mla_bwd(q, kv, o, do, indices, lse, sm_scale=None):
     bwd_kernel = bwd(H, D, D_tail, topk, kv_group, sm_scale, True)
     postprocess_kernel = postprocess(D, D_tail, kv_group)
 
-    delta = preprocess_kernel(o, do)
+    delta = preprocess_kernel(out, grad_out)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
-    dq = bwd_kernel(q, kv, do, indices, lse, delta, dkv)
+    dq = bwd_kernel(q, kv, grad_out, indices, lse, delta, dkv)
     dkv = postprocess_kernel(dkv)
 
     return dq, dkv
+
+
+@sparse_mla_backward.register_fake
+def _sparse_mla_backward_fake(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    out: torch.Tensor,
+    grad_out: torch.Tensor,
+    indices: torch.Tensor,
+    lse: torch.Tensor,
+    sm_scale: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return torch.empty_like(q), torch.empty_like(kv)
