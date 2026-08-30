@@ -54,18 +54,14 @@ class GatedDeltaNet(nn.Module):
         self.out_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         self.context_parallel_group: ProcessGroup | None = None
-        self.context_parallel_world_size = 1
 
-    def set_context_parallel_attributes(self, process_group: ProcessGroup, world_size: int) -> None:
+    def set_context_parallel_group(self, process_group: ProcessGroup) -> None:
         self.context_parallel_group = process_group
-        self.context_parallel_world_size = world_size
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.LongTensor,
-        *,
-        cu_seqlens_are_pre_shard: bool,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
 
@@ -81,8 +77,6 @@ class GatedDeltaNet(nn.Module):
 
         context = None
         if self.context_parallel_group is not None:
-            if not cu_seqlens_are_pre_shard:
-                raise ValueError("GatedDeltaNet context parallelism requires full pre-shard sequence boundaries")
             context = build_cp_context(
                 cu_seqlens=cu_seqlens.to(device=hidden_states.device, dtype=torch.int32),
                 group=self.context_parallel_group,
