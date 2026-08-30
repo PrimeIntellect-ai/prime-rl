@@ -5,7 +5,7 @@ from transformers.modeling_outputs import BaseModelOutput
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
-from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import MoE, SigmoidOutputGatedMoE
 from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import (
     Qwen3_5MoeTextConfig,
@@ -27,21 +27,6 @@ from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_pos
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
-class Qwen3_5SharedExpert(FeedForward):
-    def __init__(self, config: Qwen3_5MoeTextConfig) -> None:
-        super().__init__(
-            dim=config.hidden_size,
-            hidden_dim=config.shared_expert_intermediate_size,
-            expert_type="gated",
-            activation=config.hidden_act,
-        )
-        self.output_gate = nn.Linear(config.hidden_size, 1, bias=False)
-
-    def forward(self, hidden_states: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
-        output = super().forward(hidden_states, routed_experts)
-        return output * self.output_gate(hidden_states).sigmoid()
-
-
 class Qwen3_5DecoderLayer(nn.Module):
     def __init__(self, config: Qwen3_5TextConfig, layer_index: int) -> None:
         super().__init__()
@@ -54,27 +39,14 @@ class Qwen3_5DecoderLayer(nn.Module):
             raise ValueError(f"Unsupported Qwen3.5 layer type: {self.layer_type}")
 
         if isinstance(config, Qwen3_5MoeTextConfig):
-            router = TokenChoiceTopKRouter(
+            self.mlp = SigmoidOutputGatedMoE(
                 dim=config.hidden_size,
+                expert_hidden_dim=config.moe_intermediate_size,
+                shared_expert_hidden_dim=config.shared_expert_intermediate_size,
                 num_experts=config.num_experts,
                 top_k=config.num_experts_per_tok,
-                score_func="softmax",
-                route_norm=True,
-                route_scale=1.0,
-            )
-            experts = GroupedExperts(
-                dim=config.hidden_size,
-                hidden_dim=config.moe_intermediate_size,
-                num_experts=config.num_experts,
-                expert_type="gated",
                 activation=config.hidden_act,
-            )
-            experts.init_weights(config.initializer_range)
-            self.mlp = MoE(
-                router=router,
-                experts=experts,
-                shared_expert=Qwen3_5SharedExpert(config),
-                score_before_experts=False,
+                init_std=config.initializer_range,
                 load_balance_coeff=config.load_balance_coeff,
             )
         else:
