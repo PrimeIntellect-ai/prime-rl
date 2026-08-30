@@ -114,6 +114,19 @@ class AdminClients:
             await client.aclose()
 
 
+def setup_policy_admin_clients(
+    client_config: ClientConfig,
+    model_name: str,
+    *,
+    require_world_size: bool,
+):
+    if client_config.is_dynamo():
+        from prime_rl.inference.dynamo import DynamoAdminClients
+
+        return DynamoAdminClients(client_config, model_name, require_world_size=require_world_size)
+    return AdminClients(client_config)
+
+
 async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
     """One-shot readiness check of an inference endpoint (health + model
     listing) with transient clients — for frozen endpoints that never need a

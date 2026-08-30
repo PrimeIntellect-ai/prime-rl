@@ -8,6 +8,7 @@ from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     BaseWeightBroadcastConfig,
+    DynamoConfig,
     EnvVars,
     HeartbeatConfig,
     MetricsServerConfig,
@@ -591,6 +592,13 @@ class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Number of inference workers."""
 
 
+class DynamoWeightBroadcastConfig(DynamoConfig):
+    model_name: str
+    headers: dict[str, str] = Field(default_factory=dict)
+    headers_from_env: dict[str, str] = Field(default_factory=dict)
+    api_key_var: str = "VLLM_API_KEY"
+
+
 class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     type: Literal["nccl"] = "nccl"
 
@@ -599,6 +607,9 @@ class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
 
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
+
+    dynamo: DynamoWeightBroadcastConfig | None = None
+    """Dynamo worker discovery used by the native vLLM weight-transfer sender."""
 
 
 class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):

@@ -12,6 +12,7 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.shared import ClientConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
@@ -84,6 +85,39 @@ def write_toml(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         tomli_w.dump(data, f)
+
+
+def test_client_config_identifies_dynamo():
+    config = ClientConfig(dynamo={"discovery_url": "http://frontend:8001"})
+
+    assert config.is_dynamo()
+    assert config.dynamo is not None
+    assert config.dynamo.discovery_url == "http://frontend:8001"
+    assert not ClientConfig().is_dynamo()
+
+
+def test_external_dynamo_uses_declared_inference_capacity():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {
+                "model": {"client": {"dynamo": {"discovery_url": "http://dynamo-frontend:8001"}}}
+            },
+            "weight_broadcast": {"type": "nccl"},
+            "deployment": {
+                "type": "single_node",
+                "gpus_per_node": 8,
+                "num_train_gpus": 1,
+                "num_infer_gpus": 4,
+            },
+        }
+    )
+
+    assert config.trainer.weight_broadcast.type == "nccl"
+    assert config.trainer.weight_broadcast.inference_world_size == 4
+    assert config.orchestrator.weight_broadcast.inference_world_size == 4
+    assert config.trainer.weight_broadcast.dynamo is not None
+    assert config.trainer.weight_broadcast.dynamo.discovery_url == "http://dynamo-frontend:8001"
 
 
 def test_defaults():

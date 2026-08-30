@@ -162,6 +162,11 @@ class BaseModelConfig(BaseConfig):
     """VLM configuration. Setting this enables vision-language model support."""
 
 
+class DynamoConfig(BaseConfig):
+    discovery_url: str
+    """Dynamo frontend URL used to discover the inference workers pinned for RL control."""
+
+
 class ClientConfig(BaseConfig):
     wait_for_ready_timeout: int = 1800
     """Seconds to wait at startup for the inference pool to become ready."""
@@ -183,6 +188,12 @@ class ClientConfig(BaseConfig):
 
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
+
+    dynamo: DynamoConfig | None = None
+    """Dynamo RL worker-discovery configuration."""
+
+    def is_dynamo(self) -> bool:
+        return self.dynamo is not None
 
 
 class LogConfig(BaseConfig):
