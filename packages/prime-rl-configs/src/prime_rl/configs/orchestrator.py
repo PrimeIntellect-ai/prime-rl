@@ -430,7 +430,10 @@ class ConcurrencyConfig(BaseConfig):
     """Minimum number of in-flight episodes. Set ``min_inflight = max_inflight`` to recover fixed concurrency."""
 
     max_inflight: int | None = Field(1024, ge=1)
-    """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
+    """Maximum in-flight concurrency, in concurrent model streams: an episode is admitted at its
+    harness's declared fan-out (``max_concurrent_model_calls``, default 1), so with fan-out harnesses
+    the episode count stays below this by the fan-out factor. Set it to avoid runaway concurrency,
+    especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
 
     @model_validator(mode="after")
     def validate_bounds(self):

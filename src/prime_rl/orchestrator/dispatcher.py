@@ -189,6 +189,9 @@ class Dispatcher:
         self.min_burst = max((env.config.group_size for env in train_envs or ()), default=8)
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
+        # Admission cost per (kind, env), in concurrent model streams — resolved once
+        # from the harness's declared fan-out (see ``_declared_cost``).
+        self._env_costs: dict[tuple[WorkKind, str], int] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
 
         # Bounded so the dispatcher backpressures on a slow sink (unbounded
@@ -237,6 +240,27 @@ class Dispatcher:
     def available_permits(self) -> int:
         return self.max_inflight - self.current_inflight
 
+    def _declared_cost(self, kind: WorkKind, env_name: str) -> int:
+        """Admission cost of one episode, in concurrent model streams.
+
+        A fan-out harness (e.g. recursive sub-agents) runs several model streams
+        inside one episode; admitting it as one permit lets the request pool
+        exceed what the controller sized from engine capacity. The harness
+        declares its bound as ``max_concurrent_model_calls``; without a
+        declaration an episode costs one stream."""
+        key = (kind, env_name)
+        cost = self._env_costs.get(key)
+        if cost is None:
+            envs = self.train_envs if kind == "train" else self.eval_envs
+            harness = None
+            if envs is not None:
+                env = envs.get(env_name)
+                agent = getattr(env.config.env, "agent", None)
+                harness = getattr(agent, "harness", None)
+            cost = max(1, int(getattr(harness, "max_concurrent_model_calls", 1) or 1))
+            self._env_costs[key] = cost
+        return cost
+
     def set_limit(self, max_inflight: int) -> None:
         """Move the in-flight cap (concurrency controller hook). A cap below
         the current in-flight count sheds nothing — admissions just stay
@@ -266,7 +290,7 @@ class Dispatcher:
                 break
             # Count only live cancellations toward the excess: drop_group's
             # return includes never-dispatched episodes, which free no permits
-            live = sum(1 for meta in self.inflight.values() if meta.group_id == group_id)
+            live = sum(meta.cost for meta in self.inflight.values() if meta.group_id == group_id)
             await self.drop_group(group_id, reason="overload")
             shed += live
         if shed:
@@ -526,8 +550,12 @@ class Dispatcher:
         else:
             cache_salt = None
 
+        cost = self._declared_cost(group.kind, group.env_name)
+        if self.available_permits < cost:
+            return False
+
         group.episodes_to_schedule -= 1
-        await self.acquire()
+        await self.acquire(cost)
         self.admissions_in_window += 1
         task = asyncio.create_task(
             env.run(
@@ -547,21 +575,27 @@ class Dispatcher:
             step=group.step,
             client_config=client,
             started_at=time.monotonic(),
+            cost=cost,
         )
         return True
 
-    async def acquire(self) -> None:
-        """Reserve one permit + rate-limit it. Caller must precheck
-        ``available_permits >= 1``; this is not a blocking acquire."""
+    async def acquire(self, cost: int = 1) -> None:
+        """Reserve ``cost`` permits + rate-limit the admission. Permits are
+        concurrent model streams, not episodes: a fan-out harness admits at its
+        declared stream count so the pool stays comparable to the concurrency
+        controller's engine-derived cap (KV capacity / max_model_len sizes
+        streams). Caller must precheck ``available_permits >= cost``; this is
+        not a blocking acquire."""
         if self.rate_limiter is not None:
             await self.rate_limiter.acquire()
-        self.current_inflight += 1
+        self.current_inflight += cost
 
-    def release(self, *, refund_admission: bool = False) -> None:
-        """Free one permit. ``refund_admission`` only on natural completions:
-        refunding cancelled episodes would hand a mass shed's worth of burst
-        budget to the refill while the overload is still draining."""
-        self.current_inflight -= 1
+    def release(self, cost: int = 1, *, refund_admission: bool = False) -> None:
+        """Free ``cost`` permits (the episode's admission cost). ``refund_admission``
+        only on natural completions: refunding cancelled episodes would hand a mass
+        shed's worth of burst budget to the refill while the overload is still
+        draining."""
+        self.current_inflight -= cost
         if refund_admission:
             self.admissions_in_window = max(0, self.admissions_in_window - 1)
 
@@ -570,7 +604,7 @@ class Dispatcher:
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_episodes
-        self.release(refund_admission=True)
+        self.release(meta.cost, refund_admission=True)
         group = self.groups.get(meta.group_id)
 
         try:
@@ -679,7 +713,7 @@ class Dispatcher:
             if meta.group_id != group_id:
                 continue
             del self.inflight[task]
-            self.release()
+            self.release(meta.cost)
             claimed.append((task, meta))
 
         inflight_cancelled = len(claimed)
@@ -717,7 +751,7 @@ class Dispatcher:
         markers since the sinks are being torn down anyway."""
         for meta in self.inflight.values():
             self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name)
-            self.release()
+            self.release(meta.cost)
         tasks = list(self.inflight.keys())
         self.inflight.clear()
         self.groups.clear()
@@ -735,7 +769,7 @@ class Dispatcher:
             if meta.kind != "train":
                 continue
             self.inflight.pop(task, None)
-            self.release()
+            self.release(meta.cost)
             self.metrics.record_cancellation(kind="train", env_name=meta.env_name)
             cancelled += 1
             train_tasks.append(task)

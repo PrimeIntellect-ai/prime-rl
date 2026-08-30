@@ -93,6 +93,9 @@ class InflightEpisode:
     client_config: vf.ClientConfig | None = None
     started_at: float = 0.0
     """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
+    cost: int = 1
+    """Admission cost in concurrent model streams (the harness's declared fan-out);
+    every release/cancel path refunds exactly this many permits."""
 
 
 @dataclass
