@@ -1,0 +1,69 @@
+# GLM-5.3-Flash 16-node P/D stack: mooncake + llm-d router.
+#
+# Launch: uv run inference @ examples/advanced/glm-5.3/infer/pd-llmd.toml
+
+output_dir = "/shared/outputs/glm5.3-16node-llmd"
+
+use_deep_gemm = true
+enable_fp32_lm_head = true
+
+[kv_cache_offload]
+type = "mooncake"
+device_name = "mlx5_0,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_9,mlx5_10,mlx5_11"
+
+[kv_cache_offload.cpu]
+num_bytes = 1_000_000_000_000
+
+[deployment]
+type = "disaggregated"
+prefill_nodes_per_replica = 2
+num_prefill_replicas = 4
+decode_nodes_per_replica = 8
+num_decode_replicas = 1
+
+[deployment.prefill_env_vars]
+"VLLM_ENABLE_MOE_DP_CHUNK" = "0"
+"VLLM_DEEP_GEMM_WARMUP" = "skip"
+"UCX_RCACHE_MAX_UNRELEASED" = "1024"
+
+[deployment.decode_env_vars]
+"VLLM_DEEP_GEMM_WARMUP" = "skip"
+"UCX_RCACHE_MAX_UNRELEASED" = "1024"
+
+[deployment.prefill_vllm_overrides]
+"enable_dbo" = true
+
+[deployment.decode_vllm_overrides]
+"max_num_batched_tokens" = 96
+"max_num_seqs" = 96
+
+[router]
+type = "llm-d"
+non_cached_tokens = 128
+
+[router.scorers]
+"prefix-cache-scorer" = 3.0
+
+[router.prefill_scorer_overrides]
+"queue-scorer" = 4.0
+"active-request-scorer" = 5.0
+
+[router.decode_scorer_overrides]
+"active-request-scorer" = 5.0
+"kv-cache-utilization-scorer" = 4.0
+"queue-scorer" = 3.0
+
+[slurm]
+job_name = "glm5.3-16node-llmd"
+partition = "all"
+
+[vllm]
+model = "zai-org/GLM-5.3-Flash"
+max_model_len = 131072
+tool_call_parser = "glm47"
+reasoning_parser = "glm45"
+gpu_memory_utilization = 0.75
+enable_expert_parallel = true
+enable_eplb = false
+enable_ep_weight_filter = true
+safetensors_load_strategy = "prefetch"
