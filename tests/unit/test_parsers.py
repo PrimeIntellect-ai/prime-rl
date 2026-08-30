@@ -34,6 +34,12 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     # GLM-5.1
     ("zai-org/GLM-5.1", "glm47", "glm45"),
     ("zai-org/GLM-5.1-FP8", "glm47", "glm45"),
+    # GLM-5.2
+    ("zai-org/GLM-5.2", "glm47", "glm45"),
+    ("zai-org/GLM-5.2-FP8", "glm47", "glm45"),
+    # GLM-5.3
+    ("zai-org/GLM-5.3-Flash", "glm47", "glm45"),
+    ("zai-org/GLM-5.3-Flash-BF16", "glm47", "glm45"),
     # MiniMax M2
     ("MiniMaxAI/MiniMax-M2", "minimax_m2", "minimax_m2_append_think"),
     ("MiniMaxAI/MiniMax-M2.1", "minimax_m2", "minimax_m2_append_think"),
