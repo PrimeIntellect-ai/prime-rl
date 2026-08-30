@@ -54,9 +54,11 @@ class GatedDeltaNet(nn.Module):
         self.out_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         self.context_parallel_group: ProcessGroup | None = None
+        self.context_parallel_world_size = 1
 
-    def set_context_parallel_group(self, process_group: ProcessGroup) -> None:
+    def set_context_parallel_attributes(self, process_group: ProcessGroup, world_size: int) -> None:
         self.context_parallel_group = process_group
+        self.context_parallel_world_size = world_size
 
     def forward(
         self,
