@@ -13,6 +13,7 @@ import torch.distributed as dist
 from rich import print as rich_print
 from rich.text import Text
 from torch import Tensor, nn
+from torch.distributed.tensor import DTensor
 from torchtitan.distributed.utils import clip_grad_norm_ as torch_clip_grad_norm_
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -92,8 +93,33 @@ def clip_grad_norm_(
 ) -> Tensor:
     if manager is not None:
         grad_norm = manager.clip_grad_norm_(max_norm)
-    else:
-        grad_norm = torch_clip_grad_norm_(model.parameters(), max_norm=max_norm, ep_enabled=ep_enabled)
+        return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm
+
+    parameters = list(model.parameters())
+    cpu_sharded_parameters = [
+        parameter
+        for parameter in parameters
+        if isinstance(parameter.grad, DTensor) and parameter.grad.device_mesh.device_type == "cpu"
+    ]
+    if not cpu_sharded_parameters:
+        return torch_clip_grad_norm_(parameters, max_norm=max_norm, ep_enabled=ep_enabled)
+
+    cpu_sharded_parameter_ids = {id(parameter) for parameter in cpu_sharded_parameters}
+    other_parameters = [parameter for parameter in parameters if id(parameter) not in cpu_sharded_parameter_ids]
+    other_norm = torch_clip_grad_norm_(other_parameters, max_norm=float("inf"), ep_enabled=ep_enabled)
+    cpu_norm = torch.nn.utils.get_total_norm([parameter.grad for parameter in cpu_sharded_parameters])
+    if isinstance(cpu_norm, DTensor):
+        cpu_norm = cpu_norm.full_tensor()
+
+    cpu_norm = cpu_norm.to(other_norm.device)
+    grad_norm = torch.linalg.vector_norm(torch.stack((other_norm.float(), cpu_norm.float())))
+    clip_coefficient = torch.clamp(max_norm / (grad_norm + 1e-6), max=1.0)
+    for parameter in parameters:
+        gradient = parameter.grad
+        if gradient is None:
+            continue
+        local_gradient = gradient.to_local() if isinstance(gradient, DTensor) else gradient
+        local_gradient.mul_(clip_coefficient.to(local_gradient.device))
     return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm
 
 

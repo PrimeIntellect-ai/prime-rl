@@ -113,7 +113,8 @@ def train(config: TrainerConfig):
 
     # Set precision
     setup_torch_distributed(
-        timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
+        timeout=timedelta(seconds=config.dist_timeout_seconds),
+        enable_gloo=config.model.fsdp_cpu_offload or config.model.ngram_embedding_cpu_offload,
     )
     if config.model.full_offload is not None:
         setup_full_cpu_optimizer_offload(config.model.full_offload)

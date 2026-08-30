@@ -46,6 +46,7 @@ from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_bl
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
+from prime_rl.trainer.models.layers.owner_sharded_embedding import OwnerShardedEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import get_world
@@ -491,6 +492,9 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     }
 
     hsdp_mesh = parallel_dims.get_mesh("hsdp")
+    owner_sharded_parameters = {
+        module.weight for module in model.modules() if isinstance(module, OwnerShardedEmbedding)
+    }
 
     dp_mod_ep_mesh: DeviceMesh | None = None
     if parallel_dims.ep_enabled:
@@ -531,9 +535,11 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 reshard_after_forward=config.reshard_after_forward,
             )
 
+        block_ignored_parameters = owner_sharded_parameters.intersection(transformer_block.parameters())
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,
+            ignored_params=block_ignored_parameters or None,
             **fsdp_config,
         )
 
@@ -564,6 +570,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         mp_policy=mp_policy,
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
+        ignored_params=owner_sharded_parameters or None,
     )
 
     if not parallel_dims.ep_enabled:
@@ -630,7 +637,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     device = "cpu" if config.fsdp_cpu_offload else "cuda"
-    model.to_empty(device=device)
+    materialize_model_from_meta(model, device)
     torch.distributed.barrier()
 
     # Must run before any weight loading: reinit can zero persistent buffers that ship in checkpoints
@@ -864,6 +871,40 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
 
 
+def setup_owner_sharded_embeddings(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
+    embeddings = [module for module in model.modules() if isinstance(module, OwnerShardedEmbedding)]
+    if not embeddings:
+        if config.ngram_embedding_cpu_offload:
+            raise ValueError("N-gram embedding CPU offload was enabled, but the model has no owner-sharded embedding")
+        return
+
+    owner_mesh = parallel_dims.get_mesh("dp_cp")
+    cpu_offload = config.ngram_embedding_cpu_offload or config.fsdp_cpu_offload
+    for embedding in embeddings:
+        embedding.parallelize(owner_mesh, cpu_offload=cpu_offload)
+
+    if cpu_offload:
+        # Layer checkpointing replays individual blocks during backward. Hooking
+        # the model entry prefetches once per real forward instead of on a replay.
+        def prefetch_embeddings(_module: nn.Module, _args: tuple) -> None:
+            for embedding in embeddings:
+                embedding.prefetch()
+
+        get_language_model(model).register_forward_pre_hook(prefetch_embeddings)
+
+    get_logger().info(
+        f"Sharded {len(embeddings)} embedding table(s) across dp_cp={owner_mesh.size()} (cpu_offload={cpu_offload})"
+    )
+
+
+def materialize_model_from_meta(model: nn.Module, device: str) -> None:
+    for module in model.modules():
+        if isinstance(module, OwnerShardedEmbedding):
+            module.materialize()
+        else:
+            module.to_empty(device=device, recurse=False)
+
+
 def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:
     """Apply LoRA and identify any vision encoder that must remain frozen."""
     frozen_vision_encoder = None
@@ -992,6 +1033,7 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
+    setup_owner_sharded_embeddings(model, config, parallel_dims)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
@@ -1023,7 +1065,7 @@ def setup_model(
                 "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
             )
             device = "cpu" if config.fsdp_cpu_offload else "cuda"
-            model.to_empty(device=device)
+            materialize_model_from_meta(model, device)
             torch.distributed.barrier()
             if isinstance(model, PreTrainedModelPrimeRL):
                 model.init_buffers_post_meta()

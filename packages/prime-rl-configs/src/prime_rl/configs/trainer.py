@@ -249,6 +249,9 @@ class ModelConfig(BaseModelConfig):
     fsdp_cpu_offload: bool = False
     """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
+    ngram_embedding_cpu_offload: bool = False
+    """Keep owner-sharded n-gram embedding weights in pinned CPU memory and prefetch them for lookup."""
+
     optim_cpu_offload: bool = True
     """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
 
