@@ -189,7 +189,18 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
     # module default so every subsequently created PG inherits it.
     dist.distributed_c10d.default_pg_timeout = timeout
 
-    dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
+    if "RANK" in os.environ:
+        dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
+    else:
+        get_logger().info("Using standalone single-process distributed mode")
+        dist.init_process_group(
+            backend=backend,
+            store=dist.HashStore(),
+            rank=0,
+            world_size=1,
+            timeout=timeout,
+            device_id=device_id,
+        )
     get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")
 
 
