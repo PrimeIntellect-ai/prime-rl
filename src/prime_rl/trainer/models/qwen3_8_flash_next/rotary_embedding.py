@@ -1,6 +1,21 @@
 import torch
 from torch import nn
 
+from prime_rl.trainer.models.layers.rotary_emb import rotate_half
+
+
+def apply_rotary_embedding(
+    hidden_states: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+) -> torch.Tensor:
+    cos = cos.unsqueeze(2)
+    sin = sin.unsqueeze(2)
+    rotary_dim = cos.shape[-1]
+    rotated = hidden_states[..., :rotary_dim]
+    rotated = (rotated * cos) + (rotate_half(rotated) * sin)
+    return torch.cat((rotated, hidden_states[..., rotary_dim:]), dim=-1)
+
 
 class RotaryEmbedding(nn.Module):
     def __init__(
@@ -40,4 +55,4 @@ class RotaryEmbedding(nn.Module):
         return embeddings.cos().to(hidden_states.dtype), embeddings.sin().to(hidden_states.dtype)
 
 
-__all__ = ["RotaryEmbedding"]
+__all__ = ["RotaryEmbedding", "apply_rotary_embedding"]
