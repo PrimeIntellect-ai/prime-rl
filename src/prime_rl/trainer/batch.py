@@ -19,6 +19,18 @@ def _text_config(model_config: Any) -> Any:
     return getattr(model_config, "text_config", model_config)
 
 
+def get_model_num_experts(model_config: Any | None) -> int | None:
+    """Return the routed-expert count exposed by supported model configs."""
+    if model_config is None:
+        return None
+
+    config = _text_config(model_config)
+    for field_name in ("num_experts", "n_routed_experts", "num_local_experts"):
+        if (num_experts := getattr(config, field_name, None)) is not None:
+            return int(num_experts)
+    return None
+
+
 def _is_mla(config: Any) -> bool:
     return bool(getattr(config, "multi_latent_attention", False) or hasattr(config, "q_lora_rank"))
 
@@ -270,11 +282,44 @@ def _slice_routed_experts(routed_experts: RoutedExperts, seq_len: int) -> Routed
     )
 
 
-def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
+def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int, num_experts: int) -> None:
     routed_experts = micro_batch.routed_experts
     assert routed_experts is not None
-    row_size = _routed_experts_row_size(routed_experts)
-    routed_experts.data += b"\0" * (padding_size * row_size)
+    dtype = np.dtype(routed_experts.dtype)
+    if not np.issubdtype(dtype, np.integer):
+        raise TypeError(f"routed_experts must use an integer dtype, got {dtype}")
+    if num_experts <= 0:
+        raise ValueError(f"num_experts must be positive, got {num_experts}")
+
+    _, num_layers, topk = routed_experts.shape
+    if not 0 < topk <= num_experts:
+        raise ValueError(f"Cannot pad routed_experts with {topk=} using {num_experts=}")
+
+    # Compact payloads are typed from observed routes. Widen before synthesizing
+    # padding when the model's full expert-ID range does not fit.
+    if num_experts - 1 > np.iinfo(dtype).max:
+        widened_dtype = np.min_scalar_type(num_experts - 1)
+        if not np.issubdtype(widened_dtype, np.integer):
+            raise ValueError(f"num_experts is too large for an integer routed_experts payload: {num_experts}")
+        existing = np.frombuffer(routed_experts.data, dtype=dtype).reshape(routed_experts.shape)
+        routed_experts.data = existing.astype(widened_dtype).tobytes()
+        routed_experts.dtype = widened_dtype.name
+        dtype = widened_dtype
+
+    num_padding_routes = padding_size * topk
+    route_ordinals = np.arange(num_padding_routes, dtype=np.int64)
+    remainder = num_padding_routes % num_experts
+    remainder_ordinals = np.arange(remainder, dtype=np.int64)
+    remainder_routes = remainder_ordinals * num_experts // remainder if remainder else remainder_ordinals
+    # Put the evenly spaced remainder first in an otherwise complete expert cycle.
+    expert_cycle = np.concatenate(
+        (remainder_routes, np.setdiff1d(np.arange(num_experts), remainder_routes, assume_unique=True))
+    )
+    padding_routes = expert_cycle[route_ordinals % num_experts]
+    padding_routes = padding_routes.reshape(padding_size, 1, topk)
+    layer_offsets = np.arange(num_layers, dtype=np.int64).reshape(1, num_layers, 1)
+    padding = ((padding_routes + layer_offsets) % num_experts).astype(dtype, copy=False)
+    routed_experts.data += padding.tobytes()
     routed_experts.shape[0] += padding_size
 
 
@@ -689,16 +734,8 @@ def _distribute_group(
     return [[group[i] for i in partition] for partition in partitions]
 
 
-def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBatch:
-    """
-    Pad a micro batch with the given padding size sample
-    Return the padded micro batch.
-    Args:
-        micro_batch: The micro batch to pad.
-        padding_size: The number of padding tokens to add.
-    Returns:
-        The padded micro batch.
-    """
+def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int, num_experts: int | None = None) -> MicroBatch:
+    """Pad every token-aligned field to a multiple of ``pad_to_multiple_of``."""
 
     padding_size = (pad_to_multiple_of - (len(micro_batch.input_ids) % pad_to_multiple_of)) % pad_to_multiple_of
 
@@ -710,6 +747,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
 
     if not (pad_to_multiple_of > 1 and padding_size > 0):
         return micro_batch
+    if micro_batch.routed_experts is not None and num_experts is None:
+        raise ValueError("num_experts is required when padding routed_experts")
 
     micro_batch.input_ids.extend([1] * padding_size)
     micro_batch.advantages.extend([0.0] * padding_size)
@@ -732,7 +771,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
     if micro_batch.routed_experts is not None:
-        _pad_routed_experts(micro_batch, padding_size)
+        assert num_experts is not None
+        _pad_routed_experts(micro_batch, padding_size, num_experts)
     micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
@@ -799,6 +839,7 @@ def prepare_batch(
     num_train_workers: int,
     bin_cost: Callable[[Sequence[int]], int],
     pad_to_multiple_of: int = 1,
+    num_experts: int | None = None,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -812,7 +853,7 @@ def prepare_batch(
     all_samples = [prepare_sample(rollout, seq_len) for rollout in rollouts]
 
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_train_workers, bin_cost)
-    micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
+    micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of, num_experts) for micro_batch in micro_batches]
 
     # Separate by modality so each step index has uniform modality across all ranks
     mm_batches = [b for b in micro_batches if _is_multimodal_sample(b)]

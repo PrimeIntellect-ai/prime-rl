@@ -3,7 +3,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from prime_rl.trainer.batch import _is_multimodal_sample, build_bin_cost, pad_micro_batch, prepare_batch, prepare_sample
+from prime_rl.trainer.batch import (
+    _is_multimodal_sample,
+    build_bin_cost,
+    get_model_num_experts,
+    pad_micro_batch,
+    prepare_batch,
+    prepare_sample,
+)
 from prime_rl.transports.batch.types import EncodedTensor, MicroBatch, RoutedExperts, TrainingSample
 
 
@@ -14,6 +21,38 @@ def _routed_experts(data, dtype=np.uint8):
         shape=list(routed_experts.shape),
         dtype=str(routed_experts.dtype),
     )
+
+
+def _sample_with_routed_experts(routed_experts: np.ndarray) -> TrainingSample:
+    num_tokens = len(routed_experts)
+    return TrainingSample(
+        token_ids=list(range(num_tokens)),
+        mask=[False] + [True] * (num_tokens - 1),
+        logprobs=[0.0] + [-0.1] * (num_tokens - 1),
+        temperatures=[1.0] * num_tokens,
+        advantages=[0.0] + [1.0] * (num_tokens - 1),
+        env_name="test-env",
+        routed_experts=_routed_experts(routed_experts),
+    )
+
+
+def _prepare_routed_padding(
+    original: np.ndarray, *, num_experts: int, padded_length: int
+) -> tuple[MicroBatch, np.ndarray]:
+    batches = prepare_batch(
+        rollouts=[_sample_with_routed_experts(original)],
+        seq_len=padded_length,
+        num_train_workers=1,
+        bin_cost=build_bin_cost(None),
+        pad_to_multiple_of=padded_length,
+        num_experts=num_experts,
+    )
+    micro_batch = batches[0][0]
+    assert micro_batch.routed_experts is not None
+    dtype = np.dtype(micro_batch.routed_experts.dtype)
+    actual = np.frombuffer(micro_batch.routed_experts.data, dtype=dtype).reshape(micro_batch.routed_experts.shape)
+    np.testing.assert_array_equal(actual[: len(original)], original)
+    return micro_batch, actual[len(original) :]
 
 
 def _encoded(arr) -> EncodedTensor:
@@ -78,6 +117,20 @@ def make_flops_config():
         num_hidden_layers=2,
         head_dim=8,
     )
+
+
+@pytest.mark.parametrize(
+    ("model_config", "expected"),
+    [
+        (SimpleNamespace(num_experts=64), 64),
+        (SimpleNamespace(n_routed_experts=128), 128),
+        (SimpleNamespace(num_local_experts=256), 256),
+        (SimpleNamespace(text_config=SimpleNamespace(num_experts=512)), 512),
+        (SimpleNamespace(hidden_size=1024), None),
+    ],
+)
+def test_get_model_num_experts(model_config, expected):
+    assert get_model_num_experts(model_config) == expected
 
 
 def test_training_sample_requires_env_name():
@@ -174,6 +227,84 @@ def test_pad_micro_batch_preserves_explicit_sequence_lengths():
     assert padded.seq_lens == [6]
     assert sum(padded.sequence_lengths) == len(padded.input_ids)
     assert padded.loss_mask[-2:] == [False, False]
+
+
+def test_prepare_batch_distributes_routed_expert_padding():
+    num_experts = 256
+    experts_per_rank = 32
+    original = np.arange(7 * 4 * 8, dtype=np.uint8).reshape(7, 4, 8)
+
+    micro_batch, padding = _prepare_routed_padding(original, num_experts=num_experts, padded_length=8)
+    expected = np.arange(0, num_experts, experts_per_rank, dtype=np.uint8) + np.arange(4, dtype=np.uint8)[:, None]
+    np.testing.assert_array_equal(padding[0], expected)
+    assert micro_batch.loss_mask[-1:] == [False]
+    assert (padding < num_experts).all()
+    assert np.all(np.diff(np.sort(padding, axis=-1), axis=-1) > 0)
+    for layer_routes in padding[0]:
+        np.testing.assert_array_equal(np.bincount(layer_routes // experts_per_rank, minlength=8), np.ones(8))
+
+
+def test_prepare_batch_distributes_low_topk_padding_across_ep_ranks():
+    num_experts = 256
+    experts_per_rank = 32
+    original = np.arange(9 * 4 * 2, dtype=np.uint8).reshape(9, 4, 2)
+
+    micro_batch, padding = _prepare_routed_padding(original, num_experts=num_experts, padded_length=16)
+    assert micro_batch.loss_mask[-7:] == [False] * 7
+    assert np.all(np.diff(np.sort(padding, axis=-1), axis=-1) > 0)
+    for layer in range(padding.shape[1]):
+        layer_routes = padding[:, layer].ravel()
+        expert_histogram = np.bincount(layer_routes, minlength=num_experts)
+        assert expert_histogram.max() - expert_histogram.min() <= 1
+        rank_histogram = np.bincount(layer_routes // experts_per_rank, minlength=8)
+        assert sorted(rank_histogram.tolist()) == [1, 1, 2, 2, 2, 2, 2, 2]
+
+
+def test_prepare_batch_balances_routing_remainder_across_ep_ranks():
+    num_experts = 256
+    experts_per_rank = 32
+    original = np.arange(2 * 8, dtype=np.uint8).reshape(1, 2, 8)
+
+    _, padding = _prepare_routed_padding(original, num_experts=num_experts, padded_length=34)
+    assert np.all(np.diff(np.sort(padding, axis=-1), axis=-1) > 0)
+    for layer in range(padding.shape[1]):
+        layer_routes = padding[:, layer].ravel()
+        expert_histogram = np.bincount(layer_routes, minlength=num_experts)
+        assert expert_histogram.max() - expert_histogram.min() == 1
+        rank_histogram = np.bincount(layer_routes // experts_per_rank, minlength=8)
+        np.testing.assert_array_equal(rank_histogram, np.full(8, 33))
+
+
+def test_prepare_batch_widens_routed_experts_for_full_domain_padding():
+    num_experts = 512
+    experts_per_rank = 64
+    original = np.arange(6 * 2 * 8, dtype=np.uint8).reshape(6, 2, 8)
+
+    micro_batch, padding = _prepare_routed_padding(original, num_experts=num_experts, padded_length=8)
+    assert micro_batch.routed_experts is not None
+    assert micro_batch.routed_experts.dtype == "uint16"
+    expected = np.arange(0, num_experts, experts_per_rank // 2, dtype=np.uint16).reshape(2, 8)
+    np.testing.assert_array_equal(padding[:, 0], expected)
+    np.testing.assert_array_equal(padding[:, 1], (expected + 1) % num_experts)
+    assert micro_batch.loss_mask[-2:] == [False, False]
+    assert (padding < num_experts).all()
+    assert np.all(np.diff(np.sort(padding, axis=-1), axis=-1) > 0)
+    for layer in range(padding.shape[1]):
+        rank_histogram = np.bincount(padding[:, layer].ravel() // experts_per_rank, minlength=8)
+        np.testing.assert_array_equal(rank_histogram, np.full(8, 2))
+
+
+def test_prepare_batch_requires_model_expert_count_for_routing_padding():
+    original = np.arange(7 * 2 * 2, dtype=np.uint8).reshape(7, 2, 2)
+
+    with pytest.raises(ValueError, match="num_experts is required when padding routed_experts"):
+        prepare_batch(
+            rollouts=[_sample_with_routed_experts(original)],
+            seq_len=8,
+            num_train_workers=1,
+            bin_cost=build_bin_cost(None),
+            pad_to_multiple_of=8,
+        )
 
 
 def test_split_to_align_avoids_dummy_micro_batches():
