@@ -1586,7 +1586,7 @@ wheels = [
 
 [[package]]
 name = "enterprise-ops-gym"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/tool_use/enterprise_ops_gym" }
 dependencies = [
     { name = "datasets" },
@@ -3445,7 +3445,7 @@ wheels = [
 
 [[package]]
 name = "mcp-atlas"
-version = "0.3.1"
+version = "0.4.0"
 source = { editable = "deps/prime-envs/environments/tool_use/mcp_atlas" }
 dependencies = [
     { name = "datasets" },
