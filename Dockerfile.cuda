@@ -167,34 +167,6 @@ RUN find /usr/local/cuda-13.0/targets/*/lib \
            -o -name 'libnvjpeg*' -o -name 'libnvblas*' \) -delete \
     && find /usr/local/cuda-13.0 -name '*.a' ! -name 'libcudadevrt.a' ! -name 'libcudart_static.a' -delete
 
-# AWS EFA userspace stack: libfabric + the aws-ofi-nccl NCCL net plugin,
-# installed as one version-matched unit via AWS's official installer
-# rather than picking versions by hand. Do not substitute a host-mounted
-# copy of these libraries instead of building them in -- symbol-version
-# mismatches between a host's rdma-core and a container's can silently
-# break the NCCL plugin. --skip-kmod: containers share the host kernel and
-# must never build/load a kernel module themselves; the EFA driver is
-# expected to already be present on the host. --skip-limit-conf: ulimits
-# config doesn't apply inside a build. Same base OS as the runtime stage
-# below for glibc/rdma-core ABI compatibility.
-FROM nvidia/cuda:13.0.1-base-ubuntu24.04 AS efa-installer
-ENV DEBIAN_FRONTEND=noninteractive
-ARG EFA_INSTALLER_VERSION=1.47.0
-# One RUN: efa_installer.sh apt-get installs its own deps (pciutils,
-# libnl-3-200, tcl, ...) internally, so the package index has to survive
-# until after it runs. Purging /var/lib/apt/lists/* only at the very end
-# (not between the curl/tar deps and the installer invocation) keeps that
-# available.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates tar gzip \
-    && curl -fsSL "https://efa-installer.amazonaws.com/aws-efa-installer-${EFA_INSTALLER_VERSION}.tar.gz" \
-        -o /tmp/aws-efa-installer.tar.gz \
-    && tar -xzf /tmp/aws-efa-installer.tar.gz -C /tmp \
-    && cd /tmp/aws-efa-installer \
-    && ./efa_installer.sh -y --skip-kmod --skip-limit-conf \
-    && cd / && rm -rf /tmp/aws-efa-installer.tar.gz /tmp/aws-efa-installer \
-    && apt-get clean autoclean && rm -rf /var/lib/apt/lists/*
-
 # Runtime image
 FROM nvidia/cuda:13.0.1-base-ubuntu24.04
 
@@ -230,6 +202,32 @@ RUN apt-get update && apt-get install -y \
     && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# AWS EFA userspace stack: libfabric + the aws-ofi-nccl NCCL net plugin,
+# installed as one version-matched unit via AWS's official installer rather
+# than picking versions by hand. Do not substitute a host-mounted copy of
+# these libraries instead of building them in -- symbol-version mismatches
+# between a host's rdma-core and a container's can silently break the NCCL
+# plugin. Run directly in this stage (not a separate one COPY'd in after):
+# the installer's own apt-get/dpkg step upgrades system rdma-core packages
+# (libibverbs, ibverbs-providers, librdmacm) in place to versions libfabric
+# actually links against -- copying only /opt/amazon out of an isolated
+# stage leaves that system-wide upgrade behind, so libfabric ends up paired
+# with whatever older rdma-core this image's own apt install pulled in and
+# fails to load (symbol version mismatch on libefa.so.1). --skip-kmod:
+# containers share the host kernel and must never build/load a kernel
+# module themselves; the EFA driver is expected to already be present on
+# the host. --skip-limit-conf: ulimits config doesn't apply inside a build.
+ARG EFA_INSTALLER_VERSION=1.47.0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates tar gzip \
+    && curl -fsSL "https://efa-installer.amazonaws.com/aws-efa-installer-${EFA_INSTALLER_VERSION}.tar.gz" \
+        -o /tmp/aws-efa-installer.tar.gz \
+    && tar -xzf /tmp/aws-efa-installer.tar.gz -C /tmp \
+    && cd /tmp/aws-efa-installer \
+    && ./efa_installer.sh -y --skip-kmod --skip-limit-conf \
+    && cd / && rm -rf /tmp/aws-efa-installer.tar.gz /tmp/aws-efa-installer \
+    && apt-get clean autoclean && rm -rf /var/lib/apt/lists/*
 
 # CUDA 13.0 toolkit (TileLang's runtime nvcc JIT)
 COPY --from=cuda-trim /usr/local/cuda-13.0 /usr/local/cuda-13.0
@@ -267,11 +265,6 @@ COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packa
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/flash_attn /app/.venv/lib/python3.12/site-packages/flash_attn
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/flash_attn_2_cuda*.so /app/.venv/lib/python3.12/site-packages/
 COPY --from=builder /opt/ucx /opt/ucx
-
-# EFA userspace stack from the dedicated stage above. Not added to
-# LD_LIBRARY_PATH here -- deployment configs opt into that only where
-# EFA is actually available, so this is inert everywhere else.
-COPY --from=efa-installer /opt/amazon /opt/amazon
 
 # Copy and set up entrypoint script
 COPY --chown=appuser:appuser scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
