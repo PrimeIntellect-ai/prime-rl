@@ -4,13 +4,15 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeTextRotaryEmbedding as HFQwen3_5MoeRotaryEmbedding,
 )
 
-from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig
-from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeRotaryEmbedding
-from prime_rl.trainer.models.qwen3_5_moe.mrope import build_qwen3_5_mrope_position_ids
+from prime_rl.trainer.models.qwen3_5 import Qwen3_5MoeTextConfig
+from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
+    Qwen3_5RotaryEmbedding,
+    build_qwen3_5_mrope_position_ids,
+)
 
 
-def _tiny_config() -> Qwen3_5MoeConfig:
-    return Qwen3_5MoeConfig(
+def _tiny_config() -> Qwen3_5MoeTextConfig:
+    return Qwen3_5MoeTextConfig(
         vocab_size=128,
         hidden_size=128,
         num_attention_heads=2,
@@ -169,7 +171,7 @@ def test_qwen35_mrope_rejects_video_tokens():
 
 def test_qwen35_rotary_matches_hf_for_2d_and_3d_positions():
     config = _tiny_config()
-    prime_rotary = Qwen3_5MoeRotaryEmbedding(config)
+    prime_rotary = Qwen3_5RotaryEmbedding(config)
     hf_rotary = HFQwen3_5MoeRotaryEmbedding(config)
     hidden_states = torch.randn(1, 6, config.hidden_size)
 

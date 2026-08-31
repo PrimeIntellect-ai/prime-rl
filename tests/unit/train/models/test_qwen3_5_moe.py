@@ -3,8 +3,7 @@ import torch
 from transformers import Qwen3_5MoeForCausalLM as HFQwen3_5MoeForCausalLM
 
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig
-from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeForCausalLM
+from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5MoeTextConfig
 from prime_rl.utils.cp import setup_model_cp
 from prime_rl.utils.utils import default_dtype
 
@@ -12,7 +11,7 @@ pytestmark = [pytest.mark.gpu]
 
 
 def get_model_pairs():
-    config = Qwen3_5MoeConfig(
+    config = Qwen3_5MoeTextConfig(
         vocab_size=256,
         hidden_size=256,
         num_hidden_layers=4,
@@ -34,7 +33,7 @@ def get_model_pairs():
     config._attn_implementation = "flash_attention_2"
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         hf_model = HFQwen3_5MoeForCausalLM._from_config(config)
-        prime_model = PrimeRLQwen3_5MoeForCausalLM._from_config(config)
+        prime_model = Qwen3_5ForCausalLM._from_config(config)
     with torch.no_grad():
         state_dict = hf_model.state_dict()
         prime_state_keys = prime_model.state_dict().keys()
@@ -68,9 +67,28 @@ def test_qwen3_5_moe():
     grad_diff = hf_model.model.embed_tokens.weight.grad - prime_model.model.embed_tokens.weight.grad
     assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=1000), f"Max grad diff: {grad_diff.abs().max()}"
 
+    packed_position_ids = torch.arange(1, 51, device="cuda").repeat(2).unsqueeze(0)
+    with torch.no_grad():
+        packed = prime_model(
+            input_ids,
+            position_ids=packed_position_ids,
+            seq_lens=torch.tensor([50, 50], device="cuda"),
+        )["logits"]
+        unpacked = torch.cat(
+            [
+                prime_model(
+                    input_ids[:, start : start + 50],
+                    position_ids=packed_position_ids[:, :50],
+                    seq_lens=torch.tensor([50], device="cuda"),
+                )["logits"]
+                for start in (0, 50)
+            ],
+            dim=1,
+        )
+    torch.testing.assert_close(packed, unpacked, atol=0.03, rtol=0.01)
+
 
 def test_qwen3_5_moe_roundtrip():
-    """Verify HF → PrimeRL → HF weight conversion is lossless at the state_dict level."""
     hf_model, prime_model = get_model_pairs()
 
     # Get original HF state_dict and the PrimeRL-converted version
@@ -81,18 +99,12 @@ def test_qwen3_5_moe_roundtrip():
     assert prime_model.is_prime_state_dict(prime_sd)
     assert not prime_model.is_hf_state_dict(prime_sd)
 
-    # Convert PrimeRL → per-expert HF format
     converted_hf_sd = prime_model.convert_to_hf(dict(prime_sd))
-
-    # Also convert original HF (fused) to per-expert format for comparison
-
-    # First convert original HF → PrimeRL, then back to per-expert HF
     orig_prime_sd = dict(original_hf_sd)
     prime_model.convert_to_prime(orig_prime_sd)
     orig_roundtripped = dict(orig_prime_sd)
     prime_model.convert_to_hf(orig_roundtripped)
 
-    # All non-expert keys should match exactly, expert keys should match after roundtrip
     for key in orig_roundtripped:
         assert key in converted_hf_sd, f"Missing key: {key}"
         assert torch.equal(orig_roundtripped[key], converted_hf_sd[key]), f"Mismatch at {key}"
@@ -128,23 +140,18 @@ def test_qwen3_5_moe_router_replay():
 
 
 def test_qwen3_5_moe_cp_patching():
-    """Verify substitute_ring_attn patches Qwen3_5MoeGatedFlashAttention._compute_attention."""
     from unittest.mock import MagicMock
 
     from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
     from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_attn
-    from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeGatedFlashAttention
+    from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
 
-    # substitute_ring_attn rewrites _compute_attention on all three classes;
-    # snapshot every one so the patch can't leak into later tests via the
-    # untouched siblings.
-    originals = {
-        cls: cls._compute_attention for cls in (FlashAttention, AfmoeFlashAttention, Qwen3_5MoeGatedFlashAttention)
-    }
+    originals = {cls: cls._compute_attention for cls in (FlashAttention, AfmoeFlashAttention)}
     try:
         mock_group = MagicMock()
         substitute_ring_attn(process_group=mock_group, heads_k_stride=1)
-        assert Qwen3_5MoeGatedFlashAttention._compute_attention is not originals[Qwen3_5MoeGatedFlashAttention]
+        assert Qwen3_5Attention._compute_attention is FlashAttention._compute_attention
+        assert Qwen3_5Attention._compute_attention is not originals[FlashAttention]
     finally:
         for cls, method in originals.items():
             cls._compute_attention = method
@@ -153,7 +160,7 @@ def test_qwen3_5_moe_cp_patching():
 def test_qwen3_5_moe_context_parallel_setup_hook():
     from unittest.mock import MagicMock
 
-    config = Qwen3_5MoeConfig(
+    config = Qwen3_5MoeTextConfig(
         vocab_size=128,
         hidden_size=64,
         num_hidden_layers=2,
@@ -174,18 +181,18 @@ def test_qwen3_5_moe_context_parallel_setup_hook():
     )
     config._attn_implementation = "flash_attention_2"
     with torch.device("meta"):
-        model = PrimeRLQwen3_5MoeForCausalLM(config)
+        model = Qwen3_5ForCausalLM(config)
 
     linear_layer = model.model.layers[0]
     model.model.layers[0] = torch.nn.Sequential(linear_layer)
     cp_group = MagicMock()
     setup_model_cp(model, cp_group, cp_rank=1, cp_world_size=2)
 
-    assert model.model._cp_group is cp_group
-    assert model.model._cp_rank == 1
-    assert model.model._cp_world_size == 2
-    assert linear_layer.linear_attn.cp_group is cp_group
-    assert linear_layer.linear_attn.cp_world_size == 2
+    assert model.model.context_parallel_group is cp_group
+    assert model.model.context_parallel_rank == 1
+    assert model.model.context_parallel_world_size == 2
+    assert linear_layer.linear_attn.context_parallel_group is cp_group
+    assert linear_layer.linear_attn.context_parallel_world_size == 2
 
 
 if __name__ == "__main__":
