@@ -226,6 +226,7 @@ RUN apt-get update && apt-get install -y \
     libibverbs1 \
     ibverbs-providers \
     librdmacm1 \
+    libhwloc15 \
     && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
