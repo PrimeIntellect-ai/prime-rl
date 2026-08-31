@@ -1986,7 +1986,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "verifiers", specifier = ">=0.2.2.dev65" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
@@ -3882,7 +3882,7 @@ wheels = [
 [[package]]
 name = "multi-swe-bench"
 version = "1.1.2"
-source = { registry = "https://pypi.org/simple" }
+source = { url = "https://files.pythonhosted.org/packages/48/ad/6b7cda600a50392c790b14ee420b9a3bb318a982a298c05f2d1c066a434f/multi_swe_bench-1.1.2.tar.gz" }
 dependencies = [
     { name = "dataclasses-json" },
     { name = "docker" },
@@ -3894,10 +3894,24 @@ dependencies = [
     { name = "tqdm" },
     { name = "unidiff" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/48/ad/6b7cda600a50392c790b14ee420b9a3bb318a982a298c05f2d1c066a434f/multi_swe_bench-1.1.2.tar.gz", hash = "sha256:44944bc6608d7d9b8d4390f3ce0a3b2c69122ea6be6e35766c6fde2328f50392", size = 1267660, upload-time = "2025-12-18T07:16:09.584Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/a8/060eb46096742944d8d37c34094d4e0fb34b28c6291a877388543ea65660/multi_swe_bench-1.1.2-py3-none-any.whl", hash = "sha256:09a5770096d6a035383c5240762ffa8c87b1e8df7d374110de8fb781b4e5a9f9", size = 4942355, upload-time = "2025-12-18T07:16:07.468Z" },
+sdist = { hash = "sha256:44944bc6608d7d9b8d4390f3ce0a3b2c69122ea6be6e35766c6fde2328f50392" }
+
+[package.metadata]
+requires-dist = [
+    { name = "dataclasses-json" },
+    { name = "docker" },
+    { name = "gitpython" },
+    { name = "prettier", marker = "extra == 'dev'" },
+    { name = "pygithub" },
+    { name = "pyyaml" },
+    { name = "ruff", marker = "extra == 'dev'" },
+    { name = "swe-rex" },
+    { name = "toml" },
+    { name = "tqdm" },
+    { name = "typos", marker = "extra == 'dev'" },
+    { name = "unidiff" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "multidict"
@@ -3943,7 +3957,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets" },
-    { name = "multi-swe-bench" },
+    { name = "multi-swe-bench", url = "https://files.pythonhosted.org/packages/48/ad/6b7cda600a50392c790b14ee420b9a3bb318a982a298c05f2d1c066a434f/multi_swe_bench-1.1.2.tar.gz" },
     { name = "verifiers", specifier = ">=0.2.2.dev27" },
 ]
 
@@ -7058,7 +7072,7 @@ dependencies = [
 
 [[package]]
 name = "tau2-bench"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "deps/prime-envs/environments/tool_use/tau2_bench" }
 dependencies = [
     { name = "tau2" },
@@ -7069,7 +7083,7 @@ dependencies = [
 requires-dist = [
     { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
     { name = "tau2", git = "https://github.com/sierra-research/tau2-bench.git?rev=337326e" },
-    { name = "verifiers", specifier = ">=0.2.0" },
+    { name = "verifiers", specifier = ">=0.3.1" },
 ]
 
 [[package]]
