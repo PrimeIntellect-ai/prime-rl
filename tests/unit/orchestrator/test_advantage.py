@@ -11,6 +11,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.metrics import TrainEpisodes
 from prime_rl.orchestrator.trajectories import trace_to_samples
 
 
@@ -268,3 +269,32 @@ def test_assign_advantages_rejects_misaligned():
     # full length is 3 (prompt + 2 sampled); a 1-element list must be rejected
     with pytest.raises(ValueError, match="align"):
         assign_advantages(episode.traces[0], [0.5])
+
+
+# --------------------------------------------------------------------------
+# effective records: the scalar advantage rides along in trace info.
+# --------------------------------------------------------------------------
+
+
+def _effective_record(advantage: float | None) -> dict:
+    episode = _build_episode(0.0, sampled_lengths=[2])
+    trace = episode.traces[0]
+    if advantage is not None:
+        assign_advantages(trace, advantage)
+    effective = TrainEpisodes([episode], sampled_trace_ids={trace.id}).effective
+    return effective.vf_episodes[0].to_record()
+
+
+def test_effective_record_carries_scalar_advantage():
+    record = _effective_record(0.7)
+    assert record["traces"][0]["info"]["advantage"] == pytest.approx(0.7)
+
+
+def test_effective_record_omits_unassigned_advantage():
+    record = _effective_record(None)
+    assert "advantage" not in record["traces"][0]["info"]
+
+
+def test_effective_record_distinguishes_zero_advantage_from_unassigned():
+    record = _effective_record(0.0)
+    assert record["traces"][0]["info"]["advantage"] == 0.0

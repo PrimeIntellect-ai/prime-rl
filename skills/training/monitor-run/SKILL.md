@@ -176,10 +176,19 @@ and `run`. Training-run records discriminate train/eval work and include dispatc
 step plus an optional live-policy version span. Traces retain their own task,
 verifiers, agent, and runtime fields.
 
+Each trainable trace also carries `info.advantage`, the scalar view of its assigned credit.
+It is only populated in `train/effective` (written at ship time, after credit assignment).
+It resolves to `null` everywhere else — in `all` (written on arrival, before the sink scores
+it), for eval traces, and for algorithms that assign no rl credit (sft, opd, opsd). `null` is
+distinct from `0.0`: the latter means the trace *was* scored and its group cancelled out, so it
+carried no gradient.
+
 ```bash
 wc -l {run_dir}/rollouts/step_42/train/{all,effective}/traces.jsonl
 jq '.traces[].rewards' {run_dir}/rollouts/step_42/train/effective/traces.jsonl
 jq 'select(.ok | not) | {id, env: .env.id, errors}' {run_dir}/rollouts/step_*/train/all/traces.jsonl
+# traces that scored but carried no gradient (group rewards were all equal)
+jq '.traces[] | select(.info.advantage == 0)' {run_dir}/rollouts/step_42/train/effective/traces.jsonl
 ```
 
 The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/rollouts/step_{n}/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank), next to the episode subtrees.
