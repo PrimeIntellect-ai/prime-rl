@@ -12,13 +12,22 @@
 #   uv run sft @ examples/advanced/deepseek-v4-flash/sft-flash-smoke.toml \
 #     --model.debug.num-layers 4 --dist-timeout-seconds 14400
 #
-# `--dist-timeout-seconds 14400` matters on the *first* run only, regardless of
-# `debug.num_layers`. `load_dcp_from_hf` does a one-time HF -> prime-rl format conversion of the
-# checkpoint's *entire* on-disk state dict on a single rank before any GPU work happens -- for
-# this ~156GB (fp8/MXFP4) checkpoint that dequantizes to ~530GB and took about 90 minutes here,
-# blowing past the 3600s default. The converted state dict is cached next to the snapshot
-# (`<snapshot>/prime/`), so every subsequent run (any `debug.num_layers` value) skips straight to
-# the fast, truly-selective `dcp_load` step and the default timeout is fine again.
+# `--dist-timeout-seconds 14400` matters on any run that has to build the conversion cache.
+# `load_dcp_from_hf` does a one-time HF -> prime-rl format conversion on a single rank before any
+# GPU work happens: this ~156GB (fp8/MXFP4) checkpoint dequantizes to ~569GB, which took about 30
+# minutes here, blowing past the 3600s default. The result is cached next to the snapshot at
+# `<snapshot>/prime/`.
+#
+# That cache is NOT layer-count agnostic, and assuming otherwise costs a full rebuild.
+# Dequantization covers the whole on-disk state dict, but the key *renaming* is driven by
+# `converting_deepseek_v4.py:164` (`for layer_idx in range(config.num_hidden_layers)`), and
+# `debug.num_layers` shrinks `num_hidden_layers`. So a run with `--model.debug.num-layers 8`
+# writes a hybrid cache: layers 0 through 7 carry prime-rl names, layers 8 through 42 still carry
+# their on-disk DeepSeek names. A later run wanting more layers than the one that built the cache
+# dies in `dcp_load` with
+# `RuntimeError: Missing key in checkpoint state_dict: model.layers.10.attn_hc.base.`
+# Reuse is only safe at the same or a smaller `debug.num_layers`. To rebuild, delete
+# `<snapshot>/prime/` and rerun at the layer count you actually want.
 #
 # Why the full model doesn't fit, precisely (8xH200, ep=8, no further sharding axis available):
 # - Plain FSDP+EP (`optimization_dtype = "float32"`, this repo's other protected default) keeps
