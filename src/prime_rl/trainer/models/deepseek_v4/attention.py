@@ -86,14 +86,14 @@ def build_sliding_window_mask(
     Query `q` may attend to key `k` when `k <= q` and `q - k < sliding_window`; every
     other entry is the dtype's minimum, so it vanishes under the softmax.
 
-    `cu_seqlens` carries the packed row's document boundaries, and the window is clipped
-    at them: a query never reaches into the rollout before its own. Without it the row is
-    treated as a single document. The mask broadcasts over the batch, so a batched packed
-    row shares one document layout, which is all `seq_lens` can express anyway.
+    `cu_seqlens` carries the packed sequence's document boundaries, and the window is clipped
+    at them: a query never reaches into the document before its own. Without it the sequence
+    is treated as a single document. The mask broadcasts over the batch, so a batched packed
+    sequence shares one document layout, which is all `seq_lens` can express anyway.
 
     A padded micro-batch folds its padding into the last document (`batch.py:717-718`
     extends `seq_lens[-1]` while restarting `position_ids`), so the padding is masked as a
-    continuation of the last rollout. Causality already keeps it away from every real
+    continuation of the last document. Causality already keeps it away from every real
     token, and it is loss-masked.
     """
     positions = torch.arange(seq_len, device=device)
@@ -110,33 +110,39 @@ def build_sliding_window_mask(
 class CompressionLayout:
     """Per-document compressed-entry layout for one compress rate.
 
-    A compressor pools the packed row into entries, and every one of them has to belong to
-    exactly one document: an entry that straddled a boundary would blend two rollouts, and an
-    entry numbered from the start of the row could not be compared against a per-document
-    causal threshold. This carries both, precomputed once per rate and shared by every layer
-    that uses it.
+    An entry is one compressed KV vector: a compressor pools a window of `compress_rate`
+    consecutive source tokens into a single `head_dim` vector, and the attention block reads the
+    resulting series as extra keys and values beside its local sliding window. Document `d` of
+    length `L_d` owns `L_d // compress_rate` entries, and its trailing `L_d % compress_rate` tokens
+    are dropped. CSA's compressor also pools the previous entry's window, so its entries overlap
+    and its first entry per document has no predecessor to pool; `is_first` marks those.
 
-    `seq_lens` has no batch dimension, so one layout describes every row of the batch.
+    Every entry has to belong to exactly one document: one that straddled a boundary would blend
+    two independent documents, and one numbered from the start of the packed sequence could not be
+    compared against a per-document causal threshold. This carries both, precomputed once per rate
+    and shared by every layer that uses it.
+
+    `seq_lens` has no batch dimension, so one layout describes every sequence in the batch.
     """
 
-    src_idx: Tensor  # (N, rate) int64 - source token index in the packed row
-    entry_doc: Tensor  # (N,) int64 - which document each entry belongs to
-    entry_local: Tensor  # (N,) int64 - entry index within its own document
-    is_first: Tensor  # (N,) bool - entry 0 of its document
-    entry_pos: Tensor  # (N,) int64 - == entry_local * rate, the compress-RoPE position
-    doc_of_token: Tensor  # (S,) int64 - which document each packed token belongs to
+    src_idx: Tensor  # [n_entries, compress_rate] int64 - source token index in the packed sequence
+    entry_doc: Tensor  # [n_entries] int64 - which document each entry belongs to
+    entry_local: Tensor  # [n_entries] int64 - entry index within its own document
+    is_first: Tensor  # [n_entries] bool - entry 0 of its document
+    entry_pos: Tensor  # [n_entries] int64 - == entry_local * compress_rate, the compress-RoPE position
+    doc_of_token: Tensor  # [seq_len] int64 - which document each packed token belongs to
 
 
 def build_compression_layout(cu_seqlens: Tensor, compress_rate: int, total_tokens: int) -> CompressionLayout:
-    """Lay out the compressed entries of a packed row, document by document.
+    """Lay out the compressed entries of a packed sequence, document by document.
 
     Document `d` of length `L_d` gets `L_d // compress_rate` entries; entry `j` covers the
     `compress_rate` source tokens starting at `cu_seqlens[d] + j * compress_rate`. The
     trailing `L_d % compress_rate` tokens get no entry, exactly as the unpacked case drops
     its trailing partial window; they stay visible through the local sliding window.
 
-    A row whose every document is shorter than `compress_rate` yields `N == 0`, which is
-    well-formed: the compressors then contribute nothing beyond their local window.
+    A packed sequence whose every document is shorter than `compress_rate` yields zero entries,
+    which is well-formed: the compressors then contribute nothing beyond their local window.
     """
     device = cu_seqlens.device
     starts = cu_seqlens[:-1].to(torch.int64)
@@ -164,12 +170,12 @@ def build_compression_layout(cu_seqlens: Tensor, compress_rate: int, total_token
 
 @dataclass(frozen=True)
 class PackedContext:
-    """Every artifact a layer derives from the packed row's document map, carried together.
+    """Every artifact a layer derives from the packed sequence's document map, carried together.
 
     The sliding mask, the query positions and the compressed-entry layouts all encode the same
     boundaries, and they are only correct together. Passed as three optional arguments they can
-    contradict each other: a mask built without `cu_seqlens` spans rollouts while a layout does
-    not, and a row-global `position_ids` feeds `causal_threshold` a count that a per-document
+    contradict each other: a mask built without `cu_seqlens` spans documents while a layout does
+    not, and a sequence-global `position_ids` feeds `causal_threshold` a count that a per-document
     `entry_local` cannot be compared against. Neither mistake is reachable through `build`, which
     derives all three from one `cu_seqlens`.
 
@@ -245,12 +251,12 @@ def _cu_seqlens_from_position_ids(position_ids: Tensor, total_tokens: int) -> Te
 
     `DeepseekV4Model` always hands its compressors a layout built from the authoritative
     `seq_lens`; this is the fallback for a caller that drives a compressor directly, and it
-    reads the boundaries the same way HF does for its own window mask. A row of contiguous
-    positions, whatever it starts at, comes back as a single document.
+    reads the boundaries the same way HF does for its own window mask. Contiguous positions,
+    whatever they start at, come back as a single document.
 
     Not `prime_rl.utils.sequence.get_cu_seqlens_from_position_ids`: that one flattens the batch
-    with `reshape(-1)`, so at batch 2 it reports four documents spanning twice the row. It is
-    written for the trainer, where the batch is always one packed row.
+    with `reshape(-1)`, so at batch 2 it reports four documents spanning twice the sequence. It
+    is written for the trainer, where the batch is always one packed sequence.
     """
     positions = position_ids[0]
     starts = torch.nonzero(positions[1:] != positions[:-1] + 1).flatten() + 1
@@ -261,7 +267,7 @@ def _readable_entries(layout: CompressionLayout, threshold: Tensor) -> Tensor:
     """`[batch, seq_len, n_entries]` bool: which entries query `t` may read.
 
     An entry has to belong to the query's own document, and it has to sit below the query's
-    per-document causal threshold. Comparing the threshold against a packed-row entry number
+    per-document causal threshold. Comparing the threshold against a sequence-global entry number
     instead would mix the two coordinate systems.
     """
     same_document = layout.doc_of_token[None, :, None] == layout.entry_doc[None, None, :]
@@ -302,7 +308,7 @@ class DeepseekV4DualSeriesCompressor(nn.Module):
     def compress(self, hidden_states: torch.Tensor, layout: CompressionLayout | None = None) -> torch.Tensor:
         """Compress `[batch, seq_len, hidden_size]` to `[batch, n_entries, head_dim]`.
 
-        `layout` decides which source tokens each entry pools; without one the row is treated
+        `layout` decides which source tokens each entry pools; without one the sequence is treated
         as a single document, which is the only reading available to a caller that supplies no
         boundaries.
         """
@@ -319,7 +325,7 @@ class DeepseekV4DualSeriesCompressor(nn.Module):
 
         # Shift the `Ca` series one entry later so entry `w` sees entry `w - 1`'s. The first
         # entry of every document has no predecessor, and the entry sitting before it in the
-        # packed row belongs to another document, so both halves are cleared: the gate to
+        # packed sequence belongs to another document, so both halves are cleared: the gate to
         # `-inf` and the values to zero. Zeroing is not redundant with the gate, because a
         # zero softmax weight against a non-finite value would still yield NaN.
         previous = (torch.arange(n_entries, device=hidden_states.device) - 1).clamp(min=0)
@@ -498,7 +504,7 @@ class DeepseekV4HCACompressor(nn.Module):
     def compress(self, hidden_states: torch.Tensor, layout: CompressionLayout | None = None) -> torch.Tensor:
         """Compress `[batch, seq_len, hidden_size]` to `[batch, n_entries, head_dim]`.
 
-        `layout` decides which source tokens each entry pools; without one the row is treated
+        `layout` decides which source tokens each entry pools; without one the sequence is treated
         as a single document, as in CSA.
         """
         batch, seq_len, _ = hidden_states.shape
@@ -613,7 +619,7 @@ class DeepseekV4Attention(nn.Module):
         position_embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]],
         packed: PackedContext | None = None,
     ) -> tuple[torch.Tensor, None]:
-        """`packed` carries the row's document boundaries; without one the row is a single document."""
+        """`packed` carries the sequence's document boundaries; without one the sequence is a single document."""
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
         cos, sin = position_embeddings[self.rope_layer_type]
