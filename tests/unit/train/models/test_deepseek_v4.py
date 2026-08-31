@@ -8,12 +8,15 @@ lives in `test_deepseek_v4_hf.py`.
 
 import math
 import re
+from unittest.mock import MagicMock
 
 import pytest
 import torch
 from huggingface_hub.errors import StrictDataclassClassValidationError
 from torch import nn
 
+from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.model import load_dcp_from_hf
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import (
@@ -36,6 +39,7 @@ from .deepseek_v4_helpers import (
     _randomize,
     _seed_rng,  # noqa: F401 -- pytest fixture, applied by name
     _seq_lens,
+    _tid2eid,
     _torch_rms_norm,  # noqa: F401 -- pytest fixture, applied by name
     get_prime_model,
 )
@@ -57,7 +61,7 @@ def test_deepseek_v4_hash_layers_route_on_token_ids():
         prime_model(input_ids, seq_lens=_seq_lens(input_ids))
         counts.append(torch.stack([layer.mlp.tokens_per_expert.clone() for layer in hash_layers]))
 
-    table = hash_layers[0].mlp.tid2eid
+    table = hash_layers[0].mlp.router.tid2eid
     assert set(table[0].tolist()) != set(table[1].tolist()), "the two table rows must differ for this to bite"
     assert not torch.equal(counts[0], counts[1]), "a hash layer must route the two token ids to different experts"
     expected = torch.zeros_like(counts[0][0])
@@ -110,6 +114,75 @@ def test_deepseek_v4_weight_conversion_roundtrip():
     assert set(state_dict) == set(original)
     for name, tensor in original.items():
         assert torch.equal(state_dict[name], tensor), f"Value mismatch for {name}"
+
+
+def _fill_hash_tables(model: nn.Module) -> dict[int, torch.Tensor]:
+    """Give every bootstrap layer its own non-degenerate table, and hand them back by layer."""
+    tables = {}
+    for layer_idx, layer in enumerate(model.model.layers):
+        if not layer.mlp.is_hash:
+            continue
+        table = _tid2eid(_BASE["vocab_size"], _BASE["n_routed_experts"], _BASE["num_experts_per_tok"])
+        with torch.no_grad():
+            layer.mlp.router.tid2eid.copy_(table)
+        tables[layer_idx] = table
+    assert len(tables) == _BASE["num_hash_layers"], "config must contain hash-routed layers"
+    return tables
+
+
+def test_deepseek_v4_hash_table_survives_the_on_disk_roundtrip():
+    """The frozen table has to reach `mlp.router.tid2eid` from the name a real checkpoint ships.
+
+    It is the one buffer no `init_weights` can reconstruct: an all-zero table is a valid tensor
+    that routes every token to expert 0, so a rename on either side of the conversion chain
+    degrades the model in silence rather than raising. `test_deepseek_v4_weight_conversion_roundtrip`
+    only ever roundtrips the zeros the constructor leaves behind, and `_VLLM_MAPPED_NAMES` pins the
+    on-disk name without saying where it lands, so this carries real values across both.
+    """
+    prime_config = _prime_config()
+    model = DeepseekV4ForCausalLM(prime_config).to("cuda")
+    tables = _fill_hash_tables(model)
+
+    state_dict = model.convert_to_hf(dict(model.state_dict()))
+
+    assert {key for key in state_dict if key.endswith("tid2eid")} == {
+        f"layers.{layer_idx}.ffn.gate.tid2eid" for layer_idx in tables
+    }, "only the bootstrap layers carry a table, under the name the real checkpoint ships"
+    for layer_idx, table in tables.items():
+        assert torch.equal(state_dict[f"layers.{layer_idx}.ffn.gate.tid2eid"], table)
+
+    model.convert_to_prime(state_dict)
+    reloaded = DeepseekV4ForCausalLM(prime_config).to("cuda")
+    reloaded.load_state_dict(state_dict)
+
+    for layer_idx, table in tables.items():
+        assert torch.equal(reloaded.model.layers[layer_idx].mlp.router.tid2eid, table)
+
+
+def test_deepseek_v4_load_dcp_from_hf_keeps_the_hash_table(tmp_path, monkeypatch):
+    """Checkpoint values for the frozen table must survive the loading path itself.
+
+    Two things at once: the name `load_dcp_from_hf` asks the checkpoint for (a `KeyError` in the
+    stub below if the buffer moves), and that nothing between `dcp_load` and the end of loading
+    resets it. `init_buffers_post_meta` walks every MoE and runs just before the load, so getting
+    it to reset one buffer too many is an easy mistake with no symptom other than every bootstrap
+    token routing to expert 0.
+    """
+    with torch.device("meta"):
+        model = DeepseekV4ForCausalLM(_prime_config())
+    expected = _tid2eid(_BASE["vocab_size"], _BASE["n_routed_experts"], _BASE["num_experts_per_tok"])
+
+    def fake_dcp_load(state_dict, storage_reader=None):
+        buffer = state_dict["model.layers.0.mlp.router.tid2eid"]
+        buffer.copy_(expected.to(device=buffer.device))
+
+    monkeypatch.setattr("prime_rl.trainer.model.dcp_load", fake_dcp_load)
+    monkeypatch.setattr("prime_rl.trainer.model.load_state_dict_keys", lambda path: model.state_dict().keys())
+    monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
+
+    load_dcp_from_hf(model, ModelConfig(name=str(tmp_path)), parallel_dims=MagicMock())
+
+    torch.testing.assert_close(model.model.layers[0].mlp.router.tid2eid, expected)
 
 
 def test_deepseek_v4_config_rejects_a_foreign_layer_type():

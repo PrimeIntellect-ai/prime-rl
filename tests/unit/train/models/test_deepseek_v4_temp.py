@@ -487,7 +487,7 @@ def test_hash_moe_routes_by_token_id_not_by_score():
     prime_module = prime_hash_moe()
     _, hidden = _moe_hidden_states()
     hidden = hidden.detach()
-    table = prime_module.tid2eid
+    table = prime_module.router.tid2eid
     assert set(table[0].tolist()) != set(table[1].tolist()), "the two rows must differ for this to bite"
 
     # Identical hidden states throughout: only the token ids move the routing.

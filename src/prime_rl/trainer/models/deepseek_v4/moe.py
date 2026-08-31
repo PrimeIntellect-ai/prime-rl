@@ -95,6 +95,38 @@ class DeepseekV4Router(TokenChoiceTopKRouter):
         return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
 
 
+class DeepseekV4HashRouter(DeepseekV4Router):
+    """A bootstrap layer's router: selection is a frozen token-id lookup, gating still learned.
+
+    `tid2eid` replaces the top-k of the scores with `tid2eid[token_id]`, read from the checkpoint
+    and zeros until one fills it. A frozen selection cannot be steered, so a hash layer has no use
+    for the aux-loss-free load-balancing bias, and HF's `DeepseekV4HashRouter` carries no
+    `e_score_correction_bias` to load into it either; `selection_bias=False` leaves that buffer
+    unbuilt, keeping the state dict aligned with HF's.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        num_experts: int,
+        top_k: int,
+        score_func: str,
+        route_norm: bool,
+        route_scale: float,
+        vocab_size: int,
+    ) -> None:
+        super().__init__(
+            dim=dim,
+            num_experts=num_experts,
+            top_k=top_k,
+            score_func=score_func,
+            route_norm=route_norm,
+            route_scale=route_scale,
+            selection_bias=False,
+        )
+        self.register_buffer("tid2eid", torch.zeros(vocab_size, top_k, dtype=torch.long), persistent=True)
+
+
 class DeepseekV4Experts(GroupedExperts):
     """Routed experts with V4's clamped SwiGLU.
 
@@ -149,11 +181,11 @@ class DeepseekV4MoE(MoE):
     it, then hands the three V4-specific pieces to the base constructor. `MoE.forward`'s
     orchestration is unchanged.
 
-    A hash layer routes each token to `tid2eid[token_id]`, a frozen table read from the
-    checkpoint, instead of to the top-k of the router's scores. That is precisely what the
-    shared router's `routed_experts` bypass does, so the router class is the same for both
-    layer types and only the `forward` below differs: it looks the indices up and lets the
-    base class weight them with the learned scores as usual.
+    A hash layer routes each token to `tid2eid[token_id]`, the frozen table its
+    `DeepseekV4HashRouter` carries, instead of to the top-k of the router's scores. That is
+    precisely what the shared router's `routed_experts` bypass does, so only the `forward` below
+    differs between the two layer types: it reads the indices out of the table and lets the base
+    class weight them with the learned scores as usual.
     """
 
     def __init__(self, config: DeepseekV4Config, layer_idx: int):
@@ -167,7 +199,7 @@ class DeepseekV4MoE(MoE):
 
         is_hash = layer_idx < config.num_hash_layers
 
-        router = DeepseekV4Router(
+        router_kwargs = dict(
             dim=config.hidden_size,
             num_experts=config.n_routed_experts,
             top_k=config.num_experts_per_tok,
@@ -176,11 +208,11 @@ class DeepseekV4MoE(MoE):
             # `config.norm_topk_prob`, so neither do we.
             route_norm=True,
             route_scale=config.routed_scaling_factor,
-            # A frozen selection cannot be steered, so a hash layer has no use for the
-            # aux-loss-free load-balancing bias, and HF's `DeepseekV4HashRouter` carries no
-            # `e_score_correction_bias` to load into it either. `False` leaves the
-            # `selection_bias` buffer unbuilt, keeping the state dict aligned with HF's.
-            selection_bias=not is_hash,
+        )
+        router = (
+            DeepseekV4HashRouter(**router_kwargs, vocab_size=config.vocab_size)
+            if is_hash
+            else DeepseekV4Router(**router_kwargs, selection_bias=True)
         )
         experts = DeepseekV4Experts(
             dim=config.hidden_size,
@@ -203,16 +235,6 @@ class DeepseekV4MoE(MoE):
         self.layer_idx = layer_idx
         self.is_hash = is_hash
 
-        if is_hash:
-            # HF hangs the table off the router (`gate.tid2eid`); prime-rl's router is
-            # shared by both layer types, so it lives here instead, exactly like the
-            # `selection_bias` it stands in for. Zeros until a checkpoint fills it.
-            self.register_buffer(
-                "tid2eid",
-                torch.zeros(config.vocab_size, config.num_experts_per_tok, dtype=torch.long),
-                persistent=True,
-            )
-
     def forward(
         self,
         x: torch.Tensor,
@@ -232,6 +254,6 @@ class DeepseekV4MoE(MoE):
         """
         if self.is_hash and routed_experts is None:
             assert input_ids is not None, f"layer {self.layer_idx} is hash-routed and needs input_ids"
-            bs, slen, _ = x.shape
-            routed_experts = self.tid2eid[input_ids.reshape(-1)].view(bs, slen, -1)
+            # `(vocab_size, top_k)` indexed by `(bs, slen)` token ids gives `(bs, slen, top_k)`.
+            routed_experts = self.router.tid2eid[input_ids]
         return super().forward(x, routed_experts=routed_experts)

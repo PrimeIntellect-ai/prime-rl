@@ -15,16 +15,16 @@ saved checkpoint from `scripts/mini_moe.py --arch deepseek_v4`, not derivable fr
 in-memory `state_dict()` parity test alone, which only ever exercised the HF-native side).
 
 The genuinely PrimeRL-specific delta, once on HF-native names, is small: PrimeRL's shared
-`MoE` owns the router one level above where HF hangs it, keeps the aux-loss-free
-load-balancing bias on that router as `selection_bias`, and names its shared expert in the
-singular. Attention and its
+`MoE` owns the router one level above where HF hangs it, so everything HF keeps under `gate`
+moves onto `router` (the aux-loss-free load-balancing bias arriving as `selection_bias`), and
+names its shared expert in the singular. Attention and its
 compressors and the hyper-connections already match HF-native shapes exactly once the on-disk
 step above has run. The routed experts are the one place PrimeRL diverges from HF-native on
 purpose: HF fuses `w1`/`w3` into `gate_up_proj` in memory, but PrimeRL stacks them as the
 canonical split `gate_proj`/`up_proj`/`down_proj` every other prime-rl MoE uses, so the
 on-disk per-expert `w1`/`w2`/`w3` only ever need stacking and renaming, never fusing.
 
-The two MoE layer types have different key sets: a hash layer carries `mlp.tid2eid` and no
+The two MoE layer types have different key sets: a hash layer carries `mlp.router.tid2eid` and no
 `mlp.router.selection_bias`, a standard one the other way round. Every op is present-guarded, so the
 same list is emitted for both.
 """
@@ -149,7 +149,7 @@ def _layer_ops(layer_idx: int, layer_type: str) -> list[ConvOp]:
     ops += [
         Rename(f"{prefix}.gate.weight", f"{prefix}.router.gate.weight"),
         Rename(f"{prefix}.gate.e_score_correction_bias", f"{prefix}.router.selection_bias"),
-        Rename(f"{prefix}.gate.tid2eid", f"{prefix}.tid2eid"),
+        Rename(f"{prefix}.gate.tid2eid", f"{prefix}.router.tid2eid"),
         PrefixRename(f"{prefix}.shared_experts.", f"{prefix}.shared_expert."),
     ]
     return ops

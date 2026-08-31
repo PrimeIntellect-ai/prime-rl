@@ -173,12 +173,13 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         return super().convert_to_prime(state_dict)
 
     def init_buffers_post_meta(self) -> None:
-        # One rotary per compressor and per indexer on top of the model-level one, and all
-        # of their tables are non-persistent, so every instance has to be walked. Only
-        # `tokens_per_expert` gets reset here: it is non-persistent (never in a checkpoint)
-        # so `to_empty()` leaves it uninitialized. `selection_bias` is persistent and already
-        # holds the real checkpoint value by the time this runs (dcp_load has already
-        # populated it), so it must not be touched here.
+        # `to_empty()` leaves every buffer uninitialized and this runs before `dcp_load`, so a
+        # buffer is restored either here or by the checkpoint. Rebuilt here are the ones no
+        # checkpoint carries: the rotary tables (non-persistent, and there is one rotary per
+        # compressor and per indexer on top of the model-level one, so every instance has to be
+        # walked) and `tokens_per_expert`. The router's persistent buffers, `selection_bias` and a
+        # hash layer's `tid2eid`, are in the checkpoint that `dcp_load` applies next, so they are
+        # left to it.
         for module in self.modules():
             if isinstance(module, DeepseekV4RotaryEmbedding):
                 module.init_buffers_post_meta()

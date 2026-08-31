@@ -234,7 +234,7 @@ def prime_hash_moe() -> nn.Module:
         module = DeepseekV4MoE(DeepseekV4Config(**_HASH_MOE), layer_idx=_HASH_LAYER)
     _randomize(module)
     with torch.no_grad():
-        module.tid2eid.copy_(_tid2eid())
+        module.router.tid2eid.copy_(_tid2eid())
     return module
 
 

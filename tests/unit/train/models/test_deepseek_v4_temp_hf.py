@@ -360,7 +360,7 @@ def test_hca_attention_matches_hf(_torch_rms_norm):  # noqa: F811
 _HF_TO_PRIME_MOE_KEYS = {
     "gate.weight": "router.gate.weight",
     "gate.e_score_correction_bias": "router.selection_bias",
-    "gate.tid2eid": "tid2eid",
+    "gate.tid2eid": "router.tid2eid",
 }
 
 

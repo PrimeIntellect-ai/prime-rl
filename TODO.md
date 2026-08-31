@@ -209,12 +209,14 @@ backward lands upstream (no tracking issue exists there to watch instead); the N
 TileLang path is usable sooner at the cost of writing the mask-to-indices conversion.
 
 State-dict deltas, all forced by prime-rl's own `MoE`/router naming and all implemented in
-`converting_deepseek_v4.py`: `mlp.gate.weight` -> `mlp.router.gate.weight`,
-`mlp.gate.e_score_correction_bias` -> `mlp.expert_bias`, `mlp.shared_experts.*` ->
-`mlp.shared_expert.*`, and, on the hash layers only, `mlp.gate.tid2eid` -> `mlp.tid2eid`. The
-routed experts need **no** conversion: `mlp.experts.gate_up_proj`/`down_proj` already match HF's
-own names and shapes, unlike every other prime-rl MoE. The two MoE layer types have different key
-sets: a hash layer has `mlp.tid2eid` and no `mlp.expert_bias`, a standard one the other way round.
+`converting_deepseek_v4.py`. prime-rl owns the router one level above HF, so everything HF keeps
+under `gate` moves onto `router`: `mlp.gate.weight` -> `mlp.router.gate.weight`,
+`mlp.gate.e_score_correction_bias` -> `mlp.router.selection_bias`, and, on the hash layers only,
+`mlp.gate.tid2eid` -> `mlp.router.tid2eid`. The shared expert is named in the singular
+(`mlp.shared_experts.*` -> `mlp.shared_expert.*`). The routed experts need **no** conversion:
+`mlp.experts.gate_up_proj`/`down_proj` already match HF's own names and shapes, unlike every other
+prime-rl MoE. The two MoE layer types have different key sets: a hash layer has
+`mlp.router.tid2eid` and no `mlp.router.selection_bias`, a standard one the other way round.
 
 One structural note: `DeepseekV4Indexer` subclasses a `DeepseekV4DualSeriesCompressor`
 base shared with `DeepseekV4CSACompressor` (HF's two classes run byte-identical compression code
