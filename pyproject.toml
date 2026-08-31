@@ -168,6 +168,9 @@ members = [
 # tau2-synth and tau3-bench pin `tau2` forks/revs that conflict with the
 # canonical tau2-bench; a workspace shares one lock, so these can't coexist.
 exclude = [
+    # These environments require MCP 1.x; verifiers requires MCP 2.0.
+    "deps/prime-envs/environments/search/browsecomp_plus",
+    "deps/prime-envs/environments/tool_use/automationbench_env",
     "deps/prime-envs/environments/tool_use/tau2_synth",
     "deps/prime-envs/environments/tool_use/tau3_bench",
 ]
