@@ -2,7 +2,7 @@
 # math-env, batch_size=64. Read the per-step trainer/vLLM mismatch off the `mismatch_kl/all/mean`
 # metric (console log line "Mismatch KL {:.4f}" and W&B) -- there is no separate script that
 # produces this; transcribe the 20 step values into the PR. All entries must be < 0.015 to merge.
-# Same deployment/parallelism base as rl.toml -- see that file and RUNS.md for rationale.
+# Runs on 4 train + 8 infer nodes (8xH200 each).
 max_steps = 20
 seq_len = 2048
 
@@ -10,6 +10,8 @@ seq_len = 2048
 name = "deepseek-ai/DeepSeek-V4-Flash-0731"
 
 [weight_broadcast]
+# NCCL/NIXL broadcast need convert_layer_to_vllm_kernel, which this port does not implement
+# (see TODO.md). Filesystem broadcast uses convert_to_hf instead, which is implemented and tested.
 type = "filesystem"
 
 [deployment]
@@ -60,6 +62,8 @@ use_deep_gemm = true
 
 [inference.vllm]
 tensor_parallel_size = 8
+# One full-TP replica per inference node (8 nodes x TP=8 = 64 GPUs total), required by the
+# multi-node expert-parallel inference validator when enable_expert_parallel is set.
 data_parallel_size = 8
 enable_expert_parallel = true
 # Both required by DeepSeek V4's sparse-MLA KV layout, not tuning choices. See the comments in
@@ -67,5 +71,8 @@ enable_expert_parallel = true
 kv_cache_dtype = "fp8"
 block_size = 256
 
+# The checkpoint ships no Jinja chat template, so `name = "default"` resolves to DefaultRenderer
+# and raises "tokenizer.chat_template is not set" on the first rollout. `deepseek-v4` is what
+# auto-resolution would pick anyway; pinned so the choice survives a MODEL_RENDERER_MAP change.
 [orchestrator.renderer]
-name = "default"
+name = "deepseek-v4"

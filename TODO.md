@@ -138,7 +138,7 @@ Open items:
   `named_parameters(recurse=False)` on `Shard(0)` regardless of name, so the stacked
   `gate_proj`/`up_proj`/`down_proj` the experts inherit from `GroupedExperts` are covered by
   construction. Re-verified after the port with an `ep=8` SFT run on
-  `examples/advanced/deepseek-v4-flash/sft-mini-ep-check.toml`: finite loss (12.66, 12.24,
+  a mini-checkpoint config since removed from the repo: finite loss (12.66, 12.24,
   13.01), nonzero varying grad norms, no NaNs, 12.3 GiB peak. That run uses the default torch
   dispatch and sets no `[model.ac]`, so it does not speak to the DeepEP-versus-torch deadlock
   `sft.toml` documents under `ac.mode = "full"`.
@@ -203,7 +203,7 @@ fundamentally requires scoring every candidate, so the indexer's forward memory 
 quadratic in `seq_len` no matter how the kernel is engineered; only its backward is linear (touches
 only the selected top-k entries). Getting the indexer to true linear memory would need an
 approximate or hierarchical top-k, which nothing surveyed implements. Fine at `seq_len=2048` (this
-port's current validation target, see `RUNS.md`), but will matter at the million-token context
+port's current validation target), but will matter at the million-token context
 lengths DeepSeek-V4's own paper targets. Revisit attention-gym's Triton backend if/when D=512
 backward lands upstream (no tracking issue exists there to watch instead); the NeMo-Automodel
 TileLang path is usable sooner at the cost of writing the mask-to-indices conversion.
@@ -234,7 +234,7 @@ true HF channel order.
 
 Found while getting the local 4-GPU validation working against a mini checkpoint with real
 config values. None of these are visible from the test suite; all of them are on the path of
-`examples/advanced/deepseek-v4-flash/{rl,kl-check}.toml`.
+`examples/advanced/deepseek-v4-flash/kl-check.toml`.
 
 - **The trainer cannot load the real checkpoint.** `deepseek-ai/DeepSeek-V4-Flash-0731` ships
   `quantization_config: {quant_method: "fp8", fmt: "e4m3", weight_block_size: [128, 128],
@@ -267,8 +267,8 @@ config values. None of these are visible from the test suite; all of them are on
   handles UE8M0 (logged at startup: "Detected quantization_config.scale_fmt=ue8m0; enabling
   UE8M0 for DeepGEMM"), so `--use-deep-gemm` sidesteps this entirely. Net effect: on this
   checkpoint the flag isn't just about avoiding silent corruption above 1024 tokens, it's
-  required to boot at all. `examples/advanced/deepseek-v4-flash/{inference,rl,kl-check}.toml`
-  now all set `use_deep_gemm = true` (previously only `rl-mini-smoke.toml` had it).
+  required to boot at all. `examples/advanced/deepseek-v4-flash/{inference,kl-check,sft}.toml`
+  all set `use_deep_gemm = true`.
 - **Filesystem weight broadcast silently downcast everything to bf16** (fixed here, but worth
   knowing it affected six models). `gather_weights_parallel` cast every DTensor to bf16 and the
   filesystem sender passed no exceptions, so `keep_in_fp32_for_weight_transfer`, which only the
@@ -312,11 +312,12 @@ config values. None of these are visible from the test suite; all of them are on
   `DeepSeekV4Renderer`, a native implementation rather than a wrapper around DeepSeek's
   `encode_messages`, and registers it in `MODEL_RENDERER_MAP` for
   `deepseek-ai/DeepSeek-V4-Flash-0731`. `sft.toml` picks it up through auto-resolution and needs
-  no `[renderer]` section. `rl.toml` and `kl-check.toml` still pin `name = "default"` and could
-  drop the pin, but that swap is untested. `rl-mini-smoke.toml` must keep an explicit renderer
-  either way: it points at `/tmp/deepseek-v4-mini`, which is not a key in `MODEL_RENDERER_MAP`,
-  so auto-resolution would fall through to `DefaultRenderer` and trip
-  `validate_renderer_auto_resolves`.
+  no `[renderer]` section. `kl-check.toml` pins `name = "deepseek-v4"` explicitly, which is what
+  auto-resolution would pick anyway. Verified against the real checkpoint's tokenizer:
+  `name = "default"` raises `Cannot use chat template functions because tokenizer.chat_template
+  is not set`, while `deepseek-v4` renders. Any config naming a local checkpoint path instead of
+  the hub id needs the explicit pin, since the path is not a key in `MODEL_RENDERER_MAP` and
+  auto-resolution would fall through to `DefaultRenderer`.
 - **NCCL weight broadcast breaks with `data_parallel_size > 1`.** With two DP replicas the
   orchestrator logs `inference_world_size=1, gpus_per_server=1` and only DP rank 0 gets a
   receiver installed, so the collective RPC reaches DP1 and fails with `'Worker' object has no
@@ -356,8 +357,8 @@ config values. None of these are visible from the test suite; all of them are on
 - **The full 43-layer real checkpoint does not fit for training on a single 8xH200 node.**
   Confirmed by direct CUDA OOM under both CPU-offload strategies this repo supports, once the
   compress_ratios fix above unblocked the load in the first place. This is a hardware ceiling,
-  not a bug: `examples/advanced/deepseek-v4-flash/rl.toml` already specs `num_train_nodes = 4`
-  (32 GPUs) for this exact checkpoint.
+  not a bug: `examples/advanced/deepseek-v4-flash/{sft,kl-check}.toml` already spec
+  `num_train_nodes = 4` (32 GPUs) for this exact checkpoint.
   - Plain FSDP+EP (`optimization_dtype = "float32"`) keeps the entire fp32 parameter shard
     resident on GPU: `284.6e9 params * 4 bytes / 8 GPUs ≈ 132.5 GiB/GPU` (total params derived
     from the real config's per-layer shapes: ~278B in routed/shared experts across 43 MoE
@@ -385,8 +386,8 @@ config values. None of these are visible from the test suite; all of them are on
     non-truncated-model keys to make truncated runs meaningfully cheap to load, but as a
     one-time, cached cost it wasn't worth the (model-agnostic, cross-architecture-risk) code
     change for this session's purposes.
-  See `examples/advanced/deepseek-v4-flash/sft-flash-smoke.toml` for the exact working
-  single-node command and full derivation.
+  See the header comment in `examples/advanced/deepseek-v4-flash/sft.toml` for the single-node
+  pre-flight command and the memory derivation.
 
 ## DeepSeek V4's routed-expert selection flips under small numerical perturbation
 

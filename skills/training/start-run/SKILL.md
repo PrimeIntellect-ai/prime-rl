@@ -114,11 +114,14 @@ hand. Upstream reference: https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash
 - CUDA >= 12.3 on `CUDA_HOME`/`PATH` for the TileLang kernel JIT, **if** the machine's default
   `nvcc` is older (it was 11.5 on the SM120 dev box; check before assuming).
 
-If boot fails: try `--vllm.enforce-eager` first, which skips CUDA-graph capture. If output is
-subtly wrong above 1024 tokens per forward, try `--use-deep-gemm` (top-level, not under `--vllm.`);
-without it `VLLM_USE_DEEP_GEMM=0` and the manifold-hyper-connection pre-norm GEMM falls back to a
-TileLang kernel measured silently wrong past that length **on SM120**. Whether that also holds on
-Hopper is unverified, which is why the configs do not set it.
+If boot fails: try `--vllm.enforce-eager` first, which skips CUDA-graph capture.
+
+`use_deep_gemm = true` is set by every `deepseek-v4-flash` config and is required, not an
+optimization. Without it `VLLM_USE_DEEP_GEMM=0`, and two things break: the
+manifold-hyper-connection pre-norm GEMM falls back to a TileLang kernel measured silently wrong
+above 1024 tokens per forward **on SM120**, and the real checkpoint's UE8M0-scaled fp8 weights
+route to a CUTLASS kernel that crashes during the memory-profiling forward pass. Budget for the
+first-boot JIT: roughly 1261 kernels, measured at ~12 min.
 
 Do **not** pass `--vllm.quantization`.
 

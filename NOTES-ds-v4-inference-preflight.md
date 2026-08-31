@@ -199,7 +199,8 @@ respected:
 checkpoint and had the identical missing `use_deep_gemm = true` (only `rl-mini-smoke.toml`
 already had it, with a comment already correctly calling it "mandatory, not an optimization").
 Added the same setting + comment to `inference.toml`, `rl.toml`, and `kl-check.toml`; all three
-still parse under `--dry-run`. Also updated `TODO.md`'s "DeepSeek V4: blockers for the real
+still parse under `--dry-run`. (`rl.toml` and `rl-mini-smoke.toml` have since been removed from
+the repo; this section is kept as the record of the finding.) Also updated `TODO.md`'s "DeepSeek V4: blockers for the real
 cluster run" section: filled in the "not yet checked on Hopper" gap, added the newly-found
 CUTLASS/UE8M0 crash as a second, more basic reason the flag is required, and corrected a stale
 claim that `monkey_patch_deepseek_v4_compress_ratios` was "a no-op on the real checkpoint" (it
