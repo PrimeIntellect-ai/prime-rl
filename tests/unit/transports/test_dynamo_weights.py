@@ -1,8 +1,10 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 from prime_rl.transports.weights.base import RECEIVER_READY_MARKER
+import prime_rl.transports.weights.dynamo as dynamo_weights
 from prime_rl.transports.weights.dynamo import DynamoWeightReceiver
 
 
@@ -90,3 +92,75 @@ async def test_dynamo_filesystem_receiver_uses_admin_collective_rpc(tmp_path):
     )
     assert ("update_weight_version", "4") in admin.calls
     assert admin.calls[-1] == "resume"
+
+
+def test_dynamo_nixl_receiver_participates_in_orchestrator_handshake(tmp_path, monkeypatch):
+    events: list[object] = []
+
+    class FakeNixlAgent:
+        def __init__(self, name: str) -> None:
+            events.append(("agent", name))
+
+        def get_metadata(self) -> bytes:
+            return b"orchestrator-metadata"
+
+        def add_remote_agent(self, metadata: bytes) -> str:
+            events.append(("add_remote_agent", metadata))
+            return "trainer-peer"
+
+        def make_connection(self, peer: str) -> None:
+            events.append(("make_connection", peer))
+
+        def wait_for_notification(self, peers: list[str], notification: str, timeout: int) -> None:
+            events.append(("wait_for_notification", peers, notification, timeout))
+
+        def send_notification(self, peer: str, notification: str) -> None:
+            events.append(("send_notification", peer, notification))
+
+    class FakeModelExpressSession:
+        def __init__(self, **kwargs) -> None:
+            events.append(("session", kwargs))
+
+        def publish(self, *, nixl_metadata: bytes) -> None:
+            events.append(("publish", nixl_metadata))
+
+        def wait_for(self, role: str, *, count: int, timeout: int):
+            events.append(("wait_for", role, count, timeout))
+            return ["trainer-ref"]
+
+        def fetch(self, ref: str):
+            events.append(("fetch", ref))
+            return SimpleNamespace(nixl_metadata=b"trainer-table")
+
+    class FakeTrainerTensorTable:
+        @classmethod
+        def decode(cls, payload: bytes):
+            events.append(("decode", payload))
+            return SimpleNamespace(agents=[SimpleNamespace(metadata=b"trainer-metadata")])
+
+    monkeypatch.setattr(dynamo_weights, "set_ucx_env_defaults", lambda device: events.append(("ucx", device)), raising=False)
+    monkeypatch.setattr(dynamo_weights, "NixlAgent", FakeNixlAgent, raising=False)
+    monkeypatch.setattr(dynamo_weights, "make_agent_name", lambda role, rank: f"{role}-{rank}", raising=False)
+    monkeypatch.setattr(dynamo_weights, "ModelExpressSession", FakeModelExpressSession, raising=False)
+    monkeypatch.setattr(dynamo_weights, "MxClient", lambda server_url: ("client", server_url), raising=False)
+    monkeypatch.setattr(dynamo_weights, "TrainerTensorTable", FakeTrainerTensorTable, raising=False)
+    monkeypatch.setattr(dynamo_weights, "policy_notification", lambda step, state: f"policy-{step}-{state}", raising=False)
+
+    admin = FakeAdminPlane()
+    config = SimpleNamespace(
+        type="nixl",
+        timeout=10,
+        inference_world_size=2,
+        host="modelexpress",
+        port=8001,
+        session_id="test-session",
+    )
+    receiver = DynamoWeightReceiver(tmp_path, config, [], "model", admin)
+    receiver.step_dir(3).mkdir(parents=True)
+
+    asyncio.run(receiver.initialize())
+    asyncio.run(receiver.receive(3))
+
+    assert ("publish", b"orchestrator-metadata") in events
+    assert ("wait_for_notification", ["trainer-peer"], "policy-3-ready", 10) in events
+    assert ("send_notification", "trainer-peer", "policy-3-complete") in events
