@@ -14,7 +14,7 @@ from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 
 
-class _ClampedSwiglu:
+class ClampedSwiglu:
     """SwiGLU with both branches clamped, as in HF's `DeepseekV4Experts`.
 
     Structurally an `Activation`, but with `limit` as instance state: V4 reads its clamp
@@ -116,7 +116,7 @@ class DeepseekV4Experts(GroupedExperts):
 
     def __init__(self, dim: int, hidden_dim: int, num_experts: int, swiglu_limit: float) -> None:
         super().__init__(dim, hidden_dim, num_experts, expert_type="gated")
-        self.activation = _ClampedSwiglu(swiglu_limit)
+        self.activation = ClampedSwiglu(swiglu_limit)
 
     def init_weights(self, init_std: float) -> None:
         # Both halves of HF's fused gate_up_proj are drawn from the same std=0.02
