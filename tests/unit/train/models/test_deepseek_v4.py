@@ -1,277 +1,44 @@
+"""Whole-model checks for the DeepSeek V4 port that need no reference implementation.
+
+Hash routing, gradient reachability, the weight-conversion chain against vLLM's own loader,
+meta-device buffer restoration, and the packed-batch invariant the trainer needs in order to
+agree with vLLM. The parity half, which uses HF's own DeepSeek V4 implementation as its oracle,
+lives in `test_deepseek_v4_hf.py`.
+"""
+
+import re
+
 import pytest
 import torch
+from huggingface_hub.errors import StrictDataclassClassValidationError
 from torch import nn
-from transformers.core_model_loading import revert_weight_conversion
-from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config as HFDeepseekV4Config
-from transformers.models.deepseek_v4.modeling_deepseek_v4 import DeepseekV4ForCausalLM as HFDeepseekV4ForCausalLM
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4CSACompressor, DeepseekV4HCACompressor
-from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import to_on_disk_naming
-from prime_rl.trainer.models.layers import norms
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
 
-pytestmark = [pytest.mark.gpu]
-
-# Deliberately heterogeneous: one layer of every attention type, hash-routed bootstrap
-# layers ahead of standard MoE ones, and a sliding window narrow enough that the compressed
-# branches are what carries any long-range signal.
-_BASE = dict(
-    vocab_size=64,
-    hidden_size=128,
-    moe_intermediate_size=64,
-    num_hidden_layers=5,
-    num_attention_heads=4,
-    num_key_value_heads=1,
-    head_dim=32,
-    q_lora_rank=64,
-    partial_rotary_factor=0.5,
-    rope_theta=10000.0,
-    compress_rope_theta=160000.0,
-    max_position_embeddings=256,
-    sliding_window=6,
-    o_groups=2,
-    o_lora_rank=16,
-    layer_types=[
-        "sliding_attention",
-        "compressed_sparse_attention",
-        "heavily_compressed_attention",
-        "compressed_sparse_attention",
-        "sliding_attention",
-    ],
-    compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 8},
-    index_n_heads=4,
-    index_head_dim=24,
-    # Smaller than the number of compressed entries the sequence yields, so the Lightning
-    # Indexer's selection has to actually discard some of them.
-    index_topk=2,
-    n_routed_experts=8,
-    num_experts_per_tok=3,
-    n_shared_experts=1,
-    scoring_func="sqrtsoftplus",
-    routed_scaling_factor=1.5,
-    swiglu_limit=10.0,
-    num_hash_layers=2,
-    hc_mult=4,
-    hc_sinkhorn_iters=20,
-    hc_eps=1e-6,
-    rms_norm_eps=1e-6,
+from .deepseek_v4_helpers import (
+    _BASE,
+    _BATCH,
+    _SEQ,
+    _assert_relative,
+    _inputs,
+    _prime_config,
+    _randomize,
+    _seed_rng,  # noqa: F401 -- pytest fixture, applied by name
+    _seq_lens,
+    _torch_rms_norm,  # noqa: F401 -- pytest fixture, applied by name
+    get_prime_model,
 )
 
-_BATCH, _SEQ = 2, 32
-
-
-@pytest.fixture(autouse=True)
-def _seed_rng():
-    torch.manual_seed(0)
-
-
-@pytest.fixture
-def _torch_rms_norm(monkeypatch):
-    """Make the shared `RMSNorm` take its PyTorch path instead of the quack kernel.
-
-    The kernel is a project-wide choice that predates this model and drifts from HF's fp32
-    reference by up to ~1e-2 in bf16, which would swamp what the V4-specific math
-    contributes to the comparison.
-    """
-    monkeypatch.setattr(norms, "_get_quack_rmsnorm", lambda: None)
-
-
-def _tid2eid(vocab_size: int, num_experts: int, top_k: int) -> torch.Tensor:
-    """A frozen token id -> expert ids table, distinct experts per row as a real one has."""
-    rows = [torch.randperm(num_experts)[:top_k] for _ in range(vocab_size)]
-    return torch.stack(rows).to(device="cuda", dtype=torch.long)
-
-
-def _randomize(model: nn.Module) -> None:
-    """Draw non-degenerate values for every parameter and routing buffer.
-
-    Norm gains default to ones and the sinks, position biases, load-balancing bias and hash
-    table all default to zeros, each of which would leave the path it controls
-    indistinguishable from a no-op. The position bias is drawn wide because it is a softmax
-    logit over a pooling window; at the projections' std the gate would stay near uniform.
-    """
-    for name, param in model.named_parameters():
-        with torch.no_grad():
-            if name.endswith("scale"):
-                param.uniform_(0.5, 1.5)
-            elif name.endswith("base"):
-                param.normal_(mean=0.0, std=0.5)
-            elif name.endswith("norm.weight"):
-                param.uniform_(0.5, 1.5)
-            elif name.endswith("sinks") or name.endswith("position_bias"):
-                param.normal_(mean=0.0, std=1.0)
-            else:
-                param.normal_(mean=0.0, std=0.02)
-
-    with torch.no_grad():
-        for name, buffer in model.named_buffers():
-            if name.endswith("e_score_correction_bias"):
-                buffer.normal_(mean=0.0, std=0.1)
-            elif name.endswith("tid2eid"):
-                buffer.copy_(_tid2eid(_BASE["vocab_size"], _BASE["n_routed_experts"], _BASE["num_experts_per_tok"]))
-
-
-def _configs() -> tuple[HFDeepseekV4Config, DeepseekV4Config]:
-    hf_config = HFDeepseekV4Config(**_BASE)
-    # Force the eager path so HF actually runs its sink softmax, and keep the compressors'
-    # rolling-window caches out of a training-shaped single forward.
-    hf_config._attn_implementation = "eager"
-    hf_config.use_cache = False
-    # The for-loop expert path keeps the routed experts in the activation dtype; the
-    # grouped-mm kernel casts to bfloat16 internally and is covered in test_deepseek_v4_temp.
-    return hf_config, DeepseekV4Config(**_BASE, use_grouped_mm=False)
-
-
-def _on_disk_state_dict(hf_model: nn.Module) -> dict[str, torch.Tensor]:
-    """An HF model's weights under the key naming a real DeepSeek V4 checkpoint uses.
-
-    `conversion_chain` converts *on-disk* names, which for this model are not the names
-    `hf_model.state_dict()` returns: transformers carries a conversion registry entry for
-    deepseek_v4 and applies it inside `from_pretrained` / `save_pretrained`, so the on-disk
-    names are the compact DeepSeek-native ones (`attn`, `ffn`, `wkv`, per-expert `w1`/`w2`/`w3`,
-    no `model.` prefix). The trainer reads raw on-disk state dicts in `load_dcp_from_hf` and
-    never goes through `from_pretrained`, so that is the naming the chain has to handle.
-
-    `revert_weight_conversion` is transformers' own reverse pass, the one `save_pretrained`
-    runs, so this stays authoritative rather than restating the mapping here.
-    """
-    reverted = revert_weight_conversion(hf_model, dict(hf_model.state_dict()))
-    return to_on_disk_naming(reverted)
-
-
-def get_model_pairs(dtype: torch.dtype = torch.bfloat16) -> tuple[nn.Module, nn.Module]:
-    """Build an HF and a prime-rl model carrying identical weights."""
-    hf_config, prime_config = _configs()
-    with torch.device("cuda"), default_dtype(dtype):
-        hf_model = HFDeepseekV4ForCausalLM._from_config(hf_config)
-        prime_model = DeepseekV4ForCausalLM._from_config(prime_config)
-    _randomize(hf_model)
-
-    with torch.no_grad():
-        state_dict = _on_disk_state_dict(hf_model)
-        prime_state_keys = set(prime_model.state_dict())
-        prime_model.convert_to_prime(state_dict)
-        assert set(state_dict) == prime_state_keys, "the converted HF key set must equal prime-rl's exactly"
-        prime_model.load_state_dict(state_dict)
-
-    # Training code wraps the LM head; tests mirror that so forward takes labels/temperature.
-    inject_prime_lm_head(prime_model, chunk_size=None)
-    return hf_model, prime_model
-
-
-def _inputs() -> tuple[torch.Tensor, torch.Tensor]:
-    input_ids = torch.randint(0, _BASE["vocab_size"], (_BATCH, _SEQ), device="cuda")
-    position_ids = torch.arange(_SEQ, device="cuda").unsqueeze(0).expand(_BATCH, -1)
-    return input_ids, position_ids
-
-
-def _seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
-    return torch.tensor([input_ids.shape[1]], device=input_ids.device)
-
-
-def _run_pair(hf_model: nn.Module, prime_model: nn.Module) -> tuple[torch.Tensor, torch.Tensor]:
-    input_ids, position_ids = _inputs()
-    hf_output = hf_model(input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids=position_ids, seq_lens=_seq_lens(input_ids))
-
-    hf_output.logits.sum().backward()
-    prime_output["logits"].sum().backward()
-    return hf_output.logits, prime_output["logits"]
-
-
-def _assert_relative(prime: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
-    """Bound the largest absolute deviation by `rtol` times the reference's own scale."""
-    prime, reference = prime.float(), reference.float()
-    deviation = (prime - reference).abs().max()
-    scale = reference.abs().max()
-    assert deviation <= rtol * scale, f"{label}: max deviation {deviation} exceeds {rtol} * scale {scale}"
-
-
-def _assert_close(
-    prime_logits: torch.Tensor,
-    hf_logits: torch.Tensor,
-    hf_model: nn.Module,
-    prime_model: nn.Module,
-    *,
-    logits_rtol: float,
-    grad_rtol: float,
-) -> None:
-    assert prime_logits.shape == (_BATCH, _SEQ, _BASE["vocab_size"])
-    _assert_relative(prime_logits, hf_logits, logits_rtol, "logits")
-    _assert_relative(
-        prime_model.model.embed_tokens.weight.grad,
-        hf_model.model.embed_tokens.weight.grad,
-        grad_rtol,
-        "embedding gradient",
-    )
-
-
-class _IdentityMLP(nn.Module):
-    """Stands in for a decoder layer's MoE block: same shape in, same shape out.
-
-    It has to swallow `input_ids` (and prime-rl's `routed_experts`): the decoder layer
-    passes them to every layer, hash-routed or not.
-    """
-
-    def forward(self, hidden_states: torch.Tensor, **kwargs) -> torch.Tensor:
-        return hidden_states
-
-
-def _identity_attention(hidden_states: torch.Tensor, *args, **kwargs) -> tuple[torch.Tensor, None]:
-    return hidden_states, None
-
-
-def test_deepseek_v4_attn_only(_torch_rms_norm):
-    hf_model, prime_model = get_model_pairs()
-    for model in (hf_model, prime_model):
-        for layer in model.model.layers:
-            layer.mlp = _IdentityMLP()
-
-    hf_logits, prime_logits = _run_pair(hf_model, prime_model)
-
-    _assert_close(prime_logits, hf_logits, hf_model, prime_model, logits_rtol=0.02, grad_rtol=0.02)
-
-
-def test_deepseek_v4_mlp_only(_torch_rms_norm):
-    hf_model, prime_model = get_model_pairs()
-    for model in (hf_model, prime_model):
-        for layer in model.model.layers:
-            layer.self_attn.forward = _identity_attention
-
-    hf_logits, prime_logits = _run_pair(hf_model, prime_model)
-
-    _assert_close(prime_logits, hf_logits, hf_model, prime_model, logits_rtol=0.02, grad_rtol=0.02)
-
-
-def test_deepseek_v4(_torch_rms_norm):
-    hf_model, prime_model = get_model_pairs()
-
-    hf_logits, prime_logits = _run_pair(hf_model, prime_model)
-
-    # Loose by design, and the loosest assertion in this file. prime-rl's router scores in
-    # float32 (`TokenChoiceTopKRouter` upcasts to keep the training loss from exploding)
-    # while HF scores in the activation dtype, so in bfloat16 a few percent of the tokens
-    # in the deeper layers pick a different expert set and their outputs then legitimately
-    # diverge. `test_deepseek_v4_float32` runs the same comparison with that one difference
-    # removed and holds to 1e-5; the isolation tests above carry the tight bfloat16 bound.
-    _assert_close(prime_logits, hf_logits, hf_model, prime_model, logits_rtol=0.2, grad_rtol=0.1)
-
-
-def test_deepseek_v4_float32(_torch_rms_norm):
-    """Full-model parity with the router's dtype difference removed."""
-    hf_model, prime_model = get_model_pairs(dtype=torch.float32)
-
-    hf_logits, prime_logits = _run_pair(hf_model, prime_model)
-
-    _assert_close(prime_logits, hf_logits, hf_model, prime_model, logits_rtol=1e-5, grad_rtol=1e-5)
+pytestmark = [pytest.mark.gpu]
 
 
 def test_deepseek_v4_hash_layers_route_on_token_ids():
     """The bootstrap layers read `input_ids`, so identical hidden states still route apart."""
-    _, prime_model = get_model_pairs()
+    prime_model = get_prime_model()
     hash_layers = prime_model.model.layers[: _BASE["num_hash_layers"]]
     assert hash_layers, "config must contain a hash-routed layer"
 
@@ -293,7 +60,7 @@ def test_deepseek_v4_hash_layers_route_on_token_ids():
 
 def test_deepseek_v4_backward():
     """Every parameter that can train does, and the Lightning Indexer's still cannot."""
-    _, prime_config = _configs()
+    prime_config = _prime_config()
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = DeepseekV4ForCausalLM(prime_config)
     _randomize(model)
@@ -322,7 +89,7 @@ def test_deepseek_v4_backward():
 
 
 def test_deepseek_v4_weight_conversion_roundtrip():
-    _, prime_config = _configs()
+    prime_config = _prime_config()
     model = DeepseekV4ForCausalLM(prime_config).to("cuda")
     original = {name: tensor.clone() for name, tensor in model.state_dict().items()}
 
@@ -338,43 +105,129 @@ def test_deepseek_v4_weight_conversion_roundtrip():
         assert torch.equal(state_dict[name], tensor), f"Value mismatch for {name}"
 
 
-def test_deepseek_v4_conversion_matches_the_hf_key_set():
-    """The converted HF checkpoint has to land on prime-rl's keys with nothing left over."""
-    hf_config, prime_config = _configs()
-    with torch.device("meta"):
-        hf_model = HFDeepseekV4ForCausalLM._from_config(hf_config)
-        prime_model = DeepseekV4ForCausalLM._from_config(prime_config)
+def test_deepseek_v4_config_rejects_a_foreign_layer_type():
+    """V4's own attention vocabulary, not the generic one transformers checks against.
 
-    state_dict = _on_disk_state_dict(hf_model)
-    # A real checkpoint ships multi-token-prediction heads that neither side instantiates,
-    # at the top level (`mtp.0.hc_attn_base`, ...) rather than nested inside a layer.
-    state_dict["mtp.0.embed.weight"] = torch.empty(0, device="meta")
-    prime_model.convert_to_prime(state_dict)
+    `PretrainedConfig.validate_layer_type` runs first, from `super().__init__()`, and accepts
+    anything in transformers' generic layer-type list; only `DeepseekV4Config`'s own override
+    narrows that to the three V4 variants. `compress_rates` carries a rate for the foreign type
+    on purpose, so `validate_architecture` cannot be what rejects it.
+    """
+    kwargs = _BASE | {"layer_types": ["full_attention"] * 5, "compress_rates": {"full_attention": 4}}
 
-    assert set(state_dict) == set(prime_model.state_dict())
+    with pytest.raises(StrictDataclassClassValidationError, match="layer_types entries must be one of"):
+        DeepseekV4Config(**kwargs, use_grouped_mm=False)
 
 
 def test_deepseek_v4_config_translates_legacy_compress_ratios():
     """Real checkpoints ship the V3-flavoured legacy `compress_ratios`/`num_hash_layers` schema
-    instead of `layer_types`/`mlp_layer_types` (see NOTES-ds-v4-inference-preflight.md). HF's own
-    config translates these; prime-rl's must too, since prime-rl's model code reads
-    `layer_types`/`mlp_layer_types` directly rather than `compress_ratios`.
-    """
-    legacy_kwargs = dict(
-        num_hidden_layers=6,
-        compress_ratios=[0, 0, 4, 128, 4, 128],
-        num_hash_layers=2,
-    )
-    hf_config = HFDeepseekV4Config(**legacy_kwargs)
-    prime_config = DeepseekV4Config(**legacy_kwargs)
+    instead of `layer_types`/`mlp_layer_types` (see NOTES-ds-v4-inference-preflight.md). prime-rl's
+    model code reads `layer_types`/`mlp_layer_types` directly, so the config has to translate them.
 
-    assert prime_config.layer_types == hf_config.layer_types
-    assert prime_config.mlp_layer_types == hf_config.mlp_layer_types
+    The expected schedules are written out here rather than read off HF's own config;
+    `test_deepseek_v4_hf.py` holds the version that checks them against it.
+    """
+    config = DeepseekV4Config(num_hidden_layers=6, compress_ratios=[0, 0, 4, 128, 4, 128], num_hash_layers=2)
+
+    assert config.layer_types == [
+        "sliding_attention",
+        "sliding_attention",
+        "compressed_sparse_attention",
+        "heavily_compressed_attention",
+        "compressed_sparse_attention",
+        "heavily_compressed_attention",
+    ]
+    assert config.mlp_layer_types == ["hash_moe", "hash_moe", "moe", "moe", "moe", "moe"]
+
+
+# What vLLM's DeepSeek V4 loader sees, with the layer and expert indices folded away. Written
+# out rather than derived: this file has no independent implementation to derive it from, and a
+# rename on either side of the boundary is exactly what it exists to catch.
+_VLLM_MAPPED_NAMES = {
+    "lm_head.weight",
+    "model.embed_tokens.weight",
+    "model.hc_head_base",
+    "model.hc_head_fn",
+    "model.hc_head_scale",
+    "model.layers.{i}.attn.attn_sink",
+    "model.layers.{i}.attn.compressor.ape",
+    "model.layers.{i}.attn.compressor.norm.weight",
+    "model.layers.{i}.attn.compressor.wgate.weight",
+    "model.layers.{i}.attn.compressor.wkv.weight",
+    "model.layers.{i}.attn.indexer.compressor.ape",
+    "model.layers.{i}.attn.indexer.compressor.norm.weight",
+    "model.layers.{i}.attn.indexer.compressor.wgate.weight",
+    "model.layers.{i}.attn.indexer.compressor.wkv.weight",
+    "model.layers.{i}.attn.indexer.weights_proj.weight",
+    "model.layers.{i}.attn.indexer.wq_b.weight",
+    "model.layers.{i}.attn.kv_norm.weight",
+    "model.layers.{i}.attn.q_norm.weight",
+    "model.layers.{i}.attn.wkv.weight",
+    "model.layers.{i}.attn.wo_a.weight",
+    "model.layers.{i}.attn.wo_b.weight",
+    "model.layers.{i}.attn.wq_a.weight",
+    "model.layers.{i}.attn.wq_b.weight",
+    "model.layers.{i}.attn_norm.weight",
+    "model.layers.{i}.ffn.experts.{i}.w1.weight",
+    "model.layers.{i}.ffn.experts.{i}.w2.weight",
+    "model.layers.{i}.ffn.experts.{i}.w3.weight",
+    "model.layers.{i}.ffn.gate.e_score_correction_bias",
+    "model.layers.{i}.ffn.gate.tid2eid",
+    "model.layers.{i}.ffn.gate.weight",
+    "model.layers.{i}.ffn.shared_experts.down_proj.weight",
+    "model.layers.{i}.ffn.shared_experts.w1.weight",
+    "model.layers.{i}.ffn.shared_experts.w3.weight",
+    "model.layers.{i}.ffn_norm.weight",
+    "model.layers.{i}.hc_attn_base",
+    "model.layers.{i}.hc_attn_fn",
+    "model.layers.{i}.hc_attn_scale",
+    "model.layers.{i}.hc_ffn_base",
+    "model.layers.{i}.hc_ffn_fn",
+    "model.layers.{i}.hc_ffn_scale",
+    "model.norm.weight",
+}
+
+
+def test_deepseek_v4_on_disk_keys_map_to_the_names_vllm_expects():
+    """Pin the names prime-rl's checkpoint arrives under on vLLM's side of the boundary.
+
+    `convert_to_hf` emits the compact DeepSeek-native naming a real checkpoint ships (the
+    conversion chain runs on-disk -> prime, so reversing it lands back on the on-disk names).
+    That is what `utils/weights.py` broadcasts during a run and what `scripts/mini_moe.py`
+    writes, and `_make_deepseek_v4_weights_mapper` is what vLLM puts it through on the way in.
+
+    Asserted against a written-out set because the mapper cannot serve as its own oracle: it
+    returns unrecognized keys unchanged rather than `None`, so "every key maps to something" is
+    true for any input whatsoever, including a misspelling. Pinning the mapped names instead
+    fails on a rename on either side: prime-rl renaming a weight, or vLLM's mapper moving under
+    a bump. It does not prove vLLM's loader has a parameter of that name, which would take
+    instantiating vLLM's model; `examples/advanced/deepseek-v4-flash/kl-check.toml` is what
+    covers that end to end.
+
+    `_make_deepseek_v4_weights_mapper` is private API in a URL-pinned wheel (`vllm==0.26.0+cu129`).
+    Imported inside the test because importing vLLM at module scope would run during collection,
+    including in the CPU CI job that deselects this file.
+    """
+    from vllm.models.deepseek_v4.nvidia.model import _make_deepseek_v4_weights_mapper
+
+    with torch.device("meta"):
+        model = DeepseekV4ForCausalLM._from_config(_prime_config())
+    on_disk_state_dict = model.convert_to_hf(dict(model.state_dict()))
+    assert on_disk_state_dict, "vacuous probe: the model produced no weights to map"
+
+    # Both expert dtypes, since the mapper is built per dtype and only one of them ships fp4.
+    for expert_dtype in ("fp8", "fp4"):
+        mapper = _make_deepseek_v4_weights_mapper(expert_dtype)
+        mapped = {re.sub(r"\.\d+\.", ".{i}.", mapper._map_name(key)) for key in on_disk_state_dict}
+        assert mapped == _VLLM_MAPPED_NAMES, (
+            f"{expert_dtype}: unexpected {sorted(mapped - _VLLM_MAPPED_NAMES)}, "
+            f"missing {sorted(_VLLM_MAPPED_NAMES - mapped)}"
+        )
 
 
 def test_deepseek_v4_init_buffers_post_meta_restores_every_rotary():
     """Rotary tables are non-persistent and computed eagerly, so meta loading loses them."""
-    _, prime_config = _configs()
+    prime_config = _prime_config()
     with torch.device("meta"):
         model = DeepseekV4ForCausalLM(prime_config)
     model.to_empty(device="cuda")
@@ -479,7 +332,7 @@ def _assert_reads_are_document_local(compressor: nn.Module, doc_lens: tuple[int,
         )
 
 
-def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypatch):
+def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypatch):  # noqa: F811
     """The local window stops at document boundaries, on every layer.
 
     Guards the `cu_seqlens` term in `build_sliding_window_mask`: without it the distances come
@@ -499,7 +352,7 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
 
     monkeypatch.setattr(dsv4_attention, "eager_attention_with_sinks", record)
 
-    _, prime_model = get_model_pairs(dtype=torch.float32)
+    prime_model = get_prime_model(torch.float32)
     input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)
     prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)
 
@@ -516,14 +369,14 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
         assert torch.equal(local, expected), f"layer {layer_idx}: the local window crosses a document boundary"
 
 
-def test_packed_logits_match_unpacked(_torch_rms_norm):
+def test_packed_logits_match_unpacked(_torch_rms_norm):  # noqa: F811
     """The invariant that makes the trainer agree with vLLM, which serves each rollout alone.
 
     End to end over every pathway at once: the local sliding window, the CSA compressor with its
     indexer, and HCA. Each document's logits have to come out the same whether it is packed beside
     another rollout or served on its own.
     """
-    _, prime_model = get_model_pairs(dtype=torch.float32)
+    prime_model = get_prime_model(torch.float32)
     input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)
 
     packed = prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)["logits"]
@@ -538,29 +391,29 @@ def test_packed_logits_match_unpacked(_torch_rms_norm):
         _assert_relative(packed[:, span], alone, 1e-4, f"document {index}")
 
 
-def test_packed_csa_reads_only_own_document_entries(_torch_rms_norm):
+def test_packed_csa_reads_only_own_document_entries(_torch_rms_norm):  # noqa: F811
     """CSA's long-range pathway stays inside the querying token's own document.
 
     `causal_threshold` counts entries per document and `build_compression_layout` numbers and
     pools them per document to match, so the entries a query at local position 4 of the second
     document may read are its own document's, not the ones pooled from the first.
     """
-    _, prime_model = get_model_pairs(dtype=torch.float32)
+    prime_model = get_prime_model(torch.float32)
     _assert_reads_are_document_local(_compressor_of_type(prime_model, DeepseekV4CSACompressor), _DOC_LENS)
 
 
-def test_packed_hca_reads_only_own_document_entries(_torch_rms_norm):
+def test_packed_hca_reads_only_own_document_entries(_torch_rms_norm):  # noqa: F811
     """The same invariant for HCA, which has no indexer and reads every entry under its threshold.
 
     The documents here are longer than the compress rate of 8 on purpose: below it the threshold
     floors to zero, HCA contributes nothing at all, and the probe would be vacuous. That regime is
     covered by `test_hca_inert_below_compress_rate_matches_unpacked` instead.
     """
-    _, prime_model = get_model_pairs(dtype=torch.float32)
+    prime_model = get_prime_model(torch.float32)
     _assert_reads_are_document_local(_compressor_of_type(prime_model, DeepseekV4HCACompressor), _DOC_LENS)
 
 
-def test_packed_csa_selection_matches_unpacked(_torch_rms_norm):
+def test_packed_csa_selection_matches_unpacked(_torch_rms_norm):  # noqa: F811
     """What the Lightning Indexer hands a query must not depend on how the row was packed.
 
     The indexer masks its candidates to the querying document's own entries, and those entries
@@ -573,7 +426,7 @@ def test_packed_csa_selection_matches_unpacked(_torch_rms_norm):
     document's entries differently than the lone run does. It goes through `forward` rather than
     `compress` and `indexer` directly, so the whole path a query takes is covered.
     """
-    _, prime_model = get_model_pairs(dtype=torch.float32)
+    prime_model = get_prime_model(torch.float32)
     compressor = _compressor_of_type(prime_model, DeepseekV4CSACompressor)
 
     hidden_states, q_residual = _compressor_inputs(_DOC_LENS)
@@ -598,7 +451,7 @@ def test_packed_csa_selection_matches_unpacked(_torch_rms_norm):
         )
 
 
-def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):
+def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):  # noqa: F811
     """HCA contributes nothing either way when every document is shorter than its rate.
 
     Its threshold `(position_ids + 1) // 8` floors to zero for every query in a 6-token document,
@@ -611,7 +464,7 @@ def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):
     Asserted as an entry count: compressing per document, a row of documents this short yields no
     entries at all, so there is nothing for a query to read rather than entries it may not reach.
     """
-    _, prime_model = get_model_pairs(dtype=torch.float32)
+    prime_model = get_prime_model(torch.float32)
     compressor = _compressor_of_type(prime_model, DeepseekV4HCACompressor)
     assert compressor.compress_rate == 8
 

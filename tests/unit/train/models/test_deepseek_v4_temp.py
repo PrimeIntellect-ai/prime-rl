@@ -1,192 +1,71 @@
-# Scratch file for development-time correctness checks during the DeepSeek V4 port,
-# isolating each mechanism (mHC, rotary, attention variants, MoE) against HF's reference
-# as it lands. Not meant to be merged into test_deepseek_v4.py as-is; once the model
-# classes exist, split or fold what's still relevant and delete this file. See TODO.md.
+"""Module-level correctness checks for the DeepSeek V4 port, one mechanism at a time.
+
+Each section isolates one piece (mHC, rotary, the three attention variants, MoE, hash-routed
+MoE) and pins the properties it has to hold on its own, below the whole-model level
+`test_deepseek_v4.py` works at. The packed-batch section is the sharpest of them: it holds the
+`forward(pack([A, B])) == concat(forward(A), forward(B))` invariant the trainer needs in order
+to agree with vLLM, which serves each rollout alone.
+
+The parity half of these checks, which needs HF's own DeepSeek V4 implementation as its oracle,
+lives in `test_deepseek_v4_temp_hf.py`.
+"""
 
 import pytest
 import torch
 import torch.nn.functional as F
 from torch import nn
-from transformers.masking_utils import create_sliding_window_causal_mask
-from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config as HFDeepseekV4Config
-from transformers.models.deepseek_v4.modeling_deepseek_v4 import (
-    DeepseekV4Attention as HFDeepseekV4Attention,
-)
-from transformers.models.deepseek_v4.modeling_deepseek_v4 import (
-    DeepseekV4HyperConnection as HFDeepseekV4HyperConnection,
-)
-from transformers.models.deepseek_v4.modeling_deepseek_v4 import (
-    DeepseekV4HyperHead as HFDeepseekV4HyperHead,
-)
-from transformers.models.deepseek_v4.modeling_deepseek_v4 import (
-    DeepseekV4RotaryEmbedding as HFDeepseekV4RotaryEmbedding,
-)
-from transformers.models.deepseek_v4.modeling_deepseek_v4 import (
-    DeepseekV4SparseMoeBlock as HFDeepseekV4SparseMoeBlock,
-)
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import (
     CompressionLayout,
     DeepseekV4Attention,
-    PackedContext,
     build_compression_layout,
-    build_sliding_window_mask,
 )
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4HyperHead
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4Experts, DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
-from prime_rl.trainer.models.layers import norms
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 from prime_rl.utils.utils import default_dtype
+
+from .deepseek_v4_temp_helpers import (
+    _ATTN,
+    _BASE,
+    _BATCH,
+    _COMPRESS_RATE,
+    _CSA_LAYER,
+    _HASH_MOE,
+    _HCA_COMPRESS_RATE,
+    _HCA_LAYER,
+    _MOE,
+    _MOE_TOKENS,
+    _SEQ,
+    _SINGLE_DOC,
+    _cu_seqlens,
+    _hidden_states,
+    _hidden_streams,
+    _input_ids,
+    _moe_hidden_states,
+    _packed_context,
+    _packed_position_ids,
+    _position_embeddings,
+    _position_ids,
+    _randomize,
+    _randomize_attention,
+    _seed_rng,  # noqa: F401 -- pytest fixture, applied by name
+    _torch_rms_norm,  # noqa: F401 -- pytest fixture, applied by name
+    prime_attention,
+    prime_attention_config,
+    prime_hash_moe,
+    prime_hyper_connection,
+    prime_moe,
+)
 
 pytestmark = [pytest.mark.gpu]
 
-_BASE = dict(
-    hidden_size=128,
-    num_hidden_layers=4,
-    hc_mult=4,
-    hc_sinkhorn_iters=20,
-    hc_eps=1e-6,
-    rms_norm_eps=1e-6,
-)
-
-_ATTN = dict(
-    hidden_size=128,
-    num_hidden_layers=4,
-    num_attention_heads=4,
-    num_key_value_heads=1,
-    head_dim=32,
-    q_lora_rank=64,
-    partial_rotary_factor=0.5,
-    rope_theta=10000.0,
-    compress_rope_theta=160000.0,
-    max_position_embeddings=256,
-    sliding_window=6,
-    o_groups=2,
-    o_lora_rank=16,
-    layer_types=[
-        "sliding_attention",
-        "compressed_sparse_attention",
-        "heavily_compressed_attention",
-        "sliding_attention",
-    ],
-    compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 8},
-    index_n_heads=4,
-    index_head_dim=24,
-    # Smaller than the four compressed entries a 16-token sequence yields, so the
-    # Lightning Indexer's selection has to actually discard some of them.
-    index_topk=2,
-    rms_norm_eps=1e-6,
-)
-
-_BATCH, _SEQ = 2, 16
-_SLIDING_LAYER, _CSA_LAYER, _HCA_LAYER = 0, 1, 2
-_COMPRESS_RATE = _ATTN["compress_rates"]["compressed_sparse_attention"]
-_HCA_COMPRESS_RATE = _ATTN["compress_rates"]["heavily_compressed_attention"]
-
-
-@pytest.fixture(autouse=True)
-def _seed_rng():
-    torch.manual_seed(0)
-
-
-def _randomize(module: nn.Module) -> None:
-    """Draw non-degenerate values for every parameter.
-
-    Both classes allocate with `torch.empty`, so a test must fill them. `init_weights`
-    zeros the biases and ones the scales, which would leave those paths untested, hence
-    the explicit spread here.
-    """
-    for name, param in module.named_parameters():
-        with torch.no_grad():
-            if name.endswith("scale"):
-                param.uniform_(0.5, 1.5)
-            elif name.endswith("base"):
-                param.normal_(mean=0.0, std=0.5)
-            else:
-                param.normal_(mean=0.0, std=0.02)
-
-
-def _sync(hf_module: nn.Module, prime_module: nn.Module) -> None:
-    hf_state = hf_module.state_dict()
-    assert set(hf_state) == set(prime_module.state_dict()), "prime-rl and HF parameter names must match exactly"
-    prime_module.load_state_dict(hf_state)
-
-
-def _hyper_connection_pair():
-    hf_config = HFDeepseekV4Config(**_BASE)
-    prime_config = DeepseekV4Config(**_BASE)
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        hf_module = HFDeepseekV4HyperConnection(hf_config)
-        prime_module = DeepseekV4HyperConnection(prime_config)
-    _randomize(hf_module)
-    _sync(hf_module, prime_module)
-    return hf_module, prime_module
-
-
-def _hyper_head_pair():
-    hf_config = HFDeepseekV4Config(**_BASE)
-    prime_config = DeepseekV4Config(**_BASE)
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        hf_module = HFDeepseekV4HyperHead(hf_config)
-        prime_module = DeepseekV4HyperHead(prime_config)
-    _randomize(hf_module)
-    _sync(hf_module, prime_module)
-    return hf_module, prime_module
-
-
-def _hidden_streams():
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        streams = torch.randn(_BATCH, _SEQ, _BASE["hc_mult"], _BASE["hidden_size"])
-    return streams.clone().requires_grad_(True), streams.clone().requires_grad_(True)
-
-
-def _compare_grads(hf_module: nn.Module, prime_module: nn.Module, rtol: float = 0, atol: float = 0) -> None:
-    prime_grads = dict(prime_module.named_parameters())
-    for name, hf_param in hf_module.named_parameters():
-        prime_grad = prime_grads[name].grad
-        # The Lightning Indexer's parameters reach the loss only through integer top-k
-        # indices, so both implementations must agree that they get no gradient at all.
-        if hf_param.grad is None:
-            assert prime_grad is None, f"{name} received a gradient in prime-rl but not in HF"
-            continue
-        assert prime_grad is not None, f"{name} received no gradient"
-        torch.testing.assert_close(prime_grad, hf_param.grad, rtol=rtol, atol=atol, msg=lambda m, n=name: f"{n}: {m}")
-
-
-def test_hyperconnection_matches_hf():
-    hf_module, prime_module = _hyper_connection_pair()
-    hf_input, prime_input = _hidden_streams()
-
-    hf_post, hf_comb, hf_collapsed = hf_module(hf_input)
-    prime_post, prime_comb, prime_collapsed = prime_module(prime_input)
-
-    torch.testing.assert_close(prime_post, hf_post, rtol=0, atol=0)
-    torch.testing.assert_close(prime_comb, hf_comb, rtol=0, atol=0)
-    torch.testing.assert_close(prime_collapsed, hf_collapsed, rtol=0, atol=0)
-
-    # `comb` is doubly stochastic, so an unweighted sum has a near-constant gradient;
-    # weighting the outputs keeps every parameter's gradient informative.
-    with torch.device("cuda"):
-        post_weight = torch.randn_like(hf_post)
-        comb_weight = torch.randn_like(hf_comb)
-        collapsed_weight = torch.randn_like(hf_collapsed)
-
-    def loss(post, comb, collapsed):
-        return (post * post_weight).sum() + (comb * comb_weight).sum() + (collapsed * collapsed_weight).sum()
-
-    loss(hf_post, hf_comb, hf_collapsed).backward()
-    loss(prime_post, prime_comb, prime_collapsed).backward()
-
-    _compare_grads(hf_module, prime_module)
-    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=0, atol=0)
-
 
 def test_hyperconnection_collapses_streams_with_pre_gate():
-    _, prime_module = _hyper_connection_pair()
+    prime_module = prime_hyper_connection()
     _, streams = _hidden_streams()
 
     post, comb, collapsed = prime_module(streams)
@@ -201,7 +80,7 @@ def test_hyperconnection_collapses_streams_with_pre_gate():
 
 
 def test_hyperconnection_comb_is_doubly_stochastic():
-    _, prime_module = _hyper_connection_pair()
+    prime_module = prime_hyper_connection()
     _, streams = _hidden_streams()
 
     _, comb, _ = prime_module(streams)
@@ -222,25 +101,6 @@ def test_hyperconnection_init_weights():
     assert module.fn.float().std().item() == pytest.approx(0.02, rel=0.1)
 
 
-def test_hyperhead_matches_hf():
-    hf_module, prime_module = _hyper_head_pair()
-    hf_input, prime_input = _hidden_streams()
-
-    hf_output = hf_module(hf_input)
-    prime_output = prime_module(prime_input)
-
-    assert prime_output.shape == (_BATCH, _SEQ, _BASE["hidden_size"])
-    torch.testing.assert_close(prime_output, hf_output, rtol=0, atol=0)
-
-    with torch.device("cuda"):
-        weight = torch.randn_like(hf_output)
-    (hf_output * weight).sum().backward()
-    (prime_output * weight).sum().backward()
-
-    _compare_grads(hf_module, prime_module)
-    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=0, atol=0)
-
-
 def test_hyperhead_init_weights():
     config = DeepseekV4Config(**_BASE)
     with torch.device("cuda"), default_dtype(torch.bfloat16):
@@ -252,186 +112,8 @@ def test_hyperhead_init_weights():
     assert module.hc_fn.float().std().item() == pytest.approx(0.02, rel=0.1)
 
 
-@pytest.fixture
-def _torch_rms_norm(monkeypatch):
-    """Make the shared `RMSNorm` take its PyTorch path instead of the quack kernel.
-
-    The kernel is a project-wide choice that predates this model and drifts from HF's
-    fp32 reference by up to ~1e-2 in bf16, which would swamp everything the V4-specific
-    math contributes. Disabling it is what lets the parity assertions stay exact.
-    """
-    monkeypatch.setattr(norms, "_get_quack_rmsnorm", lambda: None)
-
-
-def _attention_configs() -> tuple[HFDeepseekV4Config, DeepseekV4Config]:
-    hf_config = HFDeepseekV4Config(**_ATTN)
-    # Force the eager path so HF actually runs its sink softmax, not an SDPA kernel.
-    hf_config._attn_implementation = "eager"
-    return hf_config, DeepseekV4Config(**_ATTN)
-
-
-def _randomize_attention(module: nn.Module) -> None:
-    """Draw non-degenerate values for every attention parameter.
-
-    Norm gains default to ones, the sinks and the compressors' position biases to zeros,
-    which would leave all three paths indistinguishable from an identity, hence the
-    explicit spread. The position bias is drawn wide because it is a softmax logit: at the
-    projections' std it would leave the pooling gate all but uniform.
-    """
-    for name, param in module.named_parameters():
-        with torch.no_grad():
-            if name.endswith("norm.weight"):
-                param.uniform_(0.5, 1.5)
-            elif name == "sinks" or name.endswith("position_bias"):
-                param.normal_(mean=0.0, std=1.0)
-            else:
-                param.normal_(mean=0.0, std=0.02)
-
-
-def _position_ids() -> torch.Tensor:
-    return torch.arange(_SEQ, device="cuda").unsqueeze(0).expand(_BATCH, -1)
-
-
-def _hidden_states() -> tuple[torch.Tensor, torch.Tensor]:
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        hidden = torch.randn(_BATCH, _SEQ, _ATTN["hidden_size"])
-    return hidden.clone().requires_grad_(True), hidden.clone().requires_grad_(True)
-
-
-def _attention_pair(layer_idx: int = _SLIDING_LAYER) -> tuple[nn.Module, nn.Module]:
-    hf_config, prime_config = _attention_configs()
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        hf_module = HFDeepseekV4Attention(hf_config, layer_idx=layer_idx)
-        prime_module = DeepseekV4Attention(prime_config, layer_idx=layer_idx)
-    _randomize_attention(hf_module)
-    _sync(hf_module, prime_module)
-    return hf_module, prime_module
-
-
-def _position_embeddings() -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
-    _, prime_config = _attention_configs()
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        rotary = DeepseekV4RotaryEmbedding(prime_config)
-        probe = torch.zeros(_BATCH, _SEQ, _ATTN["hidden_size"])
-    position_ids = _position_ids()
-    return {rope_type: rotary(probe, position_ids, rope_type) for rope_type in ("main", "compress")}
-
-
-def test_rotary_matches_hf():
-    hf_config, prime_config = _attention_configs()
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        hf_rotary = HFDeepseekV4RotaryEmbedding(hf_config)
-        prime_rotary = DeepseekV4RotaryEmbedding(prime_config)
-        probe = torch.zeros(_BATCH, _SEQ, _ATTN["hidden_size"])
-    position_ids = _position_ids()
-
-    rope_dim = int(_ATTN["head_dim"] * _ATTN["partial_rotary_factor"])
-    for rope_type in ("main", "compress"):
-        hf_cos, hf_sin = hf_rotary(probe, position_ids, rope_type)
-        prime_cos, prime_sin = prime_rotary(probe, position_ids, rope_type)
-        # Interleaved RoPE needs one theta per pair, so cos/sin come out at half width.
-        assert prime_cos.shape == (_BATCH, _SEQ, rope_dim // 2)
-        torch.testing.assert_close(prime_cos, hf_cos, rtol=0, atol=0)
-        torch.testing.assert_close(prime_sin, hf_sin, rtol=0, atol=0)
-
-    # The two rope types differ only in their base, so their tables must not coincide.
-    assert not torch.equal(prime_rotary.main_inv_freq, prime_rotary.compress_inv_freq)
-
-
-def test_rotary_matches_hf_yarn():
-    """Real checkpoints YaRN-scale the compress branch via a legacy flat `rope_scaling` dict."""
-    attn_yarn = _ATTN | {
-        "rope_scaling": {
-            "beta_fast": 32,
-            "beta_slow": 1,
-            "factor": 16,
-            "original_max_position_embeddings": 65536,
-            "type": "yarn",
-        }
-    }
-    hf_config = HFDeepseekV4Config(**attn_yarn)
-    prime_config = DeepseekV4Config(**attn_yarn)
-
-    assert prime_config.rope_parameters["compress"]["rope_type"] == "yarn"
-    assert prime_config.rope_parameters["compress"]["attention_factor"] == 1.0
-    assert prime_config.rope_parameters["main"]["rope_type"] == "default"
-
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        hf_rotary = HFDeepseekV4RotaryEmbedding(hf_config)
-        prime_rotary = DeepseekV4RotaryEmbedding(prime_config)
-        probe = torch.zeros(_BATCH, _SEQ, _ATTN["hidden_size"])
-    position_ids = _position_ids()
-
-    for rope_type in ("main", "compress"):
-        hf_cos, hf_sin = hf_rotary(probe, position_ids, rope_type)
-        prime_cos, prime_sin = prime_rotary(probe, position_ids, rope_type)
-        torch.testing.assert_close(prime_cos, hf_cos, rtol=0, atol=0)
-        torch.testing.assert_close(prime_sin, hf_sin, rtol=0, atol=0)
-
-
-@pytest.mark.parametrize("doc_lens", [(_SEQ,), (7, 9)], ids=["single_document", "packed"])
-def test_sliding_window_mask_matches_hf(doc_lens):
-    """Upstream is the oracle for the local window, packed or not.
-
-    HF recovers document boundaries from `position_ids` restarts and prime-rl is told them as
-    `seq_lens`, so the two agree wherever the restarts line up with the boundaries. They do here,
-    and on a padded micro-batch they would not: `pad_micro_batch` restarts `position_ids` for the
-    padding while folding it into `seq_lens[-1]`.
-    """
-    hf_config, _ = _attention_configs()
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        probe = torch.zeros(_BATCH, _SEQ, _ATTN["hidden_size"])
-    position_ids = torch.cat([torch.arange(length, device="cuda") for length in doc_lens])
-    hf_mask = create_sliding_window_causal_mask(
-        config=hf_config,
-        inputs_embeds=probe,
-        attention_mask=None,
-        past_key_values=None,
-        position_ids=position_ids.unsqueeze(0).expand(_BATCH, -1),
-        allow_is_causal_skip=False,
-    )
-    cu_seqlens, _ = get_cu_seqlens_from_seq_lens(torch.tensor(doc_lens, device="cuda"), total_tokens=_SEQ)
-    prime_mask = build_sliding_window_mask(
-        _SEQ, _ATTN["sliding_window"], torch.bfloat16, torch.device("cuda"), cu_seqlens=cu_seqlens
-    )
-
-    assert prime_mask.shape == (1, 1, _SEQ, _SEQ)
-    torch.testing.assert_close(prime_mask.expand_as(hf_mask), hf_mask, rtol=0, atol=0)
-
-
-def test_sliding_attention_matches_hf(_torch_rms_norm):
-    hf_module, prime_module = _attention_pair()
-    hf_input, prime_input = _hidden_states()
-    position_embeddings = _position_embeddings()
-    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
-
-    hf_output, _ = hf_module(
-        hf_input,
-        position_embeddings=position_embeddings,
-        position_ids=packed.position_ids,
-        attention_mask=packed.attention_mask,
-    )
-    prime_output, prime_weights = prime_module(
-        prime_input,
-        position_embeddings=position_embeddings,
-        packed=packed,
-    )
-
-    assert prime_weights is None, "prime-rl attention modules return `None` for attn_weights"
-    assert prime_output.shape == (_BATCH, _SEQ, _ATTN["hidden_size"])
-    torch.testing.assert_close(prime_output, hf_output, rtol=0, atol=0)
-
-    with torch.device("cuda"):
-        weight = torch.randn_like(hf_output)
-    (hf_output * weight).sum().backward()
-    (prime_output * weight).sum().backward()
-
-    _compare_grads(hf_module, prime_module)
-    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=0, atol=0)
-
-
 def test_sliding_attention_builds_its_own_mask():
-    _, prime_module = _attention_pair()
+    prime_module = prime_attention()
     _, hidden = _hidden_states()
     position_embeddings = _position_embeddings()
     packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
@@ -443,7 +125,7 @@ def test_sliding_attention_builds_its_own_mask():
 
 
 def test_sliding_attention_only_reads_the_local_window():
-    _, prime_module = _attention_pair()
+    prime_module = prime_attention()
     _, hidden = _hidden_states()
     position_embeddings = _position_embeddings()
     window = _ATTN["sliding_window"]
@@ -459,40 +141,8 @@ def test_sliding_attention_only_reads_the_local_window():
     torch.testing.assert_close(perturbed[:, window:], baseline[:, window:], rtol=0, atol=0)
 
 
-def test_csa_attention_matches_hf(_torch_rms_norm):
-    hf_module, prime_module = _attention_pair(_CSA_LAYER)
-    hf_input, prime_input = _hidden_states()
-    position_embeddings = _position_embeddings()
-    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
-
-    hf_output, _ = hf_module(
-        hf_input,
-        position_embeddings=position_embeddings,
-        position_ids=packed.position_ids,
-        # HF concatenates the compressor's per-batch block bias onto the mask, so the local
-        # window mask has to carry a batch dimension of its own here.
-        attention_mask=packed.attention_mask.expand(_BATCH, 1, _SEQ, _SEQ),
-    )
-    prime_output, _ = prime_module(
-        prime_input,
-        position_embeddings=position_embeddings,
-        packed=packed,
-    )
-
-    assert prime_output.shape == (_BATCH, _SEQ, _ATTN["hidden_size"])
-    torch.testing.assert_close(prime_output, hf_output, rtol=0, atol=0)
-
-    with torch.device("cuda"):
-        weight = torch.randn_like(hf_output)
-    (hf_output * weight).sum().backward()
-    (prime_output * weight).sum().backward()
-
-    _compare_grads(hf_module, prime_module)
-    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=0, atol=0)
-
-
 def test_csa_attention_defaults_to_sequential_positions():
-    _, prime_module = _attention_pair(_CSA_LAYER)
+    prime_module = prime_attention(_CSA_LAYER)
     _, hidden = _hidden_states()
     position_embeddings = _position_embeddings()
     packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
@@ -504,7 +154,7 @@ def test_csa_attention_defaults_to_sequential_positions():
 
 
 def test_csa_attention_reads_beyond_the_local_window():
-    _, prime_module = _attention_pair(_CSA_LAYER)
+    prime_module = prime_attention(_CSA_LAYER)
     _, hidden = _hidden_states()
     position_embeddings = _position_embeddings()
     window = _ATTN["sliding_window"]
@@ -521,7 +171,7 @@ def test_csa_attention_reads_beyond_the_local_window():
 
 
 def test_csa_compressor_pools_overlapping_windows():
-    _, prime_module = _attention_pair(_CSA_LAYER)
+    prime_module = prime_attention(_CSA_LAYER)
     compressor = prime_module.compressor
     _, hidden = _hidden_states()
 
@@ -540,7 +190,7 @@ def test_csa_compressor_pools_overlapping_windows():
 
 
 def test_csa_compressor_drops_the_trailing_partial_window():
-    _, prime_module = _attention_pair(_CSA_LAYER)
+    prime_module = prime_attention(_CSA_LAYER)
     compressor = prime_module.compressor
     _, hidden = _hidden_states()
 
@@ -552,7 +202,7 @@ def test_csa_compressor_drops_the_trailing_partial_window():
 
 
 def test_csa_indexer_keeps_only_readable_entries():
-    _, prime_module = _attention_pair(_CSA_LAYER)
+    prime_module = prime_attention(_CSA_LAYER)
     indexer = prime_module.compressor.indexer
     _, hidden = _hidden_states()
     position_ids = _position_ids()
@@ -573,7 +223,7 @@ def test_csa_indexer_keeps_only_readable_entries():
 
 
 def test_csa_attention_init_weights_reaches_the_compressor():
-    _, prime_module = _attention_pair(_CSA_LAYER)
+    prime_module = prime_attention(_CSA_LAYER)
     assert (prime_module.compressor.indexer.position_bias != 0).any(), "fixture must start from a spread"
 
     prime_module.init_weights(0.02)
@@ -584,7 +234,7 @@ def test_csa_attention_init_weights_reaches_the_compressor():
 
 
 def test_csa_indexer_selection_is_not_differentiable():
-    _, prime_module = _attention_pair(_CSA_LAYER)
+    prime_module = prime_attention(_CSA_LAYER)
     _, hidden = _hidden_states()
 
     output, _ = prime_module(hidden, position_embeddings=_position_embeddings())
@@ -599,39 +249,8 @@ def test_csa_indexer_selection_is_not_differentiable():
         assert got_grad == (not name.startswith("indexer.")), f"unexpected gradient state for {name}"
 
 
-def test_hca_attention_matches_hf(_torch_rms_norm):
-    hf_module, prime_module = _attention_pair(_HCA_LAYER)
-    hf_input, prime_input = _hidden_states()
-    position_embeddings = _position_embeddings()
-    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
-
-    hf_output, _ = hf_module(
-        hf_input,
-        position_embeddings=position_embeddings,
-        position_ids=packed.position_ids,
-        # As in the CSA case, HF concatenates a per-batch block bias onto the mask.
-        attention_mask=packed.attention_mask.expand(_BATCH, 1, _SEQ, _SEQ),
-    )
-    prime_output, _ = prime_module(
-        prime_input,
-        position_embeddings=position_embeddings,
-        packed=packed,
-    )
-
-    assert prime_output.shape == (_BATCH, _SEQ, _ATTN["hidden_size"])
-    torch.testing.assert_close(prime_output, hf_output, rtol=0, atol=0)
-
-    with torch.device("cuda"):
-        weight = torch.randn_like(hf_output)
-    (hf_output * weight).sum().backward()
-    (prime_output * weight).sum().backward()
-
-    _compare_grads(hf_module, prime_module)
-    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=0, atol=0)
-
-
 def test_hca_attention_reads_every_readable_compressed_entry():
-    _, prime_module = _attention_pair(_HCA_LAYER)
+    prime_module = prime_attention(_HCA_LAYER)
     _, hidden = _hidden_states()
     position_embeddings = _position_embeddings()
     window = _ATTN["sliding_window"]
@@ -651,7 +270,7 @@ def test_hca_attention_reads_every_readable_compressed_entry():
 
 
 def test_hca_compressor_pools_non_overlapping_windows():
-    _, prime_module = _attention_pair(_HCA_LAYER)
+    prime_module = prime_attention(_HCA_LAYER)
     compressor = prime_module.compressor
     _, hidden = _hidden_states()
 
@@ -670,7 +289,7 @@ def test_hca_compressor_pools_non_overlapping_windows():
 
 
 def test_hca_compressor_drops_the_trailing_partial_window():
-    _, prime_module = _attention_pair(_HCA_LAYER)
+    prime_module = prime_attention(_HCA_LAYER)
     compressor = prime_module.compressor
     _, hidden = _hidden_states()
 
@@ -684,7 +303,7 @@ def test_hca_compressor_drops_the_trailing_partial_window():
 
 
 def test_hca_compressor_masks_unreadable_entries():
-    _, prime_module = _attention_pair(_HCA_LAYER)
+    prime_module = prime_attention(_HCA_LAYER)
     compressor = prime_module.compressor
     _, hidden = _hidden_states()
     position_ids = _position_ids()
@@ -704,7 +323,7 @@ def test_hca_compressor_masks_unreadable_entries():
 
 
 def test_hca_compressor_is_fully_differentiable():
-    _, prime_module = _attention_pair(_HCA_LAYER)
+    prime_module = prime_attention(_HCA_LAYER)
     _, hidden = _hidden_states()
 
     output, _ = prime_module(hidden, position_embeddings=_position_embeddings())
@@ -718,7 +337,7 @@ def test_hca_compressor_is_fully_differentiable():
 
 
 def test_hca_attention_init_weights_reaches_the_compressor():
-    _, prime_module = _attention_pair(_HCA_LAYER)
+    prime_module = prime_attention(_HCA_LAYER)
     assert (prime_module.compressor.position_bias != 0).any(), "fixture must start from a spread"
 
     prime_module.init_weights(0.02)
@@ -727,121 +346,8 @@ def test_hca_attention_init_weights_reaches_the_compressor():
     assert (prime_module.compressor.position_bias == 0).all()
 
 
-_MOE = dict(
-    hidden_size=64,
-    num_hidden_layers=2,
-    moe_intermediate_size=32,
-    n_routed_experts=8,
-    num_experts_per_tok=3,
-    n_shared_experts=1,
-    scoring_func="sqrtsoftplus",
-    routed_scaling_factor=1.5,
-    # Small enough that the parameter spread `_randomize` draws actually reaches the
-    # clamp; the 10.0 default would leave that branch untested.
-    swiglu_limit=0.1,
-    num_hash_layers=0,
-    rms_norm_eps=1e-6,
-)
-_MOE_TOKENS = _BATCH * _SEQ
-
-# prime-rl's `MoE` owns the router and the load-balancing bias, so both sit one level up
-# from where HF keeps them, and its shared expert is singular. HF's fused routed-expert
-# `gate_up_proj` splits into prime's `w1`/`w3`; `down_proj` renames to `w2`.
-_HF_TO_PRIME_MOE_KEYS = {
-    "gate.weight": "router.gate.weight",
-    "gate.e_score_correction_bias": "expert_bias",
-    "gate.tid2eid": "tid2eid",
-    "experts.down_proj": "experts.w2",
-}
-
-
-def _to_prime_moe_items(hf_key: str, value: torch.Tensor) -> dict[str, torch.Tensor]:
-    """Map one HF MoE key/value onto the one or two prime-rl key/value pairs it becomes."""
-    if hf_key == "experts.gate_up_proj":
-        gate, up = value.chunk(2, dim=1)
-        return {"experts.w1": gate, "experts.w3": up}
-    key = _HF_TO_PRIME_MOE_KEYS.get(hf_key, hf_key.replace("shared_experts.", "shared_expert.", 1))
-    return {key: value}
-
-
-def _sync_moe(hf_module: nn.Module, prime_module: nn.Module) -> None:
-    hf_state: dict[str, torch.Tensor] = {}
-    for key, value in hf_module.state_dict().items():
-        hf_state.update(_to_prime_moe_items(key, value))
-    assert set(hf_state) == set(prime_module.state_dict()), "the HF key set must map onto prime-rl's exactly"
-    prime_module.load_state_dict(hf_state)
-
-
-def _compare_moe_grads(hf_module: nn.Module, prime_module: nn.Module, rtol: float, atol: float) -> None:
-    prime_params = dict(prime_module.named_parameters())
-    for name, hf_param in hf_module.named_parameters():
-        assert hf_param.grad is not None, f"{name} received no gradient in HF"
-        for prime_name, expected_grad in _to_prime_moe_items(name, hf_param.grad).items():
-            prime_grad = prime_params[prime_name].grad
-            assert prime_grad is not None, f"{prime_name} received no gradient"
-            torch.testing.assert_close(
-                prime_grad, expected_grad, rtol=rtol, atol=atol, msg=lambda m, n=prime_name: f"{n}: {m}"
-            )
-
-
-def _moe_pair() -> tuple[nn.Module, nn.Module]:
-    """Build an HF / prime-rl MoE pair from identical weights.
-
-    Everything here runs in float32, unlike the rest of this file: prime-rl's router
-    scores in float32 by design (`TokenChoiceTopKRouter` upcasts to keep the training
-    loss from exploding) while HF scores in the activation dtype, so bf16 would put a
-    ~1e-3 floor under every comparison and hide everything else.
-    """
-    hf_config = HFDeepseekV4Config(**_MOE)
-    # The for-loop expert path keeps the comparison in float32; `use_grouped_mm` casts to
-    # bfloat16 internally and is covered separately.
-    prime_config = DeepseekV4Config(**_MOE, use_grouped_mm=False)
-    with torch.device("cuda"):
-        hf_module = HFDeepseekV4SparseMoeBlock(hf_config, layer_idx=0)
-        prime_module = DeepseekV4MoE(prime_config, layer_idx=0)
-    _randomize(hf_module)
-    # The aux-loss-free load-balancing bias is a buffer, so `_randomize` leaves it at
-    # zero and the biased selection path would go untested. It maps onto prime-rl's
-    # `MoE.expert_bias`, which the forward pass feeds to the router.
-    with torch.no_grad():
-        hf_module.gate.e_score_correction_bias.normal_(mean=0.0, std=0.1)
-    _sync_moe(hf_module, prime_module)
-    return hf_module, prime_module
-
-
-def _moe_hidden_states() -> tuple[torch.Tensor, torch.Tensor]:
-    with torch.device("cuda"):
-        hidden = torch.randn(_BATCH, _SEQ, _MOE["hidden_size"])
-    return hidden.clone().requires_grad_(True), hidden.clone().requires_grad_(True)
-
-
-def test_moe_matches_hf():
-    hf_module, prime_module = _moe_pair()
-    hf_input, prime_input = _moe_hidden_states()
-
-    hf_output = hf_module(hf_input)
-    prime_output = prime_module(prime_input)
-
-    assert prime_output.shape == (_BATCH, _SEQ, _MOE["hidden_size"])
-    # Both implementations run the same float32 arithmetic on the same weights, but they
-    # group it differently: prime-rl sorts the tokens into one contiguous matmul per
-    # expert and scatter-adds the results, HF gathers each expert's tokens and index-adds
-    # them. Only the summation order differs, hence a tolerance at the float32 floor.
-    torch.testing.assert_close(prime_output, hf_output, rtol=1e-5, atol=1e-8)
-
-    with torch.device("cuda"):
-        weight = torch.randn_like(hf_output)
-    (hf_output * weight).sum().backward()
-    (prime_output * weight).sum().backward()
-
-    # Every parameter here trains, unlike the Lightning Indexer's: nothing on this path
-    # goes through an integer selection that the gradient cannot cross.
-    _compare_moe_grads(hf_module, prime_module, rtol=1e-4, atol=5e-7)
-    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=1e-5, atol=1e-8)
-
-
 def test_moe_router_scores_with_sqrt_softplus():
-    _, prime_module = _moe_pair()
+    prime_module = prime_moe()
     router = prime_module.router
     _, hidden = _moe_hidden_states()
     x = hidden.detach().reshape(-1, _MOE["hidden_size"])
@@ -862,7 +368,7 @@ def test_moe_router_scores_with_sqrt_softplus():
 
 
 def test_moe_expert_bias_steers_selection_but_not_the_gate():
-    _, prime_module = _moe_pair()
+    prime_module = prime_moe()
     router = prime_module.router
     _, hidden = _moe_hidden_states()
     x = hidden.detach().reshape(-1, _MOE["hidden_size"])
@@ -883,7 +389,7 @@ def test_moe_expert_bias_steers_selection_but_not_the_gate():
 
 
 def test_moe_shared_expert_clamps_the_swiglu():
-    _, prime_module = _moe_pair()
+    prime_module = prime_moe()
     shared_expert = prime_module.shared_expert
     _, hidden = _moe_hidden_states()
     x = hidden.detach()
@@ -947,67 +453,8 @@ def test_moe_init_weights():
     assert (module.expert_bias == 0).all()
 
 
-# A vocabulary small enough that a 32-token batch hits most rows of the table several times.
-_HASH_MOE = dict(_MOE, num_hash_layers=1, vocab_size=16)
-_HASH_LAYER = 0
-
-
-def _tid2eid() -> torch.Tensor:
-    """A frozen token id -> expert ids table, distinct experts per row as a real one has."""
-    rows = [
-        torch.randperm(_HASH_MOE["n_routed_experts"])[: _HASH_MOE["num_experts_per_tok"]]
-        for _ in range(_HASH_MOE["vocab_size"])
-    ]
-    return torch.stack(rows).to(device="cuda", dtype=torch.long)
-
-
-def _input_ids() -> torch.Tensor:
-    return torch.randint(_HASH_MOE["vocab_size"], (_BATCH, _SEQ), device="cuda")
-
-
-def _hash_moe_pair() -> tuple[nn.Module, nn.Module]:
-    """Build an HF / prime-rl hash-routed MoE pair from identical weights.
-
-    Float32 for the reason `_moe_pair` documents: hash routing changes which experts a
-    token reaches, not how the scores that weight them are computed. Both sides start from
-    an all-zero table, which would send every token to expert 0, so it is drawn here.
-    """
-    hf_config = HFDeepseekV4Config(**_HASH_MOE)
-    prime_config = DeepseekV4Config(**_HASH_MOE, use_grouped_mm=False)
-    with torch.device("cuda"):
-        hf_module = HFDeepseekV4SparseMoeBlock(hf_config, layer_idx=_HASH_LAYER)
-        prime_module = DeepseekV4MoE(prime_config, layer_idx=_HASH_LAYER)
-    _randomize(hf_module)
-    with torch.no_grad():
-        hf_module.gate.tid2eid.copy_(_tid2eid())
-    _sync_moe(hf_module, prime_module)
-    return hf_module, prime_module
-
-
-def test_hash_moe_matches_hf():
-    hf_module, prime_module = _hash_moe_pair()
-    hf_input, prime_input = _moe_hidden_states()
-    input_ids = _input_ids()
-
-    hf_output = hf_module(hf_input, input_ids=input_ids)
-    prime_output = prime_module(prime_input, input_ids=input_ids)
-
-    assert prime_output.shape == (_BATCH, _SEQ, _HASH_MOE["hidden_size"])
-    # Same float32 arithmetic, different grouping of the expert matmuls, as in
-    # `test_moe_matches_hf`: the tolerance sits at the float32 summation-order floor.
-    torch.testing.assert_close(prime_output, hf_output, rtol=1e-5, atol=1e-8)
-
-    with torch.device("cuda"):
-        weight = torch.randn_like(hf_output)
-    (hf_output * weight).sum().backward()
-    (prime_output * weight).sum().backward()
-
-    _compare_moe_grads(hf_module, prime_module, rtol=1e-4, atol=5e-7)
-    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=1e-5, atol=1e-8)
-
-
 def test_hash_moe_routes_by_token_id_not_by_score():
-    _, prime_module = _hash_moe_pair()
+    prime_module = prime_hash_moe()
     _, hidden = _moe_hidden_states()
     hidden = hidden.detach()
     table = prime_module.tid2eid
@@ -1028,25 +475,8 @@ def test_hash_moe_routes_by_token_id_not_by_score():
     assert set(learned_indices.flatten().tolist()) != set(table[0].tolist())
 
 
-def test_hash_moe_trains_the_gate():
-    hf_module, prime_module = _hash_moe_pair()
-    hf_input, prime_input = _moe_hidden_states()
-    input_ids = _input_ids()
-
-    hf_module(hf_input, input_ids=input_ids).sum().backward()
-    prime_module(prime_input, input_ids=input_ids).sum().backward()
-
-    # The table only decides which experts run; the gate still produces the weights their
-    # outputs are scaled by, so it keeps training, by the same gradient HF gets.
-    gate_grad = prime_module.router.gate.weight.grad
-    assert gate_grad is not None and (gate_grad != 0).any()
-    torch.testing.assert_close(gate_grad, hf_module.gate.weight.grad, rtol=1e-4, atol=5e-7)
-    # The table is a buffer, so no optimizer can drift it away from its checkpoint values.
-    assert "tid2eid" not in dict(prime_module.named_parameters())
-
-
 def test_moe_ignores_input_ids_when_not_hash_routed():
-    _, prime_module = _moe_pair()
+    prime_module = prime_moe()
     _, hidden = _moe_hidden_states()
 
     prime_module.tokens_per_expert.zero_()
@@ -1069,12 +499,11 @@ def test_moe_ignores_input_ids_when_not_hash_routed():
 # because vLLM serves each rollout alone, and a trainer that disagrees optimizes a model the
 # sampler does not implement.
 #
-# Float32 throughout, unlike the bfloat16 parity tests above. `kv_proj` sees a different number
+# Float32 throughout, unlike the bfloat16 module tests above. `kv_proj` sees a different number
 # of rows packed than alone and cuBLAS is free to tile the two differently, so the two runs can
 # never be bit-identical; in bfloat16 that floor would sit around 1e-2 and swallow exactly the
 # cross-document leakage these tests exist to catch.
 
-_SINGLE_DOC = (_SEQ,)
 # The boundary falls inside a window of both rates, so both drop tokens at it.
 _MID_WINDOW_DOCS = (7, 9)
 # Every document is a whole number of windows at both rates, so the per-document entry count
@@ -1099,10 +528,6 @@ _PACKED_RTOL, _PACKED_ATOL = 1e-5, 1e-6
 # of `kv_proj`'s gradient lands 3e-4 off in relative terms while being 2e-6 off in absolute ones.
 # Against the tensor's own scale the worst deviation measured over these tests is 8e-7.
 _PACKED_GRAD_RTOL = 1e-5
-
-
-def _cu_seqlens(doc_lens: tuple[int, ...]) -> torch.Tensor:
-    return get_cu_seqlens_from_seq_lens(torch.tensor(doc_lens, device="cuda"), total_tokens=sum(doc_lens))[0]
 
 
 def _layout(doc_lens: tuple[int, ...], compress_rate: int) -> CompressionLayout:
@@ -1133,35 +558,8 @@ def _doc_of_token(doc_lens: tuple[int, ...]) -> torch.Tensor:
     return torch.cat([torch.full((length,), index, device="cuda") for index, length in enumerate(doc_lens)])
 
 
-def _packed_position_ids(doc_lens: tuple[int, ...]) -> torch.Tensor:
-    positions = torch.cat([torch.arange(length, device="cuda") for length in doc_lens])
-    return positions.unsqueeze(0).expand(_BATCH, -1)
-
-
 def _alone_position_ids(length: int, batch: int = _BATCH) -> torch.Tensor:
     return torch.arange(length, device="cuda").unsqueeze(0).expand(batch, -1)
-
-
-def _compress_rates(module: nn.Module) -> set[int]:
-    """The rates an attention layer needs a layout for: its compressor's, or none at all."""
-    return set() if module.compressor is None else {module.compressor.compress_rate}
-
-
-def _packed_context(module: nn.Module, doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedContext:
-    """The context `DeepseekV4Model` would hand `module` for a row laid out as `doc_lens`.
-
-    `_SINGLE_DOC` gives back what the layer builds for itself when passed no context at all, so
-    the two are comparable. `dtype` is the mask's, and has to be the one the caller runs at.
-    """
-    return PackedContext.build(
-        cu_seqlens=_cu_seqlens(doc_lens),
-        position_ids=_packed_position_ids(doc_lens),
-        total_tokens=sum(doc_lens),
-        compress_rates=_compress_rates(module),
-        sliding_window=_ATTN["sliding_window"],
-        dtype=dtype,
-        device=torch.device("cuda"),
-    )
 
 
 def _fp32_hidden_states(seq_len: int = _SEQ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1172,7 +570,7 @@ def _fp32_hidden_states(seq_len: int = _SEQ) -> tuple[torch.Tensor, torch.Tensor
 
 
 def _fp32_attention(layer_idx: int) -> nn.Module:
-    _, prime_config = _attention_configs()
+    prime_config = prime_attention_config()
     with torch.device("cuda"):
         module = DeepseekV4Attention(prime_config, layer_idx=layer_idx)
     _randomize_attention(module)
@@ -1180,7 +578,7 @@ def _fp32_attention(layer_idx: int) -> nn.Module:
 
 
 def _fp32_position_embeddings(position_ids: torch.Tensor) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
-    _, prime_config = _attention_configs()
+    prime_config = prime_attention_config()
     with torch.device("cuda"):
         rotary = DeepseekV4RotaryEmbedding(prime_config)
         probe = torch.zeros(*position_ids.shape, _ATTN["hidden_size"])
@@ -1606,7 +1004,7 @@ def _assert_attention_is_finite(module: nn.Module, doc_lens: tuple[int, ...]) ->
         assert param.grad is None or torch.isfinite(param.grad).all(), f"{name} received a non-finite gradient"
 
 
-def test_csa_attention_packed_matches_unpacked(_torch_rms_norm):
+def test_csa_attention_packed_matches_unpacked(_torch_rms_norm):  # noqa: F811
     """The invariant that makes the trainer agree with vLLM, on a CSA layer.
 
     Everything the layer reads past its local window comes through the compressor, so this is
@@ -1615,7 +1013,7 @@ def test_csa_attention_packed_matches_unpacked(_torch_rms_norm):
     _assert_attention_matches_per_document(_fp32_attention(_CSA_LAYER), _MID_WINDOW_DOCS)
 
 
-def test_hca_attention_packed_matches_unpacked(_torch_rms_norm):
+def test_hca_attention_packed_matches_unpacked(_torch_rms_norm):  # noqa: F811
     """The same invariant on an HCA layer, which has no indexer to narrow the damage.
 
     One whole window per document at rate 8, so both documents own an entry and the second one's
@@ -1624,7 +1022,7 @@ def test_hca_attention_packed_matches_unpacked(_torch_rms_norm):
     _assert_attention_matches_per_document(_fp32_attention(_HCA_LAYER), _EXACT_MULTIPLE_DOCS)
 
 
-def test_csa_attention_survives_a_zero_entry_document(_torch_rms_norm):
+def test_csa_attention_survives_a_zero_entry_document(_torch_rms_norm):  # noqa: F811
     """A document that compressed to nothing leaves its queries an all `-inf` block bias.
 
     The row still carries the second document's three entries, so the compressed half of the
@@ -1647,7 +1045,7 @@ def test_csa_attention_survives_a_zero_entry_document(_torch_rms_norm):
     _assert_attention_is_finite(module, _SHORT_FIRST_DOCS)
 
 
-def test_hca_attention_survives_a_zero_entry_document(_torch_rms_norm):
+def test_hca_attention_survives_a_zero_entry_document(_torch_rms_norm):  # noqa: F811
     """Every document below rate 8, so the compressed half of the layer is empty for the row.
 
     This is the other new path: not one empty document among non-empty ones but a compressor
@@ -1749,7 +1147,7 @@ def _packed_model() -> nn.Module:
     return model.eval()
 
 
-def test_model_packed_matches_unpacked(_torch_rms_norm):
+def test_model_packed_matches_unpacked(_torch_rms_norm):  # noqa: F811
     """End to end, the whole point: packing rollouts together must not change any of them.
 
     The trainer packs; vLLM serves each rollout alone. Every layer contributes here, so unlike
@@ -1787,7 +1185,7 @@ def test_model_packed_matches_unpacked(_torch_rms_norm):
     _compare_accumulated_grads(model, packed_grads, rtol=_MODEL_GRAD_RTOL)
 
 
-def test_model_segments_by_seq_lens_on_a_padded_row(_torch_rms_norm, monkeypatch):
+def test_model_segments_by_seq_lens_on_a_padded_row(_torch_rms_norm, monkeypatch):  # noqa: F811
     """`seq_lens` decides the document layout, and `position_ids` restarting does not.
 
     `pad_micro_batch` (`trainer/batch.py:714-719`) folds its padding into the last document: it

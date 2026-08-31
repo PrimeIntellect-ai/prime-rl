@@ -7,12 +7,24 @@ into ordinary, non-quantized model instances and compare forward passes. Neither
 runs a quantized-weight kernel (`FP8Linear`/`FP8Experts`/DeepGEMM/Triton): that machinery is
 an inference-serving optimization, keeps weights compressed at rest, and is unrelated to
 whether the dequantization math itself is correct -- which is what these tests check.
+
+Both sides of the comparison need `transformers.models.deepseek_v4`, which only exists from
+transformers 5.15, and the repo pins an older version so the DS V4 work does not drag an
+unrelated dependency bump along with it. Run them explicitly:
+
+    uv run --with 'transformers==5.15.0' pytest tests/unit/train/models/test_deepseek_v4_dequantize_e2e_hf.py -v
+
+Under the pinned version the module skips rather than erroring. `Fp8Dequantize` itself exists on
+the pinned version; it is HF's model class that does not.
 """
+
+import pytest
+
+pytest.importorskip("transformers.models.deepseek_v4")
 
 import re
 from pathlib import Path
 
-import pytest
 import torch
 from safetensors.torch import save_file
 from transformers.integrations.finegrained_fp8 import Fp8Dequantize
@@ -22,15 +34,14 @@ from prime_rl.trainer.models.deepseek_v4 import DeepseekV4ForCausalLM as PrimeRL
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
 
-from .test_deepseek_v4 import (
+from .deepseek_v4_helpers import (
     _assert_close,
-    _configs,
     _IdentityMLP,
-    _on_disk_state_dict,
     _randomize,
     _run_pair,
     _torch_rms_norm,  # noqa: F401 -- pytest fixture, referenced by name in test signatures
 )
+from .test_deepseek_v4_hf import _configs, _on_disk_state_dict
 
 pytestmark = [pytest.mark.gpu]
 
