@@ -224,15 +224,15 @@
         <button data-mode="messages" class="active">Messages</button>
         <button data-mode="rendered">Rendered</button>
       </div>
-      <select id="token-signal" title="Choose the token signal for either view. Text is uncolored; other options color recorded tokens by advantage, log probability, training mask, message-content membership, or the trainer's annotations (trainer logprob, entropy, mismatch KL, IPO stable mask).">
+      <select id="token-signal" title="Choose the token signal for either view. Text is uncolored; other options color recorded tokens by advantage, log probability, training mask, message-content membership, or the trainer's annotations (trainer logprob, entropy, KL mismatch, IPO stable mask).">
         <option value="">Text</option>
         <option value="advantage">Advantage</option>
         <option value="logprob">Logprob</option>
         <option value="trainer_logprob">Trainer logprob</option>
         <option value="entropy">Entropy</option>
-        <option value="mismatch_kl">Mismatch KL</option>
+        <option value="mismatch_kl">KL Mismatch</option>
         <option value="stable_mask">Stable mask</option>
-        <option value="mask">Mask</option>
+        <option value="mask">Loss Mask</option>
         <option value="is_content">Content</option>
       </select>
       <button id="tm-collapse" class="btn">collapse</button>
