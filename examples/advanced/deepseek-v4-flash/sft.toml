@@ -34,14 +34,20 @@ max_steps = 20
 name = "deepseek-ai/DeepSeek-V4-Flash-0731"
 impl = "custom"
 ep = 8
-# Required here, not a tuning choice, and needs the DeepEP extra installed. Measured on a 4-layer
-# single-node run: the default "torch" backend deadlocked every rank (NCCL watchdog, 480s with no
-# collective progress), while this backend completed 5 steps with nan_count=0. The likely reason,
-# from the comment on DeepEPExpertParallel in trainer/distributed/expert_parallel.py, is that only
-# this backend hoists the token dispatch into MoE.forward(), keeping its collectives outside the
-# activation-checkpoint boundary that `ac.mode = "full"` re-executes during backward. That
-# explanation is not confirmed: the run isolating it was cancelled before it reached a step.
-ep_comm_backend = "deepep"
+
+# Kept, not a tuning choice, and needs the DeepEP extra installed. Measured on a 4-layer
+# single-node run: the default torch dispatch deadlocked every rank (NCCL watchdog, 480s with no
+# collective progress), while DeepEP completed 5 steps with nan_count=0.
+#
+# The reason originally recorded here no longer holds. It cited DeepEPExpertParallel in
+# trainer/distributed/expert_parallel.py, and argued that only DeepEP hoists the token dispatch
+# into MoE.forward() and so keeps its collectives outside the activation-checkpoint boundary that
+# `ac.mode = "full"` re-executes during backward. PR #3411 deleted that class, moved every backend
+# behind one TokenDispatcher.run() call inside MoE.forward(), and dropped the routed_experts
+# selective-AC target, so the asymmetry the explanation rested on is gone. Whether the torch
+# dispatch still deadlocks on the new runtime has not been retested; DeepEP stays until it is.
+[model.moe.dispatch]
+type = "deepep"
 
 [model.ac]
 freq = 1
