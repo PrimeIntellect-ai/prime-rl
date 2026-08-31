@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.distributed import ProcessGroup
 
-from prime_rl.trainer.models.layers.owner_sharded_embedding import OwnerShardedEmbedding
+from prime_rl.trainer.models.layers.head_sharded_embedding import HeadShardedEmbedding
 from prime_rl.utils.cp import gather_for_cp
 
 MASK64 = (1 << 64) - 1
@@ -130,7 +130,7 @@ class NGramEmbedding(nn.Module):
 
         total_vocab_size = offsets[-1] + sizes[-1]
         padded_vocab_size = (total_vocab_size + vocab_size_divisor - 1) // vocab_size_divisor * vocab_size_divisor
-        self.ngram_embedding = OwnerShardedEmbedding(padded_vocab_size, self.head_dim)
+        self.ngram_embedding = HeadShardedEmbedding(padded_vocab_size, self.head_dim, sizes)
 
         self.context_parallel_group: ProcessGroup | None = None
         self.context_parallel_rank = 0

@@ -11,6 +11,7 @@ os.environ.setdefault("USE_HUB_KERNELS", "NO")
 
 import torch
 import torch._dynamo
+import torch.distributed as dist
 import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
@@ -43,10 +44,10 @@ from prime_rl.trainer.models import (
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
+from prime_rl.trainer.models.layers.head_sharded_embedding import HeadShardedEmbedding
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
-from prime_rl.trainer.models.layers.owner_sharded_embedding import OwnerShardedEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import get_world
@@ -492,9 +493,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     }
 
     hsdp_mesh = parallel_dims.get_mesh("hsdp")
-    owner_sharded_parameters = {
-        module.weight for module in model.modules() if isinstance(module, OwnerShardedEmbedding)
-    }
+    head_sharded_parameters = {module.weight for module in model.modules() if isinstance(module, HeadShardedEmbedding)}
 
     dp_mod_ep_mesh: DeviceMesh | None = None
     if parallel_dims.ep_enabled:
@@ -535,7 +534,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 reshard_after_forward=config.reshard_after_forward,
             )
 
-        block_ignored_parameters = owner_sharded_parameters.intersection(transformer_block.parameters())
+        block_ignored_parameters = head_sharded_parameters.intersection(transformer_block.parameters())
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,
@@ -544,6 +543,11 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         )
 
     shard_norm_and_lm_head = hasattr(model, "config") and not model.config.tie_word_embeddings
+    final_module = (
+        getattr(language_model, "norm", None)
+        or getattr(language_model, "norm_f", None)
+        or getattr(language_model, "hyper_connection_mixer")
+    )
 
     if shard_norm_and_lm_head:
         # This optimization breaks weight tying
@@ -553,9 +557,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             mesh=hsdp_mesh,
             **fsdp_config,
         )
-        norm_module = getattr(language_model, "norm", None) or language_model.norm_f
         fully_shard(
-            [model.lm_head, norm_module],
+            [model.lm_head, final_module],
             mesh=hsdp_mesh,
             mp_policy=mp_policy,
             offload_policy=offload_policy,
@@ -570,7 +573,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         mp_policy=mp_policy,
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
-        ignored_params=owner_sharded_parameters or None,
+        ignored_params=head_sharded_parameters or None,
     )
 
     if not parallel_dims.ep_enabled:
@@ -598,15 +601,15 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_forward_prefetch(prefetch_modules)
             else:
                 transformer_block.set_modules_to_forward_prefetch([next_transformer_block])
-        elif language_model.norm is not None and model.lm_head is not None:
+        elif final_module is not None and model.lm_head is not None:
             if shard_norm_and_lm_head:
-                transformer_block.set_modules_to_forward_prefetch([language_model.norm, model.lm_head])
+                transformer_block.set_modules_to_forward_prefetch([final_module, model.lm_head])
 
     # backward
     reversed_transformer_blocks = list(reversed(language_model.layers))
     prev_transformer_blocks = reversed_transformer_blocks[1:] + [None]
 
-    if language_model.norm is not None and model.lm_head is not None and len(language_model.layers) > 0:
+    if final_module is not None and model.lm_head is not None and len(language_model.layers) > 0:
         last_transformer_block = reversed_transformer_blocks[0]
         prefetch_modules = [last_transformer_block]
         last_mlp = getattr(last_transformer_block, "mlp", None)
@@ -871,17 +874,22 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
 
 
-def setup_owner_sharded_embeddings(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
-    embeddings = [module for module in model.modules() if isinstance(module, OwnerShardedEmbedding)]
+def setup_head_sharded_embeddings(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
+    embeddings = [module for module in model.modules() if isinstance(module, HeadShardedEmbedding)]
     if not embeddings:
         if config.ngram_embedding_cpu_offload:
-            raise ValueError("N-gram embedding CPU offload was enabled, but the model has no owner-sharded embedding")
+            raise ValueError("N-gram embedding CPU offload was enabled, but the model has no head-sharded embedding")
         return
 
-    owner_mesh = parallel_dims.get_mesh("dp_cp")
+    embedding_mesh = parallel_dims.get_mesh("dp_shard_cp")
+    embedding_group = dist.new_group(
+        ranks=dist.get_process_group_ranks(embedding_mesh.get_group()),
+        backend="nccl",
+        use_local_synchronization=True,
+    )
     cpu_offload = config.ngram_embedding_cpu_offload or config.fsdp_cpu_offload
     for embedding in embeddings:
-        embedding.parallelize(owner_mesh, cpu_offload=cpu_offload)
+        embedding.parallelize(embedding_mesh, embedding_group, cpu_offload=cpu_offload)
 
     if cpu_offload:
         # Layer checkpointing replays individual blocks during backward. Hooking
@@ -893,13 +901,14 @@ def setup_owner_sharded_embeddings(model: nn.Module, config: ModelConfig, parall
         get_language_model(model).register_forward_pre_hook(prefetch_embeddings)
 
     get_logger().info(
-        f"Sharded {len(embeddings)} embedding table(s) across dp_cp={owner_mesh.size()} (cpu_offload={cpu_offload})"
+        f"Sharded {len(embeddings)} embedding table(s) across dp_shard_cp={embedding_mesh.size()} "
+        f"(cpu_offload={cpu_offload})"
     )
 
 
 def materialize_model_from_meta(model: nn.Module, device: str) -> None:
     for module in model.modules():
-        if isinstance(module, OwnerShardedEmbedding):
+        if isinstance(module, HeadShardedEmbedding):
             module.materialize()
         else:
             module.to_empty(device=device, recurse=False)
@@ -1033,7 +1042,7 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
-    setup_owner_sharded_embeddings(model, config, parallel_dims)
+    setup_head_sharded_embeddings(model, config, parallel_dims)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
