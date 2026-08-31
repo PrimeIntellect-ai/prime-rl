@@ -50,15 +50,15 @@ In W&B, each project auto-gets an **"overview" saved view** (train / eval / stab
 
 - `{run_dir}/configs/latest/` — the current attempt's command, launch TOML, and `resolved/` JSON files. Each launch stays under `configs/attempt_<n>/`.
 - `{run_dir}/logs/latest/` — the current attempt's logs (each launch gets `logs/attempt_<n>/`; resumes never overwrite earlier attempts). See below.
-- `{run_dir}/traces/step_{n}/` — saved episodes and their annotations (see Episodes below).
+- `{run_dir}/traces/step_{n}/{train,eval}/` — saved episodes and their annotations (see Episodes below).
 
 ### Dashboard
 
 `uv run dashboard [output_dir ...]` (default `outputs/`, or `$PRL_OUTPUT_DIR` if set; several dirs can be tracked at
 once) serves a local web dashboard at `http://localhost:7788` with four views per run:
 metrics (the W&B overview sections, read from `metrics.jsonl`), per-attempt config
-files, a rollout trace viewer with a per-token advantage/logprob view, and merged
-component logs. It only reads the run dirs — safe to run against a live run.
+files, a rollout trace viewer with per-token overlays (advantage, trainer logprob,
+entropy, KL mismatch, stable/loss/content masks), and merged component logs. It only reads the run dirs — safe to run against a live run.
 `--port`/`--host` pick the bind address; a taken port automatically bumps to the next
 free one, so several dashboards run side by side without coordination. GPU deps live
 behind the `gpu` extra, so `uv sync --extra dashboard && uv run dashboard` works
@@ -162,12 +162,12 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 ### Episodes
 
 ```
-{run_dir}/traces/step_{n}/{train,eval}.jsonl                 # appended per episode as it completes
-{run_dir}/traces/step_{n}/annotations/orchestrator.jsonl     # ship-time trace updates, per finalized batch / eval epoch
-{run_dir}/traces/step_{n}/annotations/trainer.jsonl          # trainer trace updates (recomputed logprobs, entropies)
+{run_dir}/traces/step_{n}/{train,eval}/traces.jsonl                 # appended per episode as it completes
+{run_dir}/traces/step_{n}/{train,eval}/annotations/orchestrator.jsonl  # ship-time trace updates, per finalized batch / eval epoch
+{run_dir}/traces/step_{n}/train/annotations/trainer.jsonl              # trainer trace updates (recomputed logprobs, entropies)
 ```
 
-The per-kind files are JSONL of native `vf.Episode` records (training tensors excluded),
+The per-kind `traces.jsonl` files are JSONL of native `vf.Episode` records (training tensors excluded),
 one line per episode, written exactly once at arrival — including trace-less failures,
 curriculum-rejected work, and work that never enters a batch — so they are crash-durable.
 Each record carries its provenance at the episode level: `env` (`id` plus the
@@ -176,7 +176,7 @@ discriminate train/eval work and include dispatch step plus an optional live-pol
 version span. Traces retain their own task, verifiers, agent, and runtime fields.
 
 Everything learned after arrival lands as trace-update records in `annotations/`, keyed
-by `trace_id` and placed in the step directory whose per-kind file holds the trace. The
+by `trace_id` and placed next to the `traces.jsonl` that holds the trace. The
 orchestrator appends the shipped cohort (`info.train.effective`, `info.train.trained_at_step`,
 the scalar `info.advantage`, and per-branch advantage streams; eval: `info.eval.effective`);
 the trainer appends its per-branch recomputed logprobs and entropies. Readers fold the
@@ -184,10 +184,10 @@ updates onto the episode records in write order — the dashboard's `effective` 
 exactly the traces with an orchestrator annotation.
 
 ```bash
-wc -l {run_dir}/traces/step_42/train.jsonl
-jq '.traces[].rewards' {run_dir}/traces/step_42/train.jsonl
-jq 'select(.ok | not) | {id, env: .env.id, errors}' {run_dir}/traces/step_*/train.jsonl
-jq '{trace_id, info}' {run_dir}/traces/step_42/annotations/orchestrator.jsonl
+wc -l {run_dir}/traces/step_42/train/traces.jsonl
+jq '.traces[].rewards' {run_dir}/traces/step_42/train/traces.jsonl
+jq 'select(.ok | not) | {id, env: .env.id, errors}' {run_dir}/traces/step_*/train/traces.jsonl
+jq '{trace_id, info}' {run_dir}/traces/step_42/train/annotations/orchestrator.jsonl
 ```
 
 The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/batches/step_{n}/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank).

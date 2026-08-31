@@ -144,7 +144,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
                 advantages=branch.advantages,
                 trace_id=trace.id,
-                branch_index=branch.index,
+                branch_id=branch.index,
                 logged_at_step=(trace.info.get("train") or {}).get("logged_at_step"),
             )
         )

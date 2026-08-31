@@ -2585,11 +2585,14 @@ function renderMessages(ep, trace, branches) {
       (h) => h.quote && findQuote(reasoningText(reasoning), h.quote, h.prefix, h.suffix)
     );
     const marked = contentMarked || reasoningMarked;
+    const showingTokens = !contentMarked && signal && node.token_ids?.length;
     const body = contentMarked
       ? quoteMarkedHtml(text, contentMarks)
-      : signal && node.token_ids?.length ? renderTokenNode(node, signal, scales) : esc(text);
+      : showingTokens ? renderTokenNode(node, signal, scales) : esc(text);
     const subs = [];
-    if (reasoning) subs.push(reasoningBlock(reasoning, reasoningMarks));
+    // The token spans already cover the reasoning tokens; a separate box would
+    // duplicate them and split the sequence the overlay is coloring.
+    if (reasoning && !showingTokens) subs.push(reasoningBlock(reasoning, reasoningMarks));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
     const messageHtml =
       `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}" data-node="${idx}"${role === "system" && !marked ? "" : " open"}>` +
@@ -2944,6 +2947,7 @@ function renderEpisode() {
   $("#tm-messages").hidden = timeline;
   $("#tm-timeline").hidden = !timeline;
   $("#token-signal").closest(".dd-select").hidden = timeline;
+  $("#trace-view-mode").hidden = timeline;
   $("#tm-collapse").hidden = timeline;
   $("#tm-expand").hidden = timeline;
   setActive("#tm-view", "view", traceView);

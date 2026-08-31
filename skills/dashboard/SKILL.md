@@ -81,7 +81,7 @@ command applies when the tab connects.
 The trace viewer's token-signal selector colors recorded tokens by advantage,
 trainer logprob, entropy, KL mismatch, IPO stable mask, loss mask, or
 content membership. Every episode is on disk once, in
-`<run>/traces/step_<n>/{train,eval}.jsonl`; post-hoc facts arrive as
+`<run>/traces/step_<n>/{train,eval}/traces.jsonl`; post-hoc facts arrive as
 trace-update records in the sibling `annotations/{orchestrator,trainer}.jsonl`
 (effective membership, advantages, trained step; trainer logprobs and
 entropies) and are folded onto the traces at read time, so the overlays work in

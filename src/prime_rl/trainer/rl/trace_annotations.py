@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 from torch import Tensor
 
-from prime_rl.utils.pathing import get_step_path, get_traces_dir
+from prime_rl.utils.pathing import get_kind_traces_dir
 
 UPDATE_VERSION = 1
 
@@ -16,8 +16,8 @@ UPDATE_VERSION = 1
 class TraceAnnotationWriter:
     """Collects the trainer's per-token streams (recomputed logprobs, entropies) during a
     step and writes them as verifiers ``TraceUpdate`` JSONL — one record per trained
-    sequence, keyed by ``(trace_id, branch_index)`` — appended to
-    ``traces/step_<n>/annotations/trainer.jsonl`` next to each trace's arrival file.
+    sequence, keyed by ``(trace_id, branch_id)`` — appended to
+    ``traces/step_<n>/train/annotations/trainer.jsonl`` next to each trace's arrival file.
     Streams are full-length over the sample's token prefix so readers can fold them onto
     trace nodes without knowing the trainer's loss mask.
 
@@ -26,7 +26,7 @@ class TraceAnnotationWriter:
     the first accumulate nothing since they share their micro batches."""
 
     def __init__(self, output_dir: Path, parallel_dims: Any, world: Any) -> None:
-        self.traces_dir = get_traces_dir(output_dir)
+        self.output_dir = output_dir
         self.world = world
         self.is_duplicate_rank = parallel_dims.cp_enabled and parallel_dims.world_mesh["cp"].get_local_rank() != 0
         self._pending: list[tuple[int, dict[str, Any]]] = []
@@ -35,9 +35,9 @@ class TraceAnnotationWriter:
         if self.is_duplicate_rank:
             return
         trace_ids = micro_batch["trace_ids"]
-        branch_indices = micro_batch["branch_indices"]
+        branch_ids = micro_batch["branch_ids"]
         logged_at_steps = micro_batch["logged_at_steps"]
-        if not trace_ids or not branch_indices or not logged_at_steps:
+        if not trace_ids or not branch_ids or not logged_at_steps:
             return
         sequence_lengths = micro_batch["sequence_lengths"]
         loss_mask = [bool(v) for v in micro_batch["loss_mask"].detach().cpu().reshape(-1).tolist()]
@@ -46,12 +46,12 @@ class TraceAnnotationWriter:
         entropies = _tensor_to_floats(model_output["entropy"])
 
         start = 0
-        for trace_id, branch_index, logged_at_step, length in zip(
-            trace_ids, branch_indices, logged_at_steps, sequence_lengths
+        for trace_id, branch_id, logged_at_step, length in zip(
+            trace_ids, branch_ids, logged_at_steps, sequence_lengths
         ):
             span_start, end = start, start + length
             start = end
-            if not trace_id or branch_index < 0 or logged_at_step < 0:
+            if not trace_id or branch_id < 0 or logged_at_step < 0:
                 continue
             # Trailing padding is appended to the last sample and folded into its length.
             while end > span_start and env_names[end - 1] == "" and not loss_mask[end - 1]:
@@ -67,7 +67,7 @@ class TraceAnnotationWriter:
                 "version": UPDATE_VERSION,
                 "trace_id": trace_id,
                 "info": {"train": {"trained_at_step": step}},
-                "branches": [{"index": branch_index, "trainer_logprobs": logprob_span, "entropies": entropy_span}],
+                "branches": [{"branch_id": branch_id, "trainer_logprobs": logprob_span, "entropies": entropy_span}],
             }
             self._pending.append((logged_at_step, record))
 
@@ -87,7 +87,7 @@ class TraceAnnotationWriter:
         for logged_at_step, record in records:
             by_step.setdefault(logged_at_step, []).append(record)
         for logged_at_step, step_records in by_step.items():
-            path = get_step_path(self.traces_dir, logged_at_step) / "annotations" / "trainer.jsonl"
+            path = get_kind_traces_dir(self.output_dir, logged_at_step, "train") / "annotations" / "trainer.jsonl"
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as file:
                 for record in step_records:

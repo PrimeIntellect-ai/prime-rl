@@ -33,7 +33,7 @@ class TensorMicroBatch(TypedDict):
     # trace, parallel to sequence_lengths; None on synthetic data. "" / -1
     # mark an unknown sequence (e.g. a dummy batch).
     trace_ids: list[str] | None
-    branch_indices: list[int] | None
+    branch_ids: list[int] | None
     logged_at_steps: list[int] | None
 
     # Batch level
@@ -126,7 +126,7 @@ class FakeDataLoader:
             "env_names": ["fake"] * input_ids.shape[0],
             "sequence_lengths": sequence_lengths,
             "trace_ids": None,
-            "branch_indices": None,
+            "branch_ids": None,
             "logged_at_steps": None,
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": torch.tensor([input_ids.shape[0]], dtype=torch.int32),
@@ -158,7 +158,7 @@ class FakeDataLoader:
             "env_names": ["fake"] * self.seq_len,
             "sequence_lengths": [self.seq_len],
             "trace_ids": None,
-            "branch_indices": None,
+            "branch_ids": None,
             "logged_at_steps": None,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": torch.tensor([self.seq_len], dtype=torch.int32),
@@ -232,7 +232,7 @@ class DataLoader:
             env_names=micro_batch.env_names,
             sequence_lengths=micro_batch.sequence_lengths,
             trace_ids=micro_batch.trace_ids,
-            branch_indices=micro_batch.branch_indices,
+            branch_ids=micro_batch.branch_ids,
             logged_at_steps=micro_batch.logged_at_steps,
             # Single adapter: every token in the batch belongs to it (padding included).
             lora_num_tokens=torch.tensor([len(micro_batch.input_ids)], dtype=torch.int32),

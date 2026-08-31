@@ -10,7 +10,7 @@ import orjson
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
-from prime_rl.utils.pathing import get_step_path, get_traces_dir
+from prime_rl.utils.pathing import get_kind_traces_dir
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
@@ -28,7 +28,7 @@ def _effective_update(trace: vf.Trace, kind: Kind, step: int) -> dict[str, Any]:
     if (advantage := trace.info.get("advantage")) is not None:
         info["advantage"] = advantage
     branches = [
-        {"index": branch.index, "advantages": advantages}
+        {"branch_id": branch.index, "advantages": advantages}
         for branch in trace.branches
         if (advantages := branch.advantages) is not None
     ]
@@ -65,18 +65,18 @@ class FileMonitor(Monitor):
         self.file.write(json.dumps(row) + "\n")
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
-        """``all`` appends each episode to ``traces/step_<n>/<kind>.jsonl`` as it completes,
-        so an in-progress run can be inspected live; every episode is serialized exactly
-        once, at arrival. ``effective`` writes no second copy: it appends TraceUpdate
-        records to ``traces/step_<n>/annotations/orchestrator.jsonl`` next to each trace's
-        arrival file, carrying what the ship-time cohort learned (see
-        ``_effective_update``); readers fold them onto the arrival records. Episode-level
-        failures are preserved even when no trace was produced."""
+        """``all`` appends each episode to ``traces/step_<n>/<kind>/traces.jsonl`` as it
+        completes, so an in-progress run can be inspected live; every episode is
+        serialized exactly once, at arrival. ``effective`` writes no second copy: it
+        appends TraceUpdate records to the sibling ``annotations/orchestrator.jsonl``,
+        carrying what the ship-time cohort learned (see ``_effective_update``); readers
+        fold them onto the arrival records. Episode-level failures are preserved even
+        when no trace was produced."""
 
         def write() -> None:
             opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
             if subset == "all":
-                path = get_step_path(get_traces_dir(self.output_dir), step) / f"{kind}.jsonl"
+                path = get_kind_traces_dir(self.output_dir, step, kind) / "traces.jsonl"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with open(path, "ab") as f:
                     for episode in episodes:
@@ -95,9 +95,7 @@ class FileMonitor(Monitor):
                         logged_step = (trace.info.get("train") or {}).get("logged_at_step", step)
                     updates_by_step.setdefault(logged_step, []).append(_effective_update(trace, kind, step))
             for logged_step, updates in updates_by_step.items():
-                path = (
-                    get_step_path(get_traces_dir(self.output_dir), logged_step) / "annotations" / "orchestrator.jsonl"
-                )
+                path = get_kind_traces_dir(self.output_dir, logged_step, kind) / "annotations" / "orchestrator.jsonl"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with open(path, "ab") as f:
                     for update in updates:
