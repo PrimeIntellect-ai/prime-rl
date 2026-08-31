@@ -308,9 +308,15 @@ config values. None of these are visible from the test suite; all of them are on
   means rollouts are tokenized locally and `[orchestrator.renderer] name = "default"` resolves to
   `DefaultRenderer`, which calls `tokenizer.apply_chat_template`. No config knob can fix that: the
   renderer pool builds its tokenizer with `load_tokenizer(path)`, which takes no template
-  argument. It needs a `deepseek-v4` renderer in `deps/renderers`, wrapping DeepSeek's own
-  `encode_messages`; both `rl.toml` and `rl-mini-smoke.toml` still pin `name = "default"` until
-  then.
+  argument. That renderer now exists: `renderers` 0.1.11 (which `main` pins) ships
+  `DeepSeekV4Renderer`, a native implementation rather than a wrapper around DeepSeek's
+  `encode_messages`, and registers it in `MODEL_RENDERER_MAP` for
+  `deepseek-ai/DeepSeek-V4-Flash-0731`. `sft.toml` picks it up through auto-resolution and needs
+  no `[renderer]` section. `rl.toml` and `kl-check.toml` still pin `name = "default"` and could
+  drop the pin, but that swap is untested. `rl-mini-smoke.toml` must keep an explicit renderer
+  either way: it points at `/tmp/deepseek-v4-mini`, which is not a key in `MODEL_RENDERER_MAP`,
+  so auto-resolution would fall through to `DefaultRenderer` and trip
+  `validate_renderer_auto_resolves`.
 - **NCCL weight broadcast breaks with `data_parallel_size > 1`.** With two DP replicas the
   orchestrator logs `inference_world_size=1, gpus_per_server=1` and only DP rank 0 gets a
   receiver installed, so the collective RPC reaches DP1 and fails with `'Worker' object has no
