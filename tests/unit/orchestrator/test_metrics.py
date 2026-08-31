@@ -213,11 +213,10 @@ def test_solve_rates():
 
 
 def test_stop_condition_breakdown():
-    truncated = [mk(is_truncated=True, stop_condition=c) for c in ("length", "max_turns", "prompt_too_long")]
-    out = train_wandb(truncated + [mk(stop_condition=None)])
-    assert out["train/agg/all/agent/stop_condition/generation_truncated"] == 0.5  # truncated & not prompt_too_long
-    assert out["train/agg/all/agent/stop_condition/length"] == 1 / 3  # over the 3 recorded conditions
-    assert out["train/agg/all/agent/stop_condition/prompt_too_long"] == 1 / 3
+    truncated = [mk(is_truncated=True, stop_condition=c) for c in ("length", "max_turns")]
+    out = train_wandb(truncated + [mk(stop_condition=None), mk(stop_condition=None)])
+    assert out["train/agg/all/agent/stop_condition/generation_truncated"] == 0.5
+    assert out["train/agg/all/agent/stop_condition/length"] == 0.5  # over the 2 recorded conditions
 
 
 def test_nested_metrics_and_rewards():

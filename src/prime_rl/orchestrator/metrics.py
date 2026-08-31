@@ -227,12 +227,7 @@ class TraceMetrics(StatGroup):
         return Stat([float(record.cancelled) for record in self.records])
 
     def stop_conditions(self) -> dict[str, float]:
-        out = {
-            "generation_truncated": sum(
-                trace.is_truncated and trace.stop_condition != "prompt_too_long" for trace in self.traces
-            )
-            / len(self.traces)
-        }
+        out = {"generation_truncated": sum(trace.is_truncated for trace in self.traces) / len(self.traces)}
         conditions = [trace.stop_condition for trace in self.traces if trace.stop_condition is not None]
         for condition in sorted(set(conditions)):
             out[condition] = conditions.count(condition) / len(conditions)
