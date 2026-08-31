@@ -1,0 +1,31 @@
+[env_vars]
+UV_NO_SYNC = "1"
+
+[slurm]
+project_dir = "/shared/parker/worktrees/prime-rl-hillclimb-lossless-tunnel-relaunch"
+template_path = "/shared/parker/worktrees/prime-rl-hillclimb-lossless-tunnel-relaunch/src/prime_rl/templates/multi_node_rl_router_tunnel_canary.sbatch.j2"
+pre_run_command = "mkdir -p /tmp/nemotron35-lightning-hillclimb-binary-frontier500-bs512-r1 /tmp/nemotron35-lightning-hillclimb-binary-frontier500-bs512-r1-uv-cache /shared/parker/huggingface /shared/parker/prime-rl-outputs /shared/parker/harbor-cache/hillclimb-f44acccc8 ; UV_NO_SYNC=1 timeout 120 /shared/parker/worktrees/prime-rl-hillclimb-lossless-tunnel-relaunch/.venv/bin/prime sandbox delete --label \"nemotron35-lightning-hillclimb-binary-frontier500-bs512-r1\" -y || true"
+
+[ckpt]
+interval = 5
+keep_last = 20
+
+[resume]
+step = 30
+
+[deployment]
+num_train_nodes = 6
+num_infer_nodes = 1
+num_infer_replicas = 2
+
+[orchestrator.concurrency]
+initial_inflight = 3072
+max_inflight = 4096
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/nemotron35-lightning-hillclimb-binary-frontier500-bs512-r1-vllm"
+FLASHINFER_WORKSPACE_BASE = "/tmp/nemotron35-lightning-hillclimb-binary-frontier500-bs512-r1-flashinfer"
+
+[inference.router]
+type = "vllm-router"
+policy = "cache_aware"
