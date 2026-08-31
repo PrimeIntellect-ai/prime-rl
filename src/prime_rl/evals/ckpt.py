@@ -34,7 +34,7 @@ class CheckpointManager:
         ckpt_path = self.get_ckpt_path(cursor)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
-        # Keep the last complete checkpoint readable if the process dies mid-write.
+        # Replace atomically so resume never observes a partially written pickle.
         fd, tmp_name = tempfile.mkstemp(dir=ckpt_path, prefix="progress.pt.", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as f:
