@@ -120,9 +120,14 @@ without it `VLLM_USE_DEEP_GEMM=0` and the manifold-hyper-connection pre-norm GEM
 TileLang kernel measured silently wrong past that length **on SM120**. Whether that also holds on
 Hopper is unverified, which is why the configs do not set it.
 
-Do **not** pass `--vllm.quantization`, and do not put a CUDA 13 runtime on `LD_LIBRARY_PATH` to
-"fix" the `deep_gemm` import error in the log. That error is expected: vLLM falls back to its own
-vendored DeepGEMM.
+Do **not** pass `--vllm.quantization`.
+
+There is no longer a `deep_gemm` import error to work around. The pinned wheel needs
+`libcudart.so.13`, which the stack lacked while it was CUDA 12, so it used to fail to import and
+vLLM fell back to its own vendored DeepGEMM. Since the CUDA 13 bump the pinned build imports and
+is what actually runs, which matters because it carries no SM120 kernels for the block-scaled FP8
+GEMMs, the UE8M0 scale transform, the hyper-connection GEMM or the paged MQA logits. See `TODO.md`
+before running this on Blackwell consumer parts.
 
 For RL, set `[weight_broadcast] type = "filesystem"`. NCCL and NIXL need
 `convert_layer_to_vllm_kernel`, which the DeepSeek V4 port does not implement.
