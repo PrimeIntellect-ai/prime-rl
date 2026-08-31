@@ -356,11 +356,6 @@ def test_env_algo_overrides_top_level():
         )
 
 
-def test_trainer_enable_trace_annotations_cli_flag():
-    assert cli(TrainerConfig, args=[]).enable_trace_annotations
-    assert not cli(TrainerConfig, args=["--no-enable-trace-annotations"]).enable_trace_annotations
-
-
 def test_single_node_auto_inference_ports_follow_server_port():
     config = RLConfig.model_validate(
         {

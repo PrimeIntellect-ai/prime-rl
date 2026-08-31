@@ -135,6 +135,7 @@ def test_prepare_batch_preserves_branch_identity(make_training_example):
         example = make_training_example()
         example.trace_id = f"trace-{i}"
         example.branch_index = i
+        example.logged_at_step = 10 + i
         examples.append(example)
     examples.append(make_training_example())  # no identity -> sentinels
 
@@ -146,25 +147,32 @@ def test_prepare_batch_preserves_branch_identity(make_training_example):
         pad_to_multiple_of=8,
     )
 
-    seen: set[tuple[str, int]] = set()
+    seen: set[tuple[str, int, int]] = set()
     for batch in _flatten_batches(batches_per_gpu):
         if not _has_loss_tokens(batch):
             # Dummies are copies of real batches; identity must not survive the copy.
-            assert batch.trace_ids is None and batch.branch_indices is None
+            assert batch.trace_ids is None and batch.branch_indices is None and batch.logged_at_steps is None
             continue
-        assert len(batch.trace_ids) == len(batch.branch_indices) == len(batch.sequence_lengths)
-        seen.update(zip(batch.trace_ids, batch.branch_indices))
-    assert seen == {(f"trace-{i}", i) for i in range(5)} | {("", -1)}
+        assert (
+            len(batch.trace_ids)
+            == len(batch.branch_indices)
+            == len(batch.logged_at_steps)
+            == len(batch.sequence_lengths)
+        )
+        seen.update(zip(batch.trace_ids, batch.branch_indices, batch.logged_at_steps))
+    assert seen == {(f"trace-{i}", i, 10 + i) for i in range(5)} | {("", -1, -1)}
 
 
 def test_prepare_sample_truncation_keeps_identity():
     sample = make_sized_training_example(10)
     sample.trace_id = "trace-x"
     sample.branch_index = 2
+    sample.logged_at_step = 7
     micro_batch = prepare_sample(sample, seq_len=4)
     assert len(micro_batch.input_ids) == 4
     assert micro_batch.trace_ids == ["trace-x"]
     assert micro_batch.branch_indices == [2]
+    assert micro_batch.logged_at_steps == [7]
 
 
 def test_randomized_packing_invariants():

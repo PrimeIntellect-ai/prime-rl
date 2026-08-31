@@ -88,9 +88,7 @@ In TOML, an empty section header (`[ckpt]`) does the same.
 
 ## RL trainer trace annotations
 
-The RL trainer writes its per-token streams (recomputed logprobs, entropies) as trace-update JSONL under `<run_dir>/trace_annotations/step_<step>/rank_<rank>.jsonl`, one record per trained sequence keyed by `trace_id` and `branch_index`. A `STABLE` marker lands in each step directory once every rank has flushed. The dashboard joins these onto rollout traces at read time to power the trainer-logprob, entropy, mismatch-KL, and stable-mask token overlays. It does not decode token text in the trainer.
-
-On by default; disable with `trainer.enable_trace_annotations = false` (or `--no-enable-trace-annotations` when running the trainer entrypoint directly).
+The RL trainer writes its per-token streams (recomputed logprobs, entropies) as trace-update JSONL to `<run_dir>/traces/step_<n>/annotations/trainer.jsonl`, one record per trained sequence keyed by `trace_id` and `branch_index`, placed next to the trace's arrival file (records land in the step the trace was logged at, which under off-policy lag differs from the trained step). Rank 0 is the only writer: every rank gathers its records to it at the end of each step. The dashboard folds these onto rollout traces at read time to power the trainer-logprob, entropy, mismatch-KL, and stable-mask token overlays. Always on; the trainer does not decode token text.
 
 ## Key files
 

@@ -3,7 +3,7 @@
 This package is fully AI-generated and maintained by agents - it is not meant to be read or edited by humans. Change it by asking an agent, and verify through the browser smoke tests.
 
 Reads everything from run output directories (metrics.jsonl, logs/attempt_N,
-rollouts/step_N) — no wandb or network required. Usage:
+traces/step_N) — no wandb or network required. Usage:
 
     uv run dashboard [output_dir ...] [--port 7788] [--host 127.0.0.1]
 
@@ -68,7 +68,7 @@ def _lru_put(cache: OrderedDict, key, value) -> None:
 # Append-only file caches keyed by absolute path: line-start offsets and per-episode summaries.
 _offsets_cache: OrderedDict[Path, tuple[int, bytes, list[int]]] = OrderedDict()
 _summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
-_annotations_cache: OrderedDict[Path, dict[str, dict[int, dict]]] = OrderedDict()
+_annotations_cache: OrderedDict[Path, tuple[tuple[int, ...], dict[str, list[dict]]]] = OrderedDict()
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
 _json_cache: dict[Path, tuple[tuple[int, float], dict]] = {}
@@ -78,7 +78,7 @@ _steps_cache: dict[Path, tuple[float, list[int]]] = {}
 def is_run_dir(path: Path) -> bool:
     if not path.is_dir() or path.name.startswith("."):
         return False
-    return any((path / marker).exists() for marker in ("configs", "logs", "metrics.jsonl", "rollouts"))
+    return any((path / marker).exists() for marker in ("configs", "logs", "metrics.jsonl", "traces"))
 
 
 _dirs_file_state: tuple[float, list[Path]] = (0.0, [])
@@ -194,15 +194,6 @@ def numbered_dirs(parent: Path, prefix: str) -> list[tuple[int, Path]]:
     )
 
 
-def size_etag(path: Path, etag: str | None) -> tuple[str, dict | None]:
-    """Etag = file size: the trace files are append-only, so an unchanged size means
-    an unchanged response. Returns (current_etag, short-circuit response or None)."""
-    current = str(path.stat().st_size)
-    if etag is not None and etag == current:
-        return current, {"unchanged": True, "etag": current}
-    return current, None
-
-
 def model_name(config: dict) -> str | None:
     """`model` is a string on eval configs, a {name} object on rl/sft ones."""
     model = config.get("model")
@@ -250,20 +241,20 @@ def attempt_numbers(run_dir: Path) -> list[int]:
 
 
 def step_numbers(run_dir: Path) -> list[int]:
-    """Rollout step numbers, cached by the rollouts dir mtime (which changes when a
+    """Trace step numbers, cached by the traces dir mtime (which changes when a
     step dir is created) — polled per run on every /api/runs tick."""
-    rollouts = run_dir / "rollouts"
+    traces = run_dir / "traces"
     try:
-        mtime = rollouts.stat().st_mtime
+        mtime = traces.stat().st_mtime
     except OSError:
         return []
     with _lock:
-        cached = _steps_cache.get(rollouts)
+        cached = _steps_cache.get(traces)
         if cached and cached[0] == mtime:
             return cached[1]
-    steps = [n for n, _ in numbered_dirs(rollouts, "step_")]
+    steps = [n for n, _ in numbered_dirs(traces, "step_")]
     with _lock:
-        _steps_cache[rollouts] = (mtime, steps)
+        _steps_cache[traces] = (mtime, steps)
     return steps
 
 
@@ -548,24 +539,25 @@ def rollout_steps(run_dir: Path) -> list[dict]:
     """Presence only — never reads trace files. Presence is monotonic (files only
     appear), so known-present subsets are cached forever; absent ones re-stat every
     poll only for the newest steps — older gaps (an eval landing late at its trigger
-    step) are picked up by a full rescan every 10th call."""
+    step, or annotations trailing their traces) are picked up by a full rescan every
+    10th call. ``effective`` is coarse: it marks a kind as soon as the step has any
+    orchestrator annotations, and the episode listing does the exact filtering."""
     global _avail_scan_counter
     _avail_scan_counter += 1
     full_rescan = _avail_scan_counter % 10 == 1
-    numbered = numbered_dirs(run_dir / "rollouts", "step_")
+    numbered = numbered_dirs(run_dir / "traces", "step_")
     recent_cutoff = numbered[-1][0] - RECENT_STEPS if numbered else 0
     steps = []
     for number, step_dir in numbered:
         available = _avail_cache.setdefault(step_dir, {})
         if len(available) < 4 and (full_rescan or number >= recent_cutoff):
+            annotated = (step_dir / "annotations" / "orchestrator.jsonl").is_file()
             for kind in ("train", "eval"):
-                for subset in ("all", "effective"):
-                    key = f"{kind}/{subset}"
-                    if key in available:
-                        continue
-                    path = step_dir / kind / subset / "traces.jsonl"
-                    if path.is_file() and path.stat().st_size > 0:
-                        available[key] = True
+                path = step_dir / f"{kind}.jsonl"
+                if f"{kind}/all" not in available and path.is_file() and path.stat().st_size > 0:
+                    available[f"{kind}/all"] = True
+                if f"{kind}/effective" not in available and f"{kind}/all" in available and annotated:
+                    available[f"{kind}/effective"] = True
         if available:
             steps.append({"step": number, "available": available})
     root = eval_root_traces(run_dir)
@@ -685,6 +677,7 @@ def summarize_episode(line: int, rec: dict) -> dict:
         "cost": sum(costs) if costs else None,
         "line": line,
         "id": rec.get("id"),
+        "trace_ids": [trace_id for trace in rec.get("traces") or [] if (trace_id := trace.get("id"))],
         "env": (rec.get("env") or {}).get("id") or (rec.get("env") or {}).get("name"),
         "group": (rec.get("group") or {}).get("id"),
         "ok": rec.get("ok"),
@@ -734,6 +727,7 @@ def episode_summaries(path: Path) -> list[dict]:
 # result is persisted outside the run dir (the dashboard never writes there),
 # so a revisit — or a dashboard restart — skips the parse entirely.
 SIDECAR_DIR = STATE_DIR
+SIDECAR_FORMAT = 2
 SIDECAR_WRITE_INTERVAL_S = 20.0
 _sidecar_written: dict[Path, tuple[float, int]] = {}  # path -> (last write time, count)
 
@@ -759,7 +753,8 @@ def load_sidecar(path: Path) -> list[dict] | None:
     data = read_json(sidecar_path(path))
     try:
         if (
-            data.get("path") != str(path.resolve())
+            data.get("format") != SIDECAR_FORMAT
+            or data.get("path") != str(path.resolve())
             or path.stat().st_size < data["size"]
             or data.get("checkpoint") != file_checkpoint(path, data["size"]).hex()
         ):
@@ -778,6 +773,7 @@ def write_sidecar(path: Path, summaries: list[dict]) -> None:
     SIDECAR_DIR.mkdir(parents=True, exist_ok=True)
     size = path.stat().st_size
     payload = {
+        "format": SIDECAR_FORMAT,
         "path": str(path.resolve()),
         "size": size,
         "checkpoint": file_checkpoint(path, size).hex(),
@@ -790,17 +786,20 @@ def write_sidecar(path: Path, summaries: list[dict]) -> None:
 
 
 def traces_path(run: str, step: int, kind: str, subset: str) -> Path:
+    """The arrival file for one step and kind. ``subset`` never changes the file —
+    every episode is on disk exactly once — it selects the read-time filter: the
+    ``effective`` listing keeps only episodes with orchestrator annotations."""
     if kind not in ("train", "eval") or subset not in ("all", "effective"):
         raise HTTPException(400, "kind must be train|eval, subset all|effective")
     run_dir = get_run_dir(run)
-    path = run_dir / "rollouts" / f"step_{step}" / kind / subset / "traces.jsonl"
+    path = run_dir / "traces" / f"step_{step}" / f"{kind}.jsonl"
     if path.is_file():
         return path
     if (step, kind, subset) == EVAL_ROOT_STEP:
         root = eval_root_traces(run_dir)
         if root is not None:
             return root
-    raise HTTPException(404, "no traces for this step/kind/subset")
+    raise HTTPException(404, "no traces for this step/kind")
 
 
 def read_episode_record(path: Path, line: int) -> dict:
@@ -857,74 +856,85 @@ def trace_branch_paths(nodes: list[dict]) -> list[list[int]]:
     return paths
 
 
-def load_step_annotations(run_dir: Path, step: int) -> dict[str, dict[int, dict]] | None:
-    """Trainer-written trace-update records for one step, indexed by trace id and
-    branch index. Only STABLE step dirs load; they are final, so entries cache."""
-    step_dir = run_dir / "trace_annotations" / f"step_{step}"
+ANNOTATION_FILES = ("orchestrator.jsonl", "trainer.jsonl")
+STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies")
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return -1
+
+
+def step_annotations(run_dir: Path, step: int) -> dict[str, list[dict]]:
+    """TraceUpdate records for one step's traces, by trace id, in write order
+    (orchestrator before trainer). Cached by the annotation files' sizes — they are
+    append-only, so unchanged sizes mean an unchanged index."""
+    annotations_dir = run_dir / "traces" / f"step_{step}" / "annotations"
+    key = tuple(_file_size(annotations_dir / name) for name in ANNOTATION_FILES)
     with _lock:
-        cached = _lru_get(_annotations_cache, step_dir)
-    if cached is not None:
-        return cached
-    if not (step_dir / "STABLE").exists():
-        return None
-    index: dict[str, dict[int, dict]] = {}
-    for rank_file in sorted(step_dir.glob("rank_*.jsonl")):
+        cached = _lru_get(_annotations_cache, annotations_dir)
+        if cached and cached[0] == key:
+            return cached[1]
+    index: dict[str, list[dict]] = {}
+    for name in ANNOTATION_FILES:
         try:
-            lines = rank_file.read_bytes().splitlines()
+            lines = (annotations_dir / name).read_bytes().splitlines()
         except OSError:
             continue
         for raw in lines:
             if not raw:
                 continue
             try:
-                record = orjson.loads(raw)
-            except ValueError:
-                continue
-            trace_id = record.get("trace_id")
-            if not trace_id:
-                continue
-            for branch in record.get("branches") or []:
-                branch_index = branch.get("index")
-                if isinstance(branch_index, int):
-                    index.setdefault(trace_id, {})[branch_index] = branch
+                update = orjson.loads(raw)
+            except orjson.JSONDecodeError:
+                continue  # torn tail line of a live append
+            if trace_id := update.get("trace_id"):
+                index.setdefault(trace_id, []).append(update)
     with _lock:
-        _lru_put(_annotations_cache, step_dir, index)
+        _lru_put(_annotations_cache, annotations_dir, (key, index))
     return index
 
 
-ANNOTATION_STREAMS = ("trainer_logprobs", "entropies")
+def _deep_merge(old, new):
+    if isinstance(old, dict) and isinstance(new, dict):
+        return {**old, **{key: _deep_merge(old.get(key), value) for key, value in new.items()}}
+    return new
 
 
-def stamp_trace_annotations(trace: dict, updates: dict[int, dict]) -> int:
-    """Project full-length branch streams onto node fields, compact over each node's
-    mask — the dict mirror of verifiers' `apply_trace_update`. A node is stamped only
-    when a stream fully covers it with non-null values at every sampled position, and
-    the first writer wins on nodes shared across branches. Returns stamped nodes."""
+def fold_trace_updates(trace: dict, updates: list[dict]) -> int:
+    """Apply TraceUpdate records onto a raw trace dict in write order (newest wins) —
+    the dict mirror of verifiers' `apply_trace_update`: deep-merge `info`, then project
+    each full-length branch stream onto the branch's nodes, compact over each node's
+    mask. A node takes a stream only when it is fully covered with non-null values at
+    every sampled position. Returns how many nodes hold trainer logprobs afterwards."""
     nodes = trace.get("nodes") or []
-    stamped: set[int] = set()
-    for branch_index, path in enumerate(trace_branch_paths(nodes)):
-        branch = updates.get(branch_index)
-        if not branch:
-            continue
-        for field in ANNOTATION_STREAMS:
-            stream = branch.get(field)
-            if not stream:
+    paths = trace_branch_paths(nodes)
+    for update in updates:
+        if update.get("info"):
+            trace["info"] = _deep_merge(trace.get("info") or {}, update["info"])
+        for branch in update.get("branches") or []:
+            branch_index = branch.get("index")
+            if not isinstance(branch_index, int) or not 0 <= branch_index < len(paths):
                 continue
-            cursor = 0
-            for node_index in path:
-                node = nodes[node_index]
-                token_ids = node.get("token_ids") or []
-                span = stream[cursor : cursor + len(token_ids)]
-                cursor += len(token_ids)
-                if len(span) < len(token_ids):
-                    break
-                values = [v for v, sampled in zip(span, node.get("mask") or []) if sampled]
-                if not values or any(v is None for v in values):
+            for field in STREAM_FIELDS:
+                stream = branch.get(field)
+                if not stream:
                     continue
-                if node.get(field) is None:
+                cursor = 0
+                for node_index in paths[branch_index]:
+                    node = nodes[node_index]
+                    token_ids = node.get("token_ids") or []
+                    span = stream[cursor : cursor + len(token_ids)]
+                    cursor += len(token_ids)
+                    if len(span) < len(token_ids):
+                        break
+                    values = [v for v, sampled in zip(span, node.get("mask") or []) if sampled]
+                    if not values or any(v is None for v in values):
+                        continue
                     node[field] = values
-                    stamped.add(node_index)
-    return len(stamped)
+    return sum(1 for node in nodes if node.get("trainer_logprobs"))
 
 
 def ipo_eps(run_dir: Path) -> float:
@@ -1185,6 +1195,40 @@ def list_rollouts(run: str) -> dict:
     return {"steps": rollout_steps(get_run_dir(run))}
 
 
+def subset_etag(run_dir: Path, step: int, subset: str, path: Path) -> str:
+    """The effective listing also changes when annotations grow, so its etag
+    covers the orchestrator annotation file's size too."""
+    tag = str(path.stat().st_size)
+    if subset == "effective":
+        tag += f"-{_file_size(run_dir / 'traces' / f'step_{step}' / 'annotations' / 'orchestrator.jsonl')}"
+    return tag
+
+
+def effective_summaries(run_dir: Path, step: int, kind: str, summaries: list[dict]) -> list[dict]:
+    """Episodes with at least one trace the orchestrator marked effective, keeping
+    their arrival-file line numbers and merging in the ship-time scalar advantage
+    (arrival records carry none)."""
+    effective_ids: set[str] = set()
+    advantage_by_id: dict[str, float] = {}
+    for trace_id, trace_updates in step_annotations(run_dir, step).items():
+        for update in trace_updates:
+            info = update.get("info") or {}
+            if (info.get(kind) or {}).get("effective"):
+                effective_ids.add(trace_id)
+            if isinstance(info.get("advantage"), (int, float)):
+                advantage_by_id[trace_id] = info["advantage"]
+    rows = []
+    for summary in summaries:
+        hits = [trace_id for trace_id in summary.get("trace_ids") or [] if trace_id in effective_ids]
+        if not hits:
+            continue
+        advantages = [advantage_by_id[trace_id] for trace_id in hits if trace_id in advantage_by_id]
+        if advantages:
+            summary = {**summary, "advantage": sum(advantages) / len(advantages)}
+        rows.append(summary)
+    return rows
+
+
 @app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}")
 def list_episodes(
     run: str,
@@ -1199,11 +1243,14 @@ def list_episodes(
     order: str = "asc",
     etag: str | None = None,
 ) -> dict:
+    run_dir = get_run_dir(run)
     path = traces_path(run, step, kind, subset)
-    current_etag, unchanged = size_etag(path, etag)
-    if unchanged:
-        return unchanged
+    current_etag = subset_etag(run_dir, step, subset, path)
+    if etag is not None and etag == current_etag:
+        return {"unchanged": True, "etag": current_etag}
     summaries = episode_summaries(path)
+    if subset == "effective":
+        summaries = effective_summaries(run_dir, step, kind, summaries)
     envs = sorted({s["env"] for s in summaries if s.get("env")})
     if episode is not None:
         summaries = [s for s in summaries if s.get("id") == episode]
@@ -1300,11 +1347,14 @@ def episode_series(run: str, step: int, kind: str, subset: str, etag: str | None
     """Per-episode series over a traces file (x = episode order): reward, shape, and the
     nested rewards/metrics/timing keys — the metrics view for eval runs. `after` returns
     only episodes past that index, so a growing file ships increments, not the world."""
+    run_dir = get_run_dir(run)
     path = traces_path(run, step, kind, subset)
-    current_etag, unchanged = size_etag(path, etag)
-    if unchanged:
-        return unchanged
+    current_etag = subset_etag(run_dir, step, subset, path)
+    if etag is not None and etag == current_etag:
+        return {"unchanged": True, "etag": current_etag}
     summaries = episode_summaries(path)
+    if subset == "effective":
+        summaries = effective_summaries(run_dir, step, kind, summaries)
     keys: set[str] = set()
     for s in summaries:
         keys.update(
@@ -1346,14 +1396,16 @@ def get_episode(
     path = traces_path(run, step, kind, subset)
     rec = read_episode_at(path, line)
     run_dir = get_run_dir(run)
-    if kind == "train":
-        annotations = load_step_annotations(run_dir, step)
-        if annotations:
-            for trace in rec.get("traces") or []:
-                updates = annotations.get(trace.get("id") or "")
-                if updates:
-                    stamped = stamp_trace_annotations(trace, updates)
-                    trace["train_annotations"] = {"step": step, "eps": ipo_eps(run_dir), "nodes": stamped}
+    annotations = step_annotations(run_dir, step)
+    if annotations:
+        for trace in rec.get("traces") or []:
+            updates = annotations.get(trace.get("id") or "")
+            if not updates:
+                continue
+            stamped = fold_trace_updates(trace, updates)
+            if stamped:
+                trained_at = ((trace.get("info") or {}).get("train") or {}).get("trained_at_step")
+                trace["train_annotations"] = {"step": trained_at, "eps": ipo_eps(run_dir), "nodes": stamped}
     if not tokens and not rendered:
         return rec
     fallback_model = model_name(main_config(run_dir)[1])

@@ -2761,7 +2761,12 @@ function renderMeta(ep, trace, branches) {
       if (work?.policy) parts.push(metaRow("policy span", `v${work.policy.start}–v${work.policy.end}`));
       if (trainedAt != null) parts.push(metaRow("trained at step", trainedAt));
       if (annotations)
-        parts.push(metaRow("trainer annotations", `${annotations.nodes} nodes @ step ${annotations.step}`));
+        parts.push(
+          metaRow(
+            "trainer annotations",
+            `${annotations.nodes} nodes${annotations.step != null ? ` @ step ${annotations.step}` : ""}`
+          )
+        );
     }
 
     const durations = [];

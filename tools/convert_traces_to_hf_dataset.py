@@ -146,7 +146,9 @@ def register_in_dataset_card(root: Path, subset: str, split: str, rel_path: str)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("traces", type=Path, help="a run's traces.jsonl (one episode per line)")
+    parser.add_argument(
+        "traces", type=Path, help="a run's episode JSONL, e.g. traces/step_N/train.jsonl (one episode per line)"
+    )
     parser.add_argument("--name", required=True, help="HF repo id, or output dataset dir with --local")
     parser.add_argument("--subset", default="default", help="dataset config name")
     parser.add_argument("--split", default="train", help="dataset split name")

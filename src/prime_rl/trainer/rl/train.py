@@ -35,7 +35,7 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
-from prime_rl.trainer.rl.trace_annotations import setup_trace_annotation_writer
+from prime_rl.trainer.rl.trace_annotations import TraceAnnotationWriter
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
@@ -257,7 +257,7 @@ def train(config: TrainerConfig):
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
-    trace_annotation_writer = setup_trace_annotation_writer(config, parallel_dims, world, logger)
+    trace_annotation_writer = TraceAnnotationWriter(config.output_dir, parallel_dims, world)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -559,9 +559,7 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
-        if config.enable_trace_annotations:
-            dist.barrier()
-            trace_annotation_writer.mark_stable()
+        trace_annotation_writer.flush()
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
@@ -723,8 +721,6 @@ def train(config: TrainerConfig):
         logger.info(f"Saving trace to {trace_file}")
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
-
-    trace_annotation_writer.close()
 
     # Write final checkpoint
     if config.ckpt is not None:

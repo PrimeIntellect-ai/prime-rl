@@ -681,9 +681,6 @@ class TrainerConfig(BaseConfig):
     metrics_server: MetricsServerConfig | None = None
     """Prometheus metrics server configuration. If set, exposes a ``/metrics`` endpoint for scraping."""
 
-    enable_trace_annotations: bool = True
-    """Write the trainer's per-token streams (recomputed logprobs, entropies) as trace-update JSONL under ``<output_dir>/trace_annotations/step_<N>/``, keyed by trace and branch so the dashboard can overlay them onto rollout traces."""
-
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
 
