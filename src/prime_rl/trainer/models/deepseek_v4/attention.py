@@ -40,7 +40,7 @@ def eager_attention_with_sinks(
     key: torch.Tensor,
     value: torch.Tensor,
     sinks: torch.Tensor,
-    attention_mask: torch.Tensor | None,
+    attention_mask: torch.Tensor,
     scaling: float,
     dropout: float = 0.0,
     training: bool = False,
@@ -59,8 +59,7 @@ def eager_attention_with_sinks(
     Returns the attention output in `[batch, seq, heads, head_dim]` layout.
     """
     attn_weights = torch.matmul(query, key.transpose(2, 3)) * scaling
-    if attention_mask is not None:
-        attn_weights = attn_weights + attention_mask
+    attn_weights = attn_weights + attention_mask
 
     sink_logits = sinks.reshape(1, -1, 1, 1).expand(query.shape[0], -1, query.shape[-2], -1)
     combined_logits = torch.cat([attn_weights, sink_logits], dim=-1)
