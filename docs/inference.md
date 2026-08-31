@@ -285,7 +285,7 @@ On the CLI the same keys are available as `--inference.vllm.max-num-seqs 256` (o
 
 Router replay works by capturing the expert routing decisions into a buffer. This buffer then gets sent to the trainer, which can use it instead of re-computing the routing. This lowers the trainer↔inference mismatch by an order of magnitude, resulting in more stable training.
 
-To enable router replay, you can set `inference.vllm.enable_return_routed_experts = true`.
+To enable router replay, you can set `inference.vllm.enable_return_routed_experts = true`. vLLM 0.28 uses the V2 model runner for standard deployments. Disaggregated P/D remains on V1 because NIXL routed-expert stitching is V1-only.
 
 ```toml
 [trainer]
@@ -311,6 +311,6 @@ top_k = 512   # optional, defaults to 512 under truncation (bounds the kept sets
 
 That's all — there are no replay flags. Truncated train sampling makes the inference server return kept sets (`inference.enable_return_sampling_mask`, auto-enabled) and the trainer replays whatever masks arrive. Train-sampling `top_k` above 512 is rejected: the trainer pads each micro batch's masks to the largest kept set, so the bound caps trainer memory. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`; Gemma-family (softcapped) lm_heads fail loudly. Frozen-source envs are exempt.
 
-Capture runs on vLLM's V2 model runner (forced automatically) and is engine-wide, which has two consequences for other traffic on the same server. It is incompatible with router replay (`enable_return_routed_experts`, V1-only). And while it is on, vLLM rejects any request with `temperature <= 0` or without an effective `top_k > 0` — eval sampling against the training server must set `top_k` (the model's generation config often supplies one) and a non-zero temperature.
+Capture runs on vLLM's V2 model runner (forced automatically) and is engine-wide. It can run with router replay on standard deployments. The combination is not supported with disaggregated P/D because NIXL routed-expert capture uses V1. While sampling capture is on, vLLM rejects any request with `temperature <= 0` or without an effective `top_k > 0` — eval sampling against the training server must set `top_k` (the model's generation config often supplies one) and a non-zero temperature.
 
 When launching the inference server standalone, set `inference.enable_return_sampling_mask = true` yourself; clients must sample with `0 < top_k <= 512`.

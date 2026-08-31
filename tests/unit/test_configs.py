@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -832,3 +833,19 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.vllm.tool_call_parser == "hermes"
+
+
+def test_combined_replay_uses_v2_runner(monkeypatch):
+    from prime_rl.inference.server import setup_vllm_env
+
+    monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
+    config = InferenceConfig(
+        enable_return_sampling_mask=True,
+        vllm={"enable_return_routed_experts": True},
+    )
+
+    setup_vllm_env(config)
+
+    assert config.enable_return_sampling_mask is True
+    assert config.vllm.enable_return_routed_experts is True
+    assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"

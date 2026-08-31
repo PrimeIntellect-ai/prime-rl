@@ -459,7 +459,7 @@ class InferenceConfig(BaseConfig):
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
 
     enable_return_sampling_mask: bool = False
-    """Auto-set for sampling replay: return per-token kept-set sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). Capture is engine-wide: vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0`` while it is on, and it requires the V2 model runner (the launcher forces ``VLLM_USE_V2_MODEL_RUNNER=1``), so it is incompatible with router replay (``vllm.enable_return_routed_experts``). Auto-enabled by the ``rl`` entrypoint under truncated train sampling and persisted into the per-node config; set by hand only for standalone-launched servers."""
+    """Auto-set for sampling replay: return per-token kept-set sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). Capture is engine-wide: vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0`` while it is on, and it requires the V2 model runner (the launcher forces ``VLLM_USE_V2_MODEL_RUNNER=1``). Auto-enabled by the ``rl`` entrypoint under truncated train sampling and persisted into the per-node config; set by hand only for standalone-launched servers."""
 
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
@@ -498,12 +498,16 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_sampling_mask_no_routed_experts(self):
-        """Sampling-mask capture runs on the V2 model runner; routed-experts capture only exists on V1."""
-        if self.enable_return_sampling_mask and self.vllm.enable_return_routed_experts:
+    def validate_disaggregated_combined_replay(self):
+        """NIXL routed-expert capture uses the V1 runner, while sampling replay needs V2."""
+        if (
+            self.deployment.type == "disaggregated"
+            and self.enable_return_sampling_mask
+            and self.vllm.enable_return_routed_experts
+        ):
             raise ValueError(
-                "enable_return_sampling_mask (sampling replay, V2 model runner) is incompatible with "
-                "enable_return_routed_experts (router replay, V1 model runner). Disable one of the two."
+                "Combined router and sampling replay is not supported with disaggregated P/D: "
+                "NIXL routed-expert capture uses the V1 model runner, while sampling replay needs V2."
             )
         return self
 

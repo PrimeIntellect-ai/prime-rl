@@ -673,6 +673,21 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_disaggregated_combined_replay(self):
+        inference = self.inference
+        if (
+            inference is not None
+            and inference.deployment.type == "disaggregated"
+            and inference.enable_return_sampling_mask
+            and inference.vllm.enable_return_routed_experts
+        ):
+            raise ValueError(
+                "Combined router and sampling replay is not supported with disaggregated P/D: "
+                "NIXL routed-expert capture uses the V1 model runner, while sampling replay needs V2."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_router_replay_without_kv_offload(self):
         if (
             self.trainer.enable_router_replay
