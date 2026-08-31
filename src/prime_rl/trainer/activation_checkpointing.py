@@ -7,12 +7,23 @@ import torch
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointImpl, checkpoint_wrapper
 from torch.utils.checkpoint import (
+    SAC_IGNORED_OPS,
     CheckpointPolicy,
     SelectiveCheckpointContext,
     create_selective_checkpoint_contexts,
 )
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig
+
+# FSDP's replay-specific hooks emit a different number of profiler markers.
+SAC_IGNORED_OPS.update(
+    {
+        torch.ops.profiler._record_function_enter.default,
+        torch.ops.profiler._record_function_enter_new.default,
+        torch.ops.profiler._record_function_exit.default,
+        torch.ops.profiler._record_function_exit._RecordFunction,
+    }
+)
 
 # Adapted from TorchTitan's whole-block selective activation checkpointing policy.
 # These targets and the CUDA-to-CPU copy rule are correctness requirements. They

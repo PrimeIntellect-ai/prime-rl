@@ -877,10 +877,18 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     prev_transformer_blocks = reversed_transformer_blocks[1:] + [None]
 
     if language_model.norm is not None and model.lm_head is not None and len(language_model.layers) > 0:
+        last_transformer_block = reversed_transformer_blocks[0]
+        prefetch_modules = [last_transformer_block]
+        last_mlp = getattr(last_transformer_block, "mlp", None)
+        if last_mlp is not None and isinstance(last_mlp, MoE):
+            prefetch_modules.append(last_mlp.experts)
+            if isinstance(last_mlp.router, FSDPModule):
+                prefetch_modules.append(last_mlp.router)
+
         if shard_norm_and_lm_head:
-            model.lm_head.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
+            model.lm_head.set_modules_to_backward_prefetch(prefetch_modules)
         else:
-            model.set_modules_to_backward_prefetch([reversed_transformer_blocks[0]])
+            model.set_modules_to_backward_prefetch(prefetch_modules)
 
     for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
         if prev_transformer_block is not None:
