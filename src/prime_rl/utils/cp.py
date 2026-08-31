@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# ruff: noqa: I001 — `prime_rl._compat` must run before `ring_flash_attn` imports below.
+# ruff: noqa: I001 — `prime_rl._compat` must run before the deferred `ring_flash_attn` import.
 import prime_rl._compat  # noqa: F401
 
 from typing import Literal
@@ -8,7 +8,6 @@ from typing import Literal
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from ring_flash_attn import update_ring_flash_attn_params
 
 from prime_rl.trainer.distributed.collectives import all_gather
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -177,6 +176,10 @@ def setup_cp_attention_params(
     )
 
     if cp_style == "ring":
+        # Delayed import: ring_flash_attn imports flash_attn at module scope, which only
+        # the ring path needs.
+        from ring_flash_attn import update_ring_flash_attn_params
+
         update_ring_flash_attn_params(cu_seqlens, cp_group)
     elif cp_style == "ulysses":
         # Delayed import: ulysses_attn lives under trainer.models, which imports

@@ -7,7 +7,6 @@ from contextlib import nullcontext
 from datetime import timedelta
 
 from renderers.base import create_renderer
-from ring_flash_attn import substitute_hf_flash_attn
 from torch.nn import CrossEntropyLoss
 
 # Import environment before any other imports
@@ -131,6 +130,10 @@ def train(config: SFTConfig):
         cp_group = parallel_dims.world_mesh["cp"].get_group()
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
         if config.model.cp_style == "ring":
+            # Delayed import: ring_flash_attn imports flash_attn at module scope, which
+            # only the ring path needs.
+            from ring_flash_attn import substitute_hf_flash_attn
+
             substitute_hf_flash_attn(cp_group, heads_k_stride=1)
             substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
         else:
