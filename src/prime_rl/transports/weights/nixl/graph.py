@@ -253,6 +253,11 @@ class LazyWeight(torch.Tensor):
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
+        if func is torch.cat:
+            tensors = args[0] if args else kwargs["tensors"]
+            dim = args[1] if len(args) > 1 else kwargs.get("dim", 0)
+            return ConcatenatedLazyWeight(tuple(tensors), dim)
+
         if func is torch.Tensor.copy_:
             destination = args[0]
             source = args[1] if len(args) > 1 else kwargs.get("src")
@@ -301,12 +306,125 @@ class LazyWeight(torch.Tensor):
     @classmethod
     def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
-        for value in (*args, *kwargs.values()):
+        if func is torch.ops.aten.copy_.default:
+            destination, source = args[:2]
+            if isinstance(source, cls):
+                return source._record_copy(destination)
+
+        pending = [*args, *kwargs.values()]
+        while pending:
+            value = pending.pop()
             if isinstance(value, cls):
                 raise UnsupportedOpError(
                     f"unsupported operation {func} on {value._source_name!r}, recorded chain={value._ops!r}"
                 )
+            if isinstance(value, (tuple, list)):
+                pending.extend(value)
+            elif isinstance(value, dict):
+                pending.extend(value.values())
         return func(*args, **kwargs)
+
+
+class ConcatenatedLazyWeight(torch.Tensor):
+    """A lazy concatenation of independently transferable source views."""
+
+    @staticmethod
+    def __new__(cls, parts: tuple[LazyWeight, ...], dim: int) -> "ConcatenatedLazyWeight":
+        meta = torch.cat([part._meta() for part in parts], dim=dim)
+        value = torch.Tensor._make_wrapper_subclass(
+            cls,
+            meta.shape,
+            strides=meta.stride(),
+            storage_offset=meta.storage_offset(),
+            dtype=meta.dtype,
+            device=parts[0].device,
+            requires_grad=False,
+        )
+        value._parts = parts
+        value._dim = dim % meta.ndim
+        return value
+
+    def __repr__(self) -> str:
+        return f"ConcatenatedLazyWeight(parts={self._parts!r}, dim={self._dim})"
+
+    def _narrow(self, dim: int, start: int, length: int) -> LazyWeight | "ConcatenatedLazyWeight":
+        dim %= self.ndim
+        if dim != self._dim:
+            return ConcatenatedLazyWeight(tuple(part.narrow(dim, start, length) for part in self._parts), self._dim)
+
+        end = start + length
+        part_start = 0
+        narrowed_parts = []
+        for part in self._parts:
+            part_end = part_start + part.shape[dim]
+            overlap_start = max(start, part_start)
+            overlap_end = min(end, part_end)
+            if overlap_start < overlap_end:
+                narrowed_parts.append(part.narrow(dim, overlap_start - part_start, overlap_end - overlap_start))
+            part_start = part_end
+            if part_start >= end:
+                break
+
+        if len(narrowed_parts) == 1:
+            return narrowed_parts[0]
+        return ConcatenatedLazyWeight(tuple(narrowed_parts), dim)
+
+    def _chunk(self, chunks: int, dim: int) -> tuple[LazyWeight | "ConcatenatedLazyWeight", ...]:
+        dim %= self.ndim
+        meta_chunks = torch.empty(self.shape, device="meta").chunk(chunks, dim=dim)
+        start = 0
+        result = []
+        for chunk in meta_chunks:
+            length = chunk.shape[dim]
+            result.append(self._narrow(dim, start, length))
+            start += length
+        return tuple(result)
+
+    def _record_copy(self, destination: torch.Tensor) -> torch.Tensor:
+        if tuple(destination.shape) != tuple(self.shape):
+            raise UnsupportedOpError(
+                f"copy_ shape mismatch for lazy concatenation: {tuple(self.shape)} -> {tuple(destination.shape)}"
+            )
+
+        destination_offset = 0
+        for part in self._parts:
+            part_size = part.shape[self._dim]
+            part._record_copy(destination.narrow(self._dim, destination_offset, part_size))
+            destination_offset += part_size
+        return destination
+
+    @classmethod
+    def __torch_function__(cls, func, types, args=(), kwargs=None):
+        kwargs = kwargs or {}
+        if func is torch.Tensor.narrow:
+            source = args[0]
+            dim = args[1] if len(args) > 1 else kwargs["dim"]
+            start = args[2] if len(args) > 2 else kwargs["start"]
+            length = args[3] if len(args) > 3 else kwargs["length"]
+            return source._narrow(dim, start, length)
+
+        if func is torch.Tensor.chunk:
+            source = args[0]
+            chunks = args[1] if len(args) > 1 else kwargs["chunks"]
+            dim = args[2] if len(args) > 2 else kwargs.get("dim", 0)
+            return source._chunk(chunks, dim)
+
+        if func is torch.Tensor.copy_:
+            destination = args[0]
+            source = args[1] if len(args) > 1 else kwargs.get("src")
+            if isinstance(source, cls):
+                return source._record_copy(destination)
+
+        with torch._C.DisableTorchFunctionSubclass():
+            return func(*args, **kwargs)
+
+    @classmethod
+    def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
+        if func is torch.ops.aten.copy_.default:
+            destination, source = args[:2]
+            if isinstance(source, cls):
+                return source._record_copy(destination)
+        raise UnsupportedOpError(f"unsupported operation {func} on lazy concatenation")
 
 
 def make_hf_lazy_weights(

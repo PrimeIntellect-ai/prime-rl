@@ -459,7 +459,7 @@ class InferenceConfig(BaseConfig):
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
 
     enable_fp32_lm_head: bool = True
-    """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
+    """Run the lm_head projection in fp32 via vLLM's native ``head_dtype`` model setting. Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``."""
 
     enable_fp32_router_logits: bool = True
     """Emit fp32 MoE router logits: the bf16×bf16 gate GEMM writes its fp32 accumulator out unrounded instead of truncating logits to bf16 before expert scoring. Matches fp32-routed checkpoints (e.g. GLM-5.x, trained with Megatron ``--moe-router-dtype fp32``); pairs with ``trainer.model.moe_router_dtype = "float32"``. Implemented natively by vLLM, which reads ``moe_router_dtype`` off the HF config — this flag injects ``hf_overrides = {"moe_router_dtype": "float32"}`` (GLM-5.x gets fp32 routing regardless)."""
@@ -612,23 +612,20 @@ class InferenceConfig(BaseConfig):
         if "enable_prompt_tokens_details" not in extra_fields:
             namespace.enable_prompt_tokens_details = True
 
+        hf_overrides = getattr(namespace, "hf_overrides", None) or {}
+        if self.enable_fp32_lm_head:
+            hf_overrides.setdefault("head_dtype", "float32")
+
         # vLLM's DeepseekV2-family (and transformers-backend MoE) gates read
         # `moe_router_dtype` off the HF config to pick the router logits dtype.
         if self.enable_fp32_router_logits:
-            hf_overrides = getattr(namespace, "hf_overrides", None) or {}
             hf_overrides.setdefault("moe_router_dtype", "float32")
+
+        if hf_overrides:
             namespace.hf_overrides = hf_overrides
 
         kv_transfer_config = self.build_kv_transfer_config()
         if kv_transfer_config is not None:
             namespace.kv_transfer_config = kv_transfer_config
-
-        # Pass prime-rl-specific flags through vLLM's additional_config dict;
-        # workers read these via get_current_vllm_config().additional_config.
-        additional_config = getattr(namespace, "additional_config", None) or {}
-        if self.enable_fp32_lm_head:
-            additional_config["fp32_lm_head"] = True
-        if additional_config:
-            namespace.additional_config = additional_config
 
         return namespace

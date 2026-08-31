@@ -17,6 +17,89 @@ def apply_shared_vllm_patches():
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
+    monkey_patch_qwen4_ple_shard_weight_loader()
+
+
+def monkey_patch_qwen4_ple_shard_weight_loader():
+    """Route Qwen4 PLE checkpoint shards through the parameter loader.
+
+    Upstream: https://github.com/vllm-project/vllm/pull/53896#discussion_r3890620708
+    """
+    from types import MethodType
+
+    from vllm.models.qwen4_exp.common.ple import compute_ple_shard_overlap
+    from vllm.models.qwen4_exp.nvidia.ple_layer import Qwen4ExpNGramEmbedding
+
+    original_init = Qwen4ExpNGramEmbedding.__init__
+    original_load_weights = Qwen4ExpNGramEmbedding.load_weights
+    if getattr(original_load_weights, "_prime_rl_uses_ple_weight_loader", False):
+        return
+
+    def load_checkpoint_shard(embedding, param, loaded_weight, *, checkpoint_start):
+        overlap = compute_ple_shard_overlap(
+            checkpoint_start=checkpoint_start,
+            checkpoint_rows=loaded_weight.shape[0],
+            tp_start=embedding.shard_indices.org_vocab_start_index,
+            tp_end=embedding.shard_indices.org_vocab_end_index,
+        )
+        if overlap is None:
+            return 0
+
+        source = loaded_weight.narrow(0, overlap.source_start, overlap.row_count)
+        destination = param.data.narrow(0, overlap.destination_start, overlap.row_count)
+        destination.copy_(source)
+        return overlap.row_count
+
+    def __init__(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        embedding = self.ngram_embedding
+        embedding.weight.weight_loader = MethodType(load_checkpoint_shard, embedding)
+
+    def load_weights(self, weights):
+        loaded = set()
+        regular_weights = []
+        shard_prefix = "ngram_embedding.shard_"
+
+        for name, loaded_weight in weights:
+            if not (name.startswith(shard_prefix) and name.endswith(".weight")):
+                regular_weights.append((name, loaded_weight))
+                continue
+
+            shard_text = name[len(shard_prefix) : -len(".weight")]
+            if not shard_text.isdigit():
+                regular_weights.append((name, loaded_weight))
+                continue
+
+            shard_index = int(shard_text)
+            if shard_index >= self.split_ngram_parts:
+                raise ValueError(
+                    f"PLE embedding shard index {shard_index} exceeds split_ngram_parts={self.split_ngram_parts}"
+                )
+
+            embedding = self.ngram_embedding
+            shard_size = (embedding.org_vocab_size + self.split_ngram_parts - 1) // self.split_ngram_parts
+            checkpoint_start = shard_index * shard_size
+            expected_rows = max(0, min(shard_size, embedding.org_vocab_size - checkpoint_start))
+            expected_shape = (expected_rows, embedding.embedding_dim)
+            if tuple(loaded_weight.shape) != expected_shape:
+                raise ValueError(
+                    f"Shape mismatch for PLE embedding shard {shard_index}: "
+                    f"expected {expected_shape}, got {tuple(loaded_weight.shape)}"
+                )
+
+            embedding.weight.weight_loader(
+                embedding.weight,
+                loaded_weight,
+                checkpoint_start=checkpoint_start,
+            )
+            loaded.add("ngram_embedding.weight")
+
+        loaded.update(original_load_weights(self, regular_weights))
+        return loaded
+
+    load_weights._prime_rl_uses_ple_weight_loader = True
+    Qwen4ExpNGramEmbedding.__init__ = __init__
+    Qwen4ExpNGramEmbedding.load_weights = load_weights
 
 
 def monkey_patch_online_fp8_parameter_cast():
@@ -629,68 +712,6 @@ def monkey_patch_no_moe_lora():
         self.is_lora_enabled = False
 
     FusedMoEConfig.__post_init__ = _patched__post_init__
-
-
-def monkey_patch_fp32_lm_head():
-    """Run the lm_head projection in fp32, via a native bf16xbf16 -> fp32 GEMM.
-
-    Uses ``torch.mm(..., out_dtype=torch.float32)`` (PyTorch >= 2.10) so the
-    matmul accumulates and emits fp32 directly without zero-padding the bf16
-    operands or maintaining a separate fp32 weight copy. This avoids the
-    epilogue truncation to bf16 that `F.linear(bf16, bf16)` does, which is
-    where lm_head precision actually leaks before the sampler's softmax.
-
-    Activated by setting ``additional_config["fp32_lm_head"] = True`` on the
-    vLLM namespace; the launcher does this when ``inference.enable_fp32_lm_head``
-    is set. The flag is captured once on ``LogitsProcessor.__init__`` (where
-    vLLM guarantees a ``set_current_vllm_config()`` context) and stored on the
-    instance — reading it from ``_get_logits`` during serving doesn't work
-    because vLLM doesn't keep the context set during forwards.
-
-    Tracks vllm-project/vllm#24567 (which uses the operand-upcast approach).
-    Per @Jackmin801 on PR #2438, native ``out_dtype=fp32`` mm is more efficient
-    and just as correct.
-    """
-    import torch
-    from vllm.config import get_current_vllm_config
-    from vllm.logger import init_logger
-    from vllm.model_executor.layers.logits_processor import LogitsProcessor
-
-    logger = init_logger(__name__)
-
-    _original_init = LogitsProcessor.__init__
-    _original_get_logits = LogitsProcessor._get_logits
-
-    def _patched_init(self, *args, **kwargs):
-        _original_init(self, *args, **kwargs)
-        vllm_config = get_current_vllm_config()
-        additional_config = vllm_config.additional_config or {}
-        self._fp32_lm_head_enabled = additional_config.get("fp32_lm_head", False)
-        if self._fp32_lm_head_enabled:
-            logger.warning("fp32 lm_head ENABLED for this LogitsProcessor instance.")
-
-    def _patched_get_logits(self, hidden_states, lm_head, embedding_bias):
-        if not getattr(self, "_fp32_lm_head_enabled", False):
-            return _original_get_logits(self, hidden_states, lm_head, embedding_bias)
-
-        # Native bf16xbf16 -> fp32 GEMM. torch.mm requires 2D inputs; vLLM v1's
-        # generative path passes 2D [num_tokens, hidden_size] hidden_states, but
-        # flatten defensively in case some future caller passes 3D.
-        flat = hidden_states.reshape(-1, hidden_states.shape[-1])
-        logits = torch.mm(flat, lm_head.weight.t(), out_dtype=torch.float32)
-        if embedding_bias is not None:
-            logits = logits + embedding_bias.to(torch.float32)
-        if hidden_states.dim() > 2:
-            logits = logits.reshape(*hidden_states.shape[:-1], -1)
-
-        logits = self._gather_logits(logits)
-        if logits is not None:
-            logits = logits[..., : self.org_vocab_size]
-        return logits
-
-    LogitsProcessor.__init__ = _patched_init
-    LogitsProcessor._get_logits = _patched_get_logits
-    logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")
 
 
 def monkey_patch_dp_coordinator_startup_timeout():
