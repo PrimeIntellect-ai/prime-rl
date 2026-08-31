@@ -284,6 +284,7 @@ mamba-ssm = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
+vllm = { VLLM_USE_PRECOMPILED = "1", VLLM_PRECOMPILED_WHEEL_VARIANT = "cu130" }
 
 [[tool.uv.index]]
 name = "pytorch-cu130"
