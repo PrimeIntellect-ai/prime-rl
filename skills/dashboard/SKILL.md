@@ -78,6 +78,14 @@ for multi-agent traces and `highlight` entries shaped as `{node, quote,
 reason, field?}`. On `409`, tell the user to open the returned `url`; the stored
 command applies when the tab connects.
 
+The trace viewer's token-signal selector colors recorded tokens by advantage,
+logprob, trainer logprob, entropy, mismatch KL, IPO stable mask, loss mask, or
+content membership. The trainer-derived signals come from
+`<run>/trace_annotations/step_<N>/` (written by the RL trainer, joined onto
+traces at read time) and appear on `train` traces once the step's `STABLE`
+marker exists — reliably on the `effective` subset, whose ship step matches the
+trained step.
+
 ## Write a report only when asked
 
 Create a report only when the user explicitly asks for one. Otherwise answer

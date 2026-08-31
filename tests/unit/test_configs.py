@@ -356,9 +356,9 @@ def test_env_algo_overrides_top_level():
         )
 
 
-def test_trainer_enable_token_export_cli_flag():
-    assert not cli(TrainerConfig, args=[]).enable_token_export
-    assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
+def test_trainer_enable_trace_annotations_cli_flag():
+    assert cli(TrainerConfig, args=[]).enable_trace_annotations
+    assert not cli(TrainerConfig, args=["--no-enable-trace-annotations"]).enable_trace_annotations
 
 
 def test_single_node_auto_inference_ports_follow_server_port():

@@ -2277,20 +2277,55 @@ function alignedSignal(node, values) {
   return (i) => (index[i] == null ? null : values[index[i]]);
 }
 
-function renderTokenNode(node, signal, maxAbsAdv) {
+/* per-episode normalization constants for the token-signal overlays, plus the
+   run's IPO eps for the stable mask (server-stamped on annotated traces) */
+function episodeSignalScales(trace) {
+  let maxAbsAdv = 0, maxEntropy = 0, maxKl = 0;
+  for (const node of trace.nodes || []) {
+    for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
+    for (const h of node.entropies || []) if (h != null) maxEntropy = Math.max(maxEntropy, h);
+    const trainer = node.trainer_logprobs, inference = node.logprobs;
+    if (Array.isArray(trainer) && Array.isArray(inference) && trainer.length === inference.length)
+      for (let j = 0; j < trainer.length; j++) {
+        if (trainer[j] == null || inference[j] == null) continue;
+        const dlp = trainer[j] - inference[j];
+        maxKl = Math.max(maxKl, Math.exp(dlp) - dlp - 1);
+      }
+  }
+  return { maxAbsAdv, maxEntropy, maxKl, eps: trace.train_annotations?.eps ?? 0.1 };
+}
+
+function renderTokenNode(node, signal, scales) {
   const ids = node.token_ids || [];
   const strs = node.token_strs;
   const logprobAt = alignedSignal(node, node.logprobs);
   const advantageAt = alignedSignal(node, node.advantages);
+  const trainerLpAt = alignedSignal(node, node.trainer_logprobs);
+  const entropyAt = alignedSignal(node, node.entropies);
   const spans = ids.map((id, i) => {
     const text = strs?.[i] ?? ` ${id} `;
     const logprob = logprobAt(i), advantage = advantageAt(i);
+    const trainerLp = trainerLpAt(i), entropy = entropyAt(i);
+    const dlp = trainerLp != null && logprob != null ? trainerLp - logprob : null;
+    const kl = dlp != null ? Math.exp(dlp) - dlp - 1 : null;
+    const probDelta = dlp != null ? Math.exp(trainerLp) - Math.exp(logprob) : null;
     let bg = "";
-    if (signal === "advantage" && advantage != null && maxAbsAdv > 0) {
-      const alpha = Math.min(1, Math.abs(advantage) / maxAbsAdv) * 0.45;
+    if (signal === "advantage" && advantage != null && scales.maxAbsAdv > 0) {
+      const alpha = Math.min(1, Math.abs(advantage) / scales.maxAbsAdv) * 0.45;
       bg = `background:rgba(${advantage > 0 ? "182,255,60" : "255,69,57"},${alpha.toFixed(3)})`;
     } else if (signal === "logprob" && logprob != null) {
       bg = `background:rgba(183,166,250,${(Math.min(1, -logprob / 6) * 0.6).toFixed(3)})`;
+    } else if (signal === "trainer_logprob" && trainerLp != null) {
+      bg = `background:rgba(183,166,250,${(Math.min(1, -trainerLp / 6) * 0.6).toFixed(3)})`;
+    } else if (signal === "entropy" && entropy != null && scales.maxEntropy > 0) {
+      bg = `background:rgba(94,234,212,${(Math.min(1, entropy / scales.maxEntropy) * 0.5).toFixed(3)})`;
+    } else if (signal === "mismatch_kl" && kl != null && scales.maxKl > 0) {
+      bg = `background:rgba(255,69,57,${(Math.min(1, kl / scales.maxKl) * 0.55).toFixed(3)})`;
+    } else if (signal === "stable_mask" && probDelta != null) {
+      bg =
+        probDelta > scales.eps ? "background:rgba(255,69,57,0.35)"
+        : probDelta < -scales.eps ? "background:rgba(255,176,32,0.35)"
+        : "background:rgba(74,158,255,0.15)";
     } else if (signal === "mask" && node.mask?.[i]) {
       bg = "background:rgba(74,158,255,0.3)";
     } else if (signal === "is_content" && node.is_content?.[i]) {
@@ -2300,6 +2335,13 @@ function renderTokenNode(node, signal, maxAbsAdv) {
     if (signal === "advantage" && advantage != null) tip += ` adv=${fmtNum(advantage)}`;
     else if (signal === "logprob" && logprob != null)
       tip += ` lp=${logprob.toFixed(4)} (${(Math.exp(logprob) * 100).toFixed(1)}%)`;
+    else if (signal === "trainer_logprob" && trainerLp != null) {
+      tip += ` t-lp=${trainerLp.toFixed(4)} (${(Math.exp(trainerLp) * 100).toFixed(1)}%)`;
+      if (dlp != null) tip += ` Δlp=${dlp.toFixed(4)}`;
+    } else if (signal === "entropy" && entropy != null) tip += ` H=${entropy.toFixed(4)} nats`;
+    else if (signal === "mismatch_kl" && kl != null) tip += ` kl=${kl.toFixed(6)} ratio=${Math.exp(dlp).toFixed(4)}`;
+    else if (signal === "stable_mask" && probDelta != null)
+      tip += ` Δp=${probDelta.toFixed(4)} eps=${scales.eps} (${probDelta > scales.eps ? "masked high" : probDelta < -scales.eps ? "masked low" : "kept"})`;
     else if (signal === "mask") tip += ` mask=${node.mask?.[i] ?? "?"}`;
     else if (signal === "is_content") tip += ` content=${node.is_content?.[i] ?? "?"}`;
     return `<span class="tok" style="${bg}" data-tip="${esc(tip)}">${esc(text)}</span>`;
@@ -2406,10 +2448,8 @@ function renderedTokensHtml(trace, branches) {
   };
   const selected = currentBranchIdx === -1 ? rendered.all_nodes : rendered.paths?.[currentBranchIdx];
   if (signal && tokenCount) {
-    let maxAbsAdv = 0;
-    for (const node of trace.nodes || [])
-      for (const advantage of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(advantage));
-    const body = path.map((index) => renderTokenNode(trace.nodes[index], signal, maxAbsAdv)).join("");
+    const scales = episodeSignalScales(trace);
+    const body = path.map((index) => renderTokenNode(trace.nodes[index], signal, scales)).join("");
     return (
       `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
       `<span class="chip">${fmtCompact(tokenCount)} tokens</span>` +
@@ -2498,9 +2538,7 @@ function renderMessages(ep, trace, branches) {
   const concatenated = currentBranchIdx === -1;
   const toolsHtml = toolDefinitionsHtml(trace);
   const systemPosition = path.findIndex((idx) => trace.nodes[idx]?.message?.role === "system");
-  let maxAbsAdv = 0;
-  for (const node of trace.nodes || [])
-    for (const a of node.advantages || []) maxAbsAdv = Math.max(maxAbsAdv, Math.abs(a));
+  const scales = episodeSignalScales(trace);
   const indexedCalls = (trace.calls || []).map((call, index) => ({ call, index }));
   const callsByNode = new Map();
   for (const item of indexedCalls) {
@@ -2553,7 +2591,7 @@ function renderMessages(ep, trace, branches) {
     const marked = contentMarked || reasoningMarked;
     const body = contentMarked
       ? quoteMarkedHtml(text, contentMarks)
-      : signal && node.token_ids?.length ? renderTokenNode(node, signal, maxAbsAdv) : esc(text);
+      : signal && node.token_ids?.length ? renderTokenNode(node, signal, scales) : esc(text);
     const subs = [];
     if (reasoning) subs.push(reasoningBlock(reasoning, reasoningMarks));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
@@ -2713,6 +2751,18 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("is_completed", trace.is_completed));
     parts.push(metaRow("is_truncated", traceTruncated(trace)));
     parts.push(metaRow("ok", trace.ok));
+
+    const work = ep.run?.work;
+    const trainedAt = trace.info?.train?.trained_at_step;
+    const annotations = trace.train_annotations;
+    if (work || trainedAt != null || annotations) {
+      parts.push(`<div class="meta-sec">training</div>`);
+      if (work?.step != null) parts.push(metaRow("dispatched at step", work.step));
+      if (work?.policy) parts.push(metaRow("policy span", `v${work.policy.start}–v${work.policy.end}`));
+      if (trainedAt != null) parts.push(metaRow("trained at step", trainedAt));
+      if (annotations)
+        parts.push(metaRow("trainer annotations", `${annotations.nodes} nodes @ step ${annotations.step}`));
+    }
 
     const durations = [];
     (function walkTiming(obj, prefix) {

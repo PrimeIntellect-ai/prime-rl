@@ -649,6 +649,15 @@ class Orchestrator:
                 await self.version_advanced.wait()
             self.wait_for_policy_time += time.perf_counter() - hold_start
 
+        # Post-hoc run facts land on the trace via the shared update mechanism;
+        # dispatch identity (run id, dispatch step, policy span) already rides
+        # ``Episode.run``, so only the ship/train step is new here.
+        for record in effective.records:
+            vf.apply_trace_update(
+                record.trace,
+                vf.TraceUpdate(trace_id=record.trace.id, info={"train": {"trained_at_step": step}}),
+            )
+
         # The effective (clean, trained-on) subset is logged at ship time; the full arrival
         # window already streamed into the ``all`` cohort on arrival.
         await monitors.log(effective.vf_episodes, step, "train", "effective")

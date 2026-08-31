@@ -68,6 +68,7 @@ def _lru_put(cache: OrderedDict, key, value) -> None:
 # Append-only file caches keyed by absolute path: line-start offsets and per-episode summaries.
 _offsets_cache: OrderedDict[Path, tuple[int, bytes, list[int]]] = OrderedDict()
 _summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
+_annotations_cache: OrderedDict[Path, dict[str, dict[int, dict]]] = OrderedDict()
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
 _json_cache: dict[Path, tuple[tuple[int, float], dict]] = {}
@@ -856,6 +857,83 @@ def trace_branch_paths(nodes: list[dict]) -> list[list[int]]:
     return paths
 
 
+def load_step_annotations(run_dir: Path, step: int) -> dict[str, dict[int, dict]] | None:
+    """Trainer-written trace-update records for one step, indexed by trace id and
+    branch index. Only STABLE step dirs load; they are final, so entries cache."""
+    step_dir = run_dir / "trace_annotations" / f"step_{step}"
+    with _lock:
+        cached = _lru_get(_annotations_cache, step_dir)
+    if cached is not None:
+        return cached
+    if not (step_dir / "STABLE").exists():
+        return None
+    index: dict[str, dict[int, dict]] = {}
+    for rank_file in sorted(step_dir.glob("rank_*.jsonl")):
+        try:
+            lines = rank_file.read_bytes().splitlines()
+        except OSError:
+            continue
+        for raw in lines:
+            if not raw:
+                continue
+            try:
+                record = orjson.loads(raw)
+            except ValueError:
+                continue
+            trace_id = record.get("trace_id")
+            if not trace_id:
+                continue
+            for branch in record.get("branches") or []:
+                branch_index = branch.get("index")
+                if isinstance(branch_index, int):
+                    index.setdefault(trace_id, {})[branch_index] = branch
+    with _lock:
+        _lru_put(_annotations_cache, step_dir, index)
+    return index
+
+
+ANNOTATION_STREAMS = ("trainer_logprobs", "entropies")
+
+
+def stamp_trace_annotations(trace: dict, updates: dict[int, dict]) -> int:
+    """Project full-length branch streams onto node fields, compact over each node's
+    mask — the dict mirror of verifiers' `apply_trace_update`. A node is stamped only
+    when a stream fully covers it with non-null values at every sampled position, and
+    the first writer wins on nodes shared across branches. Returns stamped nodes."""
+    nodes = trace.get("nodes") or []
+    stamped: set[int] = set()
+    for branch_index, path in enumerate(trace_branch_paths(nodes)):
+        branch = updates.get(branch_index)
+        if not branch:
+            continue
+        for field in ANNOTATION_STREAMS:
+            stream = branch.get(field)
+            if not stream:
+                continue
+            cursor = 0
+            for node_index in path:
+                node = nodes[node_index]
+                token_ids = node.get("token_ids") or []
+                span = stream[cursor : cursor + len(token_ids)]
+                cursor += len(token_ids)
+                if len(span) < len(token_ids):
+                    break
+                values = [v for v, sampled in zip(span, node.get("mask") or []) if sampled]
+                if not values or any(v is None for v in values):
+                    continue
+                if node.get(field) is None:
+                    node[field] = values
+                    stamped.add(node_index)
+    return len(stamped)
+
+
+def ipo_eps(run_dir: Path) -> float:
+    """The run's IPO stable-mask threshold, for the frontend's stable-mask overlay."""
+    loss = read_json(resolved_config_dir(run_dir) / "trainer.json").get("loss") or {}
+    eps = loss.get("eps") if loss.get("type") == "ipo" else None
+    return eps if isinstance(eps, (int, float)) else 0.1
+
+
 def token_usage(usage: dict) -> tuple[int | None, int | None, int | None]:
     prompt_tokens = usage.get("prompt_tokens")
     output_tokens = usage.get("completion_tokens")
@@ -1267,9 +1345,18 @@ def get_episode(
 ) -> dict:
     path = traces_path(run, step, kind, subset)
     rec = read_episode_at(path, line)
+    run_dir = get_run_dir(run)
+    if kind == "train":
+        annotations = load_step_annotations(run_dir, step)
+        if annotations:
+            for trace in rec.get("traces") or []:
+                updates = annotations.get(trace.get("id") or "")
+                if updates:
+                    stamped = stamp_trace_annotations(trace, updates)
+                    trace["train_annotations"] = {"step": step, "eps": ipo_eps(run_dir), "nodes": stamped}
     if not tokens and not rendered:
         return rec
-    fallback_model = model_name(main_config(get_run_dir(run))[1])
+    fallback_model = model_name(main_config(run_dir)[1])
     for trace in rec.get("traces") or []:
         client = ((trace.get("agent") or {}).get("config") or {}).get("client") or {}
         model = client.get("renderer_model_name") or fallback_model

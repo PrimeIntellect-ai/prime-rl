@@ -455,6 +455,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         ce_weights=ce_weights,
         ref_kl_weights=ref_kl_weights,
         seq_lens=[len(input_ids)],
+        trace_ids=[training_example.trace_id or ""],
+        branch_indices=[training_example.branch_index if training_example.branch_index is not None else -1],
     )
 
 
@@ -555,6 +557,8 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
+    trace_ids: list[str] = []
+    branch_indices: list[int] = []
 
     for sample in bin_content.samples:
         sample_len = len(sample.input_ids)
@@ -592,6 +596,8 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
                     mm_kwargs[key].data += sample.mm_kwargs[key].data
                     mm_kwargs[key].shape[0] += sample.mm_kwargs[key].shape[0]
         seq_lens.extend(sample.seq_lens)
+        trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
+        branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
 
     sequence_lengths = [len(sample.input_ids) for sample in bin_content.samples]
     assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
@@ -614,6 +620,8 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         ce_weights=streams["ce_weights"],
         ref_kl_weights=streams["ref_kl_weights"],
         seq_lens=seq_lens,
+        trace_ids=trace_ids,
+        branch_indices=branch_indices,
     )
 
 
@@ -724,7 +732,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         micro_batch.ref_logprobs.extend([0.0] * padding_size)
     # Padding is loss-masked, so no component trains it; fill every stream
     # with 0.0 (not the pack-boundary defaults) so a padded pure-ce batch
-    # still reads as rl-empty in token export, which keys off nonzero weights.
+    # still reads as rl-empty to consumers that key off nonzero weights
+    # (e.g. the per-env mismatch metrics).
     for stream_name in STREAM_FILL:
         stream = getattr(micro_batch, stream_name)
         if stream is not None:
@@ -764,6 +773,12 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
     assert sum(micro_batch.sequence_lengths) == num_tokens, (
         f"sequence_lengths sum {sum(micro_batch.sequence_lengths)} != {num_tokens} tokens"
     )
+    num_sequences = len(micro_batch.sequence_lengths)
+    for name in ("trace_ids", "branch_indices"):
+        values = getattr(micro_batch, name)
+        assert values is None or len(values) == num_sequences, (
+            f"{name} misaligned after packing: {len(values)} != {num_sequences} sequences"
+        )
     assert sum(micro_batch.seq_lens) == num_tokens, f"seq_lens sum {sum(micro_batch.seq_lens)} != {num_tokens} tokens"
     if micro_batch.routed_experts is not None:
         assert micro_batch.routed_experts.shape[0] == num_tokens, (
@@ -781,6 +796,9 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.rl_weights = None
     dummy.ce_weights = None
     dummy.ref_kl_weights = None
+    # The copied identity would double-annotate the source's traces.
+    dummy.trace_ids = None
+    dummy.branch_indices = None
     return dummy
 
 

@@ -35,7 +35,7 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
-from prime_rl.trainer.rl.token_export import setup_token_exporter
+from prime_rl.trainer.rl.trace_annotations import setup_trace_annotation_writer
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
@@ -257,7 +257,7 @@ def train(config: TrainerConfig):
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
-    token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
+    trace_annotation_writer = setup_trace_annotation_writer(config, parallel_dims, world, logger)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -537,14 +537,7 @@ def train(config: TrainerConfig):
                 for env_name, indices in mismatch_env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
-            token_exporter.export(
-                progress.step,
-                micro_step,
-                micro_batch,
-                out,
-                sequence_lengths,
-                config.loss,
-            )
+            trace_annotation_writer.export(progress.step, micro_batch, out)
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
@@ -566,9 +559,9 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
-        if config.enable_token_export:
+        if config.enable_trace_annotations:
             dist.barrier()
-            token_exporter.mark_stable()
+            trace_annotation_writer.mark_stable()
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
@@ -731,7 +724,7 @@ def train(config: TrainerConfig):
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
 
-    token_exporter.close()
+    trace_annotation_writer.close()
 
     # Write final checkpoint
     if config.ckpt is not None:

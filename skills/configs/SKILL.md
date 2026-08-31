@@ -86,15 +86,11 @@ The `sft` entrypoint takes the same eval shape at the top level for online evals
 
 In TOML, an empty section header (`[ckpt]`) does the same.
 
-## RL trainer token exports
+## RL trainer trace annotations
 
-For rollout debugging, enable trainer-side token export with `trainer.enable_token_export = true` (or `--enable-token-export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence under `<run_dir>/token_exports/step_<step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, component weight streams (rl/ce/ref_kl), advantages, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.
+The RL trainer writes its per-token streams (recomputed logprobs, entropies) as trace-update JSONL under `<run_dir>/trace_annotations/step_<step>/rank_<rank>.jsonl`, one record per trained sequence keyed by `trace_id` and `branch_index`. A `STABLE` marker lands in each step directory once every rank has flushed. The dashboard joins these onto rollout traces at read time to power the trainer-logprob, entropy, mismatch-KL, and stable-mask token overlays. It does not decode token text in the trainer.
 
-```toml
-enable_token_export = true
-```
-
-Leave it unset for normal training. When enabled, it exports every sequence from each exporting rank.
+On by default; disable with `trainer.enable_trace_annotations = false` (or `--no-enable-trace-annotations` when running the trainer entrypoint directly).
 
 ## Key files
 
