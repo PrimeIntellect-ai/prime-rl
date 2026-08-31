@@ -5142,7 +5142,7 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pybase64" },
     { name = "pyzmq" },
-    { name = "renderers" },
+    { name = "renderers", extra = ["multimodal"] },
     { name = "rich" },
     { name = "setproctitle" },
     { name = "tenacity" },
@@ -5305,7 +5305,7 @@ requires-dist = [
     { name = "pybase64", specifier = ">=1.4.2" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "quack-kernels", marker = "sys_platform == 'linux' and extra == 'quack'", specifier = ">=0.4.1" },
-    { name = "renderers", editable = "deps/renderers" },
+    { name = "renderers", extras = ["multimodal"], editable = "deps/renderers" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.1.8" },
     { name = "setproctitle", specifier = ">=1.3.0" },
@@ -5363,7 +5363,7 @@ dependencies = [
 requires-dist = [
     { name = "prime-pydantic-config", specifier = ">=0.4.3" },
     { name = "pydantic", specifier = ">=1.10.13" },
-    { name = "renderers", specifier = ">=0.1.10" },
+    { name = "renderers", specifier = ">=0.1.11" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomli-w", specifier = ">=1.2.0" },
     { name = "verifiers", specifier = ">=0.3.0" },
@@ -6197,6 +6197,11 @@ dependencies = [
     { name = "openai-harmony" },
     { name = "prime-pydantic-config" },
     { name = "tiktoken" },
+]
+
+[package.optional-dependencies]
+multimodal = [
+    { name = "pillow" },
     { name = "transformers" },
 ]
 
@@ -6206,10 +6211,13 @@ requires-dist = [
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-harmony", specifier = ">=0.0.4" },
+    { name = "pillow", marker = "extra == 'multimodal'", specifier = ">=12.2.0" },
     { name = "prime-pydantic-config", specifier = ">=0.3.0.dev83" },
     { name = "tiktoken" },
-    { name = "transformers", specifier = ">=4.50.0" },
+    { name = "transformers", marker = "extra == 'multimodal'", specifier = ">=4.50.0" },
+    { name = "transformers", marker = "extra == 'transformers'", specifier = ">=4.50.0" },
 ]
+provides-extras = ["multimodal", "transformers"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -6220,6 +6228,7 @@ dev = [
     { name = "ruff" },
     { name = "torch", specifier = ">=2.11.0" },
     { name = "torchvision", specifier = ">=0.26.0" },
+    { name = "transformers", specifier = ">=4.50.0" },
     { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
 ]
 
