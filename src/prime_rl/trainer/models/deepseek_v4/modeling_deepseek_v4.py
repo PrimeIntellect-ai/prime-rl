@@ -13,7 +13,6 @@ from torch import Tensor, nn
 from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
-from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
@@ -81,25 +80,6 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
         )
 
 
-def _reset_rotary_inv_freq(rotary_emb: DeepseekV4RotaryEmbedding) -> None:
-    """Re-derive a rotary's per-rope-type inverse frequencies in place.
-
-    The tables are computed eagerly in `__init__` and registered non-persistently, so they
-    survive neither meta-device construction nor a `load_state_dict`. Re-deriving them is
-    cheap and idempotent.
-    """
-    for layer_type in rotary_emb.layer_types:
-        rope_type = rotary_emb.rope_type[layer_type]
-        rope_init_fn = rotary_emb.compute_default_rope_parameters
-        if rope_type != "default":
-            rope_init_fn = ROPE_INIT_FUNCTIONS[rope_type]
-        inv_freq_buffer = getattr(rotary_emb, f"{layer_type}_inv_freq")
-        inv_freq, attention_scaling = rope_init_fn(rotary_emb.config, inv_freq_buffer.device, layer_type=layer_type)
-        inv_freq_buffer.copy_(inv_freq)
-        getattr(rotary_emb, f"{layer_type}_original_inv_freq").copy_(inv_freq)
-        setattr(rotary_emb, f"{layer_type}_attention_scaling", attention_scaling)
-
-
 # Mirrors HF's `_keep_in_fp32_modules_strict`, with `e_score_correction_bias` renamed to
 # the `expert_bias` prime-rl's `MoE` keeps it under. The bare `norm` entry subsumes the
 # named norms; both are kept so the list stays a one-to-one image of HF's.
@@ -146,7 +126,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         elif isinstance(module, DeepseekV4MoE):
             module.init_weights(init_std, module.tokens_per_expert.device)
         elif isinstance(module, DeepseekV4RotaryEmbedding):
-            _reset_rotary_inv_freq(module)
+            module.init_buffers_post_meta()
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -192,7 +172,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         # populated it), so it must not be touched here.
         for module in self.modules():
             if isinstance(module, DeepseekV4RotaryEmbedding):
-                _reset_rotary_inv_freq(module)
+                module.init_buffers_post_meta()
             elif isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
                 module.tokens_per_expert.zero_()
 

@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import torch
 from torch import nn
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
@@ -65,14 +67,32 @@ class DeepseekV4RotaryEmbedding(nn.Module):
         self.layer_types = [name for name, params in config.rope_parameters.items() if isinstance(params, dict)]
         self.rope_type: dict[str, str] = {}
         for layer_type in self.layer_types:
-            rope_type = config.rope_parameters[layer_type]["rope_type"]
-            self.rope_type[layer_type] = rope_type
-            rope_init_fn = self.compute_default_rope_parameters
-            if rope_type != "default":
-                rope_init_fn = ROPE_INIT_FUNCTIONS[rope_type]
-            inv_freq, attention_scaling = rope_init_fn(config, device, layer_type=layer_type)
+            self.rope_type[layer_type] = config.rope_parameters[layer_type]["rope_type"]
+            inv_freq, attention_scaling = self._rope_init_fn(layer_type)(config, device, layer_type=layer_type)
             self.register_buffer(f"{layer_type}_inv_freq", inv_freq, persistent=False)
             self.register_buffer(f"{layer_type}_original_inv_freq", inv_freq.clone(), persistent=False)
+            setattr(self, f"{layer_type}_attention_scaling", attention_scaling)
+
+    def _rope_init_fn(self, layer_type: str) -> Callable[..., tuple[torch.Tensor, float]]:
+        rope_type = self.rope_type[layer_type]
+        if rope_type == "default":
+            return self.compute_default_rope_parameters
+        return ROPE_INIT_FUNCTIONS[rope_type]
+
+    def init_buffers_post_meta(self) -> None:
+        """Re-derive the per-rope-type inverse frequencies in place.
+
+        The tables are computed eagerly in `__init__` and registered non-persistently, so they
+        survive neither meta-device construction nor a `load_state_dict`. Re-deriving them is
+        cheap and idempotent.
+        """
+        for layer_type in self.layer_types:
+            inv_freq_buffer = getattr(self, f"{layer_type}_inv_freq")
+            inv_freq, attention_scaling = self._rope_init_fn(layer_type)(
+                self.config, inv_freq_buffer.device, layer_type=layer_type
+            )
+            inv_freq_buffer.copy_(inv_freq)
+            getattr(self, f"{layer_type}_original_inv_freq").copy_(inv_freq)
             setattr(self, f"{layer_type}_attention_scaling", attention_scaling)
 
     @staticmethod
