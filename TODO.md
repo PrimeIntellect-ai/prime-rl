@@ -293,9 +293,16 @@ config values. None of these are visible from the test suite; all of them are on
   What was genuinely missing on the prime-rl side was the parser mapping: `utils/parsers.py` had
   patterns for DeepSeek V3.1/V3.2 but none for V4, so `tool_call_parser` and `reasoning_parser`
   resolved `"auto" -> None` and were dropped before reaching vLLM, leaving `<think>` content
-  unsplit from `content`. Fixed. `scripts/mini_moe.py` still writes a plain template into the mini
-  checkpoint; whether the mini checkpoint carries what `DeepseekV4Tokenizer` needs has not been
-  checked, so that workaround is left in place.
+  unsplit from `content`. Fixed. The mini checkpoint needs no template either, for the same reason
+  the real one does not: it saves `architectures: ["DeepseekV4ForCausalLM"]`, so vLLM picks the
+  same renderer. `scripts/mini_moe.py` no longer writes one. The one component that did read a
+  Jinja template is prime-rl's own client-side renderer, since `train_client_type="renderer"`
+  means rollouts are tokenized locally and `[orchestrator.renderer] name = "default"` resolves to
+  `DefaultRenderer`, which calls `tokenizer.apply_chat_template`. No config knob can fix that: the
+  renderer pool builds its tokenizer with `load_tokenizer(path)`, which takes no template
+  argument. It needs a `deepseek-v4` renderer in `deps/renderers`, wrapping DeepSeek's own
+  `encode_messages`; both `rl.toml` and `rl-mini-smoke.toml` still pin `name = "default"` until
+  then.
 - **NCCL weight broadcast breaks with `data_parallel_size > 1`.** With two DP replicas the
   orchestrator logs `inference_world_size=1, gpus_per_server=1` and only DP rank 0 gets a
   receiver installed, so the collective RPC reaches DP1 and fails with `'Worker' object has no

@@ -62,6 +62,8 @@ class DeepseekV4Config(PretrainedConfig):
         n_routed_experts: Total number of routed experts.
         n_shared_experts: Number of always-on shared experts.
         scoring_func: Router activation, one of `sqrtsoftplus`, `softmax`, `sigmoid`.
+        topk_method: Router top-k selection. Only `noaux_tc` (aux-loss-free bias correction) is
+            implemented; the field is carried because vLLM gates `e_score_correction_bias` on it.
         norm_topk_prob: Whether to renormalize the top-k routing probabilities.
         routed_scaling_factor: Scaling factor applied to the routed expert output.
         num_hash_layers: Number of leading hash-routed layers; the remaining layers use
@@ -127,6 +129,7 @@ class DeepseekV4Config(PretrainedConfig):
         n_routed_experts: int = 256,
         n_shared_experts: int = 1,
         scoring_func: str = "sqrtsoftplus",
+        topk_method: str = "noaux_tc",
         norm_topk_prob: bool = True,
         routed_scaling_factor: float = 1.5,
         num_hash_layers: int = 3,
@@ -211,6 +214,7 @@ class DeepseekV4Config(PretrainedConfig):
         self.n_routed_experts = n_routed_experts
         self.n_shared_experts = n_shared_experts
         self.scoring_func = scoring_func
+        self.topk_method = topk_method
         self.norm_topk_prob = norm_topk_prob
         self.routed_scaling_factor = routed_scaling_factor
         self.num_hash_layers = num_hash_layers

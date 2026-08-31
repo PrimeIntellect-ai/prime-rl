@@ -10,6 +10,9 @@ The parity half of these checks, which needs HF's own DeepSeek V4 implementation
 lives in `test_deepseek_v4_temp_hf.py`.
 """
 
+import json
+from types import SimpleNamespace
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -451,6 +454,69 @@ def test_moe_init_weights():
     for name, param in module.named_parameters():
         assert param.std().item() == pytest.approx(expected_std[name], rel=0.15), name
     assert (module.expert_bias == 0).all()
+
+
+def test_config_serializes_topk_method():
+    """The saved `config.json` has to carry `topk_method`, which is what vLLM gates the
+    `e_score_correction_bias` parameter on (see the test below). An explicit value must win."""
+    assert json.loads(DeepseekV4Config().to_json_string())["topk_method"] == "noaux_tc"
+    assert json.loads(DeepseekV4Config(topk_method="greedy").to_json_string())["topk_method"] == "greedy"
+
+
+_VLLM_MOE_HF_CONFIG = dict(
+    hidden_size=64,
+    n_routed_experts=8,
+    num_experts_per_tok=2,
+    moe_intermediate_size=32,
+    swiglu_limit=7.0,
+    norm_topk_prob=True,
+    scoring_func="sqrtsoftplus",
+    num_hash_layers=2,
+    n_shared_experts=None,
+    hidden_act="silu",
+    vocab_size=128,
+    routed_scaling_factor=1.0,
+)
+
+
+def _vllm_gate_bias(layer_idx: int, topk_method: str | None, port: int) -> torch.Tensor | None:
+    """Build vLLM's own DeepSeek V4 MoE and return its `gate.e_score_correction_bias`.
+
+    `model_config` is the only stub; `parallel_config`, `kernel_config` and `quant_config` come
+    off a real `VllmConfig`. `prefix` has to be unique per call: vLLM registers MoE layers in a
+    process-global table and raises on a repeated name.
+    """
+    from vllm.config import VllmConfig, set_current_vllm_config
+    from vllm.distributed import ensure_model_parallel_initialized, init_distributed_environment
+    from vllm.models.deepseek_v4.nvidia.model import DeepseekV4MoE
+
+    init_distributed_environment(world_size=1, rank=0, distributed_init_method=f"tcp://127.0.0.1:{port}", local_rank=0)
+    vllm_config = VllmConfig()
+    with set_current_vllm_config(vllm_config):
+        ensure_model_parallel_initialized(1, 1)
+        extra = {} if topk_method is None else {"topk_method": topk_method}
+        hf_config = SimpleNamespace(**_VLLM_MOE_HF_CONFIG, **extra)
+        vllm_config.model_config = SimpleNamespace(hf_config=hf_config, dtype=torch.bfloat16)
+        moe = DeepseekV4MoE(vllm_config=vllm_config, prefix=f"model.layers.{layer_idx}.ffn")
+    return moe.gate.e_score_correction_bias
+
+
+@pytest.mark.parametrize(
+    ("layer_idx", "topk_method", "builds_bias"),
+    [(2, "noaux_tc", True), (3, None, False), (4, "greedy", False), (0, "noaux_tc", False)],
+    ids=["noaux_tc", "absent", "other_method", "hash_layer"],
+)
+def test_vllm_builds_e_score_correction_bias_only_for_noaux_tc(layer_idx, topk_method, builds_bias, free_port):
+    """Why the config has to declare `topk_method`. HF's router writes
+    `gate.e_score_correction_bias` unconditionally, so it always lands on disk, but vLLM only
+    builds the destination parameter for `noaux_tc` on a non-hash layer. With the field missing
+    from `config.json` the saved weight has nowhere to load."""
+    bias = _vllm_gate_bias(layer_idx, topk_method, free_port)
+    if builds_bias:
+        assert isinstance(bias, nn.Parameter)
+        assert bias.shape == (_VLLM_MOE_HF_CONFIG["n_routed_experts"],)
+    else:
+        assert bias is None
 
 
 def test_hash_moe_routes_by_token_id_not_by_score():

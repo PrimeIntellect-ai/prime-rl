@@ -23,6 +23,7 @@ import argparse
 from pathlib import Path
 
 import torch
+from safetensors.torch import load_file, save_file
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers import DeepseekV4ForCausalLM as HFDeepseekV4ForCausalLM
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
@@ -307,53 +308,13 @@ def create(arch: str, output_dir: Path) -> None:
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
     if arch == "deepseek_v4":
-        _fixup_deepseek_v4_checkpoint(output_dir)
+        # `save_pretrained` writes four key families under names a real DeepSeek V4 checkpoint
+        # does not use; see `to_on_disk_naming`. vLLM's `hf_to_vllm_mapper` assumes the real
+        # format (`KeyError: 'hc_head.hc_base'` otherwise) and this repo's `conversion_chain`
+        # targets it too.
+        path = output_dir / "model.safetensors"
+        save_file(to_on_disk_naming(load_file(path)), path, metadata={"format": "pt"})
     print(f"  Saved to {output_dir}")
-
-
-def _fixup_deepseek_v4_checkpoint(output_dir: Path) -> None:
-    """Bring a locally saved DeepSeek V4 checkpoint in line with the real on-disk format.
-
-    Two separate gaps in what `save_pretrained` leaves behind. The key naming is corrected by
-    `to_on_disk_naming` (see its docstring for what transformers gets wrong and how that was
-    established); vLLM's own `hf_to_vllm_mapper` assumes the real format and fails with
-    `KeyError: 'hc_head.hc_base'` otherwise, and this repo's own `conversion_chain` targets the
-    real format too. The config needs a `topk_method` backfill, below.
-    """
-    import json
-
-    from safetensors.torch import load_file, save_file
-
-    path = output_dir / "model.safetensors"
-    save_file(to_on_disk_naming(load_file(path)), path, metadata={"format": "pt"})
-
-    # `deepseek-ai/DeepSeek-V4-Flash-0731` ships no chat template: no `chat_template.jinja` in
-    # the repo and no `chat_template` key in its tokenizer config. prime-rl's environments call
-    # the chat completions endpoint, and the router renders the template itself from the model
-    # directory (it takes no template argument), so without one in the checkpoint every rollout
-    # comes back 502 and the run dies reporting "10 consecutive zero-output batch equivalents".
-    # Deliberately plain: this only has to make the loop runnable on an untrained checkpoint,
-    # and inventing a template for a *real* checkpoint would degrade quality silently.
-    tokenizer_config_path = output_dir / "tokenizer_config.json"
-    tokenizer_config = json.loads(tokenizer_config_path.read_text())
-    tokenizer_config.setdefault(
-        "chat_template",
-        "{% for message in messages %}{{ message['role'] }}: {{ message['content'] }}\n"
-        "{% endfor %}{% if add_generation_prompt %}assistant:{% endif %}",
-    )
-    tokenizer_config_path.write_text(json.dumps(tokenizer_config, indent=2))
-
-    # `topk_method` is a real DeepSeek V4 config field (the real checkpoint sets it to
-    # "noaux_tc") that this repo's `DeepseekV4Config` doesn't model at all -- prime-rl's own
-    # `DeepseekV4MoE` always behaves as if it were "noaux_tc" (always builds the aux-loss-free
-    # `expert_bias` for non-hash layers), but never persists the field, so external consumers
-    # like vLLM that gate `e_score_correction_bias` construction on it see it as absent and
-    # skip building the parameter entirely. Backfill it so the saved config matches what the
-    # real checkpoint (and vLLM) expect.
-    config_path = output_dir / "config.json"
-    config = json.loads(config_path.read_text())
-    config.setdefault("topk_method", "noaux_tc")
-    config_path.write_text(json.dumps(config, indent=2))
 
 
 def verify(arch: str, model_dir: Path) -> None:
