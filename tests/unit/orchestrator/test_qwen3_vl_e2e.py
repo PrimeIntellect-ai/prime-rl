@@ -53,6 +53,7 @@ class _FakeOpenAI:
         payload = {
             "request_id": "qwen-vl-e2e",
             "prompt_token_ids": prompt_ids,
+            "mm_placeholders": {"image": [{"offset": pad_index, "length": 4}]},
             "choices": [
                 {
                     "index": 0,
@@ -119,4 +120,5 @@ def test_generate_qwen3_vl_sends_raw_content_and_uses_expanded_prompt_ids():
     assert body["token_ids"].count(image_pad_id) == 1
     assert result["renderer_prompt_ids"] == body["token_ids"]
     assert result["prompt_ids"].count(image_pad_id) == 4
+    assert result["mm_placeholders"] == {"image": [{"offset": body["token_ids"].index(image_pad_id), "length": 4}]}
     assert result["completion_ids"] == [50, 60, 151645]
