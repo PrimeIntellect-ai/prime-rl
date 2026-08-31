@@ -32,6 +32,8 @@ dependencies = [
     "orjson>=3.10",
     "pandas>=2.0",
     "msgspec>=0.18",
+    "aiohttp>=3.14.3",
+    "hillclimb-static-rewards",
 ]
 
 [project.scripts]
@@ -229,7 +231,7 @@ torchao = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/downlo
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
 vllm-router = [
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { path = "/shared/parker/prime-rl-outputs/.artifacts/vllm-router/2cae1ab/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 vllm = [
@@ -251,6 +253,7 @@ prime-kernels = [
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 flash_attn_3 = { index = "pytorch-cu128-test" }
+hillclimb-static-rewards = { path = "/shared/parker/run-deps/prime-envs-private-hillclimb-reward-modes-63fcb252/environments/hillclimb", editable = true }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
