@@ -14,7 +14,7 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
@@ -118,6 +118,14 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     _supports_attention_backend = True
     _can_record_outputs = {"hidden_states": DeepseekV4DecoderLayer}
     _keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]
+
+    @classmethod
+    def cp_support(cls, config) -> CPSupport:
+        return CPSupport(
+            frozenset(),
+            "its sliding window is a dense local mask built from post-shard document boundaries, "
+            "which CP's global (pre-shard) boundaries cannot address",
+        )
 
     def _init_weights(self, module: nn.Module) -> None:
         super()._init_weights(module)
