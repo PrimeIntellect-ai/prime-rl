@@ -23,7 +23,6 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_rope_disable_yarn_on_sliding_layers()
     monkey_patch_deepseek_v4_hc_prenorm_gemm_fallback()
     monkey_patch_deepseek_v4_bf16_o_proj()
-    monkey_patch_cutedsl_fmax_result_type()
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -339,61 +338,6 @@ def monkey_patch_deepseek_v4_hc_prenorm_gemm_fallback():
 
     _patched_prenorm_gemm._prime_rl_has_torch_fallback = True
     vllm_deep_gemm.tf32_hc_prenorm_gemm = _patched_prenorm_gemm
-
-
-def monkey_patch_cutedsl_fmax_result_type():
-    """Pass the missing result type to NVVM's ``fmax`` builder.
-
-    ``vllm/vllm_flash_attn/cute/utils.py:352`` calls
-    ``nvvm.fmax(a, b, c=...)``, but the installed ``nvidia_cutlass_dsl`` (4.5.2)
-    declares that MLIR op builder as ``fmax(res, a, b, *, c=None, ...)``, taking
-    the result type first. The positional arguments therefore shift by one and the
-    call dies while the kernel is being traced:
-
-        TypeError: fmax() missing 1 required positional argument: 'b'
-
-    This is a plain version skew between vLLM 0.26.0 and the CuTeDSL package it
-    resolves to, not anything model- or hardware-specific. DeepSeek V4 reaches it
-    through the CuTeDSL Lightning Indexer
-    (``fused_indexer_q_cutedsl.py:520``), which is taken whenever
-    ``has_cutedsl()`` is true, i.e. whenever the ``cutlass`` package is importable
-    at all. Since that package ships in this repo's environment, any hardware
-    running DeepSeek V4 through vLLM here hits this, including the cluster.
-
-    Note ``vllm.utils.import_utils.has_cutedsl`` is the escape hatch if further
-    CuTeDSL skew turns up: every DeepSeek V4 CuTeDSL entry point is gated on it
-    (``fused_indexer_q.py:353,410``, ``cache_utils.py:403``,
-    ``sparse_attn_indexer.py:57``) and falls back to a maintained Triton kernel,
-    so forcing it False trades throughput for avoiding the CuTeDSL path entirely.
-    Fixing the one broken signature is preferred: it keeps vLLM's intended kernels.
-
-    Importing ``vllm.vllm_flash_attn.cute.utils`` here costs about a second of
-    process startup, which this file's DeepSeek V4 patches already dwarf (they
-    import the full DeepSeek V4 model module, about five seconds).
-    """
-    from cutlass import Float32
-    from cutlass._mlir.dialects import nvvm
-    from cutlass.cutlass_dsl import T, dsl_user_op
-    from vllm.vllm_flash_attn.cute import utils as cute_utils
-
-    if getattr(cute_utils.fmax, "_prime_rl_passes_result_type", False):
-        return
-
-    @dsl_user_op
-    def _fmax(a, b, c=None, *, loc=None, ip=None):
-        return Float32(
-            nvvm.fmax(
-                T.f32(),
-                Float32(a).ir_value(loc=loc, ip=ip),
-                Float32(b).ir_value(loc=loc, ip=ip),
-                c=Float32(c).ir_value(loc=loc, ip=ip) if c is not None else None,
-                loc=loc,
-                ip=ip,
-            )
-        )
-
-    _fmax._prime_rl_passes_result_type = True
-    cute_utils.fmax = _fmax
 
 
 def monkey_patch_deepseek_v4_bf16_o_proj():

@@ -239,15 +239,6 @@ config values. None of these are visible from the test suite; all of them are on
   checkpoint, so they would fail at weight load. Needs an fp8-plus-block-scales to bf16
   dequantizing load path; `trainer/models/glm_moe_dsa/converting_glm_moe_dsa.py` is the nearest
   precedent but goes the other direction (bf16 to fp8, for weight transfer).
-- **vLLM's CuTeDSL `fmax` wrapper is broken against the pinned `nvidia_cutlass_dsl`.**
-  `vllm/vllm_flash_attn/cute/utils.py:352` calls `nvvm.fmax(a, b, c=...)`; version 4.5.2 declares
-  that MLIR builder as `fmax(res, a, b, ...)`, so the arguments shift and tracing the CuTeDSL
-  Lightning Indexer dies with `TypeError: fmax() missing 1 required positional argument: 'b'`.
-  Hardware-independent version skew, reached whenever the `cutlass` package is importable, which
-  it is here. Worked around by `monkey_patch_cutedsl_fmax_result_type()` in
-  `inference/patches.py`; the escape hatch if more skew appears is
-  `vllm.utils.import_utils.has_cutedsl`, since every DeepSeek V4 CuTeDSL entry point is gated on
-  it and falls back to Triton.
 - **`--use-deep-gemm` is mandatory, not an optimization, at least on SM120.**
   `InferenceConfig.use_deep_gemm` defaults to False, which sets `VLLM_USE_DEEP_GEMM=0`, which
   makes `is_deep_gemm_supported()` False, which makes `mhc_pre_tilelang` take
@@ -435,28 +426,27 @@ and a `kl-check.toml` run, and is worth doing before trusting any KL number. If 
 lever already exists: `MoE.forward` accepts `routed_experts`, so a served rollout's routing
 decisions can be replayed rather than recomputed.
 
-## The pinned `deep_gemm` wheel is built against CUDA 13, the rest of the stack is CUDA 12
+## The pinned `deep_gemm` wheel now loads, so its missing SM120 kernels are live
 
-`pyproject.toml:243` pins prime-rl's own `deep_gemm-2.5.0+891d57b` wheel, whose `_C` extension
-declares `NEEDED libcudart.so.13` and `libnvrtc.so.13` (checked with `readelf -d`), while
-`pyproject.toml:236` pins `vllm-0.26.0+cu129` and torch is CUDA 12.x. On any CUDA 12 box a plain
-`uv sync --all-extras` therefore yields a `deep_gemm` that cannot import:
+This entry used to say the pinned `deep_gemm-2.5.0+891d57b` wheel could not import: its `_C`
+extension declares `NEEDED libcudart.so.13` and `libnvrtc.so.13` while the stack was CUDA 12, so
+`uv sync --all-extras` produced a `deep_gemm` that raised
+`ImportError: libcudart.so.13: cannot open shared object file`. vLLM noticed and silently fell back
+to its vendored `vllm.third_party.deep_gemm`, which made the pin dead weight.
 
-```
-ImportError: libcudart.so.13: cannot open shared object file: No such file or directory
-```
+PR #3425 moved the whole stack to CUDA 13, and the conclusion inverts rather than going away.
+Verified on this branch: `import deep_gemm` now succeeds from site-packages, version 2.5.0. So the
+pinned wheel is what every FP8 kernel path actually runs on now, not the vendored copy, which
+affects `InferenceConfig.use_deep_gemm`, the `examples/advanced/glm-5.2/` GLM-5-FP8 configs, and
+`[trainer.model.quantization] type = "fp8"`.
 
-vLLM notices and silently falls back to its own vendored copy ("deep_gemm not found in
-site-packages, trying vendored vllm.third_party.deep_gemm"), so nothing breaks loudly, but the
-pinned wheel is dead weight and every FP8 kernel path in this repo quietly runs on the vendored
-build instead of the pinned one: `InferenceConfig.use_deep_gemm`, the
-`examples/advanced/glm-5.2/` GLM-5-FP8 configs, and `[trainer.model.quantization] type = "fp8"`
-with `enable_grouped_gemm`. Worth deciding deliberately: either build the wheel against CUDA 12,
-add the CUDA 13 runtime as a dependency alongside it, or drop the pin and rely on the vendored
-copy. Note that forcing the pinned build to load (by putting a CUDA 13 runtime on
-`LD_LIBRARY_PATH`) is actively worse on Blackwell consumer parts: that build has no SM120
+That makes the warning this entry used to bury the live concern. The pinned build has no SM120
 kernels for the block-scaled FP8 GEMMs, the UE8M0 scale-layout transform, the hyper-connection
-GEMM, or the paged MQA logits, all of which the vendored copy handles.
+GEMM, or the paged MQA logits, all of which the vendored copy handles. It was previously
+unreachable so it did not matter; now, on Blackwell consumer parts, the pin is the thing that gets
+loaded. Irrelevant on H100/H200 (SM90), where these tests ran. Worth deciding deliberately before
+anyone runs this on SM120: either build the wheel with SM120 kernels, or drop the pin and let vLLM
+use its vendored copy.
 
 ## `convert_rope_params_to_dict` overrides are dead code
 

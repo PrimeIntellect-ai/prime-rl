@@ -211,7 +211,7 @@ def test_deepseek_v4_on_disk_keys_map_to_the_names_vllm_expects():
     instantiating vLLM's model; `examples/advanced/deepseek-v4-flash/kl-check.toml` is what
     covers that end to end.
 
-    `_make_deepseek_v4_weights_mapper` is private API in a URL-pinned wheel (`vllm==0.26.0+cu129`).
+    `_make_deepseek_v4_weights_mapper` is private API in a URL-pinned wheel (`vllm==0.28.0`).
     Imported inside the test because importing vLLM at module scope would run during collection,
     including in the CPU CI job that deselects this file.
     """
