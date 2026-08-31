@@ -1609,12 +1609,14 @@ version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/tool_use/enterprise_ops_gym" }
 dependencies = [
     { name = "datasets" },
+    { name = "mcp" },
     { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
+    { name = "mcp", specifier = ">=2,<3" },
     { name = "verifiers", specifier = ">=0.3.0" },
 ]
 
@@ -3550,6 +3552,7 @@ source = { editable = "deps/prime-envs/environments/tool_use/mcp_atlas" }
 dependencies = [
     { name = "datasets" },
     { name = "httpx" },
+    { name = "mcp" },
     { name = "prime-sandboxes" },
     { name = "verifiers" },
 ]
@@ -3558,6 +3561,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "httpx" },
+    { name = "mcp", specifier = ">=2,<3" },
     { name = "prime-sandboxes", specifier = ">=0.2.37" },
     { name = "verifiers", specifier = ">=0.3.0" },
 ]
