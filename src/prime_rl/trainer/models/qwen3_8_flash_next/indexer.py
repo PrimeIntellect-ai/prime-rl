@@ -1,3 +1,4 @@
+import prime_kernels
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -6,9 +7,6 @@ from torch.distributed import ProcessGroup
 from prime_rl.trainer.models.qwen3_8_flash_next.norm import RMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import apply_rotary_embedding
 from prime_rl.utils.cp import gather_for_cp
-
-# Caps the FP32 score workspace at 128 MiB for a 262K-token sequence.
-INDEXER_QUERY_CHUNK_SIZE = 512
 
 
 class SparseAttentionIndexer(nn.Module):
@@ -49,54 +47,6 @@ class SparseAttentionIndexer(nn.Module):
     def output_width(self) -> int:
         return self.token_budget + self.compression_ratio - 1
 
-    def select_blocks(
-        self,
-        query: torch.Tensor,
-        compressed_key: torch.Tensor,
-        sequence_block_start: torch.Tensor,
-        causal_block_end: torch.Tensor,
-    ) -> torch.Tensor:
-        num_blocks = compressed_key.shape[0]
-        if num_blocks == 0:
-            return torch.zeros(
-                query.shape[0],
-                self.block_budget,
-                dtype=torch.int32,
-                device=query.device,
-            )
-
-        selected_chunks: list[torch.Tensor] = []
-        key = compressed_key.float().transpose(0, 1)
-        block_indices = torch.arange(num_blocks, device=query.device)
-        for query_chunk, block_start, block_end in zip(
-            query.split(INDEXER_QUERY_CHUNK_SIZE),
-            sequence_block_start.split(INDEXER_QUERY_CHUNK_SIZE),
-            causal_block_end.split(INDEXER_QUERY_CHUNK_SIZE),
-            strict=True,
-        ):
-            scores = torch.zeros(
-                query_chunk.shape[0],
-                num_blocks,
-                dtype=torch.float32,
-                device=query.device,
-            )
-            for query_head in query_chunk.unbind(dim=1):
-                scores.add_(torch.matmul(query_head.float(), key).relu())
-            # The usual head-dimension scale is constant and does not affect top-k selection.
-            visible = (block_indices >= block_start[:, None]) & (block_indices < block_end[:, None])
-            scores = scores.masked_fill(~visible, -torch.inf)
-
-            topk = min(self.block_budget, num_blocks)
-            selected = scores.topk(topk, dim=-1).indices
-            if topk < self.block_budget:
-                selected = F.pad(selected, (0, self.block_budget - topk), value=num_blocks)
-            selected = selected.masked_fill(
-                (selected < block_start[:, None]) | (selected >= block_end[:, None]),
-                num_blocks,
-            )
-            selected_chunks.append(selected.to(torch.int32))
-        return torch.cat(selected_chunks)
-
     @torch.no_grad()
     def forward(
         self,
@@ -128,10 +78,19 @@ class SparseAttentionIndexer(nn.Module):
         all_sequence_indices = torch.searchsorted(cu_seqlens[1:], token_indices, right=True)
         all_sequence_ends = cu_seqlens[1:][all_sequence_indices]
         all_sequence_positions = token_indices - cu_seqlens[:-1][all_sequence_indices]
-        block_start_tokens = token_indices[
-            (all_sequence_positions.remainder(self.compression_ratio) == 0)
-            & (token_indices + self.compression_ratio <= all_sequence_ends)
-        ].long()
+        is_block_start = (all_sequence_positions.remainder(self.compression_ratio) == 0) & (
+            token_indices + self.compression_ratio <= all_sequence_ends
+        )
+        max_blocks = total_tokens // self.compression_ratio
+        block_slots = is_block_start.cumsum(0) - 1
+        block_slots = block_slots.masked_fill(~is_block_start, max_blocks)
+        block_start_tokens = torch.zeros(
+            max_blocks + 1,
+            dtype=torch.long,
+            device=hidden_states.device,
+        )
+        block_start_tokens.scatter_(0, block_slots.long(), token_indices.long())
+        block_start_tokens = block_start_tokens[:-1]
         offsets = torch.arange(self.compression_ratio, device=hidden_states.device)
         compressed_key = raw_key[block_start_tokens[:, None] + offsets].float().mean(dim=1).to(raw_key.dtype)
         compressed_key = self.k_layernorm(compressed_key).unsqueeze(1)
@@ -158,11 +117,13 @@ class SparseAttentionIndexer(nn.Module):
             self.compression_ratio,
             rounding_mode="floor",
         )
-        selected_blocks = self.select_blocks(
+        kernel = prime_kernels.load("indexed_attention")
+        selected_blocks = kernel.select_indexed_blocks(
             query,
             compressed_key,
-            sequence_block_start,
-            causal_block_end,
+            sequence_block_start.to(torch.int32),
+            causal_block_end.to(torch.int32),
+            self.block_budget,
         )
 
         num_blocks = block_start_tokens.shape[0]
@@ -191,4 +152,4 @@ class SparseAttentionIndexer(nn.Module):
         return indices.unsqueeze(0)
 
 
-__all__ = ["INDEXER_QUERY_CHUNK_SIZE", "SparseAttentionIndexer"]
+__all__ = ["SparseAttentionIndexer"]
