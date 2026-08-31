@@ -115,28 +115,17 @@ def test_hyperhead_init_weights():
     assert module.hc_fn.float().std().item() == pytest.approx(0.02, rel=0.1)
 
 
-def test_sliding_attention_builds_its_own_mask():
-    prime_module = prime_attention()
-    _, hidden = _hidden_states()
-    position_embeddings = _position_embeddings()
-    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
-
-    explicit, _ = prime_module(hidden, position_embeddings=position_embeddings, packed=packed)
-    implicit, _ = prime_module(hidden, position_embeddings=position_embeddings)
-
-    torch.testing.assert_close(implicit, explicit, rtol=0, atol=0)
-
-
 def test_sliding_attention_only_reads_the_local_window():
     prime_module = prime_attention()
     _, hidden = _hidden_states()
     position_embeddings = _position_embeddings()
+    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
     window = _ATTN["sliding_window"]
 
-    baseline, _ = prime_module(hidden, position_embeddings=position_embeddings)
+    baseline, _ = prime_module(hidden, position_embeddings=position_embeddings, packed=packed)
     perturbed_input = hidden.clone()
     perturbed_input[:, 0] += 1.0
-    perturbed, _ = prime_module(perturbed_input, position_embeddings=position_embeddings)
+    perturbed, _ = prime_module(perturbed_input, position_embeddings=position_embeddings, packed=packed)
 
     # Token 0 is the last key inside the window of query `window - 1` and the first one
     # outside the window of query `window`.
@@ -144,28 +133,17 @@ def test_sliding_attention_only_reads_the_local_window():
     torch.testing.assert_close(perturbed[:, window:], baseline[:, window:], rtol=0, atol=0)
 
 
-def test_csa_attention_defaults_to_sequential_positions():
-    prime_module = prime_attention(_CSA_LAYER)
-    _, hidden = _hidden_states()
-    position_embeddings = _position_embeddings()
-    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
-
-    explicit, _ = prime_module(hidden, position_embeddings=position_embeddings, packed=packed)
-    implicit, _ = prime_module(hidden, position_embeddings=position_embeddings)
-
-    torch.testing.assert_close(implicit, explicit, rtol=0, atol=0)
-
-
 def test_csa_attention_reads_beyond_the_local_window():
     prime_module = prime_attention(_CSA_LAYER)
     _, hidden = _hidden_states()
     position_embeddings = _position_embeddings()
+    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
     window = _ATTN["sliding_window"]
 
-    baseline, _ = prime_module(hidden, position_embeddings=position_embeddings)
+    baseline, _ = prime_module(hidden, position_embeddings=position_embeddings, packed=packed)
     perturbed_input = hidden.clone()
     perturbed_input[:, 0] += 1.0
-    perturbed, _ = prime_module(perturbed_input, position_embeddings=position_embeddings)
+    perturbed, _ = prime_module(perturbed_input, position_embeddings=position_embeddings, packed=packed)
 
     # Token 0 is outside the local window of every query from `window` on, and a sliding
     # layer ignores it there (see `test_sliding_attention_only_reads_the_local_window`).
@@ -177,14 +155,15 @@ def test_csa_compressor_pools_overlapping_windows():
     prime_module = prime_attention(_CSA_LAYER)
     compressor = prime_module.compressor
     _, hidden = _hidden_states()
+    layout = _layout(_SINGLE_DOC, _COMPRESS_RATE)
 
-    compressed = compressor.compress(hidden)
+    compressed = compressor.compress(hidden, layout)
     assert compressed.shape == (_BATCH, _SEQ // _COMPRESS_RATE, _ATTN["head_dim"])
 
     token = _COMPRESS_RATE + 1
     perturbed_input = hidden.clone()
     perturbed_input[:, token] += 1.0
-    perturbed = compressor.compress(perturbed_input)
+    perturbed = compressor.compress(perturbed_input, layout)
 
     changed = {w for w in range(compressed.shape[1]) if not torch.equal(perturbed[:, w], compressed[:, w])}
     # A token feeds its own window's entry through the `Cb` series and the next window's
@@ -197,8 +176,8 @@ def test_csa_compressor_drops_the_trailing_partial_window():
     compressor = prime_module.compressor
     _, hidden = _hidden_states()
 
-    full = compressor.compress(hidden)
-    truncated = compressor.compress(hidden[:, : _SEQ - 1])
+    full = compressor.compress(hidden, _layout(_SINGLE_DOC, _COMPRESS_RATE))
+    truncated = compressor.compress(hidden[:, : _SEQ - 1], _layout((_SEQ - 1,), _COMPRESS_RATE))
 
     assert truncated.shape[1] == full.shape[1] - 1
     torch.testing.assert_close(truncated, full[:, : truncated.shape[1]], rtol=0, atol=0)
@@ -211,7 +190,7 @@ def test_csa_indexer_keeps_only_readable_entries():
     position_ids = _position_ids()
     q_residual = prime_module.q_a_norm(prime_module.q_a_proj(hidden))
 
-    top_k_indices = indexer(hidden, q_residual, position_ids)
+    top_k_indices = indexer(hidden, q_residual, position_ids, _layout(_SINGLE_DOC, _COMPRESS_RATE))
 
     top_k = _ATTN["index_topk"]
     assert top_k_indices.shape == (_BATCH, _SEQ, top_k)
@@ -240,7 +219,11 @@ def test_csa_indexer_selection_is_not_differentiable():
     prime_module = prime_attention(_CSA_LAYER)
     _, hidden = _hidden_states()
 
-    output, _ = prime_module(hidden, position_embeddings=_position_embeddings())
+    output, _ = prime_module(
+        hidden,
+        position_embeddings=_position_embeddings(),
+        packed=_packed_context(prime_module, _SINGLE_DOC, torch.bfloat16),
+    )
     output.sum().backward()
 
     compressor = prime_module.compressor
@@ -256,12 +239,13 @@ def test_hca_attention_reads_every_readable_compressed_entry():
     prime_module = prime_attention(_HCA_LAYER)
     _, hidden = _hidden_states()
     position_embeddings = _position_embeddings()
+    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
     window = _ATTN["sliding_window"]
 
-    baseline, _ = prime_module(hidden, position_embeddings=position_embeddings)
+    baseline, _ = prime_module(hidden, position_embeddings=position_embeddings, packed=packed)
     perturbed_input = hidden.clone()
     perturbed_input[:, 0] += 1.0
-    perturbed, _ = prime_module(perturbed_input, position_embeddings=position_embeddings)
+    perturbed, _ = prime_module(perturbed_input, position_embeddings=position_embeddings, packed=packed)
 
     # Token 0 leaves the local window at query `window` and only re-enters through
     # compressed entry 0, which covers tokens `0 .. compress_rate - 1` and so is unreadable
@@ -276,14 +260,15 @@ def test_hca_compressor_pools_non_overlapping_windows():
     prime_module = prime_attention(_HCA_LAYER)
     compressor = prime_module.compressor
     _, hidden = _hidden_states()
+    layout = _layout(_SINGLE_DOC, _HCA_COMPRESS_RATE)
 
-    compressed = compressor.compress(hidden)
+    compressed = compressor.compress(hidden, layout)
     assert compressed.shape == (_BATCH, _SEQ // _HCA_COMPRESS_RATE, _ATTN["head_dim"])
 
     token = _HCA_COMPRESS_RATE + 1
     perturbed_input = hidden.clone()
     perturbed_input[:, token] += 1.0
-    perturbed = compressor.compress(perturbed_input)
+    perturbed = compressor.compress(perturbed_input, layout)
 
     changed = {w for w in range(compressed.shape[1]) if not torch.equal(perturbed[:, w], compressed[:, w])}
     # The windows do not overlap, so a token feeds its own entry and no other. This is the
@@ -296,8 +281,8 @@ def test_hca_compressor_drops_the_trailing_partial_window():
     compressor = prime_module.compressor
     _, hidden = _hidden_states()
 
-    full = compressor.compress(hidden)
-    truncated = compressor.compress(hidden[:, : _SEQ - 1])
+    full = compressor.compress(hidden, _layout(_SINGLE_DOC, _HCA_COMPRESS_RATE))
+    truncated = compressor.compress(hidden[:, : _SEQ - 1], _layout((_SEQ - 1,), _HCA_COMPRESS_RATE))
 
     # One token short of a full window is one entry short, and the entries that survive are
     # bit-identical: the dropped tokens never fed them.
@@ -313,7 +298,7 @@ def test_hca_compressor_masks_unreadable_entries():
 
     q_residual = prime_module.q_a_norm(prime_module.q_a_proj(hidden))
 
-    compressed_kv, block_bias = compressor(hidden, q_residual, position_ids)
+    compressed_kv, block_bias = compressor(hidden, q_residual, position_ids, _layout(_SINGLE_DOC, _HCA_COMPRESS_RATE))
 
     n_windows = _SEQ // _HCA_COMPRESS_RATE
     assert compressed_kv.shape == (_BATCH, 1, n_windows, _ATTN["head_dim"])
@@ -329,7 +314,11 @@ def test_hca_compressor_is_fully_differentiable():
     prime_module = prime_attention(_HCA_LAYER)
     _, hidden = _hidden_states()
 
-    output, _ = prime_module(hidden, position_embeddings=_position_embeddings())
+    output, _ = prime_module(
+        hidden,
+        position_embeddings=_position_embeddings(),
+        packed=_packed_context(prime_module, _SINGLE_DOC, torch.bfloat16),
+    )
     output.sum().backward()
 
     # Unlike CSA, every compressed entry is attended over directly, so there is no
@@ -749,7 +738,9 @@ def _assert_compress_matches_per_document(
 
     for index, count in enumerate(counts):
         entries = _entry_slice(doc_lens, compress_rate, index)
-        alone = compressor.compress(alone_input[:, _doc_slice(doc_lens, index)])
+        alone = compressor.compress(
+            alone_input[:, _doc_slice(doc_lens, index)], _layout((doc_lens[index],), compress_rate)
+        )
         assert alone.shape == (_BATCH, count, compressor.head_dim), f"document {index} compressed to the wrong count"
         torch.testing.assert_close(
             packed[:, entries],
@@ -767,8 +758,8 @@ def _assert_compress_matches_per_document(
 def test_csa_compressor_single_document_matches_today():
     """One document is the unpacked case, which packing must leave exactly where it was.
 
-    The per-document comparison degenerates into `compress(x, layout)` against `compress(x)`
-    here, so it pins the layout path against the layout-free one: four entries at packed
+    The per-document comparison degenerates into a single document compared against itself
+    here, so what it pins is the layout for the unpacked case: four entries at packed
     positions 0, 4, 8, 12, only the first of them without a predecessor to pool.
     """
     module = _fp32_attention(_CSA_LAYER)
@@ -918,7 +909,9 @@ def test_hca_compressor_emits_no_entries_when_every_document_is_short():
 
     for index, length in enumerate(_ALL_SHORT_DOCS):
         assert length < _HCA_COMPRESS_RATE, f"document {index} must be too short to fill a window"
-        alone = compressor.compress(alone_input[:, _doc_slice(_ALL_SHORT_DOCS, index)])
+        alone = compressor.compress(
+            alone_input[:, _doc_slice(_ALL_SHORT_DOCS, index)], _layout((_ALL_SHORT_DOCS[index],), _HCA_COMPRESS_RATE)
+        )
         assert alone.shape == (_BATCH, 0, compressor.head_dim), f"document {index} compressed to something"
 
 
@@ -964,7 +957,9 @@ def test_csa_indexer_selects_only_within_its_own_document():
     for index, length in enumerate(_INDEXER_DOCS):
         span = _doc_slice(_INDEXER_DOCS, index)
         entries = _entry_slice(_INDEXER_DOCS, _COMPRESS_RATE, index)
-        alone_picks = indexer(hidden[:, span], q_residual[:, span], _alone_position_ids(length))
+        alone_picks = indexer(
+            hidden[:, span], q_residual[:, span], _alone_position_ids(length), _layout((length,), _COMPRESS_RATE)
+        )
         expected = torch.zeros_like(packed_selected[:, span])
         expected[..., entries] = _selected_entries(alone_picks, counts[index])
         assert torch.equal(packed_selected[:, span], expected), (
@@ -996,7 +991,12 @@ def test_csa_indexer_marks_every_pick_invalid_with_no_readable_entry():
     first, second = (_doc_slice(_SHORT_FIRST_DOCS, index) for index in (0, 1))
     assert (packed_picks[:, first] < 0).all(), "a query whose document compressed to nothing was given a pick"
     assert (packed_picks[:, second] >= 0).any(), "vacuous probe: the second document picks nothing either"
-    alone_picks = indexer(hidden[:, first], q_residual[:, first], _alone_position_ids(_SHORT_FIRST_DOCS[0]))
+    alone_picks = indexer(
+        hidden[:, first],
+        q_residual[:, first],
+        _alone_position_ids(_SHORT_FIRST_DOCS[0]),
+        _layout((_SHORT_FIRST_DOCS[0],), _COMPRESS_RATE),
+    )
     assert (alone_picks >= 0).sum().item() == 0, "run alone the same document has nothing to pick from"
 
 
@@ -1004,9 +1004,8 @@ def _assert_attention_matches_per_document(module: nn.Module, doc_lens: tuple[in
     """A packed attention layer must equal the same layer run on each document separately.
 
     Forward and backward, with one random weight drawn over the packed output and sliced per
-    document so the two losses are the same function. The lone runs pass no context at all, which
-    is the contract's default of a single document and the shape a rollout arrives in at
-    inference time.
+    document so the two losses are the same function. The lone runs each get a single-document
+    context, which is the shape a rollout arrives in at inference time.
     """
     compress_rate = module.compressor.compress_rate
     packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
@@ -1036,6 +1035,7 @@ def _assert_attention_matches_per_document(module: nn.Module, doc_lens: tuple[in
         alone_output, _ = module(
             alone_input[:, span],
             position_embeddings=_fp32_position_embeddings(alone_position_ids),
+            packed=_packed_context(module, (length,), torch.float32),
         )
         torch.testing.assert_close(
             packed_output[:, span],

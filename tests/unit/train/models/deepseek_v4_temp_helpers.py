@@ -221,7 +221,8 @@ def prime_hash_moe() -> nn.Module:
     return module
 
 
-# One document filling the row: what a layer builds for itself when passed no packed context.
+# One document filling the row: the unpacked case, and the shape a rollout arrives in at
+# inference time.
 _SINGLE_DOC = (_SEQ,)
 
 
@@ -242,8 +243,8 @@ def _compress_rates(module: nn.Module) -> set[int]:
 def _packed_context(module: nn.Module, doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedContext:
     """The context `DeepseekV4Model` would hand `module` for a row laid out as `doc_lens`.
 
-    `_SINGLE_DOC` gives back what the layer builds for itself when passed no context at all, so
-    the two are comparable. `dtype` is the mask's, and has to be the one the caller runs at.
+    `_SINGLE_DOC` gives back the single-document context, which is what the unpacked half of a
+    packing comparison runs at. `dtype` is the mask's, and has to be the one the caller runs at.
     """
     return PackedContext.build(
         cu_seqlens=_cu_seqlens(doc_lens),

@@ -79,7 +79,7 @@ def build_sliding_window_mask(
     dtype: torch.dtype,
     device: torch.device,
     *,
-    cu_seqlens: torch.Tensor | None = None,
+    cu_seqlens: torch.Tensor,
 ) -> torch.Tensor:
     """Additive `[1, 1, seq_len, seq_len]` mask: causal, restricted to a local window.
 
@@ -87,9 +87,9 @@ def build_sliding_window_mask(
     other entry is the dtype's minimum, so it vanishes under the softmax.
 
     `cu_seqlens` carries the packed sequence's document boundaries, and the window is clipped
-    at them: a query never reaches into the document before its own. Without it the sequence
-    is treated as a single document. The mask broadcasts over the batch, so a batched packed
-    sequence shares one document layout, which is all `seq_lens` can express anyway.
+    at them: a query never reaches into the document before its own. The mask broadcasts over
+    the batch, so a batched packed sequence shares one document layout, which is all `seq_lens`
+    can express anyway.
 
     A padded micro-batch folds its padding into the last document (`batch.py:717-718`
     extends `seq_lens[-1]` while restarting `position_ids`), so the padding is masked as a
@@ -99,9 +99,8 @@ def build_sliding_window_mask(
     positions = torch.arange(seq_len, device=device)
     distance = positions[:, None] - positions[None, :]
     allowed = (distance >= 0) & (distance < sliding_window)
-    if cu_seqlens is not None:
-        document_ids = torch.searchsorted(cu_seqlens[1:].to(positions.dtype), positions, right=True)
-        allowed &= document_ids[:, None] == document_ids[None, :]
+    document_ids = torch.searchsorted(cu_seqlens[1:].to(positions.dtype), positions, right=True)
+    allowed &= document_ids[:, None] == document_ids[None, :]
     mask = torch.zeros(seq_len, seq_len, dtype=dtype, device=device)
     return mask.masked_fill_(~allowed, torch.finfo(dtype).min)[None, None]
 
@@ -212,7 +211,7 @@ class PackedContext:
         dtype: torch.dtype,
         device: torch.device,
     ) -> "PackedContext":
-        """The one construction path: every field comes from the same `cu_seqlens`."""
+        """Derive all three fields from one `cu_seqlens`, which is what keeps them consistent."""
         return cls(
             attention_mask=build_sliding_window_mask(
                 total_tokens, sliding_window, dtype, device, cu_seqlens=cu_seqlens
@@ -222,45 +221,6 @@ class PackedContext:
                 rate: build_compression_layout(cu_seqlens, rate, total_tokens) for rate in compress_rates
             },
         )
-
-    @classmethod
-    def single_document(
-        cls,
-        *,
-        total_tokens: int,
-        batch_size: int,
-        compress_rates: set[int],
-        sliding_window: int,
-        dtype: torch.dtype,
-        device: torch.device,
-    ) -> "PackedContext":
-        """The reading available to a caller that supplies no boundaries at all."""
-        return cls.build(
-            cu_seqlens=torch.tensor([0, total_tokens], device=device),
-            position_ids=torch.arange(total_tokens, device=device).expand(batch_size, -1),
-            total_tokens=total_tokens,
-            compress_rates=compress_rates,
-            sliding_window=sliding_window,
-            dtype=dtype,
-            device=device,
-        )
-
-
-def _cu_seqlens_from_position_ids(position_ids: Tensor, total_tokens: int) -> Tensor:
-    """Recover document boundaries from where `position_ids` stop advancing by one.
-
-    `DeepseekV4Model` always hands its compressors a layout built from the authoritative
-    `seq_lens`; this is the fallback for a caller that drives a compressor directly, and it
-    reads the boundaries the same way HF does for its own window mask. Contiguous positions,
-    whatever they start at, come back as a single document.
-
-    Not `prime_rl.utils.sequence.get_cu_seqlens_from_position_ids`: that one flattens the batch
-    with `reshape(-1)`, so at batch 2 it reports four documents spanning twice the sequence. It
-    is written for the trainer, where the batch is always one packed sequence.
-    """
-    positions = position_ids[0]
-    starts = torch.nonzero(positions[1:] != positions[:-1] + 1).flatten() + 1
-    return torch.cat([starts.new_zeros(1), starts, starts.new_full((1,), total_tokens)])
 
 
 def _readable_entries(layout: CompressionLayout, threshold: Tensor) -> Tensor:
@@ -305,17 +265,12 @@ class DeepseekV4DualSeriesCompressor(nn.Module):
         self.kv_norm = RMSNorm(RMSNormConfig(hidden_size=head_dim, eps=config.rms_norm_eps))
         self.rotary_emb = DeepseekV4RotaryEmbedding(config)
 
-    def compress(self, hidden_states: torch.Tensor, layout: CompressionLayout | None = None) -> torch.Tensor:
+    def compress(self, hidden_states: torch.Tensor, layout: CompressionLayout) -> torch.Tensor:
         """Compress `[batch, seq_len, hidden_size]` to `[batch, n_entries, head_dim]`.
 
-        `layout` decides which source tokens each entry pools; without one the sequence is treated
-        as a single document, which is the only reading available to a caller that supplies no
-        boundaries.
+        `layout` decides which source tokens each entry pools.
         """
-        batch, seq_len, _ = hidden_states.shape
-        if layout is None:
-            boundaries = torch.tensor([0, seq_len], device=hidden_states.device)
-            layout = build_compression_layout(boundaries, self.compress_rate, seq_len)
+        batch = hidden_states.shape[0]
         n_entries = layout.src_idx.shape[0]
         if n_entries == 0:
             return hidden_states.new_zeros(batch, 0, self.head_dim)
@@ -404,13 +359,9 @@ class DeepseekV4Indexer(DeepseekV4DualSeriesCompressor):
         hidden_states: torch.Tensor,
         q_residual: torch.Tensor,
         position_ids: torch.Tensor,
-        layout: CompressionLayout | None = None,
+        layout: CompressionLayout,
     ) -> torch.Tensor:
         batch, seq_len, _ = hidden_states.shape
-        if layout is None:
-            layout = build_compression_layout(
-                _cu_seqlens_from_position_ids(position_ids, seq_len), self.compress_rate, seq_len
-            )
         compressed_kv = self.compress(hidden_states, layout)
         compressed_len = compressed_kv.shape[1]
         top_k = min(self.index_topk, compressed_len)
@@ -449,13 +400,9 @@ class DeepseekV4CSACompressor(DeepseekV4DualSeriesCompressor):
         hidden_states: torch.Tensor,
         q_residual: torch.Tensor,
         position_ids: torch.Tensor,
-        layout: CompressionLayout | None = None,
+        layout: CompressionLayout,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         batch, seq_len, _ = hidden_states.shape
-        if layout is None:
-            layout = build_compression_layout(
-                _cu_seqlens_from_position_ids(position_ids, seq_len), self.compress_rate, seq_len
-            )
         compressed_kv = self.compress(hidden_states, layout).unsqueeze(1)
         compressed_len = compressed_kv.shape[2]
 
@@ -501,16 +448,12 @@ class DeepseekV4HCACompressor(nn.Module):
         self.kv_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
         self.rotary_emb = DeepseekV4RotaryEmbedding(config)
 
-    def compress(self, hidden_states: torch.Tensor, layout: CompressionLayout | None = None) -> torch.Tensor:
+    def compress(self, hidden_states: torch.Tensor, layout: CompressionLayout) -> torch.Tensor:
         """Compress `[batch, seq_len, hidden_size]` to `[batch, n_entries, head_dim]`.
 
-        `layout` decides which source tokens each entry pools; without one the sequence is treated
-        as a single document, as in CSA.
+        `layout` decides which source tokens each entry pools.
         """
-        batch, seq_len, _ = hidden_states.shape
-        if layout is None:
-            boundaries = torch.tensor([0, seq_len], device=hidden_states.device)
-            layout = build_compression_layout(boundaries, self.compress_rate, seq_len)
+        batch = hidden_states.shape[0]
         if layout.src_idx.shape[0] == 0:
             return hidden_states.new_zeros(batch, 0, self.head_dim)
 
@@ -529,14 +472,10 @@ class DeepseekV4HCACompressor(nn.Module):
         hidden_states: torch.Tensor,
         q_residual: torch.Tensor,
         position_ids: torch.Tensor,
-        layout: CompressionLayout | None = None,
+        layout: CompressionLayout,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """`q_residual` is part of the compressor contract but unused: HCA has no indexer."""
         batch, seq_len, _ = hidden_states.shape
-        if layout is None:
-            layout = build_compression_layout(
-                _cu_seqlens_from_position_ids(position_ids, seq_len), self.compress_rate, seq_len
-            )
         compressed_kv = self.compress(hidden_states, layout).unsqueeze(1)
         compressed_len = compressed_kv.shape[2]
 
@@ -592,7 +531,6 @@ class DeepseekV4Attention(nn.Module):
         self.rope_layer_type = "main" if self.layer_type == "sliding_attention" else "compress"
         self.num_heads = config.num_attention_heads
         self.head_dim = config.head_dim
-        self.sliding_window = config.sliding_window
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
         self.scaling = self.head_dim**-0.5
@@ -617,9 +555,9 @@ class DeepseekV4Attention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]],
-        packed: PackedContext | None = None,
+        packed: PackedContext,
     ) -> tuple[torch.Tensor, None]:
-        """`packed` carries the sequence's document boundaries; without one the sequence is a single document."""
+        """`packed` carries the document boundaries every pathway below is clipped at."""
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
         cos, sin = position_embeddings[self.rope_layer_type]
@@ -631,15 +569,6 @@ class DeepseekV4Attention(nn.Module):
         kv = self.kv_norm(self.kv_proj(hidden_states)).view(*hidden_shape).transpose(1, 2)
         kv = apply_rotary_pos_emb_interleaved(kv, cos, sin)
 
-        if packed is None:
-            packed = PackedContext.single_document(
-                total_tokens=input_shape[1],
-                batch_size=input_shape[0],
-                compress_rates={self.compressor.compress_rate} if self.compressor is not None else set(),
-                sliding_window=self.sliding_window,
-                dtype=kv.dtype,
-                device=kv.device,
-            )
         attention_mask = packed.attention_mask
 
         if self.compressor is not None:

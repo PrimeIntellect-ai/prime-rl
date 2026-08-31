@@ -57,7 +57,8 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
         position_embeddings: dict[str, tuple[torch.Tensor, torch.Tensor]],
         input_ids: torch.Tensor | None = None,
         routed_experts: torch.Tensor | None = None,
-        packed: PackedContext | None = None,
+        *,
+        packed: PackedContext,
     ) -> torch.Tensor:
         dtype = hidden_states.dtype
 

@@ -16,8 +16,14 @@ from torch import nn
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
-from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4CSACompressor, DeepseekV4HCACompressor
+from prime_rl.trainer.models.deepseek_v4.attention import (
+    CompressionLayout,
+    DeepseekV4CSACompressor,
+    DeepseekV4HCACompressor,
+    build_compression_layout,
+)
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 from prime_rl.utils.utils import default_dtype
 
 from .deepseek_v4_helpers import (
@@ -274,6 +280,13 @@ def _packed_inputs(doc_lens: tuple[int, ...]) -> tuple[torch.Tensor, torch.Tenso
     return input_ids, position_ids, torch.tensor(doc_lens, device="cuda")
 
 
+def _layout(doc_lens: tuple[int, ...], compress_rate: int) -> CompressionLayout:
+    """The layout `DeepseekV4Model` would build for a row laid out as `doc_lens`."""
+    total = sum(doc_lens)
+    cu_seqlens, _ = get_cu_seqlens_from_seq_lens(torch.tensor(doc_lens, device="cuda"), total_tokens=total)
+    return build_compression_layout(cu_seqlens, compress_rate, total)
+
+
 def _doc_ids(doc_lens: tuple[int, ...]) -> torch.Tensor:
     return torch.cat([torch.full((length,), index, device="cuda") for index, length in enumerate(doc_lens)])
 
@@ -317,9 +330,10 @@ def _assert_reads_are_document_local(compressor: nn.Module, doc_lens: tuple[int,
     hidden_states, q_residual = _compressor_inputs(doc_lens)
     _, position_ids, _ = _packed_inputs(doc_lens)
 
-    compressed_kv, block_bias = compressor(hidden_states, q_residual, position_ids)
+    layout = _layout(doc_lens, compressor.compress_rate)
+    compressed_kv, block_bias = compressor(hidden_states, q_residual, position_ids, layout)
     other_hidden, other_q = _resample_first_document((hidden_states, q_residual), doc_lens)
-    other_kv, other_bias = compressor(other_hidden, other_q, position_ids)
+    other_kv, other_bias = compressor(other_hidden, other_q, position_ids, layout)
 
     second = _doc_slice(doc_lens, 1)
     readable = block_bias[0, 0, second] == 0
@@ -429,10 +443,11 @@ def test_packed_csa_selection_matches_unpacked(_torch_rms_norm):  # noqa: F811
     """
     prime_model = get_prime_model(torch.float32)
     compressor = _compressor_of_type(prime_model, DeepseekV4CSACompressor)
+    rate = compressor.compress_rate
 
     hidden_states, q_residual = _compressor_inputs(_DOC_LENS)
     _, position_ids, _ = _packed_inputs(_DOC_LENS)
-    packed_kv, packed_bias = compressor(hidden_states, q_residual, position_ids)
+    packed_kv, packed_bias = compressor(hidden_states, q_residual, position_ids, _layout(_DOC_LENS, rate))
 
     second = _doc_slice(_DOC_LENS, 1)
     length = _DOC_LENS[1]
@@ -440,6 +455,7 @@ def test_packed_csa_selection_matches_unpacked(_torch_rms_norm):  # noqa: F811
         hidden_states[:, second],
         q_residual[:, second],
         torch.arange(length, device="cuda").unsqueeze(0),
+        _layout((length,), rate),
     )
 
     packed_reads = packed_bias[0, 0, second] == 0
@@ -464,14 +480,19 @@ def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):  # noq
 
     Asserted as an entry count: compressing per document, a row of documents this short yields no
     entries at all, so there is nothing for a query to read rather than entries it may not reach.
+    The layout is handed in, so the entry count restates what the layout already says; the
+    property that a short document compresses to nothing is pinned directly by
+    `test_hca_compressor_emits_no_entries_when_every_document_is_short`. What is left here is that
+    the compressor honours a zero-entry layout identically packed and alone.
     """
     prime_model = get_prime_model(torch.float32)
     compressor = _compressor_of_type(prime_model, DeepseekV4HCACompressor)
-    assert compressor.compress_rate == 8
+    rate = compressor.compress_rate
+    assert rate == 8
 
     hidden_states, q_residual = _compressor_inputs(_SHORT_DOC_LENS)
     _, position_ids, _ = _packed_inputs(_SHORT_DOC_LENS)
-    _, packed_bias = compressor(hidden_states, q_residual, position_ids)
+    _, packed_bias = compressor(hidden_states, q_residual, position_ids, _layout(_SHORT_DOC_LENS, rate))
     assert packed_bias.shape[-1] == 0, "every document is too short to fill a window, so the row has no entries"
 
     for index, length in enumerate(_SHORT_DOC_LENS):
@@ -480,6 +501,7 @@ def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):  # noq
             hidden_states[:, span],
             q_residual[:, span],
             torch.arange(length, device="cuda").unsqueeze(0),
+            _layout((length,), rate),
         )
         assert alone_kv.shape[2] == 0, f"document {index} is too short to fill a window"
         assert alone_bias.shape[-1] == 0
