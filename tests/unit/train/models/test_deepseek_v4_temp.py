@@ -26,7 +26,7 @@ from prime_rl.trainer.models.deepseek_v4.attention import (
     build_compression_layout,
 )
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4HyperHead
-from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4Experts, DeepseekV4MoE
+from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
@@ -53,12 +53,12 @@ from .deepseek_v4_temp_helpers import (
     _packed_position_ids,
     _position_embeddings,
     _position_ids,
-    _randomize,
     _randomize_attention,
     _seed_rng,  # noqa: F401 -- pytest fixture, applied by name
     _torch_rms_norm,  # noqa: F401 -- pytest fixture, applied by name
     prime_attention,
     prime_attention_config,
+    prime_clamped_moe,
     prime_hash_moe,
     prime_hyper_connection,
     prime_moe,
@@ -344,6 +344,9 @@ def test_moe_router_scores_with_sqrt_softplus():
     _, hidden = _moe_hidden_states()
     x = hidden.detach().reshape(-1, _MOE["hidden_size"])
 
+    # The router applies `selection_bias` itself, and `prime_moe` draws a non-zero one so the
+    # biased path is covered elsewhere. This test pins the scoring function, so zero it.
+    router.selection_bias.zero_()
     top_scores, indices, num_tokens_per_expert, _ = router(x)
 
     scores = F.softplus(F.linear(x, router.gate.weight)).sqrt()
@@ -359,18 +362,17 @@ def test_moe_router_scores_with_sqrt_softplus():
     assert num_tokens_per_expert.sum().item() == _MOE_TOKENS * _MOE["num_experts_per_tok"]
 
 
-def test_moe_expert_bias_steers_selection_but_not_the_gate():
+def test_moe_selection_bias_steers_selection_but_not_the_gate():
     prime_module = prime_moe()
     router = prime_module.router
     _, hidden = _moe_hidden_states()
     x = hidden.detach().reshape(-1, _MOE["hidden_size"])
     favored = 5
 
+    router.selection_bias.zero_()
     _, unbiased_indices, _, _ = router(x)
-    with torch.device("cuda"):
-        expert_bias = torch.zeros(_MOE["n_routed_experts"])
-    expert_bias[favored] = 100.0
-    top_scores, indices, num_tokens_per_expert, _ = router(x, expert_bias=expert_bias)
+    router.selection_bias[favored] = 100.0
+    top_scores, indices, num_tokens_per_expert, _ = router(x)
 
     assert not torch.equal(indices, unbiased_indices), "the bias must change the selection"
     assert num_tokens_per_expert[favored].item() == _MOE_TOKENS, "every token must reach the favored expert"
@@ -381,7 +383,7 @@ def test_moe_expert_bias_steers_selection_but_not_the_gate():
 
 
 def test_moe_shared_expert_clamps_the_swiglu():
-    prime_module = prime_moe()
+    prime_module = prime_clamped_moe()
     shared_expert = prime_module.shared_expert
     _, hidden = _moe_hidden_states()
     x = hidden.detach()
@@ -396,35 +398,8 @@ def test_moe_shared_expert_clamps_the_swiglu():
     assert not torch.equal(output, shared_expert.down_proj(F.silu(gate) * up))
 
 
-def _experts(use_grouped_mm: bool) -> DeepseekV4Experts:
-    return DeepseekV4Experts(
-        dim=_MOE["hidden_size"],
-        hidden_dim=_MOE["moe_intermediate_size"],
-        num_experts=_MOE["n_routed_experts"],
-        swiglu_limit=_MOE["swiglu_limit"],
-        use_grouped_mm=use_grouped_mm,
-    )
-
-
-def test_moe_grouped_mm_experts_match_the_for_loop():
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        for_loop, grouped_mm = _experts(use_grouped_mm=False), _experts(use_grouped_mm=True)
-        x = torch.randn(_MOE_TOKENS, _MOE["hidden_size"])
-    _randomize(for_loop)
-    grouped_mm.load_state_dict(for_loop.state_dict())
-    # Tokens arrive pre-sorted by expert, exactly as `MoE`'s reorderer hands them over.
-    expert_of_token = torch.arange(_MOE_TOKENS, device="cuda") % _MOE["n_routed_experts"]
-    num_tokens_per_expert = torch.histc(expert_of_token, bins=_MOE["n_routed_experts"], min=0, max=8)
-
-    # The grouped GEMM computes the same function through a different kernel, so the
-    # tolerance sits at the bfloat16 rounding floor for outputs of this magnitude.
-    torch.testing.assert_close(
-        grouped_mm(x, num_tokens_per_expert), for_loop(x, num_tokens_per_expert), rtol=1e-2, atol=1e-5
-    )
-
-
 def test_moe_init_weights():
-    prime_config = DeepseekV4Config(**_MOE, use_grouped_mm=False)
+    prime_config = DeepseekV4Config(**_MOE)
     with torch.device("cuda"):
         module = DeepseekV4MoE(prime_config, layer_idx=0)
 
@@ -433,16 +408,16 @@ def test_moe_init_weights():
     # The gated branches keep the shared `MoE`'s fixed 0.02, the rest scales with init_std.
     expected_std = {
         "router.gate.weight": 0.5,
-        "experts.w1": 0.02,
-        "experts.w3": 0.02,
-        "experts.w2": 0.5,
+        "experts.gate_proj": 0.02,
+        "experts.up_proj": 0.02,
+        "experts.down_proj": 0.5,
         "shared_expert.gate_proj.weight": 0.02,
         "shared_expert.up_proj.weight": 0.5,
         "shared_expert.down_proj.weight": 0.5,
     }
     for name, param in module.named_parameters():
         assert param.std().item() == pytest.approx(expected_std[name], rel=0.15), name
-    assert (module.expert_bias == 0).all()
+    assert (module.router.selection_bias == 0).all()
 
 
 def test_config_serializes_topk_method():
@@ -1173,14 +1148,21 @@ _MODEL = dict(
     attention_dropout=0.0,
 )
 
-# Looser than the module-level floor, and it has to be: `DeepseekV4Experts` sorts the tokens by
-# expert assignment, so a packed row and a lone document accumulate the same expert's matmul in a
-# different order, and four layers of hyper-connected residual amplify that. Measured on this
-# config the logits deviate by up to 3e-7 in absolute terms on a scale of 0.8, and the parameter
-# gradients by up to 9e-6 relative to their own scale. Both tolerances sit an order of magnitude
-# above that, because which tokens share an expert (and so what cancels) moves with the seed.
-_MODEL_RTOL, _MODEL_ATOL = 1e-4, 1e-5
-_MODEL_GRAD_RTOL = 1e-4
+# Far looser than the module-level floor, and it has to be. `GroupedExperts` runs the routed
+# experts through `torch._grouped_mm` in bfloat16 whatever dtype it is handed, so the packed and
+# lone runs agree only to the bf16 rounding floor, not float32's. On top of that the experts sort
+# tokens by expert assignment, so the two runs accumulate the same expert's matmul in a different
+# order, and four layers of hyper-connected residual amplify the difference into every parameter's
+# gradient, not just the experts' own.
+#
+# Measured on this config over six seeds: the logits deviate by up to 2.7e-4 on a scale of 0.86,
+# and the parameter gradients by up to 7.4e-3 relative to their own scale. Both tolerances sit
+# about an order of magnitude above that, because which tokens share an expert (and so what
+# cancels) moves with the seed. That still leaves the test its teeth: telling the packed run it is
+# one long document instead of three, so attention may read across the boundaries, moves the
+# logits by 5.1e-1 and the gradients by 2.8, which is 190x and 35x these bounds respectively.
+_MODEL_RTOL, _MODEL_ATOL = 3e-3, 1e-4
+_MODEL_GRAD_RTOL = 8e-2
 
 
 def _randomize_model(model: nn.Module) -> None:
@@ -1205,7 +1187,7 @@ def _randomize_model(model: nn.Module) -> None:
 
 def _packed_model() -> nn.Module:
     """A float32 model in eval mode, with the LM head the trainer wraps it in."""
-    config = DeepseekV4Config(**_MODEL, use_grouped_mm=False)
+    config = DeepseekV4Config(**_MODEL)
     with torch.device("cuda"):
         model = DeepseekV4ForCausalLM._from_config(config)
     _randomize_model(model)

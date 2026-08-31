@@ -123,7 +123,7 @@ def test_deepseek_v4_config_rejects_a_foreign_layer_type():
     kwargs = _BASE | {"layer_types": ["full_attention"] * 5, "compress_rates": {"full_attention": 4}}
 
     with pytest.raises(StrictDataclassClassValidationError, match="layer_types entries must be one of"):
-        DeepseekV4Config(**kwargs, use_grouped_mm=False)
+        DeepseekV4Config(**kwargs)
 
 
 def test_deepseek_v4_config_translates_legacy_compress_ratios():
@@ -403,7 +403,12 @@ def test_packed_logits_match_unpacked(_torch_rms_norm):  # noqa: F811
             position_ids=torch.arange(length, device="cuda").unsqueeze(0),
             seq_lens=torch.tensor([length], device="cuda"),
         )["logits"]
-        _assert_relative(packed[:, span], alone, 1e-4, f"document {index}")
+        # `GroupedExperts` runs the routed experts through `torch._grouped_mm` in bfloat16
+        # whatever dtype the model runs in, and packing changes which tokens share an expert
+        # matmul, so the two runs agree only to the bf16 floor. Worst relative deviation
+        # measured over six seeds is 1.2e-3; a document actually reading its neighbour moves
+        # the logits by a fraction of their own scale, orders of magnitude above this.
+        _assert_relative(packed[:, span], alone, 1e-2, f"document {index}")
 
 
 def test_packed_csa_reads_only_own_document_entries(_torch_rms_norm):  # noqa: F811

@@ -353,14 +353,14 @@ def test_hca_attention_matches_hf(_torch_rms_norm):  # noqa: F811
     torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=0, atol=0)
 
 
-# prime-rl's `MoE` owns the router and the load-balancing bias, so both sit one level up
-# from where HF keeps them, and its shared expert is singular. HF's fused routed-expert
-# `gate_up_proj` splits into prime's `w1`/`w3`; `down_proj` renames to `w2`.
+# prime-rl's `MoE` owns the router one level up from where HF keeps it, hangs the
+# load-balancing bias off that router as `selection_bias`, and names its shared expert in the
+# singular. HF's fused routed-expert `gate_up_proj` splits into prime's stacked `gate_proj`
+# and `up_proj`; `down_proj` already matches.
 _HF_TO_PRIME_MOE_KEYS = {
     "gate.weight": "router.gate.weight",
-    "gate.e_score_correction_bias": "expert_bias",
+    "gate.e_score_correction_bias": "router.selection_bias",
     "gate.tid2eid": "tid2eid",
-    "experts.down_proj": "experts.w2",
 }
 
 
@@ -368,7 +368,7 @@ def _to_prime_moe_items(hf_key: str, value: torch.Tensor) -> dict[str, torch.Ten
     """Map one HF MoE key/value onto the one or two prime-rl key/value pairs it becomes."""
     if hf_key == "experts.gate_up_proj":
         gate, up = value.chunk(2, dim=1)
-        return {"experts.w1": gate, "experts.w3": up}
+        return {"experts.gate_proj": gate, "experts.up_proj": up}
     key = _HF_TO_PRIME_MOE_KEYS.get(hf_key, hf_key.replace("shared_experts.", "shared_expert.", 1))
     return {key: value}
 
@@ -402,16 +402,14 @@ def _moe_pair() -> tuple[nn.Module, nn.Module]:
     ~1e-3 floor under every comparison and hide everything else.
     """
     hf_config = HFDeepseekV4Config(**_MOE)
-    # The for-loop expert path keeps the comparison in float32; `use_grouped_mm` casts to
-    # bfloat16 internally and is covered separately.
-    prime_config = DeepseekV4Config(**_MOE, use_grouped_mm=False)
+    prime_config = DeepseekV4Config(**_MOE)
     with torch.device("cuda"):
         hf_module = HFDeepseekV4SparseMoeBlock(hf_config, layer_idx=0)
         prime_module = DeepseekV4MoE(prime_config, layer_idx=0)
     _randomize(hf_module)
     # The aux-loss-free load-balancing bias is a buffer, so `_randomize` leaves it at
     # zero and the biased selection path would go untested. It maps onto prime-rl's
-    # `MoE.expert_bias`, which the forward pass feeds to the router.
+    # `router.selection_bias`, which the router applies to its own selection.
     with torch.no_grad():
         hf_module.gate.e_score_correction_bias.normal_(mean=0.0, std=0.1)
     _sync_moe(hf_module, prime_module)
@@ -426,11 +424,12 @@ def test_moe_matches_hf():
     prime_output = prime_module(prime_input)
 
     assert prime_output.shape == (_BATCH, _SEQ, _MOE["hidden_size"])
-    # Both implementations run the same float32 arithmetic on the same weights, but they
-    # group it differently: prime-rl sorts the tokens into one contiguous matmul per
-    # expert and scatter-adds the results, HF gathers each expert's tokens and index-adds
-    # them. Only the summation order differs, hence a tolerance at the float32 floor.
-    torch.testing.assert_close(prime_output, hf_output, rtol=1e-5, atol=1e-8)
+    # `GroupedExperts` runs the routed experts through `torch._grouped_mm` in bfloat16
+    # whatever dtype it is handed, so this sits at the bf16 floor rather than float32's. The
+    # two also group the arithmetic differently: prime-rl sorts the tokens into one
+    # contiguous matmul per expert and scatter-adds, HF gathers each expert's tokens and
+    # index-adds. Measured max deviation 1.1e-3 on an output scale of 0.39.
+    torch.testing.assert_close(prime_output, hf_output, rtol=1e-2, atol=5e-3)
 
     with torch.device("cuda"):
         weight = torch.randn_like(hf_output)
@@ -438,9 +437,10 @@ def test_moe_matches_hf():
     (prime_output * weight).sum().backward()
 
     # Every parameter here trains, unlike the Lightning Indexer's: nothing on this path
-    # goes through an integer selection that the gradient cannot cross.
-    _compare_moe_grads(hf_module, prime_module, rtol=1e-4, atol=5e-7)
-    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=1e-5, atol=1e-8)
+    # goes through an integer selection that the gradient cannot cross. Same bf16 floor as
+    # the forward above.
+    _compare_moe_grads(hf_module, prime_module, rtol=1e-2, atol=5e-3)
+    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=1e-2, atol=5e-3)
 
 
 def _hash_moe_pair() -> tuple[nn.Module, nn.Module]:
@@ -451,7 +451,7 @@ def _hash_moe_pair() -> tuple[nn.Module, nn.Module]:
     an all-zero table, which would send every token to expert 0, so it is drawn here.
     """
     hf_config = HFDeepseekV4Config(**_HASH_MOE)
-    prime_config = DeepseekV4Config(**_HASH_MOE, use_grouped_mm=False)
+    prime_config = DeepseekV4Config(**_HASH_MOE)
     with torch.device("cuda"):
         hf_module = HFDeepseekV4SparseMoeBlock(hf_config, layer_idx=_HASH_LAYER)
         prime_module = DeepseekV4MoE(prime_config, layer_idx=_HASH_LAYER)
@@ -471,17 +471,17 @@ def test_hash_moe_matches_hf():
     prime_output = prime_module(prime_input, input_ids=input_ids)
 
     assert prime_output.shape == (_BATCH, _SEQ, _HASH_MOE["hidden_size"])
-    # Same float32 arithmetic, different grouping of the expert matmuls, as in
-    # `test_moe_matches_hf`: the tolerance sits at the float32 summation-order floor.
-    torch.testing.assert_close(prime_output, hf_output, rtol=1e-5, atol=1e-8)
+    # Same bf16 expert arithmetic and different grouping of the expert matmuls, as in
+    # `test_moe_matches_hf`.
+    torch.testing.assert_close(prime_output, hf_output, rtol=1e-2, atol=5e-3)
 
     with torch.device("cuda"):
         weight = torch.randn_like(hf_output)
     (hf_output * weight).sum().backward()
     (prime_output * weight).sum().backward()
 
-    _compare_moe_grads(hf_module, prime_module, rtol=1e-4, atol=5e-7)
-    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=1e-5, atol=1e-8)
+    _compare_moe_grads(hf_module, prime_module, rtol=1e-2, atol=5e-3)
+    torch.testing.assert_close(prime_input.grad, hf_input.grad, rtol=1e-2, atol=5e-3)
 
 
 def test_hash_moe_trains_the_gate():
@@ -496,6 +496,6 @@ def test_hash_moe_trains_the_gate():
     # outputs are scaled by, so it keeps training, by the same gradient HF gets.
     gate_grad = prime_module.router.gate.weight.grad
     assert gate_grad is not None and (gate_grad != 0).any()
-    torch.testing.assert_close(gate_grad, hf_module.gate.weight.grad, rtol=1e-4, atol=5e-7)
+    torch.testing.assert_close(gate_grad, hf_module.gate.weight.grad, rtol=1e-2, atol=5e-3)
     # The table is a buffer, so no optimizer can drift it away from its checkpoint values.
     assert "tid2eid" not in dict(prime_module.named_parameters())

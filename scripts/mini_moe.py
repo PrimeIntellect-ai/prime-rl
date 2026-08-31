@@ -138,7 +138,6 @@ ARCH_PRESETS = {
             num_experts_per_tok=4,
             n_shared_experts=1,
             num_hash_layers=2,
-            use_grouped_mm=False,
         ),
         "hf_model_class": HFDeepseekV4ForCausalLM,
         "prime_model_class": PrimeRLDeepseekV4ForCausalLM,

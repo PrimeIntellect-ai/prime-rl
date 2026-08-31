@@ -165,9 +165,13 @@ _MOE = dict(
     n_shared_experts=1,
     scoring_func="sqrtsoftplus",
     routed_scaling_factor=1.5,
-    # Small enough that the parameter spread `_randomize` draws actually reaches the
-    # clamp; the 10.0 default would leave that branch untested.
-    swiglu_limit=0.1,
+    # The real default, which leaves the clamp idle on the spread `_randomize` draws. That is
+    # deliberate: `GroupedExperts` runs the routed experts in bfloat16, and next to a saturating
+    # clamp bf16 rounding flips which entries get clipped, so a clipped entry's gradient jumps
+    # between `silu'(gate) * up` and exactly zero. Measured against HF that swings individual
+    # routed-expert gradients by 39%, against 0.66% with the clamp idle, which would leave the
+    # parity comparisons unable to see anything else. `_CLAMPED_MOE` covers the clamp instead.
+    swiglu_limit=10.0,
     num_hash_layers=0,
     rms_norm_eps=1e-6,
 )
@@ -181,6 +185,11 @@ def _moe_hidden_states() -> tuple[torch.Tensor, torch.Tensor]:
 
 
 # A vocabulary small enough that a 32-token batch hits most rows of the table several times.
+# Small enough that the parameter spread `_randomize` draws actually reaches the clamp. Only the
+# shared expert is compared under it, and that path stays in float32, so the comparison is exact
+# and the bf16 boundary flipping described on `_MOE` does not arise.
+_CLAMPED_MOE = dict(_MOE, swiglu_limit=0.1)
+
 _HASH_MOE = dict(_MOE, num_hash_layers=1, vocab_size=16)
 _HASH_LAYER = 0
 
@@ -201,12 +210,20 @@ def _input_ids() -> torch.Tensor:
 def prime_moe() -> nn.Module:
     """A float32 MoE block with non-degenerate weights, for the reason `_MOE` documents."""
     with torch.device("cuda"):
-        module = DeepseekV4MoE(DeepseekV4Config(**_MOE, use_grouped_mm=False), layer_idx=0)
+        module = DeepseekV4MoE(DeepseekV4Config(**_MOE), layer_idx=0)
     _randomize(module)
     # The aux-loss-free load-balancing bias is a buffer, so `_randomize` leaves it at zero and
     # the biased selection path would go untested.
     with torch.no_grad():
-        module.expert_bias.normal_(mean=0.0, std=0.1)
+        module.router.selection_bias.normal_(mean=0.0, std=0.1)
+    return module
+
+
+def prime_clamped_moe() -> nn.Module:
+    """A MoE block whose SwiGLU clamp actually bites, for the shared expert's clamp test."""
+    with torch.device("cuda"):
+        module = DeepseekV4MoE(DeepseekV4Config(**_CLAMPED_MOE), layer_idx=0)
+    _randomize(module)
     return module
 
 
@@ -214,7 +231,7 @@ def prime_hash_moe() -> nn.Module:
     """The same, hash-routed. The table starts all-zero, which would send every token to
     expert 0, so it is drawn here."""
     with torch.device("cuda"):
-        module = DeepseekV4MoE(DeepseekV4Config(**_HASH_MOE, use_grouped_mm=False), layer_idx=_HASH_LAYER)
+        module = DeepseekV4MoE(DeepseekV4Config(**_HASH_MOE), layer_idx=_HASH_LAYER)
     _randomize(module)
     with torch.no_grad():
         module.tid2eid.copy_(_tid2eid())

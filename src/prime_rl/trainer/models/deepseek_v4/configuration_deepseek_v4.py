@@ -84,7 +84,6 @@ class DeepseekV4Config(PretrainedConfig):
         output_router_logits: Whether to return the router logits.
         router_aux_loss_coef: Coefficient of the router auxiliary loss.
         router_jitter_noise: Jitter noise added to the router inputs during training.
-        use_grouped_mm: Whether the routed experts use a grouped matmul kernel.
     """
 
     model_type = "deepseek_v4"
@@ -148,7 +147,6 @@ class DeepseekV4Config(PretrainedConfig):
         output_router_logits: bool = False,
         router_aux_loss_coef: float = 0.001,
         router_jitter_noise: float = 0.0,
-        use_grouped_mm: bool = True,
         pad_token_id: int | None = None,
         bos_token_id: int | None = 0,
         eos_token_id: int | list[int] | None = 1,
@@ -222,7 +220,6 @@ class DeepseekV4Config(PretrainedConfig):
         self.output_router_logits = output_router_logits
         self.router_aux_loss_coef = router_aux_loss_coef
         self.router_jitter_noise = router_jitter_noise
-        self.use_grouped_mm = use_grouped_mm
 
         # Manifold-constrained hyper-connections
         self.hc_mult = hc_mult

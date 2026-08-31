@@ -107,9 +107,9 @@ def _randomize(model: nn.Module) -> None:
 
     with torch.no_grad():
         for name, buffer in model.named_buffers():
-            # HF hangs the aux-loss-free load-balancing bias off the router; prime-rl's `MoE`
-            # owns it one level up, as `expert_bias`. Draw whichever this model carries.
-            if name.endswith("e_score_correction_bias") or name.endswith("expert_bias"):
+            # HF and prime-rl both hang the aux-loss-free load-balancing bias off the router,
+            # under different names. Draw whichever this model carries.
+            if name.endswith("e_score_correction_bias") or name.endswith("selection_bias"):
                 buffer.normal_(mean=0.0, std=0.1)
             elif name.endswith("tid2eid"):
                 buffer.copy_(_tid2eid(_BASE["vocab_size"], _BASE["n_routed_experts"], _BASE["num_experts_per_tok"]))
@@ -118,7 +118,7 @@ def _randomize(model: nn.Module) -> None:
 def _prime_config() -> DeepseekV4Config:
     # The for-loop expert path keeps the routed experts in the activation dtype; the
     # grouped-mm kernel casts to bfloat16 internally and is covered in test_deepseek_v4_temp.
-    return DeepseekV4Config(**_BASE, use_grouped_mm=False)
+    return DeepseekV4Config(**_BASE)
 
 
 def get_prime_model(dtype: torch.dtype = torch.bfloat16) -> nn.Module:

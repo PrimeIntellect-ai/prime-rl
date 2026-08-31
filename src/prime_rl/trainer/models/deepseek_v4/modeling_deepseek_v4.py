@@ -82,7 +82,7 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
 
 
 # Mirrors HF's `_keep_in_fp32_modules_strict`, with `e_score_correction_bias` renamed to
-# the `expert_bias` prime-rl's `MoE` keeps it under. The bare `norm` entry subsumes the
+# the `selection_bias` prime-rl's router keeps it under. The bare `norm` entry subsumes the
 # named norms; both are kept so the list stays a one-to-one image of HF's.
 _KEEP_IN_FP32_MODULES = (
     "attn_hc",
@@ -90,7 +90,7 @@ _KEEP_IN_FP32_MODULES = (
     "hc_head",
     "sinks",
     "position_bias",
-    "expert_bias",
+    "selection_bias",
     "q_a_norm",
     "kv_norm",
     "input_layernorm",
@@ -168,7 +168,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         # One rotary per compressor and per indexer on top of the model-level one, and all
         # of their tables are non-persistent, so every instance has to be walked. Only
         # `tokens_per_expert` gets reset here: it is non-persistent (never in a checkpoint)
-        # so `to_empty()` leaves it uninitialized. `expert_bias` is persistent and already
+        # so `to_empty()` leaves it uninitialized. `selection_bias` is persistent and already
         # holds the real checkpoint value by the time this runs (dcp_load has already
         # populated it), so it must not be touched here.
         for module in self.modules():

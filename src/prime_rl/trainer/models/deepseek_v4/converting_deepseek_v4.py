@@ -15,15 +15,17 @@ saved checkpoint from `scripts/mini_moe.py --arch deepseek_v4`, not derivable fr
 in-memory `state_dict()` parity test alone, which only ever exercised the HF-native side).
 
 The genuinely PrimeRL-specific delta, once on HF-native names, is small: PrimeRL's shared
-`MoE` owns the router and the aux-loss-free load-balancing bias one level above where HF hangs
-them (off the router itself), and names its shared expert in the singular. Attention and its
+`MoE` owns the router one level above where HF hangs it, keeps the aux-loss-free
+load-balancing bias on that router as `selection_bias`, and names its shared expert in the
+singular. Attention and its
 compressors and the hyper-connections already match HF-native shapes exactly once the on-disk
 step above has run. The routed experts are the one place PrimeRL diverges from HF-native on
-purpose: HF fuses `w1`/`w3` into `gate_up_proj` in memory, but PrimeRL's `DeepseekV4Experts`
-keeps them split, matching the on-disk layout directly, so no fusing step is needed at all.
+purpose: HF fuses `w1`/`w3` into `gate_up_proj` in memory, but PrimeRL stacks them as the
+canonical split `gate_proj`/`up_proj`/`down_proj` every other prime-rl MoE uses, so the
+on-disk per-expert `w1`/`w2`/`w3` only ever need stacking and renaming, never fusing.
 
 The two MoE layer types have different key sets: a hash layer carries `mlp.tid2eid` and no
-`mlp.expert_bias`, a standard one the other way round. Every op is present-guarded, so the
+`mlp.router.selection_bias`, a standard one the other way round. Every op is present-guarded, so the
 same list is emitted for both.
 """
 
@@ -120,9 +122,9 @@ def _on_disk_attn_ops(layer_idx: int, layer_type: str) -> list[ConvOp]:
 def _on_disk_moe_ops(layer_idx: int) -> list[ConvOp]:
     """DeepSeek's on-disk `ffn.*` naming -> `transformers`-native `mlp.*`.
 
-    The routed experts' per-expert `w1`/`w2`/`w3` are already prime's own names, so the only
-    conversion they need is stacking into prime's per-expert-batched tensors, same as every
-    other prime-rl MoE model.
+    The routed experts' per-expert `w1`/`w2`/`w3` are stacked into prime's per-expert-batched
+    tensors and renamed to the canonical `gate_proj`/`down_proj`/`up_proj`, same as every other
+    prime-rl MoE model.
     """
     p = f"layers.{layer_idx}"
     shared = f"{p}.mlp.shared_experts"
@@ -136,7 +138,7 @@ def _on_disk_moe_ops(layer_idx: int) -> list[ConvOp]:
             p,
             hf_experts="mlp.experts",
             prime_experts="mlp.experts",
-            proj_order=(("w1", "w1"), ("w2", "w2"), ("w3", "w3")),
+            proj_order=(("gate_proj", "w1"), ("down_proj", "w2"), ("up_proj", "w3")),
         ),
     ]
 
@@ -146,7 +148,7 @@ def _layer_ops(layer_idx: int, layer_type: str) -> list[ConvOp]:
     ops = _on_disk_attn_ops(layer_idx, layer_type) + _on_disk_moe_ops(layer_idx)
     ops += [
         Rename(f"{prefix}.gate.weight", f"{prefix}.router.gate.weight"),
-        Rename(f"{prefix}.gate.e_score_correction_bias", f"{prefix}.expert_bias"),
+        Rename(f"{prefix}.gate.e_score_correction_bias", f"{prefix}.router.selection_bias"),
         Rename(f"{prefix}.gate.tid2eid", f"{prefix}.tid2eid"),
         PrefixRename(f"{prefix}.shared_experts.", f"{prefix}.shared_expert."),
     ]
