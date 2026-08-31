@@ -1,6 +1,9 @@
 import base64
+import importlib
 import io
 import json
+import sys
+from types import ModuleType
 
 import httpx
 import numpy as np
@@ -151,3 +154,25 @@ async def test_renderer_boundary_supplies_prime_prompt_start(monkeypatch):
     result = await renderer_client.generate(sampling_params={"routed_experts_prompt_start": 11})
 
     assert result["routed_experts"]["start"] == 11
+
+
+def test_env_server_workers_install_native_routed_experts_normalizer(monkeypatch):
+    utils_module = ModuleType("prime_rl.utils.utils")
+    utils_module.clean_exit = lambda function: function
+    monkeypatch.setitem(sys.modules, "prime_rl.utils.utils", utils_module)
+    sys.modules.pop("prime_rl.entrypoints.env_server", None)
+    env_server = importlib.import_module("prime_rl.entrypoints.env_server")
+
+    installed: list[bool] = []
+    monkeypatch.setattr(env_server, "setup_env_server_logging", lambda *_args: None)
+    monkeypatch.setattr(env_server, "set_base_sandbox_labels", lambda _labels: None)
+    monkeypatch.setattr(
+        env_server,
+        "install_native_routed_experts_normalizer",
+        lambda: installed.append(True),
+        raising=False,
+    )
+
+    env_server.setup_worker(None, False, [])
+
+    assert installed == [True]
