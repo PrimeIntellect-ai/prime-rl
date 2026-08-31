@@ -1,3 +1,4 @@
+import pytest
 import torch
 from torch import nn
 from torch.utils.checkpoint import CheckpointPolicy, SelectiveCheckpointContext
@@ -64,7 +65,8 @@ def test_selective_policy_saves_default_and_custom_targets():
     )
 
 
-def test_selective_checkpoint_records_moe_routing_once():
+@pytest.mark.parametrize("mode", ["full", "selective"])
+def test_checkpoint_records_moe_routing_once(mode):
     moe = MoE(
         router=TokenChoiceTopKRouter(
             dim=4,
@@ -79,7 +81,7 @@ def test_selective_checkpoint_records_moe_routing_once():
         score_before_experts=True,
         load_balance_coeff=0.1,
     )
-    checkpointed = get_activation_checkpoint_wrapper(ActivationCheckpointConfig(mode="selective"))(moe)
+    checkpointed = get_activation_checkpoint_wrapper(ActivationCheckpointConfig(mode=mode))(moe)
     hidden_states = torch.randn(1, 3, 4, requires_grad=True)
 
     output = checkpointed(hidden_states)

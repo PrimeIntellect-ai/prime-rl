@@ -69,9 +69,13 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
         "prime_rl::sparse_mla",
     }
 )
+# An operation target matches one qualified operator name, while a namespace
+# target matches every operation registered in that namespace.
 DEFAULT_SELECTIVE_TARGETS = DEFAULT_SELECTIVE_SAVE_NAMESPACES | DEFAULT_SELECTIVE_SAVE_OPERATIONS
 
 
+# PyTorch calls checkpoint policies with the dispatched operation's operands.
+# Keyword operands let us distinguish CUDA-to-CPU copies from other _to_copy calls.
 def _mandatory_checkpoint_policy(
     _context: SelectiveCheckpointContext,
     operation: torch._ops.OpOverload | torch._ops.HigherOrderOperator,
@@ -106,10 +110,10 @@ def _selective_checkpoint_policy(
 
 def get_activation_checkpoint_wrapper(config: ActivationCheckpointConfig) -> Callable[[nn.Module], nn.Module]:
     if config.mode == "full":
-        return partial(checkpoint_wrapper, checkpoint_impl=CheckpointImpl.NO_REENTRANT)
-
-    targets = DEFAULT_SELECTIVE_TARGETS if config.targets is None else frozenset(config.targets)
-    policy = partial(_selective_checkpoint_policy, targets=targets)
+        policy = _mandatory_checkpoint_policy
+    else:
+        targets = DEFAULT_SELECTIVE_TARGETS if config.targets is None else frozenset(config.targets)
+        policy = partial(_selective_checkpoint_policy, targets=targets)
 
     return partial(
         checkpoint_wrapper,

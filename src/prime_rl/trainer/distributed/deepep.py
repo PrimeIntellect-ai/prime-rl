@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import cast
 from weakref import WeakValueDictionary
 
 import torch
@@ -18,7 +19,8 @@ from prime_rl.trainer.distributed.token_dispatcher import (
 _buffer: Buffer | None = None
 _handle_cache: dict[int, object] = {}
 _combine_backward_handles: dict[int, object] = {}
-_combine_dispatchers: WeakValueDictionary[int, object] = WeakValueDictionary()
+# The custom-op schema can carry only the dispatcher ID; weak values avoid extending dispatcher lifetimes.
+_combine_dispatchers: WeakValueDictionary[int, DeepEPTokenDispatcher] = WeakValueDictionary()
 _pending_dispatch_events: dict[int, EventOverlap] = {}
 _handle_counter = 0
 _deepep_cuda_ops_registered = False
@@ -141,7 +143,7 @@ def _combine_op_impl(x: torch.Tensor, handle_id: torch.Tensor, dispatcher_id: in
         async_finish=True,
         allocate_on_comm_stream=True,
     )
-    dispatcher = cast("DeepEPTokenDispatcher | None", _combine_dispatchers.get(dispatcher_id))
+    dispatcher = _combine_dispatchers.get(dispatcher_id)
     assert dispatcher is not None, "DeepEP dispatcher was released before combine completed."
     dispatcher._pending_combine_events.append(after_event)
     if x.requires_grad:
