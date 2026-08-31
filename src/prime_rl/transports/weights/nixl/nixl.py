@@ -80,7 +80,7 @@ class NIXLWeightSender(WeightSender):
         self.config = config
         self.parallel_dims = parallel_dims
         if self.is_serving_rank:
-            set_ucx_env_defaults(torch.cuda.current_device())
+            set_ucx_env_defaults(torch.accelerator.current_device_index())
             self.nixl_agent = NixlAgent(make_agent_name("trainer", self.world.rank))
         self.initialized = False
         self.transfer_group_names: list[str] = []
@@ -264,7 +264,7 @@ class NIXLWeightSender(WeightSender):
                 TrainerAgent(
                     name=self.nixl_agent.name,
                     metadata=self.nixl_agent.get_metadata(),
-                    device_id=torch.cuda.current_device(),
+                    device_id=torch.accelerator.current_device_index(),
                 )
             ],
             staging_buffer_count=self.staging_buffer_count,
@@ -422,7 +422,7 @@ class NIXLWeightSender(WeightSender):
             if self.is_serving_rank:
                 for shard in self.staged_shards_by_group.get(group, ()):
                     shard.copy_to_staging()
-                torch.cuda.synchronize()
+                torch.accelerator.synchronize()
                 notification = group_notification(group, self.group_generations[group])
                 for peer in self.inference_peers:
                     self.nixl_agent.send_notification(peer, notification)
