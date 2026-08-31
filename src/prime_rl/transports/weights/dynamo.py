@@ -9,6 +9,7 @@ from typing import Any, Iterator, cast
 import httpx
 import torch
 import torch.nn as nn
+from modelexpress.client import MxClient
 from torch import Tensor
 from torch.distributed.tensor import DTensor
 
@@ -26,6 +27,15 @@ from prime_rl.trainer.conversion_utils import get_max_layer_num
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
 from prime_rl.transports.weights.nccl import filter_state_dict_by_layers, preprocess_layer_checkpoint
+from prime_rl.transports.weights.nixl.agent import (
+    NixlAgent,
+    NixlPeer,
+    make_agent_name,
+    policy_notification,
+    set_ucx_env_defaults,
+)
+from prime_rl.transports.weights.nixl.model_express import ModelExpressSession
+from prime_rl.transports.weights.nixl.trainer_tensor_table import TrainerTensorTable
 from prime_rl.utils.pathing import wait_for_path
 from prime_rl.utils.vlm import get_layer_prefix
 
@@ -132,7 +142,9 @@ class PrimeWeightSource:
             metadata = []
             for layer_idx, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
                 converted = preprocess_layer_checkpoint(self.model, layer_state_dict, layer_idx)
-                metadata.extend(ParamMeta(name, tensor.dtype, tuple(tensor.shape)) for name, tensor in converted.items())
+                metadata.extend(
+                    ParamMeta(name, tensor.dtype, tuple(tensor.shape)) for name, tensor in converted.items()
+                )
             self._metadata = metadata
         return list(self._metadata)
 
@@ -226,6 +238,9 @@ class DynamoWeightReceiver(WeightReceiver):
     def __init__(self, broadcast_dir, config, admin_clients, model_name, admin_plane: DynamoAdminClients) -> None:
         super().__init__(broadcast_dir, config, admin_clients, model_name)
         self.admin_plane = admin_plane
+        self.nixl_agent: NixlAgent | None = None
+        self.nixl_session: ModelExpressSession | None = None
+        self.nixl_trainer_peer: NixlPeer | None = None
 
     def _world_size(self) -> int:
         sizes = [worker.world_size for worker in self.admin_plane.workers]
@@ -277,6 +292,45 @@ class DynamoWeightReceiver(WeightReceiver):
                 )
                 rank_offset += worker.world_size
             await self.admin_plane.fanout_collective(bodies)
+            set_ucx_env_defaults(0)
+            self.nixl_agent = NixlAgent(make_agent_name("orchestrator", 0))
+            self.nixl_session = ModelExpressSession(
+                client=MxClient(server_url=f"{self.config.host}:{self.config.port}"),
+                role="orchestrator",
+                rank=0,
+                session_id=self.config.session_id,
+                worker_id="orchestrator",
+            )
+            self.nixl_session.publish(nixl_metadata=self.nixl_agent.get_metadata())
+
+    async def _wait_for_nixl_ready(self, step: int) -> None:
+        if self.nixl_agent is None or self.nixl_session is None:
+            raise RuntimeError("Dynamo NIXL receiver was not initialized")
+        if self.nixl_trainer_peer is None:
+            trainer_refs = await asyncio.to_thread(
+                self.nixl_session.wait_for,
+                "trainer",
+                count=1,
+                timeout=self.config.timeout,
+            )
+            trainer_worker = await asyncio.to_thread(self.nixl_session.fetch, trainer_refs[0])
+            trainer_table = TrainerTensorTable.decode(trainer_worker.nixl_metadata)
+            self.nixl_trainer_peer = self.nixl_agent.add_remote_agent(trainer_table.agents[0].metadata)
+            self.nixl_agent.make_connection(self.nixl_trainer_peer)
+        await asyncio.to_thread(
+            self.nixl_agent.wait_for_notification,
+            [self.nixl_trainer_peer],
+            policy_notification(step, "ready"),
+            timeout=self.config.timeout,
+        )
+
+    def _complete_nixl_receive(self, step: int) -> None:
+        if self.nixl_agent is None or self.nixl_trainer_peer is None:
+            raise RuntimeError("Dynamo NIXL receiver has no trainer peer")
+        self.nixl_agent.send_notification(
+            self.nixl_trainer_peer,
+            policy_notification(step, "complete"),
+        )
 
     async def _wait_for_version(self, step: int) -> None:
         expected = str(step)
@@ -312,6 +366,7 @@ class DynamoWeightReceiver(WeightReceiver):
             await self.admin_plane.update_weight_version(str(step))
         elif self.config.type == "nixl":
             self._ack(step)
+            await self._wait_for_nixl_ready(step)
             await self.admin_plane.fanout_collective(
                 [
                     {
@@ -323,6 +378,7 @@ class DynamoWeightReceiver(WeightReceiver):
                     for _ in self.admin_plane.workers
                 ]
             )
+            self._complete_nixl_receive(step)
             await self.admin_plane.update_weight_version(str(step))
         else:
             raise ValueError(f"Unsupported Dynamo weight transfer type: {self.config.type}")
