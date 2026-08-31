@@ -19,33 +19,7 @@ import torch.distributed as dist
 from fla.modules.conv import causal_conv1d as fla_causal_conv1d
 from fla.ops.utils import prepare_sequence_ids
 
-
-class _SeqToHeadParallel(torch.autograd.Function):
-    """[B, S/cp, D] -> [B, S, D/cp] via all-to-all."""
-
-    @staticmethod
-    def forward(ctx, x: torch.Tensor, cp_group: dist.ProcessGroup, cp_size: int) -> torch.Tensor:
-        ctx.cp_group = cp_group
-        ctx.cp_size = cp_size
-        return _all_to_all_seq_to_head(x, cp_group, cp_size)
-
-    @staticmethod
-    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None, None]:
-        return _all_to_all_head_to_seq(grad_output, ctx.cp_group, ctx.cp_size), None, None
-
-
-class _HeadToSeqParallel(torch.autograd.Function):
-    """[B, S, D/cp] -> [B, S/cp, D] via all-to-all."""
-
-    @staticmethod
-    def forward(ctx, x: torch.Tensor, cp_group: dist.ProcessGroup, cp_size: int) -> torch.Tensor:
-        ctx.cp_group = cp_group
-        ctx.cp_size = cp_size
-        return _all_to_all_head_to_seq(x, cp_group, cp_size)
-
-    @staticmethod
-    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None, None]:
-        return _all_to_all_seq_to_head(grad_output, ctx.cp_group, ctx.cp_size), None, None
+from prime_rl.trainer.distributed.collectives import all_to_all_single_equal
 
 
 def _all_to_all_seq_to_head(x: torch.Tensor, cp_group: dist.ProcessGroup, cp_size: int) -> torch.Tensor:
@@ -60,8 +34,7 @@ def _all_to_all_seq_to_head(x: torch.Tensor, cp_group: dist.ProcessGroup, cp_siz
     # Split D into cp_size chunks, put cp dim first for all_to_all scatter
     # [B, S_local, D] -> [B, S_local, cp, D_local] -> [cp, B, S_local, D_local]
     x = x.reshape(B, S_local, cp_size, D_local).permute(2, 0, 1, 3).contiguous()
-    output = torch.empty_like(x)
-    dist.all_to_all_single(output, x, group=cp_group)
+    output = all_to_all_single_equal(x, cp_group)
     # output[i] = data from rank i (its S_local tokens, our D_local slice)
     # [cp, B, S_local, D_local] -> [B, cp, S_local, D_local] -> [B, cp*S_local, D_local]
     return output.permute(1, 0, 2, 3).reshape(B, cp_size * S_local, D_local).contiguous()
@@ -78,8 +51,7 @@ def _all_to_all_head_to_seq(x: torch.Tensor, cp_group: dist.ProcessGroup, cp_siz
     # Split S_global into cp_size chunks (one per rank), put cp dim first for scatter
     # [B, S_global, D_local] -> [B, cp, S_local, D_local] -> [cp, B, S_local, D_local]
     x = x.reshape(B, cp_size, S_local, D_local).permute(1, 0, 2, 3).contiguous()
-    output = torch.empty_like(x)
-    dist.all_to_all_single(output, x, group=cp_group)
+    output = all_to_all_single_equal(x, cp_group)
     # Each rank now has cp chunks of [B, S_local, D_local] — one D_local slice from each rank
     # [cp, B, S_local, D_local] -> [B, S_local, cp, D_local] -> [B, S_local, D]
     return output.permute(1, 2, 0, 3).reshape(B, S_local, cp_size * D_local).contiguous()
@@ -87,12 +59,12 @@ def _all_to_all_head_to_seq(x: torch.Tensor, cp_group: dist.ProcessGroup, cp_siz
 
 def seq_to_head_parallel(x: torch.Tensor, cp_group: dist.ProcessGroup, cp_size: int) -> torch.Tensor:
     """[B, S/cp, D] -> [B, S, D/cp] with correct backward."""
-    return _SeqToHeadParallel.apply(x, cp_group, cp_size)
+    return _all_to_all_seq_to_head(x, cp_group, cp_size)
 
 
 def head_to_seq_parallel(x: torch.Tensor, cp_group: dist.ProcessGroup, cp_size: int) -> torch.Tensor:
     """[B, S, D/cp] -> [B, S/cp, D] with correct backward."""
-    return _HeadToSeqParallel.apply(x, cp_group, cp_size)
+    return _all_to_all_head_to_seq(x, cp_group, cp_size)
 
 
 def mamba_cp_forward(
