@@ -61,7 +61,8 @@ class DeepseekV4Config(PretrainedConfig):
         num_experts_per_tok: Number of routed experts activated per token.
         n_routed_experts: Total number of routed experts.
         n_shared_experts: Number of always-on shared experts.
-        scoring_func: Router activation, one of `sqrtsoftplus`, `softmax`, `sigmoid`.
+        scoring_func: Router activation. Only `sqrtsoftplus` is implemented; any other
+            value is rejected when the MoE layer is built.
         topk_method: Router top-k selection. Only `noaux_tc` (aux-loss-free bias correction) is
             implemented; the field is carried because vLLM gates `e_score_correction_bias` on it.
         norm_topk_prob: Whether to renormalize the top-k routing probabilities.

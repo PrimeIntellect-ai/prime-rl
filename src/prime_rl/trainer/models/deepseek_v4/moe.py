@@ -33,12 +33,12 @@ class ClampedSwiglu:
 
 
 class DeepseekV4Router(TokenChoiceTopKRouter):
-    """Token-choice router scored with `sqrt(softplus(.))`.
+    """Token-choice router scored with `sqrt(softplus(.))`, V4's only scoring function.
 
     `TokenChoiceTopKRouter.forward` picks its scoring function from an inline
     `if/elif/else: raise` chain with no hook to extend, and `"sqrtsoftplus"` is outside
     the `ScoreFuncType` it accepts, so the whole method is restated below. Only the
-    scoring branch is new: the `routed_experts` bypass, the selection bias, the
+    scoring line is new: the `routed_experts` bypass, the selection bias, the
     normalization, the scaling and the per-expert token count are the base class's,
     unchanged.
     """
@@ -57,14 +57,7 @@ class DeepseekV4Router(TokenChoiceTopKRouter):
 
         # Scoring runs in float32 to avoid loss explosion, as in the base class. HF scores
         # in the input dtype instead, so bf16 activations drift from HF by ~1e-3 here.
-        if self.score_func == "sqrtsoftplus":
-            scores = F.softplus(logits.float()).sqrt()
-        elif self.score_func == "sigmoid":
-            scores = torch.sigmoid(logits.float())
-        elif self.score_func == "softmax":
-            scores = F.softmax(logits.float(), dim=1)
-        else:
-            raise NotImplementedError(f"Unknown score function {self.score_func}")
+        scores = F.softplus(logits.float()).sqrt()
 
         # NOTE: the selection bias only steers selection. The gating value top_scores is
         #       still derived from the original scores.
@@ -84,11 +77,8 @@ class DeepseekV4Router(TokenChoiceTopKRouter):
             top_scores = scores.gather(dim=1, index=selected_experts_indices)
 
         with torch.no_grad():
-            if self.score_func == "softmax":
-                routing_confidence_sum = top_scores.sum()
-            else:
-                selected_probability_mass = top_scores / (scores.sum(dim=-1, keepdim=True) + 1e-20)
-                routing_confidence_sum = selected_probability_mass.sum()
+            selected_probability_mass = top_scores / (scores.sum(dim=-1, keepdim=True) + 1e-20)
+            routing_confidence_sum = selected_probability_mass.sum()
 
         if self.route_norm:
             denominator = top_scores.sum(dim=-1, keepdim=True) + 1e-20
@@ -170,6 +160,10 @@ class DeepseekV4MoE(MoE):
         assert config.hidden_act == "silu", (
             f"the routed experts hardcode SiLU; hidden_act={config.hidden_act!r} is not supported"
         )
+        if config.scoring_func != "sqrtsoftplus":
+            raise ValueError(
+                f"the router hardcodes sqrt(softplus(.)); scoring_func={config.scoring_func!r} is not supported"
+            )
 
         is_hash = layer_idx < config.num_hash_layers
 
