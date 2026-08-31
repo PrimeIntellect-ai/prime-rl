@@ -194,6 +194,7 @@ def test_dataloader_shards_across_ranks_and_workers(
 
         def next_sample(dataiter, dataloader, index: int) -> int:
             micro_batch = next(dataiter)
+            # After the causal shift, the first target is DummyRenderer's first character, offset by its two special tokens.
             sample = micro_batch["target_ids"][0, 0].item() - ord("0") - 2
             worker_id = index % num_workers
             worker_round = index // num_workers
