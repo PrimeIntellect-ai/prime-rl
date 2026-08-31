@@ -13,7 +13,7 @@ dependencies = [
     "loguru>=0.7.3",
     "pyarrow>=21.0.0",
     "numpy>=2.2.6",
-    "transformers==5.15.0",
+    "transformers==5.6.2",
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",
     "prime>=0.6.19",
@@ -145,7 +145,7 @@ override-dependencies = [
     # vLLM 0.28.0 requires quack-kernels 0.6.4. It requires this exact CUTLASS version.
     # Keep this pin aligned with quack-kernels and the flash-attn-4 revision below.
     "nvidia-cutlass-dsl==4.6.2",
-    "transformers==5.15.0",
+    "transformers==5.6.2",
     "torch>=2.13.0",
     "openenv-core",
 ]

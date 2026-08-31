@@ -9,6 +9,14 @@ Usage:
 
     # Verify only (on an existing checkpoint)
     uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --verify-only
+
+The `deepseek_v4` preset needs HF's own DeepSeek V4 implementation, which only exists from
+transformers 5.15, so run this script under the same override the HF-oracle tests use:
+
+    uv run --with 'transformers==5.15.0' python scripts/mini_moe.py --arch deepseek_v4 --output-dir ./mini-dsv4
+
+That import is module level, so on the pinned version every arch needs the override, not just
+`deepseek_v4`.
 """
 
 import argparse

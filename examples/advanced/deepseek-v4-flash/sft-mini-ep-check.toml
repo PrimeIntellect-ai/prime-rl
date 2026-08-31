@@ -3,7 +3,8 @@
 # ep>1. Pure trainer forward+backward check on the mini deepseek_v4 preset -- no inference
 # needed, so all GPUs go to training. Generate the checkpoint first:
 #
-#   uv run python scripts/mini_moe.py --arch deepseek_v4 --output-dir /tmp/deepseek-v4-mini
+#   uv run --with 'transformers==5.15.0' python scripts/mini_moe.py \
+#     --arch deepseek_v4 --output-dir /tmp/deepseek-v4-mini
 #
 # On a single allocated 8xH200 node, run as-is (ep=8, matching
 # examples/advanced/deepseek-v4-flash/rl.toml):

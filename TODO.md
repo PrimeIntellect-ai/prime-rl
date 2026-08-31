@@ -1,39 +1,30 @@
 # TODO
 
-## Qwen3.5 GatedDeltaNet varlen patch is broken on transformers >= 5.13
+## Qwen3.5 patch detection misses a dense checkpoint behind a generic alias
 
-`_patch_qwen3_5_linear_attn_varlen()` in `src/prime_rl/trainer/model.py` monkey-patches
-`Qwen3_5DecoderLayer`/`Qwen3_5GatedDeltaNet` so packed RL/SFT batches don't leak Mamba-style
-recurrent state across sequence boundaries. It's broken on transformers 5.15.0 in two ways,
-and no existing test exercises this code path (`_patch_qwen3_5_linear_attn_varlen`,
-`Qwen3_5GatedDeltaNet`, `GatedDeltaNet` have zero hits under `tests/`), so CI won't catch it.
-Originally flagged by reviewer `dzautner` on PR #3055; confirmed and extended here.
+`get_model()` in `trainer/model.py` decides whether to apply the Qwen3.5 patches via a
+name-string check plus a `model_type` fallback that only matches `"qwen3_5_moe*"`. A dense
+Qwen3.5 checkpoint loaded through a generic local alias (e.g. `/checkpoints/model4b`) silently
+skips them: no crash, just the state-leak bug that `_patch_qwen3_5_linear_attn_varlen` exists to
+prevent, showing up only as elevated mismatch-KL. Flagged by reviewer `dzautner` on PR #3055 and
+still unaddressed. Fix: extract the detection into a small pure function checking both
+`model_type` and nested `text_config.model_type` for `qwen3_5`/`qwen3_5_moe` prefixes, and add a
+unit test for the dense generic-alias case.
 
-1. **Renamed attribute.** The patch checks `self.layer_type != "linear_attention"`, but
-   transformers >= 5.13 renamed this to `self.block_type`. Raises `AttributeError` the moment
-   the patch runs. Fix: `getattr(self, "block_type", getattr(self, "layer_type", None))`.
-2. **Kernel references no longer exist.** The patch calls `self.causal_conv1d_fn(...)` /
-   `self.chunk_gated_delta_rule(...)` as bound methods; transformers moved these to
-   module-level functions in `transformers.models.qwen3_5.modeling_qwen3_5`, each resolved at
-   decoration time to a real kernel or a plain PyTorch reference
-   (`@use_kernel_func_from_hub_with_fallback`). In this dev env, `causal_conv1d` isn't
-   installed, so `causal_conv1d_fn` is guaranteed to be the reference implementation, which
-   ignores `seq_idx`/packing entirely. `fla.ops.gated_delta_rule.chunk_gated_delta_rule` (an
-   installed alternative) does take `cu_seqlens`, but its signature doesn't match the current
-   call site and its `cu_seqlens` correctness hasn't been verified here. (Checking which
-   implementation resolved requires `transformers.utils.import_utils.resolve_internal_import`
-   directly: `functools.wraps` makes the wrapper's `__module__`/signature always look like the
-   reference impl regardless of what actually resolved.)
+Nothing under `tests/` exercises the patched path at all (`_patch_qwen3_5_linear_attn_varlen`,
+`Qwen3_5GatedDeltaNet`, `GatedDeltaNet` have zero hits), so CI would not catch a regression in
+it either. Worth a packed-vs-unpacked GDN parity test alongside the fix above.
 
-What still needs to happen: fix the rename with a `getattr` fallback; call the module-level
-`causal_conv1d_fn` directly (keep prime-rl's existing per-segment conv1d loop rather than a
-fast path that can't be reliably detected as safe); re-derive the `chunk_gated_delta_rule` call
-against fla's real signature with an actual packed-vs-unpacked parity check; then add regression
-tests for both (none exist today). Separately (dzautner, PR #3055, still open): `get_model()` in
-`trainer/model.py` detects Qwen3.5 via a name-string check plus a `model_type` fallback that
-only matches `"qwen3_5_moe*"`, so a dense Qwen3.5 checkpoint loaded through a generic local
-alias silently skips the patch (no crash, just the state-leak bug back, showing up only as
-elevated mismatch-KL).
+## Two DeepSeek V4 shims to delete on the next transformers bump
+
+Transformers added V4's `compressed_sparse_attention` / `heavily_compressed_attention` to the
+vocabulary `PretrainedConfig.validate_layer_type` checks in 5.15. Below that, every DeepSeek V4
+config raises on construction, so `utils/transformers_compat.py` extends the tuple by hand and
+both halves of the repo call it: the trainer at config-module import, and the inference side
+through `monkey_patch_deepseek_v4_allowed_layer_types` in `inference/patches.py` (vLLM's own
+`DeepseekV4Config` has no override of its own, and vLLM declares only `transformers>=5.5.3`).
+Once the pin reaches 5.15 or later, both call sites go away; `DEEPSEEK_V4_LAYER_TYPES` moves
+back next to the validator that reads it.
 
 ## DeepSeek V4 port
 
@@ -51,7 +42,8 @@ All seven steps are done, which gets a minimal working model: `DeepseekV4ForCaus
 registered in `trainer/models/__init__.py`, dispatches through `AutoModelForCausalLMPrimeRL` /
 `get_model()`, loads an HF checkpoint through `converting_deepseek_v4.conversion_chain` with no
 missing or unexpected keys, and matches HF's forward and backward to the float32 floor
-(`tests/unit/train/models/test_deepseek_v4.py`). What follows is what it still takes to call it
+(`tests/unit/train/models/test_deepseek_v4_hf.py`, which runs only under the transformers 5.15
+override). What follows is what it still takes to call it
 production ready.
 
 Fixed during review: `init_buffers_post_meta` unconditionally zeroed `MoE`'s persistent
@@ -150,10 +142,10 @@ Open items:
   scores in the activation dtype, so in bfloat16 a few percent of tokens pick a different expert
   set and the logits diverge by ~10% of their scale. `test_deepseek_v4_float32` pins that this is
   the *only* remaining difference; `test_deepseek_v4` documents the bfloat16 bound.
-- **`tests/unit/train/models/test_deepseek_v4_temp.py` is per-mechanism scaffolding.** It predates
-  the model classes and still carries the only coverage of several internals (compressor window
-  structure, indexer selection, grouped-mm experts). `test_deepseek_v4.py` covers the assembled
-  model. Fold the still-useful half of the scratch file into it and delete the rest.
+- **`tests/unit/train/models/test_deepseek_v4_temp.py` is the per-mechanism suite.** It carries
+  the only coverage of several internals (compressor window structure, indexer selection,
+  grouped-mm experts) plus the packed-batch invariants; `test_deepseek_v4.py` covers the
+  assembled model. Its HF-oracle half lives in `test_deepseek_v4_temp_hf.py`.
 
 Investigated whether the eager-only attention above (`modeling_deepseek_v4.py:128-133`: head_dim
 512 exceeds FlashAttention's 256 cap, no SDPA equivalent for the per-head sink logit,

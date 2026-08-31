@@ -3,7 +3,8 @@
 # performance or convergence test: the mini checkpoint is freshly initialized, so completions
 # are incoherent and rewards stay near zero by construction. Generate the checkpoint first:
 #
-#   uv run python scripts/mini_moe.py --arch deepseek_v4 --output-dir /tmp/deepseek-v4-mini
+#   uv run --with 'transformers==5.15.0' python scripts/mini_moe.py \
+#     --arch deepseek_v4 --output-dir /tmp/deepseek-v4-mini
 #
 # Then, on a single node with at least 4 GPUs. The CUDA_HOME/PATH override is required: the
 # system default nvcc is 11.5 and the TileLang kernel JIT needs 12.3 or newer.
