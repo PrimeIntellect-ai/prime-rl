@@ -42,9 +42,9 @@ wants; `is_available` is just that call compared to `None`.
 tcgen05. Its trainer integration is dormant. `mxfp8_moe` is a Python-only registered
 kernel package for MXFP8 grouped GEMM and torch EP transport on SM100; it owns the
 MoE-specific torchao-derived orchestration and exports explicit BF16 boundaries instead
-of tensor-subclass interception. `indexed_attention` uses TileLang for token-indexed
-grouped-query attention, Triton for QSA scoring, and a compiled persistent top-k on SM80,
-SM90, and SM100.
+of tensor-subclass interception. `indexed_attention` is Python-only TileLang on SM80,
+SM90, and SM100; it provides indexed grouped-query attention, index scoring, and radix
+selection.
 
 What a kernel requires of its inputs — block sizes, alignments, shape constraints — belongs
 to prime-kernels, which exports it: `flash_moe.BLOCK_M`, `flash_moe.MXFP8_SCALE_BLOCK`, and
