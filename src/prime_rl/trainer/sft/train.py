@@ -4,6 +4,7 @@ import math
 import time
 import asyncio
 from contextlib import nullcontext
+from dataclasses import dataclass, field
 from datetime import timedelta
 
 from renderers.base import create_renderer
@@ -41,8 +42,7 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import (
-    get_dataset_progress,
-    get_dataset_state,
+    Batch,
     load_sft_dataset,
     setup_dataloader,
     setup_dataset,
@@ -67,6 +67,13 @@ from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 import torch.distributed as dist
+
+
+@dataclass
+class SFTProgress(Progress):
+    epoch: int = 0
+    samples_by_source: dict[str | None, int] = field(default_factory=dict)
+    tokens_by_source: dict[str | None, int] = field(default_factory=dict)
 
 
 @clean_exit
@@ -228,7 +235,7 @@ def train(config: SFTConfig):
         val_raw_dataset = load_sft_dataset(config.val.data)
 
     # Optionally, resume training from a checkpoint
-    progress = Progress()
+    progress = SFTProgress()
 
     if checkpoint_step is not None:
         resume_dir = config.resume.dir if config.resume else None
@@ -250,7 +257,7 @@ def train(config: SFTConfig):
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
         logger.info(
             f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
-            f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
+            f"total_samples={progress.total_samples}, epoch={progress.epoch})"
         )
     else:
         logger.info("Starting from scratch")
@@ -267,17 +274,17 @@ def train(config: SFTConfig):
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     cp_size = parallel_dims.cp
 
-    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
+    def compute_loss(micro_batch: Batch) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
-        input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
-        position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
-        target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
-        loss_mask = micro_batch["loss_mask"].to("cuda", non_blocking=True)
-        seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
-        mm_kwargs = micro_batch.get("mm_kwargs")
+        input_ids = micro_batch.input_ids.to("cuda", non_blocking=True)
+        position_ids = micro_batch.position_ids.to("cuda", non_blocking=True)
+        target_ids = micro_batch.target_ids.to("cuda", non_blocking=True)
+        loss_mask = micro_batch.loss_mask.to("cuda", non_blocking=True)
+        seq_lens = micro_batch.seq_lens.to("cuda", non_blocking=True)
+        mm_kwargs = micro_batch.mm_kwargs
         if mm_kwargs is not None:
             mm_kwargs = {key: value.to("cuda", non_blocking=True) for key, value in mm_kwargs.items()}
-        mm_type_ids = micro_batch.get("mm_token_type_ids")
+        mm_type_ids = micro_batch.mm_token_type_ids
         if mm_type_ids is not None:
             mm_type_ids = mm_type_ids.to("cuda", non_blocking=True)
 
@@ -476,7 +483,7 @@ def train(config: SFTConfig):
             step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         else:
             micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
-            local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
+            local_token_count = sum(int(micro_batch.loss_mask.sum()) for micro_batch in micro_batches)
             global_step_token_count = torch.tensor(local_token_count, dtype=torch.int64, device="cuda")
             dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
             global_token_count_val = global_step_token_count.item() // cp_size
@@ -491,10 +498,21 @@ def train(config: SFTConfig):
                 overlap_optimizer=not run_validation_this_step,
             )
 
+        step_padding_tokens = 0
+        step_batch_tokens = 0
         for micro_step, micro_batch in enumerate(micro_batches):
+            progress.total_samples = max(progress.total_samples, micro_batch.step)
+            progress.epoch = max(progress.epoch, micro_batch.epoch)
+            for source, num_samples in micro_batch.num_samples_by_source.items():
+                progress.samples_by_source[source] = progress.samples_by_source.get(source, 0) + num_samples
+            for source, num_tokens in micro_batch.num_tokens_by_source.items():
+                progress.tokens_by_source[source] = progress.tokens_by_source.get(source, 0) + num_tokens
+            step_padding_tokens += micro_batch.num_padding_tokens
+            step_batch_tokens += micro_batch.input_ids.numel()
+
             if config.log.log_data:
                 print_sample(
-                    micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
+                    micro_batch.input_ids.flatten().tolist(), micro_batch.loss_mask.flatten().tolist(), tokenizer
                 )
 
             with maybe_record_function("forward"):
@@ -596,8 +614,6 @@ def train(config: SFTConfig):
         num_local_tokens = config.data.seq_len * (config.data.batch_size // dp_size)
         num_tokens = dp_size * num_local_tokens
         progress.total_tokens += num_tokens
-        dataset_progress = get_dataset_progress(dataloader)
-        progress.total_samples = dataset_progress["step"]
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_tokens_per_second() or 0
@@ -619,26 +635,25 @@ def train(config: SFTConfig):
         logger.success(step_message)
 
         # Log progress metrics
-        samples_by_source = dataset_progress["num_samples"]
-        tokens_by_source = dataset_progress["num_tokens"]
-        total_samples = sum(samples_by_source.values())
-        total_tokens = sum(tokens_by_source.values())
+        total_samples = sum(progress.samples_by_source.values())
+        total_tokens = sum(progress.tokens_by_source.values())
         progress_metrics = {
-            "progress/epoch": dataset_progress["epoch"],
+            "progress/epoch": progress.epoch,
             "progress/num_samples": progress.total_samples,
             "progress/num_tokens": progress.total_tokens,
+            "progress/ratio_padding_tokens": step_padding_tokens / step_batch_tokens,
             "step": progress.step,
         }
         # At least two subsets/splits
-        if len(samples_by_source) > 1:
+        if len(progress.samples_by_source) > 1:
             progress_metrics.update(
                 **{
                     f"progress/{subset_or_split}/ratio_samples": num_samples / total_samples
-                    for subset_or_split, num_samples in samples_by_source.items()
+                    for subset_or_split, num_samples in progress.samples_by_source.items()
                 },
                 **{
                     f"progress/{subset_or_split}/ratio_tokens": num_tokens / total_tokens
-                    for subset_or_split, num_tokens in tokens_by_source.items()
+                    for subset_or_split, num_tokens in progress.tokens_by_source.items()
                 },
             )
         asyncio.run(monitors.log(progress_metrics, step=progress.step))

@@ -8,7 +8,7 @@ from renderers.base import MultiModalData, PlaceholderRange, RenderedTrainingSam
 from transformers import AutoTokenizer
 
 import prime_rl.trainer.sft.data as sft_data
-from prime_rl.trainer.sft.data import CatDataset, SFTDataset, _drop_null_fields
+from prime_rl.trainer.sft.data import CatDataset, Sample, SFTDataset, _drop_null_fields, cat_collate
 from prime_rl.trainer.utils import print_sample
 
 _BOS_TOKEN_ID = 0
@@ -74,7 +74,7 @@ def test_sft_first_exhausted(build_dummy_dataset, dummy_renderer, max_epochs: in
     num_samples = 0
     sampling_order = []
     for x in dataset:
-        sampling_order.append(x["target_ids"][:-1])
+        sampling_order.append(x.target_ids[:-1])
         num_samples += 1
     assert num_samples == max_epochs * min([len(d) for d in ds]) * len(ds)
     assert sampling_order == [_sample_token_ids("a0"), _sample_token_ids("b0")] * max_epochs
@@ -90,7 +90,7 @@ def test_sft_all_exhausted(build_dummy_dataset, dummy_renderer, max_epochs: int)
     num_samples = 0
     sampling_order = []
     for x in dataset:
-        sampling_order.append(x["target_ids"][:-1])
+        sampling_order.append(x.target_ids[:-1])
         num_samples += 1
     assert num_samples == max_epochs * max([len(d) for d in ds]) * len(ds)
     print(sampling_order)
@@ -124,7 +124,7 @@ def test_sft_all_exhausted_with_probs(build_dummy_dataset, dummy_renderer, probs
     num_samples = 0
     sampling_freq = []
     for x in dataset:
-        sampling_freq.append(x["target_ids"][0])
+        sampling_freq.append(x.target_ids[0])
         num_samples += 1
     sampling_freq = Counter(sampling_freq)
     ratio_a = sampling_freq[ord("a") + 2] / num_samples
@@ -149,13 +149,13 @@ def test_sft_dataset_state(build_dummy_dataset, dummy_renderer):
     # Epoch 1
     for i in range(4):
         sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
+        assert sample.target_ids[:-1] == _sample_token_ids(str(i))
         assert dataset.state_dict() == {"epoch": 0, "step": i + 1}
 
     # Epoch 2
     for i in range(4):
         sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
+        assert sample.target_ids[:-1] == _sample_token_ids(str(i))
         assert dataset.state_dict() == {"epoch": 1, "step": 4 + i + 1}
 
     with pytest.raises(StopIteration):
@@ -178,7 +178,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset, dummy_renderer):
     # Epoch 1
     for i in range(4):
         sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
+        assert sample.target_ids[:-1] == _sample_token_ids(str(i))
         assert dataset.state_dict() == {"epoch": 0, "step": i + 1}
 
     # Resuming from checkpoint cross epoch
@@ -196,7 +196,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset, dummy_renderer):
     # Epoch 2.1
     for i in range(2):
         sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
+        assert sample.target_ids[:-1] == _sample_token_ids(str(i))
         assert dataset.state_dict() == {"epoch": 1, "step": 4 + i + 1}
 
     # Resuming from checkpoint mid epoch
@@ -214,7 +214,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset, dummy_renderer):
     # Epoch 2.2
     for i in range(2, 4):
         sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
+        assert sample.target_ids[:-1] == _sample_token_ids(str(i))
         assert dataset.state_dict() == {"epoch": 1, "step": 4 + i + 1}
 
     with pytest.raises(StopIteration):
@@ -237,7 +237,7 @@ def test_multiturn_loss_mask():
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
     dataset = SFTDataset(dataset, create_renderer(tokenizer), max_examples=1)
     sample = next(iter(dataset))
-    print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
+    print_sample(sample.input_ids, sample.loss_mask, tokenizer)
 
 
 def test_multiturn_loss_mask_with_tools():
@@ -300,7 +300,7 @@ def test_multiturn_loss_mask_with_tools():
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
     dataset = SFTDataset(dataset, create_renderer(tokenizer), max_examples=1)
     sample = next(iter(dataset))
-    print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
+    print_sample(sample.input_ids, sample.loss_mask, tokenizer)
 
 
 def test_messages_rows_are_equivalent_to_empty_prompt_completion():
@@ -409,16 +409,15 @@ def _sft_sample(
     *,
     mm_kwargs: dict[str, torch.Tensor] | None = None,
     mm_token_type_ids: list[int] | None = None,
-) -> dict:
-    return {
-        "input_ids": input_ids,
-        "position_ids": list(range(len(input_ids))),
-        "loss_mask": [True] * len(input_ids),
-        "target_ids": [x + 1 for x in input_ids],
-        "seq_lens": [len(input_ids)],
-        "mm_kwargs": mm_kwargs,
-        "mm_token_type_ids": mm_token_type_ids,
-    }
+) -> Sample:
+    return Sample(
+        input_ids=input_ids,
+        position_ids=list(range(len(input_ids))),
+        loss_mask=[True] * len(input_ids),
+        target_ids=[x + 1 for x in input_ids],
+        mm_kwargs=mm_kwargs,
+        mm_token_type_ids=mm_token_type_ids,
+    )
 
 
 def test_cat_dataset_packs_multimodal_samples():
@@ -444,13 +443,14 @@ def test_cat_dataset_packs_multimodal_samples():
         seq_len=5,
     )
 
-    packed = next(iter(dataset))
+    packed = cat_collate([next(iter(dataset))], seq_len=5)
 
-    assert packed["input_ids"] == [1, 2, 3, 4, 5]
-    assert packed["seq_lens"] == [2, 3]
-    assert packed["mm_token_type_ids"] == [0, 1, 0, 1, 1]
-    assert packed["mm_kwargs"]["pixel_values"].shape == (5, 3)
-    assert packed["mm_kwargs"]["image_grid_thw"].tolist() == [[1, 1, 2], [1, 1, 3]]
+    assert packed.input_ids.tolist() == [[1, 2, 3, 4, 5]]
+    assert packed.seq_lens.tolist() == [2, 3]
+    assert packed.mm_token_type_ids.tolist() == [[0, 1, 0, 1, 1]]
+    assert packed.mm_kwargs["pixel_values"].shape == (5, 3)
+    assert packed.mm_kwargs["image_grid_thw"].tolist() == [[1, 1, 2], [1, 1, 3]]
+    assert packed.num_padding_tokens == 0
 
 
 def test_cat_dataset_packs_text_and_multimodal_samples_together():
@@ -472,16 +472,18 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
     )
 
     dataiter = iter(dataset)
-    packed = next(dataiter)
-    text_pack = next(dataiter)
+    packed = cat_collate([next(dataiter)], seq_len=5)
+    text_pack = cat_collate([next(dataiter)], seq_len=5)
 
-    assert packed["input_ids"] == [1, 2, 3, 4, 0]
-    assert packed["loss_mask"] == [True, True, True, True, False]
-    assert packed["seq_lens"] == [1, 2, 2]
-    assert packed["mm_kwargs"] is not None
-    assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0]
-    assert text_pack["input_ids"] == [5, 6, 0, 0, 0]
-    assert text_pack["loss_mask"] == [True, True, False, False, False]
-    assert text_pack["seq_lens"] == [5]
-    assert text_pack["mm_kwargs"] is None
-    assert text_pack["mm_token_type_ids"] is None
+    assert packed.input_ids.tolist() == [[1, 2, 3, 4, 0]]
+    assert packed.loss_mask.tolist() == [[True, True, True, True, False]]
+    assert packed.seq_lens.tolist() == [1, 2, 2]
+    assert packed.mm_kwargs is not None
+    assert packed.mm_token_type_ids.tolist() == [[0, 0, 1, 0, 0]]
+    assert packed.num_padding_tokens == 1
+    assert text_pack.input_ids.tolist() == [[5, 6, 0, 0, 0]]
+    assert text_pack.loss_mask.tolist() == [[True, True, False, False, False]]
+    assert text_pack.seq_lens.tolist() == [5]
+    assert text_pack.mm_kwargs is None
+    assert text_pack.mm_token_type_ids is None
+    assert text_pack.num_padding_tokens == 3

@@ -240,6 +240,7 @@ Pulled from the console log and mirrored to W&B.
 - `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
+- `progress/ratio_padding_tokens` — fraction of the step's batch tokens that are padding (packing efficiency).
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
 
 **Stability and optimization:**

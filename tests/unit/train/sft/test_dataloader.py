@@ -1,12 +1,13 @@
 import gc
 import os
+from collections import defaultdict
 
 import pytest
 import torch
 from datasets import Dataset
 
 from prime_rl.configs.sft import FakeDataConfig, SFTDataConfig
-from prime_rl.trainer.sft.data import FakeDataset, SFTDataset, get_dataset_progress, get_dataset_state, setup_dataloader
+from prime_rl.trainer.sft.data import FakeDataset, SFTDataset, setup_dataloader
 from prime_rl.trainer.world import reset_world
 
 
@@ -28,23 +29,12 @@ def test_fake_dataset_single_rank_state():
     _, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)
 
-    # Initial state
-    assert get_dataset_state(dataloader) == {"worker_0": {"step": 0, "epoch": 0}}
-
     # Iterate over samples
-    micro_batch = next(dataiter)
-    print(micro_batch)
-    assert micro_batch["input_ids"].unique().item() == 0
-    assert get_dataset_state(dataloader) == {"worker_0": {"step": 1, "epoch": 0}}
-    micro_batch = next(dataiter)
-    assert micro_batch["input_ids"].unique().item() == 1
-    assert get_dataset_state(dataloader) == {"worker_0": {"step": 2, "epoch": 0}}
-    micro_batch = next(dataiter)
-    assert micro_batch["input_ids"].unique().item() == 2
-    assert get_dataset_state(dataloader) == {"worker_0": {"step": 3, "epoch": 0}}
-    micro_batch = next(dataiter)
-    assert micro_batch["input_ids"].unique().item() == 3
-    assert get_dataset_state(dataloader) == {"worker_0": {"step": 4, "epoch": 0}}
+    for step in range(4):
+        micro_batch = next(dataiter)
+        assert micro_batch.input_ids.unique().item() == step
+        assert micro_batch.step == step + 1
+        assert micro_batch.epoch == 0
 
 
 @pytest.mark.parametrize("rank", [0, 1], ids=["rank0", "rank1"])
@@ -62,16 +52,13 @@ def test_fake_dataset_multi_rank_state(rank: int, non_dp_size: int):
     _, dataloader = setup_fake_dataloader(config, non_dp_size)
     dataiter = iter(dataloader)
 
-    # Initial state
-    assert get_dataset_state(dataloader) == {"worker_0": {"step": 0, "epoch": 0}}
-
     data_rank = rank // non_dp_size
     data_world_size = 2 // non_dp_size
     for index in range(6):
         expected_sample = index * data_world_size + data_rank
         micro_batch = next(dataiter)
-        assert micro_batch["input_ids"].unique().item() == expected_sample
-        assert get_dataset_state(dataloader) == {"worker_0": {"step": expected_sample + 1, "epoch": 0}}
+        assert micro_batch.input_ids.unique().item() == expected_sample
+        assert micro_batch.step == expected_sample + 1
 
 
 def test_fake_dataset_single_rank_resume():
@@ -82,9 +69,9 @@ def test_fake_dataset_single_rank_resume():
     # First 2 samples
     for step in range(2):
         micro_batch = next(dataiter)
-        assert micro_batch["input_ids"].shape == (1, 128)
-        assert micro_batch["input_ids"].unique().item() == step
-        assert get_dataset_state(dataloader) == {"worker_0": {"step": step + 1, "epoch": 0}}
+        assert micro_batch.input_ids.shape == (1, 128)
+        assert micro_batch.input_ids.unique().item() == step
+        assert micro_batch.step == step + 1
 
     # Reload dataloader
     state_dict = dataloader.state_dict()
@@ -95,9 +82,9 @@ def test_fake_dataset_single_rank_resume():
     # Second two samples
     for step in range(2, 4):
         micro_batch = next(dataiter)
-        assert micro_batch["input_ids"].shape == (1, 128)
-        assert micro_batch["input_ids"].unique().item() == step
-        assert get_dataset_state(dataloader) == {"worker_0": {"step": step + 1, "epoch": 0}}
+        assert micro_batch.input_ids.shape == (1, 128)
+        assert micro_batch.input_ids.unique().item() == step
+        assert micro_batch.step == step + 1
 
 
 def test_fake_dataset_single_rank_state_with_packing():
@@ -108,16 +95,11 @@ def test_fake_dataset_single_rank_state_with_packing():
     step = 0
     for _ in range(8):
         micro_batch = next(dataiter)
-        num_packed_examples = len(micro_batch["input_ids"][micro_batch["loss_mask"]].unique())
-        step += num_packed_examples
-        assert micro_batch["input_ids"].shape == (1, 128)
-        assert micro_batch["seq_lens"].sum() == micro_batch["input_ids"].shape[1]
-        worker_state = dataloader.state_dict()["_snapshot"]["_worker_snapshots"]["worker_0"]["dataset_state"]
-        pending_sample = worker_state.get("pending_sample")
-        expected_dataset_step = step + (pending_sample is not None)
-        assert get_dataset_state(dataloader) == {"worker_0": {"step": expected_dataset_step, "epoch": 0}}
-        if pending_sample is not None:
-            assert pending_sample["input_ids"][0] == step
+        step += len(micro_batch.samples)
+        assert micro_batch.input_ids.shape == (1, 128)
+        assert micro_batch.seq_lens.sum() == micro_batch.input_ids.shape[1]
+        assert micro_batch.step == step
+        assert micro_batch.num_padding_tokens == (~micro_batch.loss_mask).sum().item()
 
     state_dict = dataloader.state_dict()
     rng_state = torch.random.get_rng_state()
@@ -130,7 +112,7 @@ def test_fake_dataset_single_rank_state_with_packing():
     resumed_batch = next(resumed_dataiter)
 
     for key in ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens"):
-        torch.testing.assert_close(resumed_batch[key], expected_batch[key])
+        torch.testing.assert_close(getattr(resumed_batch, key), getattr(expected_batch, key))
 
 
 @pytest.mark.parametrize("num_workers", [1, 2])
@@ -191,25 +173,30 @@ def test_dataloader_shards_across_ranks_and_workers(
         dataloader = setup_epoch_dataloader()
         dataiter = iter(dataloader)
         epochs = set()
+        num_samples_by_source = defaultdict(int)
+        num_tokens_by_source = defaultdict(int)
 
-        def next_sample(dataiter, dataloader, index: int) -> int:
+        def next_sample(dataiter, index: int) -> int:
             micro_batch = next(dataiter)
             # After the causal shift, the first target is DummyRenderer's first character, offset by its two special tokens.
-            sample = micro_batch["target_ids"][0, 0].item() - ord("0") - 2
+            sample = micro_batch.target_ids[0, 0].item() - ord("0") - 2
             worker_id = index % num_workers
             worker_round = index // num_workers
             data_rank = rank // non_dp_size
             position = worker_round * data_world_size * num_workers + data_rank * num_workers + worker_id
-            progress = get_dataset_progress(dataloader)
+            for source, num_samples in micro_batch.num_samples_by_source.items():
+                num_samples_by_source[source] += num_samples
+            for source, num_tokens in micro_batch.num_tokens_by_source.items():
+                num_tokens_by_source[source] += num_tokens
             assert sample == position % num_examples
-            assert progress["step"] == position + 1
-            assert progress["epoch"] == position // num_examples
-            assert progress["num_samples"] == {"fake": index + 1}
-            assert progress["num_tokens"] == {"fake": (index + 1) * config.seq_len}
-            epochs.add(progress["epoch"])
+            assert micro_batch.step == position + 1
+            assert micro_batch.epoch == position // num_examples
+            assert dict(num_samples_by_source) == {"fake": index + 1}
+            assert dict(num_tokens_by_source) == {"fake": (index + 1) * config.seq_len}
+            epochs.add(micro_batch.epoch)
             return sample
 
-        samples = [next_sample(dataiter, dataloader, index) for index in range(samples_before_resume)]
+        samples = [next_sample(dataiter, index) for index in range(samples_before_resume)]
 
         state_dict = dataloader.state_dict()
         del dataiter, dataloader
@@ -218,9 +205,7 @@ def test_dataloader_shards_across_ranks_and_workers(
         dataloader = setup_epoch_dataloader()
         dataloader.load_state_dict(state_dict)
         dataiter = iter(dataloader)
-        samples.extend(
-            next_sample(dataiter, dataloader, index) for index in range(samples_before_resume, samples_per_rank)
-        )
+        samples.extend(next_sample(dataiter, index) for index in range(samples_before_resume, samples_per_rank))
 
         samples_by_rank.append(samples)
         assert epochs == {0, 1}
@@ -236,7 +221,7 @@ def test_dataloader_shards_across_ranks_and_workers(
     assert sorted(sample for samples in unique_samples for sample in samples) == expected
 
 
-def test_dataloader_progress_is_monotonic_with_uneven_workers():
+def test_batch_metadata_with_uneven_workers():
     config = FakeDataConfig(
         batch_size=1,
         micro_batch_size=1,
@@ -248,11 +233,13 @@ def test_dataloader_progress_is_monotonic_with_uneven_workers():
     _, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)
 
-    positions = []
+    seen_steps = []
     for _ in range(12):
-        next(dataiter)
-        positions.append(get_dataset_progress(dataloader)["step"])
+        micro_batch = next(dataiter)
+        assert micro_batch.num_samples_by_source == {"fake": len(micro_batch.samples)}
+        assert micro_batch.num_padding_tokens == (~micro_batch.loss_mask).sum().item()
+        seen_steps.extend(sample.step for sample in micro_batch.samples)
 
     del dataiter, dataloader
     gc.collect()
-    assert positions == sorted(positions)
+    assert len(seen_steps) == len(set(seen_steps))

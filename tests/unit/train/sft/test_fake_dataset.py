@@ -43,10 +43,10 @@ def test_fake_dataset_random_resume(length: str, data_world_size: int):
             next(dataiter)
 
         state_dict = dataset.state_dict()
-        expected = [next(dataiter)["input_ids"] for _ in range(2)]
+        expected = [next(dataiter).input_ids for _ in range(2)]
 
         resumed = make(data_rank)
         resumed.load_state_dict(state_dict)
         resumed_dataiter = iter(resumed)
-        assert [next(resumed_dataiter)["input_ids"] for _ in range(2)] == expected
+        assert [next(resumed_dataiter).input_ids for _ in range(2)] == expected
         assert resumed.state_dict() == dataset.state_dict()
