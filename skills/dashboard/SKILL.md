@@ -79,7 +79,7 @@ reason, field?}`. On `409`, tell the user to open the returned `url`; the stored
 command applies when the tab connects.
 
 The trace viewer's token-signal selector colors recorded tokens by advantage,
-logprob, trainer logprob, entropy, KL mismatch, IPO stable mask, loss mask, or
+trainer logprob, entropy, KL mismatch, IPO stable mask, loss mask, or
 content membership. Every episode is on disk once, in
 `<run>/traces/step_<n>/{train,eval}.jsonl`; post-hoc facts arrive as
 trace-update records in the sibling `annotations/{orchestrator,trainer}.jsonl`

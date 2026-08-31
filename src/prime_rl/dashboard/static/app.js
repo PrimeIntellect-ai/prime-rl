@@ -2313,8 +2313,6 @@ function renderTokenNode(node, signal, scales) {
     if (signal === "advantage" && advantage != null && scales.maxAbsAdv > 0) {
       const alpha = Math.min(1, Math.abs(advantage) / scales.maxAbsAdv) * 0.45;
       bg = `background:rgba(${advantage > 0 ? "182,255,60" : "255,69,57"},${alpha.toFixed(3)})`;
-    } else if (signal === "logprob" && logprob != null) {
-      bg = `background:rgba(183,166,250,${(Math.min(1, -logprob / 6) * 0.6).toFixed(3)})`;
     } else if (signal === "trainer_logprob" && trainerLp != null) {
       bg = `background:rgba(183,166,250,${(Math.min(1, -trainerLp / 6) * 0.6).toFixed(3)})`;
     } else if (signal === "entropy" && entropy != null && scales.maxEntropy > 0) {
@@ -2333,8 +2331,6 @@ function renderTokenNode(node, signal, scales) {
     }
     let tip = `#${i} id=${id}`;
     if (signal === "advantage" && advantage != null) tip += ` adv=${fmtNum(advantage)}`;
-    else if (signal === "logprob" && logprob != null)
-      tip += ` lp=${logprob.toFixed(4)} (${(Math.exp(logprob) * 100).toFixed(1)}%)`;
     else if (signal === "trainer_logprob" && trainerLp != null) {
       tip += ` t-lp=${trainerLp.toFixed(4)} (${(Math.exp(trainerLp) * 100).toFixed(1)}%)`;
       if (dlp != null) tip += ` Δlp=${dlp.toFixed(4)}`;
@@ -4199,7 +4195,10 @@ document.addEventListener("visibilitychange", () => {
   renderLogLevel();
   $("#log-search").value = prefs.logSearch ?? "";
   $("#config-search").value = prefs.configSearch ?? "";
-  $("#token-signal").value = prefs.tokenSignal === "rendered" ? "" : (prefs.tokenSignal ?? "");
+  $("#token-signal").value =
+    prefs.tokenSignal === "rendered" ? ""
+    : prefs.tokenSignal === "logprob" ? "trainer_logprob"
+    : (prefs.tokenSignal ?? "");
   $("#follow-toggle").checked = state.follow;
   for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
     dressSelect($(sel));
