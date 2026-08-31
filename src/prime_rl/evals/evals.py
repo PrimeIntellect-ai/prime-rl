@@ -51,7 +51,6 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation, Policy
 from prime_rl.orchestrator.utils import (
-    episode_env_name,
     episode_group_id,
     eval_work,
     intercept_vf_logging,
@@ -92,7 +91,7 @@ class Evals:
         self.last_step = (config.online.resume_step if config.online is not None else None) or 0
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.ckpt_manager = CheckpointManager(config.output_dir)
-        self.completed_groups = 0
+        self.last_saved_cursor = 0
         self.env_server_procs: list[Popen] = []
         self.dispatcher_task: asyncio.Task | None = None
 
@@ -166,11 +165,10 @@ class Evals:
             self.ckpt_manager.load(
                 resume_step,
                 self.eval_source,
-                self.eval_sink,
                 path=resume_path,
             )
-            self.completed_groups = resume_step
-            get_logger().info(f"Resuming evals after {self.completed_groups} completed task groups")
+            self.last_saved_cursor = self.eval_source.cursor
+            get_logger().info(f"Resuming evals from task cursor {self.eval_source.cursor}")
         self.policy = Policy(version=0, model_name=config.model)
 
         # Pessimistic per-episode token cost for the controller's starting cap,
@@ -277,8 +275,7 @@ class Evals:
         else:
             await self.watch()
 
-        if self.config.ckpt is not None and self.completed_groups > 0:
-            self.save_checkpoint()
+        self.maybe_save_checkpoint(force=True)
 
         # The periodic logger and the collector log to the W&B run, so they
         # must stop before finalize marks the run finished.
@@ -406,6 +403,10 @@ class Evals:
         if not fired:
             return
 
+        for env_name in fired:
+            task_count = self.eval_source.triggered_task_count(env_name, step)
+            self.eval_sink.set_batch_size(env_name, step, task_count * self.eval_sink.group_size_for(env_name))
+
         now = time.perf_counter()
         for env_name in fired:
             self.eval_triggered_at[(env_name, step)] = now
@@ -425,7 +426,7 @@ class Evals:
 
     async def consume_epoch(self, fired: list[str], step: int) -> None:
         """Consume one epoch, preempting it when a newer checkpoint is ready."""
-        pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) > 0}
+        pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name, step) > 0}
         cancellation_task: asyncio.Task[int] | None = None
         superseding_step: int | None = None
         online = self.config.online
@@ -457,25 +458,28 @@ class Evals:
             if isinstance(item, GroupCancellation):
                 eval_batch = self.eval_sink.cancel(item)
                 group_completed = False
+                group_id = item.group_id
             elif isinstance(item, DispatchFailure):
                 eval_batch = self.eval_sink.fail(item)
                 group_completed = not self.eval_sink.has_pending_group(item.group_id)
-                completed_task = (item.env_name, item.task_key, item.task_hash, item.step)
+                group_id = item.group_id
             else:
                 item_step = eval_work(item).step
                 await monitors.log([item], item_step, "eval", "all")
                 eval_batch = self.eval_sink.add(item)
                 group_id = episode_group_id(item)
                 group_completed = not self.eval_sink.has_pending_group(group_id)
-                completed_task = (episode_env_name(item), item.task.key, item.task.hash, item_step)
             if eval_batch is not None:
                 await self.finalize_eval_batch(eval_batch)
                 pending.discard(eval_batch.env_name)
             if group_completed:
-                self.eval_source.mark_completed(*completed_task)
-                self.completed_groups += 1
-                if self.config.ckpt is not None and self.completed_groups % self.config.ckpt.interval == 0:
-                    self.save_checkpoint()
+                source_index = self.dispatcher.pop_source_index(group_id)
+                if self.config.online is not None:
+                    continue
+                if source_index is None:
+                    raise RuntimeError(f"Eval group {group_id} is missing its source cursor")
+                if self.eval_source.mark_completed(source_index):
+                    self.maybe_save_checkpoint()
 
         if cancellation_task is not None:
             cancelled = await cancellation_task
@@ -484,8 +488,16 @@ class Evals:
                 f"advancing to checkpoint {superseding_step}"
             )
 
-    def save_checkpoint(self) -> None:
-        self.ckpt_manager.save(self.completed_groups, self.eval_source, self.eval_sink)
+    def maybe_save_checkpoint(self, *, force: bool = False) -> None:
+        if self.config.ckpt is None:
+            return
+        cursor = self.eval_source.cursor
+        if cursor <= 0 or cursor == self.last_saved_cursor:
+            return
+        if not force and cursor - self.last_saved_cursor < self.config.ckpt.interval:
+            return
+        self.ckpt_manager.save(self.eval_source)
+        self.last_saved_cursor = cursor
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the

@@ -70,7 +70,7 @@ class CheckpointConfig(BaseConfig):
     """Checkpoint progress for an interruptible standalone eval run."""
 
     interval: int = Field(1, ge=1)
-    """Save after every N completed task groups."""
+    """Save after the task cursor advances by N completed groups."""
 
 
 class EvalsConfig(BaseConfig):
@@ -103,10 +103,10 @@ class EvalsConfig(BaseConfig):
     subdirectories. Shared with the trainer for online evals. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
     ckpt: CheckpointConfig | None = None
-    """Checkpoint standalone eval progress. Checkpoint steps count completed task groups."""
+    """Checkpoint standalone eval progress. Checkpoint steps are task cursor positions."""
 
     resume: ResumeConfig | None = None
-    """Resume a standalone eval run from a group checkpoint. A bare block loads the latest checkpoint."""
+    """Resume a standalone eval run from a cursor checkpoint. A bare block loads the latest checkpoint."""
 
     log: LogConfig = LogConfig()
 

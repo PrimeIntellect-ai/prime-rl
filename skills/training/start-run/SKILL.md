@@ -96,7 +96,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## `evals` — multi-env evals
 
-Runs the configured eval sources against a live inference server. Standalone (no `[online]` block): one epoch of every source against the served weights, then exit. Add `[ckpt]` (`interval` counts completed task groups) to make the run interruptible, then use `--resume`, `--resume.step N`, or `--resume.dir path/to/checkpoints/step_N`; for standalone evals, checkpoint step N means N completed task groups. Partially completed groups are retried. Resume loads without `[ckpt]` but does not save new checkpoints. Checkpoint/resume is rejected with `[online]` because that process is coupled to the trainer's live broadcast handshake. With `[online]` (`broadcasts_dir`, `max_steps`, `resume_step`): watch the broadcasts dir for stable `step_{n}` weight broadcasts and evaluate each — the `sft` launcher writes this config for online evals. By default a newer checkpoint cancels unfinished episodes from the prior eval. Set `eval.cancel_on_new_checkpoint = false` to drain every epoch. The trainer can idle while it waits for slow evals. Launcher-managed SFT evals use NCCL weight broadcast by default, including multi-node SLURM deployments. LoRA and external inference use filesystem broadcast.
+Runs the configured eval sources against a live inference server. Standalone (no `[online]` block): one epoch of every source against the served weights, then exit. Add `[ckpt]` (`interval` counts completed task groups in the eval-source order) to make the run interruptible, then use `--resume`, `--resume.step N`, or `--resume.dir path/to/checkpoints/step_N`; for standalone evals, checkpoint step N means resume from task cursor N. Checkpoints store only the cursor, not generated episode records; partially completed groups and groups beyond the durable cursor are retried. Resume loads without `[ckpt]` but does not save new checkpoints. Checkpoint/resume is rejected with `[online]` because that process is coupled to the trainer's live broadcast handshake. With `[online]` (`broadcasts_dir`, `max_steps`, `resume_step`): watch the broadcasts dir for stable `step_{n}` weight broadcasts and evaluate each — the `sft` launcher writes this config for online evals. By default a newer checkpoint cancels unfinished episodes from the prior eval. Set `eval.cancel_on_new_checkpoint = false` to drain every epoch. The trainer can idle while it waits for slow evals. Launcher-managed SFT evals use NCCL weight broadcast by default, including multi-node SLURM deployments. LoRA and external inference use filesystem broadcast.
 
 ```bash
 uv run inference --vllm.model Qwen/Qwen3-4B   # start inference separately
@@ -123,7 +123,7 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
 [ckpt]               # optional: make a standalone eval resumable
-interval = 10        # completed task groups between saves
+interval = 10        # completed task groups between cursor saves
 ```
 
 - Env servers: spawned by the evals process, one per source without an explicit `serve.address`, at `tcp://127.0.0.1:<eval.env_server_base_port + index>`; logs at `{output_dir}/logs/latest/envs/eval/{name}.log`.
