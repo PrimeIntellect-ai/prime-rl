@@ -1,6 +1,6 @@
-# Expert-parallelism correctness pre-flight for DeepSeek V4's fused expert weight layout
-# (gate_up_proj/down_proj), flagged in TODO.md as mechanically plausible but unverified under
-# ep>1. Pure trainer forward+backward check on the mini deepseek_v4 preset -- no inference
+# Expert-parallelism correctness pre-flight for DeepSeek V4's routed experts, which #3411 moved
+# onto the shared `GroupedExperts` stacked `gate_proj`/`up_proj`/`down_proj` parameters sharded
+# by `ExpertWeightParallel`. Pure trainer forward+backward check on the mini preset -- no inference
 # needed, so all GPUs go to training. Generate the checkpoint first:
 #
 #   uv run --with 'transformers==5.15.0' python scripts/mini_moe.py \

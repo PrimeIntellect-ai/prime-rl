@@ -131,13 +131,17 @@ Open items:
   layout).
 - **LoRA doesn't support `DeepseekV4Experts` yet.** `lora.py` dispatches on the three known
   expert classes, so a LoRA run would silently leave the routed experts frozen.
-- **Expert parallelism for `DeepseekV4Experts` works.** It holds split `w1`/`w2`/`w3` params
-  (post `eff76d9e7`, which un-fused what this note previously described as a
-  `gate_up_proj`/`down_proj` layout), matching the literal names torchtitan's
-  `ExpertParallel._partition_fn` shards by. Verified with an `ep=8` SFT smoke run on
-  `examples/advanced/deepseek-v4-flash/sft-mini-ep-check.toml` (20 steps, finite loss,
-  `nan_count=0` throughout, nonzero varying grad norms). `GptOssGroupedExperts` still has an EP
-  gap for its own fused layout, unaffected by this.
+- **Expert parallelism for `DeepseekV4Experts` works.** The reasoning changed with #3411 even
+  though the conclusion did not. This note used to say EP worked because the experts held
+  literal `w1`/`w2`/`w3` params matching the names torchtitan's `ExpertParallel._partition_fn`
+  sharded by. That class is gone; `ExpertWeightParallel._partition_fn` now shards every
+  `named_parameters(recurse=False)` on `Shard(0)` regardless of name, so the stacked
+  `gate_proj`/`up_proj`/`down_proj` the experts inherit from `GroupedExperts` are covered by
+  construction. Re-verified after the port with an `ep=8` SFT run on
+  `examples/advanced/deepseek-v4-flash/sft-mini-ep-check.toml`: finite loss (12.66, 12.24,
+  13.01), nonzero varying grad norms, no NaNs, 12.3 GiB peak. That run uses the default torch
+  dispatch and sets no `[model.ac]`, so it does not speak to the DeepEP-versus-torch deadlock
+  `sft.toml` documents under `ac.mode = "full"`.
 - **No router aux loss.** `output_router_logits`, `router_aux_loss_coef`, `router_jitter_noise`
   are carried by the config and read by nothing.
 - **No vLLM kernel weight transfer.** `convert_layer_to_vllm_kernel` is not overridden, so the
