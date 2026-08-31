@@ -19,6 +19,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig
+from prime_rl.trainer.models.fusions import optimizer_state_dict_for_checkpoint, optimizer_state_dict_for_runtime
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
@@ -60,6 +61,7 @@ class AppState(Stateful):
         self.optimizers = optimizers
         self.scheduler = scheduler
         self.progress = progress
+        self.runtime_optimizer_state_dict: dict[str, Any] = {"state": {}, "param_groups": []}
 
     def _get_checkpoint_optimizers(self) -> list[Optimizer]:
         """Expose optimizers keyed by their model parameters for DCP."""
@@ -79,9 +81,10 @@ class AppState(Stateful):
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
         checkpoint_optimizers = self._get_checkpoint_optimizers()
         model_state_dict, optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
+        self.runtime_optimizer_state_dict = optimizer_state_dict
         state_dict = {
             "model": model_state_dict,
-            "optimizers": optimizer_state_dict,
+            "optimizers": optimizer_state_dict_for_checkpoint(self.model, optimizer_state_dict),
         }
         if self.scheduler is not None:
             scheduler_state_dict = self.scheduler.state_dict()
@@ -104,6 +107,11 @@ class AppState(Stateful):
     def load_state_dict(self, state_dict: dict[str, Any]):
         checkpoint_optimizers = self._get_checkpoint_optimizers()
         has_cpu_offload = self._has_cpu_offload()
+        optimizer_state_dict = optimizer_state_dict_for_runtime(
+            self.model,
+            state_dict["optimizers"],
+            self.runtime_optimizer_state_dict,
+        )
 
         if has_cpu_offload:
             # When CPU offload is on, the optimizer is already loaded by the time we
@@ -126,7 +134,7 @@ class AppState(Stateful):
                 self.model,
                 checkpoint_optimizers,
                 model_state_dict=state_dict["model"],
-                optim_state_dict=state_dict["optimizers"],
+                optim_state_dict=optimizer_state_dict,
             )
 
         if self.scheduler is not None:

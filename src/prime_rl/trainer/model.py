@@ -41,6 +41,7 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.fusions import apply_model_fusions
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -1243,6 +1244,9 @@ def setup_model(
     if not possible_to_load_to_meta:
         logger.warning("Cannot load model to meta device only, loading to CPU instead.")
         model = get_model(config, device=torch.device("cpu"), dtype=DTYPE_MAP[config.optimization_dtype])
+
+    if config.fusions:
+        logger.info(f"Applied runtime model fusions: {apply_model_fusions(model, config.fusions)}")
 
     lm_head_chunk_size: int | None = None
     if isinstance(config.fused_lm_head_token_chunk_size, int):

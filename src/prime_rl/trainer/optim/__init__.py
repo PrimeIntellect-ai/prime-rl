@@ -1,11 +1,12 @@
 import torch
-from dion import Muon
 from torch import nn
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
+from prime_rl.trainer.models.fusions import applied_parameter_fusions
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
+from prime_rl.trainer.optim.muon import Muon
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -54,6 +55,7 @@ def setup_optimizer(
         optimizer_named_params,
         parallel_dims,
         fused_adamw=config.type == "adamw" and not cpu_offload,
+        model=model,
     )
 
     if full_offload_config is not None:
@@ -80,6 +82,7 @@ def _create_optimizer(
     parallel_dims: ParallelDims,
     lr: float | None = None,
     fused_adamw: bool = False,
+    model: nn.Module | None = None,
 ) -> Optimizer:
     """Create optimizer. If lr is None, uses config.lr."""
     if lr is None:
@@ -107,7 +110,7 @@ def _create_optimizer(
                 fused=fused_adamw,
             )
         case "muon":
-            return _create_muon_optimizer(config, named_params, parallel_dims, lr)
+            return _create_muon_optimizer(config, named_params, parallel_dims, model, lr)
         case "sign_sgd":
             return SignSGD(
                 params=trainable_params,
@@ -120,6 +123,7 @@ def _create_muon_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
+    model: nn.Module | None,
     lr: float | None = None,
 ) -> Optimizer:
     def muon_enabled(n, p):
@@ -185,8 +189,14 @@ def _create_muon_optimizer(
     else:
         distributed_mesh = parallel_dims.world_mesh
 
+    parameter_fusions = {}
+    if model is not None:
+        for _, parameter, module, fusion in applied_parameter_fusions(model):
+            parameter_fusions[parameter] = (module, fusion)
+
     optimizer = Muon(
         params=param_groups,
+        parameter_fusions=parameter_fusions,
         lr=lr,
         mu=config.mu,
         betas=(config.betas1, config.betas2),

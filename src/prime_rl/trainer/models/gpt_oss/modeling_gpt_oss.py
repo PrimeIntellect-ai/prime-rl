@@ -33,6 +33,10 @@ from prime_rl.trainer.models.layers.moe import (
 )
 
 
+class GptOssExperts(GroupedExperts):
+    supported_fusions = {}
+
+
 class GptOssDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: GptOssConfig, layer_idx: int):
         super().__init__()
@@ -47,7 +51,7 @@ class GptOssDecoderLayer(GradientCheckpointingLayer):
             route_scale=1.0,
             gate_bias=True,
         )
-        experts = GroupedExperts(
+        experts = GptOssExperts(
             dim=config.hidden_size,
             hidden_dim=config.intermediate_size,
             num_experts=config.num_local_experts,
