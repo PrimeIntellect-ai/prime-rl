@@ -385,6 +385,56 @@ config values. None of these are visible from the test suite; all of them are on
   See `examples/advanced/deepseek-v4-flash/sft-flash-smoke.toml` for the exact working
   single-node command and full derivation.
 
+## DeepSeek V4's routed-expert selection flips under small numerical perturbation
+
+`GroupedExperts.forward` runs the routed experts through `torch._grouped_mm` in bfloat16 whatever
+dtype the model runs in. PR #3411 removed the alternative: `layers/moe.py` used to pick between
+`_run_experts_for_loop_impl`, per-expert `torch.matmul` with no dtype cast and so float32 when its
+inputs were, and `_run_experts_grouped_mm_impl`, which cast to bfloat16. `use_grouped_mm=False`
+selected the former and is what the V4 tests ran on. There is now one path, and all three
+`model.moe.compute` options (`bf16`, `deepgemm_fp8`, `mxfp8`) are below float32.
+
+Bfloat16 experts perturb the residual stream by well under 1%, which is enough to flip near-tied
+top-k routing decisions in the score-routed layers, and a token routed to a different expert
+changes its block output entirely.
+
+The sensitivity is not V4-specific. Top-k selection over perturbed scores flips near-ties in any
+routed MoE, and every model on main now runs its experts in bfloat16. What is V4-specific is that
+anything noticed: V4's tests were written to float32 exactness (`rtol=1e-5, atol=1e-8`, and
+`mini_moe`'s absolute `0.1`), while the other models' HF-parity tests already ran in bfloat16 with
+bounds wide enough to swallow it. `test_qwen3_moe.py` asserts `atol=1e-0` on logits and `atol=2048`
+on gradients, which is why #3411 could delete its `use_grouped_mm=False` and change nothing else.
+Even after being recalibrated, V4's bounds stay far tighter than any sibling's. Note that the flip
+counts below were measured on V4 only; that the mechanism generalises is inference from the shared
+top-k code path, not a measurement.
+
+Measured on the `scripts/mini_moe.py --arch deepseek_v4` checkpoint (float32 model, bfloat16
+experts against float32 per-expert matmuls, 64 tokens, 4 of 16 experts each):
+
+| layer | routing | selections flipped | block output deviation |
+| --- | --- | --- | --- |
+| 0, 1 | hash | 0 / 256 | 0.45%, 0.85% |
+| 2 | score | 4 / 256 | 33% |
+| 3 | score | 3 / 256 | 28% |
+| 4 | score | 12 / 256 | 40% |
+
+Final logits deviate by 1.19 on a scale of 6.7, against 3.1e-5 with float32 experts. The hash
+layers are the control: their routing is a frozen table, so they show textbook bfloat16 error and
+no flips at all.
+
+Two consequences. `scripts/mini_moe.py --arch deepseek_v4` fails its `assert max_diff < 0.1` for
+this reason and is left failing deliberately: the threshold is a precision bound, what breaks it
+here is discrete, and raising it to fit would only hide the next real regression. Note the on-disk
+to prime to on-disk weight roundtrip further down `verify()`, which is the check that actually
+covers the conversion chain, never runs while that assert fires.
+
+The one that matters more: the trainer and vLLM run different MoE kernels, so the same mechanism
+should make them disagree on a comparable fraction of expert selections, and that lands directly on
+the mismatch-KL this port is judged by. Nothing here measures it; that needs the real checkpoint
+and a `kl-check.toml` run, and is worth doing before trusting any KL number. If it does bite, the
+lever already exists: `MoE.forward` accepts `routed_experts`, so a served rollout's routing
+decisions can be replayed rather than recomputed.
+
 ## The pinned `deep_gemm` wheel is built against CUDA 13, the rest of the stack is CUDA 12
 
 `pyproject.toml:243` pins prime-rl's own `deep_gemm-2.5.0+891d57b` wheel, whose `_C` extension
@@ -407,18 +457,6 @@ copy. Note that forcing the pinned build to load (by putting a CUDA 13 runtime o
 `LD_LIBRARY_PATH`) is actively worse on Blackwell consumer parts: that build has no SM120
 kernels for the block-scaled FP8 GEMMs, the UE8M0 scale-layout transform, the hyper-connection
 GEMM, or the paged MQA logits, all of which the vendored copy handles.
-
-## `GptOssGroupedExperts` crashes with `use_grouped_mm=False`
-
-Found by accident while porting DeepSeek V4's experts (which hit the same constraint and worked
-around it correctly). `layers/moe.py`'s `expert_parallel` decorator wraps functions with a fixed
-`(w1, w2, w3, x, num_tokens_per_expert)` signature, but `GptOssGroupedExperts`'s for-loop path
-calls its wrapped function with 6 positional args (`gate_up_proj`, `gate_up_proj_bias`,
-`down_proj`, `down_proj_bias`, `x`, `num_tokens_per_expert`). Confirmed empirically: raises
-`TypeError: wrapper() takes from 4 to 5 positional arguments but 6 were given` immediately, every
-time. No existing test exercises `GptOssGroupedExperts` with `use_grouped_mm=False` (`gpt_oss`
-has no test file at all), so nothing has caught it. Unrelated to the DeepSeek V4 port; needs its
-own fix in shared code.
 
 ## `convert_rope_params_to_dict` overrides are dead code
 
