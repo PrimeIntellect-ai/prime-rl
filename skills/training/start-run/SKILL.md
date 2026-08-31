@@ -47,6 +47,7 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
 - SLURM: single- and multi-node
 - Multi-node SLURM stops after `.trainer.done` for trainer-only fake-data runs. Runs with inference stop after both `.trainer.done` and `.orchestrator.done`.
 - NIXL on SLURM: install NIXL and ModelExpress with the provided scripts. The job starts ModelExpress and Redis unless `slurm.launch_modelexpress = false`.
+- When multiple SLURM components run from the same worktree, set `UV_NO_SYNC = "1"` in `[env_vars]` after synchronizing the environment. Otherwise concurrent `uv run` processes can contend on `.venv/.lock` during startup.
 - Environment packages: before launching a config with a non-core verifier env id,
   verify the package imports under `uv run` (for example
   `uv run python -c "import importlib.util; print(importlib.util.find_spec('r2e_gym'))"`).
