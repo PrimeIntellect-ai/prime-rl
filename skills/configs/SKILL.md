@@ -84,7 +84,7 @@ The `sft` entrypoint takes the same eval shape at the top level for online evals
 --model.compile.fullgraph   # enables and sets fullgraph=true
 ```
 
-In TOML, an empty section header (`[ckpt]`) does the same.
+In TOML, an empty section header (`[ckpt]`) does the same. Inside a dotted `[[...source]]` block a section header would end the block, so enable the field by setting one of its sub-fields instead — `env.agent.harness.compaction.summarize_at_tokens = "None"` enables compaction with its defaults (auto threshold).
 
 ## RL trainer token exports
 

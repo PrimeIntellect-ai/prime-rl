@@ -56,6 +56,7 @@ ratio = 0.3
 curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
 env.taskset.id = "r2e-gym"
 env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = "None"  # compact at the auto threshold
 env.agent.runtime.labels = ["intellect-3.1", "swe"]
 
 [[orchestrator.train.source]]
@@ -100,6 +101,7 @@ interval = 25
 name = "swe-bench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = "None"  # compact at the auto threshold
 env.agent.runtime.labels = ["intellect-3.1", "swe-bench-verified"]
 
 [[orchestrator.eval.source]]

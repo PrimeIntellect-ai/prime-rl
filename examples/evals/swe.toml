@@ -23,10 +23,12 @@ max_inflight = 32
 name = "swebench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = "None"  # compact at the auto threshold
 env.agent.timeout.rollout = 3600
 
 [[eval.source]]
 name = "terminal-bench-2"
 env.taskset.id = "terminal-bench-2"
 env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = "None"  # compact at the auto threshold
 env.agent.timeout.rollout = 3600

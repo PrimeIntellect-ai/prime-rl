@@ -106,6 +106,7 @@ thinking_retention = "all"
 name = "scaleswe"
 env.taskset.id = "scaleswe"
 env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = "None"  # compact at the auto threshold
 env.agent.runtime.labels = ["glm45air-swe"]
 
 # --- Eval: SWE-Bench Verified at step 0 + every 20 steps, bash harness on prime ---
@@ -117,6 +118,7 @@ interval = 20
 name = "swebench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = "None"  # compact at the auto threshold
 env.agent.runtime.labels = ["glm45air-swe"]
 env.agent.timeout.rollout = 3600
 

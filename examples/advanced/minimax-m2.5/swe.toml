@@ -55,6 +55,7 @@ max_inflight = 4096
 name = "swe"
 env.taskset.id = "r2e-gym"
 env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = "None"  # compact at the auto threshold
 env.agent.runtime.labels = ["minimax-swe", "swe"]
 
 [orchestrator.eval]
@@ -64,6 +65,7 @@ interval = 25
 name = "swe-bench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = "None"  # compact at the auto threshold
 env.agent.runtime.labels = ["minimax-swe", "swe-bench-verified"]
 
 [inference.vllm]
