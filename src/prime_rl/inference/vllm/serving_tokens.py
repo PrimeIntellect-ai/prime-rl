@@ -17,8 +17,8 @@ still missing from the upstream handler:
    Fixed upstream by https://github.com/vllm-project/vllm/pull/42644, which
    missed the 0.28.0 cut.
 
-3. Expanded prompt IDs — return the effective engine prompt after multimodal
-   placeholder expansion. Drop this once
+3. Prompt metadata — return the effective engine prompt and authoritative
+   multimodal placeholder ranges after expansion. Drop this once
    https://github.com/vllm-project/vllm/pull/53187 is available in a release.
 
 Everything else delegates to upstream so we track future vLLM changes for free.
@@ -27,6 +27,7 @@ Everything else delegates to upstream so we track future vLLM changes for free.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterable
+from contextvars import ContextVar
 from typing import Any
 
 from fastapi import Request
@@ -35,6 +36,7 @@ from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
     GenerateResponse,
     GenerateResponseChoice,
+    PlaceholderRangeInfo,
 )
 from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
 from vllm.outputs import RequestOutput
@@ -51,6 +53,26 @@ class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
 class PrimeRlGenerateResponse(GenerateResponse):
     choices: list[PrimeRlGenerateResponseChoice]
     prompt_token_ids: list[int] | None = None
+    mm_placeholders: dict[str, list[PlaceholderRangeInfo]] | None = None
+
+
+_response_mm_placeholders: ContextVar[dict[str, list[PlaceholderRangeInfo]] | None] = ContextVar(
+    "response_mm_placeholders", default=None
+)
+
+
+def _extract_mm_placeholders(
+    engine_input: Any,
+) -> dict[str, list[PlaceholderRangeInfo]] | None:
+    if not isinstance(engine_input, dict) or engine_input.get("type") != "multimodal":
+        return None
+    return {
+        modality: [
+            PlaceholderRangeInfo(offset=placeholder.offset, length=placeholder.length)
+            for placeholder in sorted(ranges, key=lambda placeholder: placeholder.offset)
+        ]
+        for modality, ranges in engine_input["mm_placeholders"].items()
+    }
 
 
 class _GenerateRoutedExpertsCapture(RoutedExpertsCapture):
@@ -78,6 +100,16 @@ class _PromptTokenIdsCapture:
 
 class PrimeRlServingTokens(ServingTokens):
     """ServingTokens with Prime's remaining response and PD extensions."""
+
+    def _log_inputs(
+        self,
+        request_id: str,
+        inputs: Any,
+        params: Any,
+        lora_request: Any,
+    ) -> None:
+        _response_mm_placeholders.set(_extract_mm_placeholders(inputs))
+        super()._log_inputs(request_id, inputs, params, lora_request)
 
     async def serve_tokens(
         self,
@@ -125,4 +157,5 @@ class PrimeRlServingTokens(ServingTokens):
         else:
             response = PrimeRlGenerateResponse(**response.model_dump())
         response.prompt_token_ids = prompt_capture.prompt_token_ids
+        response.mm_placeholders = _response_mm_placeholders.get()
         return response
