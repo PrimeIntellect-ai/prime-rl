@@ -20,6 +20,7 @@ def apply_shared_vllm_patches():
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_deepseek_v4_rope_unhashable_cache_key()
     monkey_patch_deepseek_v4_rope_force_fp32_cache()
+    monkey_patch_deepseek_v4_rope_disable_yarn_on_sliding_layers()
     monkey_patch_deepseek_v4_hc_prenorm_gemm_fallback()
     monkey_patch_deepseek_v4_bf16_o_proj()
     monkey_patch_cutedsl_fmax_result_type()
@@ -152,13 +153,17 @@ def monkey_patch_deepseek_v4_rope_unhashable_cache_key():
 
     `get_rope`'s cache-key builder (`vllm/model_executor/layers/rotary_embedding/__init__.py`)
     only converts top-level list-typed `rope_parameters` values into tuples before hashing; it
-    doesn't recurse into nested dicts. This repo's DeepSeek V4 port structures
-    `rope_parameters` as a dict-of-dicts (keyed by rope type, `main`/`compress`), so the cache
-    key vLLM builds for it ends up containing an unhashable dict, crashing with
+    doesn't recurse into nested dicts. HF's `DeepseekV4Config` structures `rope_parameters` as a
+    dict-of-dicts (keyed by rope type, `main`/`compress`), and so does this repo's port, so the
+    cache key vLLM builds for it ends up containing an unhashable dict, crashing with
     `TypeError: unhashable type: 'dict'` on `if key in _ROPE_DICT`. `_ROPE_DICT` is a pure
     memoization cache (only skips rebuilding an identical `RotaryEmbedding`, never read for
     correctness), so it's safe to just skip caching when the key isn't hashable rather than
     reimplementing `get_rope`'s ~300-line body to deep-freeze the key.
+
+    `monkey_patch_deepseek_v4_rope_disable_yarn_on_sliding_layers` below flattens the nested form
+    before it reaches `get_rope`, so this fires only for a nested config carrying no YaRN
+    parameters at all, which that patch deliberately passes through untouched.
     """
     from vllm.model_executor.layers import rotary_embedding
 
@@ -175,13 +180,12 @@ def monkey_patch_deepseek_v4_rope_force_fp32_cache():
     `cos_sin_cache.dtype == torch.float32`. vLLM's `DeepseekV4ScalingRotaryEmbedding`
     (`vllm/model_executor/layers/rotary_embedding/deepseek_scaling_rope.py`) already forces
     fp32 for the YaRN-scaled path (`rope_type` in `deepseek_yarn`/`deepseek_llama_scaling`),
-    but DeepSeek V4's "main" (sliding-window) attention legitimately has `rope_type="default"`
-    -- it only ever attends within a short local window, so it needs no YaRN extrapolation --
-    and `get_rope`'s "default"-scaling-type branch builds a plain `RotaryEmbedding` using
+    but `get_rope`'s "default"-scaling-type branch builds a plain `RotaryEmbedding` using
     whatever the ambient default dtype is (bf16 during normal model loading), which fails the
-    same fp32 assertion. Force fp32 for any `rope_parameters` carrying the `is_deepseek_v4`
-    marker (set by `vllm/models/deepseek_v4/common/rope.py`'s `build_deepseek_v4_rope`),
-    regardless of scaling type.
+    same fp32 assertion. A checkpoint that ships no rope scaling at all takes that branch for
+    every layer. Force fp32 for any `rope_parameters` carrying the `is_deepseek_v4` marker (set
+    by `vllm/models/deepseek_v4/common/rope.py`'s `build_deepseek_v4_rope`), regardless of
+    scaling type.
     """
     from vllm.model_executor.layers import rotary_embedding
 
@@ -1114,3 +1118,113 @@ def monkey_patch_dp_coordinator_startup_timeout():
             zmq_addr_pipe.close()
 
     DPCoordinator._wait_for_zmq_addrs = _patched_wait_for_zmq_addrs
+
+
+_DEEPSEEK_V4_YARN_ROPE_TYPES = frozenset({"yarn", "deepseek_yarn", "deepseek_llama_scaling"})
+
+
+def _deepseek_v4_yarn_parameters(rope_parameters):
+    """The YaRN parameters `build_deepseek_v4_rope` should be reading, or None if there are none.
+
+    Handles both on-disk schemas. The real checkpoint ships a flat legacy `rope_scaling`, which
+    vLLM's config shim normalizes in place. Anything written by `save_pretrained` instead nests
+    the parameters under `main`/`compress` rope-type labels; the shim assumes flat, so
+    transformers injects a top-level `rope_type="default"` beside the two sub-dicts and upstream
+    silently builds unscaled RoPE for every layer. `compress` is the sub-dict carrying the YaRN
+    parameters; `main` is the derived plain form, and upstream selects the base from
+    `config.rope_theta` / `config.compress_rope_theta` on its own either way.
+    """
+    if not isinstance(rope_parameters, dict):
+        return None
+    compress = rope_parameters.get("compress")
+    parameters = dict(compress if isinstance(compress, dict) else rope_parameters)
+    rope_type = parameters.get("rope_type", parameters.get("type", "default"))
+    if rope_type not in _DEEPSEEK_V4_YARN_ROPE_TYPES:
+        return None
+    parameters["rope_type"] = rope_type
+    return parameters
+
+
+def monkey_patch_deepseek_v4_rope_disable_yarn_on_sliding_layers():
+    """Give DeepSeek V4's sliding-window layers the plain RoPE its reference implementation uses.
+
+    DeepSeek ships the reference inside the checkpoint we serve, at
+    https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/tree/main/inference. Its
+    `model.py:481-485` picks the frequencies per layer:
+
+        if self.compress_ratio:
+            original_seq_len, rope_theta = args.original_seq_len, args.compress_rope_theta
+        else:
+            # disable YaRN and use base rope_theta in pure sliding-window attention
+            original_seq_len, rope_theta = 0, args.rope_theta
+
+    and `precompute_freqs_cis` (`model.py:206-235`) applies the NTK-by-parts ramp only when
+    `original_seq_len > 0`. So a pure sliding-window layer gets plain RoPE at `rope_theta` and
+    every compressed layer gets YaRN at `compress_rope_theta`. HF's `DeepseekV4Config` splits its
+    `rope_parameters` into `main`/`compress` for the same reason, and so does this repo's trainer.
+
+    `vllm/models/deepseek_v4/common/rope.py`'s `build_deepseek_v4_rope` branches the base on
+    `compress_ratio` but never the scaling, so on the real checkpoint it hands YaRN to layers 0
+    and 1 as well. No config value can correct that: `rope_type` is one global field there.
+
+    The correction is to build those layers with `factor=1`, which makes
+    `DeepseekScalingRotaryEmbedding._compute_inv_freq`'s interpolated and extrapolated frequencies
+    identical, collapsing the ramp to the plain `1 / base**(2k/d)` whatever the correction range
+    is, and makes `yarn_get_mscale` return 1.0, matching the reference's unit-magnitude
+    `freqs_cis`. `original_max_position_embeddings` is widened to `max_position_embeddings` at the
+    same time because the cos/sin cache is `original_max * factor` rows and must still span the
+    context. Measured against the reference's own frequencies, this takes the sliding layers from
+    2.9e-04 max absolute error to 6e-08, the float32 residual the compressed layers already have;
+    `tests/unit/inference/test_deepseek_v4_rope_patch.py` is that comparison.
+
+    Substituting `rope_type="default"` instead would look simpler but is wrong: `get_rope` routes
+    it to a plain `RotaryEmbedding`, which rotates the leading `rotary_dim` channels rather than
+    the trailing ones and takes no `inverse` argument, both of which DeepSeek V4 needs.
+    """
+    from vllm.models.deepseek_v4.common import rope as dsv4_rope
+
+    original_build = dsv4_rope.build_deepseek_v4_rope
+
+    if getattr(original_build, "_prime_rl_matches_deepseek_reference", False):
+        return
+
+    def _patched_build(config, *, head_dim, rope_head_dim, max_position_embeddings, compress_ratio):
+        parameters = _deepseek_v4_yarn_parameters(config.rope_parameters)
+        if parameters is None:
+            return original_build(
+                config,
+                head_dim=head_dim,
+                rope_head_dim=rope_head_dim,
+                max_position_embeddings=max_position_embeddings,
+                compress_ratio=compress_ratio,
+            )
+
+        # `compress_ratio` is already clamped to >= 1 by the caller, so <= 1 is "no compressor",
+        # i.e. the reference's `else` branch. vLLM lumps the MTP layers in here too.
+        if compress_ratio <= 1:
+            parameters["factor"] = 1
+            parameters["original_max_position_embeddings"] = max_position_embeddings
+
+        # Swapping a copy in also spares `config.rope_parameters` upstream's in-place mutation,
+        # which otherwise leaves the last-built layer's `rope_theta` on the shared config.
+        original_parameters = config.rope_parameters
+        config.rope_parameters = parameters
+        try:
+            return original_build(
+                config,
+                head_dim=head_dim,
+                rope_head_dim=rope_head_dim,
+                max_position_embeddings=max_position_embeddings,
+                compress_ratio=compress_ratio,
+            )
+        finally:
+            config.rope_parameters = original_parameters
+
+    _patched_build._prime_rl_matches_deepseek_reference = True
+    dsv4_rope.build_deepseek_v4_rope = _patched_build
+
+    # `attention.py` imports the builder into its own namespace, so the defining module alone
+    # would not reach the already-bound reference.
+    from vllm.models.deepseek_v4 import attention as dsv4_attention
+
+    dsv4_attention.build_deepseek_v4_rope = _patched_build

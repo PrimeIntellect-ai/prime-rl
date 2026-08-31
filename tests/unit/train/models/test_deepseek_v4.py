@@ -1,11 +1,12 @@
 """Whole-model checks for the DeepSeek V4 port that need no reference implementation.
 
 Hash routing, gradient reachability, the weight-conversion chain against vLLM's own loader,
-meta-device buffer restoration, and the packed-batch invariant the trainer needs in order to
-agree with vLLM. The parity half, which uses HF's own DeepSeek V4 implementation as its oracle,
+meta-device buffer restoration, the packed-batch invariant the trainer needs in order to agree
+with vLLM, and the RoPE vLLM builds on the other side of that boundary. The parity half, which uses HF's own DeepSeek V4 implementation as its oracle,
 lives in `test_deepseek_v4_hf.py`.
 """
 
+import math
 import re
 
 import pytest
@@ -482,3 +483,153 @@ def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):  # noq
         )
         assert alone_kv.shape[2] == 0, f"document {index} is too short to fill a window"
         assert alone_bias.shape[-1] == 0
+
+
+# DeepSeek ships its own inference code inside the checkpoint, at
+# https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/tree/main/inference. Its
+# `model.py:481-485` is what decides which frequencies each layer gets:
+#
+#     if self.compress_ratio:
+#         original_seq_len, rope_theta = args.original_seq_len, args.compress_rope_theta
+#     else:
+#         # disable YaRN and use base rope_theta in pure sliding-window attention
+#         original_seq_len, rope_theta = 0, args.rope_theta
+#
+# `precompute_freqs_cis` (`model.py:206-235`) applies the NTK-by-parts ramp only when
+# `original_seq_len > 0`, so a pure sliding-window layer gets plain RoPE at `rope_theta` and every
+# compressed layer gets YaRN at `compress_rope_theta`. vLLM's `build_deepseek_v4_rope` branches the
+# base but not the scaling, which `monkey_patch_deepseek_v4_rope_disable_yarn_on_sliding_layers`
+# corrects.
+#
+# The real checkpoint's beta range and factor, but a reduced `original_max_position_embeddings`:
+# the cos/sin cache is `original_max * factor` rows of fp32, which at the checkpoint's 65536 would
+# allocate 268 MB per rope. 4096 still places the correction range at channels 10 to 23, well
+# inside the 32 channel pairs, so the ramp is exercised.
+_ROPE_FACTOR = 16
+_ROPE_ORIGINAL_MAX_POSITION = 4096
+_ROPE_BETA_FAST, _ROPE_BETA_SLOW = 32, 1
+_ROPE_THETA, _COMPRESS_ROPE_THETA = 10000.0, 160000.0
+_ROPE_HEAD_DIM, _ROPE_ROTARY_DIM = 512, 64
+_ROPE_MAX_POSITION = _ROPE_ORIGINAL_MAX_POSITION * _ROPE_FACTOR
+
+_ROPE_SCALING = {
+    "type": "yarn",
+    "factor": _ROPE_FACTOR,
+    "beta_fast": _ROPE_BETA_FAST,
+    "beta_slow": _ROPE_BETA_SLOW,
+    "original_max_position_embeddings": _ROPE_ORIGINAL_MAX_POSITION,
+}
+
+
+def _reference_rope_freqs(original_seq_len: int, base: float) -> torch.Tensor:
+    """Verbatim from the checkpoint's `inference/model.py:206-231`, minus the unused `t` outer.
+
+    Only the frequency vector is kept; the reference then does `torch.polar(ones, outer(t, freqs))`,
+    whose magnitude is 1, i.e. no mscale on cos/sin.
+    """
+
+    def find_correction_dim(num_rotations, dim, base, max_seq_len):
+        return dim * math.log(max_seq_len / (num_rotations * 2 * math.pi)) / (2 * math.log(base))
+
+    def find_correction_range(low_rot, high_rot, dim, base, max_seq_len):
+        low = math.floor(find_correction_dim(low_rot, dim, base, max_seq_len))
+        high = math.ceil(find_correction_dim(high_rot, dim, base, max_seq_len))
+        return max(low, 0), min(high, dim - 1)
+
+    def linear_ramp_factor(min, max, dim):
+        if min == max:
+            max += 0.001
+        linear_func = (torch.arange(dim, dtype=torch.float32) - min) / (max - min)
+        return torch.clamp(linear_func, 0, 1)
+
+    dim = _ROPE_ROTARY_DIM
+    freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
+    if original_seq_len > 0:
+        low, high = find_correction_range(_ROPE_BETA_FAST, _ROPE_BETA_SLOW, dim, base, original_seq_len)
+        smooth = 1 - linear_ramp_factor(low, high, dim // 2)
+        freqs = freqs / _ROPE_FACTOR * (1 - smooth) + freqs * smooth
+    return freqs
+
+
+def _vllm_rope_freqs(rotary_emb) -> torch.Tensor:
+    """Recover inv_freq from row 1 of vLLM's `[position, rotary_dim]` cos-then-sin cache."""
+    cos, sin = rotary_emb.cos_sin_cache[1].chunk(2)
+    return torch.atan2(sin, cos)
+
+
+@pytest.fixture
+def vllm_rope_builder():
+    """`build_deepseek_v4_rope`, patched, under the live vLLM config its `CustomOp` base asserts on.
+
+    The builder is resolved off the module at call time rather than bound at import, because the
+    patch rebinds that attribute.
+    """
+    from vllm.config import VllmConfig, set_current_vllm_config
+    from vllm.models.deepseek_v4.common import rope as dsv4_rope
+    from vllm.transformers_utils.configs.deepseek_v4 import DeepseekV4Config as VllmDeepseekV4Config
+
+    from prime_rl.inference.patches import monkey_patch_deepseek_v4_rope_disable_yarn_on_sliding_layers
+
+    monkey_patch_deepseek_v4_rope_disable_yarn_on_sliding_layers()
+
+    def build(compress_ratio: int, rope_parameters: dict | None = None):
+        config = VllmDeepseekV4Config(
+            rope_scaling=dict(_ROPE_SCALING) if rope_parameters is None else None,
+            rope_parameters=rope_parameters,
+            rope_theta=_ROPE_THETA,
+            compress_rope_theta=_COMPRESS_ROPE_THETA,
+            max_position_embeddings=_ROPE_MAX_POSITION,
+        )
+        with set_current_vllm_config(VllmConfig()):
+            return dsv4_rope.build_deepseek_v4_rope(
+                config,
+                head_dim=_ROPE_HEAD_DIM,
+                rope_head_dim=_ROPE_ROTARY_DIM,
+                max_position_embeddings=_ROPE_MAX_POSITION,
+                compress_ratio=compress_ratio,
+            )
+
+    return build
+
+
+def _assert_reference_rope(builder, rope_parameters=None):
+    """Sliding-window layers take plain RoPE at `rope_theta`, compressed layers YaRN at theirs.
+
+    Both are asserted together: neutralizing YaRN on the sliding layers must not disturb the
+    compressed layers, which vLLM already gets right.
+    """
+    sliding = _vllm_rope_freqs(builder(compress_ratio=1, rope_parameters=rope_parameters))
+    compressed = _vllm_rope_freqs(builder(compress_ratio=4, rope_parameters=rope_parameters))
+
+    torch.testing.assert_close(sliding, _reference_rope_freqs(0, _ROPE_THETA), atol=1e-6, rtol=0)
+    torch.testing.assert_close(
+        compressed,
+        _reference_rope_freqs(_ROPE_ORIGINAL_MAX_POSITION, _COMPRESS_ROPE_THETA),
+        atol=1e-6,
+        rtol=0,
+    )
+
+
+def test_deepseek_v4_vllm_rope_matches_the_reference(vllm_rope_builder):
+    """The flat legacy `rope_scaling` the real checkpoint ships."""
+    _assert_reference_rope(vllm_rope_builder)
+
+
+def test_deepseek_v4_vllm_rope_matches_the_reference_from_nested_parameters(vllm_rope_builder):
+    """A `save_pretrained` round trip nests `rope_parameters` under `main`/`compress` keys.
+
+    vLLM's config shim assumes a flat dict, so transformers injects a top-level
+    `rope_type="default"` beside the sub-dicts and `build_deepseek_v4_rope` drops YaRN from every
+    layer. The patch reads the `compress` sub-dict instead.
+    """
+    nested = {
+        "main": {"rope_type": "default", "rope_theta": _ROPE_THETA, "partial_rotary_factor": 0.125},
+        "compress": {
+            **_ROPE_SCALING,
+            "rope_type": "yarn",
+            "rope_theta": _COMPRESS_ROPE_THETA,
+            "partial_rotary_factor": 0.125,
+            "attention_factor": 1.0,
+        },
+    }
+    _assert_reference_rope(vllm_rope_builder, rope_parameters=nested)

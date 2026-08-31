@@ -88,6 +88,17 @@ Open items:
   for most of it. Per-document compression has since landed but the smoke has not been re-run, and
   this sandbox's fp8 KV cache and torch-fallback output projection contribute an unapportioned
   share that will not appear on the cluster.
+- **A RoPE term has been removed from the mismatch and the residual should be re-measured.**
+  vLLM's `build_deepseek_v4_rope` branches the RoPE base on `compress_ratio` but not the scaling,
+  so it handed YaRN to the two pure sliding-window layers (0 and 1 of 43 on the real checkpoint),
+  where DeepSeek's own reference disables it. Fixed locally by
+  `monkey_patch_deepseek_v4_rope_disable_yarn_on_sliding_layers` in `inference/patches.py`, which
+  also flattens the nested `main`/`compress` schema that vLLM's config shim cannot read (that one
+  dropped YaRN from all 43 layers on any `save_pretrained` round trip). Both are pinned against the
+  reference's own `precompute_freqs_cis` by `tests/unit/inference/test_deepseek_v4_rope_patch.py`
+  and written up for upstream in `ISSUES_vllm_dsv4.md`. The sliding-layer error was bounded at
+  0.037 rad of phase inside the 128-token window, so it was likely a small term in the 0.063
+  residual above rather than the explanation for it.
 - **No context parallelism.** CP hands the model pre-shard (global) document boundaries, which
   cannot address a dense local mask built over post-shard positions. `get_model` rejects `cp > 1`
   for this model and `DeepseekV4Model.forward` rejects `seq_lens_are_pre_shard`. Lifting this
