@@ -17,11 +17,29 @@ def apply_shared_vllm_patches():
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
+    monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_deepseek_v4_rope_unhashable_cache_key()
     monkey_patch_deepseek_v4_rope_force_fp32_cache()
     monkey_patch_deepseek_v4_hc_prenorm_gemm_fallback()
     monkey_patch_deepseek_v4_bf16_o_proj()
     monkey_patch_cutedsl_fmax_result_type()
+
+
+def monkey_patch_deepseek_v4_allowed_layer_types():
+    """Let vLLM's `DeepseekV4Config` construct under a transformers pin below 5.15.
+
+    `vllm/transformers_utils/configs/deepseek_v4.py` leaves `layer_types` to
+    `PretrainedConfig`, whose validator checks it against a vocabulary that only gained V4's
+    compressed attention names in transformers 5.15, so `AutoConfig.from_pretrained` on any
+    DeepSeek V4 checkpoint raises. vLLM declares `transformers>=5.5.3`, so this is a gap in
+    upstream's own version floor rather than something prime-rl introduced.
+
+    `EngineArgs.__post_init__` loads general plugins before `create_model_config`, which is why
+    patching here is early enough. The trainer applies the same shim on its own import path.
+    """
+    from prime_rl.utils.transformers_compat import allow_deepseek_v4_layer_types
+
+    allow_deepseek_v4_layer_types()
 
 
 def monkey_patch_online_fp8_parameter_cast():
