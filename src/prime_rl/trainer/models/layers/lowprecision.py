@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
-from torch import Tensor, nn
+from torch import nn
 
 from prime_rl.utils.logger import get_logger
 
@@ -22,33 +21,6 @@ class LinearRecipe(ABC):
     def convert_linear(self, mod: nn.Linear) -> nn.Linear: ...
 
     """Convert a high-precision linear to this recipe's low-precision linear."""
-
-
-@dataclass(frozen=True)
-class PreparedWeights:
-    pass
-
-
-@dataclass(frozen=True)
-class PreparedActivations:
-    pass
-
-
-class MoEExpertKernel(ABC):
-    """Computes fully routed MoE. Each backend can decide what pre/post processing needs to happen."""
-    name: str
-
-    @abstractmethod
-    def preprocess_weights(self, w1: Tensor, w2: Tensor, w3: Tensor | None) -> PreparedWeights: ...
-
-    @abstractmethod
-    def preprocess_activations(self, x: Tensor, num_tokens_per_expert: Tensor) -> PreparedActivations: ...
-
-    @abstractmethod
-    def compute(self, weights: PreparedWeights, activations: PreparedActivations) -> Tensor: ...
-
-    @abstractmethod
-    def postprocess_activations(self, out: Tensor, activations: PreparedActivations) -> Tensor: ...
 
 
 def replace_all_linear_with_low_precision_linear(
