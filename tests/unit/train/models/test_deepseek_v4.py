@@ -571,7 +571,7 @@ def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):  # noq
     entries at all, so there is nothing for a query to read rather than entries it may not reach.
     The layout is handed in, so the entry count restates what the layout already says; the
     property that a short document compresses to nothing is pinned directly by the
-    `hca_every_document_short` case of `test_compressor_packed_matches_per_document`. What is left
+    `hca_short_first_document` case of `test_compressor_packed_matches_per_document`. What is left
     here is that the compressor honours a zero-entry layout identically packed and alone.
     """
     prime_model = get_prime_model(torch.float32)
@@ -1148,7 +1148,6 @@ def _assert_compress_matches_per_document(
         (_HCA_LAYER, _HCA_COMPRESS_RATE, _MID_WINDOW_DOCS, [0, 1]),
         (_HCA_LAYER, _HCA_COMPRESS_RATE, _EXACT_MULTIPLE_DOCS, [1, 1]),
         (_HCA_LAYER, _HCA_COMPRESS_RATE, _SHORT_FIRST_DOCS, [0, 1]),
-        (_HCA_LAYER, _HCA_COMPRESS_RATE, _ALL_SHORT_DOCS, [0, 0, 0]),
     ],
     ids=[
         "csa_single_document",
@@ -1160,7 +1159,6 @@ def _assert_compress_matches_per_document(
         "hca_mid_window_boundary",
         "hca_exact_multiple",
         "hca_short_first_document",
-        "hca_every_document_short",
     ],
 )
 def test_compressor_packed_matches_per_document(layer_idx, compress_rate, doc_lens, expected_counts):
@@ -1172,9 +1170,10 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, doc_le
     the numbering: the second document's entries have to be rotated at its own local positions and
     its first entry marked as first, so CSA's backward-looking series is gated off instead of
     reaching into the previous document. `short_first_document` is the path that did not exist
-    before per-document compression, one empty document among non-empty ones. `every_document_short`
-    is the degenerate end: at the CSA rate every entry is the first of its own document, and at the
-    HCA rate the row compresses to nothing at all rather than to entries that straddle boundaries.
+    before per-document compression, one empty document among non-empty ones.
+    `csa_every_document_short` is the degenerate end, every entry the first of its own document. A
+    row that compresses to nothing at all belongs to `test_attention_survives_a_zero_entry_document`
+    instead: both sides of the comparison here would be zeros, so nothing but the shapes could fail.
     """
     module = prime_attention(layer_idx, dtype=torch.float32)
     layout = _layout(doc_lens, compress_rate)
