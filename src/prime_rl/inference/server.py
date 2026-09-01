@@ -10,10 +10,10 @@ def setup_vllm_env(config: InferenceConfig):
     # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
-    # vLLM 0.28 supports both replay captures on V2. NIXL P/D remains on V1:
-    # vLLM rejects routed-expert capture with KV connectors, and prime-rl's
-    # prefill/decode stitching patch is V1-only. setdefault keeps an explicit
-    # [inference.env_vars] choice authoritative.
+    # Standard deployments use V2 for both capture modes. NIXL P/D also uses V2
+    # for sampling-mask capture, but router replay remains on V1 because vLLM
+    # rejects routed-expert capture with KV connectors and prime-rl's stitching
+    # patch is V1-only. setdefault keeps an explicit env-var choice authoritative.
     if config.enable_return_sampling_mask:
         os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1")
     elif config.vllm.enable_return_routed_experts:

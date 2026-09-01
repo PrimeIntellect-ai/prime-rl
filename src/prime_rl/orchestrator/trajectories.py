@@ -67,11 +67,13 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
 
 
 def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> SamplingMask | None:
-    """The branch's sampling mask (`Branch.sampling_mask`) -> the transport
-    `SamplingMask` the trainer replays. Realigns `counts` to `num_tokens`
-    (truncating drops the tail's ids too) as a backstop — `Branch.sampling_mask` already
-    guarantees alignment, mirroring `_encode_routed_experts`. A 0 count just means no
-    replay for that position, so partial coverage stays safe."""
+    """Encode a branch sampling mask for a fixed token count.
+
+    The mask stores row sizes in `counts` and concatenates every row in `ids`.
+    For example, `counts=[2, 1]` and `ids=[4, 7, 9]` become `counts=[2]` and
+    `ids=[4, 7]` for one token. For three tokens, they become
+    `counts=[2, 1, 0]` with unchanged ids. Zero-count rows disable replay.
+    """
     if mask is None:
         return None
     ids, counts = mask.ids, mask.counts

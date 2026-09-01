@@ -294,9 +294,12 @@ def _slice_sampling_mask(sampling_mask: SamplingMask, seq_len: int) -> SamplingM
 
 
 def _pad_sampling_mask(micro_batch: MicroBatch, padding_size: int) -> None:
+    """Add zero-count mask rows for sequence-padding tokens.
+
+    Padding adds token positions but no eligible token ids, so only `counts` grows.
+    """
     sampling_mask = micro_batch.sampling_mask
     assert sampling_mask is not None
-    # Padding tokens carry no sampling mask (count 0), so only counts grow.
     sampling_mask.counts += b"\0" * (padding_size * _SAMPLING_MASK_ITEMSIZE)
 
 
