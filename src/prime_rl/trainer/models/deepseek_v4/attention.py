@@ -219,7 +219,7 @@ def get_token_entry_causal_mask(layout: CompressionLayout, threshold: Tensor) ->
     return same_document & (threshold.unsqueeze(-1) > layout.entry_local[None, None, :])
 
 
-class DeepseekV4DualSeriesCompressor(nn.Module):
+class DeepseekV4Compressor(nn.Module):
     """Softmax-gated pooling of the token stream into one entry per `compress_rate` tokens.
 
     `kv_proj` and `gate_proj` emit `2 * head_dim` features per token, read as two
@@ -317,7 +317,7 @@ class DeepseekV4IndexerScorer(nn.Module):
         return (scores * weights.unsqueeze(-1)).sum(dim=2)
 
 
-class DeepseekV4Indexer(DeepseekV4DualSeriesCompressor):
+class DeepseekV4Indexer(DeepseekV4Compressor):
     """Lightning Indexer: picks the `index_topk` compressed entries each query may read.
 
     It repeats the CSA compressor's compression at the much narrower `index_head_dim`,
@@ -365,7 +365,7 @@ class DeepseekV4Indexer(DeepseekV4DualSeriesCompressor):
         return torch.where(readable.gather(-1, top_k_indices), top_k_indices, torch.full_like(top_k_indices, -1))
 
 
-class DeepseekV4CSACompressor(DeepseekV4DualSeriesCompressor):
+class DeepseekV4CSACompressor(DeepseekV4Compressor):
     """Compressed Sparse Attention compressor: the sparse long-range half of a CSA layer.
 
     Returns the compressed history as extra KV entries for the attention block to
