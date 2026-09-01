@@ -88,7 +88,7 @@ In TOML, an empty section header (`[ckpt]`) does the same.
 
 ## RL trainer trace annotations
 
-The RL trainer always writes its per-token streams (recomputed logprobs, entropies) as trace-update JSONL, keyed by `trace_id` and `branch_index`. There is no config knob.
+The RL trainer always logs its per-token streams (recomputed logprobs, entropies) as trace updates through the file monitor, keyed by `trace_id` and `branch_index`. There is no config knob.
 
 ## Key files
 

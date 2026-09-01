@@ -1091,3 +1091,6 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
   font-size: 12px;
 }
 #view-toast .toast-text { color: var(--grey-6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* the step control does not narrow the `all` stream */
+#step-bar.muted-step #step-blocks, #step-bar.muted-step #step-label { opacity: 0.35; }

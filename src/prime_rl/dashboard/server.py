@@ -2,8 +2,8 @@
 
 This package is fully AI-generated and maintained by agents - it is not meant to be read or edited by humans. Change it by asking an agent, and verify through the browser smoke tests.
 
-Reads everything from run output directories (metrics.jsonl, logs/attempt_N,
-traces/step_N) — no wandb or network required. Usage:
+Reads everything from run output directories (the file monitor's metrics and trace
+streams, logs/attempt_N) — no wandb or network required. Usage:
 
     uv run dashboard [output_dir ...] [--port 7788] [--host 127.0.0.1]
 

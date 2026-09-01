@@ -1870,6 +1870,10 @@ function adjustKindSubset() {
   }
   setActive("#trace-subset", "subset", traces.subset);
   setActive("#tm-subset", "subset", traces.subset);
+  // `all` is the whole arrival-ordered stream; only `effective` ties to a step
+  const streamed = traces.subset === "all";
+  $("#step-bar").classList.toggle("muted-step", streamed);
+  for (const id of ["#step-prev", "#step-next", "#tm-step-prev", "#tm-step-next"]) $(id).disabled = streamed;
 }
 
 function renderStepControl() {
