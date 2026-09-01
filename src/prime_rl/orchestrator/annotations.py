@@ -2,8 +2,8 @@
 
 An episode is serialized once, when it arrives, so a trace's later facts cannot be
 implied by where its record sits. Both events below are stamped explicitly: what the
-orchestrator knows at arrival goes onto the trace before it is logged, and what the
-shipped cohort adds becomes an append-only update the reader folds back on.
+orchestrator knows at arrival goes onto the trace before it is logged, and what a batch
+adds when it takes the episode becomes an append-only update the reader folds back on.
 """
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ def stamp_arrival(episodes: list[vf.Episode], kind: Kind, step: int) -> None:
             trace.info["arrival"] = {"step": step, "time": now}
 
 
-def stamp_ship(episodes: list[vf.Episode], step: int) -> list[dict[str, Any]]:
-    """The updates a shipped cohort adds over its arrival records: membership, the step
+def stamp_batch(episodes: list[vf.Episode], step: int) -> list[dict[str, Any]]:
+    """The updates a batched cohort adds over its arrival records: membership, the step
     it ties to, the scalar advantage, and the per-token advantage streams."""
     now = time.time()
     updates = []
