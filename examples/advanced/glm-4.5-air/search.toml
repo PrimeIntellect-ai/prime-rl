@@ -100,7 +100,7 @@ name = "openseeker"
 env.agent.harness.id = "rlm"
 env.agent.harness.skills = ["search"]
 env.agent.harness.forward_env = ["SERPER_API_KEY"]
-env.agent.harness.summarize_at_tokens = [65536, 131072]
+env.agent.harness.compaction.summarize_at_tokens = 98304
 env.agent.runtime.labels = ["glm45air-search"]
 env.taskset.id = "openseeker"
 
@@ -124,7 +124,7 @@ name = "redsearcher"
 env.agent.harness.id = "rlm"
 env.agent.harness.skills = ["search"]
 env.agent.harness.forward_env = ["SERPER_API_KEY"]
-env.agent.harness.summarize_at_tokens = [65536, 131072]
+env.agent.harness.compaction.summarize_at_tokens = 98304
 env.agent.runtime.labels = ["glm45air-search"]
 env.taskset.id = "redsearcher" # optional `difficulty` filter (easy/medium/hard)
 
@@ -154,7 +154,7 @@ num_examples = 500 # full set is 1266; cap eval at 500
 env.agent.harness.id = "rlm"
 env.agent.harness.skills = ["search"]
 env.agent.harness.forward_env = ["SERPER_API_KEY"]
-env.agent.harness.summarize_at_tokens = 98304
+env.agent.harness.compaction.summarize_at_tokens = 98304
 env.agent.runtime.labels = ["glm45air-search"]
 env.agent.timeout.rollout = 3600
 env.taskset.id = "browsecomp"

@@ -70,11 +70,6 @@ class BenchmarkConfig(BaseConfig):
         Field(description="Activation checkpointing type"),
     ] = "Recompute"
 
-    selective_targets: Annotated[
-        list[str] | None,
-        Field(description="Selective activation checkpoint targets when ac=Selective"),
-    ] = None
-
     attention: Annotated[
         Literal["sdpa", "flash_attention_2", "flash_attention_3", "flash_attention_4"],
         Field(description="Attention implementation"),
@@ -160,8 +155,6 @@ def build_command(config: BenchmarkConfig, output_dir: Path) -> list[str]:
         cmd.append("--model.ac")
     elif config.ac == "Selective":
         cmd.extend(["--model.ac", "--model.ac.mode", "selective"])
-        if config.selective_targets:
-            cmd.extend(["--model.ac.targets", json.dumps(config.selective_targets)])
     elif config.ac == "Offload":
         cmd.append("--model.ac-offloading")
 
