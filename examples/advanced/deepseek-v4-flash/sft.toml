@@ -86,9 +86,9 @@ type = "filesystem"
 timeout = 3600
 
 [inference]
-# Mandatory for DeepSeek V4, not an optimization: without it the mHC pre-norm GEMM falls back to a
-# TileLang kernel that is silently wrong above 1024 tokens per forward on SM120, and the
-# checkpoint's UE8M0-scaled fp8 weights route to a CUTLASS kernel that crashes on boot.
+# Note: we found `use_deep_gemm = false` is broken on SM120 where mHC pre-norm GEMM falls back to
+# a TileLang kernel whose forward is silently wrong above 1024 tokens, and the checkpoint's
+# UE8M0-scaled fp8 weights route to a CUTLASS kernel that crashes on boot.
 use_deep_gemm = true
 
 [inference.vllm]
