@@ -1947,7 +1947,7 @@ async function loadEpisodes({ append = false } = {}) {
   syncTraceFilterControls();
   if (traces.mode === "step" && traces.step == null) {
     $("#trace-status").textContent = "";
-    showTraceEmpty("no shipped cohorts yet", "no batch has shipped, so no episode ties to a step");
+    showTraceEmpty("no shipped batches yet");
     return;
   }
   const key = traceKey();
