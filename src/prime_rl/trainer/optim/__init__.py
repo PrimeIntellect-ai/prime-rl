@@ -4,7 +4,7 @@ from torch import nn
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
-from prime_rl.trainer.models.fusions import applied_parameter_fusions
+from prime_rl.trainer.models.fusions import packed_parameters
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.offload import (
@@ -190,16 +190,15 @@ def _create_muon_optimizer(
         distributed_mesh = parallel_dims.world_mesh
 
     # Runtime fusions pack several logical matrices into one physical parameter. Muon
-    # orthogonalizes each of them separately, so a fused parameter trains exactly as its
-    # unfused matrices would. Frozen fused parameters never reach the optimizer.
+    # orthogonalizes each of them separately, so a packed parameter trains exactly as the
+    # matrices it replaces would. Packed biases and frozen parameters are not Muon's.
     matrix_partitions = {}
     if model is not None:
         muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
-        matrix_partitions = {
-            parameter: fusion.optimizer_matrix_partitions(module)
-            for _, parameter, module, fusion in applied_parameter_fusions(model)
-            if parameter in muon_params
-        }
+        for info in packed_parameters(model):
+            partitions = info.packed.matrix_partitions(info.parameter)
+            if partitions is not None and info.parameter in muon_params:
+                matrix_partitions[info.parameter] = partitions
 
     optimizer = Muon(
         params=param_groups,

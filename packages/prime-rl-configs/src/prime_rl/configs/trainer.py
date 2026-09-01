@@ -240,7 +240,7 @@ class ModelConfig(BaseModelConfig):
     compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""
 
-    fusions: list[Literal["gate_up"]] = []
+    fusions: list[Literal["gate_up", "qkv"]] = []
     """Runtime parameter fusions applied by modules that explicitly support them."""
 
     ac: ActivationCheckpointConfig | None = ActivationCheckpointConfig()

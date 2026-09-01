@@ -13,7 +13,7 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher, TokenDispatcher
-from prime_rl.trainer.models.fusions import GroupedExpertsGateUpFusion
+from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ActivationType
 from prime_rl.trainer.models.layers.grouped_gemm import BF16GroupedGemm, GroupedGemm
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
@@ -83,7 +83,7 @@ def broadcast_expert_bias(
 
 
 class GroupedExperts(nn.Module):
-    supported_fusions = {"gate_up": GroupedExpertsGateUpFusion}
+    supported_fusions = {"gate_up": fuse_gate_up_projections}
 
     def __init__(
         self,
