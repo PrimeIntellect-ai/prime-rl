@@ -605,7 +605,7 @@ def episode_summaries(path: Path) -> list[dict]:
             try:
                 summaries.append(summarize_episode(line_no + 1, orjson.loads(raw)))
             except orjson.JSONDecodeError:
-                summaries.append({"line": line_no, "id": None, "error": "unparseable"})
+                summaries.append({"line": line_no + 1, "id": None, "error": "unparseable"})
     with _lock:
         _lru_put(_summaries_cache, path, (len(offsets), summaries))
     write_sidecar(path, summaries)
@@ -1422,7 +1422,11 @@ def read_episode_at(path: Path, line: int, offset: int | None = None) -> dict:
         offset = offsets[line - 1]
     with path.open("rb") as f:
         f.seek(offset)
-        return orjson.loads(f.readline())
+        try:
+            return orjson.loads(f.readline())
+        except orjson.JSONDecodeError as error:
+            # a record torn by a crash, or the stream's last line caught mid-append
+            raise HTTPException(422, f"episode {line} is unparseable") from error
 
 
 def episode_offset(run_dir: Path, line: int) -> int | None:

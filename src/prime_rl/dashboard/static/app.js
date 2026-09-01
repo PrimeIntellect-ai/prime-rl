@@ -1944,7 +1944,7 @@ function traceKey() {
 
 /* the table holds one page at a time and grows as the reader scrolls, so a run of
    any length costs the same to open */
-async function loadEpisodes({ append = false } = {}) {
+async function loadEpisodes({ append = false, poll = false } = {}) {
   const traces = state.traces;
   syncTraceFilterControls();
   if (traces.mode === "step" && traces.step == null) {
@@ -1970,6 +1970,15 @@ async function loadEpisodes({ append = false } = {}) {
     return;
   }
   if (data.unchanged) return;
+  // A live run answers every poll with a new first page. Rebuilding from it would
+  // drop the pages a reader has scrolled through and send them back to the top, so
+  // while they are scrolled only the count moves. The etag is deliberately left
+  // behind: the next poll after they return to the top refreshes for real.
+  if (poll && !append && $("#episode-table-wrap").scrollTop > 0) {
+    traces.total = data.total;
+    $("#trace-status").textContent = `${fmtCompact(data.total)} episode${data.total === 1 ? "" : "s"}`;
+    return;
+  }
   traces.etag = data.etag;
   traces.key = key;
   traces.total = data.total;
@@ -2198,7 +2207,7 @@ async function refreshTraces() {
   try {
     await loadRollouts();
     if (state.traces !== traces) return;
-    await loadEpisodes();
+    await loadEpisodes({ poll: true });
     if (state.traces !== traces) return;
     await loadHistogram();
   } finally {
