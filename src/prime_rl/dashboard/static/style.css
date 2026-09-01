@@ -809,7 +809,8 @@ mark.hit {
 .tl-tooltip dd { color: var(--grey-6); margin: 0; }
 .tl-tooltip-hint { color: var(--grey-4); border-top: 1px solid var(--hairline); margin-top: 9px; padding-top: 7px; font-size: 9.5px; }
 
-.trace-errors { margin-top: auto; padding-top: 12px; }
+/* the banners lead the transcript, so they stand off the first entry */
+.trace-errors { margin-top: auto; padding-top: 12px; margin-bottom: 14px; }
 .trace-error-banner {
   border: 1px solid var(--negative);
   background: rgba(255, 69, 57, 0.08);
