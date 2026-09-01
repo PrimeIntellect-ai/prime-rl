@@ -510,7 +510,6 @@ class DeepseekV4Attention(nn.Module):
         self.num_heads = config.num_attention_heads
         self.head_dim = config.head_dim
         self.attention_dropout = config.attention_dropout
-        self.is_causal = True
         self.scaling = self.head_dim**-0.5
 
         self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=False)
