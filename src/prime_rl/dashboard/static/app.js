@@ -4062,14 +4062,8 @@ $("#step-blocks").addEventListener("pointerover", (e) => {
   const cell = e.target.closest(".sb-cell");
   if (cell) selectStepByIndex(+cell.dataset.i);
 });
-$("#step-prev").addEventListener("click", () => {
-  const idx = state.traces.steps.findIndex((s) => s.step === state.traces.step);
-  selectStepByIndex(idx - 1);
-});
-$("#step-next").addEventListener("click", () => {
-  const idx = state.traces.steps.findIndex((s) => s.step === state.traces.step);
-  selectStepByIndex(idx + 1);
-});
+$("#step-prev").addEventListener("click", () => shiftStep(-1));
+$("#step-next").addEventListener("click", () => shiftStep(1));
 async function setTraceMode(mode, inModal = false) {
   const traces = state.traces;
   traces.mode = mode;
@@ -4215,9 +4209,21 @@ $("#tm-back").addEventListener("click", () => {
   activateTab("report");
 });
 $("#drawer-backdrop").addEventListener("click", closeDrawer);
+function shiftStep(delta) {
+  const idx = state.traces.steps.findIndex((s) => s.step === state.traces.step);
+  selectStepByIndex(idx < 0 ? 0 : idx + delta);
+}
+
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") return closeDrawer();
-  if ($("#trace-modal").hidden || e.target.matches("input, select, textarea")) return;
+  if (e.target.matches("input, select, textarea")) return;
+  if ($("#trace-modal").hidden) {
+    // the step bar walks with the arrow keys, like its ‹ › buttons
+    if (state.tab !== "traces" || state.traces.mode !== "step") return;
+    if (e.key === "ArrowLeft") { e.preventDefault(); shiftStep(-1); }
+    if (e.key === "ArrowRight") { e.preventDefault(); shiftStep(1); }
+    return;
+  }
   if (e.key === "ArrowDown") { e.preventDefault(); stepRollout(1); }
   if (e.key === "ArrowUp") { e.preventDefault(); stepRollout(-1); }
   if (e.key === "ArrowLeft") { e.preventDefault(); modalStep(-1); }
