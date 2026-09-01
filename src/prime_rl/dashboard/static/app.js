@@ -2097,7 +2097,7 @@ function histTipHtml(start, count, bin) {
   const day = new Date(start * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
   const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   return (
-    `<div class="tip-head">${count} rollout${count === 1 ? "" : "s"}</div>` +
+    `<div class="tip-head">${count} episode${count === 1 ? "" : "s"}</div>` +
     `<div class="tip-row"><span>start</span><span>${day} ${clock(start)}</span></div>` +
     `<div class="tip-row"><span>end</span><span>${day} ${clock(end)}</span></div>` +
     `<div class="tip-row"><span>duration</span><span>${fmtBin(bin)}</span></div>`
@@ -2446,7 +2446,7 @@ function episodeSignalScales(trace) {
         maxKl = Math.max(maxKl, Math.exp(dlp) - dlp - 1);
       }
   }
-  return { maxAbsAdv, maxEntropy, maxKl, eps: trace.train_annotations?.eps ?? 0.1 };
+  return { maxAbsAdv, maxEntropy, maxKl };
 }
 
 function renderTokenNode(node, signal, scales) {
@@ -2462,22 +2462,14 @@ function renderTokenNode(node, signal, scales) {
     const trainerLp = trainerLpAt(i), entropy = entropyAt(i);
     const dlp = trainerLp != null && logprob != null ? trainerLp - logprob : null;
     const kl = dlp != null ? Math.exp(dlp) - dlp - 1 : null;
-    const probDelta = dlp != null ? Math.exp(trainerLp) - Math.exp(logprob) : null;
     let bg = "";
     if (signal === "advantage" && advantage != null && scales.maxAbsAdv > 0) {
       const alpha = Math.min(1, Math.abs(advantage) / scales.maxAbsAdv) * 0.45;
       bg = `background:rgba(${advantage > 0 ? "182,255,60" : "255,69,57"},${alpha.toFixed(3)})`;
-    } else if (signal === "trainer_logprob" && trainerLp != null) {
-      bg = `background:rgba(183,166,250,${(Math.min(1, -trainerLp / 6) * 0.6).toFixed(3)})`;
     } else if (signal === "entropy" && entropy != null && scales.maxEntropy > 0) {
       bg = `background:rgba(94,234,212,${(Math.min(1, entropy / scales.maxEntropy) * 0.5).toFixed(3)})`;
     } else if (signal === "mismatch_kl" && kl != null && scales.maxKl > 0) {
       bg = `background:rgba(255,69,57,${(Math.min(1, kl / scales.maxKl) * 0.55).toFixed(3)})`;
-    } else if (signal === "stable_mask" && probDelta != null) {
-      bg =
-        probDelta > scales.eps ? "background:rgba(255,69,57,0.35)"
-        : probDelta < -scales.eps ? "background:rgba(255,176,32,0.35)"
-        : "background:rgba(74,158,255,0.15)";
     } else if (signal === "mask" && node.mask?.[i]) {
       bg = "background:rgba(74,158,255,0.3)";
     } else if (signal === "is_content" && node.is_content?.[i]) {
@@ -2485,13 +2477,10 @@ function renderTokenNode(node, signal, scales) {
     }
     let tip = `#${i} id=${id}`;
     if (signal === "advantage" && advantage != null) tip += ` adv=${fmtNum(advantage)}`;
-    else if (signal === "trainer_logprob" && trainerLp != null) {
-      tip += ` t-lp=${trainerLp.toFixed(4)} (${(Math.exp(trainerLp) * 100).toFixed(1)}%)`;
-      if (dlp != null) tip += ` Δlp=${dlp.toFixed(4)}`;
-    } else if (signal === "entropy" && entropy != null) tip += ` H=${entropy.toFixed(4)} nats`;
-    else if (signal === "mismatch_kl" && kl != null) tip += ` kl=${kl.toFixed(6)} ratio=${Math.exp(dlp).toFixed(4)}`;
-    else if (signal === "stable_mask" && probDelta != null)
-      tip += ` Δp=${probDelta.toFixed(4)} eps=${scales.eps} (${probDelta > scales.eps ? "masked high" : probDelta < -scales.eps ? "masked low" : "kept"})`;
+    else if (signal === "entropy" && entropy != null) tip += ` H=${entropy.toFixed(4)} nats`;
+    // the mismatch is the whole comparison: both logprobs, their gap, and the k3 estimator
+    else if (signal === "mismatch_kl" && kl != null)
+      tip += ` trainer=${trainerLp.toFixed(4)} inference=${logprob.toFixed(4)} Δ=${dlp.toFixed(4)} kl=${kl.toFixed(6)}`;
     else if (signal === "mask") tip += ` mask=${node.mask?.[i] ?? "?"}`;
     else if (signal === "is_content") tip += ` content=${node.is_content?.[i] ?? "?"}`;
     return `<span class="tok" style="${bg}" data-tip="${esc(tip)}">${esc(text)}</span>`;
@@ -2816,6 +2805,14 @@ function renderMessages(ep, trace, branches) {
   }
 }
 
+function metaSubRow(key, value) {
+  if (value == null) return "";
+  return (
+    `<div class="meta-row"><span class="k"><span class="tree" style="padding-left:12px">└</span> ${esc(key)}</span>` +
+    `<span class="v">${esc(value)}</span></div>`
+  );
+}
+
 function metaRow(key, value, asId = false) {
   if (value == null) return "";
   return (
@@ -2905,22 +2902,6 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("is_truncated", traceTruncated(trace)));
     parts.push(metaRow("ok", trace.ok));
 
-    // a trace has several steps: dispatched at one, arrived at another, shipped at a
-    // third — each stamped as its own event, so the lag between them is readable
-    const info = trace.info || {};
-    const annotations = trace.train_annotations;
-    if (info.dispatch || info.arrival || info.ship || annotations) {
-      parts.push(`<div class="meta-sec">timeline</div>`);
-      if (info.dispatch?.step != null) parts.push(metaRow("dispatched at step", info.dispatch.step));
-      if (info.arrival?.step != null) parts.push(metaRow("arrived at step", info.arrival.step));
-      if (info.ship?.step != null) parts.push(metaRow("shipped at step", info.ship.step));
-      if (info.ship?.step != null && info.dispatch?.step != null)
-        parts.push(metaRow("staleness", `${info.ship.step - info.dispatch.step} steps`));
-      if (ep.run?.work?.policy)
-        parts.push(metaRow("policy span", `v${ep.run.work.policy.start}–v${ep.run.work.policy.end}`));
-      if (annotations) parts.push(metaRow("trainer annotations", `${annotations.nodes} nodes`));
-    }
-
     const durations = [];
     (function walkTiming(obj, prefix) {
       if (!obj || typeof obj !== "object") return;
@@ -2939,6 +2920,31 @@ function renderMeta(ep, trace, branches) {
           : esc(name || "total");
         parts.push(`<div class="meta-row"><span class="k">${label}</span><span class="v">${secs.toFixed(2)}s</span></div>`);
       }
+    }
+
+    // a trace has several steps - dispatched at one, arrived at another, shipped at a
+    // third - so each is stamped as its own event. The lag between the first and the
+    // last is the staleness the policy trained through, split where it accrued:
+    // generating the rollout, then waiting in the sink for a batch.
+    const info = trace.info || {};
+    const annotations = trace.train_annotations;
+    const lag = (steps, seconds) =>
+      `${steps} step${Math.abs(steps) === 1 ? "" : "s"}` + (isFinite(seconds) ? ` · ${fmtDuration(seconds)}` : "");
+    if (info.dispatch || info.arrival || info.ship || annotations) {
+      parts.push(`<div class="meta-sec">timeline</div>`);
+      if (info.dispatch?.step != null) parts.push(metaRow("dispatch step", info.dispatch.step));
+      if (info.arrival?.step != null) parts.push(metaRow("arrival step", info.arrival.step));
+      if (info.ship?.step != null) parts.push(metaRow("ship step", info.ship.step));
+      if (info.ship?.step != null && info.dispatch?.step != null) {
+        parts.push(metaRow("staleness", lag(info.ship.step - info.dispatch.step, info.ship.time - info.dispatch.time)));
+        if (info.arrival?.step != null) {
+          parts.push(metaSubRow("in flight", lag(info.arrival.step - info.dispatch.step, info.arrival.time - info.dispatch.time)));
+          parts.push(metaSubRow("in queue", lag(info.ship.step - info.arrival.step, info.ship.time - info.arrival.time)));
+        }
+      }
+      if (ep.run?.work?.policy)
+        parts.push(metaRow("policy span", `v${ep.run.work.policy.start}–v${ep.run.work.policy.end}`));
+      if (annotations) parts.push(metaRow("trainer annotations", `${annotations.nodes} nodes`));
     }
   }
 
@@ -3783,7 +3789,9 @@ function syncTraceFilterControls() {
   const badge = $("#trace-filter-count");
   badge.hidden = !active;
   badge.textContent = active;
+  // the stream is not addressed by step, so its controls go away in that mode
   $("#step-bar").hidden = t.mode !== "step";
+  $("#tm-stephead").hidden = t.mode !== "step";
   $("#trace-chart").hidden = t.mode !== "stream";
   $("#trace-clear-bin").hidden = !t.bin;
   setActive("#trace-mode", "mode", t.mode);
@@ -4412,10 +4420,8 @@ document.addEventListener("visibilitychange", () => {
   renderLogLevel();
   $("#log-search").value = prefs.logSearch ?? "";
   $("#config-search").value = prefs.configSearch ?? "";
-  $("#token-signal").value =
-    prefs.tokenSignal === "rendered" ? ""
-    : prefs.tokenSignal === "logprob" ? "trainer_logprob"
-    : (prefs.tokenSignal ?? "");
+  const signal = prefs.tokenSignal ?? "";
+  $("#token-signal").value = $(`#token-signal option[value="${CSS.escape(signal)}"]`) ? signal : "";
   $("#follow-toggle").checked = state.follow;
   for (const sel of ["#run-select", "#trace-env", "#trace-sort", "#tm-env", "#tm-sort", "#config-attempt-select", "#attempt-select", "#token-signal", "#report-select"])
     dressSelect($(sel));

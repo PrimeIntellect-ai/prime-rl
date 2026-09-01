@@ -180,7 +180,7 @@
 <div id="drawer-backdrop" hidden></div>
 <div id="trace-modal" hidden>
   <aside id="tm-left">
-    <div class="tm-head tm-stephead">
+    <div class="tm-head tm-stephead" id="tm-stephead">
       <button id="tm-step-prev" class="btn tm-nav" title="previous step">‹</button>
       <span id="tm-step-label"></span>
       <button id="tm-step-next" class="btn tm-nav" title="next step">›</button>
@@ -244,13 +244,11 @@
         <button data-mode="messages" class="active">Messages</button>
         <button data-mode="rendered">Rendered</button>
       </div>
-      <select id="token-signal" title="Choose the token signal for either view. Text is uncolored; other options color recorded tokens by advantage, loss/content mask membership, or the trainer's annotations (trainer logprob, entropy, KL mismatch, IPO stable mask).">
+      <select id="token-signal" title="Choose the token signal for either view. Text is uncolored; other options color recorded tokens by advantage, loss/content mask membership, or the trainer's annotations (entropy, and the mismatch between its recomputed logprobs and the sampling ones).">
         <option value="">Text</option>
         <option value="advantage">Advantage</option>
-        <option value="trainer_logprob">Trainer logprob</option>
         <option value="entropy">Entropy</option>
-        <option value="mismatch_kl">KL Mismatch</option>
-        <option value="stable_mask">Stable mask</option>
+        <option value="mismatch_kl">Mismatch</option>
         <option value="mask">Loss Mask</option>
         <option value="is_content">Content Mask</option>
       </select>

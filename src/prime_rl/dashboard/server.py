@@ -894,13 +894,6 @@ def trace_ship_steps(run_dir: Path) -> dict[str, int]:
     return steps
 
 
-def ipo_eps(run_dir: Path) -> float:
-    """The run's IPO stable-mask threshold, for the frontend's stable-mask overlay."""
-    loss = read_json(resolved_config_dir(run_dir) / "trainer.json").get("loss") or {}
-    eps = loss.get("eps") if loss.get("type") == "ipo" else None
-    return eps if isinstance(eps, (int, float)) else 0.1
-
-
 def token_usage(usage: dict) -> tuple[int | None, int | None, int | None]:
     prompt_tokens = usage.get("prompt_tokens")
     output_tokens = usage.get("completion_tokens")
@@ -1459,7 +1452,7 @@ def get_episode(
             stamped = fold_trace_updates(trace, updates)
             if stamped:
                 ship_step = ((trace.get("info") or {}).get("ship") or {}).get("step")
-                trace["train_annotations"] = {"step": ship_step, "eps": ipo_eps(run_dir), "nodes": stamped}
+                trace["train_annotations"] = {"step": ship_step, "nodes": stamped}
     if not tokens and not rendered:
         return rec
     fallback_model = model_name(main_config(run_dir)[1])
