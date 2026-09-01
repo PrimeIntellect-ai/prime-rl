@@ -743,6 +743,23 @@ class OrchestratorConfig(BaseConfig):
                 env.sampling.extra_body.setdefault("return_token_ids", True)
         return self
 
+    @model_validator(mode="after")
+    def validate_policy_top_k_consistency(self):
+        """Require one top-k capture mode across the live policy server."""
+        policy_sources = [
+            env for env in self.train.source if env.algo is not None and env.algo.sampling.source == "policy"
+        ]
+        enabled = [env for env in policy_sources if env.sampling.top_k is not None]
+        disabled = [env for env in policy_sources if env.sampling.top_k is None]
+        if enabled and disabled:
+            names = ", ".join(env.resolved_name for env in disabled)
+            raise ValueError(
+                "Live-policy train sources cannot mix top_k > 0 and top_k = -1 because "
+                "sampling-mask capture is engine-wide. Set top_k > 0 for these sources: "
+                f"{names}."
+            )
+        return self
+
     @property
     def env_sources(self) -> list[tuple[str, EnvConfig]]:
         """Every ``(split, source)`` this run pulls from, train first then eval — the

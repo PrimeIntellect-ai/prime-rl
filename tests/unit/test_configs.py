@@ -357,6 +357,54 @@ def test_env_algo_overrides_top_level():
         )
 
 
+def test_policy_sources_accept_different_top_p_values():
+    with pytest.warns(UserWarning, match="defaulting top_k"):
+        config = OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "train": {
+                    "source": [
+                        {
+                            "name": "top-p-95",
+                            "env": {"taskset": {"id": "reverse-text"}},
+                            "sampling": {"top_p": 0.95},
+                        },
+                        {
+                            "name": "top-p-97",
+                            "env": {"taskset": {"id": "reverse-text"}},
+                            "sampling": {"top_p": 0.97},
+                        },
+                    ]
+                },
+            }
+        )
+
+    assert [source.sampling.top_k for source in config.train.source] == [512, 512]
+
+
+def test_policy_sources_reject_mixed_top_k_capture():
+    with pytest.warns(UserWarning, match="defaulting top_k"):
+        with pytest.raises(ValidationError, match="cannot mix top_k > 0 and top_k = -1"):
+            OrchestratorConfig.model_validate(
+                {
+                    "renderer": {"name": "qwen3"},
+                    "train": {
+                        "source": [
+                            {
+                                "name": "truncated",
+                                "env": {"taskset": {"id": "reverse-text"}},
+                                "sampling": {"top_p": 0.95},
+                            },
+                            {
+                                "name": "untruncated",
+                                "env": {"taskset": {"id": "reverse-text"}},
+                            },
+                        ]
+                    },
+                }
+            )
+
+
 def test_trainer_enable_token_export_cli_flag():
     assert not cli(TrainerConfig, args=[]).enable_token_export
     assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
