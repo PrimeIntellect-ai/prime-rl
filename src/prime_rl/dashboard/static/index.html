@@ -91,13 +91,12 @@
         </button>
         <div class="dd-menu dd-filters" id="trace-filter-menu" hidden>
           <div class="dd-sec">filter</div>
-          <label class="dd-row"><span class="t-label">kind</span>
-            <select id="trace-kind">
-              <option value="">train &amp; eval</option>
-              <option value="train">train only</option>
-              <option value="eval">eval only</option>
-            </select>
-          </label>
+          <div class="dd-row"><span class="t-label">kind</span>
+            <div class="seg toggle-seg" id="trace-kinds">
+              <button data-kind="train" class="on">train</button>
+              <button data-kind="eval" class="on">eval</button>
+            </div>
+          </div>
           <label class="dd-row"><span class="t-label">env</span>
             <select id="trace-env"><option value="">all envs</option></select>
           </label>
@@ -107,6 +106,7 @@
             <select id="trace-sort">
               <option value="arrival:desc">newest first</option>
               <option value="arrival:asc">oldest first</option>
+              <option value="group:asc">group</option>
               <option value="duration:desc">total time ↓</option>
               <option value="duration:asc">total time ↑</option>
               <option value="reward:desc">reward ↓</option>
@@ -116,12 +116,6 @@
           </label>
         </div>
       </div>
-      <select id="trace-window" title="how far back the stream chart reaches">
-        <option value="14400" selected>last 4h</option>
-        <option value="86400">last 24h</option>
-        <option value="604800">last 7d</option>
-        <option value="">all time</option>
-      </select>
       <span id="trace-status" class="muted"></span>
       <div class="spacer"></div>
       <button id="trace-clear-bin" class="btn" hidden>clear selection</button>
@@ -135,11 +129,12 @@
     <div id="trace-chart">
       <div class="chart-head"><span class="chart-title">Episodes finished</span><span id="trace-chart-sub" class="muted"></span></div>
       <div id="trace-hist"></div>
+      <div id="hist-tip" hidden></div>
     </div>
     <div id="episode-table-wrap">
       <table id="episode-table">
         <thead><tr>
-          <th>#</th><th>arrived</th><th>time</th><th>env</th><th>group</th><th>reward</th><th>adv</th>
+          <th>#</th><th>arrived</th><th>took</th><th>kind</th><th>env</th><th>group</th><th>reward</th><th>adv</th>
           <th>tok</th><th>turns</th><th>stop</th><th>status</th>
         </tr></thead>
         <tbody></tbody>
@@ -198,13 +193,12 @@
         </button>
         <div class="dd-menu dd-filters" id="tm-filter-menu" hidden>
           <div class="dd-sec">filter</div>
-          <label class="dd-row"><span class="t-label">kind</span>
-            <select id="tm-kind">
-              <option value="">train &amp; eval</option>
-              <option value="train">train only</option>
-              <option value="eval">eval only</option>
-            </select>
-          </label>
+          <div class="dd-row"><span class="t-label">kind</span>
+            <div class="seg toggle-seg" id="tm-kinds">
+              <button data-kind="train" class="on">train</button>
+              <button data-kind="eval" class="on">eval</button>
+            </div>
+          </div>
           <label class="dd-row"><span class="t-label">env</span>
             <select id="tm-env"><option value="">all envs</option></select>
           </label>
@@ -214,6 +208,7 @@
             <select id="tm-sort">
               <option value="arrival:desc">newest first</option>
               <option value="arrival:asc">oldest first</option>
+              <option value="group:asc">group</option>
               <option value="duration:desc">total time ↓</option>
               <option value="duration:asc">total time ↑</option>
               <option value="reward:desc">reward ↓</option>

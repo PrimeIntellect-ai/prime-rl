@@ -15,6 +15,11 @@ const SINGLE_SERIES = "#b6ff3c";
 const POLL_MS = 5000;
 const prefs = JSON.parse(localStorage.getItem("prl-dash") || "{}");
 
+const SORT_OPTIONS = new Set([
+  "arrival:desc", "arrival:asc", "group:asc",
+  "duration:desc", "duration:asc", "reward:desc", "reward:asc", "output_tokens:desc",
+]);
+
 const state = {
   runs: [],
   run: null,
@@ -43,16 +48,17 @@ const state = {
   traces: {
     loaded: false, steps: [], step: null, env: "",
     mode: prefs.traceMode ?? "stream",
-    kind: prefs.traceKind ?? "",
-    window: prefs.traceWindow ?? "14400",
+    kinds: { train: prefs.traceKinds?.train ?? true, eval: prefs.traceKinds?.eval ?? true },
     bin: null,
     episodes: [],
     total: 0,
     offset: 0,
     paging: false,
     errorsOnly: prefs.traceErrorsOnly ?? false,
-    sort: (prefs.traceSort ?? "arrival:desc").split(":")[0],
-    order: (prefs.traceSort ?? "arrival:desc").split(":")[1],
+    sorts: {
+      stream: SORT_OPTIONS.has(prefs.traceSortStream) ? prefs.traceSortStream : "arrival:desc",
+      step: SORT_OPTIONS.has(prefs.traceSortStep) ? prefs.traceSortStep : "group:asc",
+    },
     viewMode: prefs.tokenSignal === "rendered" ? "rendered" : (prefs.traceViewMode ?? "messages"),
   },
   report: { loaded: false, files: [], file: null, wanted: null, text: null, mtime: null, citations: {}, order: [], verify: new Map() },
@@ -1897,15 +1903,28 @@ function selectStepByIndex(index) {
 // the table chrome stays in place; the message renders as a spanning row so
 // arriving traces cause no layout shift
 function showTraceEmpty(title, detail) {
-  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="11">${emptyState(title, detail)}</td></tr>`;
+  $("#episode-table tbody").innerHTML = `<tr class="empty"><td colspan="12">${emptyState(title, detail)}</td></tr>`;
 }
 
 const PAGE = 128;
 
+/* both kinds on means no filter; exactly one narrows to it. Turning both off would
+   only ever show nothing, so the last one on stays on. */
+function activeKind() {
+  const { train, eval: ev } = state.traces.kinds;
+  return train && ev ? "" : train ? "train" : ev ? "eval" : "";
+}
+
+function traceSort() {
+  return state.traces.sorts[state.traces.mode] ?? "arrival:desc";
+}
+
 function traceQuery(extra = {}) {
   const t = state.traces;
-  const qs = new URLSearchParams({ sort: t.sort, order: t.order, errors_only: t.errorsOnly });
-  if (t.kind) qs.set("kind", t.kind);
+  const [sort, order] = traceSort().split(":");
+  const qs = new URLSearchParams({ sort, order, errors_only: t.errorsOnly });
+  const kind = activeKind();
+  if (kind) qs.set("kind", kind);
   if (t.env) qs.set("env", t.env);
   if (t.mode === "step" && t.step != null) qs.set("step", t.step);
   if (t.bin) {
@@ -1918,7 +1937,7 @@ function traceQuery(extra = {}) {
 
 function traceKey() {
   const t = state.traces;
-  return JSON.stringify([state.run, t.mode, t.step, t.kind, t.env, t.errorsOnly, t.sort, t.order, t.bin]);
+  return JSON.stringify([state.run, t.mode, t.step, activeKind(), t.env, t.errorsOnly, traceSort(), t.bin]);
 }
 
 /* the table holds one page at a time and grows as the reader scrolls, so a run of
@@ -1951,6 +1970,7 @@ async function loadEpisodes({ append = false } = {}) {
   traces.etag = data.etag;
   traces.key = key;
   traces.total = data.total;
+  traces.runKinds = data.kinds;
   traces.episodes = fresh ? data.episodes : traces.episodes.concat(data.episodes);
   const currentEnv = traces.env;
   for (const sel of ["#trace-env", "#tm-env"])
@@ -1990,8 +2010,6 @@ async function loadHistogram() {
   qs.delete("end");
   qs.delete("sort");
   qs.delete("order");
-  qs.set("bin", 60);
-  if (traces.window) qs.set("window", traces.window);
   let data;
   try {
     data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes/histogram?${qs}`);
@@ -2002,59 +2020,108 @@ async function loadHistogram() {
   renderHistogram();
 }
 
+const HIST_H = 148;
+const HIST_BAR_MAX = 46;
+
 function renderHistogram() {
   const data = state.traces.hist;
   const host = $("#trace-hist");
+  const width = Math.max(320, host.clientWidth || 900);
   if (!data || !data.bins.length) {
-    host.innerHTML = "";
-    $("#trace-chart-sub").textContent = "";
+    // an empty run still gets its frame, so the chart does not pop in later
+    $("#trace-chart-sub").textContent = "no episodes yet";
+    host.innerHTML =
+      `<svg width="${width}" height="${HIST_H}" viewBox="0 0 ${width} ${HIST_H}">` +
+      `<line class="hgrid" x1="46" y1="${HIST_H - 20}" x2="${width - 8}" y2="${HIST_H - 20}"></line></svg>`;
     return;
   }
   const bins = data.bins;
   const max = Math.max(...bins.map((b) => b[1]), 1);
-  const W = 1000, H = 120, padL = 34, padB = 18;
-  const bw = (W - padL) / bins.length;
+  // real pixels, and the plot always spans the width; capping the bar itself is
+  // what keeps a two-bar series from becoming two slabs
+  const padL = 46, padR = 8, padB = 20, padT = 12;
+  const plot = width - padL - padR;
+  const slot = plot / bins.length;
+  const barW = Math.max(1, Math.min(slot - Math.min(3, slot * 0.25), HIST_BAR_MAX));
+  const scale = (count) => (count / max) * (HIST_H - padB - padT);
   const selected = state.traces.bin;
   const bars = bins
     .map(([t, count], i) => {
-      const h = (count / max) * (H - padB);
+      const h = scale(count);
       const on = selected && t >= selected[0] && t < selected[1];
       return (
-        `<rect class="hbar${on ? " on" : ""}" x="${padL + i * bw}" y="${H - padB - h}" ` +
-        `width="${Math.max(1, bw - 1)}" height="${h}" data-t="${t}" data-count="${count}">` +
-        `<title>${count} episodes · ${new Date(t * 1000).toLocaleString()}</title></rect>`
+        `<rect class="hbar${on ? " on" : ""}" x="${(padL + i * slot + (slot - barW) / 2).toFixed(2)}" ` +
+        `y="${(HIST_H - padB - h).toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, count ? 1 : 0).toFixed(2)}" ` +
+        `data-t="${t}" data-count="${count}"></rect>`
       );
     })
     .join("");
-  const ticks = [0, Math.floor(bins.length / 2), bins.length - 1]
-    .filter((i, n, all) => all.indexOf(i) === n && bins[i])
-    .map(
-      (i) =>
-        `<text class="hax" x="${padL + i * bw}" y="${H - 4}">${new Date(bins[i][0] * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</text>`
-    )
-    .join("");
   const grid = [0, max / 2, max]
     .map((v) => {
-      const y = H - padB - (v / max) * (H - padB);
-      return `<line class="hgrid" x1="${padL}" y1="${y}" x2="${W}" y2="${y}"></line><text class="hax hval" x="0" y="${y + 3}">${fmtCompact(Math.round(v))}</text>`;
+      const y = HIST_H - padB - scale(v);
+      return (
+        `<line class="hgrid" x1="${padL}" y1="${y.toFixed(2)}" x2="${(padL + plot).toFixed(2)}" y2="${y.toFixed(2)}"></line>` +
+        `<text class="hax hval" x="${padL - 8}" y="${(y + 3).toFixed(2)}">${fmtCompact(Math.round(v))}</text>`
+      );
     })
     .join("");
-  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${grid}${bars}${ticks}</svg>`;
-  const span = `${new Date(data.start * 1000).toLocaleString()} → ${new Date(data.end * 1000).toLocaleTimeString()}`;
-  $("#trace-chart-sub").textContent = `${data.total} episodes · ${Math.round(data.bin)}s bins · ${span}`;
+  // label a few bars; include the date once the span crosses a day
+  const spanS = data.end - data.start || 1;
+  const label = (t) => {
+    const d = new Date(t * 1000);
+    const clock = d.toLocaleTimeString([], spanS < 300 ? { hour: "2-digit", minute: "2-digit", second: "2-digit" } : { hour: "2-digit", minute: "2-digit" });
+    return spanS > 86400 ? `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${clock}` : clock;
+  };
+  const every = Math.max(1, Math.ceil(bins.length / Math.max(2, Math.floor(plot / 110))));
+  const ticks = bins
+    .map(([t], i) => (i % every === 0 || i === bins.length - 1 ? i : null))
+    .filter((i) => i != null)
+    .map((i) => {
+      const x = padL + i * slot + slot / 2;
+      const anchor = i === 0 ? "start" : i === bins.length - 1 ? "end" : "middle";
+      return `<text class="hax" style="text-anchor:${anchor}" x="${x.toFixed(2)}" y="${HIST_H - 5}">${label(bins[i][0])}</text>`;
+    })
+    .join("");
+  host.innerHTML =
+    `<svg width="${width}" height="${HIST_H}" viewBox="0 0 ${width} ${HIST_H}">${grid}${bars}${ticks}</svg>`;
+  const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const span = `${new Date(data.start * 1000).toLocaleDateString([], { month: "short", day: "numeric" })} ${clock(data.start)} → ${clock(data.end)}`;
+  const picked = selected
+    ? ` · selected ${clock(selected[0])}–${clock(selected[1])} (${fmtBin(data.bin)})`
+    : "";
+  $("#trace-chart-sub").textContent = `${data.total} episodes · ${fmtBin(data.bin)} bins · ${span}${picked}`;
 }
 
-function fmtDuration(seconds) {
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
-  return `${Math.floor(seconds / 3600)}h ${Math.round((seconds % 3600) / 60)}m`;
+function histTipHtml(start, count, bin) {
+  const end = start + bin;
+  const day = new Date(start * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
+  const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return (
+    `<div class="tip-head">${count} rollout${count === 1 ? "" : "s"}</div>` +
+    `<div class="tip-row"><span>start</span><span>${day} ${clock(start)}</span></div>` +
+    `<div class="tip-row"><span>end</span><span>${day} ${clock(end)}</span></div>` +
+    `<div class="tip-row"><span>duration</span><span>${fmtBin(bin)}</span></div>`
+  );
+}
+
+function fmtBin(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
+function fmtStamp(epoch) {
+  const d = new Date(epoch * 1000);
+  return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function episodeRowHtml(ep) {
   return `<tr data-line="${ep.line}">
         <td class="muted">${ep.line}</td>
-        <td class="muted">${ep.arrival ? new Date(ep.arrival * 1000).toLocaleTimeString() : ""}</td>
+        <td class="muted nowrap">${ep.arrival ? fmtStamp(ep.arrival) : ""}</td>
         <td class="muted">${ep.duration != null ? fmtDuration(ep.duration) : ""}</td>
+        <td class="muted">${esc(ep.kind ?? "")}</td>
         <td>${esc(ep.env ?? "?")}</td>
         <td class="muted" title="${esc(ep.group ?? "")}">${ep.group ? esc(ep.group.slice(0, 8)) : "n/a"}</td>
         <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
@@ -2070,8 +2137,8 @@ function episodeRowHtml(ep) {
       </tr>`;
 }
 
-/* windowed table: only rows in (and around) the viewport exist in the DOM,
-   spacer rows stand in for the rest — thousands of episodes stay instant */
+/* windowed table: only rows in (and around) the viewport exist in the DOM, spacer
+   rows stand in for the rest, and the page itself grows as the reader scrolls */
 let episodeRowH = 0;
 
 function renderEpisodeRows(reset = false) {
@@ -2088,7 +2155,7 @@ function renderEpisodeRows(reset = false) {
   }
   const start = Math.max(0, Math.floor(wrap.scrollTop / episodeRowH) - 20);
   const end = Math.min(episodes.length, start + Math.ceil(wrap.clientHeight / episodeRowH) + 40);
-  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="11" style="height:${h}px"></td></tr>` : "");
+  const pad = (h) => (h > 0 ? `<tr class="vpad"><td colspan="12" style="height:${h}px"></td></tr>` : "");
   tbody.innerHTML =
     pad(start * episodeRowH) +
     episodes.slice(start, end).map(episodeRowHtml).join("") +
@@ -2643,7 +2710,7 @@ function renderMessages(ep, trace, branches) {
     pendingHighlight &&
     pendingHighlight.run === state.run &&
     pendingHighlight.step === state.traces.step &&
-    pendingHighlight.kind === state.traces.kind &&
+    pendingHighlight.kind === activeKind() &&
     pendingHighlight.subset === (state.traces.mode === "step" ? "effective" : "all") &&
     pendingHighlight.line === currentLine &&
     pendingHighlight.trace === currentTraceIdx
@@ -3474,7 +3541,8 @@ const MAX_PENDING_VIEW_COMMANDS = 32;
 function primeTraceCommand(cmd) {
   const traces = state.traces;
   if (cmd.step != null) traces.step = cmd.step;
-  if (cmd.kind) traces.kind = cmd.kind;
+  // a command naming a kind narrows to it; both stay on otherwise
+  if (cmd.kind) traces.kinds = { train: cmd.kind === "train", eval: cmd.kind === "eval" };
   // a citation addressed to a step wants the cohort view; `all` is the stream
   if (cmd.subset) traces.mode = cmd.subset === "effective" ? "step" : "stream";
   traces.bin = null;
@@ -3542,7 +3610,7 @@ async function applyTraceCommand(cmd) {
   pendingHighlight = {
     run: state.run,
     step: traces.step,
-    kind: traces.kind,
+    kind: activeKind(),
     subset: traces.mode === "step" ? "effective" : "all",
     line,
     trace: cmd.trace ?? 0,
@@ -3699,15 +3767,22 @@ function dressSelect(select) {
 function syncTraceFilterControls() {
   const t = state.traces;
   for (const sel of ["#trace-env", "#tm-env"]) $(sel).value = t.env;
-  for (const sel of ["#trace-kind", "#tm-kind"]) $(sel).value = t.kind;
-  for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = `${t.sort}:${t.order}`;
+  for (const sel of ["#trace-kinds", "#tm-kinds"])
+    for (const button of document.querySelectorAll(`${sel} button`)) {
+      button.classList.toggle("on", !!t.kinds[button.dataset.kind]);
+      // note a kind this run never produced, but leave it toggleable: disabling it
+      // would strand the toggle off the moment someone turned it off
+      const absent = t.runKinds && !t.runKinds.includes(button.dataset.kind);
+      button.classList.toggle("absent", !!absent);
+      button.title = absent ? `no ${button.dataset.kind} episodes in this run` : "";
+    }
+  for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = traceSort();
   for (const sel of ["#trace-errors", "#tm-errors"]) $(sel).checked = t.errorsOnly;
-  const active = [t.env, t.kind, t.errorsOnly].filter(Boolean).length;
+  const active = [t.env, activeKind(), t.errorsOnly].filter(Boolean).length;
   for (const sel of ["#trace-filter-btn", "#tm-filter-btn"]) $(sel).classList.toggle("active", active > 0);
   const badge = $("#trace-filter-count");
   badge.hidden = !active;
   badge.textContent = active;
-  $("#trace-window").value = t.window;
   $("#step-bar").hidden = t.mode !== "step";
   $("#trace-chart").hidden = t.mode !== "stream";
   $("#trace-clear-bin").hidden = !t.bin;
@@ -3986,25 +4061,41 @@ for (const sel of ["#trace-env", "#tm-env"])
     await loadHistogram();
     await refreshModalList();
   });
-for (const sel of ["#trace-kind", "#tm-kind"])
-  $(sel).addEventListener("change", async (e) => {
-    state.traces.kind = e.target.value;
-    await loadEpisodes();
-    await loadHistogram();
-    savePrefs();
-    await refreshModalList();
-  });
-$("#trace-window").addEventListener("change", async (e) => {
-  state.traces.window = e.target.value;
-  state.traces.bin = null;
-  await loadHistogram();
-  await loadEpisodes();
-  savePrefs();
-});
+for (const sel of ["#trace-kinds", "#tm-kinds"])
+  document.querySelectorAll(`${sel} button`).forEach((b) =>
+    b.addEventListener("click", async () => {
+      const kinds = state.traces.kinds;
+      const kind = b.dataset.kind;
+      const other = kind === "train" ? "eval" : "train";
+      if (kinds[kind] && !kinds[other]) return; // never leave both off
+      kinds[kind] = !kinds[kind];
+      await loadEpisodes();
+      await loadHistogram();
+      savePrefs();
+      await refreshModalList();
+    })
+  );
 $("#trace-clear-bin").addEventListener("click", async () => {
   state.traces.bin = null;
   await loadEpisodes();
   renderHistogram();
+});
+$("#trace-hist").addEventListener("mousemove", (e) => {
+  const bar = e.target.closest(".hbar");
+  const tip = $("#hist-tip");
+  if (!bar) {
+    tip.hidden = true;
+    return;
+  }
+  tip.innerHTML = histTipHtml(+bar.dataset.t, +bar.dataset.count, state.traces.hist?.bin ?? 60);
+  tip.hidden = false;
+  const host = $("#trace-chart").getBoundingClientRect();
+  const left = Math.min(e.clientX - host.left + 12, host.width - tip.offsetWidth - 8);
+  tip.style.left = `${Math.max(4, left)}px`;
+  tip.style.top = `${e.clientY - host.top + 14}px`;
+});
+$("#trace-hist").addEventListener("mouseleave", () => {
+  $("#hist-tip").hidden = true;
 });
 // a bar narrows the table to the episodes that finished in it
 $("#trace-hist").addEventListener("click", async (e) => {
@@ -4031,7 +4122,7 @@ for (const sel of ["#trace-errors", "#tm-errors"])
   });
 for (const sel of ["#trace-sort", "#tm-sort"])
   $(sel).addEventListener("change", async (e) => {
-    [state.traces.sort, state.traces.order] = e.target.value.split(":");
+    state.traces.sorts[state.traces.mode] = e.target.value;
     await loadEpisodes();
     savePrefs();
     await refreshModalList();
@@ -4252,9 +4343,9 @@ function savePrefs() {
       collapsedSections: [...state.metrics.collapsedSections],
       traceErrorsOnly: state.traces.errorsOnly,
       traceMode: state.traces.mode,
-      traceKind: state.traces.kind,
-      traceWindow: state.traces.window,
-      traceSort: `${state.traces.sort}:${state.traces.order}`,
+      traceKinds: { ...state.traces.kinds },
+      traceSortStream: state.traces.sorts.stream,
+      traceSortStep: state.traces.sorts.step,
       traceViewMode: state.traces.viewMode,
       traceView,
       logView: state.logs.view,

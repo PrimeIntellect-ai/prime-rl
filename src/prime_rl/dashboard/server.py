@@ -13,6 +13,7 @@ Multiple output directories can be tracked at once.
 import argparse
 import asyncio
 import hashlib
+import math
 import os
 import sys
 import threading
@@ -1146,7 +1147,16 @@ def project_episode_timeline(episode: dict) -> dict:
     return {"lanes": lanes}
 
 
-SORT_KEYS = {"arrival", "duration", "reward", "output_tokens", "turns"}
+NICE_BINS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400]
+
+
+def nice_bin(ideal: float) -> float:
+    """The smallest round interval at least this wide, so bars land on seconds,
+    minutes or hours a reader recognises rather than 93.4s."""
+    return next((step for step in NICE_BINS if step >= ideal), NICE_BINS[-1])
+
+
+SORT_KEYS = {"arrival", "duration", "reward", "output_tokens", "turns", "group"}
 
 
 def episode_rows(run_dir: Path) -> list[dict]:
@@ -1224,7 +1234,8 @@ def list_stream_episodes(
     if episode is not None:
         rows = [row for row in rows if row.get("id") == episode]
     if sort in SORT_KEYS:
-        rows = sorted(rows, key=lambda row: (row.get(sort) is None, row.get(sort) or 0), reverse=order == "desc")
+        blank = "" if sort == "group" else 0
+        rows = sorted(rows, key=lambda row: (row.get(sort) is None, row.get(sort) or blank), reverse=order == "desc")
     return {
         "etag": current_etag,
         "total": len(rows),
@@ -1238,30 +1249,30 @@ def list_stream_episodes(
 @app.get("/api/runs/{run}/episodes/histogram")
 def episode_histogram(
     run: str,
-    bin: float = Query(default=60.0, gt=0),
-    window: float | None = None,
     step: int | None = None,
     kind: str | None = None,
     env: str | None = None,
     errors_only: bool = False,
-    bins: int = Query(default=240, ge=1, le=2000),
+    bars: int = Query(default=80, ge=8, le=500),
 ) -> dict:
     """Episodes finishing per time bin, over the same filters as the table — the
-    stream's shape, and the thing you click to narrow it to a moment."""
+    stream's shape, and the thing you click to narrow it to a moment. The range fits
+    the episodes and the bin is the roundest interval that keeps the bar count sane,
+    so a run of any length reads the same."""
     run_dir = get_run_dir(run)
     rows = filter_rows(episode_rows(run_dir), step=step, kind=kind, env=env, errors_only=errors_only)
     arrivals = sorted(row["arrival"] for row in rows if isinstance(row.get("arrival"), (int, float)))
     if not arrivals:
-        return {"bins": [], "bin": bin, "start": None, "end": None, "total": 0}
-    end = arrivals[-1] + bin
-    start = max(arrivals[0], end - window) if window else arrivals[0]
-    # keep the bar count bounded however long the run is
-    bin = max(bin, (end - start) / bins)
+        return {"bins": [], "bin": 60, "start": None, "end": None, "total": 0}
+    bin = nice_bin(max(arrivals[-1] - arrivals[0], 1e-9) / bars)
+    # square the edges to bin boundaries so the bars carry round timestamps
+    start = math.floor(arrivals[0] / bin) * bin
+    end = math.floor(arrivals[-1] / bin) * bin + bin
     counts: dict[int, int] = {}
     for arrival in arrivals:
-        if arrival >= start:
-            counts[int((arrival - start) // bin)] = counts.get(int((arrival - start) // bin), 0) + 1
-    span = max(1, int((end - start) // bin) + 1)
+        index = int((arrival - start) // bin)
+        counts[index] = counts.get(index, 0) + 1
+    span = max(1, int(round((end - start) / bin)))
     return {
         "bins": [[start + index * bin, counts.get(index, 0)] for index in range(span)],
         "bin": bin,
