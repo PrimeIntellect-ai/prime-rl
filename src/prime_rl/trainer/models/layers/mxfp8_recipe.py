@@ -10,6 +10,7 @@ from prime_rl.trainer.models.layers.mxfp8_linear import MXFP8Linear
 
 class Mxfp8LinearRecipe(LinearRecipe):
     """MXFP8 linear layer."""
+
     name = "mxfp8"
 
     def __init__(self, recipe: MXFP8Recipe = "mxfp8_rceil") -> None:
