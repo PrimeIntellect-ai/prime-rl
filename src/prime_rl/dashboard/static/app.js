@@ -2038,9 +2038,13 @@ const HIST_BAR_MAX = 46;
 function renderHistogram() {
   const data = state.traces.hist;
   const host = $("#trace-hist");
-  const width = Math.max(320, host.clientWidth || 900);
+  // unhide before measuring: a hidden host measures 0, and a chart drawn to a guessed
+  // width would keep it for the life of the page
   syncTraceChart();
   if (!data || !data.bins.length) return;
+  if (!host.clientWidth) return; // not laid out yet - the observer redraws once it is
+  const width = Math.max(320, host.clientWidth);
+  state.traces.histWidth = width;
   const bins = data.bins;
   const max = Math.max(...bins.map((b) => b[1]), 1);
   // real pixels, and the plot always spans the width; capping the bar itself is
@@ -4510,6 +4514,12 @@ function resizeCharts() {
   }
 }
 window.addEventListener("resize", resizeCharts);
+// The histogram is an SVG drawn to a measured width, so it has to be redrawn whenever
+// that width changes. Observing the host covers every way it can: the first paint
+// before the tab is laid out, switching to the traces tab, and resizing the window.
+new ResizeObserver(() => {
+  if (state.traces.histWidth !== Math.max(320, $("#trace-hist").clientWidth)) renderHistogram();
+}).observe($("#trace-hist"));
 
 function savePrefs() {
   localStorage.setItem(
