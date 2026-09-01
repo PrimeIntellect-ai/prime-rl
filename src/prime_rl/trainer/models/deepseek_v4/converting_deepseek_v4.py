@@ -1,32 +1,17 @@
 """HF<->PrimeRL weight conversion for DeepSeek V4.
 
-Real DeepSeek V4 checkpoints (what `save_pretrained` writes, and what a Hub download
-contains) are **not** in `transformers`' own native module-attribute naming: `transformers`
-carries a generic, bidirectional checkpoint-conversion registry
-(`transformers.conversion_mapping`, `"deepseek_v4"` entry) that HF applies automatically
-inside `from_pretrained`/`save_pretrained` to translate between DeepSeek's compact on-disk
-names (`attn`, `ffn`, `wkv`, `wq_a`, `hc_attn_base`, per-expert `w1`/`w2`/`w3`, ...) and the
-names `DeepseekV4ForCausalLM`'s own `nn.Module` tree actually uses (`self_attn`, `mlp`,
-`kv_proj`, `q_a_proj`, `attn_hc.base`, fused `gate_up_proj`/`down_proj`, ...). prime-rl's own
-loading path reads the raw on-disk state dict directly (for DCP sharding) and never goes
-through `from_pretrained`, so it has to replicate that on-disk -> HF-native step itself before
-the small remaining HF-native -> PrimeRL delta below (confirmed empirically against a real
-saved checkpoint from `scripts/mini_moe.py --arch deepseek_v4`, not derivable from the
-in-memory `state_dict()` parity test alone, which only ever exercised the HF-native side).
-
-The genuinely PrimeRL-specific delta, once on HF-native names, is small: PrimeRL's shared
-`MoE` owns the router one level above where HF hangs it, so everything HF keeps under `gate`
-moves onto `router` (the aux-loss-free load-balancing bias arriving as `selection_bias`), and
-names its shared expert in the singular. Attention and its
-compressors and the hyper-connections already match HF-native shapes exactly once the on-disk
-step above has run. The routed experts are the one place PrimeRL diverges from HF-native on
-purpose: HF fuses `w1`/`w3` into `gate_up_proj` in memory, but PrimeRL stacks them as the
-canonical split `gate_proj`/`up_proj`/`down_proj` every other prime-rl MoE uses, so the
-on-disk per-expert `w1`/`w2`/`w3` only ever need stacking and renaming, never fusing.
-
-The two MoE layer types have different key sets: a hash layer carries `mlp.router.tid2eid` and no
-`mlp.router.selection_bias`, a standard one the other way round. Every op is present-guarded, so the
-same list is emitted for both.
+"On-disk" throughout this file means the safetensors tensor keys DeepSeek actually publishes
+on the Hub: `deepseek-ai/DeepSeek-V4-Flash-0731`, whose weight map is its
+`model.safetensors.index.json`. Those are **not** `transformers`' own native module-attribute
+naming. `transformers` carries a generic, bidirectional checkpoint-conversion registry
+(`transformers.conversion_mapping`, `"deepseek_v4"` entry) that HF applies automatically inside
+`from_pretrained` / `save_pretrained` to translate between the published compact names (`attn`,
+`ffn`, `wkv`, `wq_a`, `hc_attn_base`, per-expert `w1`/`w2`/`w3`, ...) and the names
+`DeepseekV4ForCausalLM`'s own `nn.Module` tree actually uses (`self_attn`, `mlp`, `kv_proj`,
+`q_a_proj`, `attn_hc.base`, fused `gate_up_proj`/`down_proj`, ...). prime-rl's own loading path
+reads the raw on-disk state dict directly (for DCP sharding) and never goes through
+`from_pretrained`, so it has to replicate that on-disk -> HF-native step itself before the small
+remaining HF-native -> PrimeRL delta below.
 """
 
 from __future__ import annotations
@@ -36,40 +21,8 @@ from prime_rl.trainer.models.conversion_ops import (
     Drop,
     PrefixRename,
     Rename,
-    StateDict,
     routed_experts_op,
 )
-
-
-def to_on_disk_naming(state_dict: StateDict) -> StateDict:
-    """`save_pretrained`'s key naming -> the naming a real DeepSeek V4 checkpoint ships.
-
-    `transformers`' reverse conversion (`core_model_loading.revert_weight_conversion`, what
-    `save_pretrained` applies) gets every per-layer key right but four wrong, measured against
-    the real `deepseek-ai/DeepSeek-V4-Flash-0731` `model.safetensors.index.json`: 0 of its
-    72317 keys carry a `model.` prefix, its embedding is `embed.weight`, its final
-    hyper-connection head is flat (`hc_head_fn`, `hc_head_base`, `hc_head_scale`, matching the
-    per-layer `hc_attn_*` / `hc_ffn_*` pattern that does convert correctly), and each layer's
-    top-level attention kv-norm is `attn.kv_norm.weight` (matching vLLM's own `self.kv_norm`,
-    `vllm/models/deepseek_v4/attention.py`). `save_pretrained` leaves the `model.` prefix on,
-    keeps `embed_tokens.weight`, leaves the head nested as `hc_head.hc_*`, and emits the kv-norm
-    as bare `attn.norm.weight` instead (the compressor's own norm, `attn.compressor.norm.weight`
-    / `attn.indexer.compressor.norm.weight`, converts correctly and is left alone).
-
-    Applied to locally generated checkpoints so they match the real format, and to in-memory
-    state dicts in the tests so `conversion_chain` is exercised against the naming it actually
-    has to handle.
-    """
-    renamed: StateDict = {}
-    for key, tensor in state_dict.items():
-        new_key = key.removeprefix("model.")
-        new_key = new_key.replace("embed_tokens.weight", "embed.weight")
-        new_key = new_key.replace("hc_head.hc_fn", "hc_head_fn")
-        new_key = new_key.replace("hc_head.hc_base", "hc_head_base")
-        new_key = new_key.replace("hc_head.hc_scale", "hc_head_scale")
-        new_key = new_key.replace(".attn.norm.weight", ".attn.kv_norm.weight")
-        renamed[new_key] = tensor
-    return renamed
 
 
 def _on_disk_attn_ops(layer_idx: int, layer_type: str) -> list[ConvOp]:

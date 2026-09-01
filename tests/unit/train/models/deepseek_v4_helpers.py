@@ -115,6 +115,27 @@ def _randomize(model: nn.Module) -> None:
                 buffer.copy_(_tid2eid(_BASE["vocab_size"], _BASE["n_routed_experts"], _BASE["num_experts_per_tok"]))
 
 
+def _to_on_disk_naming(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    r"""`save_pretrained`'s key naming -> the naming a real DeepSeek V4 checkpoint ships.
+
+    `transformers`' deepseek_v4 conversion registry mis-reverts four key families: its
+    `^embed\.weight$` / `^hc_head_*$` patterns never match `state_dict()` keys, which carry the
+    `model.` prefix that on-disk names do not, and its broad `.norm.` rule (meant for the
+    compressor's norm) turns attention's `kv_norm` into `norm`. Repaired here so
+    `conversion_chain` is exercised against the naming a real checkpoint actually has.
+    """
+    renamed: dict[str, torch.Tensor] = {}
+    for key, tensor in state_dict.items():
+        new_key = key.removeprefix("model.")
+        new_key = new_key.replace("embed_tokens.weight", "embed.weight")
+        new_key = new_key.replace("hc_head.hc_fn", "hc_head_fn")
+        new_key = new_key.replace("hc_head.hc_base", "hc_head_base")
+        new_key = new_key.replace("hc_head.hc_scale", "hc_head_scale")
+        new_key = new_key.replace(".attn.norm.weight", ".attn.kv_norm.weight")
+        renamed[new_key] = tensor
+    return renamed
+
+
 def _prime_config() -> DeepseekV4Config:
     # The for-loop expert path keeps the routed experts in the activation dtype; the
     # grouped-mm kernel casts to bfloat16 internally and is covered in test_deepseek_v4_temp.

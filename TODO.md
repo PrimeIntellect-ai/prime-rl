@@ -15,6 +15,26 @@ Nothing under `tests/` exercises the patched path at all (`_patch_qwen3_5_linear
 `Qwen3_5GatedDeltaNet`, `GatedDeltaNet` have zero hits), so CI would not catch a regression in
 it either. Worth a packed-vs-unpacked GDN parity test alongside the fix above.
 
+## `mini_moe.py`'s DeepSeek V4 preset was pulled, and needs a different writer to come back
+
+`scripts/mini_moe.py` is back to zero diff against `main`, so `--arch deepseek_v4` no longer
+exists. It worked by building an HF model, calling `save_pretrained`, then rewriting four key
+families in the result, because `save_pretrained` routes weights through `transformers`' reverse
+conversion and the `"deepseek_v4"` entry in `transformers/conversion_mapping.py` mis-reverts them:
+its `^embed\.weight$` / `^hc_head_*$` patterns never match `state_dict()` keys, which carry the
+`model.` prefix that on-disk names do not, and its broad `.norm.` rule (meant for the compressor's
+norm) turns attention's `kv_norm` into `norm`. vLLM's `hf_to_vllm_mapper` assumes the real format
+and fails with `KeyError: 'hc_head.hc_base'` without the repair.
+
+Reinstating the preset should not reinstate the repair. Write the weights with prime-rl's own
+`convert_to_hf`, which is what `convert_state_dict_to_hf` (`utils/weights.py`) already broadcasts
+every real checkpoint with, and `save_pretrained` is out of the loop entirely. The bug is still
+present on `transformers` `main`, so a version bump will not fix it; worth filing upstream.
+
+Note that resetting the file also dropped `a4b934809 fix(scripts): pass seq_lens from mini_moe's
+verify`. That was never DeepSeek-V4-specific (`verify()` on `main` raises `TypeError` for every
+preset) and `origin/fix/mini-moe-script` owns the generic repair.
+
 ## Two DeepSeek V4 shims to delete on the next transformers bump
 
 Transformers added V4's `compressed_sparse_attention` / `heavily_compressed_attention` to the

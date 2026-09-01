@@ -21,7 +21,6 @@ from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4
 from transformers.models.deepseek_v4.modeling_deepseek_v4 import DeepseekV4ForCausalLM as HFDeepseekV4ForCausalLM
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
-from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import to_on_disk_naming
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
 
@@ -34,6 +33,7 @@ from .deepseek_v4_helpers import (
     _randomize,
     _run_pair,
     _seed_rng,  # noqa: F401 -- pytest fixture, applied by name
+    _to_on_disk_naming,
     _torch_rms_norm,  # noqa: F401 -- pytest fixture, applied by name
 )
 
@@ -63,7 +63,7 @@ def _on_disk_state_dict(hf_model: nn.Module) -> dict[str, torch.Tensor]:
     runs, so this stays authoritative rather than restating the mapping here.
     """
     reverted = revert_weight_conversion(hf_model, dict(hf_model.state_dict()))
-    return to_on_disk_naming(reverted)
+    return _to_on_disk_naming(reverted)
 
 
 def get_model_pairs(dtype: torch.dtype = torch.bfloat16) -> tuple[nn.Module, nn.Module]:
