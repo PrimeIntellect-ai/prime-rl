@@ -1,3 +1,42 @@
+"""
+[DeepSeek V4 Attention Layers]
+
+The attention layers in this architecture generally begin with a few sliding-window attention
+layers (just the first two layers in V4 Flash) followed by many complex compressed attention
+variants. A sketch of the latter is below, tensors flowing downwards:
+
+                                │
+                 ┌──────────────┴──────────────┐
+                 │                             │
+             local KV                   long-range KV
+        sliding_window ~ 128                   │
+                 │              ┌──────────────┴──────────────┐
+                 │              │        (choose one)         │
+                 │              │                             │
+                 │        CSA compressor              HCA compressor
+                 │        rate 4; Lightning           rate 128; every
+                 │        Indexer keeps               causally-ready
+                 │     index_topk per query                summary
+                 │              │                             │
+                 │              └──────────────┬──────────────┘
+                 │                             │
+               RoPE                          RoPE
+         at token positions             at each summary's
+                 │                    first source token
+                 │                             │
+                 └────────── concatenate ──────┘
+                                │
+                               QKᵀ (with {compression,position}-aware masking)
+                                │
+                         softmax + sink
+                                │
+                        values (= keys) softmax weighting
+                                │
+                          de-rotate output
+                                │
+                    grouped output projection
+"""
+
 from dataclasses import dataclass
 
 import torch
