@@ -150,8 +150,10 @@ class OffloadActivations(saved_tensors_hooks):
                     # Sync in, offload, and add an event to sync back later
                     self.s1.wait_stream(self.s0)
 
-                stream = self.s1 if self.use_streams else self.s0
-                with stream:
+                # Re-entering the current stream makes torch.compile treat it as an
+                # explicit user stream and can produce invalid Inductor code.
+                stream_context = self.s1 if self.use_streams else nullcontext()
+                with stream_context:
                     try:
                         cpu_tensor = torch.empty_like(activation, pin_memory=self.use_pin_memory, device="cpu")
                     except NotImplementedError as e:
