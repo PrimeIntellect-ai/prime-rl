@@ -1373,8 +1373,8 @@ def get_episode(
                 continue
             stamped = fold_trace_updates(trace, updates)
             if stamped:
-                trained_at = ((trace.get("info") or {}).get("train") or {}).get("trained_at_step")
-                trace["train_annotations"] = {"step": trained_at, "eps": ipo_eps(run_dir), "nodes": stamped}
+                ship_step = ((trace.get("info") or {}).get("ship") or {}).get("step")
+                trace["train_annotations"] = {"step": ship_step, "eps": ipo_eps(run_dir), "nodes": stamped}
     if not tokens and not rendered:
         return rec
     fallback_model = model_name(main_config(run_dir)[1])

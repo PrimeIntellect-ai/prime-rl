@@ -2755,21 +2755,20 @@ function renderMeta(ep, trace, branches) {
     parts.push(metaRow("is_truncated", traceTruncated(trace)));
     parts.push(metaRow("ok", trace.ok));
 
-    const work = ep.run?.work;
-    const trainedAt = trace.info?.train?.trained_at_step;
+    // a trace has several steps: dispatched at one, arrived at another, shipped at a
+    // third — each stamped as its own event, so the lag between them is readable
+    const info = trace.info || {};
     const annotations = trace.train_annotations;
-    if (work || trainedAt != null || annotations) {
-      parts.push(`<div class="meta-sec">training</div>`);
-      if (work?.step != null) parts.push(metaRow("dispatched at step", work.step));
-      if (work?.policy) parts.push(metaRow("policy span", `v${work.policy.start}–v${work.policy.end}`));
-      if (trainedAt != null) parts.push(metaRow("trained at step", trainedAt));
-      if (annotations)
-        parts.push(
-          metaRow(
-            "trainer annotations",
-            `${annotations.nodes} nodes${annotations.step != null ? ` @ step ${annotations.step}` : ""}`
-          )
-        );
+    if (info.dispatch || info.arrival || info.ship || annotations) {
+      parts.push(`<div class="meta-sec">timeline</div>`);
+      if (info.dispatch?.step != null) parts.push(metaRow("dispatched at step", info.dispatch.step));
+      if (info.arrival?.step != null) parts.push(metaRow("arrived at step", info.arrival.step));
+      if (info.ship?.step != null) parts.push(metaRow("shipped at step", info.ship.step));
+      if (info.ship?.step != null && info.dispatch?.step != null)
+        parts.push(metaRow("staleness", `${info.ship.step - info.dispatch.step} steps`));
+      if (ep.run?.work?.policy)
+        parts.push(metaRow("policy span", `v${ep.run.work.policy.start}–v${ep.run.work.policy.end}`));
+      if (annotations) parts.push(metaRow("trainer annotations", `${annotations.nodes} nodes`));
     }
 
     const durations = [];
