@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import time
 from pathlib import Path
@@ -31,6 +32,7 @@ class FileMonitor(Monitor):
     async def init(self, output_dir: Path, producer: str | None = None) -> None:
         self.output_dir = output_dir
         self.producer = producer
+        self._stream_claim: TextIO | None = None
         index = get_index_path(get_trace_stream(output_dir))
         # a relaunch appends to the stream it finds, so the numbering carries on
         self._logged = sum(1 for _ in index.open("rb")) if index.is_file() else 0
@@ -66,6 +68,7 @@ class FileMonitor(Monitor):
         def write() -> None:
             path = get_trace_stream(self.output_dir)
             path.parent.mkdir(parents=True, exist_ok=True)
+            self._claim_stream(path)
             # An index row goes out with every episode: summarising the record here,
             # while it is already in hand, saves every reader from parsing a stream
             # that outgrows memory long before the run does.
@@ -82,6 +85,21 @@ class FileMonitor(Monitor):
         # Record serialization is heavy pure-Python work; keep it off the event loop.
         # Awaited (not fire-and-forget) so appends to one file never interleave.
         await asyncio.to_thread(write)
+
+    def _claim_stream(self, path: Path) -> None:
+        """The stream and its index number episodes from this process's counter and
+        interleave records from nobody, so exactly one process may append to them. The
+        claim is a lock held for the life of the process - a relaunch inherits a stream
+        whose writer has exited - and a second writer fails here, loudly, rather than
+        tearing records and colliding line numbers in silence."""
+        if self._stream_claim is not None:
+            return
+        claim = open(path.with_suffix(".lock"), "w")  # noqa: SIM115
+        try:
+            fcntl.flock(claim, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(f"another process is writing the trace stream at {path}") from error
+        self._stream_claim = claim
 
     async def log_annotations(self, updates: list[dict[str, Any]]) -> None:
         """Append trace updates to this producer's annotation file — one writer per

@@ -73,9 +73,9 @@ def _lru_put(cache: OrderedDict, key, value) -> None:
 # Append-only file caches keyed by absolute path: line-start offsets and per-episode summaries.
 _offsets_cache: OrderedDict[Path, tuple[int, bytes, list[int]]] = OrderedDict()
 _summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
-_annotations_cache: OrderedDict[Path, tuple[tuple, dict[str, dict]]] = OrderedDict()
+_annotations_cache: OrderedDict[Path, tuple[tuple, dict[str, dict], dict[Path, int]]] = OrderedDict()
 _index_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
-_rows_cache: OrderedDict[Path, tuple[tuple[int, ...], list[dict]]] = OrderedDict()
+_rows_cache: OrderedDict[Path, tuple] = OrderedDict()  # key, rows, entered, by_trace, consumed, last row
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
 _json_cache: dict[Path, tuple[tuple[int, float], dict]] = {}
@@ -733,20 +733,48 @@ def annotations_files(run_dir: Path) -> list[Path]:
     return sorted(path for path in directory.glob("*.jsonl") if not path.name.endswith(".index.jsonl"))
 
 
+def annotation_rows(data: Path) -> list[dict]:
+    """A producer's updates as index rows - ``{trace_id, info, offset}`` - read from its
+    index when it wrote one, and derived from the records themselves when it did not."""
+    rows = index_rows(get_index_path(data))
+    if rows is not None:
+        return rows
+    size = data.stat().st_size
+    with _lock:
+        cached = _lru_get(_index_cache, data)
+    if cached and cached[0] == size:
+        return cached[1]
+    rows, offset = [], 0
+    with data.open("rb") as f:
+        for raw in f:
+            try:
+                update = orjson.loads(raw)
+            except orjson.JSONDecodeError:
+                break
+            rows.append({"trace_id": update.get("trace_id"), "info": update.get("info"), "offset": offset})
+            offset += len(raw)
+    with _lock:
+        _lru_put(_index_cache, data, (size, rows))
+    return rows
+
+
 def annotation_index(run_dir: Path) -> dict[str, dict]:
     """Trace id -> the scalars its updates carry, and where each record sits.
 
     Reads the producers' indexes when they exist, so answering "which cohort, what
     credit" never touches the token streams — they can outweigh the traces themselves.
     A producer that wrote no index is read in full."""
-    files = [(data, get_index_path(data)) for data in annotations_files(run_dir)]
-    key = tuple((data.name, _file_size(data), _file_size(index)) for data, index in files)
+    files = annotations_files(run_dir)
+    key = tuple((data.name, _file_size(data), _file_size(get_index_path(data))) for data in files)
     cache_key = get_annotations_dir(run_dir)
     with _lock:
         cached = _lru_get(_annotations_cache, cache_key)
     if cached and cached[0] == key:
         return cached[1]
-    index: dict[str, dict] = {}
+    # Producers only append, so the fold resumes from the row each one was last read
+    # to. The map is copied rather than grown in place: a request already iterating
+    # the previous one must not see it change size under it.
+    consumed, index = ({}, {}) if cached is None else (dict(cached[2]), dict(cached[1]))
 
     def note(trace_id: str | None, info: dict, data: Path, offset: int) -> None:
         if not trace_id:
@@ -755,28 +783,13 @@ def annotation_index(run_dir: Path) -> dict[str, dict]:
         entry["info"].update(info)
         entry["at"].append((data, offset))
 
-    for data, sidecar in files:
-        if sidecar.is_file():
-            for raw in sidecar.read_bytes().splitlines():
-                if not raw:
-                    continue
-                try:
-                    row = orjson.loads(raw)
-                except orjson.JSONDecodeError:
-                    break  # torn tail line of a live append
-                note(row.get("trace_id"), row.get("info") or {}, data, row.get("offset", 0))
-            continue
-        offset = 0
-        with data.open("rb") as f:
-            for raw in f:
-                try:
-                    update = orjson.loads(raw)
-                except orjson.JSONDecodeError:
-                    break
-                note(update.get("trace_id"), update.get("info") or {}, data, offset)
-                offset += len(raw)
+    for data in files:
+        rows = annotation_rows(data)
+        for row in rows[consumed.get(data, 0) :]:
+            note(row.get("trace_id"), row.get("info") or {}, data, row.get("offset", 0))
+        consumed[data] = len(rows)
     with _lock:
-        _lru_put(_annotations_cache, cache_key, (key, index))
+        _lru_put(_annotations_cache, cache_key, (key, index, consumed))
     return index
 
 
@@ -792,17 +805,6 @@ def trace_updates(run_dir: Path, trace_id: str) -> list[dict]:
         except (OSError, orjson.JSONDecodeError):
             continue
     return updates
-
-
-def trace_ship_steps(run_dir: Path) -> dict[str, int]:
-    """Trace id -> the step its cohort shipped at, for traces marked effective."""
-    steps = {}
-    for trace_id, entry in annotation_index(run_dir).items():
-        info = entry["info"]
-        step = (info.get("ship") or {}).get("step")
-        if info.get("effective") and isinstance(step, int):
-            steps[trace_id] = step
-    return steps
 
 
 def ipo_eps(run_dir: Path) -> float:
@@ -1078,11 +1080,10 @@ def stream_index_file(run_dir: Path) -> Path:
     return get_index_path(stream) if stream else get_index_path(get_trace_stream(run_dir))
 
 
-def written_index(run_dir: Path) -> list[dict] | None:
-    """The index the file monitor wrote, read incrementally. ``None`` when the stream
-    came from a producer that writes no index, which is the reader's cue to derive the
-    rows itself."""
-    path = stream_index_file(run_dir)
+def index_rows(path: Path) -> list[dict] | None:
+    """The rows of an index the file monitor wrote, read incrementally: an index is
+    append-only, so only the bytes past the last read are parsed. ``None`` when there
+    is no index, which is the reader's cue to derive what it needs itself."""
     if not path.is_file():
         return None
     size = path.stat().st_size
@@ -1106,18 +1107,24 @@ def written_index(run_dir: Path) -> list[dict] | None:
     return rows
 
 
+def written_index(run_dir: Path) -> list[dict] | None:
+    """The stream's own index, when the stream's producer wrote one."""
+    return index_rows(stream_index_file(run_dir))
+
+
 def episode_rows(run_dir: Path) -> list[dict]:
     """The run's episode index: one row per episode of the stream, in arrival order,
     carrying the cohort step its annotations give it.
 
-    Built once per (index, annotations) size and cached: a browse request must not pay
-    for the whole run, however long it gets."""
+    Everything here is append-only, so the work tracks the growth rather than the run:
+    new episodes are entered as they arrive, and a new ship-time update stamps only the
+    episodes that own its trace. A browse request pays for what changed since the last
+    one, however long the run gets."""
     path = traces_file(run_dir)
     if path is None:
         return []
-    key = (_file_size(stream_index_file(run_dir)), path.stat().st_size) + tuple(
-        _file_size(file) for file in annotations_files(run_dir)
-    )
+    files = annotations_files(run_dir)
+    key = (_file_size(stream_index_file(run_dir)), path.stat().st_size, *(_file_size(file) for file in files))
     with _lock:
         cached = _lru_get(_rows_cache, run_dir)
     if cached and cached[0] == key:
@@ -1125,12 +1132,29 @@ def episode_rows(run_dir: Path) -> list[dict]:
     rows = written_index(run_dir)
     if rows is None:
         rows = episode_summaries(path)
-    ship_steps = trace_ship_steps(run_dir)
-    for row in rows:
-        steps = {step for trace_id in row.get("trace_ids") or [] if (step := ship_steps.get(trace_id)) is not None}
-        row["step"] = min(steps) if steps else None
+    # Resume only over the very rows stamped last time: a shorter list is a rewrite,
+    # and a list rebuilt from disk holds new dicts the trace map would no longer reach.
+    entered = cached[2] if cached else 0
+    resume = bool(cached) and len(rows) >= entered and (entered == 0 or rows[entered - 1] is cached[5])
+    by_trace, consumed = (cached[3], dict(cached[4])) if resume else ({}, {})
+    if not resume:
+        entered = 0
+    for row in rows[entered:]:
+        row["step"] = None
+        for trace_id in row.get("trace_ids") or []:
+            by_trace.setdefault(trace_id, []).append(row)
+    for data in files:
+        updates = annotation_rows(data)
+        for update in updates[consumed.get(data, 0) :]:
+            info = update.get("info") or {}
+            step = (info.get("ship") or {}).get("step")
+            if not info.get("effective") or not isinstance(step, int):
+                continue
+            for row in by_trace.get(update.get("trace_id"), ()):
+                row["step"] = step if row["step"] is None else min(row["step"], step)
+        consumed[data] = len(updates)
     with _lock:
-        _lru_put(_rows_cache, run_dir, (key, rows))
+        _lru_put(_rows_cache, run_dir, (key, rows, len(rows), by_trace, consumed, rows[-1] if rows else None))
     return rows
 
 

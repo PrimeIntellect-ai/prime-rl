@@ -2326,6 +2326,7 @@ function renderModalStep() {
 
 async function modalStep(delta) {
   const traces = state.traces;
+  if (traces.mode !== "step") return; // the stream has no step to move to
   const idx = traces.steps.findIndex((s) => s.step === traces.step);
   const target = traces.steps[idx + delta];
   if (!target) return;
@@ -4290,6 +4291,7 @@ for (const sel of ["#trace-errors", "#tm-errors"])
   $(sel).addEventListener("change", async (e) => {
     state.traces.errorsOnly = e.target.checked;
     await loadEpisodes();
+    await loadHistogram();
     savePrefs();
     await refreshModalList();
   });
