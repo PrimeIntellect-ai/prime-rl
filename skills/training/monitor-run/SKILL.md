@@ -165,16 +165,13 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 {run_dir}/monitors/file/metrics.jsonl                              # every metric row, tagged by producer
 {run_dir}/monitors/file/traces/stream.jsonl                        # every episode, appended as it arrives
 {run_dir}/monitors/file/traces/stream.index.jsonl                  # one compact row per episode, with its byte offset
-{run_dir}/monitors/file/traces/stream.lock                         # held by the one process appending to the stream
 {run_dir}/monitors/file/traces/annotations/{producer}.jsonl        # trace updates: orch ship-time facts, trainer per-token streams
 {run_dir}/monitors/file/traces/annotations/{producer}.index.jsonl  # each update's scalars and where its record sits
 ```
 
 Everything the file monitor dumps lives under `monitors/file/`; nothing is written
 there when the monitor is off. The traces and everything written about them sit under
-`traces/`, and every index is named for the stream it indexes and sits beside it.
-Exactly one process appends to the stream - it holds `stream.lock` for its lifetime,
-and a second writer fails at its first episode rather than interleaving records. Those
+`traces/`, and every index is named for the stream it indexes and sits beside it. Those
 indexes are what keep reading a run cheap: a consumer browses them instead of the
 streams, and seeks by the offsets they carry to read a single episode or its token
 streams. Both are derived, so deleting them only costs a reader the work of rebuilding
