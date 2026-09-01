@@ -1939,7 +1939,10 @@ function traceFiltered() {
 
 function traceKey() {
   const t = state.traces;
-  return JSON.stringify([state.run, t.mode, t.step, activeKind(), t.env, t.errorsOnly, traceSort(), t.bin]);
+  // the step addresses a cohort only in step mode; in the stream it follows the
+  // live run and must not read as a change of query
+  const step = t.mode === "step" ? t.step : null;
+  return JSON.stringify([state.run, t.mode, step, activeKind(), t.env, t.errorsOnly, traceSort(), t.bin]);
 }
 
 /* the table holds one page at a time and grows as the reader scrolls, so a run of
@@ -1986,10 +1989,17 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   // A live stream grows at its head under newest-first order, so a page fetched
   // against a longer stream than the one already loaded repeats its tail. Lines
   // are stable, so the repeats are dropped rather than shown twice.
-  if (fresh) traces.episodes = data.episodes;
-  else {
+  if (fresh) {
+    traces.episodes = data.episodes;
+    traces.exhausted = false;
+  } else {
     const held = new Set(traces.episodes.map((episode) => episode.line));
-    traces.episodes = traces.episodes.concat(data.episodes.filter((episode) => !held.has(episode.line)));
+    const added = data.episodes.filter((episode) => !held.has(episode.line));
+    traces.episodes = traces.episodes.concat(added);
+    // the same growth keeps `total` ahead of what is held, so the tail cannot be
+    // recognised by count: a page that adds nothing is the tail. The newest sit at
+    // the head, where the next refresh from the top picks them up.
+    traces.exhausted = added.length === 0;
   }
   const currentEnv = traces.env;
   for (const sel of ["#trace-env", "#tm-env"])
@@ -2012,7 +2022,7 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
 
 async function loadMoreEpisodes() {
   const traces = state.traces;
-  if (traces.paging || traces.episodes.length >= traces.total) return;
+  if (traces.paging || traces.exhausted || traces.episodes.length >= traces.total) return;
   traces.paging = true;
   try {
     await loadEpisodes({ append: true });
