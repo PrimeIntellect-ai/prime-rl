@@ -1984,9 +1984,9 @@ async function loadEpisodes({ append = false } = {}) {
     return;
   }
   renderEpisodeRows(fresh);
-  const shown = traces.episodes.length;
+  if (!$("#trace-modal").hidden) renderRolloutWindow();
   const scope = traces.mode === "step" ? `step ${traces.step}` : traces.bin ? "selected bin" : "stream";
-  $("#trace-status").textContent = `${shown} of ${data.total} episodes · ${scope}`;
+  $("#trace-status").textContent = `${data.total} episode${data.total === 1 ? "" : "s"} · ${scope}`;
 }
 
 async function loadMoreEpisodes() {
@@ -2227,7 +2227,7 @@ let tmItemH = 0;
 function renderRolloutWindow() {
   const list = $("#tm-list");
   const episodes = filteredRollouts();
-  $("#tm-count").textContent = fmtCompact(episodes.length);
+  $("#tm-count").textContent = fmtCompact(state.traces.total || episodes.length);
   if (!episodes.length) {
     list.innerHTML = "";
     return;
@@ -2256,9 +2256,13 @@ function renderRolloutList() {
   renderRolloutWindow();
 }
 
-function stepRollout(delta) {
-  const episodes = filteredRollouts();
+async function stepRollout(delta) {
+  let episodes = filteredRollouts();
   const idx = episodes.findIndex((e) => e.line === currentLine);
+  if (idx + delta >= episodes.length - 1) {
+    await loadMoreEpisodes();
+    episodes = filteredRollouts();
+  }
   const next = episodes[idx + delta];
   if (next) openEpisode(next.line);
 }
@@ -4154,7 +4158,14 @@ $("#episode-table-wrap").addEventListener(
   "scroll",
   rafThrottle(() => state.traces.episodes?.length && renderEpisodeRows())
 );
-$("#tm-list").addEventListener("scroll", rafThrottle(renderRolloutWindow));
+$("#tm-list").addEventListener(
+  "scroll",
+  rafThrottle(() => {
+    renderRolloutWindow();
+    const list = $("#tm-list");
+    if (list.scrollTop + list.clientHeight > list.scrollHeight - 300) loadMoreEpisodes();
+  })
+);
 $("#drawer-close").addEventListener("click", closeDrawer);
 $("#tm-back").addEventListener("click", () => {
   closeDrawer();
