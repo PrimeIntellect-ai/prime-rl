@@ -2242,6 +2242,7 @@ function clearSemanticTranscriptOrigin() {
   semanticTranscriptOrigin?.classList.remove("semantic-origin");
   semanticTranscriptOrigin = null;
 }
+let replay = null;
 
 const TRAINER_SIGNALS = new Set(["entropy", "mismatch_kl", "stable_mask"]);
 
@@ -2414,6 +2415,7 @@ async function ensureTokens() {
 }
 
 async function openEpisode(line, target = {}) {
+  stopReplay();
   const requestVersion = ++episodeOpenVersion;
   episodeEnrichmentVersion++;
   $("#trace-modal").hidden = false;
@@ -2450,11 +2452,13 @@ async function openEpisode(line, target = {}) {
   if (line !== currentLine || requestVersion !== episodeOpenVersion) return;
   if (traceView === "semantic" && !timelineHasSemantic()) traceView = "transcript";
   renderEpisode();
+  if (traceView === "replay") return;
   await ensureTokens();
   if (line === currentLine && requestVersion === episodeOpenVersion) renderEpisode();
 }
 
 function closeDrawer() {
+  stopReplay();
   episodeOpenVersion++;
   episodeEnrichmentVersion++;
   $("#trace-modal").hidden = true;
@@ -2705,6 +2709,10 @@ function pyLiteral(value) {
 }
 
 function toolCallHtml(toolCall) {
+  return `<div class="tool-call">${esc(toolCallText(toolCall))}</div>`;
+}
+
+function toolCallText(toolCall) {
   const name = toolCall.function?.name ?? toolCall.name ?? "?";
   const raw = toolCall.function?.arguments ?? toolCall.arguments;
   let args;
@@ -2718,7 +2726,7 @@ function toolCallHtml(toolCall) {
   } catch {
     args = String(raw ?? "");
   }
-  return `<div class="tool-call">${esc(name)}(${esc(args)})</div>`;
+  return `${name}(${args})`;
 }
 
 function reasoningBlock(content, marks = null) {
@@ -4067,8 +4075,222 @@ function openSemanticScopeInspector(scope) {
   $("#sg-inspector").hidden = false;
 }
 
+function replayClock(seconds) {
+  const safe = Math.max(0, seconds || 0);
+  const minutes = Math.floor(safe / 60);
+  return `${minutes}:${(safe % 60).toFixed(1).padStart(4, "0")}`;
+}
+
+function replayEvents(trace, branches, skipInference = false) {
+  const path = currentPath(trace, branches);
+  const callsByNode = new Map();
+  (trace.calls || []).forEach((call) => {
+    if (Number.isInteger(call.node) && !callsByNode.has(call.node)) callsByNode.set(call.node, call);
+  });
+  const raw = path.map((nodeIndex) => {
+    const node = trace.nodes[nodeIndex];
+    const linked = callsByNode.get(nodeIndex);
+    const callStart = linked?.time?.start;
+    const callEnd = linked?.time?.end;
+    const timestamp = node.timestamp;
+    const start = callStart > 0 ? callStart : timestamp > 0 ? timestamp : null;
+    const end = callEnd > 0 ? callEnd : start;
+    return { node, linked, start, end, timed: start != null };
+  });
+  // Prompt nodes can be committed at response time even though the model saw
+  // them before the request. Place that context no later than its call start.
+  let previousCall = -1;
+  for (let i = 0; i < raw.length; i++) {
+    const callStart = raw[i].linked?.time?.start;
+    if (!(callStart > 0)) continue;
+    for (let j = previousCall + 1; j < i; j++) {
+      if (raw[j].start == null || raw[j].start > callStart) raw[j].start = raw[j].end = callStart;
+    }
+    previousCall = i;
+  }
+  const timestamps = raw.flatMap((event) => [event.start, event.end]).filter((value) => value != null);
+  const origin = timestamps.length ? Math.min(...timestamps) : 0;
+  let cursor = 0;
+  let events = raw.map((event) => {
+    const at = event.start == null ? cursor : Math.max(cursor, event.start - origin);
+    const end = event.end == null ? at : Math.max(at, event.end - origin);
+    cursor = end;
+    return { ...event, at, end };
+  });
+  if (skipInference) {
+    let virtualClock = 0;
+    let previous = null;
+    events = events.map((event) => {
+      const role = event.node.message?.role;
+      if (role === "tool" && previous) virtualClock += Math.max(0, event.at - previous.end);
+      previous = event;
+      return { ...event, at: virtualClock, end: virtualClock };
+    });
+  }
+  return {
+    events,
+    duration: events.reduce((maximum, event) => Math.max(maximum, event.end), 0),
+    hasTiming: events.some((event) => event.timed),
+  };
+}
+
+function replayNodeHtml(event, elapsed, pendingTools) {
+  const message = event.node.message || {};
+  const role = message.role || "unknown";
+  const complete = elapsed >= event.end;
+  const duration = event.end - event.at;
+  const progress = complete || duration <= 0 ? 1 : Math.max(0, Math.min(1, (elapsed - event.at) / duration));
+  const content = messageText(message);
+  const reasoning = replay?.showThinking ? reasoningText(message.reasoning_content ?? message.reasoning) : "";
+  const streamed = reasoning ? `thinking\n${reasoning}\n\n${content}` : content;
+  const visible = event.linked && !complete ? streamed.slice(0, Math.floor(streamed.length * progress)) : streamed;
+  const stamp = event.timed ? `+${replayClock(event.at)}` : "untimed";
+  const callDuration = event.end - event.at;
+  let body = "";
+  if (role === "system") body = `<span class="replay-system"># system\n${esc(visible)}</span>`;
+  else if (role === "user") body = `<span class="replay-user">❯ ${esc(visible)}</span>`;
+  else if (role === "tool") body = `<span class="replay-output">${esc(visible)}</span>`;
+  else body = `<span class="replay-assistant">${esc(visible)}</span>`;
+  if (event.linked && !complete) {
+    const usage = normalizedCallUsage(event.linked.usage);
+    const details = [event.linked.model, usage.output == null ? null : `${fmtCompact(usage.output)} output tok`]
+      .filter(Boolean)
+      .join(" · ");
+    body =
+      `<div class="replay-model-wait"><span>model responding${details ? ` · ${esc(details)}` : ""}</span>` +
+      `<span>${fmtDuration(elapsed - event.at)} / ${fmtDuration(callDuration)}</span>` +
+      `<i><b style="width:${(progress * 100).toFixed(2)}%"></b></i></div>` +
+      body;
+  }
+  if (complete) {
+    for (const call of message.tool_calls || []) {
+      const id = call.id ?? call.tool_call_id;
+      if (id) pendingTools.set(id, toolCallText(call));
+      body += `<span class="replay-command">$ ${esc(toolCallText(call))}</span>`;
+    }
+    const resultId = message.tool_call_id;
+    if (resultId) pendingTools.delete(resultId);
+    else if (role === "tool" && pendingTools.size) pendingTools.delete(pendingTools.keys().next().value);
+  }
+  return `<div class="replay-event ${esc(role)}"><span class="replay-stamp">${stamp}</span><div>${body}</div></div>`;
+}
+
+function paintReplay(force = false) {
+  if (!replay) return;
+  const output = $("#replay-output");
+  if (!output) return;
+  const frame = Math.floor(replay.elapsed * 20);
+  if (!force && frame === replay.lastFrame) return;
+  replay.lastFrame = frame;
+  const previousScrollTop = output.scrollTop;
+  const pendingTools = new Map();
+  let html = "";
+  for (const event of replay.events) {
+    if (event.at > replay.elapsed) break;
+    html += replayNodeHtml(event, replay.elapsed, pendingTools);
+  }
+  if (pendingTools.size)
+    html += [...pendingTools.values()]
+      .map((command) => `<div class="replay-running"><span class="replay-spinner"></span>${esc(command)} running</div>`)
+      .join("");
+  output.innerHTML = html || `<div class="replay-wait">waiting for the first recorded event…</div>`;
+  const progress = $("#replay-progress");
+  if (progress) progress.value = replay.duration ? String((replay.elapsed / replay.duration) * 1000) : "1000";
+  const time = $("#replay-time");
+  if (time) time.textContent = `${replayClock(replay.elapsed)} / ${replayClock(replay.duration)}`;
+  const play = $("#replay-play");
+  if (play) play.textContent = replay.playing ? "pause" : replay.elapsed >= replay.duration ? "replay" : "play";
+  output.scrollTop = replay.followOutput ? output.scrollHeight : previousScrollTop;
+}
+
+function stopReplay() {
+  if (!replay) return;
+  replay.playing = false;
+  if (replay.raf) cancelAnimationFrame(replay.raf);
+  replay.raf = null;
+}
+
+function setReplayThinking(show) {
+  if (!replay) return;
+  replay.showThinking = show;
+  const control = $("#replay-show-thinking");
+  if (control) control.checked = show;
+  replay.lastFrame = -1;
+  paintReplay(true);
+}
+
+function setReplayFollow(follow) {
+  if (!replay) return;
+  replay.followOutput = follow;
+  const output = $("#replay-output");
+  if (output) output.scrollTop = follow ? output.scrollHeight : 0;
+  $("#replay-top")?.classList.toggle("active", !follow);
+  $("#replay-live")?.classList.toggle("active", follow);
+}
+
+function replayTick(now) {
+  if (!replay?.playing) return;
+  replay.elapsed = Math.min(replay.duration, ((now - replay.wallStarted) / 1000) * replay.speed);
+  if (replay.elapsed >= replay.duration) stopReplay();
+  paintReplay();
+  if (replay?.playing) replay.raf = requestAnimationFrame(replayTick);
+}
+
+function playReplay() {
+  if (!replay) return;
+  if (replay.elapsed >= replay.duration) replay.elapsed = 0;
+  replay.playing = true;
+  replay.wallStarted = performance.now() - (replay.elapsed / replay.speed) * 1000;
+  replay.raf = requestAnimationFrame(replayTick);
+  paintReplay(true);
+}
+
+function renderReplay(trace, branches) {
+  const container = $("#tm-messages");
+  entriesObserver?.disconnect();
+  if (!trace) {
+    container.innerHTML = emptyState("no trace to replay", "this episode carries no trace data");
+    return;
+  }
+  stopReplay();
+  const timing = replayEvents(trace, branches);
+  replay = {
+    ...timing,
+    trace,
+    branches,
+    skipInference: false,
+    showThinking: true,
+    followOutput: true,
+    elapsed: 0,
+    speed: 8,
+    playing: false,
+    raf: null,
+    lastFrame: -1,
+    wallStarted: 0,
+  };
+  container.innerHTML =
+    `<div class="replay-shell"><div class="replay-bar"><span class="replay-lights">● ● ●</span>` +
+    `<span class="replay-title">${esc(trace.agent?.name || "agent")} · terminal replay</span>` +
+    `<span id="replay-timing-badge" class="chip">${timing.hasTiming ? "recorded timing · inferred token cadence" : "untimed trace"}</span></div>` +
+    `<div class="replay-controls"><button id="replay-restart" class="btn">↺</button><button id="replay-play" class="btn">play</button>` +
+    `<button id="replay-top" class="btn" title="scroll to the beginning (Home)">↑ top</button>` +
+    `<button id="replay-live" class="btn active" title="follow new output (End)">↓ live</button>` +
+    `<input id="replay-progress" type="range" min="0" max="1000" value="0" aria-label="replay position">` +
+    `<span id="replay-time">${replayClock(0)} / ${replayClock(timing.duration)}</span>` +
+    `<label class="replay-skip"><input id="replay-skip-inference" type="checkbox"> skip inference</label>` +
+    `<label class="replay-skip" title="Press T"><input id="replay-show-thinking" type="checkbox" checked> thinking <kbd>T</kbd></label>` +
+    `<span class="replay-control-label">speed</span>` +
+    `<select id="replay-speed" aria-label="replay speed"><option value="0.5">0.5×</option><option value="1">1×</option>` +
+    `<option value="2">2×</option><option value="4">4×</option><option value="8" selected>8×</option>` +
+    `<option value="16">16×</option><option value="32">32×</option></select></div>` +
+    `<div id="replay-output" class="replay-output-pane"></div></div>`;
+  paintReplay(true);
+  playReplay();
+}
+
 async function setTraceView(view, { persist = true } = {}) {
-  if (persist) preferredTraceView = view;
+  if (persist && view !== "replay") preferredTraceView = view;
+  stopReplay();
   traceView = view;
   setActive("#tm-view", "view", view);
   if (view === "timeline" || view === "semantic") await ensureTimeline();
@@ -4119,6 +4341,7 @@ function renderEpisode() {
   renderRolloutList();
   const timeline = traceView === "timeline";
   const semantic = traceView === "semantic";
+  const replaying = traceView === "replay";
   const graph = timeline || semantic;
   const evidence = currentEvidenceView != null;
   const semanticAvailable = timelineHasSemantic();
@@ -4133,10 +4356,10 @@ function renderEpisode() {
   $("#tm-tabs-row").hidden = graph || (traceTabs.hidden && branchTabs.hidden && evidenceTabs.hidden);
   $("#tm-messages").hidden = graph;
   $("#tm-timeline").hidden = !graph;
-  $("#trace-view-mode").hidden = graph || evidence;
-  $("#token-signal").closest(".dd-select").hidden = graph || evidence;
-  $("#tm-collapse").hidden = graph || evidence;
-  $("#tm-expand").hidden = graph || evidence;
+  $("#trace-view-mode").hidden = graph || evidence || replaying;
+  $("#token-signal").closest(".dd-select").hidden = graph || evidence || replaying;
+  $("#tm-collapse").hidden = graph || evidence || replaying;
+  $("#tm-expand").hidden = graph || evidence || replaying;
   if (!semantic) {
     semanticSelection = null;
     $("#sg-inspector").hidden = true;
@@ -4144,6 +4367,7 @@ function renderEpisode() {
   setActive("#tm-view", "view", traceView);
   if (timeline) renderTimeline();
   else if (semantic) renderSemanticGraph();
+  else if (replaying) renderReplay(trace, branches);
   else renderMessages(ep, trace, branches);
   renderMeta(ep, trace, branches);
 }
@@ -5233,6 +5457,29 @@ function shiftStep(delta) {
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") return closeDrawer();
+  if (
+    !$("#trace-modal").hidden &&
+    traceView === "replay" &&
+    !e.ctrlKey &&
+    !e.altKey &&
+    !e.metaKey &&
+    e.key.toLowerCase() === "t" &&
+    !e.target.matches("input[type=text], input[type=search], textarea")
+  ) {
+    e.preventDefault();
+    setReplayThinking(!replay?.showThinking);
+    return;
+  }
+  if (!$("#trace-modal").hidden && traceView === "replay" && e.key === "Home") {
+    e.preventDefault();
+    setReplayFollow(false);
+    return;
+  }
+  if (!$("#trace-modal").hidden && traceView === "replay" && e.key === "End") {
+    e.preventDefault();
+    setReplayFollow(true);
+    return;
+  }
   if (e.target.matches("input, select, textarea")) return;
   if ($("#trace-modal").hidden) {
     // the step bar walks with the arrow keys, like its ‹ › buttons
@@ -5435,6 +5682,27 @@ $("#tm-expand").addEventListener("click", () =>
   document.querySelectorAll("#tm-messages details").forEach((d) => (d.open = true))
 );
 $("#tm-messages").addEventListener("click", (e) => {
+  if (e.target.closest("#replay-top")) {
+    setReplayFollow(false);
+    return;
+  }
+  if (e.target.closest("#replay-live")) {
+    setReplayFollow(true);
+    return;
+  }
+  if (e.target.closest("#replay-play")) {
+    replay?.playing ? stopReplay() : playReplay();
+    paintReplay(true);
+    return;
+  }
+  if (e.target.closest("#replay-restart")) {
+    if (!replay) return;
+    stopReplay();
+    replay.elapsed = 0;
+    replay.lastFrame = -1;
+    playReplay();
+    return;
+  }
   const btn = e.target.closest(
     "[data-copy], [data-copy-tool], [data-copy-schema], [data-copy-tools], [data-copy-rendered], [data-copy-task], [data-copy-judge]"
   );
@@ -5476,6 +5744,54 @@ $("#tm-messages").addEventListener("click", (e) => {
     const ids = path.flatMap((index) => trace.nodes?.[index]?.token_ids || []);
     return copyText(JSON.stringify(ids), btn);
   }
+});
+$("#tm-messages").addEventListener(
+  "scroll",
+  (e) => {
+    if (!e.target.matches?.("#replay-output") || !replay) return;
+    const atBottom = e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight < 24;
+    replay.followOutput = atBottom;
+    $("#replay-top")?.classList.toggle("active", !atBottom);
+    $("#replay-live")?.classList.toggle("active", atBottom);
+  },
+  true,
+);
+$("#tm-messages").addEventListener("input", (e) => {
+  if (!e.target.matches("#replay-progress") || !replay) return;
+  const wasPlaying = replay.playing;
+  stopReplay();
+  replay.elapsed = replay.duration * (+e.target.value / 1000);
+  replay.lastFrame = -1;
+  paintReplay(true);
+  if (wasPlaying) playReplay();
+});
+$("#tm-messages").addEventListener("change", (e) => {
+  if (!replay) return;
+  if (e.target.matches("#replay-show-thinking")) {
+    setReplayThinking(e.target.checked);
+    return;
+  }
+  if (e.target.matches("#replay-skip-inference")) {
+    const wasPlaying = replay.playing;
+    stopReplay();
+    replay.skipInference = e.target.checked;
+    Object.assign(replay, replayEvents(replay.trace, replay.branches, replay.skipInference));
+    replay.elapsed = 0;
+    replay.lastFrame = -1;
+    const badge = $("#replay-timing-badge");
+    if (badge)
+      badge.textContent = replay.skipInference
+        ? "tool timing · inference skipped"
+        : replay.hasTiming ? "recorded timing · inferred token cadence" : "untimed trace";
+    paintReplay(true);
+    if (wasPlaying) playReplay();
+    return;
+  }
+  if (!e.target.matches("#replay-speed")) return;
+  const wasPlaying = replay.playing;
+  stopReplay();
+  replay.speed = +e.target.value;
+  if (wasPlaying) playReplay();
 });
 $("#tm-meta").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-copytext]");
