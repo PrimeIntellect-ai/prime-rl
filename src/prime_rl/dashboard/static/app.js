@@ -79,10 +79,10 @@ const fmtReward = (v) => (v == null || Number.isNaN(v) ? "n/a" : v.toFixed(3));
 function fmtCompact(n) {
   if (n == null || Number.isNaN(n)) return "n/a";
   const abs = Math.abs(n);
-  if (abs >= 1e9) return `${+(n / 1e9).toFixed(abs >= 1e10 ? 0 : 1)}B`;
-  if (abs >= 1e6) return `${+(n / 1e6).toFixed(abs >= 1e7 ? 0 : 1)}M`;
-  if (abs >= 1000) return `${+(n / 1000).toFixed(abs >= 10000 ? 0 : 1)}K`;
-  return String(n);
+  if (abs < 1e3) return String(n);
+  if (abs < 1e6) return `${(n / 1e3).toFixed(1)}K`;
+  if (abs < 1e9) return `${(n / 1e6).toFixed(1)}M`;
+  return `${(n / 1e9).toFixed(1)}B`;
 }
 function fmtCost(v) {
   if (v == null || Number.isNaN(v)) return "n/a";
@@ -225,18 +225,15 @@ async function selectRun(name, deferTab = false) {
   if (!deferTab) await activateTab(state.tab, true);
 }
 
+/* durations and counts read the way verifiers' format_time / format_count write
+   them, so the same run is described the same everywhere */
 function fmtDuration(secs) {
   if (secs == null || !isFinite(secs) || secs < 0) return "n/a";
-  const d = Math.floor(secs / 86400);
-  const h = Math.floor((secs % 86400) / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = Math.floor(secs % 60);
-  const parts = [];
-  if (d) parts.push(`${d}d`);
-  if (d || h) parts.push(`${h}h`);
-  if (d || h || m) parts.push(`${m}m`);
-  parts.push(`${s}s`);
-  return parts.join(" ");
+  if (secs < 1) return `${secs.toFixed(1)}s`;
+  if (secs < 60) return `${Math.round(secs)}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ${Math.floor(secs % 60)}s`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
+  return `${Math.floor(secs / 86400)}d ${Math.floor((secs % 86400) / 3600)}h`;
 }
 
 function fmtAgo(ts) {
@@ -2607,30 +2604,26 @@ function renderedTokensHtml(trace, branches) {
   if (signal && tokenCount) {
     const scales = episodeSignalScales(trace);
     const body = path.map((index) => renderTokenNode(trace.nodes[index], signal, scales)).join("");
-    return (
-      errors +
-      `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
-      `<span class="chip">${fmtCompact(tokenCount)} tokens</span>` +
-      (selected?.text != null ? `<span class="entry-preview">${preview(selected.text, 180)}</span>` : `<span class="entry-preview"></span>`) +
-      (selected?.text != null ? `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` : "") +
-      `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button>` +
-      `<span class="entry-chev">›</span></summary>` +
-      `<pre class="rendered-text">${body}</pre></details>`
-    );
+    return errors + renderedBoxHtml(tokenCount, body, selected?.text != null);
   }
   if (selected?.text == null) {
     const [title, detail] = unavailable[rendered.status] ?? ["rendered text unavailable", "The recorded token sequence could not be decoded."];
     return errors + emptyState(title, detail);
   }
+  return errors + renderedBoxHtml(selected.token_count, esc(selected.text), true);
+}
+
+/* the whole point of this view is the sequence, so it is always open and leads with
+   it rather than a preview of what is right below */
+function renderedBoxHtml(tokenCount, body, canCopyText) {
   return (
-    errors +
-    `<details class="rendered-transcript" open><summary><span class="context-label">Rendered tokens/text</span>` +
-    `<span class="chip">${fmtCompact(selected.token_count)} tokens</span>` +
-    `<span class="entry-preview">${preview(selected.text, 180)}</span>` +
-    `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` +
-    `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button>` +
-    `<span class="entry-chev">›</span></summary>` +
-    `<pre class="rendered-text">${esc(selected.text)}</pre></details>`
+    `<div class="rendered-transcript">` +
+    `<div class="rendered-head"><span class="context-label">Rendered tokens/text</span>` +
+    `<span class="chip">${fmtCompact(tokenCount)} tokens</span>` +
+    `<div class="spacer"></div>` +
+    (canCopyText ? `<button class="icon-btn" data-copy-rendered="text" title="copy decoded text">${COPY_SVG}</button>` : "") +
+    `<button class="icon-btn" data-copy-rendered="ids" title="copy authoritative token IDs">IDs</button></div>` +
+    `<pre class="rendered-text">${body}</pre></div>`
   );
 }
 
@@ -2762,9 +2755,10 @@ function renderMessages(ep, trace, branches) {
       ? quoteMarkedHtml(text, contentMarks)
       : showingTokens ? renderTokenNode(node, signal, scales) : esc(text);
     const subs = [];
-    // The token spans already cover the reasoning tokens; a separate box would
-    // duplicate them and split the sequence the overlay is coloring.
-    if (reasoning && !showingTokens) subs.push(reasoningBlock(reasoning, reasoningMarks));
+    // Reasoning is parsed out of the message only in the text view. Under any token
+    // signal the recorded sequence is what is being read, and a node that carries no
+    // token ids has nothing to pull the reasoning out of either.
+    if (reasoning && !signal) subs.push(reasoningBlock(reasoning, reasoningMarks));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
     const messageHtml =
       `<details class="entry ${esc(role)}${marked ? " hl-entry" : ""}" data-node="${idx}"${role === "system" && !marked ? "" : " open"}>` +

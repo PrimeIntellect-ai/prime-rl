@@ -895,7 +895,7 @@ details.sub .sub-name { font-weight: 500; color: var(--grey-6); }
 details.sub > .entry-body { border-top: 1px solid var(--hairline); }
 
 /* tool definitions are model context, but deliberately sit outside numbered messages */
-details.tool-definitions, details.rendered-transcript {
+details.tool-definitions, .rendered-transcript {
   border: 1px solid var(--grey-3);
   margin-bottom: 12px;
   background: rgba(183, 166, 250, 0.025);
@@ -1152,3 +1152,14 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 
 /* the label reads as the button's own name, so it takes the button's colour */
 .dd-select .dd-btn .dd-label { text-transform: uppercase; font-weight: 400; color: inherit; }
+
+/* rendered tokens: a header row over the sequence, not a disclosure */
+.rendered-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 12px;
+  background: var(--grey-2);
+  border-bottom: 1px solid var(--hairline);
+}
