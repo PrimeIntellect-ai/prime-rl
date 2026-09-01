@@ -19,6 +19,8 @@ const SORT_OPTIONS = new Set([
   "arrival:desc", "arrival:asc", "group:asc",
   "duration:desc", "duration:asc", "reward:desc", "reward:asc", "output_tokens:desc",
 ]);
+// the stream reads newest first; a cohort reads by group, so its members sit together
+const DEFAULT_SORTS = { stream: "arrival:desc", step: "group:asc" };
 
 const state = {
   runs: [],
@@ -52,12 +54,11 @@ const state = {
     bin: null,
     episodes: [],
     total: 0,
-    offset: 0,
     paging: false,
     errorsOnly: prefs.traceErrorsOnly ?? false,
     sorts: {
-      stream: SORT_OPTIONS.has(prefs.traceSortStream) ? prefs.traceSortStream : "arrival:desc",
-      step: SORT_OPTIONS.has(prefs.traceSortStep) ? prefs.traceSortStep : "group:asc",
+      stream: SORT_OPTIONS.has(prefs.traceSortStream) ? prefs.traceSortStream : DEFAULT_SORTS.stream,
+      step: SORT_OPTIONS.has(prefs.traceSortStep) ? prefs.traceSortStep : DEFAULT_SORTS.step,
     },
     viewMode: prefs.tokenSignal === "rendered" ? "rendered" : (prefs.traceViewMode ?? "messages"),
   },
@@ -1839,7 +1840,7 @@ async function loadRollouts() {
   // Follow new work while the user is on the latest preferred step. Keep a
   // manually selected historical step stable, especially while its modal is open.
   if (target && wasFollowing && $("#trace-modal").hidden) traces.step = target.step;
-  adjustKindSubset();
+  clampStep();
   renderStepControl();
 }
 
@@ -1847,10 +1848,11 @@ function stepInfo(step) {
   return state.traces.steps.find((s) => s.step === step);
 }
 
-function adjustKindSubset() {
+/* a step is only meaningful once a cohort shipped at it; the latest stands in for
+   one that has not */
+function clampStep() {
   const traces = state.traces;
   const steps = traces.steps.map((s) => s.step);
-  // a step is only meaningful once a cohort shipped at it
   if (traces.mode === "step" && !steps.includes(traces.step)) traces.step = steps.at(-1) ?? null;
 }
 
@@ -1892,7 +1894,7 @@ function selectStepByIndex(index) {
   const step = state.traces.steps[index];
   if (!step || step.step === state.traces.step) return;
   state.traces.step = step.step;
-  adjustKindSubset();
+  clampStep();
   renderStepControl();
   loadEpisodes();
 }
@@ -1913,7 +1915,7 @@ function activeKind() {
 }
 
 function traceSort() {
-  return state.traces.sorts[state.traces.mode] ?? "arrival:desc";
+  return state.traces.sorts[state.traces.mode] ?? DEFAULT_SORTS[state.traces.mode];
 }
 
 function traceQuery(extra = {}) {
@@ -1937,12 +1939,10 @@ function traceFiltered() {
   return !!(activeKind() || t.env || t.errorsOnly || t.bin);
 }
 
+/* what a loaded table answers to: the run and the exact query that produced it, so
+   the query itself decides whether a load continues the table or replaces it */
 function traceKey() {
-  const t = state.traces;
-  // the step addresses a cohort only in step mode; in the stream it follows the
-  // live run and must not read as a change of query
-  const step = t.mode === "step" ? t.step : null;
-  return JSON.stringify([state.run, t.mode, step, activeKind(), t.env, t.errorsOnly, traceSort(), t.bin]);
+  return `${state.run}|${state.traces.mode}|${traceQuery()}`;
 }
 
 /* the table holds one page at a time and grows as the reader scrolls, so a run of
@@ -1958,8 +1958,10 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   const key = traceKey();
   const fresh = !append || traces.key !== key;
   const offset = fresh ? 0 : traces.episodes.length;
-  const qs = traceQuery({ offset, limit: PAGE });
   if (!fresh && offset >= traces.total) return;
+  // a later page is pinned to the stream length the first page saw, so a live run
+  // growing at the head cannot shift what the offset addresses
+  const qs = traceQuery(fresh ? { offset, limit: PAGE } : { offset, limit: PAGE, upto: traces.lines });
   // etag = the stream size the client last saw: an unchanged run answers a poll
   // with {unchanged} instead of a page
   if (fresh && traces.key === key && traces.etag && !append) qs.set("etag", traces.etag);
@@ -1978,29 +1980,15 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   // while they are scrolled only the count moves. The etag is deliberately left
   // behind: the next poll after they return to the top refreshes for real.
   if (poll && !append && traces.key === key && $("#episode-table-wrap").scrollTop > 0) {
-    traces.total = data.total;
-    $("#trace-status").textContent = `${fmtCompact(data.total)} episode${data.total === 1 ? "" : "s"}`;
+    $("#trace-status").textContent = episodeCount(data.total);
     return;
   }
   traces.etag = data.etag;
   traces.key = key;
   traces.total = data.total;
   traces.runKinds = data.kinds;
-  // A live stream grows at its head under newest-first order, so a page fetched
-  // against a longer stream than the one already loaded repeats its tail. Lines
-  // are stable, so the repeats are dropped rather than shown twice.
-  if (fresh) {
-    traces.episodes = data.episodes;
-    traces.exhausted = false;
-  } else {
-    const held = new Set(traces.episodes.map((episode) => episode.line));
-    const added = data.episodes.filter((episode) => !held.has(episode.line));
-    traces.episodes = traces.episodes.concat(added);
-    // the same growth keeps `total` ahead of what is held, so the tail cannot be
-    // recognised by count: a page that adds nothing is the tail. The newest sit at
-    // the head, where the next refresh from the top picks them up.
-    traces.exhausted = added.length === 0;
-  }
+  if (fresh) traces.lines = data.lines;
+  traces.episodes = fresh ? data.episodes : traces.episodes.concat(data.episodes);
   const currentEnv = traces.env;
   for (const sel of ["#trace-env", "#tm-env"])
     $(sel).innerHTML =
@@ -2017,12 +2005,17 @@ async function loadEpisodes({ append = false, poll = false } = {}) {
   }
   renderEpisodeRows(fresh);
   if (!$("#trace-modal").hidden) renderRolloutWindow();
-  $("#trace-status").textContent = `${fmtCompact(data.total)} episode${data.total === 1 ? "" : "s"}`;
+  // the count is the run's, not the page's: a later page reports the pinned snapshot
+  if (fresh) $("#trace-status").textContent = episodeCount(data.total);
+}
+
+function episodeCount(n) {
+  return `${fmtCompact(n)} episode${n === 1 ? "" : "s"}`;
 }
 
 async function loadMoreEpisodes() {
   const traces = state.traces;
-  if (traces.paging || traces.exhausted || traces.episodes.length >= traces.total) return;
+  if (traces.paging || traces.episodes.length >= traces.total) return;
   traces.paging = true;
   try {
     await loadEpisodes({ append: true });
@@ -2106,11 +2099,7 @@ function renderHistogram() {
   const spanS = data.end - data.start || 1;
   const every = Math.max(1, Math.ceil(bins.length / Math.max(2, Math.floor(plot / 110))));
   const withSeconds = every * (data.bin || spanS) < 60;
-  const label = (t) => {
-    const d = new Date(t * 1000);
-    const clock = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", ...(withSeconds && { second: "2-digit" }) });
-    return spanS > 86400 ? `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${clock}` : clock;
-  };
+  const label = (t) => (spanS > 86400 ? `${fmtDay(t)} ${fmtClock(t, withSeconds)}` : fmtClock(t, withSeconds));
   // The axis is mono, so a label's width is known without measuring it. Ticks are
   // placed by that width rather than by index: the ends anchor the axis and the
   // strided ones fill in between, and any that would collide is dropped instead of
@@ -2134,25 +2123,24 @@ function renderHistogram() {
   ].join("");
   host.innerHTML =
     `<svg width="${width}" height="${HIST_H}" viewBox="0 0 ${width} ${HIST_H}">${grid}${bars}${ticks}</svg>`;
-  const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const span = `${new Date(data.start * 1000).toLocaleDateString([], { month: "short", day: "numeric" })} ${clock(data.start)} → ${clock(data.end)}`;
-  const picked = selected
-    ? ` · selected ${clock(selected[0])}–${clock(selected[1])} (${fmtBin(data.bin)})`
-    : "";
+  const span = `${fmtDay(data.start)} ${fmtClock(data.start)} → ${fmtClock(data.end)}`;
+  const picked = selected ? ` · selected ${fmtClock(selected[0])}–${fmtClock(selected[1])} (${fmtBin(data.bin)})` : "";
   $("#trace-chart-sub").textContent = `${fmtCompact(data.total)} episodes · ${fmtBin(data.bin)} bins · ${span}${picked}`;
 }
 
 function histTipHtml(start, count, bin) {
   const end = start + bin;
-  const day = new Date(start * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
-  const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   return (
-    `<div class="tip-head">${fmtCompact(count)} episode${count === 1 ? "" : "s"}</div>` +
-    `<div class="tip-row"><span>start</span><span>${day} ${clock(start)}</span></div>` +
-    `<div class="tip-row"><span>end</span><span>${day} ${clock(end)}</span></div>` +
+    `<div class="tip-head">${episodeCount(count)}</div>` +
+    `<div class="tip-row"><span>start</span><span>${fmtDay(start)} ${fmtClock(start)}</span></div>` +
+    `<div class="tip-row"><span>end</span><span>${fmtDay(end)} ${fmtClock(end)}</span></div>` +
     `<div class="tip-row"><span>duration</span><span>${fmtBin(bin)}</span></div>`
   );
 }
+
+const fmtClock = (t, seconds = true) =>
+  new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", ...(seconds && { second: "2-digit" }) });
+const fmtDay = (t) => new Date(t * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
 
 function fmtBin(seconds) {
   if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -2342,7 +2330,7 @@ async function modalStep(delta) {
   const target = traces.steps[idx + delta];
   if (!target) return;
   traces.step = target.step;
-  adjustKindSubset();
+  clampStep();
   renderStepControl();
   await loadEpisodes();
   renderModalStep();
@@ -3105,7 +3093,6 @@ function renderMeta(ep, trace, branches) {
         parts.push(`<div class="meta-row"><span class="k">${label}</span><span class="v">${secs.toFixed(2)}s</span></div>`);
       }
     }
-
   }
 
   parts.push(`<div class="meta-sec">identity</div>`);
@@ -3119,8 +3106,7 @@ function renderMeta(ep, trace, branches) {
 }
 
 function timelineClock(ts) {
-  if (ts == null) return "—";
-  return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return ts == null ? "—" : fmtClock(ts);
 }
 
 function timelineTipAttr(payload) {
@@ -3765,7 +3751,7 @@ function applyViewCommand(cmd) {
 async function applyTraceCommand(cmd) {
   const traces = state.traces;
   if (!traces.loaded) await initTraces();
-  adjustKindSubset();
+  clampStep();
   renderStepControl();
   await loadEpisodes();
   if (cmd.line == null && cmd.episode == null) return;
@@ -3972,9 +3958,8 @@ function syncTraceFilterControls() {
     }
   for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = traceSort();
   for (const sel of ["#trace-errors", "#tm-errors"]) $(sel).checked = t.errorsOnly;
-  const DEFAULT_SORT = { stream: "arrival:desc", step: "group:asc" };
   for (const sel of ["#trace-sort", "#tm-sort"])
-    $(sel).closest(".dd-wrap")?.querySelector(".dd-btn")?.classList.toggle("active", traceSort() !== DEFAULT_SORT[t.mode]);
+    $(sel).closest(".dd-wrap")?.querySelector(".dd-btn")?.classList.toggle("active", traceSort() !== DEFAULT_SORTS[t.mode]);
   const active = [t.env, activeKind(), t.errorsOnly].filter(Boolean).length;
   for (const sel of ["#trace-filter-btn", "#tm-filter-btn"]) $(sel).classList.toggle("active", active > 0);
   const badge = $("#trace-filter-count");
@@ -4212,7 +4197,7 @@ async function setTraceMode(mode, inModal = false) {
   const traces = state.traces;
   traces.mode = mode;
   traces.bin = null;
-  adjustKindSubset();
+  clampStep();
   await loadEpisodes();
   if (mode === "stream") await loadHistogram();
   savePrefs();
@@ -4301,11 +4286,6 @@ $("#trace-hist").addEventListener("click", async (e) => {
   await loadEpisodes();
   renderHistogram();
 });
-// infinite scroll: pull the next page as the reader nears the end
-$("#episode-table-wrap").addEventListener("scroll", () => {
-  const wrap = $("#episode-table-wrap");
-  if (wrap.scrollTop + wrap.clientHeight > wrap.scrollHeight - 400) loadMoreEpisodes();
-});
 for (const sel of ["#trace-errors", "#tm-errors"])
   $(sel).addEventListener("change", async (e) => {
     state.traces.errorsOnly = e.target.checked;
@@ -4335,9 +4315,14 @@ function rafThrottle(fn) {
     });
   };
 }
+// the window follows the scroll, and the next page is pulled as the reader nears the end
 $("#episode-table-wrap").addEventListener(
   "scroll",
-  rafThrottle(() => state.traces.episodes?.length && renderEpisodeRows())
+  rafThrottle(() => {
+    const wrap = $("#episode-table-wrap");
+    if (state.traces.episodes?.length) renderEpisodeRows();
+    if (wrap.scrollTop + wrap.clientHeight > wrap.scrollHeight - 400) loadMoreEpisodes();
+  })
 );
 $("#tm-list").addEventListener(
   "scroll",

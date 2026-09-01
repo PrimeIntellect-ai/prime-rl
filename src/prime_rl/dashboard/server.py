@@ -527,6 +527,13 @@ def traces_file(run_dir: Path) -> Path | None:
     return None
 
 
+def require_stream(run_dir: Path) -> Path:
+    path = traces_file(run_dir)
+    if path is None:
+        raise HTTPException(404, "no traces for this run")
+    return path
+
+
 def rollout_steps(run_dir: Path) -> list[dict]:
     """The steps a cohort can be addressed by, and the kinds of work each one holds.
 
@@ -680,19 +687,7 @@ def traces_path(run: str, step: int, kind: str, subset: str) -> Path:
     every episode is on disk exactly once — they select the read-time filter."""
     if kind not in ("train", "eval") or subset not in ("all", "effective"):
         raise HTTPException(400, "kind must be train|eval, subset all|effective")
-    path = traces_file(get_run_dir(run))
-    if path is None:
-        raise HTTPException(404, "no traces for this run")
-    return path
-
-
-def read_episode_record(path: Path, line: int) -> dict:
-    offsets = line_offsets(path)
-    if not 0 <= line < len(offsets):
-        raise HTTPException(404, "episode line out of range")
-    with path.open("rb") as f:
-        f.seek(offsets[line])
-        return orjson.loads(f.readline())
+    return require_stream(get_run_dir(run))
 
 
 def message_text(message: dict) -> str:
@@ -816,14 +811,6 @@ def ipo_eps(run_dir: Path) -> float:
     loss = read_json(resolved_config_dir(run_dir) / "trainer.json").get("loss") or {}
     eps = loss.get("eps") if loss.get("type") == "ipo" else None
     return eps if isinstance(eps, (int, float)) else 0.1
-
-
-def trace_advantages(run_dir: Path) -> dict[str, float]:
-    return {
-        trace_id: entry["info"]["advantage"]
-        for trace_id, entry in annotation_index(run_dir).items()
-        if isinstance(entry["info"].get("advantage"), (int, float))
-    }
 
 
 def token_usage(usage: dict) -> tuple[int | None, int | None, int | None]:
@@ -1206,17 +1193,24 @@ def list_stream_episodes(
     start: float | None = None,
     end: float | None = None,
     etag: str | None = None,
+    upto: int | None = Query(default=None, ge=0),
 ) -> dict:
     """One page of the stream. The client scrolls by asking for the next offset, so a
-    run of any length costs the same to browse."""
+    run of any length costs the same to browse.
+
+    A live stream grows at its head, which would shift every offset under a reader
+    mid-scroll. ``upto`` pins the page to the stream as it stood at that many lines -
+    the length the first page reported - so later pages address a list that no longer
+    moves, whatever the sort."""
     run_dir = get_run_dir(run)
-    path = traces_file(run_dir)
-    if path is None:
-        raise HTTPException(404, "no traces for this run")
-    current_etag = subset_etag(run_dir, "effective", path)
+    path = require_stream(run_dir)
+    current_etag = stream_etag(run_dir, path)
     if etag is not None and etag == current_etag and offset == 0:
         return {"unchanged": True, "etag": current_etag}
     rows = episode_rows(run_dir)
+    lines = len(rows)
+    if upto is not None:
+        rows = rows[:upto]
     envs, kinds = index_facets(run_dir)
     keep = row_filter(step=step, kind=kind, env=env, episode=episode, errors_only=errors_only, start=start, end=end)
     if sort == "arrival":
@@ -1238,6 +1232,7 @@ def list_stream_episodes(
         page, total = matching[offset : offset + limit], len(matching)
     return {
         "etag": current_etag,
+        "lines": lines,
         "total": total,
         "offset": offset,
         "envs": envs,
@@ -1287,13 +1282,10 @@ def list_rollouts(run: str) -> dict:
     return {"steps": rollout_steps(get_run_dir(run))}
 
 
-def subset_etag(run_dir: Path, subset: str, path: Path) -> str:
-    """The effective listing also moves when annotations grow, so its etag covers
-    their total size too."""
-    tag = str(path.stat().st_size)
-    if subset == "effective":
-        tag += f"-{sum(_file_size(file) for file in annotations_files(run_dir))}"
-    return tag
+def stream_etag(run_dir: Path, path: Path) -> str:
+    """What a listing depends on: the stream, and the annotations that give its rows
+    their cohort and credit. Both are append-only, so their sizes are the version."""
+    return f"{path.stat().st_size}-{sum(_file_size(file) for file in annotations_files(run_dir))}"
 
 
 def effective_steps(run_dir: Path) -> set[tuple[str, int]]:
@@ -1386,10 +1378,8 @@ def episode_series(run: str, kind: str | None = None, etag: str | None = None, a
     nested rewards/metrics/timing keys — the metrics view for eval runs. `after` returns
     only episodes past that index, so a growing stream ships increments, not the world."""
     run_dir = get_run_dir(run)
-    path = traces_file(run_dir)
-    if path is None:
-        raise HTTPException(404, "no traces for this run")
-    current_etag = subset_etag(run_dir, "effective", path)
+    path = require_stream(run_dir)
+    current_etag = stream_etag(run_dir, path)
     if etag is not None and etag == current_etag:
         return {"unchanged": True, "etag": current_etag}
     summaries = [s for s in episode_summaries(path) if not kind or s.get("kind") == kind]
@@ -1444,10 +1434,8 @@ def get_episode(
     rendered: bool = False,
 ) -> dict:
     """One episode, by its line in the stream, with every annotation folded on."""
-    path = traces_file(get_run_dir(run))
-    if path is None:
-        raise HTTPException(404, "no traces for this run")
     run_dir = get_run_dir(run)
+    path = require_stream(run_dir)
     rec = read_episode_at(path, line, episode_offset(run_dir, line))
     # only the opened episode's streams are read, by seeking to each of its records
     for trace in rec.get("traces") or []:
@@ -1661,10 +1649,8 @@ async def view_events() -> "StreamingResponse":
 
 @app.get("/api/runs/{run}/episodes/{line}/timeline")
 def get_episode_timeline(run: str, line: int) -> dict:
-    path = traces_file(get_run_dir(run))
-    if path is None:
-        raise HTTPException(404, "no traces for this run")
-    return project_episode_timeline(read_episode_at(path, line, episode_offset(get_run_dir(run), line)))
+    run_dir = get_run_dir(run)
+    return project_episode_timeline(read_episode_at(require_stream(run_dir), line, episode_offset(run_dir, line)))
 
 
 # -------------------------------------------------------------------------- static
