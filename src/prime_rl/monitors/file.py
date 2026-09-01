@@ -29,6 +29,18 @@ def _ship_step(episode: vf.Episode, step: int) -> int:
     return step
 
 
+def _stamp_arrival(episode: vf.Episode, kind: Kind, step: int, now: float) -> None:
+    """Record what this consumer knows as the episode lands: the kind of work it did,
+    when it was dispatched, and when it came back. A trace has several steps, so each
+    one is stamped as its own event rather than implied by where the record is stored."""
+    work = getattr(episode.run, "work", None)
+    for trace in episode.traces:
+        trace.info["kind"] = kind
+        if work is not None:
+            trace.info["dispatch"] = {"step": work.step, "time": trace.timing.start}
+        trace.info["arrival"] = {"step": step, "time": now}
+
+
 def _effective_update(trace: vf.Trace, step: int, now: float) -> dict[str, Any]:
     """What the ship-time cohort adds over the arrival record: membership, the step
     the cohort ties to, the scalar advantage, and the per-token advantage streams."""
@@ -96,10 +108,7 @@ class FileMonitor(Monitor):
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "ab") as f:
                 for episode in episodes:
-                    # Steps are facts about events, not about the trace: dispatch rides
-                    # ``run.work``, this is when the orchestrator saw the episode come back.
-                    for trace in episode.traces:
-                        trace.info["arrival"] = {"step": step, "time": now}
+                    _stamp_arrival(episode, kind, step, now)
                     f.write(orjson.dumps(episode.to_record(), default=str, option=OPTS))
 
         # Record serialization is heavy pure-Python work; keep it off the event loop.

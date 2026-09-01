@@ -605,6 +605,17 @@ def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
             walk_timing(value, f"{prefix}/{key}" if prefix else key, out)
 
 
+def episode_kind(rec: dict) -> str:
+    """The kind of work an episode did. The file monitor stamps it as the episode
+    lands; a stream written by another producer (a verifiers ``uv run eval`` run) is
+    read off its run info instead."""
+    for trace in rec.get("traces") or []:
+        if (kind := (trace.get("info") or {}).get("kind")) in ("train", "eval"):
+            return kind
+    run = rec.get("run") or {}
+    return (run.get("work") or {}).get("type") or run.get("type") or "eval"
+
+
 def summarize_episode(line: int, rec: dict) -> dict:
     rewards, advantages = [], []
     input_tokens = output_tokens = turns = branches = 0
@@ -655,6 +666,7 @@ def summarize_episode(line: int, rec: dict) -> dict:
                 usage = call.get("usage") or {}
                 input_tokens += usage.get("prompt_tokens") or 0
                 output_tokens += usage.get("completion_tokens") or 0
+    first_info = ((rec.get("traces") or [{}])[0].get("info")) or {}
     return {
         "rewards": {name: sum(v) / len(v) for name, v in reward_parts.items()},
         "metrics": {name: sum(v) / len(v) for name, v in metric_parts.items()},
@@ -662,8 +674,9 @@ def summarize_episode(line: int, rec: dict) -> dict:
         "cost": sum(costs) if costs else None,
         "line": line,
         "id": rec.get("id"),
-        "kind": ((rec.get("run") or {}).get("work") or {}).get("type") or (rec.get("run") or {}).get("type") or "train",
-        "dispatch_step": ((rec.get("run") or {}).get("work") or {}).get("step"),
+        "kind": episode_kind(rec),
+        "dispatch_step": (first_info.get("dispatch") or {}).get("step")
+        or ((rec.get("run") or {}).get("work") or {}).get("step"),
         "trace_ids": [trace_id for trace in rec.get("traces") or [] if (trace_id := trace.get("id"))],
         "env": (rec.get("env") or {}).get("id") or (rec.get("env") or {}).get("name"),
         "group": (rec.get("group") or {}).get("id"),
