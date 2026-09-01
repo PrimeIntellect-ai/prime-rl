@@ -75,7 +75,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # off-policy lag differs from the trained step). ``None`` on synthetic
     # samples (e.g. fake data).
     trace_id: str | None = None
-    branch_id: int | None = None
+    branch_index: int | None = None
     logged_at_step: int | None = None
 
 
@@ -111,5 +111,5 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # TrainingSample.trace_id). ``""`` / ``-1`` mark an unknown sequence
     # (e.g. a dummy micro batch). ``None`` when no packed sample carried one.
     trace_ids: list[str] | None = None
-    branch_ids: list[int] | None = None
+    branch_indices: list[int] | None = None
     logged_at_steps: list[int] | None = None

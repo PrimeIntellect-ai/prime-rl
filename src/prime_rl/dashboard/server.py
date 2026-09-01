@@ -25,6 +25,7 @@ import orjson
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
 from prime_rl.utils.config import default_output_dir
 from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.trace_updates import PRODUCERS, annotations_path, branch_node_paths, fold_trace_updates
 
 try:
     import uvicorn
@@ -847,28 +848,6 @@ def timeline_reward(trace: dict) -> float | None:
     )
 
 
-def trace_branch_paths(nodes: list[dict]) -> list[list[int]]:
-    """Return VF-native root-to-leaf branches in leaf-index order."""
-    if not nodes:
-        return []
-    parents = {parent for node in nodes if isinstance((parent := node.get("parent")), int) and 0 <= parent < len(nodes)}
-    paths = []
-    for leaf in (index for index in range(len(nodes)) if index not in parents):
-        path = []
-        seen = set()
-        node_index: int | None = leaf
-        while isinstance(node_index, int) and 0 <= node_index < len(nodes) and node_index not in seen:
-            seen.add(node_index)
-            path.append(node_index)
-            node_index = nodes[node_index].get("parent")
-        paths.append(list(reversed(path)))
-    return paths
-
-
-ANNOTATION_FILES = ("orchestrator.jsonl", "trainer.jsonl")
-STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies")
-
-
 def _file_size(path: Path) -> int:
     try:
         return path.stat().st_size
@@ -877,19 +856,19 @@ def _file_size(path: Path) -> int:
 
 
 def step_annotations(run_dir: Path, step: int, kind: str) -> dict[str, list[dict]]:
-    """TraceUpdate records for one step's traces of one kind, by trace id, in write
-    order (orchestrator before trainer). Cached by the annotation files' sizes — they
-    are append-only, so unchanged sizes mean an unchanged index."""
-    annotations_dir = kind_traces_dir(run_dir, step, kind) / "annotations"
-    key = tuple(_file_size(annotations_dir / name) for name in ANNOTATION_FILES)
+    """Trace updates for one step's traces of one kind, by trace id, in write order
+    (orchestrator before trainer). Cached by the annotation files' sizes — they are
+    append-only, so unchanged sizes mean an unchanged index."""
+    kind_dir = kind_traces_dir(run_dir, step, kind)
+    key = tuple(_file_size(annotations_path(kind_dir, producer)) for producer in PRODUCERS)
     with _lock:
-        cached = _lru_get(_annotations_cache, annotations_dir)
+        cached = _lru_get(_annotations_cache, kind_dir)
         if cached and cached[0] == key:
             return cached[1]
     index: dict[str, list[dict]] = {}
-    for name in ANNOTATION_FILES:
+    for producer in PRODUCERS:
         try:
-            lines = (annotations_dir / name).read_bytes().splitlines()
+            lines = annotations_path(kind_dir, producer).read_bytes().splitlines()
         except OSError:
             continue
         for raw in lines:
@@ -902,48 +881,8 @@ def step_annotations(run_dir: Path, step: int, kind: str) -> dict[str, list[dict
             if trace_id := update.get("trace_id"):
                 index.setdefault(trace_id, []).append(update)
     with _lock:
-        _lru_put(_annotations_cache, annotations_dir, (key, index))
+        _lru_put(_annotations_cache, kind_dir, (key, index))
     return index
-
-
-def _deep_merge(old, new):
-    if isinstance(old, dict) and isinstance(new, dict):
-        return {**old, **{key: _deep_merge(old.get(key), value) for key, value in new.items()}}
-    return new
-
-
-def fold_trace_updates(trace: dict, updates: list[dict]) -> int:
-    """Apply TraceUpdate records onto a raw trace dict in write order (newest wins) —
-    the dict mirror of verifiers' `apply_trace_update`: deep-merge `info`, then project
-    each full-length branch stream onto the branch's nodes, compact over each node's
-    mask. A node takes a stream only when it is fully covered with non-null values at
-    every sampled position. Returns how many nodes hold trainer logprobs afterwards."""
-    nodes = trace.get("nodes") or []
-    paths = trace_branch_paths(nodes)
-    for update in updates:
-        if update.get("info"):
-            trace["info"] = _deep_merge(trace.get("info") or {}, update["info"])
-        for branch in update.get("branches") or []:
-            branch_id = branch.get("branch_id")
-            if not isinstance(branch_id, int) or not 0 <= branch_id < len(paths):
-                continue
-            for field in STREAM_FIELDS:
-                stream = branch.get(field)
-                if not stream:
-                    continue
-                cursor = 0
-                for node_index in paths[branch_id]:
-                    node = nodes[node_index]
-                    token_ids = node.get("token_ids") or []
-                    span = stream[cursor : cursor + len(token_ids)]
-                    cursor += len(token_ids)
-                    if len(span) < len(token_ids):
-                        break
-                    values = [v for v, sampled in zip(span, node.get("mask") or []) if sampled]
-                    if not values or any(v is None for v in values):
-                        continue
-                    node[field] = values
-    return sum(1 for node in nodes if node.get("trainer_logprobs"))
 
 
 def ipo_eps(run_dir: Path) -> float:
@@ -1112,7 +1051,7 @@ def project_episode_timeline(episode: dict) -> dict:
     lane_groups = []
     for trace_index, trace in enumerate(episode.get("traces") or []):
         nodes = trace.get("nodes") or []
-        branch_paths = trace_branch_paths(nodes)
+        branch_paths = branch_node_paths(nodes)
         node_branch_counts: dict[int, int] = {}
         for path in branch_paths:
             for node_index in path:
@@ -1209,7 +1148,7 @@ def subset_etag(run_dir: Path, step: int, kind: str, subset: str, path: Path) ->
     covers the orchestrator annotation file's size too."""
     tag = str(path.stat().st_size)
     if subset == "effective":
-        tag += f"-{_file_size(kind_traces_dir(run_dir, step, kind) / 'annotations' / 'orchestrator.jsonl')}"
+        tag += f"-{_file_size(annotations_path(kind_traces_dir(run_dir, step, kind), 'orchestrator'))}"
     return tag
 
 

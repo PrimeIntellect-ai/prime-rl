@@ -11,6 +11,7 @@ import orjson
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.pathing import get_kind_traces_dir
+from prime_rl.utils.trace_updates import annotations_path, make_update
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
@@ -27,12 +28,12 @@ def _effective_update(trace: vf.Trace, kind: Kind, step: int) -> dict[str, Any]:
     info: dict[str, Any] = {kind: kind_info}
     if (advantage := trace.info.get("advantage")) is not None:
         info["advantage"] = advantage
-    branches = [
-        {"branch_id": branch.index, "advantages": advantages}
+    branches = {
+        branch.index: {"advantages": advantages}
         for branch in trace.branches
         if (advantages := branch.advantages) is not None
-    ]
-    return {"version": 1, "trace_id": trace.id, "info": info, "branches": branches}
+    }
+    return make_update(trace.id, info=info, branches=branches)
 
 
 class FileMonitor(Monitor):
@@ -95,7 +96,7 @@ class FileMonitor(Monitor):
                         logged_step = (trace.info.get("train") or {}).get("logged_at_step", step)
                     updates_by_step.setdefault(logged_step, []).append(_effective_update(trace, kind, step))
             for logged_step, updates in updates_by_step.items():
-                path = get_kind_traces_dir(self.output_dir, logged_step, kind) / "annotations" / "orchestrator.jsonl"
+                path = annotations_path(get_kind_traces_dir(self.output_dir, logged_step, kind), "orchestrator")
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with open(path, "ab") as f:
                     for update in updates:

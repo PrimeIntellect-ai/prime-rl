@@ -2,7 +2,7 @@
 
 Every `prime-rl` entrypoint uses [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config): TOML files for reproducible base configs, CLI flags for one-off overrides.
 
-> **AI agents working in this repo:** the equivalent runbook is at [`skills/configs/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/configs/SKILL.md), with extra runtime hints (where config classes live, validator conventions, the trainer-side `enable_trace_annotations` flag) that aren't surfaced here.
+> **AI agents working in this repo:** the equivalent runbook is at [`skills/configs/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/configs/SKILL.md), with extra runtime hints (where config classes live, validator conventions) that aren't surfaced here.
 
 ## Table of Contents
 

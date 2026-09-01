@@ -9,14 +9,13 @@ import torch.distributed as dist
 from torch import Tensor
 
 from prime_rl.utils.pathing import get_kind_traces_dir
-
-UPDATE_VERSION = 1
+from prime_rl.utils.trace_updates import annotations_path, make_update
 
 
 class TraceAnnotationWriter:
     """Collects the trainer's per-token streams (recomputed logprobs, entropies) during a
     step and writes them as verifiers ``TraceUpdate`` JSONL — one record per trained
-    sequence, keyed by ``(trace_id, branch_id)`` — appended to
+    sequence, keyed by ``(trace_id, branch_index)`` — appended to
     ``traces/step_<n>/train/annotations/trainer.jsonl`` next to each trace's arrival file.
     Streams are full-length over the sample's token prefix so readers can fold them onto
     trace nodes without knowing the trainer's loss mask.
@@ -35,9 +34,9 @@ class TraceAnnotationWriter:
         if self.is_duplicate_rank:
             return
         trace_ids = micro_batch["trace_ids"]
-        branch_ids = micro_batch["branch_ids"]
+        branch_indices = micro_batch["branch_indices"]
         logged_at_steps = micro_batch["logged_at_steps"]
-        if not trace_ids or not branch_ids or not logged_at_steps:
+        if not trace_ids or not branch_indices or not logged_at_steps:
             return
         sequence_lengths = micro_batch["sequence_lengths"]
         loss_mask = [bool(v) for v in micro_batch["loss_mask"].detach().cpu().reshape(-1).tolist()]
@@ -46,12 +45,12 @@ class TraceAnnotationWriter:
         entropies = _tensor_to_floats(model_output["entropy"])
 
         start = 0
-        for trace_id, branch_id, logged_at_step, length in zip(
-            trace_ids, branch_ids, logged_at_steps, sequence_lengths
+        for trace_id, branch_index, logged_at_step, length in zip(
+            trace_ids, branch_indices, logged_at_steps, sequence_lengths
         ):
             span_start, end = start, start + length
             start = end
-            if not trace_id or branch_id < 0 or logged_at_step < 0:
+            if not trace_id or branch_index < 0 or logged_at_step < 0:
                 continue
             # Trailing padding is appended to the last sample and folded into its length.
             while end > span_start and env_names[end - 1] == "" and not loss_mask[end - 1]:
@@ -63,12 +62,11 @@ class TraceAnnotationWriter:
             # After the right shift, a sample's first value crosses the packing boundary.
             logprob_span[0] = None
             entropy_span[0] = None
-            record = {
-                "version": UPDATE_VERSION,
-                "trace_id": trace_id,
-                "info": {"train": {"trained_at_step": step}},
-                "branches": [{"branch_id": branch_id, "trainer_logprobs": logprob_span, "entropies": entropy_span}],
-            }
+            record = make_update(
+                trace_id,
+                info={"train": {"trained_at_step": step}},
+                branches={branch_index: {"trainer_logprobs": logprob_span, "entropies": entropy_span}},
+            )
             self._pending.append((logged_at_step, record))
 
     def flush(self) -> None:
@@ -87,7 +85,7 @@ class TraceAnnotationWriter:
         for logged_at_step, record in records:
             by_step.setdefault(logged_at_step, []).append(record)
         for logged_at_step, step_records in by_step.items():
-            path = get_kind_traces_dir(self.output_dir, logged_at_step, "train") / "annotations" / "trainer.jsonl"
+            path = annotations_path(get_kind_traces_dir(self.output_dir, logged_at_step, "train"), "trainer")
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as file:
                 for record in step_records:
