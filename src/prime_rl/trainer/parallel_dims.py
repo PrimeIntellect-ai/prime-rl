@@ -313,13 +313,6 @@ def resolve_ep(config: ModelConfig) -> None:
     config.ep = resolved_ep
     get_logger().info(f"EP auto: world_size={world_size}, dp_replicate={dp_replicate} -> resolved ep={resolved_ep}")
 
-    if config.ep_comm_backend != "torch" and config.ep <= 1:
-        raise ValueError(
-            f"model.ep_comm_backend='{config.ep_comm_backend}' requires ep > 1, "
-            f"but auto-resolved ep=1 (world_size={world_size}). "
-            "Set ep explicitly or use ep_comm_backend='torch'."
-        )
-
 
 def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> ParallelDims:
     assert isinstance(config.ep, int), (

@@ -8,12 +8,12 @@ verifies KL mismatch through the loss pipeline.
 import pytest
 import torch
 
-from prime_rl.configs.trainer import DefaultLossConfig
+from prime_rl.configs.trainer import IPOLossConfig
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.rl.loss import (
     LossInputs,
-    default_loss_fn,
+    ipo_loss_fn,
     selective_log_softmax,
     shift_tensor_right,
 )
@@ -42,8 +42,6 @@ _BASE = dict(
     moe_shared_expert_intermediate_size=256,
     moe_latent_size=128,
     num_experts_per_tok=2,
-    n_group=1,
-    topk_group=1,
     norm_topk_prob=True,
     routed_scaling_factor=1.0,
 )
@@ -53,7 +51,6 @@ def _make_model(device="cuda"):
     config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     config._attn_implementation = "flash_attention_2"
     with torch.device(device), default_dtype(torch.bfloat16):
@@ -107,7 +104,7 @@ def test_kl_zero_when_identical():
             advantages=advantages,
             loss_mask=loss_mask,
         )
-        result = default_loss_fn(inputs, DefaultLossConfig())
+        result = ipo_loss_fn(inputs, IPOLossConfig(eps=10.0))
 
         assert result.metrics["unmasked_mismatch_kl"].item() == pytest.approx(0.0, abs=1e-6), (
             f"Expected zero KL for identical models, got {result.metrics['unmasked_mismatch_kl'].item()}"
@@ -141,7 +138,7 @@ def test_kl_positive_after_perturbation():
             advantages=advantages,
             loss_mask=loss_mask,
         )
-        result = default_loss_fn(inputs, DefaultLossConfig())
+        result = ipo_loss_fn(inputs, IPOLossConfig(eps=10.0))
         kl = result.metrics["unmasked_mismatch_kl"].item()
 
         assert kl > 0, f"Expected positive KL after perturbation, got {kl}"
@@ -188,7 +185,6 @@ def test_kl_with_fused_lm_head():
     config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     config._attn_implementation = "flash_attention_2"
 

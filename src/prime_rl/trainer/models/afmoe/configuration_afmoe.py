@@ -37,21 +37,16 @@ class AfmoeConfig(PretrainedConfig):
         num_experts=64,
         num_experts_per_tok=6,
         num_shared_experts=2,
-        num_expert_groups=1,
-        num_limited_groups=1,
         score_func="sigmoid",
         route_norm=True,
         route_scale=1.0,
         score_before_experts: bool = False,
         load_balance_coeff: float = 5e-4,
-        use_grouped_mm: bool = True,
         global_attn_every_n_layers=4,
         sliding_window=1024,
         mup_enabled=False,
         layer_types=None,
         attention_dropout: float = 0.0,
-        n_group: int = 1,
-        topk_group: int = 1,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -71,18 +66,13 @@ class AfmoeConfig(PretrainedConfig):
         # MoE specific
         self.moe_intermediate_size = moe_intermediate_size
         self.num_experts_per_tok = num_experts_per_tok
-        self.n_group = n_group
-        self.topk_group = topk_group
         self.num_experts = num_experts
         self.num_shared_experts = num_shared_experts
-        self.num_expert_groups = num_expert_groups
-        self.num_limited_groups = num_limited_groups
         self.score_func = score_func
         self.route_norm = route_norm
         self.route_scale = route_scale
         self.score_before_experts = score_before_experts
         self.load_balance_coeff = load_balance_coeff
-        self.use_grouped_mm = use_grouped_mm
         # Attention specific
         self.attention_dropout = attention_dropout
         self.global_attn_every_n_layers = global_attn_every_n_layers

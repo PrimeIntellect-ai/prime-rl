@@ -1,10 +1,7 @@
 """HF<->prime weight conversion for Qwen3.5-MoE, as a declarative op chain.
 
-Per layer: router ``mlp.gate.weight`` <-> ``mlp.router.gate.weight``, the routed
-experts (per-expert gate/down/up <-> stacked w1/w2/w3, with the fused
-transformers-v5 ``gate_up_proj`` input also accepted), the shared expert
-(``mlp.shared_expert.{gate,down,up}_proj`` <-> ``shared_expert.{w1,w2,w3}``) and
-its gate (``mlp.shared_expert_gate`` <-> ``shared_expert_gate``).
+Per layer: the router and shared-expert output gate are nested under their
+PrimeRL modules, and routed experts use stacked canonical projections.
 """
 
 from __future__ import annotations
@@ -18,14 +15,8 @@ def _conversion_chain(config, model_prefix: str) -> list[ConvOp]:
         p = f"{model_prefix}.layers.{i}"
         # Router: mlp.gate.weight -> mlp.router.gate.weight
         ops.append(Rename(f"{p}.mlp.gate.weight", f"{p}.mlp.router.gate.weight"))
-        # Routed experts: per-expert (gate/down/up) or fused gate_up_proj -> w1/w2/w3
+        ops.append(Rename(f"{p}.mlp.shared_expert_gate.weight", f"{p}.mlp.shared_expert.output_gate.weight"))
         ops.append(routed_experts_op(p, hf_experts="mlp.experts", prime_experts="mlp.experts", fused=True))
-        # Shared expert: mlp.shared_expert.{gate,down,up}_proj.weight -> shared_expert.{w1,w2,w3}.weight
-        ops.append(Rename(f"{p}.mlp.shared_expert.gate_proj.weight", f"{p}.shared_expert.w1.weight"))
-        ops.append(Rename(f"{p}.mlp.shared_expert.down_proj.weight", f"{p}.shared_expert.w2.weight"))
-        ops.append(Rename(f"{p}.mlp.shared_expert.up_proj.weight", f"{p}.shared_expert.w3.weight"))
-        # Shared expert gate
-        ops.append(Rename(f"{p}.mlp.shared_expert_gate.weight", f"{p}.shared_expert_gate.weight"))
     return ops
 
 

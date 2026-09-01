@@ -42,17 +42,21 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
 
         moe_args = MoEArgs(
             num_experts=config.num_local_experts,
-            num_shared_experts=0,
+            expert_type="gated",
+            activation=config.hidden_act,
             score_func=config.scoring_func,
             route_norm=True,
             route_scale=1.0,
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
-            use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=1e-3 if config.use_routing_bias else None,
-            fp8=getattr(config, "fp8", False),
         )
-        self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.intermediate_size)
+        self.mlp = MoE.from_args(
+            moe_args,
+            dim=config.hidden_size,
+            hidden_dim=config.intermediate_size,
+            shared_expert=None,
+        )
 
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
@@ -104,7 +108,7 @@ class MiniMaxM2PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any("mlp.experts.w1" in name for name in state_dict.keys())
+        return any("mlp.experts.gate_proj" in name for name in state_dict.keys())
 
     @classmethod
     def conversion_chain(cls, config):

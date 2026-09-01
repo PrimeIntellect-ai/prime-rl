@@ -1,5 +1,3 @@
-import warnings
-
 from transformers.configuration_utils import PretrainedConfig
 
 
@@ -97,10 +95,6 @@ class Glm4MoeConfig(PretrainedConfig):
             Number of routed experts.
         routed_scaling_factor (`float`, *optional*, defaults to 1.0):
             Scaling factor or routed experts.
-        n_group (`int`, *optional*, defaults to 1):
-            Number of groups for routed experts.
-        topk_group (`int`, *optional*, defaults to 1):
-            Number of selected groups for each token(for each token, ensuring the selected experts is only within `topk_group` groups).
         first_k_dense_replace (`int`, *optional*, defaults to 1):
             Number of dense layers in shallow layers(embed->dense->dense->...->dense->moe->moe...->lm_head).
                                                             \--k dense layers--/
@@ -128,9 +122,9 @@ class Glm4MoeConfig(PretrainedConfig):
         "layers.*.self_attn.k_proj": "colwise",
         "layers.*.self_attn.v_proj": "colwise",
         "layers.*.self_attn.o_proj": "rowwise",
-        "layers.*.mlp.experts.*.gate_proj": "colwise",
-        "layers.*.mlp.experts.*.up_proj": "colwise",
-        "layers.*.mlp.experts.*.down_proj": "rowwise",
+        "layers.*.mlp.experts.gate_proj": "colwise",
+        "layers.*.mlp.experts.up_proj": "colwise",
+        "layers.*.mlp.experts.down_proj": "rowwise",
         "layers.*.mlp.gate_proj": "colwise",
         "layers.*.mlp.up_proj": "colwise",
         "layers.*.mlp.down_proj": "rowwise",
@@ -165,12 +159,9 @@ class Glm4MoeConfig(PretrainedConfig):
         n_shared_experts=1,
         n_routed_experts=128,
         routed_scaling_factor=1.0,
-        n_group=1,
-        topk_group=1,
         first_k_dense_replace=1,
         norm_topk_prob=True,
         use_qk_norm=False,
-        use_grouped_mm=True,
         pad_token_id=None,
         **kwargs,
     ):
@@ -196,18 +187,12 @@ class Glm4MoeConfig(PretrainedConfig):
         # MoE arguments
         self.moe_intermediate_size = moe_intermediate_size
         self.num_experts_per_tok = num_experts_per_tok
-        self.n_group = n_group
-        self.topk_group = topk_group
         self.n_shared_experts = n_shared_experts
         self.n_routed_experts = n_routed_experts
         self.routed_scaling_factor = routed_scaling_factor
         self.first_k_dense_replace = first_k_dense_replace
         self.norm_topk_prob = norm_topk_prob
         self.use_qk_norm = use_qk_norm
-        self.use_grouped_mm = use_grouped_mm
-
-        if not self.use_grouped_mm:
-            warnings.warn("not using grouped mm for moe is very slow, should only be used for debugging")
 
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,

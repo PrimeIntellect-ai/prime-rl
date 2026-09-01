@@ -97,6 +97,9 @@ ep = 8
 [trainer.model.quantization]
 type = "fp8"
 
+[trainer.model.moe.compute]
+type = "deepgemm_fp8"
+
 [trainer.model.ac]
 freq = 1
 

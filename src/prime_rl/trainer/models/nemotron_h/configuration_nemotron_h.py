@@ -6,7 +6,7 @@ class NemotronHConfig(PretrainedConfig):
 
     The model architecture is defined by `layers_block_type`, a list where each element is
     one of "mamba", "attention", or "moe". The 120B model uses a pattern like MEMEMEM*EMEMEMEM*...
-    (M=Mamba-2, E=LatentMoE, *=Attention) repeated across 88 layers.
+    (M=Mamba-2, E=MoE with latent projections, *=Attention) repeated across 88 layers.
 
     Args:
         vocab_size: Vocabulary size.
@@ -46,8 +46,6 @@ class NemotronHConfig(PretrainedConfig):
         moe_latent_size: Latent projection size (None means use hidden_size).
         num_experts_per_tok: Top-k routing parameter.
         routed_scaling_factor: Scaling factor for routed expert outputs.
-        n_group: Number of groups for expert routing.
-        topk_group: Top-k group parameter.
         norm_topk_prob: Whether to normalize top-k probabilities.
         use_bias: Global bias setting.
         initializer_range: Standard deviation for weight initialization.
@@ -55,7 +53,6 @@ class NemotronHConfig(PretrainedConfig):
         residual_in_fp32: Whether to keep residuals in fp32.
         rescale_prenorm_residual: Whether to rescale pre-norm residuals.
         load_balance_coeff: Auxiliary-loss-free load balancing coefficient.
-        use_grouped_mm: Whether to use grouped MM for experts.
     """
 
     model_type = "nemotron_h"
@@ -109,8 +106,6 @@ class NemotronHConfig(PretrainedConfig):
         moe_latent_size=None,
         num_experts_per_tok=2,
         routed_scaling_factor=1.0,
-        n_group=1,
-        topk_group=1,
         norm_topk_prob=True,
         # General training
         use_bias=False,
@@ -120,7 +115,6 @@ class NemotronHConfig(PretrainedConfig):
         rescale_prenorm_residual=True,
         # PrimeRL training features
         load_balance_coeff=None,
-        use_grouped_mm=True,
         # RoPE
         rope_theta=10000.0,
         rope_scaling=None,
@@ -191,8 +185,6 @@ class NemotronHConfig(PretrainedConfig):
         self.moe_latent_size = moe_latent_size
         self.num_experts_per_tok = num_experts_per_tok
         self.routed_scaling_factor = routed_scaling_factor
-        self.n_group = n_group
-        self.topk_group = topk_group
         self.norm_topk_prob = norm_topk_prob
 
         # General training config
@@ -204,7 +196,6 @@ class NemotronHConfig(PretrainedConfig):
 
         # PrimeRL training features
         self.load_balance_coeff = load_balance_coeff
-        self.use_grouped_mm = use_grouped_mm
 
         super().__init__(
             pad_token_id=pad_token_id,

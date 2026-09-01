@@ -40,6 +40,8 @@ def rl_process(
         "--clean",
         "--trainer.model.impl",
         "custom",
+        "--trainer.model.conversion-dir",
+        (output_dir / RUN_NAME / "model-conversion").as_posix(),
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",

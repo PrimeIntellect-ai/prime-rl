@@ -178,7 +178,7 @@ def test_vlm_weight_roundtrip():
     # HF -> PrimeRL
     prime_sd = dict(hf_sd)
     prime_model.convert_to_prime(prime_sd)
-    assert any("language_model" in k and "mlp.experts.w1" in k for k in prime_sd)
+    assert any("language_model" in k and "mlp.experts.gate_proj" in k for k in prime_sd)
     assert original_vision_key in prime_sd
 
     # PrimeRL -> HF

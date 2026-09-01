@@ -26,7 +26,8 @@ from prime_rl.trainer.models.layers.attn import (
     flash_attn_varlen_func,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
+from prime_rl.trainer.models.layers.mlp import FeedForward
+from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.utils.cp import setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -277,18 +278,6 @@ class Qwen3_5MoeGatedAttentionBase(nn.Module):
         self.q_norm = Qwen3_5MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = Qwen3_5MoeRMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
-    def output_proj(
-        self,
-        attn_output: torch.Tensor,
-        gate: torch.Tensor,
-    ) -> torch.Tensor:
-        input_shape = gate.shape[:-1]
-        if attn_output.dim() == 4:
-            attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.contiguous().view(*input_shape, -1)
-        attn_output = attn_output * torch.sigmoid(gate)
-        return self.o_proj(attn_output)
-
 
 class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
     """Gated softmax attention using Flash Attention varlen functions."""
@@ -325,21 +314,13 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
             out = out[0]
         return out
 
-    def _attention_core(
-        self,
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> torch.Tensor:
-        return self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-
-    def attn_projections(
+    def forward(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> tuple[torch.Tensor, None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -359,24 +340,10 @@ class Qwen3_5MoeGatedFlashAttention(Qwen3_5MoeGatedAttentionBase):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
 
-        return query_states, key_states, value_states, gate
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> tuple[torch.Tensor, None]:
-        query_states, key_states, value_states, gate = self.attn_projections(hidden_states, position_embeddings)
-        attn_output = self._attention_core(
-            query_states,
-            key_states,
-            value_states,
-            cu_seqlens=cu_seqlens,
-            max_seqlen=max_seqlen,
-        )
-        return self.output_proj(attn_output, gate), None
+        attn_output = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
+        attn_output = attn_output.contiguous().view(*input_shape, -1)
+        attn_output = attn_output * torch.sigmoid(gate)
+        return self.o_proj(attn_output), None
 
 
 QWEN35MOE_ATTN_IMPL2CLASS = {
@@ -421,6 +388,24 @@ def _get_gated_attention(config: Qwen3_5MoeConfig) -> nn.Module:
     return QWEN35MOE_ATTN_IMPL2CLASS[attn_impl](attn_config)
 
 
+class Qwen3_5MoeSharedExpert(FeedForward):
+    def __init__(self, config: Qwen3_5MoeConfig) -> None:
+        super().__init__(
+            dim=config.hidden_size,
+            hidden_dim=config.shared_expert_intermediate_size,
+            expert_type="gated",
+            activation=config.hidden_act,
+        )
+        self.output_gate = nn.Linear(config.hidden_size, 1, bias=False)
+
+    def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
+        return torch.sigmoid(self.output_gate(x)) * super().forward(x, routed_experts)
+
+    def init_weights(self, init_std: float = 0.02) -> None:
+        super().init_weights(init_std)
+        nn.init.trunc_normal_(self.output_gate.weight, mean=0.0, std=init_std)
+
+
 class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: Qwen3_5MoeConfig, layer_idx: int):
         super().__init__()
@@ -433,24 +418,23 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         elif self.layer_type == "full_attention":
             self.self_attn = _get_gated_attention(config)
 
-        # MoE: routed experts via shared MoE class (no shared experts in MoE itself)
         moe_args = MoEArgs(
             num_experts=config.num_experts,
-            num_shared_experts=0,
+            expert_type="gated",
+            activation=config.hidden_act,
             score_func="softmax",
             route_norm=True,
             route_scale=1.0,
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
-            use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=config.load_balance_coeff,
-            fp8=getattr(config, "fp8", False),
         )
-        self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
-
-        # Separate gated shared expert
-        self.shared_expert = FeedForward(dim=config.hidden_size, hidden_dim=config.shared_expert_intermediate_size)
-        self.shared_expert_gate = nn.Linear(config.hidden_size, 1, bias=False)
+        self.mlp = MoE.from_args(
+            moe_args,
+            dim=config.hidden_size,
+            hidden_dim=config.moe_intermediate_size,
+            shared_expert=Qwen3_5MoeSharedExpert(config),
+        )
 
         # Layer norms with (1+weight) parameterization
         self.input_layernorm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -483,21 +467,9 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
 
         hidden_states = residual + hidden_states
 
-        # MLP: routed experts + gated shared expert
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-
-        # Routed experts
-        routed_output = self.mlp(hidden_states, routed_experts=routed_experts)
-
-        # Gated shared expert
-        bs, slen, dim = hidden_states.shape
-        hidden_flat = hidden_states.view(-1, dim)
-        shared_output = self.shared_expert(hidden_flat)
-        shared_output = F.sigmoid(self.shared_expert_gate(hidden_flat)) * shared_output
-        shared_output = shared_output.view(bs, slen, dim)
-
-        hidden_states = residual + routed_output + shared_output
+        hidden_states = residual + self.mlp(hidden_states, routed_experts=routed_experts)
         return hidden_states
 
 
@@ -643,16 +615,11 @@ class Qwen3_5MoePreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any(
-            "mlp.experts.1.up_proj" in name
-            or "mlp.experts.gate_up_proj" in name
-            or "mlp.shared_expert.gate_proj" in name
-            for name in state_dict.keys()
-        )
+        return any("mlp.experts.1.up_proj" in name or "mlp.experts.gate_up_proj" in name for name in state_dict.keys())
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any("mlp.experts.w1" in name for name in state_dict.keys())
+        return any("mlp.experts.gate_proj" in name for name in state_dict.keys())
 
     @classmethod
     def conversion_chain(cls, config):
@@ -927,16 +894,11 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any(
-            "mlp.experts.gate_up_proj" in name
-            or "mlp.experts.1.up_proj" in name
-            or "mlp.shared_expert.gate_proj" in name
-            for name in state_dict
-        )
+        return any("mlp.experts.gate_up_proj" in name or "mlp.experts.1.up_proj" in name for name in state_dict)
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any("mlp.experts.w1" in name for name in state_dict)
+        return any("mlp.experts.gate_proj" in name for name in state_dict)
 
     # ------------------------------------------------------------------
     # Forward

@@ -20,7 +20,7 @@ from prime_rl.trainer.models.layers.attn import (
     flash_attn_varlen_func,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
+from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import (
@@ -82,18 +82,6 @@ class AfmoeAttentionBase(nn.Module):
         self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
         self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
 
-    def output_proj(
-        self,
-        attn_output: torch.Tensor,
-        gate_states: torch.Tensor,
-    ) -> torch.Tensor:
-        input_shape = gate_states.shape[:-1]
-        if attn_output.dim() == 4:
-            attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.contiguous().view(*input_shape, -1)
-        attn_output = attn_output * torch.sigmoid(gate_states)
-        return self.o_proj(attn_output)
-
 
 class AfmoeFlashAttention(AfmoeAttentionBase):
     """AFMoE attention using Flash Attention varlen functions."""
@@ -125,21 +113,14 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
             out = out[0]
         return out
 
-    def _attention_core(
-        self,
-        query_states: torch.Tensor,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> torch.Tensor:
-        return self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-
-    def attn_projections(
+    def forward(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        attention_mask: torch.Tensor | None = None,
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> tuple[torch.Tensor, None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -159,25 +140,10 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
             query_states = query_states.transpose(1, 2)
             key_states = key_states.transpose(1, 2)
 
-        return query_states, key_states, value_states, gate_states
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: torch.Tensor | None = None,
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> tuple[torch.Tensor, None]:
-        query_states, key_states, value_states, gate_states = self.attn_projections(hidden_states, position_embeddings)
-        attn_output = self._attention_core(
-            query_states,
-            key_states,
-            value_states,
-            cu_seqlens=cu_seqlens,
-            max_seqlen=max_seqlen,
-        )
-        return self.output_proj(attn_output, gate_states), None
+        attn_output = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
+        attn_output = attn_output.contiguous().view(*input_shape, -1)
+        attn_output = attn_output * torch.sigmoid(gate_states)
+        return self.o_proj(attn_output), None
 
 
 AFMOE_ATTN_IMPL2CLASS = {
@@ -242,28 +208,38 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
         self.post_mlp_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
         self.moe_enabled = layer_idx >= config.num_dense_layers
-        mlp_config = MLPConfig(
-            hidden_size=config.hidden_size,
-            intermediate_size=config.intermediate_size,
-            gate_act=config.hidden_act,
-            bias=False,
-        )
         moe_args = MoEArgs(
             num_experts=config.num_experts,
-            num_shared_experts=config.num_shared_experts,
+            expert_type="gated",
+            activation=config.hidden_act,
             score_func=config.score_func,
             route_norm=config.route_norm,
             route_scale=config.route_scale,
             score_before_experts=getattr(config, "score_before_experts", False),
             top_k=config.num_experts_per_tok,
-            use_grouped_mm=getattr(config, "use_grouped_mm", True),
             load_balance_coeff=config.load_balance_coeff,
-            fp8=getattr(config, "fp8", False),
         )
         if self.moe_enabled:
-            self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
+            shared_expert = None
+            if config.num_shared_experts > 0:
+                shared_expert = FeedForward(
+                    dim=config.hidden_size,
+                    hidden_dim=config.moe_intermediate_size * config.num_shared_experts,
+                    expert_type=moe_args.expert_type,
+                    activation=moe_args.activation,
+                )
+            self.mlp = MoE.from_args(
+                moe_args,
+                dim=config.hidden_size,
+                hidden_dim=config.moe_intermediate_size,
+                shared_expert=shared_expert,
+            )
         else:
-            self.mlp = MLP(mlp_config)
+            self.mlp = FeedForward(
+                dim=config.hidden_size,
+                hidden_dim=config.intermediate_size,
+                activation=config.hidden_act,
+            )
 
     def forward(
         self,
@@ -325,7 +301,7 @@ class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, torch.Tensor]) -> bool:
-        return any("mlp.experts.w1" in module_name for module_name in state_dict.keys())
+        return any("mlp.experts.gate_proj" in module_name for module_name in state_dict.keys())
 
     @classmethod
     def conversion_chain(cls, config):

@@ -37,7 +37,8 @@ from __future__ import annotations
 
 import torch
 import torch.distributed as dist
-import torch.distributed.nn.functional as dist_nn
+
+from prime_rl.trainer.distributed.collectives import all_to_all_single_equal
 
 # Populated by `update_ulysses_params` before each forward pass. Mirrors
 # ring_flash_attn's DATA_PARAMS pattern so the patched attention path can
@@ -68,18 +69,11 @@ def _replicate_kv_heads(t: torch.Tensor, cp_size: int) -> torch.Tensor:
     return t.repeat_interleave(cp_size // h, dim=1)
 
 
-@torch._dynamo.disable
 def _all_to_all_seq_to_head(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
     """Redistribute [S_local, H, D] -> [S_global, H_local, D].
 
     Splits the head dim into cp_size groups and exchanges them so each rank
     ends up with the full sequence but only H/cp_size heads. Differentiable.
-
-    Disabled for dynamo: the collective must execute eagerly so it is scheduled
-    by the autograd engine in a consistent order across ranks, not reordered by
-    the compiled backward graph. Otherwise FSDP's post_backward reduce-scatter
-    and the all-to-all backward can interleave differently per rank, deadlocking
-    NCCL (see PR #3186 job 1578).
     """
     s_local, h, d = t.shape
     assert h % cp_size == 0, (
@@ -90,14 +84,12 @@ def _all_to_all_seq_to_head(t: torch.Tensor, cp_size: int, cp_group: dist.Proces
 
     # [S_local, cp_size, H_local, D] -> [cp_size, S_local, H_local, D]
     t = t.reshape(s_local, cp_size, h_local, d).transpose(0, 1).contiguous()
-    output = torch.empty_like(t)
-    out = dist_nn.all_to_all_single(output, t, group=cp_group)
+    out = all_to_all_single_equal(t, cp_group)
     # out[i] is the chunk that source-rank i had at position my_rank, i.e.
     # source-rank i's local sequence shard for *my* head slice.
     return out.reshape(cp_size * s_local, h_local, d)
 
 
-@torch._dynamo.disable
 def _all_to_all_head_to_seq(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
     """Inverse of `_all_to_all_seq_to_head`: [S_global, H_local, D] -> [S_local, H, D]."""
     s_global, h_local, d = t.shape
@@ -106,8 +98,7 @@ def _all_to_all_head_to_seq(t: torch.Tensor, cp_size: int, cp_group: dist.Proces
     h = h_local * cp_size
 
     t = t.reshape(cp_size, s_local, h_local, d).contiguous()
-    output = torch.empty_like(t)
-    out = dist_nn.all_to_all_single(output, t, group=cp_group)
+    out = all_to_all_single_equal(t, cp_group)
     # out[s']: original chunk for sequence-rank s' (which now becomes head-rank s').
     return out.transpose(0, 1).contiguous().reshape(s_local, h, d)
 
