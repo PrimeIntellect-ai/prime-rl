@@ -1,4 +1,5 @@
 import torch
+from dion import Muon
 from torch import nn
 from torch.optim import SGD, AdamW, Optimizer
 
@@ -6,7 +7,6 @@ from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffload
 from prime_rl.trainer.models.fusions import applied_parameter_fusions
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
-from prime_rl.trainer.optim.muon import Muon
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -189,14 +189,21 @@ def _create_muon_optimizer(
     else:
         distributed_mesh = parallel_dims.world_mesh
 
-    parameter_fusions = {}
+    # Runtime fusions pack several logical matrices into one physical parameter. Muon
+    # orthogonalizes each of them separately, so a fused parameter trains exactly as its
+    # unfused matrices would. Frozen fused parameters never reach the optimizer.
+    matrix_partitions = {}
     if model is not None:
-        for _, parameter, module, fusion in applied_parameter_fusions(model):
-            parameter_fusions[parameter] = (module, fusion)
+        muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
+        matrix_partitions = {
+            parameter: fusion.optimizer_matrix_partitions(module)
+            for _, parameter, module, fusion in applied_parameter_fusions(model)
+            if parameter in muon_params
+        }
 
     optimizer = Muon(
         params=param_groups,
-        parameter_fusions=parameter_fusions,
+        matrix_partitions=matrix_partitions,
         lr=lr,
         mu=config.mu,
         betas=(config.betas1, config.betas2),

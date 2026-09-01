@@ -143,10 +143,9 @@ class GroupedExperts(nn.Module):
                 gate_proj = to_local(self.gate_proj).transpose(-2, -1)
                 gate = self.grouped_gemm(x_bf16, gate_proj.bfloat16(), offs=offsets)
         else:
-            gate_up_proj = to_local(self.gate_up_proj)
-            gate_up_proj = gate_up_proj.flatten(1, 2).transpose(-2, -1)
+            gate_up_proj = to_local(self.gate_up_proj).transpose(-2, -1)
             gate_up = self.grouped_gemm(x_bf16, gate_up_proj.bfloat16(), offs=offsets)
-            gate, up = gate_up.unflatten(-1, (gate_up.shape[-1] // 2, 2)).unbind(-1)
+            gate, up = gate_up.chunk(2, dim=-1)
 
         if self.up_proj_bias is not None:
             up_proj_bias = to_local(self.up_proj_bias)
@@ -170,7 +169,7 @@ class GroupedExperts(nn.Module):
             nn.init.trunc_normal_(first_projection, mean=0.0, std=0.02)
             remaining = (self.up_proj, self.down_proj) if self.gate_proj is not None else (self.down_proj,)
         else:
-            gate_proj, up_proj = self.gate_up_proj.unbind(2)
+            gate_proj, up_proj = self.gate_up_proj.chunk(2, dim=1)
             nn.init.trunc_normal_(gate_proj, mean=0.0, std=0.02)
             remaining = (up_proj, self.down_proj)
         for weight in remaining:

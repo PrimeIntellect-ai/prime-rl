@@ -61,7 +61,6 @@ class AppState(Stateful):
         self.optimizers = optimizers
         self.scheduler = scheduler
         self.progress = progress
-        self.runtime_optimizer_state_dict: dict[str, Any] = {"state": {}, "param_groups": []}
 
     def _get_checkpoint_optimizers(self) -> list[Optimizer]:
         """Expose optimizers keyed by their model parameters for DCP."""
@@ -81,7 +80,10 @@ class AppState(Stateful):
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
         checkpoint_optimizers = self._get_checkpoint_optimizers()
         model_state_dict, optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
-        self.runtime_optimizer_state_dict = optimizer_state_dict
+        # Runtime fusions own one physical state tensor per fused parameter, so the
+        # checkpoint gets zero-copy logical views of it under the canonical names. This
+        # dict is also the template dcp_load writes into, which lands the loaded values
+        # directly in the fused storage.
         state_dict = {
             "model": model_state_dict,
             "optimizers": optimizer_state_dict_for_checkpoint(self.model, optimizer_state_dict),
@@ -107,11 +109,6 @@ class AppState(Stateful):
     def load_state_dict(self, state_dict: dict[str, Any]):
         checkpoint_optimizers = self._get_checkpoint_optimizers()
         has_cpu_offload = self._has_cpu_offload()
-        optimizer_state_dict = optimizer_state_dict_for_runtime(
-            self.model,
-            state_dict["optimizers"],
-            self.runtime_optimizer_state_dict,
-        )
 
         if has_cpu_offload:
             # When CPU offload is on, the optimizer is already loaded by the time we
@@ -130,11 +127,17 @@ class AppState(Stateful):
                 if isinstance(optimizer, OffloadOptimizer):
                     optimizer.finish_checkpoint_load()
         else:
+            # dcp_load already wrote the fused parameters' state through the logical
+            # views in the template, so the runtime state dict read back here holds the
+            # loaded values under their physical names.
+            _, runtime_optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
             set_state_dict(
                 self.model,
                 checkpoint_optimizers,
                 model_state_dict=state_dict["model"],
-                optim_state_dict=optimizer_state_dict,
+                optim_state_dict=optimizer_state_dict_for_runtime(
+                    self.model, state_dict["optimizers"], runtime_optimizer_state_dict
+                ),
             )
 
         if self.scheduler is not None:

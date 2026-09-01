@@ -19,12 +19,17 @@ class RuntimeFusion(Protocol):
         tensor: torch.Tensor,
     ) -> Mapping[str, torch.Tensor]: ...
 
+    @staticmethod
+    def optimizer_matrix_partitions(module: nn.Module) -> tuple[int, ...]:
+        """Sizes of the independent matrices the fused parameter packs along dim -2."""
+        ...
+
 
 class GroupedExpertsGateUpFusion:
     @classmethod
     def apply(cls, module: nn.Module) -> None:
         gate_up_proj = nn.Parameter(
-            torch.stack((module.gate_proj, module.up_proj), dim=2),
+            torch.cat((module.gate_proj, module.up_proj), dim=1),
             requires_grad=module.gate_proj.requires_grad,
         )
         module.gate_proj = None
@@ -39,8 +44,12 @@ class GroupedExpertsGateUpFusion:
         module: nn.Module,
         tensor: torch.Tensor,
     ) -> Mapping[str, torch.Tensor]:
-        gate_proj, up_proj = tensor.unbind(2)
+        gate_proj, up_proj = tensor.chunk(2, dim=1)
         return {"gate_proj": gate_proj, "up_proj": up_proj}
+
+    @staticmethod
+    def optimizer_matrix_partitions(module: nn.Module) -> tuple[int, ...]:
+        return (module.hidden_dim, module.hidden_dim)
 
     @staticmethod
     def export_state_dict(
@@ -50,7 +59,7 @@ class GroupedExpertsGateUpFusion:
         local_metadata: dict,
     ) -> None:
         gate_up_proj = state_dict.pop(f"{prefix}gate_up_proj")
-        state_dict[f"{prefix}gate_proj"], state_dict[f"{prefix}up_proj"] = gate_up_proj.unbind(2)
+        state_dict[f"{prefix}gate_proj"], state_dict[f"{prefix}up_proj"] = gate_up_proj.chunk(2, dim=1)
 
     @staticmethod
     def import_state_dict(
@@ -63,9 +72,9 @@ class GroupedExpertsGateUpFusion:
         unexpected_keys: list[str],
         error_msgs: list[str],
     ) -> None:
-        state_dict[f"{prefix}gate_up_proj"] = torch.stack(
+        state_dict[f"{prefix}gate_up_proj"] = torch.cat(
             (state_dict.pop(f"{prefix}gate_proj"), state_dict.pop(f"{prefix}up_proj")),
-            dim=2,
+            dim=1,
         )
 
 
@@ -86,12 +95,19 @@ def apply_model_fusions(model: nn.Module, requested: Sequence[str]) -> dict[str,
     return applied
 
 
+def qualified_name(module_path: str, name: str) -> str:
+    """Join a module path and a name, tolerating the empty path of the root module."""
+    return f"{module_path}.{name}" if module_path else name
+
+
 def applied_parameter_fusions(
     model: nn.Module,
 ) -> Iterator[tuple[str, nn.Parameter, nn.Module, type[RuntimeFusion]]]:
-    for module in model.modules():
+    """Yield ``(fqn, parameter, module, fusion)`` for every fused parameter in the model."""
+    for module_path, module in model.named_modules():
         for parameter_name, fusion in getattr(module, "applied_fusions", {}).items():
-            yield parameter_name, getattr(module, parameter_name), module, fusion
+            fqn = resolve_fqn(model, qualified_name(module_path, parameter_name))
+            yield fqn, getattr(module, parameter_name), module, fusion
 
 
 def optimizer_state_dict_for_checkpoint(model: nn.Module, state_dict: dict[str, Any]) -> dict[str, Any]:
@@ -106,17 +122,10 @@ def optimizer_state_dict_for_checkpoint(model: nn.Module, state_dict: dict[str, 
         {**group, "params": list(group["params"])} for group in state_dict["param_groups"]
     ]
 
-    fused_parameter_ids = {id(parameter) for _, parameter, _, _ in parameter_fusions}
-    parameter_names = {
-        id(parameter): resolve_fqn(model, name)
-        for name, parameter in model.named_parameters()
-        if id(parameter) in fused_parameter_ids
-    }
-    for parameter_name, parameter, module, fusion in parameter_fusions:
-        physical_name = parameter_names[id(parameter)]
-        prefix = physical_name.removesuffix(parameter_name)
+    for physical_name, parameter, module, fusion in parameter_fusions:
+        module_path = physical_name.rpartition(".")[0]
         logical_parameter_views = fusion.logical_parameter_views(module, parameter)
-        logical_names = {name: f"{prefix}{name}" for name in logical_parameter_views}
+        logical_names = {name: qualified_name(module_path, name) for name in logical_parameter_views}
 
         if physical_name in checkpoint_state_dict["state"]:
             physical_state = checkpoint_state_dict["state"].pop(physical_name)
@@ -159,17 +168,10 @@ def optimizer_state_dict_for_runtime(
         {**group, "params": list(group["params"])} for group in checkpoint_state_dict["param_groups"]
     ]
 
-    fused_parameter_ids = {id(parameter) for _, parameter, _, _ in parameter_fusions}
-    parameter_names = {
-        id(parameter): resolve_fqn(model, name)
-        for name, parameter in model.named_parameters()
-        if id(parameter) in fused_parameter_ids
-    }
-    for parameter_name, parameter, module, fusion in parameter_fusions:
-        physical_name = parameter_names[id(parameter)]
-        prefix = physical_name.removesuffix(parameter_name)
+    for physical_name, parameter, module, fusion in parameter_fusions:
+        module_path = physical_name.rpartition(".")[0]
         logical_parameter_views = fusion.logical_parameter_views(module, parameter)
-        logical_names = {name: f"{prefix}{name}" for name in logical_parameter_views}
+        logical_names = {name: qualified_name(module_path, name) for name in logical_parameter_views}
 
         if physical_name in restored_state_dict["state"]:
             physical_state = restored_state_dict["state"][physical_name]
