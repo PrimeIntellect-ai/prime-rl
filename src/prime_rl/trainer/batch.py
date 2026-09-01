@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from prime_rl.transports.batch.types import EncodedTensor, KeptTokens, MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transports.batch.types import EncodedTensor, MicroBatch, RoutedExperts, SamplingMask, TrainingSample
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -278,26 +278,26 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts.shape[0] += padding_size
 
 
-_KEPT_ITEMSIZE = np.dtype(np.int32).itemsize
+_SAMPLING_MASK_ITEMSIZE = np.dtype(np.int32).itemsize
 
 
-def _empty_kept_tokens(num_tokens: int) -> KeptTokens:
-    return KeptTokens(ids=b"", counts=b"\0" * (num_tokens * _KEPT_ITEMSIZE))
+def _empty_sampling_mask(num_tokens: int) -> SamplingMask:
+    return SamplingMask(ids=b"", counts=b"\0" * (num_tokens * _SAMPLING_MASK_ITEMSIZE))
 
 
-def _slice_kept_tokens(kept_tokens: KeptTokens, seq_len: int) -> KeptTokens:
-    counts = np.frombuffer(kept_tokens.counts, dtype=np.int32)[:seq_len]
-    return KeptTokens(
-        ids=kept_tokens.ids[: int(counts.sum()) * _KEPT_ITEMSIZE],
+def _slice_sampling_mask(sampling_mask: SamplingMask, seq_len: int) -> SamplingMask:
+    counts = np.frombuffer(sampling_mask.counts, dtype=np.int32)[:seq_len]
+    return SamplingMask(
+        ids=sampling_mask.ids[: int(counts.sum()) * _SAMPLING_MASK_ITEMSIZE],
         counts=counts.tobytes(),
     )
 
 
-def _pad_kept_tokens(micro_batch: MicroBatch, padding_size: int) -> None:
-    kept_tokens = micro_batch.kept_tokens
-    assert kept_tokens is not None
+def _pad_sampling_mask(micro_batch: MicroBatch, padding_size: int) -> None:
+    sampling_mask = micro_batch.sampling_mask
+    assert sampling_mask is not None
     # Padding tokens carry no sampling mask (count 0), so only counts grow.
-    kept_tokens.counts += b"\0" * (padding_size * _KEPT_ITEMSIZE)
+    sampling_mask.counts += b"\0" * (padding_size * _SAMPLING_MASK_ITEMSIZE)
 
 
 def _slice_encoded(tensor: EncodedTensor, n_rows: int) -> EncodedTensor:
@@ -405,9 +405,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )
-    # No copy needed: KeptTokens holds immutable bytes, and _pad_kept_tokens only
+    # No copy needed: SamplingMask holds immutable bytes, and _pad_sampling_mask only
     # ever mutates _materialize_bin's own accumulator.
-    kept_tokens = training_example.kept_tokens
+    sampling_mask = training_example.sampling_mask
 
     if len(input_ids) > seq_len:
         # Multimodal: never split an image's placeholder block — cut to a whole-image boundary
@@ -431,8 +431,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             ref_kl_weights = ref_kl_weights[:cut]
         if routed_experts is not None:
             routed_experts = _slice_routed_experts(routed_experts, cut)
-        if kept_tokens is not None:
-            kept_tokens = _slice_kept_tokens(kept_tokens, cut)
+        if sampling_mask is not None:
+            sampling_mask = _slice_sampling_mask(sampling_mask, cut)
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:cut]
         env_names = env_names[:cut]
@@ -463,12 +463,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         )
         assert len(routed_experts.data) == len(input_ids) * _routed_experts_row_size(routed_experts)
 
-    if kept_tokens is not None:
-        kept_counts = np.frombuffer(kept_tokens.counts, dtype=np.int32)
-        assert len(kept_counts) == len(input_ids), (
-            f"kept_tokens counts: {len(kept_counts)}, input_ids: {len(input_ids)}"
+    if sampling_mask is not None:
+        mask_counts = np.frombuffer(sampling_mask.counts, dtype=np.int32)
+        assert len(mask_counts) == len(input_ids), (
+            f"sampling_mask counts: {len(mask_counts)}, input_ids: {len(input_ids)}"
         )
-        assert len(kept_tokens.ids) == int(kept_counts.sum()) * _KEPT_ITEMSIZE
+        assert len(sampling_mask.ids) == int(mask_counts.sum()) * _SAMPLING_MASK_ITEMSIZE
 
     assert len(env_names) == len(input_ids), f"env_names: {len(env_names)}, input_ids: {len(input_ids)}"
 
@@ -482,7 +482,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         ref_logprobs=ref_logprobs,
         temperatures=temperatures,
         routed_experts=routed_experts,
-        kept_tokens=kept_tokens,
+        sampling_mask=sampling_mask,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=mm_kwargs,
@@ -576,9 +576,9 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     # A weight stream materializes as soon as one packed sample carries it; the
     # samples that lack it get the stream's identity fill (STREAM_FILL).
     has_stream = {name: any(getattr(s, name) is not None for s in bin_content.samples) for name in STREAM_FILL}
-    # Kept sets are per-token optional (unlike routed_experts): samples without
-    # them get zero-count backfill instead of constraining packing.
-    has_kept_tokens = any(sample.kept_tokens is not None for sample in bin_content.samples)
+    # Sampling masks are per-token optional (unlike routed_experts): samples
+    # without them get zero-count backfill instead of constraining packing.
+    has_sampling_mask = any(sample.sampling_mask is not None for sample in bin_content.samples)
 
     input_ids: list[int] = []
     loss_mask: list[bool] = []
@@ -593,7 +593,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     streams: dict[str, list[float] | None] = {name: ([] if has_stream[name] else None) for name in STREAM_FILL}
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
-    kept_tokens: KeptTokens | None = KeptTokens(ids=b"", counts=b"") if has_kept_tokens else None
+    sampling_mask: SamplingMask | None = SamplingMask(ids=b"", counts=b"") if has_sampling_mask else None
 
     for sample in bin_content.samples:
         sample_len = len(sample.input_ids)
@@ -631,10 +631,10 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
                     mm_kwargs[key].data += sample.mm_kwargs[key].data
                     mm_kwargs[key].shape[0] += sample.mm_kwargs[key].shape[0]
         seq_lens.extend(sample.seq_lens)
-        if kept_tokens is not None:
-            sample_kept = sample.kept_tokens if sample.kept_tokens is not None else _empty_kept_tokens(sample_len)
-            kept_tokens.ids += sample_kept.ids
-            kept_tokens.counts += sample_kept.counts
+        if sampling_mask is not None:
+            sample_mask = sample.sampling_mask if sample.sampling_mask is not None else _empty_sampling_mask(sample_len)
+            sampling_mask.ids += sample_mask.ids
+            sampling_mask.counts += sample_mask.counts
 
     sequence_lengths = [len(sample.input_ids) for sample in bin_content.samples]
     assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
@@ -650,7 +650,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         ref_logprobs=ref_logprobs,
         temperatures=temperatures,
         routed_experts=routed_experts,
-        kept_tokens=kept_tokens,
+        sampling_mask=sampling_mask,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=mm_kwargs,
@@ -777,8 +777,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
-    if micro_batch.kept_tokens is not None:
-        _pad_kept_tokens(micro_batch, padding_size)
+    if micro_batch.sampling_mask is not None:
+        _pad_sampling_mask(micro_batch, padding_size)
     micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
@@ -815,14 +815,14 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         assert micro_batch.routed_experts.shape[0] == num_tokens, (
             f"routed_experts misaligned after packing: {micro_batch.routed_experts.shape[0]} != {num_tokens} tokens"
         )
-    if micro_batch.kept_tokens is not None:
-        kept_counts = np.frombuffer(micro_batch.kept_tokens.counts, dtype=np.int32)
-        assert len(kept_counts) == num_tokens, (
-            f"kept_tokens misaligned after packing: {len(kept_counts)} != {num_tokens} tokens"
+    if micro_batch.sampling_mask is not None:
+        mask_counts = np.frombuffer(micro_batch.sampling_mask.counts, dtype=np.int32)
+        assert len(mask_counts) == num_tokens, (
+            f"sampling_mask misaligned after packing: {len(mask_counts)} != {num_tokens} tokens"
         )
-        assert len(micro_batch.kept_tokens.ids) == int(kept_counts.sum()) * _KEPT_ITEMSIZE, (
-            f"kept_tokens ids/counts inconsistent after packing: "
-            f"{len(micro_batch.kept_tokens.ids)} bytes != {int(kept_counts.sum())} ids"
+        assert len(micro_batch.sampling_mask.ids) == int(mask_counts.sum()) * _SAMPLING_MASK_ITEMSIZE, (
+            f"sampling_mask ids/counts inconsistent after packing: "
+            f"{len(micro_batch.sampling_mask.ids)} bytes != {int(mask_counts.sum())} ids"
         )
 
 
@@ -837,7 +837,7 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.ce_weights = None
     dummy.ref_kl_weights = None
     # Fully loss-masked, so replaying sampling masks would be pure wasted work.
-    dummy.kept_tokens = None
+    dummy.sampling_mask = None
     return dummy
 
 

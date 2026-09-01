@@ -7,7 +7,7 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import CustomLossConfig, IPOLossConfig, LossConfig
-from prime_rl.trainer.models.layers.lm_head import kept_replay_mask
+from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
 
 
@@ -56,24 +56,24 @@ def selective_log_softmax(
 
 
 @jaxtyped(typechecker=typechecker)
-def selective_log_softmax_with_kept(
+def selective_log_softmax_with_sampling_mask(
     logits: Float[Tensor, "batch seq vocab"],
     index: Int[Tensor, "batch seq"],
-    kept_tokens: Int[Tensor, "batch seq kept"],
+    sampling_mask: Int[Tensor, "batch seq mask"],
 ) -> Float[Tensor, "batch seq"]:
-    """Per-token logprobs with kept-set (sampling-mask) replay: positions with a
-    usable mask (see ``kept_replay_mask``) get ``logits[index] -
-    logsumexp(logits[kept])``, others full-vocab. Non-replayed rows are zeroed
+    """Per-token logprobs with sampling-mask replay: positions with a usable
+    mask (see ``sampling_replay_mask``) get ``logits[index] -
+    logsumexp(logits[mask])``, others full-vocab. Non-replayed rows are zeroed
     before the logsumexp so the unselected ``where`` branch can't emit NaN grads.
     """
     full_logprobs = selective_log_softmax(logits, index)
-    replay = kept_replay_mask(kept_tokens, index)
-    kept_logits = torch.gather(logits, -1, kept_tokens.clamp_min(0).long())
-    kept_logits = torch.where(kept_tokens >= 0, kept_logits, float("-inf"))
-    kept_logits = torch.where(replay.unsqueeze(-1), kept_logits, 0.0)
-    logz_kept = torch.logsumexp(kept_logits, dim=-1)
+    replay = sampling_replay_mask(sampling_mask, index)
+    mask_logits = torch.gather(logits, -1, sampling_mask.clamp_min(0).long())
+    mask_logits = torch.where(sampling_mask >= 0, mask_logits, float("-inf"))
+    mask_logits = torch.where(replay.unsqueeze(-1), mask_logits, 0.0)
+    logz_masked = torch.logsumexp(mask_logits, dim=-1)
     target_logits = torch.gather(logits, -1, index.unsqueeze(-1)).squeeze(-1)
-    return torch.where(replay, target_logits - logz_kept, full_logprobs)
+    return torch.where(replay, target_logits - logz_masked, full_logprobs)
 
 
 @jaxtyped(typechecker=typechecker)
@@ -91,7 +91,7 @@ def shift_tensor_left(t: Tensor, pad_value: float = 0.0) -> Tensor:
     Used to create labels from input_ids: labels[i] = input_ids[i+1]. The last
     position is padded with ``pad_value`` (0 is a valid token index but gets
     shifted off by shift_tensor_right and never used). Works for [batch, seq]
-    labels and label-aligned [batch, seq, ...] fields like kept_tokens.
+    labels and label-aligned [batch, seq, ...] fields like sampling_mask.
     """
     return torch.cat([t[:, 1:], torch.full_like(t[:, :1], pad_value)], dim=1)
 

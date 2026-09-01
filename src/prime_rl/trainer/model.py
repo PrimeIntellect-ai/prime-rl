@@ -1328,7 +1328,7 @@ def forward(
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
-    kept_tokens: Int[Tensor, "batch seq kept"] | None = None,
+    sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
     # Generic multimodal kwargs (e.g. {"pixel_values": ...,
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
     # for Gemma3). Passed straight through to ``model(**kwargs)`` so
@@ -1346,10 +1346,10 @@ def forward(
         "temperature": temperature,
     }
 
-    # Kept-set sampling masks are consumed by the injected prime lm_head; HF
+    # Sampling masks are consumed by the injected prime lm_head; HF
     # forwards don't know the kwarg, so only pass it when present.
-    if kept_tokens is not None:
-        kwargs["kept_tokens"] = kept_tokens
+    if sampling_mask is not None:
+        kwargs["sampling_mask"] = sampling_mask
 
     if mm_kwargs:
         # Forward the per-model multimodal tensors verbatim, plus the

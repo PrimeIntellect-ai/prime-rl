@@ -277,12 +277,12 @@ class TrainSink:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
-                if env.requires_kept_masks and sample.kept_tokens is None:
-                    # Rollout logprobs are kept-renormalized; training without the masks
+                if env.requires_sampling_masks and sample.sampling_mask is None:
+                    # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.
                     raise RuntimeError(
                         f"env '{env_name}' samples with truncation (top_p/top_k) but its rollouts "
-                        "carry no kept-set sampling masks. Set `enable_return_sampling_mask = true` on "
+                        "carry no sampling masks. Set `enable_return_sampling_mask = true` on "
                         "the inference server config (the rl entrypoint does this automatically) - "
                         "it requires vLLM's native sampling-mask capture (>= 0.28)."
                     )

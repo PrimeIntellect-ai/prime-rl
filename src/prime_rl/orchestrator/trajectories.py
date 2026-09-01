@@ -21,7 +21,7 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.transports.batch import TrainingSample
-from prime_rl.transports.batch.types import EncodedTensor, KeptTokens, RoutedExperts
+from prime_rl.transports.batch.types import EncodedTensor, RoutedExperts, SamplingMask
 from prime_rl.utils.logger import get_logger
 
 
@@ -66,9 +66,9 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
     return RoutedExperts(data=arr.tobytes(), shape=list(arr.shape), dtype=str(arr.dtype))
 
 
-def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> KeptTokens | None:
+def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> SamplingMask | None:
     """The branch's sampling mask (`Branch.sampling_mask`) -> the transport
-    `KeptTokens` the trainer replays. Realigns `counts` to `num_tokens`
+    `SamplingMask` the trainer replays. Realigns `counts` to `num_tokens`
     (truncating drops the tail's ids too) as a backstop — `Branch.sampling_mask` already
     guarantees alignment, mirroring `_encode_routed_experts`. A 0 count just means no
     replay for that position, so partial coverage stays safe."""
@@ -80,7 +80,7 @@ def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> Kept
         ids = ids[: int(counts.sum())]
     elif len(counts) < num_tokens:
         counts = np.concatenate([counts, np.zeros(num_tokens - len(counts), dtype=np.int32)])
-    return KeptTokens(
+    return SamplingMask(
         ids=np.ascontiguousarray(ids, dtype=np.int32).tobytes(),
         counts=np.ascontiguousarray(counts, dtype=np.int32).tobytes(),
     )
@@ -163,7 +163,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 ce_weights=_loss_weights(branch, "ce", trained_loss_nodes["ce"]),
                 ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
                 advantages=branch.advantages,
-                kept_tokens=_encode_sampling_mask(branch.sampling_mask, len(token_ids)),
+                sampling_mask=_encode_sampling_mask(branch.sampling_mask, len(token_ids)),
             )
         )
     if not samples:

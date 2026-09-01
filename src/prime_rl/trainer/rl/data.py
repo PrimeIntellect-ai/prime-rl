@@ -37,9 +37,9 @@ class TensorMicroBatch(TypedDict):
     # MoE router replay
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
 
-    # Kept-set sampling masks: kept token ids per position, -1-padded to the
-    # micro batch's max kept-set size (an all--1 row means no mask).
-    kept_tokens: Int[Tensor, "batch seq kept"] | None
+    # Sampling-mask token ids per position, padded with -1 to the micro batch's
+    # maximum mask size. A row containing only -1 has no mask.
+    sampling_mask: Int[Tensor, "batch seq mask"] | None
 
     # Generic multimodal kwargs — flat dict matching the model's forward
     # signature (e.g. ``{"pixel_values": ..., "image_grid_thw": ...}`` for
@@ -127,7 +127,7 @@ class FakeDataLoader:
             "lora_num_tokens": torch.tensor([input_ids.shape[0]], dtype=torch.int32),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
-            "kept_tokens": None,
+            "sampling_mask": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -157,7 +157,7 @@ class FakeDataLoader:
             "lora_num_tokens": torch.tensor([self.seq_len], dtype=torch.int32),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
-            "kept_tokens": None,
+            "sampling_mask": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -213,16 +213,16 @@ class DataLoader:
                 .to(torch.int32)
                 .unsqueeze(0)
             )
-        kept_tokens = None
-        packed_kept_tokens = micro_batch.kept_tokens
-        if packed_kept_tokens is not None:
-            counts = np.frombuffer(packed_kept_tokens.counts, dtype=np.int32)
-            ids = np.frombuffer(packed_kept_tokens.ids, dtype=np.int32)
+        sampling_mask = None
+        packed_sampling_mask = micro_batch.sampling_mask
+        if packed_sampling_mask is not None:
+            counts = np.frombuffer(packed_sampling_mask.counts, dtype=np.int32)
+            ids = np.frombuffer(packed_sampling_mask.ids, dtype=np.int32)
             # Boolean assignment fills row-major, matching the flat concat order.
-            max_kept = max(int(counts.max()), 1) if counts.size else 1
-            padded = np.full((len(counts), max_kept), -1, dtype=np.int32)
-            padded[np.arange(max_kept)[None, :] < counts[:, None]] = ids
-            kept_tokens = torch.from_numpy(padded).unsqueeze(0)
+            max_mask_size = max(int(counts.max()), 1) if counts.size else 1
+            padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
+            padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
+            sampling_mask = torch.from_numpy(padded).unsqueeze(0)
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
@@ -243,7 +243,7 @@ class DataLoader:
             if micro_batch.mm_token_type_ids is not None
             else None,
             routed_experts=routed_experts,
-            kept_tokens=kept_tokens,
+            sampling_mask=sampling_mask,
             rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)
             if micro_batch.rl_weights is not None
             else None,

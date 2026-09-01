@@ -131,8 +131,8 @@ class TrainEnv(Env):
         self.generation_source = generation_source
         self.algorithm = algorithm
         self.sampling_args = generation_source.sampling_args(config.sampling.to_sampling_args())
-        # Truncated policy sampling must ship the kept-set masks the trainer replays.
-        self.requires_kept_masks = (
+        # Truncated policy sampling must ship the sampling masks the trainer replays.
+        self.requires_sampling_masks = (
             config.sampling.truncates_distribution()
             and config.algo is not None
             and config.algo.sampling.source == "policy"

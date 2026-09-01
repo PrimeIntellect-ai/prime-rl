@@ -53,7 +53,7 @@ class TrainSamplingConfig(BaseConfig):
 
     top_k: int | None = Field(None, ge=1)
     """Top-k sampling for train rollouts. Truncation triggers sampling replay, and
-    a default top-k is injected when only top-p truncates so kept sets stay
+    a default top-k is injected when only top-p truncates so sampling masks stay
     bounded — see docs/inference.md (Sampling Replay)."""
 
     max_completion_tokens: int | None = None
@@ -484,8 +484,8 @@ class ConcurrencyConfig(BaseConfig):
 # Top-k injected on truncated policy sampling that has none, and the hard upper
 # bound for explicit top-k. vLLM's native sampling-mask capture requires a
 # per-request top_k > 0 to bound mask sizes, and the trainer pads each micro
-# batch's masks to the largest kept set, so the bound also caps trainer mask
-# tensors. Large enough that a 0.95-0.99 nucleus rarely reaches it (the
+# batch's masks to the largest sampling mask, so the bound also caps trainer
+# mask tensors. Large enough that a 0.95-0.99 nucleus rarely reaches it (the
 # sampling policy is essentially unchanged).
 TRAIN_TOP_K_BOUND = 512
 
@@ -620,8 +620,8 @@ class OrchestratorConfig(BaseConfig):
     def setup_truncated_sampling(self):
         """Truncated policy sampling trains with sampling replay (rollout
         logprobs are renormalized — see docs/inference.md, Sampling Replay).
-        Owned here: every truncating config gets a top-k bound (bounds the kept
-        sets); opd/opsd is rejected (full-vocab prefill refs would mix
+        Owned here: every truncating config gets a top-k bound (bounds the sampling
+        masks); opd/opsd is rejected (full-vocab prefill refs would mix
         normalizations). Frozen-source envs sample externally and are exempt."""
         policy_samplings = [
             env.sampling for env in self.train.source if env.algo is not None and env.algo.sampling.source == "policy"
@@ -642,13 +642,13 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError(
                 f"Truncated train sampling with top_k = {max(oversized)} exceeds the sampling-replay "
                 f"bound ({TRAIN_TOP_K_BOUND}): the trainer pads each micro batch's masks to the largest "
-                f"kept set, so unbounded kept sets blow up trainer memory. Use top_k <= {TRAIN_TOP_K_BOUND}."
+                f"sampling mask, so unbounded masks blow up trainer memory. Use top_k <= {TRAIN_TOP_K_BOUND}."
             )
 
         unbounded = [sampling for sampling in truncating if sampling.top_k is None]
         if unbounded:
             warnings.warn(
-                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_BOUND} so every kept set is "
+                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_BOUND} so every sampling mask is "
                 "bounded and sampling replay stays exact. Set top_k explicitly to override.",
                 stacklevel=2,
             )
@@ -659,7 +659,7 @@ class OrchestratorConfig(BaseConfig):
         if any(algo.type in ("opd", "opsd") for algo in algos):
             raise ValueError(
                 "opd/opsd is not supported with truncated train sampling: reference logprobs are full-vocab "
-                "prefill scores while trainer logprobs are renormalized over the kept set, biasing the "
+                "prefill scores while trainer logprobs are renormalized over the sampling mask, biasing the "
                 "ref_kl term. Remove the truncation (top_p/top_k) or the opd/opsd algo."
             )
 

@@ -301,15 +301,15 @@ Currently this feature is also not supported with CPU KV cache offload, which ca
 
 ### Sampling Replay
 
-Truncated sampling (`top_p < 1`, `top_k`) renormalizes the sampling distribution over the surviving "kept set" of tokens. The rollout logprobs reflect that (`logprobs_mode = "processed_logprobs"`), so the trainer must renormalize over the same set — otherwise every importance ratio is biased and training collapses (DeepSeek V3.2's "Keep Sampling Mask", [arXiv:2512.02556](https://arxiv.org/abs/2512.02556) §3.1; Cognition's [SWE-1.7 post](https://cognition.com/blog/swe-1-7)). prime-rl handles this automatically: vLLM records the kept-set token ids at sampling time (`--return-sampling-mask`, native since vLLM 0.28) and the trainer renormalizes its logprobs over them.
+Truncated sampling (`top_p < 1`, `top_k`) renormalizes the sampling distribution over a sampling mask of surviving token ids. The rollout logprobs reflect that (`logprobs_mode = "processed_logprobs"`), so the trainer must renormalize over the same mask — otherwise every importance ratio is biased and training collapses (DeepSeek V3.2's "Keep Sampling Mask", [arXiv:2512.02556](https://arxiv.org/abs/2512.02556) §3.1; Cognition's [SWE-1.7 post](https://cognition.com/blog/swe-1-7)). prime-rl handles this automatically: vLLM records the sampling mask at sampling time (`--return-sampling-mask`, native since vLLM 0.28) and the trainer renormalizes its logprobs over it.
 
 ```toml
 [orchestrator.train.sampling]
 top_p = 0.95
-top_k = 512   # optional, defaults to 512 under truncation (bounds the kept sets)
+top_k = 512   # optional, defaults to 512 under truncation (bounds each sampling mask)
 ```
 
-That's all — there are no replay flags. Truncated train sampling makes the inference server return kept sets (`inference.enable_return_sampling_mask`, auto-enabled) and the trainer replays whatever masks arrive. Train-sampling `top_k` above 512 is rejected: the trainer pads each micro batch's masks to the largest kept set, so the bound caps trainer memory. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`; Gemma-family (softcapped) lm_heads fail loudly. Frozen-source envs are exempt.
+That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Train-sampling `top_k` above 512 is rejected: the trainer pads each micro batch to its largest sampling mask, so the bound caps trainer memory. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`; Gemma-family (softcapped) lm_heads fail loudly. Frozen-source envs are exempt.
 
 Capture runs on vLLM's V2 model runner (forced automatically) and is engine-wide. It can run with router replay on standard deployments. The combination is not supported with disaggregated P/D because NIXL routed-expert capture uses V1. While sampling capture is on, vLLM rejects any request with `temperature <= 0` or without an effective `top_k > 0` — eval sampling against the training server must set `top_k` (the model's generation config often supplies one) and a non-zero temperature.
 

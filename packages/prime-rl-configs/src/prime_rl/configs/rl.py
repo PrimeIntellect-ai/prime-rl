@@ -642,8 +642,8 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_sampling_mask_capture(self):
-        """Truncated train sampling needs the inference server to return the kept-set
-        sampling masks the trainer replays (OrchestratorConfig guarantees truncating
+        """Truncated train sampling needs the inference server to return the sampling
+        masks the trainer replays (OrchestratorConfig guarantees truncating
         configs are bounded by TRAIN_TOP_K_BOUND). Capture is engine-wide: while it is
         on, vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0``,
         so eval sampling against the same server must set both."""
