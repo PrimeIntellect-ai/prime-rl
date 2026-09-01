@@ -2191,6 +2191,8 @@ let traceView = prefs.traceView === "timeline" ? "timeline" : "transcript";
 let pendingTimelineNode = null;
 let pendingTimelineCall = null;
 
+const TRAINER_SIGNALS = new Set(["entropy", "mismatch_kl", "stable_mask"]);
+
 const SORT_SVG =
   '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
   '<path d="M3 6h11M3 12h8M3 18h5"></path><path d="M18 7v11M15 15l3 3 3-3"></path></svg>';
@@ -2750,14 +2752,18 @@ function renderMessages(ep, trace, branches) {
       (h) => h.quote && findQuote(reasoningText(reasoning), h.quote, h.prefix, h.suffix)
     );
     const marked = contentMarked || reasoningMarked;
-    const showingTokens = !contentMarked && signal && node.token_ids?.length;
+    // a node with no recorded token ids carries nothing to colour - it still shows its
+    // message, whole, and says why it is uncoloured
+    const overlayable = !!node.token_ids?.length;
+    const showingTokens = !contentMarked && signal && overlayable;
+    if (signal && !overlayable) chips.push("no tokens to overlay");
+    const whole = reasoning ? `${reasoningText(reasoning)}\n\n${text}`.trim() : text;
     const body = contentMarked
       ? quoteMarkedHtml(text, contentMarks)
-      : showingTokens ? renderTokenNode(node, signal, scales) : esc(text);
+      : showingTokens ? renderTokenNode(node, signal, scales) : esc(signal ? whole : text);
     const subs = [];
-    // Reasoning is parsed out of the message only in the text view. Under any token
-    // signal the recorded sequence is what is being read, and a node that carries no
-    // token ids has nothing to pull the reasoning out of either.
+    // Reasoning is parsed into its own box only in the text view; under a signal the
+    // recorded sequence is what is being read, so it stays inline with the message.
     if (reasoning && !signal) subs.push(reasoningBlock(reasoning, reasoningMarks));
     const toolCalls = (node.message?.tool_calls || []).map(toolCallHtml);
     const messageHtml =
@@ -2792,8 +2798,15 @@ function renderMessages(ep, trace, branches) {
         `${callChipHtml(item)}<span class="entry-chev">›</span></summary></details>`,
     )
     .join("");
+  // the trainer annotates a batch only once it has trained it, so the newest arrivals
+  // in a live run have nothing to colour yet - say so rather than paint nothing
+  const needsTrainer = TRAINER_SIGNALS.has(signal) && !trace.train_annotations?.nodes;
+  const noteHtml = needsTrainer
+    ? `<div class="chart-empty">no trainer streams on this episode yet — it has not been trained${trace.info?.effective ? "" : ", and has not shipped in a batch"}</div>`
+    : "";
   container.innerHTML =
     errorsHtml +
+    noteHtml +
     (systemPosition === -1 ? toolsHtml : "") +
     path.slice(0, rendered).map(entryHtml).join("") +
     (rendered < path.length ? `<div id="tm-more" class="chart-empty">scroll for ${path.length - rendered} more entries</div>` : "") +
