@@ -300,7 +300,10 @@ class ModelConfig(BaseModelConfig):
     """Debugging knobs for the model and distributed training."""
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
-    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. SFT training silently disables this (not supported yet)."""
+    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head."""
+
+    skip_masked_lm_head_tokens: bool = True
+    """Skip the LM-head vocabulary projection (forward and backward) on tokens no loss component reads — prompt tokens, env observations and pack padding. The head is the only layer that can skip them; the backbone still runs on the full sequence because attention needs it. Saves head time and activation memory in proportion to the masked fraction of the batch, and leaves every value the loss reads unchanged. Requires the fused LM head (``fused_lm_head_token_chunk_size``); ignored by the vanilla head, which materializes full-length logits by construction."""
 
     @model_validator(mode="after")
     def trust_remote_code_only_with_hf(self):

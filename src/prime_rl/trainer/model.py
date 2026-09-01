@@ -13,7 +13,7 @@ import torch
 import torch._dynamo
 import torch.nn as nn
 from huggingface_hub import snapshot_download
-from jaxtyping import Int
+from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
@@ -1327,6 +1327,10 @@ def forward(
     seq_lens: Int[Tensor, "segments"],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
+    # Tokens the LM head must score. None scores every token; otherwise the head
+    # skips the vocabulary projection (and its backward) everywhere the mask is
+    # False. Only the fused LM head honours it.
+    keep_mask: Bool[Tensor, "batch seq"] | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     # Generic multimodal kwargs (e.g. {"pixel_values": ...,
     # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
@@ -1343,6 +1347,7 @@ def forward(
         "input_ids": input_ids,
         "labels": labels,
         "temperature": temperature,
+        "keep_mask": keep_mask,
     }
 
     if mm_kwargs:

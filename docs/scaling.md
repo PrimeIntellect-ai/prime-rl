@@ -149,15 +149,26 @@ State-only optimizer offload remains enabled by default with `model.optim_cpu_of
 
 ### LM Head Chunking
 
-The vanilla LM head materializes a `[batch * seq, vocab]` logits tensor on every step — a major memory tax when the vocabulary is large (often >100K). `fused_lm_head_token_chunk_size` swaps in a custom fused linear + logprob/entropy kernel that streams through `chunk_size` tokens at a time, avoiding the materialization. It defaults to `1024` for RL training:
+The vanilla LM head materializes a `[batch * seq, vocab]` logits tensor on every step — a major memory tax when the vocabulary is large (often >100K). `fused_lm_head_token_chunk_size` swaps in a custom fused linear + logprob/entropy kernel that streams through `chunk_size` tokens at a time, avoiding the materialization:
 
 ```toml
 [trainer.model]
-fused_lm_head_token_chunk_size = 1024       # default
+fused_lm_head_token_chunk_size = 8192       # default
 # fused_lm_head_token_chunk_size = "disabled"  # vanilla LM head
 ```
 
-Drop the chunk size further when peak memory is still tight (e.g. with very long sequences); raise it to amortize kernel-launch overhead. SFT training silently disables this (not supported yet). Only available with `model.impl = "custom"`.
+Drop the chunk size when peak memory is still tight (e.g. with very long sequences); raise it to amortize kernel-launch overhead. Only available with `model.impl = "custom"`.
+
+### Skipping Masked Tokens in the LM Head
+
+The loss computations typically only depend on a small subset of tokens: prompts, environment observations, and pack padding aren't scored by any loss. `skip_masked_lm_head_tokens` (on by default) runs the LM head only on the tokens some loss component actually reads. Requires the fused head; ignored with `fused_lm_head_token_chunk_size = "disabled"`, and with `enable_token_export`, which records logprobs for every token of a sequence.
+
+```toml
+[trainer.model]
+skip_masked_lm_head_tokens = true   # default
+```
+
+Head time and its activation memory then scale with the kept fraction, which `perf/lm_head_token_fraction` reports each step. The head is roughly 10% of a dense 8B step and a much larger share when the vocabulary is big relative to the backbone, so the end-to-end win is largest for small models, long prompts, and observation-heavy agentic rollouts.
 
 ## Memory-Tight Recipe
 

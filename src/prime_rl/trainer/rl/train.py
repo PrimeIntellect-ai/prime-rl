@@ -259,6 +259,20 @@ def train(config: TrainerConfig):
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
 
+    skip_masked_head = config.model.skip_masked_lm_head_tokens
+    if skip_masked_head and not isinstance(config.model.fused_lm_head_token_chunk_size, int):
+        logger.warning(
+            "Ignoring model.skip_masked_lm_head_tokens: the vanilla LM head returns full-length logits, "
+            "so there is nothing to skip. Set model.fused_lm_head_token_chunk_size to an int to enable it."
+        )
+        skip_masked_head = False
+    if skip_masked_head and config.enable_token_export:
+        logger.warning(
+            "Ignoring model.skip_masked_lm_head_tokens: token export records trainer logprobs and entropy "
+            "for every token of a sequence, including the ones the head would skip."
+        )
+        skip_masked_head = False
+
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
@@ -325,14 +339,22 @@ def train(config: TrainerConfig):
         local_rl_scale = 0
         local_ce_scale = 0
         local_ref_kl_scale = 0
+        # Tokens the LM head will actually use and score (those in some component's mask)
+        local_head_tokens = 0
+        local_batch_tokens = 0
         for micro_batch in micro_batches:
             mask = micro_batch["loss_mask"]
             rl_w = micro_batch["rl_weights"]
             local_rl_scale += int((mask & (rl_w != 0)).sum()) if rl_w is not None else int(mask.sum())
+            head_mask = mask
             if micro_batch["ce_weights"] is not None:
                 local_ce_scale += int((micro_batch["ce_weights"] != 0).sum())
+                head_mask = head_mask | (micro_batch["ce_weights"] != 0)
             if micro_batch["ref_kl_weights"] is not None:
                 local_ref_kl_scale += int((micro_batch["ref_kl_weights"] != 0).sum())
+                head_mask = head_mask | (micro_batch["ref_kl_weights"] != 0)
+            local_head_tokens += int(head_mask.sum())
+            local_batch_tokens += mask.numel()
         global_scales = torch.tensor(
             [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.int64, device="cuda"
         )
@@ -398,6 +420,16 @@ def train(config: TrainerConfig):
 
             labels = shift_tensor_left(input_ids)
 
+            # Tokens the LM head has to use and score: bsasically every token some loss component reads
+            keep_mask = None
+            if skip_masked_head:
+                keep_mask = loss_mask
+                if ce_weights is not None:
+                    keep_mask = keep_mask | (ce_weights != 0)
+                if ref_kl_weights is not None:
+                    keep_mask = keep_mask | (ref_kl_weights != 0)
+                keep_mask = shift_tensor_left(keep_mask)
+
             seq_lens_are_pre_shard = False
 
             if cp_enabled:
@@ -415,6 +447,8 @@ def train(config: TrainerConfig):
                     )
                 seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
+                if keep_mask is not None:
+                    keep_mask = shard_for_cp(keep_mask, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None and not defer_vlm_cp_to_model:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
 
@@ -444,6 +478,7 @@ def train(config: TrainerConfig):
                     position_ids,
                     labels=labels,
                     temperature=temperatures,
+                    keep_mask=keep_mask,
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
@@ -662,6 +697,9 @@ def train(config: TrainerConfig):
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/mfu": mfu,
             "perf/peak_memory": peak_memory,
+            "perf/lm_head_token_fraction": (
+                local_head_tokens / max(local_batch_tokens, 1) if skip_masked_head else 1.0
+            ),
             "step": progress.step,
         }
         asyncio.run(monitors.log(perf_metrics, step=progress.step))
