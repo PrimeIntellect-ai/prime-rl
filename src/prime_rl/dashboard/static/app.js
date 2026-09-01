@@ -2464,12 +2464,13 @@ const SIGNAL_LABELS = {
   is_content: "The content mask",
 };
 
-/* how many of a node's tokens the signal would actually colour */
-function paintedCount(node, signal, scales) {
+/* how many of a node's tokens the signal would actually colour. ``limit`` stops the
+   walk early for callers that only need to know whether it colours anything at all */
+function paintedCount(node, signal, scales, limit = Infinity) {
   const n = node.token_ids?.length || 0;
   const count = (at) => {
     let painted = 0;
-    for (let i = 0; i < n; i++) if (at(i) != null) painted++;
+    for (let i = 0; i < n && painted < limit; i++) if (at(i) != null) painted++;
     return painted;
   };
   if (!n) return 0;
@@ -2491,7 +2492,7 @@ function signalNote(trace, path, signal, scales) {
   if (!signal) return null;
   const nodes = path.map((index) => trace.nodes[index]).filter(Boolean);
   const tokens = nodes.reduce((total, node) => total + (node.token_ids?.length || 0), 0);
-  if (nodes.some((node) => paintedCount(node, signal, scales))) return null;
+  if (nodes.some((node) => paintedCount(node, signal, scales, 1))) return null;
   const label = SIGNAL_LABELS[signal] || signal;
   const isEval = trace.info?.kind === "eval";
   if (!tokens)
@@ -2535,6 +2536,30 @@ function signalNote(trace, path, signal, scales) {
 function signalNoteHtml(trace, path, signal, scales) {
   const note = signalNote(trace, path, signal, scales);
   return note ? `<div class="signal-note"><b>${esc(note[0])}</b><span>${esc(note[1])}</span></div>` : "";
+}
+
+/* Grey the overlays this episode cannot show, each with the reason it cannot, so the
+   choice is informed before it is made. They stay selectable: the preference is
+   sticky across episodes, and a reader setting up the next episode must still be able
+   to pick one the open episode happens not to carry. */
+function markSignalAvailability(trace, path, scales) {
+  const select = $("#token-signal");
+  let unavailable = 0;
+  for (const option of select.options) {
+    const note = option.value ? signalNote(trace, path, option.value, scales) : null;
+    if (note) {
+      option.dataset.reason = note[0];
+      option.title = note[1];
+      unavailable++;
+    } else {
+      delete option.dataset.reason;
+      option.title = "";
+    }
+  }
+  // every overlay is empty here, so say it once rather than only per option
+  if (unavailable === select.options.length - 1) select.dataset.note = "no token overlay available";
+  else delete select.dataset.note;
+  syncDressedSelects();
 }
 
 function renderTokenNode(node, signal, scales) {
@@ -2686,6 +2711,7 @@ function renderedTokensHtml(trace, branches) {
   };
   const selected = currentBranchIdx === -1 ? rendered.all_nodes : rendered.paths?.[currentBranchIdx];
   const scales = episodeSignalScales(trace);
+  markSignalAvailability(trace, path, scales);
   const note = signalNoteHtml(trace, path, signal, scales);
   if (signal && tokenCount) {
     const body = path.map((index) => renderTokenNode(trace.nodes[index], signal, scales)).join("");
@@ -2785,6 +2811,7 @@ function renderMessages(ep, trace, branches) {
   const toolsHtml = toolDefinitionsHtml(trace);
   const systemPosition = path.findIndex((idx) => trace.nodes[idx]?.message?.role === "system");
   const scales = episodeSignalScales(trace);
+  markSignalAvailability(trace, path, scales);
   const noteHtml = signalNoteHtml(trace, path, signal, scales);
   const signalPaints = !noteHtml;
   const indexedCalls = (trace.calls || []).map((call, index) => ({ call, index }));
@@ -3854,9 +3881,23 @@ const dressedSelects = new Set();
 
 function rebuildSelectMenu(wrap) {
   const select = wrap.querySelector("select");
-  wrap.querySelector(".dd-menu").innerHTML = [...select.options]
-    .map((o, i) => `<div class="dd-opt${o.selected ? " active" : ""}${o.disabled ? " disabled" : ""}" data-i="${i}">${esc(o.textContent)}</div>`)
-    .join("");
+  // an option can carry the reason it has nothing to offer: it greys, keeps its
+  // place, and says why beside its name
+  const note = select.dataset.note ? `<div class="dd-note">${esc(select.dataset.note)}</div>` : "";
+  wrap.querySelector(".dd-menu").innerHTML =
+    note +
+    [...select.options]
+      .map((o, i) => {
+        const reason = o.dataset.reason;
+        const classes = ["dd-opt", o.selected && "active", o.disabled && "disabled", reason && "unavailable"];
+        return (
+          `<div class="${classes.filter(Boolean).join(" ")}" data-i="${i}"${o.title ? ` title="${esc(o.title)}"` : ""}>` +
+          `<span>${esc(o.textContent)}</span>` +
+          (reason ? `<span class="dd-why">${esc(reason)}</span>` : "") +
+          `</div>`
+        );
+      })
+      .join("");
 }
 
 function syncDressedSelects() {
@@ -3871,7 +3912,13 @@ function syncDressedSelects() {
     // active option is already marked - the same as the filter button
     if (label) span.innerHTML = `<b class="dd-label">${esc(label)}</b>`;
     else span.textContent = chosen;
-    wrap.querySelector(".dd-btn").disabled = select.disabled;
+    const btn = wrap.querySelector(".dd-btn");
+    btn.disabled = select.disabled;
+    // a chosen option with nothing to offer greys the trigger too, and hovering it
+    // gives the reason without opening the menu
+    const chosenOption = select.selectedOptions[0];
+    btn.classList.toggle("unavailable", !!chosenOption?.dataset.reason);
+    btn.title = chosenOption?.dataset.reason ? chosenOption.title : "";
   }
 }
 

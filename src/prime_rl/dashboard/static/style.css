@@ -135,6 +135,20 @@ select:focus, .search:focus { border-color: var(--grey-6); }
 .dd-opt:hover { background: var(--grey-2); color: var(--grey-6); }
 .dd-opt.active { color: var(--accent); }
 .dd-opt.disabled { color: var(--grey-3); cursor: default; }
+/* an option with nothing to offer greys and names its reason, but stays selectable */
+.dd-opt.unavailable { display: flex; justify-content: space-between; gap: 28px; color: var(--grey-4); }
+.dd-opt.unavailable:hover { color: var(--grey-5); }
+.dd-why { color: var(--grey-3); }
+.dd-note {
+  padding: 5px 12px 7px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--grey-4);
+}
+.dd-btn.unavailable { color: var(--grey-4); }
 .dd-menu {
   position: absolute;
   top: 34px;
