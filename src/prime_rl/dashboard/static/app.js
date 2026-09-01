@@ -3760,7 +3760,9 @@ function syncDressedSelects() {
     // a labelled select reads like the filter button: an icon, its name, its value
     const label = select.dataset.label;
     const span = wrap.querySelector(".dd-btn span");
-    if (label) span.innerHTML = `<b class="dd-label">${esc(label)}</b>: ${esc(chosen)}`;
+    // a labelled select names itself and leaves its value to the menu, where the
+    // active option is already marked - the same as the filter button
+    if (label) span.innerHTML = `<b class="dd-label">${esc(label)}</b>`;
     else span.textContent = chosen;
     wrap.querySelector(".dd-btn").disabled = select.disabled;
   }
@@ -3809,6 +3811,9 @@ function syncTraceFilterControls() {
     }
   for (const sel of ["#trace-sort", "#tm-sort"]) $(sel).value = traceSort();
   for (const sel of ["#trace-errors", "#tm-errors"]) $(sel).checked = t.errorsOnly;
+  const DEFAULT_SORT = { stream: "arrival:desc", step: "group:asc" };
+  for (const sel of ["#trace-sort", "#tm-sort"])
+    $(sel).closest(".dd-wrap")?.querySelector(".dd-btn")?.classList.toggle("active", traceSort() !== DEFAULT_SORT[t.mode]);
   const active = [t.env, activeKind(), t.errorsOnly].filter(Boolean).length;
   for (const sel of ["#trace-filter-btn", "#tm-filter-btn"]) $(sel).classList.toggle("active", active > 0);
   const badge = $("#trace-filter-count");
