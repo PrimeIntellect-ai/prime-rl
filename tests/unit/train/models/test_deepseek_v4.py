@@ -583,9 +583,13 @@ def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):  # noq
     _, position_ids, _ = _packed_inputs(_SHORT_DOC_LENS)
     packed_kv, packed_bias = compressor(hidden_states, q_residual, position_ids, _layout(_SHORT_DOC_LENS, rate))
     assert packed_bias.shape[-1] == 0, "every document is too short to fill a window, so the row has no entries"
-    # With no source token feeding it there is nothing to walk back through, so an empty
-    # compression must not carry a graph back to the row either.
-    assert not packed_kv.requires_grad, "an empty compression must not carry a graph back to the row"
+    # The projections run whether or not the layout selects anything, so every parameter still
+    # takes part in the backward, with a zero gradient rather than none at all.
+    assert packed_kv.requires_grad, "an empty compression must still carry a graph back to the row"
+    packed_kv.sum().backward()
+    for name, param in compressor.named_parameters():
+        assert param.grad is not None, f"{name} took no part in the backward of an empty compression"
+        assert not param.grad.any(), f"{name} received a non-zero gradient from an empty compression"
 
     for index, length in enumerate(_SHORT_DOC_LENS):
         span = _doc_slice(_SHORT_DOC_LENS, index)
@@ -1057,16 +1061,6 @@ def _compare_accumulated_grads(
         _assert_relative(param.grad, expected[name], rtol, name)
 
 
-def _backward_if_differentiable(loss: torch.Tensor) -> None:
-    """Backward `loss` unless it carries no graph at all.
-
-    A document too short to fill a window compresses to nothing, and an empty output has no
-    graph to walk back through. Its contribution to every gradient is zero.
-    """
-    if loss.requires_grad:
-        loss.backward()
-
-
 def _assert_layout_is_consistent(layout: CompressionLayout, doc_lens: tuple[int, ...], compress_rate: int) -> None:
     """Pin the layout against the per-document construction it claims to describe.
 
@@ -1118,8 +1112,7 @@ def _assert_compress_matches_per_document(
 
     with torch.device("cuda"):
         weight = torch.randn_like(packed)
-    if packed.requires_grad:
-        (packed * weight).sum().backward()
+    (packed * weight).sum().backward()
     packed_grads = _take_grads(compressor)
 
     for index, count in enumerate(counts):
@@ -1137,11 +1130,10 @@ def _assert_compress_matches_per_document(
             atol=_PACKED_ATOL,
             msg=lambda m, i=index: f"document {i} compresses differently packed than alone: {m}",
         )
-        _backward_if_differentiable((alone * weight[:, entries]).sum())
+        (alone * weight[:, entries]).sum().backward()
 
     _compare_accumulated_grads(compressor, packed_grads)
-    if packed_input.grad is not None or alone_input.grad is not None:
-        torch.testing.assert_close(alone_input.grad, packed_input.grad, rtol=_PACKED_RTOL, atol=_PACKED_ATOL)
+    torch.testing.assert_close(alone_input.grad, packed_input.grad, rtol=_PACKED_RTOL, atol=_PACKED_ATOL)
 
 
 @pytest.mark.parametrize(
@@ -1340,6 +1332,15 @@ def test_attention_survives_a_zero_entry_document(layer_idx, compress_rate, doc_
         )
 
     _assert_attention_is_finite(module, doc_lens)
+
+    for name, param in module.compressor.named_parameters():
+        # The Lightning Indexer reaches the loss only through integer top-k indices, so no
+        # gradient can arrive here through attention at all.
+        if "indexer" in name:
+            continue
+        assert param.grad is not None, f"{name} took no part in the backward"
+        if n_entries == 0:
+            assert not param.grad.any(), f"{name} received a non-zero gradient from an empty compression"
 
 
 def test_model_segments_by_seq_lens_on_a_padded_row(_torch_rms_norm, monkeypatch):  # noqa: F811

@@ -250,8 +250,6 @@ class DeepseekV4DualSeriesCompressor(nn.Module):
         """
         batch = hidden_states.shape[0]
         n_entries = layout.src_idx.shape[0]
-        if n_entries == 0:
-            return hidden_states.new_zeros(batch, 0, self.head_dim)
 
         kv = self.kv_proj(hidden_states)[:, layout.src_idx]
         gate = self.gate_proj(hidden_states)[:, layout.src_idx] + self.position_bias
@@ -432,8 +430,6 @@ class DeepseekV4HCACompressor(nn.Module):
         `layout` decides which source tokens each entry pools.
         """
         batch = hidden_states.shape[0]
-        if layout.src_idx.shape[0] == 0:
-            return hidden_states.new_zeros(batch, 0, self.head_dim)
 
         kv = self.kv_proj(hidden_states)[:, layout.src_idx]
         gate = self.gate_proj(hidden_states)[:, layout.src_idx] + self.position_bias
