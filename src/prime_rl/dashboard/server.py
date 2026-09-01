@@ -27,7 +27,8 @@ from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, re
 from prime_rl.utils.config import default_output_dir
 from prime_rl.utils.pathing import get_file_monitor_dir
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.trace_updates import branch_node_paths, fold_trace_updates
+from prime_rl.utils.trace_index import INDEX_FILE, summarize_episode
+from prime_rl.utils.trace_updates import branch_node_paths, fold_trace_updates, index_suffix
 
 try:
     import uvicorn
@@ -71,7 +72,9 @@ def _lru_put(cache: OrderedDict, key, value) -> None:
 # Append-only file caches keyed by absolute path: line-start offsets and per-episode summaries.
 _offsets_cache: OrderedDict[Path, tuple[int, bytes, list[int]]] = OrderedDict()
 _summaries_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
-_annotations_cache: OrderedDict[Path, tuple[tuple[int, ...], dict[str, list[dict]]]] = OrderedDict()
+_annotations_cache: OrderedDict[Path, tuple[tuple, dict[str, dict]]] = OrderedDict()
+_index_cache: OrderedDict[Path, tuple[int, list[dict]]] = OrderedDict()
+_rows_cache: OrderedDict[Path, tuple[tuple[int, ...], list[dict]]] = OrderedDict()
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
 _json_cache: dict[Path, tuple[tuple[int, float], dict]] = {}
@@ -524,23 +527,15 @@ def traces_file(run_dir: Path) -> Path | None:
 
 
 def rollout_steps(run_dir: Path) -> list[dict]:
-    """The steps a cohort can be addressed by, per kind.
+    """The steps a cohort can be addressed by, and the kinds of work each one holds.
 
-    Only ``effective`` ties to a step — the orchestrator step whose batch shipped the
-    trace, or for eval the policy version it measured — so the steps come from the
-    annotations. ``all`` is the whole arrival-ordered stream and ignores the step; it
-    is offered on every listed step so the subset toggle always works."""
-    if traces_file(run_dir) is None:
-        return []
-    by_step: dict[int, dict[str, bool]] = {}
+    Only a cohort ties to a step — the orchestrator step whose batch shipped it, or
+    for eval the policy version it measured — so the steps come from the annotations.
+    The stream itself is not addressed by step."""
+    by_step: dict[int, set[str]] = {}
     for kind, step in effective_steps(run_dir):
-        by_step.setdefault(step, {})[f"{kind}/effective"] = True
-    if not by_step:
-        by_step[0] = {}
-    for available in by_step.values():
-        for kind in episode_kinds(run_dir):
-            available[f"{kind}/all"] = True
-    return [{"step": step, "available": available} for step, available in sorted(by_step.items())]
+        by_step.setdefault(step, set()).add(kind)
+    return [{"step": step, "kinds": sorted(kinds)} for step, kinds in sorted(by_step.items())]
 
 
 def line_offsets(path: Path) -> list[int]:
@@ -584,119 +579,6 @@ def line_offsets(path: Path) -> list[int]:
         cached_size = max(scanned_size, cached_size)
         _lru_put(_offsets_cache, path, (cached_size, file_checkpoint(path, cached_size), current))
     return current
-
-
-def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
-    """Flatten a trace timing tree to phase -> seconds (same walk as the viewer)."""
-    if isinstance(obj.get("duration"), (int, float)):
-        out[prefix] = out.get(prefix, 0.0) + obj["duration"]
-    elif isinstance(obj.get("start"), (int, float)) and isinstance(obj.get("end"), (int, float)):
-        out[prefix] = out.get(prefix, 0.0) + (obj["end"] - obj["start"])
-    for key, value in obj.items():
-        if isinstance(value, dict):
-            walk_timing(value, f"{prefix}/{key}" if prefix else key, out)
-
-
-def episode_kind(rec: dict) -> str:
-    """The kind of work an episode did. The file monitor stamps it as the episode
-    lands; a stream written by another producer (a verifiers ``uv run eval`` run) is
-    read off its run info instead."""
-    for trace in rec.get("traces") or []:
-        if (kind := (trace.get("info") or {}).get("kind")) in ("train", "eval"):
-            return kind
-    run = rec.get("run") or {}
-    return (run.get("work") or {}).get("type") or run.get("type") or "eval"
-
-
-def summarize_episode(line: int, rec: dict) -> dict:
-    rewards, advantages = [], []
-    input_tokens = output_tokens = turns = branches = 0
-    stop_condition = None
-    reward_parts: dict[str, list[float]] = {}
-    metric_parts: dict[str, list[float]] = {}
-    timing: dict[str, float] = {}
-    costs: list[float] = []
-    for trace in rec.get("traces") or []:
-        costs.extend(
-            usage["cost"]
-            for call in trace.get("calls") or []
-            if isinstance(usage := call.get("usage") or {}, dict) and isinstance(usage.get("cost"), (int, float))
-        )
-        nodes = trace.get("nodes") or []
-        parents = {node.get("parent") for node in nodes if "parent" in node}
-        branches += max(0, len(nodes) - len(parents))
-        if trace.get("rewards"):  # skip reward-less seats (e.g. a judge) in the episode mean
-            rewards.append(
-                sum(
-                    (r.get("score") or 0) * (r.get("weight") if r.get("weight") is not None else 1)
-                    for r in trace["rewards"].values()
-                    if isinstance(r, dict)
-                )
-            )
-        for name, r in (trace.get("rewards") or {}).items():
-            if isinstance(r, dict) and isinstance(r.get("score"), (int, float)):
-                reward_parts.setdefault(name, []).append(r["score"])
-        for name, value in (trace.get("metrics") or {}).items():
-            if isinstance(value, (int, float)):
-                metric_parts.setdefault(name, []).append(value)
-        if isinstance(trace.get("timing"), dict):
-            walk_timing(trace["timing"], "", timing)
-        advantage = (trace.get("info") or {}).get("advantage")
-        if advantage is not None:
-            advantages.append(advantage)
-        for node in nodes:
-            n_tokens = len(node.get("token_ids") or [])
-            if node.get("sampled"):
-                output_tokens += n_tokens
-            else:
-                input_tokens += n_tokens
-            if (node.get("message") or {}).get("role") == "assistant":
-                turns += 1
-        stop_condition = trace.get("stop_condition", stop_condition)
-        if input_tokens == 0 and output_tokens == 0:  # some eval traces carry no token arrays
-            for call in trace.get("calls") or []:
-                usage = call.get("usage") or {}
-                input_tokens += usage.get("prompt_tokens") or 0
-                output_tokens += usage.get("completion_tokens") or 0
-    first_info = ((rec.get("traces") or [{}])[0].get("info")) or {}
-    return {
-        "rewards": {name: sum(v) / len(v) for name, v in reward_parts.items()},
-        "metrics": {name: sum(v) / len(v) for name, v in metric_parts.items()},
-        "timing": timing,
-        "cost": sum(costs) if costs else None,
-        "line": line,
-        "id": rec.get("id"),
-        "kind": episode_kind(rec),
-        "dispatch_step": (first_info.get("dispatch") or {}).get("step")
-        or ((rec.get("run") or {}).get("work") or {}).get("step"),
-        "trace_ids": [trace_id for trace in rec.get("traces") or [] if (trace_id := trace.get("id"))],
-        "env": (rec.get("env") or {}).get("id") or (rec.get("env") or {}).get("name"),
-        "group": (rec.get("group") or {}).get("id"),
-        "ok": rec.get("ok"),
-        "num_errors": len(rec.get("errors") or []),
-        "reward": sum(rewards) / len(rewards) if rewards else None,
-        "advantage": sum(advantages) / len(advantages) if advantages else None,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "turns": turns,
-        "branches": branches,
-        "stop_condition": stop_condition,
-        # when the episode landed and how long it was alive: the stream's x axis,
-        # and the one duration worth sorting a stream by
-        "arrival": (first_info.get("arrival") or {}).get("time"),
-        "duration": _episode_duration(first_info, timing),
-    }
-
-
-def _episode_duration(info: dict, timing: dict[str, float]) -> float | None:
-    """Wall-clock seconds from dispatch to arrival, or the summed phases for a record
-    that predates those stamps."""
-    dispatched = (info.get("dispatch") or {}).get("time")
-    arrived = (info.get("arrival") or {}).get("time")
-    if isinstance(dispatched, (int, float)) and isinstance(arrived, (int, float)):
-        return max(0.0, arrived - dispatched)
-    phases = [value for key, value in timing.items() if "/" not in key]
-    return sum(phases) if phases else None
 
 
 def episode_summaries(path: Path) -> list[dict]:
@@ -847,51 +729,93 @@ def _file_size(path: Path) -> int:
 
 
 def annotations_files(run_dir: Path) -> list[Path]:
-    annotations_dir = get_file_monitor_dir(run_dir) / "annotations"
-    return sorted(annotations_dir.glob("*.jsonl")) if annotations_dir.is_dir() else []
+    """The annotation records themselves, one file per producer."""
+    directory = get_file_monitor_dir(run_dir) / "annotations"
+    if not directory.is_dir():
+        return []
+    return sorted(
+        path for path in directory.glob("*.jsonl") if path.name == index_suffix(path.name).replace(".index", "")
+    )
 
 
-def run_annotations(run_dir: Path) -> dict[str, list[dict]]:
-    """Every trace update for the run, by trace id, in producer order. Cached by the
-    annotation files' sizes — they are append-only, so unchanged sizes mean an
-    unchanged index."""
-    files = annotations_files(run_dir)
-    key = tuple((path.name, _file_size(path)) for path in files)
+def annotation_index(run_dir: Path) -> dict[str, dict]:
+    """Trace id -> the scalars its updates carry, and where each record sits.
+
+    Reads the producers' indexes when they exist, so answering "which cohort, what
+    credit" never touches the token streams — they can outweigh the traces themselves.
+    A producer that wrote no index is read in full."""
+    files = [(data, data.with_name(index_suffix(data.name))) for data in annotations_files(run_dir)]
+    key = tuple((data.name, _file_size(data), _file_size(index)) for data, index in files)
     cache_key = get_file_monitor_dir(run_dir) / "annotations"
     with _lock:
         cached = _lru_get(_annotations_cache, cache_key)
-        if cached and cached[0] == key:
-            return cached[1]
-    index: dict[str, list[dict]] = {}
-    for path in files:
-        try:
-            lines = path.read_bytes().splitlines()
-        except OSError:
+    if cached and cached[0] == key:
+        return cached[1]
+    index: dict[str, dict] = {}
+
+    def note(trace_id: str | None, info: dict, data: Path, offset: int) -> None:
+        if not trace_id:
+            return
+        entry = index.setdefault(trace_id, {"info": {}, "at": []})
+        entry["info"].update(info)
+        entry["at"].append((data, offset))
+
+    for data, sidecar in files:
+        if sidecar.is_file():
+            for raw in sidecar.read_bytes().splitlines():
+                if not raw:
+                    continue
+                try:
+                    row = orjson.loads(raw)
+                except orjson.JSONDecodeError:
+                    break  # torn tail line of a live append
+                note(row.get("trace_id"), row.get("info") or {}, data, row.get("offset", 0))
             continue
-        for raw in lines:
-            if not raw:
-                continue
-            try:
-                update = orjson.loads(raw)
-            except orjson.JSONDecodeError:
-                continue  # torn tail line of a live append
-            if trace_id := update.get("trace_id"):
-                index.setdefault(trace_id, []).append(update)
+        offset = 0
+        with data.open("rb") as f:
+            for raw in f:
+                try:
+                    update = orjson.loads(raw)
+                except orjson.JSONDecodeError:
+                    break
+                note(update.get("trace_id"), update.get("info") or {}, data, offset)
+                offset += len(raw)
     with _lock:
         _lru_put(_annotations_cache, cache_key, (key, index))
     return index
 
 
+def trace_updates(run_dir: Path, trace_id: str) -> list[dict]:
+    """Every update recorded against one trace, read by seeking to each record."""
+    entry = annotation_index(run_dir).get(trace_id)
+    updates = []
+    for path, offset in (entry or {}).get("at", []):
+        try:
+            with path.open("rb") as f:
+                f.seek(offset)
+                updates.append(orjson.loads(f.readline()))
+        except (OSError, orjson.JSONDecodeError):
+            continue
+    return updates
+
+
 def trace_ship_steps(run_dir: Path) -> dict[str, int]:
     """Trace id -> the step its cohort shipped at, for traces marked effective."""
-    steps: dict[str, int] = {}
-    for trace_id, updates in run_annotations(run_dir).items():
-        for update in updates:
-            info = update.get("info") or {}
-            step = (info.get("ship") or {}).get("step")
-            if info.get("effective") and isinstance(step, int):
-                steps[trace_id] = step
+    steps = {}
+    for trace_id, entry in annotation_index(run_dir).items():
+        info = entry["info"]
+        step = (info.get("ship") or {}).get("step")
+        if info.get("effective") and isinstance(step, int):
+            steps[trace_id] = step
     return steps
+
+
+def trace_advantages(run_dir: Path) -> dict[str, float]:
+    return {
+        trace_id: entry["info"]["advantage"]
+        for trace_id, entry in annotation_index(run_dir).items()
+        if isinstance(entry["info"].get("advantage"), (int, float))
+    }
 
 
 def token_usage(usage: dict) -> tuple[int | None, int | None, int | None]:
@@ -1152,47 +1076,104 @@ def nice_bin(ideal: float) -> float:
 SORT_KEYS = {"arrival", "duration", "reward", "output_tokens", "turns", "group"}
 
 
-def episode_rows(run_dir: Path) -> list[dict]:
-    """The run's episode index: one compact row per line of the stream, in arrival
-    order, with the cohort step its annotations give it. Parsed incrementally and
-    persisted, so a poll only reads the lines that arrived since the last one."""
-    path = traces_file(run_dir)
-    if path is None:
-        return []
-    ship_steps = trace_ship_steps(run_dir)
-    rows = []
-    for summary in episode_summaries(path):
-        steps = {step for trace_id in summary.get("trace_ids") or [] if (step := ship_steps.get(trace_id)) is not None}
-        rows.append({**summary, "step": min(steps) if steps else None})
+def written_index(run_dir: Path) -> list[dict] | None:
+    """The index the file monitor wrote, read incrementally. ``None`` when the stream
+    came from a producer that writes no index, which is the reader's cue to derive the
+    rows itself."""
+    path = get_file_monitor_dir(run_dir) / INDEX_FILE
+    if not path.is_file():
+        return None
+    size = path.stat().st_size
+    with _lock:
+        cached = _lru_get(_index_cache, path)
+    if cached and cached[0] == size:
+        return cached[1]
+    rows, read_from = (list(cached[1]), cached[0]) if cached and cached[0] < size else ([], 0)
+    with path.open("rb") as f:
+        f.seek(read_from)
+        for raw in f:
+            if not raw.endswith(b"\n"):
+                break  # a torn tail line: the writer is mid-append
+            try:
+                rows.append(orjson.loads(raw))
+            except orjson.JSONDecodeError:
+                break
+            read_from += len(raw)
+    with _lock:
+        _lru_put(_index_cache, path, (read_from, rows))
     return rows
 
 
-def filter_rows(
-    rows: list[dict],
+def episode_rows(run_dir: Path) -> list[dict]:
+    """The run's episode index: one row per episode of the stream, in arrival order,
+    carrying the cohort step its annotations give it.
+
+    Built once per (index, annotations) size and cached: a browse request must not pay
+    for the whole run, however long it gets."""
+    path = traces_file(run_dir)
+    if path is None:
+        return []
+    key = (_file_size(get_file_monitor_dir(run_dir) / INDEX_FILE), path.stat().st_size) + tuple(
+        _file_size(file) for file in annotations_files(run_dir)
+    )
+    with _lock:
+        cached = _lru_get(_rows_cache, run_dir)
+    if cached and cached[0] == key:
+        return cached[1]
+    rows = written_index(run_dir)
+    if rows is None:
+        rows = episode_summaries(path)
+    ship_steps = trace_ship_steps(run_dir)
+    for row in rows:
+        steps = {step for trace_id in row.get("trace_ids") or [] if (step := ship_steps.get(trace_id)) is not None}
+        row["step"] = min(steps) if steps else None
+    with _lock:
+        _lru_put(_rows_cache, run_dir, (key, rows))
+    return rows
+
+
+def row_filter(
     *,
     step: int | None = None,
     kind: str | None = None,
     env: str | None = None,
+    episode: str | None = None,
     errors_only: bool = False,
     start: float | None = None,
     end: float | None = None,
-) -> list[dict]:
-    """Narrow the index. A step selects the cohort shipped at it — for train work the
-    orchestrator step, for eval the policy version — which is the only sense in which
-    an episode belongs to a step."""
-    if step is not None:
-        rows = [row for row in rows if row.get("step") == step]
-    if kind:
-        rows = [row for row in rows if row.get("kind") == kind]
-    if env:
-        rows = [row for row in rows if row.get("env") == env]
-    if errors_only:
-        rows = [row for row in rows if row.get("num_errors") or not row.get("ok")]
-    if start is not None:
-        rows = [row for row in rows if (row.get("arrival") or 0) >= start]
-    if end is not None:
-        rows = [row for row in rows if (row.get("arrival") or 0) < end]
-    return rows
+):
+    """A predicate over index rows. A step selects the cohort shipped at it — for
+    train work the orchestrator step, for eval the policy version — which is the only
+    sense in which an episode belongs to a step."""
+
+    def keep(row: dict) -> bool:
+        if step is not None and row.get("step") != step:
+            return False
+        if kind and row.get("kind") != kind:
+            return False
+        if env and row.get("env") != env:
+            return False
+        if episode is not None and row.get("id") != episode:
+            return False
+        if errors_only and not (row.get("num_errors") or not row.get("ok")):
+            return False
+        arrival = row.get("arrival") or 0
+        return not ((start is not None and arrival < start) or (end is not None and arrival >= end))
+
+    return keep
+
+
+def filter_rows(rows: list[dict], **narrow) -> list[dict]:
+    keep = row_filter(**narrow)
+    return [row for row in rows if keep(row)]
+
+
+def index_facets(run_dir: Path) -> tuple[list[str], list[str]]:
+    """The envs and kinds the stream holds, for the filter controls."""
+    rows = episode_rows(run_dir)
+    envs = {row["env"] for row in rows if row.get("env")}
+    kinds = {row.get("kind") for row in rows}
+    return sorted(envs), [kind for kind in ("train", "eval") if kind in kinds]
 
 
 @app.get("/api/runs/{run}/episodes")
@@ -1221,21 +1202,32 @@ def list_stream_episodes(
     if etag is not None and etag == current_etag and offset == 0:
         return {"unchanged": True, "etag": current_etag}
     rows = episode_rows(run_dir)
-    envs = sorted({row["env"] for row in rows if row.get("env")})
-    kinds = [name for name in ("train", "eval") if any(row.get("kind") == name for row in rows)]
-    rows = filter_rows(rows, step=step, kind=kind, env=env, errors_only=errors_only, start=start, end=end)
-    if episode is not None:
-        rows = [row for row in rows if row.get("id") == episode]
-    if sort in SORT_KEYS:
+    envs, kinds = index_facets(run_dir)
+    keep = row_filter(step=step, kind=kind, env=env, episode=episode, errors_only=errors_only, start=start, end=end)
+    if sort == "arrival":
+        # the index is already in arrival order: walk it from the right end and stop
+        # once the page is full, so the common view costs a page rather than a run
+        ordered = reversed(rows) if order == "desc" else rows
+        page, total = [], 0
+        for row in ordered:
+            if not keep(row):
+                continue
+            if offset <= total < offset + limit:
+                page.append(row)
+            total += 1
+    else:
+        matching = [row for row in rows if keep(row)]
         blank = "" if sort == "group" else 0
-        rows = sorted(rows, key=lambda row: (row.get(sort) is None, row.get(sort) or blank), reverse=order == "desc")
+        if sort in SORT_KEYS:
+            matching.sort(key=lambda row: (row.get(sort) is None, row.get(sort) or blank), reverse=order == "desc")
+        page, total = matching[offset : offset + limit], len(matching)
     return {
         "etag": current_etag,
-        "total": len(rows),
+        "total": total,
         "offset": offset,
         "envs": envs,
         "kinds": kinds,
-        "episodes": rows[offset : offset + limit],
+        "episodes": page,
     }
 
 
@@ -1289,25 +1281,9 @@ def subset_etag(run_dir: Path, subset: str, path: Path) -> str:
     return tag
 
 
-def episode_kinds(run_dir: Path) -> list[str]:
-    """The kinds of work the stream holds, for the kind toggle."""
-    path = traces_file(run_dir)
-    kinds = {summary.get("kind") for summary in episode_summaries(path)} if path is not None else set()
-    return [kind for kind in ("train", "eval") if kind in kinds]
-
-
 def effective_steps(run_dir: Path) -> set[tuple[str, int]]:
     """The (kind, step) pairs an effective cohort can be addressed by."""
-    path = traces_file(run_dir)
-    if path is None:
-        return set()
-    ship_steps = trace_ship_steps(run_dir)
-    return {
-        (summary.get("kind"), step)
-        for summary in episode_summaries(path)
-        for trace_id in summary.get("trace_ids") or []
-        if (step := ship_steps.get(trace_id)) is not None
-    }
+    return {(row["kind"], row["step"]) for row in episode_rows(run_dir) if row.get("step") is not None}
 
 
 def get_tokenizer(model: str):
@@ -1421,13 +1397,24 @@ def episode_series(run: str, kind: str | None = None, etag: str | None = None, a
     return {"etag": current_etag, "count": len(summaries), "after": max(0, after), "series": series}
 
 
-def read_episode_at(path: Path, line: int) -> dict:
-    offsets = line_offsets(path)
-    if not 0 <= line < len(offsets):
-        raise HTTPException(404, "episode line out of range")
+def read_episode_at(path: Path, line: int, offset: int | None = None) -> dict:
+    """One episode. A written index carries the byte offset, so reading it never
+    touches the rest of the stream."""
+    if offset is None:
+        offsets = line_offsets(path)
+        if not 0 <= line < len(offsets):
+            raise HTTPException(404, "episode line out of range")
+        offset = offsets[line]
     with path.open("rb") as f:
-        f.seek(offsets[line])
+        f.seek(offset)
         return orjson.loads(f.readline())
+
+
+def episode_offset(run_dir: Path, line: int) -> int | None:
+    rows = written_index(run_dir)
+    if rows is None or not 0 <= line < len(rows):
+        return None
+    return rows[line].get("offset")
 
 
 @app.get("/api/runs/{run}/episodes/{line}")
@@ -1441,18 +1428,17 @@ def get_episode(
     path = traces_file(get_run_dir(run))
     if path is None:
         raise HTTPException(404, "no traces for this run")
-    rec = read_episode_at(path, line)
     run_dir = get_run_dir(run)
-    annotations = run_annotations(run_dir)
-    if annotations:
-        for trace in rec.get("traces") or []:
-            updates = annotations.get(trace.get("id") or "")
-            if not updates:
-                continue
-            stamped = fold_trace_updates(trace, updates)
-            if stamped:
-                ship_step = ((trace.get("info") or {}).get("ship") or {}).get("step")
-                trace["train_annotations"] = {"step": ship_step, "nodes": stamped}
+    rec = read_episode_at(path, line, episode_offset(run_dir, line))
+    # only the opened episode's streams are read, by seeking to each of its records
+    for trace in rec.get("traces") or []:
+        updates = trace_updates(run_dir, trace.get("id") or "")
+        if not updates:
+            continue
+        stamped = fold_trace_updates(trace, updates)
+        if stamped:
+            ship_step = ((trace.get("info") or {}).get("ship") or {}).get("step")
+            trace["train_annotations"] = {"step": ship_step, "nodes": stamped}
     if not tokens and not rendered:
         return rec
     fallback_model = model_name(main_config(run_dir)[1])
@@ -1550,7 +1536,7 @@ def validate_view_command(cmd: dict) -> dict:
 
     rec = None
     if episode is not None:
-        matches = [s["line"] for s in episode_summaries(path) if s.get("id") == episode]
+        matches = [row["line"] for row in episode_rows(get_run_dir(run)) if row.get("id") == episode]
         if not matches:
             raise HTTPException(404, f"episode id {episode!r} not found in {kind}/{subset} at step {step}")
         if len(matches) > 1:
@@ -1659,7 +1645,7 @@ def get_episode_timeline(run: str, line: int) -> dict:
     path = traces_file(get_run_dir(run))
     if path is None:
         raise HTTPException(404, "no traces for this run")
-    return project_episode_timeline(read_episode_at(path, line))
+    return project_episode_timeline(read_episode_at(path, line, episode_offset(get_run_dir(run), line)))
 
 
 # -------------------------------------------------------------------------- static

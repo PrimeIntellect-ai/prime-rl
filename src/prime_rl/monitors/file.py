@@ -11,7 +11,8 @@ import orjson
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.pathing import get_file_monitor_dir
-from prime_rl.utils.trace_updates import make_update
+from prime_rl.utils.trace_index import INDEX_FILE, index_row
+from prime_rl.utils.trace_updates import index_suffix, make_update, update_index_row
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
@@ -64,6 +65,9 @@ class FileMonitor(Monitor):
     async def init(self, output_dir: Path, producer: str | None = None) -> None:
         self.output_dir = output_dir
         self.producer = producer
+        index = get_file_monitor_dir(output_dir) / INDEX_FILE
+        # a relaunch appends to the stream it finds, so the numbering carries on
+        self._logged = sum(1 for _ in index.open("rb")) if index.is_file() else 0
         self.path = get_file_monitor_dir(output_dir) / self.config.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Line-buffered append so a concurrently-running dashboard can tail the file.
@@ -104,12 +108,22 @@ class FileMonitor(Monitor):
 
         def write() -> None:
             now = time.time()
-            path = get_file_monitor_dir(self.output_dir) / "traces.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "ab") as f:
+            monitor_dir = get_file_monitor_dir(self.output_dir)
+            path = monitor_dir / "traces.jsonl"
+            monitor_dir.mkdir(parents=True, exist_ok=True)
+            # An index row goes out with every episode: summarising the record here,
+            # while it is already in hand, saves every reader from parsing a stream
+            # that outgrows memory long before the run does.
+            with open(path, "ab") as f, open(monitor_dir / INDEX_FILE, "ab") as index:
+                offset = f.tell()
                 for episode in episodes:
                     _stamp_arrival(episode, kind, step, now)
-                    f.write(orjson.dumps(episode.to_record(), default=str, option=OPTS))
+                    record = episode.to_record()
+                    line = orjson.dumps(record, default=str, option=OPTS)
+                    f.write(line)
+                    index.write(orjson.dumps(index_row(self._logged, record, offset), default=str, option=OPTS))
+                    offset += len(line)
+                    self._logged += 1
 
         # Record serialization is heavy pure-Python work; keep it off the event loop.
         # Awaited (not fire-and-forget) so appends to one file never interleave.
@@ -122,11 +136,18 @@ class FileMonitor(Monitor):
             return
 
         def write() -> None:
-            path = get_file_monitor_dir(self.output_dir) / "annotations" / f"{self.producer or 'unknown'}.jsonl"
+            name = f"{self.producer or 'unknown'}.jsonl"
+            path = get_file_monitor_dir(self.output_dir) / "annotations" / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "ab") as f:
+            # the scalars go to a sibling index so a reader can answer "which cohort,
+            # what credit" without touching the token streams
+            with open(path, "ab") as f, open(path.with_name(index_suffix(name)), "ab") as index:
+                offset = f.tell()
                 for update in updates:
-                    f.write(orjson.dumps(update, option=OPTS))
+                    line = orjson.dumps(update, option=OPTS)
+                    f.write(line)
+                    index.write(orjson.dumps(update_index_row(update, offset), option=OPTS))
+                    offset += len(line)
 
         await asyncio.to_thread(write)
 

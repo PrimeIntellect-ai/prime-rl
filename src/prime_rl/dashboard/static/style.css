@@ -1108,8 +1108,9 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
   margin-top: 2px;
 }
 .dd-filters .dd-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; }
-.dd-filters .dd-row select, .dd-filters .dd-row .dd-select { flex: 1; min-width: 0; }
-.dd-filters .dd-row .dd-btn { width: 100%; justify-content: space-between; }
+/* controls sit right, sized to their content, so the label reads as the row's subject */
+.dd-filters .dd-row select, .dd-filters .dd-row .dd-select, .dd-filters .dd-row .seg { margin-left: auto; }
+.dd-filters .dd-row .dd-btn { justify-content: space-between; gap: 8px; }
 .dd-filters .t-label { white-space: nowrap; }
 
 /* episodes-finished histogram */

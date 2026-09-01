@@ -84,7 +84,7 @@
         <button data-mode="step" title="the cohort shipped at one step">Step</button>
       </div>
       <div id="trace-filter-wrap" class="dd-wrap">
-        <button id="trace-filter-btn" class="btn dd-btn" title="filter &amp; sort">
+        <button id="trace-filter-btn" class="btn dd-btn" title="filter">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
           filter
           <span id="trace-filter-count" class="badge" hidden></span>
@@ -101,21 +101,18 @@
             <select id="trace-env"><option value="">all envs</option></select>
           </label>
           <label class="toggle dd-row"><input type="checkbox" id="trace-errors"><span class="dot"></span>errors only</label>
-          <div class="dd-sec">sort</div>
-          <label class="dd-row"><span class="t-label">by</span>
-            <select id="trace-sort">
-              <option value="arrival:desc">newest first</option>
-              <option value="arrival:asc">oldest first</option>
-              <option value="group:asc">group</option>
-              <option value="duration:desc">total time ↓</option>
-              <option value="duration:asc">total time ↑</option>
-              <option value="reward:desc">reward ↓</option>
-              <option value="reward:asc">reward ↑</option>
-              <option value="output_tokens:desc">tokens ↓</option>
-            </select>
-          </label>
         </div>
       </div>
+      <select id="trace-sort" title="sort">
+        <option value="arrival:desc">newest first</option>
+        <option value="arrival:asc">oldest first</option>
+        <option value="group:asc">group</option>
+        <option value="duration:desc">total time ↓</option>
+        <option value="duration:asc">total time ↑</option>
+        <option value="reward:desc">reward ↓</option>
+        <option value="reward:asc">reward ↑</option>
+        <option value="output_tokens:desc">tokens ↓</option>
+      </select>
       <span id="trace-status" class="muted"></span>
       <div class="spacer"></div>
       <button id="trace-clear-bin" class="btn" hidden>clear selection</button>
@@ -187,7 +184,7 @@
     </div>
     <div class="tm-head tm-ctlrow">
       <div id="tm-filter-wrap" class="dd-wrap">
-        <button id="tm-filter-btn" class="btn dd-btn" title="filter &amp; sort">
+        <button id="tm-filter-btn" class="btn dd-btn" title="filter">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4-2v-4L3 5z"></path></svg>
           filter
         </button>
@@ -203,21 +200,20 @@
             <select id="tm-env"><option value="">all envs</option></select>
           </label>
           <label class="toggle dd-row"><input type="checkbox" id="tm-errors"><span class="dot"></span>errors only</label>
-          <div class="dd-sec">sort</div>
-          <label class="dd-row"><span class="t-label">by</span>
-            <select id="tm-sort">
-              <option value="arrival:desc">newest first</option>
-              <option value="arrival:asc">oldest first</option>
-              <option value="group:asc">group</option>
-              <option value="duration:desc">total time ↓</option>
-              <option value="duration:asc">total time ↑</option>
-              <option value="reward:desc">reward ↓</option>
-              <option value="reward:asc">reward ↑</option>
-              <option value="output_tokens:desc">tokens ↓</option>
-            </select>
-          </label>
         </div>
       </div>
+    </div>
+    <div class="tm-head tm-ctlrow">
+      <select id="tm-sort" title="sort">
+        <option value="arrival:desc">newest first</option>
+        <option value="arrival:asc">oldest first</option>
+        <option value="group:asc">group</option>
+        <option value="duration:desc">total time ↓</option>
+        <option value="duration:asc">total time ↑</option>
+        <option value="reward:desc">reward ↓</option>
+        <option value="reward:asc">reward ↑</option>
+        <option value="output_tokens:desc">tokens ↓</option>
+      </select>
     </div>
     <div class="tm-head tm-ctlrow" id="tm-mode-row">
       <div class="seg" id="tm-mode">

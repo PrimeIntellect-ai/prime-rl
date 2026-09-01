@@ -162,13 +162,18 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 ### Episodes
 
 ```
-{run_dir}/monitors/file/traces.jsonl                  # every episode, appended as it arrives
-{run_dir}/monitors/file/metrics.jsonl                 # every metric row, tagged by producer
-{run_dir}/monitors/file/annotations/{producer}.jsonl  # trace updates: orch ship-time facts, trainer per-token streams
+{run_dir}/monitors/file/traces.jsonl                        # every episode, appended as it arrives
+{run_dir}/monitors/file/index.jsonl                         # one compact row per episode, with its byte offset
+{run_dir}/monitors/file/metrics.jsonl                       # every metric row, tagged by producer
+{run_dir}/monitors/file/annotations/{producer}.jsonl        # trace updates: orch ship-time facts, trainer per-token streams
+{run_dir}/monitors/file/annotations/{producer}.index.jsonl  # each update's scalars and where its record sits
 ```
 
 Everything the file monitor dumps lives under `monitors/file/`; nothing is written
-there when the monitor is off. `traces.jsonl` is a stream of native `vf.Episode`
+there when the monitor is off. The two index files are what keep reading a run cheap:
+a consumer browses them instead of the streams, and seeks by the offsets they carry
+to read a single episode or its token streams. Both are derived, so deleting them
+only costs a reader the work of rebuilding what it needs. `traces.jsonl` is a stream of native `vf.Episode`
 records (training tensors excluded), one line per episode in arrival order, whatever
 kind of work it did — including trace-less failures, curriculum-rejected work, and
 work that never enters a batch, so it is crash-durable. Each record carries its

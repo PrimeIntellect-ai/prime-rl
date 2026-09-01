@@ -48,7 +48,7 @@ const state = {
   traces: {
     loaded: false, steps: [], step: null, env: "",
     mode: prefs.traceMode ?? "stream",
-    kinds: { train: prefs.traceKinds?.train ?? true, eval: prefs.traceKinds?.eval ?? true },
+    kinds: { train: true, eval: true },
     bin: null,
     episodes: [],
     total: 0,
@@ -1867,7 +1867,7 @@ function renderStepControl() {
   const cells = [];
   for (let b = 0; b * perCell < steps.length; b++) {
     const slice = steps.slice(b * perCell, (b + 1) * perCell);
-    const hasEval = slice.some((s) => s.available["eval/all"] || s.available["eval/effective"]);
+    const hasEval = slice.some((s) => s.kinds.includes("eval"));
     const last = b * perCell + slice.length - 1;
     const title = slice.length === 1 ? `step ${slice[0].step}` : `steps ${slice[0].step}–${slice[slice.length - 1].step}`;
     cells.push(
@@ -1883,7 +1883,7 @@ function renderStepControl() {
   $("#step-prev").disabled = idx <= 0;
   $("#step-next").disabled = idx < 0 || idx >= steps.length - 1;
   const info = stepInfo(traces.step);
-  const hasEval = info && (info.available["eval/all"] || info.available["eval/effective"]);
+  const hasEval = info?.kinds.includes("eval");
   $("#step-label").innerHTML =
     traces.step == null
       ? `<span class="muted">no steps yet</span>`
@@ -2406,7 +2406,7 @@ function currentPath(trace, branches) {
 
 function traceReward(trace) {
   return Object.values(trace.rewards || {}).reduce(
-    (acc, r) => acc + (r.score ?? 0) * (r.weight ?? 1), 0
+    (acc, r) => acc + ((r?.score ?? 0) * (r?.weight ?? 1)), 0
   );
 }
 
@@ -2851,7 +2851,7 @@ function renderMeta(ep, trace, branches) {
     const rewards = Object.entries(trace.rewards || {});
     if (rewards.length) {
       parts.push(`<div class="meta-sec">rewards</div>`);
-      for (const [name, r] of rewards) parts.push(metaRow(name, `${fmtReward(r.score)} × ${fmtNum(r.weight ?? 1)}`));
+      for (const [name, r] of rewards) parts.push(metaRow(name, `${fmtReward(r?.score)} × ${fmtNum(r?.weight ?? 1)}`));
     }
     const metrics = Object.entries(trace.metrics || {});
     if (metrics.length) {
@@ -4362,7 +4362,6 @@ function savePrefs() {
       collapsedSections: [...state.metrics.collapsedSections],
       traceErrorsOnly: state.traces.errorsOnly,
       traceMode: state.traces.mode,
-      traceKinds: { ...state.traces.kinds },
       traceSortStream: state.traces.sorts.stream,
       traceSortStep: state.traces.sorts.step,
       traceViewMode: state.traces.viewMode,

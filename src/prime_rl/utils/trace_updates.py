@@ -18,6 +18,18 @@ STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies")
 """Per-token streams an update may carry, compacted onto node fields of the same name."""
 
 
+def index_suffix(producer_file: str) -> str:
+    """The name of a producer's annotation index."""
+    return producer_file.replace(".jsonl", ".index.jsonl")
+
+
+def update_index_row(update: dict[str, Any], offset: int) -> dict[str, Any]:
+    """An update's scalars plus where its record sits. The per-token streams stay in
+    the annotation file: a reader browsing a run needs the scalars, and only the
+    episode it opens needs the streams."""
+    return {"trace_id": update.get("trace_id"), "offset": offset, "info": update.get("info") or {}}
+
+
 def make_update(
     trace_id: str,
     *,
