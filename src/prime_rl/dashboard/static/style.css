@@ -827,6 +827,27 @@ mark.hit {
   word-break: break-word;
 }
 
+/* why the selected token signal coloured nothing */
+.signal-note {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--hairline);
+  border-left: 2px solid var(--grey-4);
+  background: var(--grey-1);
+  font-size: 11px;
+  color: var(--grey-5);
+}
+.signal-note b {
+  font-weight: 500;
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--grey-6);
+}
+
 /* numbered collapsible message entries */
 details.entry { border: 1px solid var(--hairline); margin-bottom: 8px; }
 details.entry > summary {

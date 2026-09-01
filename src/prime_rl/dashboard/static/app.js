@@ -2455,6 +2455,88 @@ function episodeSignalScales(trace) {
   return { maxAbsAdv, maxEntropy, maxKl, eps: trace.train_annotations?.eps ?? 0.1 };
 }
 
+const SIGNAL_LABELS = {
+  advantage: "Advantage",
+  entropy: "Entropy",
+  mismatch_kl: "Mismatch",
+  stable_mask: "The stable mask",
+  mask: "The loss mask",
+  is_content: "The content mask",
+};
+
+/* how many of a node's tokens the signal would actually colour */
+function paintedCount(node, signal, scales) {
+  const n = node.token_ids?.length || 0;
+  const count = (at) => {
+    let painted = 0;
+    for (let i = 0; i < n; i++) if (at(i) != null) painted++;
+    return painted;
+  };
+  if (!n) return 0;
+  if (signal === "mask") return count((i) => node.mask?.[i] || null);
+  if (signal === "is_content") return count((i) => node.is_content?.[i] || null);
+  if (signal === "advantage") return scales.maxAbsAdv > 0 ? count(alignedSignal(node, node.advantages)) : 0;
+  if (signal === "entropy") return scales.maxEntropy > 0 ? count(alignedSignal(node, node.entropies)) : 0;
+  if (signal === "mismatch_kl" && !(scales.maxKl > 0)) return 0;
+  // the mismatch and the stable mask both read the trainer against the sampler
+  const trainerAt = alignedSignal(node, node.trainer_logprobs);
+  const logprobAt = alignedSignal(node, node.logprobs);
+  return count((i) => (trainerAt(i) != null && logprobAt(i) != null ? 1 : null));
+}
+
+/* Why the selected signal coloured nothing, or null when it coloured something. An
+   overlay that paints nothing is indistinguishable from a broken one, so each way of
+   coming up empty names itself rather than leaving the reader to guess. */
+function signalNote(trace, path, signal, scales) {
+  if (!signal) return null;
+  const nodes = path.map((index) => trace.nodes[index]).filter(Boolean);
+  const tokens = nodes.reduce((total, node) => total + (node.token_ids?.length || 0), 0);
+  if (nodes.some((node) => paintedCount(node, signal, scales))) return null;
+  const label = SIGNAL_LABELS[signal] || signal;
+  const isEval = trace.info?.kind === "eval";
+  if (!tokens)
+    return [
+      "no tokens to colour",
+      `${label} colours recorded tokens, and this trace recorded none.` +
+        (isEval ? " Eval rollouts are sampled through the chat API, which returns text rather than tokens." : ""),
+    ];
+  if (TRAINER_SIGNALS.has(signal) && !trace.train_annotations)
+    return [
+      "no trainer streams",
+      `${label} comes from the trainer. ` +
+        (isEval
+          ? "The trainer only sees train episodes, so an eval episode never carries recomputed logprobs."
+          : trace.info?.effective
+            ? "This episode shipped in a batch, but the trainer has not annotated it yet."
+            : "This episode has not shipped in a batch, so the trainer has not trained it yet."),
+    ];
+  if (TRAINER_SIGNALS.has(signal)) {
+    // the stable mask paints wherever both logprobs exist, so it reads coverage
+    // without a scale - a zero mismatch is only news once the tokens are covered
+    if (signal !== "entropy" && nodes.some((node) => paintedCount(node, "stable_mask", scales)))
+      return ["no mismatch", "The trainer's logprobs match the sampling logprobs exactly on every token here."];
+    return [
+      "not covered on this branch",
+      `The trainer annotated this episode, but its streams reach none of this branch's tokens, so ${label.toLowerCase()} has nothing to colour.`,
+    ];
+  }
+  if (signal === "advantage")
+    return nodes.some((node) => node.advantages?.length)
+      ? ["every advantage is 0", "Every member of this trace's group scored the same reward, so the group carries no learning signal."]
+      : [
+          "no advantage assigned",
+          trace.info?.effective
+            ? "This trace shipped in a batch but carries no advantage stream."
+            : "A trace is assigned its advantage when a batch ships it. This one has not shipped in a batch.",
+        ];
+  return [`${label.toLowerCase()} is empty`, `No token on this branch is in ${label.toLowerCase()}.`];
+}
+
+function signalNoteHtml(trace, path, signal, scales) {
+  const note = signalNote(trace, path, signal, scales);
+  return note ? `<div class="signal-note"><b>${esc(note[0])}</b><span>${esc(note[1])}</span></div>` : "";
+}
+
 function renderTokenNode(node, signal, scales) {
   const ids = node.token_ids || [];
   const strs = node.token_strs;
@@ -2603,16 +2685,17 @@ function renderedTokensHtml(trace, branches) {
     decode_error: ["recorded tokens could not be decoded", "The tokenizer was found, but it could not decode this recorded sequence."],
   };
   const selected = currentBranchIdx === -1 ? rendered.all_nodes : rendered.paths?.[currentBranchIdx];
+  const scales = episodeSignalScales(trace);
+  const note = signalNoteHtml(trace, path, signal, scales);
   if (signal && tokenCount) {
-    const scales = episodeSignalScales(trace);
     const body = path.map((index) => renderTokenNode(trace.nodes[index], signal, scales)).join("");
-    return errors + renderedBoxHtml(tokenCount, body, selected?.text != null);
+    return errors + note + renderedBoxHtml(tokenCount, body, selected?.text != null);
   }
   if (selected?.text == null) {
     const [title, detail] = unavailable[rendered.status] ?? ["rendered text unavailable", "The recorded token sequence could not be decoded."];
     return errors + emptyState(title, detail);
   }
-  return errors + renderedBoxHtml(selected.token_count, esc(selected.text), true);
+  return errors + note + renderedBoxHtml(selected.token_count, esc(selected.text), true);
 }
 
 /* the whole point of this view is the sequence, so it is always open and leads with
@@ -2702,6 +2785,8 @@ function renderMessages(ep, trace, branches) {
   const toolsHtml = toolDefinitionsHtml(trace);
   const systemPosition = path.findIndex((idx) => trace.nodes[idx]?.message?.role === "system");
   const scales = episodeSignalScales(trace);
+  const noteHtml = signalNoteHtml(trace, path, signal, scales);
+  const signalPaints = !noteHtml;
   const indexedCalls = (trace.calls || []).map((call, index) => ({ call, index }));
   const callsByNode = new Map();
   for (const item of indexedCalls) {
@@ -2756,7 +2841,13 @@ function renderMessages(ep, trace, branches) {
     // message, whole, and says why it is uncoloured
     const overlayable = !!node.token_ids?.length;
     const showingTokens = !contentMarked && signal && overlayable;
-    if (signal && !overlayable) chips.push("no tokens to overlay");
+    // mark a sampled entry the signal skipped, but only when it reached others: when it
+    // reached none, the note above the transcript says so once. A prompt entry carries
+    // no sampled token, so leaving it uncoloured is the expected result, not a gap.
+    if (signal && signalPaints) {
+      if (!overlayable) chips.push("no tokens to overlay");
+      else if (node.sampled && !paintedCount(node, signal, scales)) chips.push("not covered");
+    }
     const whole = reasoning ? `${reasoningText(reasoning)}\n\n${text}`.trim() : text;
     const body = contentMarked
       ? quoteMarkedHtml(text, contentMarks)
@@ -2798,12 +2889,6 @@ function renderMessages(ep, trace, branches) {
         `${callChipHtml(item)}<span class="entry-chev">›</span></summary></details>`,
     )
     .join("");
-  // the trainer annotates a batch only once it has trained it, so the newest arrivals
-  // in a live run have nothing to colour yet - say so rather than paint nothing
-  const needsTrainer = TRAINER_SIGNALS.has(signal) && !trace.train_annotations?.nodes;
-  const noteHtml = needsTrainer
-    ? `<div class="chart-empty">no trainer streams on this episode yet — it has not been trained${trace.info?.effective ? "" : ", and has not shipped in a batch"}</div>`
-    : "";
   container.innerHTML =
     errorsHtml +
     noteHtml +
