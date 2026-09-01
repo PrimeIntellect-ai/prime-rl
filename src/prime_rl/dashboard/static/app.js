@@ -2943,14 +2943,6 @@ function renderMessages(ep, trace, branches) {
   }
 }
 
-function metaSubRow(key, value) {
-  if (value == null) return "";
-  return (
-    `<div class="meta-row"><span class="k"><span class="tree" style="padding-left:12px">└</span> ${esc(key)}</span>` +
-    `<span class="v">${esc(value)}</span></div>`
-  );
-}
-
 function metaRow(key, value, asId = false) {
   if (value == null) return "";
   return (
@@ -3060,35 +3052,6 @@ function renderMeta(ep, trace, branches) {
       }
     }
 
-    // a trace has several steps - dispatched at one, arrived at another, shipped at a
-    // third - so each is stamped as its own event. The lag between the first and the
-    // last is the staleness the policy trained through, split where it accrued:
-    // generating the rollout, then waiting in the sink for a batch.
-    const info = trace.info || {};
-    const annotations = trace.train_annotations;
-    const lag = (steps, seconds) =>
-      `${steps} step${Math.abs(steps) === 1 ? "" : "s"}` + (isFinite(seconds) ? ` · ${fmtDuration(seconds)}` : "");
-    const isEvalTrace = info.kind === "eval";
-    if (info.dispatch || info.arrival || info.ship || annotations) {
-      parts.push(`<div class="meta-sec">timeline</div>`);
-      if (!isEvalTrace) {
-        if (info.dispatch?.step != null) parts.push(metaRow("dispatch step", info.dispatch.step));
-        if (info.arrival?.step != null) parts.push(metaRow("arrival step", info.arrival.step));
-      }
-      // an eval epoch is never shipped into a batch and never goes stale: it is
-      // measured at a step, and the policy span below says what it measured
-      if (info.ship?.step != null) parts.push(metaRow(isEvalTrace ? "eval step" : "ship step", info.ship.step));
-      if (info.ship?.step != null && info.dispatch?.step != null && !isEvalTrace) {
-        parts.push(metaRow("staleness", lag(info.ship.step - info.dispatch.step, info.ship.time - info.dispatch.time)));
-        if (info.arrival?.step != null) {
-          parts.push(metaSubRow("in flight", lag(info.arrival.step - info.dispatch.step, info.arrival.time - info.dispatch.time)));
-          parts.push(metaSubRow("in queue", lag(info.ship.step - info.arrival.step, info.ship.time - info.arrival.time)));
-        }
-      }
-      if (ep.run?.work?.policy)
-        parts.push(metaRow("policy span", `v${ep.run.work.policy.start}–v${ep.run.work.policy.end}`));
-      if (annotations) parts.push(metaRow("trainer annotations", `${annotations.nodes} nodes`));
-    }
   }
 
   parts.push(`<div class="meta-sec">identity</div>`);
