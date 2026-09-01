@@ -2071,23 +2071,37 @@ function renderHistogram() {
       );
     })
     .join("");
-  // label a few bars; include the date once the span crosses a day
+  // label a few bars: seconds only when consecutive ticks could not differ without
+  // them, and the date once the axis crosses a day
   const spanS = data.end - data.start || 1;
+  const every = Math.max(1, Math.ceil(bins.length / Math.max(2, Math.floor(plot / 110))));
+  const withSeconds = every * (data.bin || spanS) < 60;
   const label = (t) => {
     const d = new Date(t * 1000);
-    const clock = d.toLocaleTimeString([], spanS < 300 ? { hour: "2-digit", minute: "2-digit", second: "2-digit" } : { hour: "2-digit", minute: "2-digit" });
+    const clock = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", ...(withSeconds && { second: "2-digit" }) });
     return spanS > 86400 ? `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${clock}` : clock;
   };
-  const every = Math.max(1, Math.ceil(bins.length / Math.max(2, Math.floor(plot / 110))));
-  const ticks = bins
-    .map(([t], i) => (i % every === 0 || i === bins.length - 1 ? i : null))
-    .filter((i) => i != null)
-    .map((i) => {
-      const x = padL + i * slot + slot / 2;
-      const anchor = i === 0 ? "start" : i === bins.length - 1 ? "end" : "middle";
-      return `<text class="hax" style="text-anchor:${anchor}" x="${x.toFixed(2)}" y="${HIST_H - 5}">${label(bins[i][0])}</text>`;
-    })
-    .join("");
+  // The axis is mono, so a label's width is known without measuring it. Ticks are
+  // placed by that width rather than by index: the ends anchor the axis and the
+  // strided ones fill in between, and any that would collide is dropped instead of
+  // printed over its neighbour.
+  const CHAR_W = 6, TICK_GAP = 12;
+  const placed = [];
+  const tick = (i, anchor) => {
+    const text = label(bins[i][0]);
+    const x = padL + i * slot + slot / 2;
+    const width = text.length * CHAR_W;
+    const x0 = anchor === "start" ? x : anchor === "end" ? x - width : x - width / 2;
+    const x1 = x0 + width;
+    if (placed.some(([a, b]) => x0 < b + TICK_GAP && x1 > a - TICK_GAP)) return "";
+    placed.push([x0, x1]);
+    return `<text class="hax" style="text-anchor:${anchor}" x="${x.toFixed(2)}" y="${HIST_H - 5}">${text}</text>`;
+  };
+  const ticks = [
+    tick(0, "start"),
+    ...(bins.length > 1 ? [tick(bins.length - 1, "end")] : []),
+    ...Array.from({ length: Math.floor((bins.length - 2) / every) }, (_, k) => tick((k + 1) * every, "middle")),
+  ].join("");
   host.innerHTML =
     `<svg width="${width}" height="${HIST_H}" viewBox="0 0 ${width} ${HIST_H}">${grid}${bars}${ticks}</svg>`;
   const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -2131,13 +2145,13 @@ function episodeRowHtml(ep) {
         <td>${esc(ep.env ?? "?")}</td>
         <td class="muted" title="${esc(ep.group ?? "")}">${ep.group ? esc(ep.group.slice(0, 8)) : "n/a"}</td>
         <td class="${rewardClass(ep.reward)}">${fmtReward(ep.reward)}</td>
-        <td class="${rewardClass(ep.advantage)}">${ep.advantage != null ? fmtReward(ep.advantage) : "n/a"}</td>
         <td>${
           ep.input_tokens != null || ep.output_tokens != null
             ? `<span class="muted">in</span> ${fmtCompact(ep.input_tokens ?? 0)} <span class="muted">· out</span> ${fmtCompact(ep.output_tokens ?? 0)}`
             : ""
         }</td>
         <td>${ep.turns ?? ""}</td>
+        <td>${ep.branches ?? ""}</td>
         <td class="muted">${esc(ep.stop_condition ?? "")}</td>
         <td class="${ep.ok && !ep.num_errors ? "status-ok" : "status-err"}">${ep.ok && !ep.num_errors ? "ok" : `${ep.num_errors || ""} err`}</td>
       </tr>`;
