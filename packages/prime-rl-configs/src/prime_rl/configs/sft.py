@@ -324,7 +324,7 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
-        if self.model.ep_comm_backend == "deepep" and self.optim.max_norm is not None:
+        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping is not compatible with DeepEP. "
                 "Automatically setting optim.max_norm to None (disabled).",

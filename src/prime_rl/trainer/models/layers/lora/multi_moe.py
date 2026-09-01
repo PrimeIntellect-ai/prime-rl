@@ -1,18 +1,14 @@
 import math
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 from torch.distributed.tensor import DTensor
 
+from prime_rl.trainer.models.layers.activations import ClampedSwiglu
 from prime_rl.trainer.models.layers.lora.base import MultiLoRAModule, get_lora_num_tokens, get_multilora_scaling
 from prime_rl.trainer.models.layers.moe import (
-    GptOssGroupedExperts,
     GroupedExperts,
-    NonGatedGroupedExperts,
-    _broadcast_expert_bias,
-    _gpt_oss_apply_gate,
-    relu2,
+    broadcast_expert_bias,
 )
 
 
@@ -38,46 +34,10 @@ def _run_lora_grouped_mm(
     return lora_out
 
 
-def _run_lora_for_loop(
-    x: torch.Tensor,
-    lora_A: torch.Tensor,
-    lora_B: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-) -> torch.Tensor:
-    """Apply LoRA via for-loop over experts (fallback for non-Hopper GPUs).
-
-    Args:
-        x: Input tensor [total_tokens, in_features]
-        lora_A: Low-rank A matrices [num_experts, rank, in_features]
-        lora_B: Low-rank B matrices [num_experts, out_features, rank]
-        num_tokens_per_expert: Token counts per expert [num_experts]
-
-    Returns:
-        LoRA output [total_tokens, out_features]
-    """
-    num_tokens_per_expert_list = num_tokens_per_expert.tolist()
-    lora_out_splits = []
-
-    start = 0
-    for expert_idx, num_tokens in enumerate(num_tokens_per_expert_list):
-        if num_tokens == 0:
-            continue
-        end = start + num_tokens
-
-        # Apply LoRA for this expert: B @ A @ x
-        _a_out = torch.matmul(x[start:end], lora_A[expert_idx].transpose(-2, -1))
-        lora_out = torch.matmul(_a_out, lora_B[expert_idx].transpose(-2, -1))
-        lora_out_splits.append(lora_out)
-
-        start = end
-
-    return torch.cat(lora_out_splits, dim=0)
-
-
 class MultiLoRAGroupedExperts(MultiLoRAModule):
     """
-    GroupedExperts + multi-LoRA with grouped GEMM.
-    Applies LoRA to all three expert projections (w1, w2, w3) for multi-tenant MoE training.
+    Gated GroupedExperts + multi-LoRA with grouped GEMM.
+    Applies LoRA to all three expert projections (gate_proj, down_proj, up_proj) for multi-tenant MoE training.
     Compatible with vLLM's MoE LoRA format when broadcasting weights.
     """
 
@@ -88,113 +48,112 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         n_adapters: int,
         alpha: float = 32.0,
         dropout: float = 0.0,
-        use_grouped_mm: bool = True,
     ):
         super().__init__(base_layer)
         if rank <= 0 or n_adapters <= 0:
             raise ValueError("rank and n_adapters must be > 0")
+        if base_layer.gate_proj is None:
+            raise ValueError("MultiLoRAGroupedExperts requires gated experts")
 
         self.num_experts = base_layer.num_experts
-        self.dim = base_layer.w1.shape[2]
-        self.hidden_dim = base_layer.w1.shape[1]
+        self.dim = base_layer.gate_proj.shape[2]
+        self.hidden_dim = base_layer.gate_proj.shape[1]
 
-        # grouped_mm requires 8-byte alignment
         if rank % 8 != 0 or self.dim % 8 != 0 or self.hidden_dim % 8 != 0:
-            use_grouped_mm = False
+            raise ValueError("grouped_mm requires rank and expert dimensions divisible by 8")
 
         self.rank = rank
         self.n_adapters = n_adapters
         self.alpha = alpha
         self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
-        self.use_grouped_mm = use_grouped_mm
 
         self._lora_num_tokens = get_lora_num_tokens()
         self._scaling_factors = get_multilora_scaling()
 
-        # Initialize LoRA parameters for w1 (gate_proj: dim -> moe_dim)
-        self.w1_lora_A = nn.ParameterList(
+        # Initialize LoRA parameters for gate_proj (gate_proj: dim -> moe_dim)
+        self.gate_proj_lora_A = nn.ParameterList(
             [
                 nn.Parameter(
                     torch.empty(
                         self.num_experts,
                         rank,
                         self.dim,
-                        device=base_layer.w1.device,
-                        dtype=base_layer.w1.dtype,
+                        device=base_layer.gate_proj.device,
+                        dtype=base_layer.gate_proj.dtype,
                     )
                 )
                 for _ in range(n_adapters)
             ]
         )
-        self.w1_lora_B = nn.ParameterList(
+        self.gate_proj_lora_B = nn.ParameterList(
             [
                 nn.Parameter(
                     torch.empty(
                         self.num_experts,
                         self.hidden_dim,
                         rank,
-                        device=base_layer.w1.device,
-                        dtype=base_layer.w1.dtype,
+                        device=base_layer.gate_proj.device,
+                        dtype=base_layer.gate_proj.dtype,
                     )
                 )
                 for _ in range(n_adapters)
             ]
         )
 
-        # Initialize LoRA parameters for w2 (down_proj: moe_dim -> dim)
-        self.w2_lora_A = nn.ParameterList(
+        # Initialize LoRA parameters for down_proj (down_proj: moe_dim -> dim)
+        self.down_proj_lora_A = nn.ParameterList(
             [
                 nn.Parameter(
                     torch.empty(
                         self.num_experts,
                         rank,
                         self.hidden_dim,
-                        device=base_layer.w2.device,
-                        dtype=base_layer.w2.dtype,
+                        device=base_layer.down_proj.device,
+                        dtype=base_layer.down_proj.dtype,
                     )
                 )
                 for _ in range(n_adapters)
             ]
         )
-        self.w2_lora_B = nn.ParameterList(
+        self.down_proj_lora_B = nn.ParameterList(
             [
                 nn.Parameter(
                     torch.empty(
                         self.num_experts,
                         self.dim,
                         rank,
-                        device=base_layer.w2.device,
-                        dtype=base_layer.w2.dtype,
+                        device=base_layer.down_proj.device,
+                        dtype=base_layer.down_proj.dtype,
                     )
                 )
                 for _ in range(n_adapters)
             ]
         )
 
-        # Initialize LoRA parameters for w3 (up_proj: moe_dim -> dim)
-        self.w3_lora_A = nn.ParameterList(
+        # Initialize LoRA parameters for up_proj (up_proj: moe_dim -> dim)
+        self.up_proj_lora_A = nn.ParameterList(
             [
                 nn.Parameter(
                     torch.empty(
                         self.num_experts,
                         rank,
                         self.dim,
-                        device=base_layer.w3.device,
-                        dtype=base_layer.w3.dtype,
+                        device=base_layer.up_proj.device,
+                        dtype=base_layer.up_proj.dtype,
                     )
                 )
                 for _ in range(n_adapters)
             ]
         )
-        self.w3_lora_B = nn.ParameterList(
+        self.up_proj_lora_B = nn.ParameterList(
             [
                 nn.Parameter(
                     torch.empty(
                         self.num_experts,
                         self.hidden_dim,
                         rank,
-                        device=base_layer.w3.device,
-                        dtype=base_layer.w3.dtype,
+                        device=base_layer.up_proj.device,
+                        dtype=base_layer.up_proj.dtype,
                     )
                 )
                 for _ in range(n_adapters)
@@ -214,17 +173,17 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             for i in range(self.n_adapters):
                 self.reset_parameters(i)
         else:
-            # Reset w1 LoRA
-            nn.init.kaiming_uniform_(self.w1_lora_A[index], a=math.sqrt(5))
-            nn.init.zeros_(self.w1_lora_B[index])
+            # Reset gate_proj LoRA
+            nn.init.kaiming_uniform_(self.gate_proj_lora_A[index], a=math.sqrt(5))
+            nn.init.zeros_(self.gate_proj_lora_B[index])
 
-            # Reset w2 LoRA
-            nn.init.kaiming_uniform_(self.w2_lora_A[index], a=math.sqrt(5))
-            nn.init.zeros_(self.w2_lora_B[index])
+            # Reset down_proj LoRA
+            nn.init.kaiming_uniform_(self.down_proj_lora_A[index], a=math.sqrt(5))
+            nn.init.zeros_(self.down_proj_lora_B[index])
 
-            # Reset w3 LoRA
-            nn.init.kaiming_uniform_(self.w3_lora_A[index], a=math.sqrt(5))
-            nn.init.zeros_(self.w3_lora_B[index])
+            # Reset up_proj LoRA
+            nn.init.kaiming_uniform_(self.up_proj_lora_A[index], a=math.sqrt(5))
+            nn.init.zeros_(self.up_proj_lora_B[index])
 
     def named_parameters_for_adapter(self, idx: int) -> list[tuple[str, nn.Parameter]]:
         """Get named parameters for a specific adapter index.
@@ -239,12 +198,12 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
             List of (name, parameter) tuples for the specified adapter
         """
         return [
-            ("w1_lora_A", self.w1_lora_A[idx]),  # Shape: [num_experts, rank, dim]
-            ("w1_lora_B", self.w1_lora_B[idx]),  # Shape: [num_experts, moe_dim, rank]
-            ("w2_lora_A", self.w2_lora_A[idx]),  # Shape: [num_experts, rank, moe_dim]
-            ("w2_lora_B", self.w2_lora_B[idx]),  # Shape: [num_experts, dim, rank]
-            ("w3_lora_A", self.w3_lora_A[idx]),  # Shape: [num_experts, rank, dim]
-            ("w3_lora_B", self.w3_lora_B[idx]),  # Shape: [num_experts, moe_dim, rank]
+            ("gate_proj_lora_A", self.gate_proj_lora_A[idx]),  # Shape: [num_experts, rank, dim]
+            ("gate_proj_lora_B", self.gate_proj_lora_B[idx]),  # Shape: [num_experts, moe_dim, rank]
+            ("down_proj_lora_A", self.down_proj_lora_A[idx]),  # Shape: [num_experts, rank, moe_dim]
+            ("down_proj_lora_B", self.down_proj_lora_B[idx]),  # Shape: [num_experts, dim, rank]
+            ("up_proj_lora_A", self.up_proj_lora_A[idx]),  # Shape: [num_experts, rank, dim]
+            ("up_proj_lora_B", self.up_proj_lora_B[idx]),  # Shape: [num_experts, moe_dim, rank]
         ]
 
     def get_lora_param_counts(self) -> tuple[int, int]:
@@ -252,18 +211,20 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
 
         Returns:
             A tuple of (adapter_params, adapted_params) where:
-            - adapter_params: Number of parameters in ONE LoRA adapter (all w1/w2/w3 lora_A + lora_B)
-            - adapted_params: Number of base layer parameters being adapted by LoRA (w1, w2, w3)
+            - adapter_params: Number of parameters in ONE LoRA adapter (all gate_proj/down_proj/up_proj lora_A + lora_B)
+            - adapted_params: Number of base layer parameters being adapted by LoRA (gate_proj, down_proj, up_proj)
         """
         adapter_params = (
-            self.w1_lora_A[0].numel()
-            + self.w1_lora_B[0].numel()
-            + self.w2_lora_A[0].numel()
-            + self.w2_lora_B[0].numel()
-            + self.w3_lora_A[0].numel()
-            + self.w3_lora_B[0].numel()
+            self.gate_proj_lora_A[0].numel()
+            + self.gate_proj_lora_B[0].numel()
+            + self.down_proj_lora_A[0].numel()
+            + self.down_proj_lora_B[0].numel()
+            + self.up_proj_lora_A[0].numel()
+            + self.up_proj_lora_B[0].numel()
         )
-        adapted_params = self.base_layer.w1.numel() + self.base_layer.w2.numel() + self.base_layer.w3.numel()
+        adapted_params = (
+            self.base_layer.gate_proj.numel() + self.base_layer.down_proj.numel() + self.base_layer.up_proj.numel()
+        )
         return adapter_params, adapted_params
 
     def state_dict_for_adapter(self, idx: int) -> dict[str, torch.Tensor]:
@@ -286,32 +247,32 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         """
         state_dict = {}
 
-        detached_w1_lora_a = self.w1_lora_A[idx].detach()
-        detached_w1_lora_b = self.w1_lora_B[idx].detach()
-        detached_w2_lora_a = self.w2_lora_A[idx].detach()
-        detached_w2_lora_b = self.w2_lora_B[idx].detach()
-        detached_w3_lora_a = self.w3_lora_A[idx].detach()
-        detached_w3_lora_b = self.w3_lora_B[idx].detach()
+        detached_gate_proj_lora_a = self.gate_proj_lora_A[idx].detach()
+        detached_gate_proj_lora_b = self.gate_proj_lora_B[idx].detach()
+        detached_down_proj_lora_a = self.down_proj_lora_A[idx].detach()
+        detached_down_proj_lora_b = self.down_proj_lora_B[idx].detach()
+        detached_up_proj_lora_a = self.up_proj_lora_A[idx].detach()
+        detached_up_proj_lora_b = self.up_proj_lora_B[idx].detach()
 
         # With EP, LoRA weights are DTensors sharded across expert-parallel ranks.
         # Gather them before per-expert indexing.
-        if isinstance(detached_w1_lora_a, DTensor):
-            detached_w1_lora_a = detached_w1_lora_a.full_tensor()
-            detached_w1_lora_b = detached_w1_lora_b.full_tensor()
-            detached_w2_lora_a = detached_w2_lora_a.full_tensor()
-            detached_w2_lora_b = detached_w2_lora_b.full_tensor()
-            detached_w3_lora_a = detached_w3_lora_a.full_tensor()
-            detached_w3_lora_b = detached_w3_lora_b.full_tensor()
+        if isinstance(detached_gate_proj_lora_a, DTensor):
+            detached_gate_proj_lora_a = detached_gate_proj_lora_a.full_tensor()
+            detached_gate_proj_lora_b = detached_gate_proj_lora_b.full_tensor()
+            detached_down_proj_lora_a = detached_down_proj_lora_a.full_tensor()
+            detached_down_proj_lora_b = detached_down_proj_lora_b.full_tensor()
+            detached_up_proj_lora_a = detached_up_proj_lora_a.full_tensor()
+            detached_up_proj_lora_b = detached_up_proj_lora_b.full_tensor()
 
         # The clone is necessary to avoid views that cause giant memory spikes
         # TODO: There's probably a better way to do this
         for expert_id in range(self.num_experts):
-            state_dict[f"{expert_id}.gate_proj.lora_A.weight"] = detached_w1_lora_a[expert_id].clone()
-            state_dict[f"{expert_id}.gate_proj.lora_B.weight"] = detached_w1_lora_b[expert_id].clone()
-            state_dict[f"{expert_id}.down_proj.lora_A.weight"] = detached_w2_lora_a[expert_id].clone()
-            state_dict[f"{expert_id}.down_proj.lora_B.weight"] = detached_w2_lora_b[expert_id].clone()
-            state_dict[f"{expert_id}.up_proj.lora_A.weight"] = detached_w3_lora_a[expert_id].clone()
-            state_dict[f"{expert_id}.up_proj.lora_B.weight"] = detached_w3_lora_b[expert_id].clone()
+            state_dict[f"{expert_id}.gate_proj.lora_A.weight"] = detached_gate_proj_lora_a[expert_id].clone()
+            state_dict[f"{expert_id}.gate_proj.lora_B.weight"] = detached_gate_proj_lora_b[expert_id].clone()
+            state_dict[f"{expert_id}.down_proj.lora_A.weight"] = detached_down_proj_lora_a[expert_id].clone()
+            state_dict[f"{expert_id}.down_proj.lora_B.weight"] = detached_down_proj_lora_b[expert_id].clone()
+            state_dict[f"{expert_id}.up_proj.lora_A.weight"] = detached_up_proj_lora_a[expert_id].clone()
+            state_dict[f"{expert_id}.up_proj.lora_B.weight"] = detached_up_proj_lora_b[expert_id].clone()
 
         return state_dict
 
@@ -323,40 +284,41 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
         # 2. The topkrouter needs to set the offsets by binning its hist for each adapter
         # The sort currently occurs there, so it needs to be done there too
         adapter_idx = self._lora_num_tokens.argmax().item()
-        w1_lora_a = self.w1_lora_A[adapter_idx]  # [num_experts, rank, dim]
-        w1_lora_b = self.w1_lora_B[adapter_idx]  # [num_experts, hidden_dim, rank]
-        w2_lora_a = self.w2_lora_A[adapter_idx]  # [num_experts, rank, hidden_dim]
-        w2_lora_b = self.w2_lora_B[adapter_idx]  # [num_experts, dim, rank]
-        w3_lora_a = self.w3_lora_A[adapter_idx]  # [num_experts, rank, dim]
-        w3_lora_b = self.w3_lora_B[adapter_idx]  # [num_experts, hidden_dim, rank]
+        gate_proj_lora_a = self.gate_proj_lora_A[adapter_idx]  # [num_experts, rank, dim]
+        gate_proj_lora_b = self.gate_proj_lora_B[adapter_idx]  # [num_experts, hidden_dim, rank]
+        down_proj_lora_a = self.down_proj_lora_A[adapter_idx]  # [num_experts, rank, hidden_dim]
+        down_proj_lora_b = self.down_proj_lora_B[adapter_idx]  # [num_experts, dim, rank]
+        up_proj_lora_a = self.up_proj_lora_A[adapter_idx]  # [num_experts, rank, dim]
+        up_proj_lora_b = self.up_proj_lora_B[adapter_idx]  # [num_experts, hidden_dim, rank]
 
         # Get per-adapter scaling factor
         scaling = self._scaling_factors[adapter_idx].item()
 
         # Access base weights directly
-        base_w1 = self.base_layer.w1  # [num_experts, hidden_dim, dim]
-        base_w2 = self.base_layer.w2  # [num_experts, dim, hidden_dim]
-        base_w3 = self.base_layer.w3  # [num_experts, hidden_dim, dim]
+        gate_proj = self.base_layer.gate_proj
+        up_proj = self.base_layer.up_proj
+        down_proj = self.base_layer.down_proj
 
         # EP handling: convert DTensors to local shards.
         # Standard EP also needs token permutation; DeepEP tokens are already dispatched.
         permuted_indices = None
-        if isinstance(base_w1, DTensor):
-            base_w1 = base_w1.to_local()
-            base_w2 = base_w2.to_local()
-            base_w3 = base_w3.to_local()
-            w1_lora_a = w1_lora_a.to_local()
-            w1_lora_b = w1_lora_b.to_local()
-            w2_lora_a = w2_lora_a.to_local()
-            w2_lora_b = w2_lora_b.to_local()
-            w3_lora_a = w3_lora_a.to_local()
-            w3_lora_b = w3_lora_b.to_local()
+        if isinstance(gate_proj, DTensor):
+            gate_proj = gate_proj.to_local()
+            up_proj = up_proj.to_local()
+            down_proj = down_proj.to_local()
+            gate_proj_lora_a = gate_proj_lora_a.to_local()
+            gate_proj_lora_b = gate_proj_lora_b.to_local()
+            down_proj_lora_a = down_proj_lora_a.to_local()
+            down_proj_lora_b = down_proj_lora_b.to_local()
+            up_proj_lora_a = up_proj_lora_a.to_local()
+            up_proj_lora_b = up_proj_lora_b.to_local()
 
             if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
                 from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
 
-                experts_per_ep_rank = base_w1.shape[0]
+                from prime_rl.trainer.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
+
+                experts_per_ep_rank = gate_proj.shape[0]
                 num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
 
                 with torch.no_grad():
@@ -377,211 +339,127 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
 
         lora_x = self.lora_dropout(x)
 
-        if self.use_grouped_mm:
-            # Gate
-            h1_base = torch._grouped_mm(x.bfloat16(), base_w1.bfloat16().transpose(-2, -1), offs=offsets)
-            w1_lora_out = _run_lora_grouped_mm(lora_x, w1_lora_a, w1_lora_b, offsets)
-            h1 = h1_base + scaling * w1_lora_out.bfloat16()
+        h1_base = torch._grouped_mm(x.bfloat16(), gate_proj.bfloat16().transpose(-2, -1), offs=offsets)
+        gate_proj_lora_out = _run_lora_grouped_mm(lora_x, gate_proj_lora_a, gate_proj_lora_b, offsets)
+        h1 = h1_base + scaling * gate_proj_lora_out.bfloat16()
 
-            # Up
-            h3_base = torch._grouped_mm(x.bfloat16(), base_w3.bfloat16().transpose(-2, -1), offs=offsets)
-            w3_lora_out = _run_lora_grouped_mm(lora_x, w3_lora_a, w3_lora_b, offsets)
-            h3 = h3_base + scaling * w3_lora_out.bfloat16()
+        h3_base = torch._grouped_mm(x.bfloat16(), up_proj.bfloat16().transpose(-2, -1), offs=offsets)
+        up_proj_lora_out = _run_lora_grouped_mm(lora_x, up_proj_lora_a, up_proj_lora_b, offsets)
+        h3 = h3_base + scaling * up_proj_lora_out.bfloat16()
 
-            # SwiGLU activation
-            h = F.silu(h1) * h3
+        h = self.base_layer.activation.apply(h1, h3)
 
-            # Down
-            lora_h = self.lora_dropout(h)
-            h2_base = torch._grouped_mm(h, base_w2.bfloat16().transpose(-2, -1), offs=offsets)
-            w2_lora_out = _run_lora_grouped_mm(lora_h, w2_lora_a, w2_lora_b, offsets)
-            out = h2_base + scaling * w2_lora_out.bfloat16()
-
-            out = out.type_as(x)
-        else:
-            out = self._forward_for_loop(
-                x,
-                num_tokens_per_expert,
-                w1_lora_a,
-                w1_lora_b,
-                w2_lora_a,
-                w2_lora_b,
-                w3_lora_a,
-                w3_lora_b,
-                base_w1,
-                base_w2,
-                base_w3,
-                scaling,
-            )
+        lora_h = self.lora_dropout(h)
+        h2_base = torch._grouped_mm(h, down_proj.bfloat16().transpose(-2, -1), offs=offsets)
+        down_proj_lora_out = _run_lora_grouped_mm(lora_h, down_proj_lora_a, down_proj_lora_b, offsets)
+        out = (h2_base + scaling * down_proj_lora_out.bfloat16()).type_as(x)
 
         # EP handling: unpermute output back to dispatched token order
         if permuted_indices is not None:
-            # For-loop may produce fewer rows than permuted input (no padding rows),
-            # pad to match before unpermuting
-            if out.shape[0] < len(permuted_indices):
-                num_padding = len(permuted_indices) - out.shape[0]
-                out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
             out_unpermuted = out.new_zeros(input_shape)
             out_unpermuted[permuted_indices, :] = out
             out = out_unpermuted[:-1]
 
         return out
 
-    def _forward_for_loop(
-        self,
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-        w1_lora_a: torch.Tensor,
-        w1_lora_b: torch.Tensor,
-        w2_lora_a: torch.Tensor,
-        w2_lora_b: torch.Tensor,
-        w3_lora_a: torch.Tensor,
-        w3_lora_b: torch.Tensor,
-        base_w1: torch.Tensor,
-        base_w2: torch.Tensor,
-        base_w3: torch.Tensor,
-        scaling: float,
-    ) -> torch.Tensor:
-        """For-loop implementation of forward pass (fallback for non-Hopper GPUs)."""
-        num_tokens_per_expert_list = num_tokens_per_expert.tolist()
-        out_splits = []
-
-        start = 0
-        for expert_idx, num_tokens in enumerate(num_tokens_per_expert_list):
-            if num_tokens == 0:
-                continue
-            end = start + num_tokens
-            x_expert = x[start:end]
-            # Apply dropout for LoRA path (consistent with grouped_mm path)
-            x_expert_lora = self.lora_dropout(x_expert)
-
-            # Compute w1 + w1_lora for this expert
-            h1_base = torch.matmul(x_expert, base_w1[expert_idx].transpose(-2, -1))
-            w1_lora_tmp = torch.matmul(x_expert_lora, w1_lora_a[expert_idx].transpose(-2, -1))
-            w1_lora_out = torch.matmul(w1_lora_tmp, w1_lora_b[expert_idx].transpose(-2, -1))
-            h1 = h1_base + scaling * w1_lora_out
-
-            # Compute w3 + w3_lora for this expert
-            h3_base = torch.matmul(x_expert, base_w3[expert_idx].transpose(-2, -1))
-            w3_lora_tmp = torch.matmul(x_expert_lora, w3_lora_a[expert_idx].transpose(-2, -1))
-            w3_lora_out = torch.matmul(w3_lora_tmp, w3_lora_b[expert_idx].transpose(-2, -1))
-            h3 = h3_base + scaling * w3_lora_out
-
-            # SwiGLU activation
-            h = F.silu(h1) * h3
-
-            # Compute w2 + w2_lora for this expert
-            # Apply dropout for LoRA path (consistent with grouped_mm path)
-            h_lora = self.lora_dropout(h)
-            h2_base = torch.matmul(h, base_w2[expert_idx].transpose(-2, -1))
-            w2_lora_tmp = torch.matmul(h_lora, w2_lora_a[expert_idx].transpose(-2, -1))
-            w2_lora_out = torch.matmul(w2_lora_tmp, w2_lora_b[expert_idx].transpose(-2, -1))
-            out = h2_base + scaling * w2_lora_out
-
-            out_splits.append(out)
-            start = end
-
-        return torch.cat(out_splits, dim=0)
-
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}(base={self.base_layer}, rank={self.rank}, "
             f"n_adapters={self.n_adapters}, num_experts={self.num_experts}, "
-            f"alpha={self.alpha}, dropout={self.lora_dropout}, "
-            f"use_grouped_mm={self.use_grouped_mm})"
+            f"alpha={self.alpha}, dropout={self.lora_dropout})"
         )
 
 
 class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
     """
-    NonGatedGroupedExperts + multi-LoRA with grouped GEMM.
-    Adapts the two projections (w1: up, w2: down) of NemotronH-style relu2 experts.
+    Non-gated GroupedExperts + multi-LoRA with grouped GEMM.
+    Adapts the two projections (up_proj and down_proj).
     """
 
     def __init__(
         self,
-        base_layer: NonGatedGroupedExperts,
+        base_layer: GroupedExperts,
         rank: int,
         n_adapters: int,
         alpha: float = 32.0,
         dropout: float = 0.0,
-        use_grouped_mm: bool = True,
     ):
         super().__init__(base_layer)
         if rank <= 0 or n_adapters <= 0:
             raise ValueError("rank and n_adapters must be > 0")
+        if base_layer.gate_proj is not None:
+            raise ValueError("MultiLoRANonGatedGroupedExperts requires non-gated experts")
 
         self.num_experts = base_layer.num_experts
-        # w1 shape: [num_experts, intermediate_dim, input_dim]
-        self.hidden_dim = base_layer.w1.shape[1]
-        self.dim = base_layer.w1.shape[2]
+        # up_proj shape: [num_experts, intermediate_dim, input_dim]
+        self.hidden_dim = base_layer.up_proj.shape[1]
+        self.dim = base_layer.up_proj.shape[2]
 
         if rank % 8 != 0 or self.dim % 8 != 0 or self.hidden_dim % 8 != 0:
-            use_grouped_mm = False
+            raise ValueError("grouped_mm requires rank and expert dimensions divisible by 8")
 
         self.rank = rank
         self.n_adapters = n_adapters
         self.alpha = alpha
         self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
-        self.use_grouped_mm = use_grouped_mm
 
         self._lora_num_tokens = get_lora_num_tokens()
         self._scaling_factors = get_multilora_scaling()
 
-        # w1 (up: dim -> hidden_dim)
-        self.w1_lora_A = nn.ParameterList(
+        # up_proj (up: dim -> hidden_dim)
+        self.up_proj_lora_A = nn.ParameterList(
             [
                 nn.Parameter(
                     torch.empty(
                         self.num_experts,
                         rank,
                         self.dim,
-                        device=base_layer.w1.device,
-                        dtype=base_layer.w1.dtype,
+                        device=base_layer.up_proj.device,
+                        dtype=base_layer.up_proj.dtype,
                     )
                 )
                 for _ in range(n_adapters)
             ]
         )
-        self.w1_lora_B = nn.ParameterList(
+        self.up_proj_lora_B = nn.ParameterList(
             [
                 nn.Parameter(
                     torch.empty(
                         self.num_experts,
                         self.hidden_dim,
                         rank,
-                        device=base_layer.w1.device,
-                        dtype=base_layer.w1.dtype,
+                        device=base_layer.up_proj.device,
+                        dtype=base_layer.up_proj.dtype,
                     )
                 )
                 for _ in range(n_adapters)
             ]
         )
 
-        # w2 (down: hidden_dim -> dim)
-        self.w2_lora_A = nn.ParameterList(
+        # down_proj (down: hidden_dim -> dim)
+        self.down_proj_lora_A = nn.ParameterList(
             [
                 nn.Parameter(
                     torch.empty(
                         self.num_experts,
                         rank,
                         self.hidden_dim,
-                        device=base_layer.w2.device,
-                        dtype=base_layer.w2.dtype,
+                        device=base_layer.down_proj.device,
+                        dtype=base_layer.down_proj.dtype,
                     )
                 )
                 for _ in range(n_adapters)
             ]
         )
-        self.w2_lora_B = nn.ParameterList(
+        self.down_proj_lora_B = nn.ParameterList(
             [
                 nn.Parameter(
                     torch.empty(
                         self.num_experts,
                         self.dim,
                         rank,
-                        device=base_layer.w2.device,
-                        dtype=base_layer.w2.dtype,
+                        device=base_layer.down_proj.device,
+                        dtype=base_layer.down_proj.dtype,
                     )
                 )
                 for _ in range(n_adapters)
@@ -595,77 +473,78 @@ class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
             for i in range(self.n_adapters):
                 self.reset_parameters(i)
         else:
-            nn.init.kaiming_uniform_(self.w1_lora_A[index], a=math.sqrt(5))
-            nn.init.zeros_(self.w1_lora_B[index])
-            nn.init.kaiming_uniform_(self.w2_lora_A[index], a=math.sqrt(5))
-            nn.init.zeros_(self.w2_lora_B[index])
+            nn.init.kaiming_uniform_(self.up_proj_lora_A[index], a=math.sqrt(5))
+            nn.init.zeros_(self.up_proj_lora_B[index])
+            nn.init.kaiming_uniform_(self.down_proj_lora_A[index], a=math.sqrt(5))
+            nn.init.zeros_(self.down_proj_lora_B[index])
 
     def named_parameters_for_adapter(self, idx: int) -> list[tuple[str, nn.Parameter]]:
         return [
-            ("w1_lora_A", self.w1_lora_A[idx]),
-            ("w1_lora_B", self.w1_lora_B[idx]),
-            ("w2_lora_A", self.w2_lora_A[idx]),
-            ("w2_lora_B", self.w2_lora_B[idx]),
+            ("up_proj_lora_A", self.up_proj_lora_A[idx]),
+            ("up_proj_lora_B", self.up_proj_lora_B[idx]),
+            ("down_proj_lora_A", self.down_proj_lora_A[idx]),
+            ("down_proj_lora_B", self.down_proj_lora_B[idx]),
         ]
 
     def get_lora_param_counts(self) -> tuple[int, int]:
         adapter_params = (
-            self.w1_lora_A[0].numel()
-            + self.w1_lora_B[0].numel()
-            + self.w2_lora_A[0].numel()
-            + self.w2_lora_B[0].numel()
+            self.up_proj_lora_A[0].numel()
+            + self.up_proj_lora_B[0].numel()
+            + self.down_proj_lora_A[0].numel()
+            + self.down_proj_lora_B[0].numel()
         )
-        adapted_params = self.base_layer.w1.numel() + self.base_layer.w2.numel()
+        adapted_params = self.base_layer.up_proj.numel() + self.base_layer.down_proj.numel()
         return adapter_params, adapted_params
 
     def state_dict_for_adapter(self, idx: int) -> dict[str, torch.Tensor]:
         state_dict = {}
 
-        detached_w1_lora_a = self.w1_lora_A[idx].detach()
-        detached_w1_lora_b = self.w1_lora_B[idx].detach()
-        detached_w2_lora_a = self.w2_lora_A[idx].detach()
-        detached_w2_lora_b = self.w2_lora_B[idx].detach()
+        detached_up_proj_lora_a = self.up_proj_lora_A[idx].detach()
+        detached_up_proj_lora_b = self.up_proj_lora_B[idx].detach()
+        detached_down_proj_lora_a = self.down_proj_lora_A[idx].detach()
+        detached_down_proj_lora_b = self.down_proj_lora_B[idx].detach()
 
-        if isinstance(detached_w1_lora_a, DTensor):
-            detached_w1_lora_a = detached_w1_lora_a.full_tensor()
-            detached_w1_lora_b = detached_w1_lora_b.full_tensor()
-            detached_w2_lora_a = detached_w2_lora_a.full_tensor()
-            detached_w2_lora_b = detached_w2_lora_b.full_tensor()
+        if isinstance(detached_up_proj_lora_a, DTensor):
+            detached_up_proj_lora_a = detached_up_proj_lora_a.full_tensor()
+            detached_up_proj_lora_b = detached_up_proj_lora_b.full_tensor()
+            detached_down_proj_lora_a = detached_down_proj_lora_a.full_tensor()
+            detached_down_proj_lora_b = detached_down_proj_lora_b.full_tensor()
 
         for expert_id in range(self.num_experts):
-            state_dict[f"{expert_id}.up_proj.lora_A.weight"] = detached_w1_lora_a[expert_id].clone()
-            state_dict[f"{expert_id}.up_proj.lora_B.weight"] = detached_w1_lora_b[expert_id].clone()
-            state_dict[f"{expert_id}.down_proj.lora_A.weight"] = detached_w2_lora_a[expert_id].clone()
-            state_dict[f"{expert_id}.down_proj.lora_B.weight"] = detached_w2_lora_b[expert_id].clone()
+            state_dict[f"{expert_id}.up_proj.lora_A.weight"] = detached_up_proj_lora_a[expert_id].clone()
+            state_dict[f"{expert_id}.up_proj.lora_B.weight"] = detached_up_proj_lora_b[expert_id].clone()
+            state_dict[f"{expert_id}.down_proj.lora_A.weight"] = detached_down_proj_lora_a[expert_id].clone()
+            state_dict[f"{expert_id}.down_proj.lora_B.weight"] = detached_down_proj_lora_b[expert_id].clone()
 
         return state_dict
 
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         adapter_idx = self._lora_num_tokens.argmax().item()
-        w1_lora_a = self.w1_lora_A[adapter_idx]
-        w1_lora_b = self.w1_lora_B[adapter_idx]
-        w2_lora_a = self.w2_lora_A[adapter_idx]
-        w2_lora_b = self.w2_lora_B[adapter_idx]
+        up_proj_lora_a = self.up_proj_lora_A[adapter_idx]
+        up_proj_lora_b = self.up_proj_lora_B[adapter_idx]
+        down_proj_lora_a = self.down_proj_lora_A[adapter_idx]
+        down_proj_lora_b = self.down_proj_lora_B[adapter_idx]
 
         scaling = self._scaling_factors[adapter_idx].item()
 
-        base_w1 = self.base_layer.w1
-        base_w2 = self.base_layer.w2
+        up_proj = self.base_layer.up_proj
+        down_proj = self.base_layer.down_proj
 
         permuted_indices = None
-        if isinstance(base_w1, DTensor):
-            base_w1 = base_w1.to_local()
-            base_w2 = base_w2.to_local()
-            w1_lora_a = w1_lora_a.to_local()
-            w1_lora_b = w1_lora_b.to_local()
-            w2_lora_a = w2_lora_a.to_local()
-            w2_lora_b = w2_lora_b.to_local()
+        if isinstance(up_proj, DTensor):
+            up_proj = up_proj.to_local()
+            down_proj = down_proj.to_local()
+            up_proj_lora_a = up_proj_lora_a.to_local()
+            up_proj_lora_b = up_proj_lora_b.to_local()
+            down_proj_lora_a = down_proj_lora_a.to_local()
+            down_proj_lora_b = down_proj_lora_b.to_local()
 
             if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
                 from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
 
-                experts_per_ep_rank = base_w1.shape[0]
+                from prime_rl.trainer.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
+
+                experts_per_ep_rank = up_proj.shape[0]
                 num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
 
                 with torch.no_grad():
@@ -684,123 +563,68 @@ class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
         lora_x = self.lora_dropout(x)
 
-        if self.use_grouped_mm:
-            # Up (w1)
-            h_base = torch._grouped_mm(x.bfloat16(), base_w1.bfloat16().transpose(-2, -1), offs=offsets)
-            w1_lora_out = _run_lora_grouped_mm(lora_x, w1_lora_a, w1_lora_b, offsets)
-            h = relu2(h_base + scaling * w1_lora_out.bfloat16())
+        h_base = torch._grouped_mm(x.bfloat16(), up_proj.bfloat16().transpose(-2, -1), offs=offsets)
+        up_proj_lora_out = _run_lora_grouped_mm(lora_x, up_proj_lora_a, up_proj_lora_b, offsets)
+        h = self.base_layer.activation.apply(None, h_base + scaling * up_proj_lora_out.bfloat16())
 
-            # Down (w2)
-            lora_h = self.lora_dropout(h)
-            out_base = torch._grouped_mm(h, base_w2.bfloat16().transpose(-2, -1), offs=offsets)
-            w2_lora_out = _run_lora_grouped_mm(lora_h, w2_lora_a, w2_lora_b, offsets)
-            out = out_base + scaling * w2_lora_out.bfloat16()
-            out = out.type_as(x)
-        else:
-            out = self._forward_for_loop(
-                x,
-                num_tokens_per_expert,
-                w1_lora_a,
-                w1_lora_b,
-                w2_lora_a,
-                w2_lora_b,
-                base_w1,
-                base_w2,
-                scaling,
-            )
+        lora_h = self.lora_dropout(h)
+        out_base = torch._grouped_mm(h, down_proj.bfloat16().transpose(-2, -1), offs=offsets)
+        down_proj_lora_out = _run_lora_grouped_mm(lora_h, down_proj_lora_a, down_proj_lora_b, offsets)
+        out = (out_base + scaling * down_proj_lora_out.bfloat16()).type_as(x)
 
         if permuted_indices is not None:
-            if out.shape[0] < len(permuted_indices):
-                num_padding = len(permuted_indices) - out.shape[0]
-                out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
             out_unpermuted = out.new_zeros(input_shape)
             out_unpermuted[permuted_indices, :] = out
             out = out_unpermuted[:-1]
 
         return out
 
-    def _forward_for_loop(
-        self,
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-        w1_lora_a: torch.Tensor,
-        w1_lora_b: torch.Tensor,
-        w2_lora_a: torch.Tensor,
-        w2_lora_b: torch.Tensor,
-        base_w1: torch.Tensor,
-        base_w2: torch.Tensor,
-        scaling: float,
-    ) -> torch.Tensor:
-        num_tokens_per_expert_list = num_tokens_per_expert.tolist()
-        out_splits = []
-
-        start = 0
-        for expert_idx, num_tokens in enumerate(num_tokens_per_expert_list):
-            if num_tokens == 0:
-                continue
-            end = start + num_tokens
-            x_expert = x[start:end]
-            x_expert_lora = self.lora_dropout(x_expert)
-
-            h_base = torch.matmul(x_expert, base_w1[expert_idx].transpose(-2, -1))
-            w1_lora_tmp = torch.matmul(x_expert_lora, w1_lora_a[expert_idx].transpose(-2, -1))
-            w1_lora_out = torch.matmul(w1_lora_tmp, w1_lora_b[expert_idx].transpose(-2, -1))
-            h = relu2(h_base + scaling * w1_lora_out)
-
-            h_lora = self.lora_dropout(h)
-            out_base = torch.matmul(h, base_w2[expert_idx].transpose(-2, -1))
-            w2_lora_tmp = torch.matmul(h_lora, w2_lora_a[expert_idx].transpose(-2, -1))
-            w2_lora_out = torch.matmul(w2_lora_tmp, w2_lora_b[expert_idx].transpose(-2, -1))
-            out = out_base + scaling * w2_lora_out
-
-            out_splits.append(out)
-            start = end
-
-        return torch.cat(out_splits, dim=0)
-
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}(base={self.base_layer}, rank={self.rank}, "
             f"n_adapters={self.n_adapters}, num_experts={self.num_experts}, "
-            f"alpha={self.alpha}, dropout={self.lora_dropout}, "
-            f"use_grouped_mm={self.use_grouped_mm})"
+            f"alpha={self.alpha}, dropout={self.lora_dropout})"
         )
 
 
 class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
     """
-    GptOssGroupedExperts + multi-LoRA.
+    GPT-OSS GroupedExperts + multi-LoRA.
 
-    Adapts the two projections of GPT-OSS experts: the fused gate_up projection
-    (hidden_size -> 2*intermediate_size) and the down projection (intermediate_size -> hidden_size).
+    Preserves GPT-OSS's combined gate/up adapter format while applying it to the
+    canonical split gate_proj/up_proj runtime weights.
     """
 
     def __init__(
         self,
-        base_layer: GptOssGroupedExperts,
+        base_layer: GroupedExperts,
         rank: int,
         n_adapters: int,
         alpha: float = 32.0,
         dropout: float = 0.0,
-        use_grouped_mm: bool = True,
     ):
         super().__init__(base_layer)
         if rank <= 0 or n_adapters <= 0:
             raise ValueError("rank and n_adapters must be > 0")
+        if base_layer.gate_proj is None or base_layer.activation is not ClampedSwiglu:
+            raise ValueError("MultiLoRAGptOssGroupedExperts requires gated GPT-OSS experts")
+        if any(
+            bias is None for bias in (base_layer.gate_proj_bias, base_layer.up_proj_bias, base_layer.down_proj_bias)
+        ):
+            raise ValueError("GPT-OSS experts require projection biases")
 
         self.num_experts = base_layer.num_experts
-        self.hidden_size = base_layer.hidden_size
-        self.intermediate_size = base_layer.intermediate_size
+        self.hidden_size = base_layer.up_proj.shape[2]
+        self.intermediate_size = base_layer.up_proj.shape[1]
         self.gate_up_out = 2 * self.intermediate_size
 
         if rank % 8 != 0 or self.hidden_size % 8 != 0 or self.intermediate_size % 8 != 0:
-            use_grouped_mm = False
+            raise ValueError("grouped_mm requires rank and expert dimensions divisible by 8")
 
         self.rank = rank
         self.n_adapters = n_adapters
         self.alpha = alpha
         self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
-        self.use_grouped_mm = use_grouped_mm
 
         self._lora_num_tokens = get_lora_num_tokens()
         self._scaling_factors = get_multilora_scaling()
@@ -812,8 +636,8 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
                         self.num_experts,
                         rank,
                         self.hidden_size,
-                        device=base_layer.gate_up_proj.device,
-                        dtype=base_layer.gate_up_proj.dtype,
+                        device=base_layer.up_proj.device,
+                        dtype=base_layer.up_proj.dtype,
                     )
                 )
                 for _ in range(n_adapters)
@@ -826,8 +650,8 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
                         self.num_experts,
                         self.gate_up_out,
                         rank,
-                        device=base_layer.gate_up_proj.device,
-                        dtype=base_layer.gate_up_proj.dtype,
+                        device=base_layer.up_proj.device,
+                        dtype=base_layer.up_proj.dtype,
                     )
                 )
                 for _ in range(n_adapters)
@@ -890,7 +714,9 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             + self.down_lora_A[0].numel()
             + self.down_lora_B[0].numel()
         )
-        adapted_params = self.base_layer.gate_up_proj.numel() + self.base_layer.down_proj.numel()
+        adapted_params = (
+            self.base_layer.gate_proj.numel() + self.base_layer.up_proj.numel() + self.base_layer.down_proj.numel()
+        )
         return adapter_params, adapted_params
 
     def state_dict_for_adapter(self, idx: int) -> dict[str, torch.Tensor]:
@@ -939,27 +765,32 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
 
         scaling = self._scaling_factors[adapter_idx].item()
 
-        base_gu = self.base_layer.gate_up_proj
-        base_gu_bias = self.base_layer.gate_up_proj_bias
-        base_d = self.base_layer.down_proj
-        base_d_bias = self.base_layer.down_proj_bias
+        gate_proj = self.base_layer.gate_proj
+        up_proj = self.base_layer.up_proj
+        down_proj = self.base_layer.down_proj
+        gate_proj_bias = self.base_layer.gate_proj_bias
+        up_proj_bias = self.base_layer.up_proj_bias
+        down_proj_bias = self.base_layer.down_proj_bias
 
         permuted_indices = None
-        if isinstance(base_gu, DTensor):
-            base_gu = base_gu.to_local()
-            base_gu_bias = base_gu_bias.to_local()
-            base_d = base_d.to_local()
-            base_d_bias = base_d_bias.to_local()
+        if isinstance(up_proj, DTensor):
+            gate_proj = gate_proj.to_local()
+            up_proj = up_proj.to_local()
+            down_proj = down_proj.to_local()
+            gate_proj_bias = gate_proj_bias.to_local()
+            up_proj_bias = up_proj_bias.to_local()
+            down_proj_bias = down_proj_bias.to_local()
             gu_a = gu_a.to_local()
             gu_b = gu_b.to_local()
             d_a = d_a.to_local()
             d_b = d_b.to_local()
 
             if getattr(self.base_layer, "ep_comm_backend", "torch") != "deepep":
-                from torchtitan.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
                 from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
 
-                experts_per_ep_rank = base_gu.shape[0]
+                from prime_rl.trainer.distributed.expert_parallel import TOKEN_GROUP_ALIGN_SIZE_M
+
+                experts_per_ep_rank = up_proj.shape[0]
                 num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
 
                 with torch.no_grad():
@@ -978,97 +809,33 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
         lora_x = self.lora_dropout(x)
 
-        if self.use_grouped_mm:
-            gate_up_base = torch._grouped_mm(x.bfloat16(), base_gu.bfloat16(), offs=offsets)
-            gate_up_base = (
-                gate_up_base
-                + _broadcast_expert_bias(base_gu_bias, num_tokens_per_expert, gate_up_base.shape[0]).bfloat16()
-            )
-            gate_up_lora = _run_lora_grouped_mm(lora_x, gu_a, gu_b, offsets)
-            gate_up = gate_up_base + scaling * gate_up_lora.bfloat16()
+        gate = torch._grouped_mm(x.bfloat16(), gate_proj.bfloat16().transpose(-2, -1), offs=offsets)
+        gate = gate + broadcast_expert_bias(gate_proj_bias, num_tokens_per_expert, gate.shape[0]).bfloat16()
+        up = torch._grouped_mm(x.bfloat16(), up_proj.bfloat16().transpose(-2, -1), offs=offsets)
+        up = up + broadcast_expert_bias(up_proj_bias, num_tokens_per_expert, up.shape[0]).bfloat16()
 
-            h = _gpt_oss_apply_gate(gate_up)
-            lora_h = self.lora_dropout(h)
+        gate_up_lora = _run_lora_grouped_mm(lora_x, gu_a, gu_b, offsets)
+        gate = gate + scaling * gate_up_lora[..., ::2].bfloat16()
+        up = up + scaling * gate_up_lora[..., 1::2].bfloat16()
 
-            out_base = torch._grouped_mm(h, base_d.bfloat16(), offs=offsets)
-            out_base = (
-                out_base + _broadcast_expert_bias(base_d_bias, num_tokens_per_expert, out_base.shape[0]).bfloat16()
-            )
-            out_lora = _run_lora_grouped_mm(lora_h, d_a, d_b, offsets)
-            out = out_base + scaling * out_lora.bfloat16()
-            out = out.type_as(x)
-        else:
-            out = self._forward_for_loop(
-                x,
-                num_tokens_per_expert,
-                gu_a,
-                gu_b,
-                d_a,
-                d_b,
-                base_gu,
-                base_gu_bias,
-                base_d,
-                base_d_bias,
-                scaling,
-            )
+        h = self.base_layer.activation.apply(gate, up)
+        lora_h = self.lora_dropout(h)
+
+        out_base = torch._grouped_mm(h, down_proj.bfloat16().transpose(-2, -1), offs=offsets)
+        out_base = out_base + broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, out_base.shape[0]).bfloat16()
+        out_lora = _run_lora_grouped_mm(lora_h, d_a, d_b, offsets)
+        out = (out_base + scaling * out_lora.bfloat16()).type_as(x)
 
         if permuted_indices is not None:
-            if out.shape[0] < len(permuted_indices):
-                num_padding = len(permuted_indices) - out.shape[0]
-                out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
             out_unpermuted = out.new_zeros(input_shape)
             out_unpermuted[permuted_indices, :] = out
             out = out_unpermuted[:-1]
 
         return out
 
-    def _forward_for_loop(
-        self,
-        x: torch.Tensor,
-        num_tokens_per_expert: torch.Tensor,
-        gu_a: torch.Tensor,
-        gu_b: torch.Tensor,
-        d_a: torch.Tensor,
-        d_b: torch.Tensor,
-        base_gu: torch.Tensor,
-        base_gu_bias: torch.Tensor,
-        base_d: torch.Tensor,
-        base_d_bias: torch.Tensor,
-        scaling: float,
-    ) -> torch.Tensor:
-        n = num_tokens_per_expert.tolist()
-        out_splits = []
-
-        start = 0
-        for e, num_tokens in enumerate(n):
-            if num_tokens == 0:
-                continue
-            end = start + num_tokens
-            x_e = x[start:end]
-            x_e_lora = self.lora_dropout(x_e)
-
-            gate_up_base = x_e @ base_gu[e] + base_gu_bias[e]
-            gate_up_lora_tmp = x_e_lora @ gu_a[e].transpose(-2, -1)
-            gate_up_lora = gate_up_lora_tmp @ gu_b[e].transpose(-2, -1)
-            gate_up = gate_up_base + scaling * gate_up_lora
-
-            h = _gpt_oss_apply_gate(gate_up)
-            h_lora = self.lora_dropout(h)
-
-            out_base = h @ base_d[e] + base_d_bias[e]
-            out_lora_tmp = h_lora @ d_a[e].transpose(-2, -1)
-            out_lora = out_lora_tmp @ d_b[e].transpose(-2, -1)
-            out = out_base + scaling * out_lora
-
-            out_splits.append(out)
-            start = end
-
-        return torch.cat(out_splits, dim=0)
-
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}(base={self.base_layer}, rank={self.rank}, "
             f"n_adapters={self.n_adapters}, num_experts={self.num_experts}, "
-            f"alpha={self.alpha}, dropout={self.lora_dropout}, "
-            f"use_grouped_mm={self.use_grouped_mm})"
+            f"alpha={self.alpha}, dropout={self.lora_dropout})"
         )

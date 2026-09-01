@@ -44,8 +44,6 @@ class MiniMaxM2Config(PretrainedConfig):
             Type of QK normalization. "per_layer" means each head has its own scale.
         attention_bias (`bool`, *optional*, defaults to `False`):
             Whether to use bias in attention projections.
-        use_grouped_mm (`bool`, *optional*, defaults to `True`):
-            Whether to use grouped matmul for experts.
     """
 
     model_type = "minimax_m2"
@@ -96,7 +94,6 @@ class MiniMaxM2Config(PretrainedConfig):
         output_router_logits=False,
         router_aux_loss_coef=0.001,
         router_jitter_noise=0.0,
-        use_grouped_mm=True,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -137,9 +134,6 @@ class MiniMaxM2Config(PretrainedConfig):
         # Attention
         self.use_qk_norm = use_qk_norm
         self.qk_norm_type = qk_norm_type
-
-        # Training
-        self.use_grouped_mm = use_grouped_mm
 
         super().__init__(
             pad_token_id=pad_token_id,

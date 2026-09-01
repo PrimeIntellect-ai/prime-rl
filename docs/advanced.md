@@ -35,31 +35,50 @@ impl = "custom"        # or "hf" to force the HF path
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
 | GPT-OSS (HF MoE) | `openai/gpt-oss-20b`, `openai/gpt-oss-120b` | ❌ | ✅ |
 
-The custom path enables you to set EP, CP, selective activation checkpointing, low-precision training (`[trainer.model.quantization]`), and faster MoE kernels (`moe_use_grouped_mm = true`, default). Forcing `impl = "hf"` is mostly useful when debugging — it's slower and disables most MoE-specific knobs.
+Selective activation checkpointing works with either implementation. The custom path additionally enables EP, CP, low-precision training, and grouped MoE kernels. Forcing `impl = "hf"` is mostly useful when debugging and disables those model-specific runtime features.
 
 ### Low-precision training
 
-Set `[trainer.model.quantization]` to train dense linears and MoE expert GEMMs in low precision. Two backends are available via the `type` discriminator:
+Dense linear precision and routed-expert precision are configured independently. `[trainer.model.quantization]` applies only to dense `Linear` modules:
 
-- `type = "fp8"` — DeepGEMM FP8 blockwise (requires SM90+ / Hopper). Options: `enable_grouped_gemm` (FP8 MoE expert GEMM). Both default on.
-- `type = "mxfp8"` — torchao MXFP8 microscaling (requires SM100+ / Blackwell). Options: `enable_grouped_gemm`, `enable_a2a` (MXFP8 expert-parallel all-to-all), and `recipe` (`mxfp8_rceil` default or `mxfp8_rceil_wgrad_with_hp`).
+- `type = "fp8"` — DeepGEMM FP8 blockwise linears (requires SM90+).
+- `type = "mxfp8"` — torchao MXFP8 linears (requires SM100). `recipe` is `mxfp8_rceil` or `mxfp8_rceil_wgrad_with_hp`.
+
+`[trainer.model.moe.compute]` selects routed-expert grouped GEMMs independently:
+
+- `type = "bf16"` (default)
+- `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+)
+- `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
 
 ```toml
 [trainer.model.quantization]
 type = "mxfp8"
 recipe = "mxfp8_rceil"
-enable_a2a = true
+
+[trainer.model.moe.compute]
+type = "mxfp8"
+recipe = "mxfp8_rceil"
+
+[trainer.model.moe.dispatch]
+type = "torch"
+transport = "mxfp8"
 ```
 
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
 
 ### Expert Parallelism Backends
 
-`model.ep_comm_backend` picks the all-to-all kernel used for EP dispatch/combine:
+`[trainer.model.moe.dispatch]` selects how routed tokens are dispatched and combined:
 
-- **`torch`** (default): TorchTitan's all-to-all collective. Works everywhere, no extra install.
-- **`deepep`**: Utilizes DeepEP's custom all-to-all collectives. This provides better performance if EP dimension spans multiple nodes. We provide pre-built binaries for H100/H200 with cuda runtime 12.9 installed, you can install them by running `uv sync --all-extras`.
-DeepEP requires some careful tuning to achieve optimal performance, tuning parameters are `deepep_num_sms` and `deepep_token_chunk_size`.
+- **`torch`** (default): torch all-to-all with `transport = "bf16"` or, when MXFP8 expert compute is selected, `transport = "mxfp8"` on SM100.
+- **`deepep`**: DeepEP custom dispatch/combine kernels. Set `num_sms` and optional `token_chunk_size` in the same table. Pre-built H100/H200 binaries use CUDA 13.0 and are installed by `uv sync --all-extras`.
+
+```toml
+[trainer.model.moe.dispatch]
+type = "deepep"
+num_sms = 20
+token_chunk_size = 4096
+```
 
 With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is set to `None` automatically.)
 
@@ -141,7 +160,7 @@ If prefill queues and decode is idle, add prefill nodes (and vice versa).
 
 ```bash
 salloc -N 1 --gres=gpu:1 bash -c 'bash scripts/install_nixl_from_source.sh'
-uv pip install --reinstall --no-deps deps/nixl_cu12-*.whl
+uv pip install --reinstall --no-deps deps/nixl_cu13-*.whl
 ```
 
 The script writes UCX 1.19 to `third_party/ucx/`; the bundled sbatch templates prepend it to `LD_LIBRARY_PATH` so it overrides the system version. Re-run both commands after every `uv sync`, since the lock pins the wheel.

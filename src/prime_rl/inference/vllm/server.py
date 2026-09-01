@@ -20,17 +20,13 @@ from prime_rl.utils.logger import get_logger
 logger = get_logger()
 from prime_rl.inference.patches import (
     monkey_patch_dp_coordinator_startup_timeout,
-    monkey_patch_harmony_stop_token_propagation,
     monkey_patch_nano_v3_reasoning_parser,
     monkey_patch_strip_routed_experts_from_chat,
     monkey_patch_tokenize_params_validation,
 )
 
-# NOTE: Fix harmony stop token propagation for GPT-OSS models
-# Upstream issue still open: https://github.com/vllm-project/vllm/issues/22519
-monkey_patch_harmony_stop_token_propagation()
 # NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
-# Still needed in vLLM 0.20 — upstream rejects prompt_len > max_model_len - max_tokens
+# Still needed in vLLM 0.28 — upstream rejects prompt_len > max_model_len - max_tokens
 monkey_patch_tokenize_params_validation()
 # NOTE: Register Nano V3 reasoning parser so configs can use
 # `reasoning_parser = "nano_v3"` without a vLLM plugin file.

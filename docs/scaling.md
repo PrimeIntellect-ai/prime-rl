@@ -99,11 +99,14 @@ EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP 
 ```toml
 [trainer.model]
 impl = "custom"
-ep = 8                     # explicit EP degree; must divide num_experts
-ep_comm_backend = "torch"  # or "deepep"
+ep = 8  # explicit EP degree; must divide num_experts
+
+[trainer.model.moe.dispatch]
+type = "torch"
+transport = "bf16"
 ```
 
-`ep_comm_backend = "deepep"` uses DeepEP's custom dispatch/combine kernels for speed, with two extra knobs (`deepep_num_sms`, `deepep_token_chunk_size`) — tune on your hardware.
+For DeepEP, set `type = "deepep"` and tune `num_sms` plus optional `token_chunk_size` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
 
 ### Context Parallelism
 
@@ -127,15 +130,18 @@ cp_style = "ulysses"         # "ring"
 | `trainer.model.ac.mode = "selective"` | medium | small | 
 | `trainer.model.ac_offloading` | extra | a bit more |
 
-AC and AC offloading are enabled by default (full mode). For the best memory/throughput tradeoff, switch to selective AC (custom impl only):
+AC and AC offloading are enabled by default (full mode). Both AC modes retain stateful MoE routing updates and DeepEP communication that cannot safely replay. Selective AC uses the same transformer-block boundaries and additionally retains distributed communication, expensive matrix multiplications, grouped GEMMs, and supported attention kernels:
 
 ```toml
 [trainer.model.ac]
 mode = "selective"
-targets = ["norm", "attn_proj"]  # see Reference for the full list per architecture
 ```
 
-`ac_offloading` is also on by default with `max_inflight_activations = 5`. We've observed this feature to be very effective, lowering the peak memory usage by 30-40% in some cases, while only lossing ~3-5% of throughput. To disable either, set `model.ac = "None"` or `model.ac_offloading = "None"`.
+Set `targets` to operator names (for example, `"aten::mm"`) or namespaces (for example, `"prime_rl_collectives"`) to replace the default selective targets. Correctness-required operations remain retained.
+
+Activation offloading still applies to tensors saved by autograd, but tensors retained by the checkpoint policy remain on the accelerator.
+
+`ac_offloading` is also on by default with `max_inflight_activations = 5`. We've observed this feature to be very effective, lowering the peak memory usage by 30-40% in some cases, while only losing ~3-5% of throughput. To disable either, set `model.ac = "None"` or `model.ac_offloading = "None"`.
 
 ### Optimizer Offloading
 
@@ -230,6 +236,24 @@ Full multi-node configs ship under [`examples/advanced/`](https://github.com/Pri
 - [`glm-5.2/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.2) — large-scale and P/D-disaggregated inference across the GLM-5 family.
 
 For inference-only multi-node, set `[deployment] type = "multi_node"` on an inference TOML — each node runs an independent vLLM replica (TP and DP must fit within one node), fronted by a single global router on node 0. Point clients at the router URL the launcher prints.
+
+### NIXL weight broadcast
+
+Set `[weight_broadcast] type = "nixl"` to use receiver-driven NIXL weight transfer. Before the first SLURM run, install the NIXL/UCX build and the ModelExpress service binaries on the shared filesystem:
+
+```bash
+bash scripts/install_nixl_from_source.sh
+uv pip install --reinstall --no-deps deps/nixl_cu12-*.whl
+bash scripts/install_modelexpress.sh
+```
+
+The generated job starts a job-scoped ModelExpress server and Redis backend on the trainer head node and passes that address to every component. To use an existing service, set `slurm.launch_modelexpress = false` and configure `weight_broadcast.host` and `weight_broadcast.port`.
+
+The launcher requires the CUDA and InfiniBand transports from `third_party/ucx`. Each NIXL process selects the active InfiniBand port nearest its GPU; an explicitly configured `UCX_NET_DEVICES` takes precedence. Inference ranks start their pulls at different trainer ranks so concurrent workers distribute traffic across all available source rails.
+
+ModelExpress exchanges peer metadata during startup. Weight updates reuse prepared NIXL requests, post every trainer-rank read in a transfer group concurrently, and use versioned NIXL notifications for source readiness and buffer credits.
+
+By default, the trainer and inference worker each allocate one transfer arena. Set `weight_broadcast.overlap_transfer_and_replay = true` to allocate two arenas on both sides and replay one weight group while receiving the next. The additional arena is the size of the largest transfer group per GPU; allocation errors are reported instead of silently disabling overlap.
 
 ### Custom Templates
 

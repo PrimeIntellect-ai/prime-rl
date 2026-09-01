@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
-
-import verifiers.v1 as vf
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
 from prime_rl.transports.batch import TrainingSample
 
 if TYPE_CHECKING:
+    import verifiers.v1 as vf
+
     from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
 
 
@@ -68,7 +68,10 @@ class DispatchFailure:
     error: vf.Error
 
 
-DispatchResult: TypeAlias = vf.WireEpisode | DispatchFailure | GroupCancellation
+if TYPE_CHECKING:
+    DispatchResult: TypeAlias = vf.WireEpisode | DispatchFailure | GroupCancellation
+else:
+    DispatchResult: TypeAlias = Any
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,7 @@ class TaskRequest:
     env_name: str
     task: vf.Task
     step: int
+    source_index: int | None = None
 
 
 @dataclass
@@ -90,6 +94,7 @@ class InflightEpisode:
     task: vf.Task
     policy_version: int
     step: int
+    source_index: int | None = None
     client_config: vf.ClientConfig | None = None
     started_at: float = 0.0
     """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
@@ -108,6 +113,7 @@ class GroupState:
     target_episodes: int
     emitted: int = 0
     policy_version_at_start: int = 0
+    source_index: int | None = None
 
 
 @dataclass

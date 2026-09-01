@@ -4,7 +4,7 @@ import pytest
 import torch
 from datasets import Dataset, interleave_datasets
 from renderers import create_renderer
-from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens, RenderedTrainingSample
+from renderers.base import MultiModalData, PlaceholderRange, RenderedTrainingSample
 from transformers import AutoTokenizer
 
 import prime_rl.trainer.sft.data as sft_data
@@ -19,30 +19,11 @@ def _sample_token_ids(value: str) -> list[int]:
     return [ord(char) + 2 for char in value]
 
 
-class _DummyRenderer:
-    def render(self, messages, **kwargs):
-        content_ids = _sample_token_ids(messages[-1]["content"])
-        token_ids = [_BOS_TOKEN_ID, *content_ids, _STOP_TOKEN_ID]
-        return RenderedTokens(
-            token_ids=token_ids,
-            message_indices=[-1, *([len(messages) - 1] * (len(content_ids) + 1))],
-            sampled_mask=[False, *([True] * (len(content_ids) + 1))],
-        )
-
-    def get_stop_token_ids(self):
-        return [_STOP_TOKEN_ID]
-
-
 @pytest.fixture(scope="module")
 def build_dummy_dataset():
     return lambda letter, num_examples: Dataset.from_list(
         [{"messages": [{"role": "assistant", "content": f"{letter}{i}"}]} for i in range(num_examples)]
     )
-
-
-@pytest.fixture
-def dummy_renderer():
-    return _DummyRenderer()
 
 
 @pytest.mark.parametrize(
@@ -403,7 +384,7 @@ def test_null_messages_falls_back_to_prompt_and_completion():
     assert next(iter(mixed_row_dataset)) == next(iter(expected_dataset))
 
 
-def test_vlm_truncation_does_not_append_trainable_eos(monkeypatch):
+def test_vlm_truncation_does_not_append_trainable_eos(monkeypatch, dummy_renderer):
     mm = MultiModalData(
         mm_placeholders={"image": [PlaceholderRange(offset=1, length=1)]},
         mm_items={"image": [{"pixel_values": torch.ones(1, 1), "image_grid_thw": torch.tensor([[1, 1, 1]])}]},
@@ -418,7 +399,7 @@ def test_vlm_truncation_does_not_append_trainable_eos(monkeypatch):
         )
 
     monkeypatch.setattr(sft_data, "build_training_sample", fake_build_training_sample)
-    dataset = SFTDataset(Dataset.from_list([]), _DummyRenderer(), seq_len=2, multimodal=True)
+    dataset = SFTDataset(Dataset.from_list([]), dummy_renderer, seq_len=2, multimodal=True)
 
     assert dataset._process({"messages": [{"role": "assistant", "content": "ignored"}]}) is None
 

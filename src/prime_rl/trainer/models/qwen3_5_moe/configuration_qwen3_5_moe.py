@@ -50,7 +50,6 @@ class Qwen3_5MoeConfig(PretrainedConfig):
         layer_types=None,
         # PrimeRL additions
         load_balance_coeff=None,
-        use_grouped_mm=True,
         pad_token_id=None,
         **kwargs,
     ):
@@ -100,7 +99,6 @@ class Qwen3_5MoeConfig(PretrainedConfig):
 
         # PrimeRL additions
         self.load_balance_coeff = load_balance_coeff
-        self.use_grouped_mm = use_grouped_mm
 
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,

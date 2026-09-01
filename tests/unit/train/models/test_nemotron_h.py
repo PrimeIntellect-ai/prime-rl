@@ -40,8 +40,6 @@ _BASE = dict(
     moe_shared_expert_intermediate_size=256,
     moe_latent_size=128,
     num_experts_per_tok=2,
-    n_group=1,
-    topk_group=1,
     norm_topk_prob=True,
     routed_scaling_factor=1.0,
 )
@@ -59,7 +57,6 @@ def get_model_pairs():
     prime_config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     prime_config._attn_implementation = "flash_attention_2"
 
@@ -109,54 +106,14 @@ def test_nemotron_h_mamba_moe_only():
     assert torch.allclose(grad_diff, torch.zeros_like(grad_diff), atol=1000), f"Max grad diff: {grad_diff.abs().max()}"
 
 
-@pytest.mark.xfail(reason="HF NemotronH now uses fused expert tensors; convert_to_hf produces individual expert format")
 def test_nemotron_h_reverse():
-    """Test reverse: PrimeRL weights loaded into HF model produce identical outputs."""
-    prime_config = NemotronHConfig(
-        **_BASE,
-        layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
-    )
-    prime_config._attn_implementation = "flash_attention_2"
+    """PrimeRL weights convert back to the source checkpoint layout."""
+    _, prime_model = get_model_pairs()
+    converted = prime_model.convert_to_hf(dict(prime_model.state_dict()))
 
-    hf_config = HFNemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
-    hf_config._attn_implementation = "flash_attention_2"
-
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        prime_model = NemotronHForCausalLM._from_config(prime_config)
-        hf_model = HFNemotronHForCausalLM._from_config(hf_config)
-
-    inject_prime_lm_head(prime_model, chunk_size=None)
-
-    with torch.no_grad():
-        sd = prime_model.state_dict()
-        prime_model.convert_to_hf(sd)
-        # convert_to_hf produces checkpoint format with "backbone." prefix;
-        # the HF model uses "model." prefix for its state dict
-        keys_to_rename = [k for k in sd if k.startswith("backbone.")]
-        for key in keys_to_rename:
-            sd["model." + key[len("backbone.") :]] = sd.pop(key)
-        hf_model.load_state_dict(sd)
-
-    # Bypass attention to isolate Mamba+MoE matching
-    for layer in hf_model.model.layers:
-        if isinstance(layer.mixer, NemotronHAttention):
-            layer.forward = lambda hidden_states, **kwargs: hidden_states
-    for layer in prime_model.model.layers:
-        if isinstance(layer, NemotronHAttentionLayer):
-            layer.forward = lambda hidden_states, **kwargs: hidden_states
-
-    with torch.device("cuda"), default_dtype(torch.bfloat16):
-        input_ids = torch.randint(0, 256, (1, 32))
-        position_ids = torch.arange(0, 32).unsqueeze(0)
-
-    hf_output = hf_model(input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids=position_ids, seq_lens=_seq_lens(input_ids))
-
-    logits_diff = prime_output["logits"] - hf_output.logits
-    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=1e-0), (
-        f"Max logits diff: {logits_diff.abs().max()}"
-    )
+    assert prime_model.is_hf_state_dict(converted)
+    assert "backbone.layers.1.mixer.experts.0.up_proj.weight" in converted
+    assert not any("mlp.experts.up_proj" in name for name in converted)
 
 
 def test_nemotron_h():
@@ -181,7 +138,6 @@ def test_nemotron_h_backward():
     prime_config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = NemotronHForCausalLM(prime_config)
@@ -205,7 +161,6 @@ def test_nemotron_h_weight_conversion_roundtrip():
     prime_config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     model = NemotronHForCausalLM(prime_config).to("cuda")
     original_sd = {k: v.clone() for k, v in model.state_dict().items()}
@@ -232,7 +187,6 @@ def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():
     config = NemotronHConfig(
         **(_BASE | {"mamba_n_groups": 2}),
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     with torch.device("meta"):
         model = NemotronHForCausalLM(config)
@@ -254,7 +208,6 @@ def test_nemotron_h_no_latent_projection():
     prime_config = NemotronHConfig(
         **{**_BASE, "moe_latent_size": None},
         layers_block_type=["mamba", "moe", "attention", "moe"],
-        use_grouped_mm=False,
     )
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = NemotronHForCausalLM(prime_config)
@@ -266,5 +219,5 @@ def test_nemotron_h_no_latent_projection():
 
     output["logits"].sum().backward()
     for name, p in model.named_parameters():
-        if "experts.w1" in name and p.numel() > 0:
+        if "experts.up_proj" in name and p.numel() > 0:
             assert p.grad is not None and p.grad.norm().item() > 0, f"Zero grad for {name}"
