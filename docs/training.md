@@ -133,7 +133,9 @@ Pulled from the console logs and mirrored to W&B.
 | Source | Metric | Reading |
 |---|---|---|
 | trainer | `time/wait_for_batch` | **high → orchestrator bottleneck** |
-| orchestrator | `time/wait_for_ckpt` | **high → trainer bottleneck** |
+| orchestrator | `time/wait_for_policy` | **high → trainer bottleneck** |
+
+The trainer warns when batch wait time exceeds active trainer time. Add inference nodes when this warning persists. The orchestrator warns when policy wait time exceeds active orchestrator time. Add trainer nodes when this warning persists. The orchestrator also warns when it discards more than half of an episode window. This warning reports stale, errored, and no-signal counts.
 
 ## SFT Trainer
 

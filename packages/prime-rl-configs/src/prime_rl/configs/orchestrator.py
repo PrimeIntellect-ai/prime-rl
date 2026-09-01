@@ -305,7 +305,7 @@ class TrainConfig(BaseConfig):
     """Shared training sampling configuration."""
 
     filter_zero_advantages: bool = True
-    """Remove zero-advantage RL tokens after collecting a batch, before shipping it."""
+    """Remove zero-advantage RL tokens before counting samples toward a batch."""
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):

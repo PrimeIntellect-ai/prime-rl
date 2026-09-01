@@ -667,6 +667,13 @@ def train(config: TrainerConfig):
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
+        active_step_time = step_time - wait_for_batch_time
+        if wait_for_batch_time >= active_step_time:
+            logger.warning(
+                f"Trainer waited {format_time(wait_for_batch_time)} for a batch, at least as long as its "
+                f"{format_time(active_step_time)} active step time. Train-inference compute is imbalanced; "
+                "add more inference nodes."
+            )
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {tensor_stats['loss/mean']:.4f} | Entropy {tensor_stats['entropy/all/mean']:.4f}"
         if "mismatch_kl/all/mean" in tensor_stats:
             step_message += f" | Mismatch KL {tensor_stats['mismatch_kl/all/mean']:.4f}"

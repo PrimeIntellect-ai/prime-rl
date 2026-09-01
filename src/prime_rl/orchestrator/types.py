@@ -124,6 +124,10 @@ class TrainBatch:
     cohort: TrainEpisodes
     samples: list[TrainingSample]
     failures: list[DispatchFailure]
+    # Group cancellations can account for attempts that returned no episode.
+    cancelled_attempts: int = 0
+    # Stale attempts are a subset of cancelled_attempts.
+    stale_attempts: int = 0
 
 
 @dataclass

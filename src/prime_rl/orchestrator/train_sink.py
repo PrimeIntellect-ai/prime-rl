@@ -88,6 +88,8 @@ class TrainSink:
 
         self.pending_episodes = TrainEpisodes()
         self.pending_failures: list[DispatchFailure] = []
+        self.pending_cancelled_attempts = 0
+        self.pending_stale_attempts = 0
         self.pending_groups: dict[str, list[vf.Episode]] = defaultdict(list)
         self.pending_group_failures: dict[str, list[DispatchFailure]] = defaultdict(list)
         # A dropped group's terminal marker; its ``count`` fills in for the
@@ -243,6 +245,10 @@ class TrainSink:
         )
         n_owed = len(group) + len(failures) + (cancellation.count if cancellation is not None else 0)
         self.pending_failures.extend(failures)
+        if cancellation is not None:
+            self.pending_cancelled_attempts += cancellation.count
+            if cancellation.reason == "stale":
+                self.pending_stale_attempts += cancellation.count
 
         # A stale drop voids the whole group: every member shares the dispatch
         # version, so the arrived episodes are exactly as stale as the
@@ -287,6 +293,8 @@ class TrainSink:
                         "it requires vLLM's native sampling-mask capture (>= 0.28)."
                     )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
+            if self.config.train.filter_zero_advantages:
+                samples = [sample for sample in samples if _prune_zero_advantages(sample)]
             if samples:
                 samples_by_trace[trace.id] = samples
 
@@ -375,12 +383,6 @@ class TrainSink:
         for trace_id in selected_ids:
             del self.pending_batch[trace_id]
 
-        if self.config.train.filter_zero_advantages:
-            selected_by_trace = {
-                trace_id: [sample for sample in samples if _prune_zero_advantages(sample)]
-                for trace_id, samples in selected
-            }
-            selected_by_trace = {trace_id: samples for trace_id, samples in selected_by_trace.items() if samples}
         samples = [sample for trace_samples in selected_by_trace.values() for sample in trace_samples]
 
         shipped_ids = set(selected_by_trace)
@@ -399,7 +401,18 @@ class TrainSink:
 
         episodes = self.pending_episodes
         failures = self.pending_failures
+        cancelled_attempts = self.pending_cancelled_attempts
+        stale_attempts = self.pending_stale_attempts
         if samples:
             self.pending_episodes = TrainEpisodes()
             self.pending_failures = []
-        return TrainBatch(episodes=episodes, cohort=cohort, samples=samples, failures=failures)
+            self.pending_cancelled_attempts = 0
+            self.pending_stale_attempts = 0
+        return TrainBatch(
+            episodes=episodes,
+            cohort=cohort,
+            samples=samples,
+            failures=failures,
+            cancelled_attempts=cancelled_attempts,
+            stale_attempts=stale_attempts,
+        )
