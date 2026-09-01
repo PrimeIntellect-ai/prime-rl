@@ -1932,6 +1932,11 @@ function traceQuery(extra = {}) {
   return qs;
 }
 
+function traceFiltered() {
+  const t = state.traces;
+  return !!(activeKind() || t.env || t.errorsOnly || t.bin);
+}
+
 function traceKey() {
   const t = state.traces;
   return JSON.stringify([state.run, t.mode, t.step, activeKind(), t.env, t.errorsOnly, traceSort(), t.bin]);
@@ -1960,7 +1965,8 @@ async function loadEpisodes({ append = false } = {}) {
     data = await api(`/api/runs/${encodeURIComponent(state.run)}/episodes?${qs}`);
   } catch {
     $("#trace-status").textContent = "";
-    showTraceEmpty("no traces", "this run has no episode stream yet");
+    showTraceEmpty("no traces yet");
+    syncTraceChart();
     return;
   }
   if (data.unchanged) return;
@@ -1977,7 +1983,10 @@ async function loadEpisodes({ append = false } = {}) {
   syncDressedSelects();
   if (!data.total) {
     $("#trace-status").textContent = "";
-    showTraceEmpty("no episodes", "nothing matches the current filters");
+    // an unfiltered run with nothing in it has not produced episodes yet; a filtered
+    // one has, and the reader needs to know it is their filter that is empty
+    if (traceFiltered()) showTraceEmpty("no episodes", "nothing matches the current filters");
+    else showTraceEmpty("no traces yet");
     return;
   }
   renderEpisodeRows(fresh);
@@ -2016,6 +2025,13 @@ async function loadHistogram() {
   renderHistogram();
 }
 
+/* the chart belongs to the stream, and only once there is something to plot: an
+   empty frame reads as a broken chart rather than an empty run */
+function syncTraceChart() {
+  const t = state.traces;
+  $("#trace-chart").hidden = t.mode !== "stream" || !t.hist?.bins?.length;
+}
+
 const HIST_H = 148;
 const HIST_BAR_MAX = 46;
 
@@ -2023,14 +2039,8 @@ function renderHistogram() {
   const data = state.traces.hist;
   const host = $("#trace-hist");
   const width = Math.max(320, host.clientWidth || 900);
-  if (!data || !data.bins.length) {
-    // an empty run still gets its frame, so the chart does not pop in later
-    $("#trace-chart-sub").textContent = "no episodes yet";
-    host.innerHTML =
-      `<svg width="${width}" height="${HIST_H}" viewBox="0 0 ${width} ${HIST_H}">` +
-      `<line class="hgrid" x1="46" y1="${HIST_H - 20}" x2="${width - 8}" y2="${HIST_H - 20}"></line></svg>`;
-    return;
-  }
+  syncTraceChart();
+  if (!data || !data.bins.length) return;
   const bins = data.bins;
   const max = Math.max(...bins.map((b) => b[1]), 1);
   // real pixels, and the plot always spans the width; capping the bar itself is
@@ -3929,7 +3939,7 @@ function syncTraceFilterControls() {
   // the stream is not addressed by step, so its controls go away in that mode
   $("#step-bar").hidden = t.mode !== "step";
   $("#tm-stephead").hidden = t.mode !== "step";
-  $("#trace-chart").hidden = t.mode !== "stream";
+  syncTraceChart();
   $("#trace-clear-bin").hidden = !t.bin;
   setActive("#trace-mode", "mode", t.mode);
   setActive("#tm-mode", "mode", t.mode);
