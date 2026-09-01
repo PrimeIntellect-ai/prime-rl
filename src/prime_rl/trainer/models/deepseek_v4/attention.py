@@ -45,19 +45,6 @@ def eager_attention_with_sinks(
     dropout: float = 0.0,
     training: bool = False,
 ) -> torch.Tensor:
-    """Eager attention with a per-head learnable sink logit, as in GPT-OSS.
-
-    The sink is one extra logit column per head, concatenated before the softmax and
-    dropped from the probabilities afterwards. It absorbs attention mass without
-    contributing to the output, so a query can attend to "nothing" rather than being
-    forced to spread a full unit of probability over its window.
-
-    `key` and `value` carry a single KV head (`[batch, 1, seq, head_dim]`) which matmul
-    broadcasts over every query head; materializing the broadcast would cost
-    `num_attention_heads` times the memory for no numerical gain.
-
-    Returns the attention output in `[batch, seq, heads, head_dim]` layout.
-    """
     attn_weights = torch.matmul(query, key.transpose(2, 3)) * scaling
     attn_weights = attn_weights + attention_mask
 
@@ -81,14 +68,6 @@ def build_sliding_window_mask(
     cu_seqlens: torch.Tensor,
 ) -> torch.Tensor:
     """Additive `[1, 1, seq_len, seq_len]` mask: causal, restricted to a local window.
-
-    Query `q` may attend to key `k` when `k <= q` and `q - k < sliding_window`; every
-    other entry is the dtype's minimum, so it vanishes under the softmax.
-
-    `cu_seqlens` carries the packed sequence's document boundaries, and the window is clipped
-    at them: a query never reaches into the document before its own. The mask broadcasts over
-    the batch, so a batched packed sequence shares one document layout, which is all `seq_lens`
-    can express anyway.
 
     A padded micro-batch folds its padding into the last document (`batch.py:717-718`
     extends `seq_lens[-1]` while restarting `position_ids`), so the padding is masked as a

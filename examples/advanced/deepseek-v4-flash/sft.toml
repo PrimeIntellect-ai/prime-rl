@@ -7,11 +7,12 @@
 # 284.6e9 * 4 bytes / num_gpus. At 8 GPUs that is 132.5 GiB/GPU, which OOMs. At 32 GPUs it is
 # 33.1 GiB/GPU, leaving room for gradients and activations, so this needs neither `full_offload`
 # nor a stateless optimizer: it runs the ordinary FSDP + EP path with the default AdamW and the
-# default `optim_cpu_offload = true`. See TODO.md for the measured single-node ceiling.
+# default `optim_cpu_offload = true`. A single 8xH200 node OOMs under both CPU-offload
+# strategies this repo supports, so 4 nodes is a hardware floor, not a tuning choice.
 #
 # `--dist-timeout-seconds 14400` is needed on any run that has to build the HF -> prime-rl
 # conversion cache, which takes far longer than the 3600s default. The cache is NOT layer-count
-# agnostic; see TODO.md before reusing one built by a truncated run.
+# agnostic, so a cache built by a `debug.num_layers` run must not be reused at full depth.
 #
 # `force_balanced_routing` is deliberately absent: it is a fake-data smoke-test knob that breaks
 # gradient flow through the router. Peak memory runs higher without it, since expert load is no
@@ -85,7 +86,9 @@ type = "filesystem"
 timeout = 3600
 
 [inference]
-# Mandatory for DeepSeek V4. See TODO.md.
+# Mandatory for DeepSeek V4, not an optimization: without it the mHC pre-norm GEMM falls back to a
+# TileLang kernel that is silently wrong above 1024 tokens per forward on SM120, and the
+# checkpoint's UE8M0-scaled fp8 weights route to a CUTLASS kernel that crashes on boot.
 use_deep_gemm = true
 
 [inference.vllm]

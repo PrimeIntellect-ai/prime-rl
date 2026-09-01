@@ -1,6 +1,60 @@
-import torch
+"""DeepSeek V4 checks that need no GPU, kept out of the `gpu`-marked whole-model module.
 
+The dequantization math is a pure function over hand-built tensors, and the config checks only
+ever construct a `DeepseekV4Config`. Neither needs CUDA, and a module-level `pytest.mark.gpu`
+cannot be undone per test, so they live here and run in the CPU job.
+"""
+
+import json
+
+import pytest
+import torch
+from huggingface_hub.errors import StrictDataclassClassValidationError
+
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_, dequantize_weight
+
+from .deepseek_v4_helpers import _MODEL
+
+
+def test_deepseek_v4_config_rejects_a_foreign_layer_type():
+    """V4's own attention vocabulary, not the generic one transformers checks against.
+
+    `PretrainedConfig.validate_layer_type` runs first, from `super().__init__()`, and accepts
+    anything in transformers' generic layer-type list; only `DeepseekV4Config`'s own override
+    narrows that to the three V4 variants. `compress_rates` carries a rate for the foreign type
+    on purpose, so `validate_architecture` cannot be what rejects it.
+    """
+    kwargs = _MODEL | {"layer_types": ["full_attention"] * 5, "compress_rates": {"full_attention": 4}}
+
+    with pytest.raises(StrictDataclassClassValidationError, match="layer_types entries must be one of"):
+        DeepseekV4Config(**kwargs)
+
+
+def test_deepseek_v4_config_translates_legacy_compress_ratios():
+    """Real checkpoints ship the V3-flavoured legacy `compress_ratios`/`num_hash_layers` schema
+    instead of `layer_types`/`mlp_layer_types`, which is what prime-rl's model code reads, so the
+    config has to translate between them. Loading the real checkpoint without this built the
+    wrong per-layer attention schedule outright.
+    """
+    config = DeepseekV4Config(num_hidden_layers=6, compress_ratios=[0, 0, 4, 128, 4, 128], num_hash_layers=2)
+
+    assert config.layer_types == [
+        "sliding_attention",
+        "sliding_attention",
+        "compressed_sparse_attention",
+        "heavily_compressed_attention",
+        "compressed_sparse_attention",
+        "heavily_compressed_attention",
+    ]
+    assert config.mlp_layer_types == ["hash_moe", "hash_moe", "moe", "moe", "moe", "moe"]
+
+
+def test_deepseek_v4_config_serializes_topk_method():
+    """The saved `config.json` has to carry `topk_method`, which is what vLLM gates the
+    `e_score_correction_bias` parameter on. An explicit value must win."""
+    assert json.loads(DeepseekV4Config().to_json_string())["topk_method"] == "noaux_tc"
+    assert json.loads(DeepseekV4Config(topk_method="greedy").to_json_string())["topk_method"] == "greedy"
 
 
 def test_dequantize_weight_dense_fp8():

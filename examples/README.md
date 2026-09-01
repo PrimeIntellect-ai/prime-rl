@@ -12,6 +12,6 @@ End-to-end usage examples for prime-rl, referenced from the top-level [README](.
 - **[`advanced/`](advanced)** — larger, mostly multi-node runs on frontier models, one folder
   per model: `qwen3-30b-a3b` (math/swe/tool), `glm-4.5-air` (search/swe/terminal), `glm-5.2`
   (large-scale + PD-disaggregated inference), `minimax-m2.5` (swe), `nemotron-3-super` (swe),
-  `intellect-3.1` (swe).
+  `intellect-3.1` (swe), `deepseek-v4-flash` (sft + a standalone vLLM serving pre-flight).
 
 Dev-sized (2-GPU) counterparts of `basic/` live in [`configs/basic/`](../configs/basic).

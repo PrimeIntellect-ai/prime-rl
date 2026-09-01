@@ -284,7 +284,7 @@ class DeepseekV4Config(PretrainedConfig):
         # Dead code: `rope_theta`/`rope_scaling` never reach here via `**kwargs`, and
         # `self.rope_parameters` is overwritten by `_nest_rope_parameters` right after
         # `super().__init__()` returns regardless. Kept for parity with the same
-        # (also-dead) override in `laguna/configuration_laguna.py`; see TODO.md.
+        # (also-dead) override in `laguna/configuration_laguna.py`.
         return kwargs
 
     def validate_architecture(self) -> None:

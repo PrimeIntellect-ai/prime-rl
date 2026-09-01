@@ -1,31 +1,17 @@
-# Standalone vLLM serving pre-flight check: does this cluster's vLLM correctly serve the real
-# DeepSeek V4 Flash checkpoint at all, independent of the trainer? Uses vLLM's own native
-# DeepSeek V4 support (not this repo's trainer port), so it does not depend on the trainer's
-# state. Run locally on one allocated 8xH200 node (no [slurm] block -- this is meant to be run
-# directly, not submitted as a batch job):
+# Standalone vLLM serving pre-flight: does this cluster's vLLM serve the real DeepSeek V4 Flash
+# checkpoint at all, independent of the trainer? Uses vLLM's own native DeepSeek V4 support, not
+# this repo's trainer port. Run directly on one allocated 8xH200 node (no [slurm] block):
 #
 #   uv run inference @ examples/advanced/deepseek-v4-flash/inference.toml
 #
-# then from another shell on the same node:
-#
-#   curl http://localhost:8000/health
-#   curl http://localhost:8000/v1/chat/completions \
-#     -H "Content-Type: application/json" \
-#     -d '{"model": "deepseek-ai/DeepSeek-V4-Flash-0731", "messages": [{"role": "user", "content": "Say hello in one sentence."}]}'
-#
-# Confirm a coherent, non-garbage response before trusting the model for the real RL run.
-#
-# The checkpoint ships no Jinja chat template and does not need one: vLLM auto-selects
-# `tokenizer_mode = "deepseek_v4"` from the architecture and renders through its own
-# DeepseekV4Renderer, which wraps DeepSeek's reference encoder.
-#
-# `enforce_eager` is deliberately unset so this exercises the same path a real run takes. If the
-# engine dies during CUDA-graph capture, re-run with `--vllm.enforce-eager` before investigating
-# anything else.
+# Then check /health and a /v1/chat/completions request from another shell on the same node, and
+# confirm a coherent response before trusting the model for a real run.
 #
 # Reference: https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash
 
-# Mandatory for DeepSeek V4. See TODO.md.
+# Mandatory for DeepSeek V4, not an optimization: without it the mHC pre-norm GEMM falls back to a
+# TileLang kernel that is silently wrong above 1024 tokens per forward on SM120, and the
+# checkpoint's UE8M0-scaled fp8 weights route to a CUTLASS kernel that crashes on boot.
 use_deep_gemm = true
 
 [server]

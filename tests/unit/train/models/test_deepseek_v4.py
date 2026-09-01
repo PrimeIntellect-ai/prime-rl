@@ -1,9 +1,15 @@
-"""Whole-model checks for the DeepSeek V4 port that need no reference implementation.
+"""DeepSeek V4 checks that need a GPU and no reference implementation.
 
-Hash routing, gradient reachability, the weight-conversion chain against vLLM's own loader,
-meta-device buffer restoration, the packed-batch invariant the trainer needs in order to agree
-with vLLM, and the RoPE vLLM builds on the other side of that boundary. The parity half, which uses HF's own DeepSeek V4 implementation as its oracle,
-lives in `test_deepseek_v4_hf.py`.
+The first half works on the assembled model: hash routing, gradient reachability, the
+weight-conversion chain against vLLM's own loader, meta-device buffer restoration, the
+packed-batch invariant the trainer needs in order to agree with vLLM, and the RoPE vLLM builds on
+the other side of that boundary. The second half works one mechanism at a time, on the smaller
+per-module configs, and is marked as such where it begins.
+
+There is no HF oracle here. `transformers.models.deepseek_v4` only exists from transformers 5.15
+and the repo pins an older version, so every assertion is either self-consistency (packed against
+unpacked), a closed form written out by hand, or vLLM's own loader. The CPU-only checks live in
+`test_deepseek_v4_cpu.py`.
 """
 
 import math
@@ -12,12 +18,12 @@ from unittest.mock import MagicMock
 
 import pytest
 import torch
-from huggingface_hub.errors import StrictDataclassClassValidationError
+import torch.nn.functional as F
 from torch import nn
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import load_dcp_from_hf
-from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4ForCausalLM
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import (
     CompressionLayout,
@@ -30,11 +36,31 @@ from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 from prime_rl.utils.utils import default_dtype
 
 from .deepseek_v4_helpers import (
-    _BASE,
-    _BATCH,
-    _SEQ,
+    _ATTN,
+    _COMPRESS_RATE,
+    _CSA_LAYER,
+    _HC,
+    _HCA_COMPRESS_RATE,
+    _HCA_LAYER,
+    _MODEL,
+    _MODEL_BATCH,
+    _MODEL_SEQ,
+    _MODULE_BATCH,
+    _MODULE_SEQ,
+    _MOE,
+    _MOE_TOKENS,
+    _SINGLE_DOC,
+    _SLIDING_LAYER,
     _assert_relative,
+    _hidden_states,
+    _hidden_streams,
+    _input_ids,
     _inputs,
+    _moe_hidden_states,
+    _packed_context,
+    _packed_position_ids,
+    _position_embeddings,
+    _position_ids,
     _prime_config,
     _randomize,
     _seed_rng,  # noqa: F401 -- pytest fixture, applied by name
@@ -42,6 +68,10 @@ from .deepseek_v4_helpers import (
     _tid2eid,
     _torch_rms_norm,  # noqa: F401 -- pytest fixture, applied by name
     get_prime_model,
+    prime_attention,
+    prime_clamped_moe,
+    prime_hyper_connection,
+    prime_moe,
 )
 
 pytestmark = [pytest.mark.gpu]
@@ -50,12 +80,12 @@ pytestmark = [pytest.mark.gpu]
 def test_deepseek_v4_hash_layers_route_on_token_ids():
     """The bootstrap layers read `input_ids`, so identical hidden states still route apart."""
     prime_model = get_prime_model()
-    hash_layers = prime_model.model.layers[: _BASE["num_hash_layers"]]
+    hash_layers = prime_model.model.layers[: _MODEL["num_hash_layers"]]
     assert hash_layers, "config must contain a hash-routed layer"
 
     counts = []
     for token_id in (0, 1):
-        input_ids = torch.full((_BATCH, _SEQ), token_id, device="cuda", dtype=torch.long)
+        input_ids = torch.full((_MODEL_BATCH, _MODEL_SEQ), token_id, device="cuda", dtype=torch.long)
         for layer in hash_layers:
             layer.mlp.tokens_per_expert.zero_()
         prime_model(input_ids, seq_lens=_seq_lens(input_ids))
@@ -65,7 +95,7 @@ def test_deepseek_v4_hash_layers_route_on_token_ids():
     assert set(table[0].tolist()) != set(table[1].tolist()), "the two table rows must differ for this to bite"
     assert not torch.equal(counts[0], counts[1]), "a hash layer must route the two token ids to different experts"
     expected = torch.zeros_like(counts[0][0])
-    expected[table[0]] = _BATCH * _SEQ
+    expected[table[0]] = _MODEL_BATCH * _MODEL_SEQ
     torch.testing.assert_close(counts[0][0], expected)
 
 
@@ -88,7 +118,7 @@ def test_deepseek_v4_backward():
         has_grad = param.grad is not None and param.grad.norm().item() > 0
         # The indexer reaches the loss only through integer top-k indices, so nothing
         # differentiates back into it. DeepSeek trains it with a separate auxiliary loss
-        # that prime-rl does not implement; see TODO.md.
+        # that prime-rl does not implement.
         if ".indexer." in name:
             if has_grad:
                 unexpectedly_alive.append(name)
@@ -122,11 +152,11 @@ def _fill_hash_tables(model: nn.Module) -> dict[int, torch.Tensor]:
     for layer_idx, layer in enumerate(model.model.layers):
         if not layer.mlp.is_hash:
             continue
-        table = _tid2eid(_BASE["vocab_size"], _BASE["n_routed_experts"], _BASE["num_experts_per_tok"])
+        table = _tid2eid(_MODEL["vocab_size"], _MODEL["n_routed_experts"], _MODEL["num_experts_per_tok"])
         with torch.no_grad():
             layer.mlp.router.tid2eid.copy_(table)
         tables[layer_idx] = table
-    assert len(tables) == _BASE["num_hash_layers"], "config must contain hash-routed layers"
+    assert len(tables) == _MODEL["num_hash_layers"], "config must contain hash-routed layers"
     return tables
 
 
@@ -170,7 +200,7 @@ def test_deepseek_v4_load_dcp_from_hf_keeps_the_hash_table(tmp_path, monkeypatch
     """
     with torch.device("meta"):
         model = DeepseekV4ForCausalLM(_prime_config())
-    expected = _tid2eid(_BASE["vocab_size"], _BASE["n_routed_experts"], _BASE["num_experts_per_tok"])
+    expected = _tid2eid(_MODEL["vocab_size"], _MODEL["n_routed_experts"], _MODEL["num_experts_per_tok"])
 
     def fake_dcp_load(state_dict, storage_reader=None):
         buffer = state_dict["model.layers.0.mlp.router.tid2eid"]
@@ -183,41 +213,6 @@ def test_deepseek_v4_load_dcp_from_hf_keeps_the_hash_table(tmp_path, monkeypatch
     load_dcp_from_hf(model, ModelConfig(name=str(tmp_path)), parallel_dims=MagicMock())
 
     torch.testing.assert_close(model.model.layers[0].mlp.router.tid2eid, expected)
-
-
-def test_deepseek_v4_config_rejects_a_foreign_layer_type():
-    """V4's own attention vocabulary, not the generic one transformers checks against.
-
-    `PretrainedConfig.validate_layer_type` runs first, from `super().__init__()`, and accepts
-    anything in transformers' generic layer-type list; only `DeepseekV4Config`'s own override
-    narrows that to the three V4 variants. `compress_rates` carries a rate for the foreign type
-    on purpose, so `validate_architecture` cannot be what rejects it.
-    """
-    kwargs = _BASE | {"layer_types": ["full_attention"] * 5, "compress_rates": {"full_attention": 4}}
-
-    with pytest.raises(StrictDataclassClassValidationError, match="layer_types entries must be one of"):
-        DeepseekV4Config(**kwargs)
-
-
-def test_deepseek_v4_config_translates_legacy_compress_ratios():
-    """Real checkpoints ship the V3-flavoured legacy `compress_ratios`/`num_hash_layers` schema
-    instead of `layer_types`/`mlp_layer_types` (see NOTES-ds-v4-inference-preflight.md). prime-rl's
-    model code reads `layer_types`/`mlp_layer_types` directly, so the config has to translate them.
-
-    The expected schedules are written out here rather than read off HF's own config;
-    `test_deepseek_v4_hf.py` holds the version that checks them against it.
-    """
-    config = DeepseekV4Config(num_hidden_layers=6, compress_ratios=[0, 0, 4, 128, 4, 128], num_hash_layers=2)
-
-    assert config.layer_types == [
-        "sliding_attention",
-        "sliding_attention",
-        "compressed_sparse_attention",
-        "heavily_compressed_attention",
-        "compressed_sparse_attention",
-        "heavily_compressed_attention",
-    ]
-    assert config.mlp_layer_types == ["hash_moe", "hash_moe", "moe", "moe", "moe", "moe"]
 
 
 # What vLLM's DeepSeek V4 loader sees, with the layer and expert indices folded away. Written
@@ -281,8 +276,7 @@ def test_deepseek_v4_on_disk_keys_map_to_the_names_vllm_expects():
     true for any input whatsoever, including a misspelling. Pinning the mapped names instead
     fails on a rename on either side: prime-rl renaming a weight, or vLLM's mapper moving under
     a bump. It does not prove vLLM's loader has a parameter of that name, which would take
-    instantiating vLLM's model; `examples/advanced/deepseek-v4-flash/kl-check.toml` is what
-    covers that end to end.
+    instantiating vLLM's model; only a real serving run covers that end to end.
 
     `_make_deepseek_v4_weights_mapper` is private API in a URL-pinned wheel (`vllm==0.28.0`).
     Imported inside the test because importing vLLM at module scope would run during collection,
@@ -340,6 +334,13 @@ def test_deepseek_v4_init_buffers_post_meta_restores_every_rotary():
 
 # Neither length is a multiple of a compress rate, so each document ends mid-window and both
 # compressors have to drop a trailing partial window instead of pooling across the boundary.
+# Four hyper-connected layers amplify the bf16 expert floor described on the logits comparison
+# below into every parameter's gradient, not just the experts' own, and which tokens share an
+# expert matmul (and so what cancels) moves with the seed. Measured worst case here is 7.4e-3
+# relative to each tensor's own scale; telling the packed run it is one long document instead of
+# two moves the gradients by 2.8, which is 35x this bound.
+_MODEL_GRAD_RTOL = 8e-2
+
 _DOC_LENS = (14, 18)
 # Below the HCA compress rate of 8, where HCA yields no entries and contributes nothing either way.
 _SHORT_DOC_LENS = (6, 6)
@@ -348,7 +349,7 @@ _SHORT_DOC_LENS = (6, 6)
 def _packed_inputs(doc_lens: tuple[int, ...]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """One packed row: token ids, `position_ids` restarting per document, and flat `seq_lens`."""
     total = sum(doc_lens)
-    input_ids = torch.randint(0, _BASE["vocab_size"], (1, total), device="cuda")
+    input_ids = torch.randint(0, _MODEL["vocab_size"], (1, total), device="cuda")
     position_ids = torch.cat([torch.arange(length, device="cuda") for length in doc_lens]).unsqueeze(0)
     return input_ids, position_ids, torch.tensor(doc_lens, device="cuda")
 
@@ -372,8 +373,8 @@ def _doc_slice(doc_lens: tuple[int, ...], index: int) -> slice:
 def _compressor_inputs(doc_lens: tuple[int, ...]) -> tuple[torch.Tensor, torch.Tensor]:
     """Random tensors of the shapes a decoder layer hands its compressor."""
     total = sum(doc_lens)
-    hidden_states = torch.randn(1, total, _BASE["hidden_size"], device="cuda")
-    q_residual = torch.randn(1, total, _BASE["q_lora_rank"], device="cuda")
+    hidden_states = torch.randn(1, total, _MODEL["hidden_size"], device="cuda")
+    q_residual = torch.randn(1, total, _MODEL["q_lora_rank"], device="cuda")
     return hidden_states, q_residual
 
 
@@ -444,12 +445,12 @@ def test_packed_sliding_window_mask_respects_documents(_torch_rms_norm, monkeypa
     input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)
     prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)
 
-    assert len(recorded) == _BASE["num_hidden_layers"]
+    assert len(recorded) == _MODEL["num_hidden_layers"]
     total = sum(_DOC_LENS)
     doc_ids = _doc_ids(_DOC_LENS)
     positions = position_ids[0]
     distance = positions[:, None] - positions[None, :]
-    expected = (doc_ids[:, None] == doc_ids[None, :]) & (distance >= 0) & (distance < _BASE["sliding_window"])
+    expected = (doc_ids[:, None] == doc_ids[None, :]) & (distance >= 0) & (distance < _MODEL["sliding_window"])
     for layer_idx, mask in enumerate(recorded):
         # Compressed layers append their own entries as extra columns; those are covered
         # separately, so only the local window is compared here.
@@ -462,12 +463,19 @@ def test_packed_logits_match_unpacked(_torch_rms_norm):  # noqa: F811
 
     End to end over every pathway at once: the local sliding window, the CSA compressor with its
     indexer, and HCA. Each document's logits have to come out the same whether it is packed beside
-    another rollout or served on its own.
+    another rollout or served on its own. Gradients are compared too, since a leak that barely
+    moves the logits can still move the update.
     """
     prime_model = get_prime_model(torch.float32)
     input_ids, position_ids, seq_lens = _packed_inputs(_DOC_LENS)
 
     packed = prime_model(input_ids, position_ids=position_ids, seq_lens=seq_lens)["logits"]
+    # One random weight drawn over the packed logits and sliced per document, so the packed loss
+    # and the summed per-document losses are the same function of the same numbers.
+    with torch.device("cuda"):
+        weight = torch.randn_like(packed)
+    (packed * weight).sum().backward()
+    packed_grads = _take_grads(prime_model)
 
     for index, length in enumerate(_DOC_LENS):
         span = _doc_slice(_DOC_LENS, index)
@@ -482,6 +490,9 @@ def test_packed_logits_match_unpacked(_torch_rms_norm):  # noqa: F811
         # measured over six seeds is 1.2e-3; a document actually reading its neighbour moves
         # the logits by a fraction of their own scale, orders of magnitude above this.
         _assert_relative(packed[:, span], alone, 1e-2, f"document {index}")
+        (alone * weight[:, span]).sum().backward()
+
+    _compare_accumulated_grads(prime_model, packed_grads, rtol=_MODEL_GRAD_RTOL)
 
 
 def test_packed_csa_reads_only_own_document_entries(_torch_rms_norm):  # noqa: F811
@@ -559,9 +570,9 @@ def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):  # noq
     Asserted as an entry count: compressing per document, a row of documents this short yields no
     entries at all, so there is nothing for a query to read rather than entries it may not reach.
     The layout is handed in, so the entry count restates what the layout already says; the
-    property that a short document compresses to nothing is pinned directly by
-    `test_hca_compressor_emits_no_entries_when_every_document_is_short`. What is left here is that
-    the compressor honours a zero-entry layout identically packed and alone.
+    property that a short document compresses to nothing is pinned directly by the
+    `hca_every_document_short` case of `test_compressor_packed_matches_per_document`. What is left
+    here is that the compressor honours a zero-entry layout identically packed and alone.
     """
     prime_model = get_prime_model(torch.float32)
     compressor = _compressor_of_type(prime_model, DeepseekV4HCACompressor)
@@ -570,8 +581,11 @@ def test_hca_inert_below_compress_rate_matches_unpacked(_torch_rms_norm):  # noq
 
     hidden_states, q_residual = _compressor_inputs(_SHORT_DOC_LENS)
     _, position_ids, _ = _packed_inputs(_SHORT_DOC_LENS)
-    _, packed_bias = compressor(hidden_states, q_residual, position_ids, _layout(_SHORT_DOC_LENS, rate))
+    packed_kv, packed_bias = compressor(hidden_states, q_residual, position_ids, _layout(_SHORT_DOC_LENS, rate))
     assert packed_bias.shape[-1] == 0, "every document is too short to fill a window, so the row has no entries"
+    # With no source token feeding it there is nothing to walk back through, so an empty
+    # compression must not carry a graph back to the row either.
+    assert not packed_kv.requires_grad, "an empty compression must not carry a graph back to the row"
 
     for index, length in enumerate(_SHORT_DOC_LENS):
         span = _doc_slice(_SHORT_DOC_LENS, index)
@@ -733,3 +747,649 @@ def test_deepseek_v4_vllm_rope_matches_the_reference_from_nested_parameters(vllm
         },
     }
     _assert_reference_rope(vllm_rope_builder, rope_parameters=nested)
+
+
+# Everything below works one mechanism at a time, below the assembled-model level the tests above
+# work at, on the smaller `_ATTN`/`_MOE`/`_HC` configs. These carry the only coverage of the
+# compressors' window structure, the Lightning Indexer's selection contract, the router's scoring,
+# and the per-document packing invariant, none of which the whole-model tests can see sharply
+# enough to be worth asserting there.
+#
+# Every test in this half stands alone: each builds its own module and its only shared machinery
+# is the helper module's builders, so any one of them can be deleted without touching another. The
+# exceptions are noted on the helpers in the packed section further down.
+
+
+def test_hyperconnection_gates_are_doubly_stochastic_and_bounded():
+    """mHC's mixing matrix is a Sinkhorn iterate, so it must sum to one along both axes.
+
+    This is the property the fp32 weight-transfer exception exists to protect: handed bf16
+    hyper-connection parameters, the normalization produces NaN rather than a slightly wrong
+    gate. The pre-gate is `2 * sigmoid(.)`, so it is bounded independently.
+    """
+    prime_module = prime_hyper_connection()
+    _, streams = _hidden_streams()
+
+    post, comb, collapsed = prime_module(streams)
+
+    assert collapsed.shape == (_MODULE_BATCH, _MODULE_SEQ, _HC["hidden_size"])
+    assert collapsed.dtype == streams.dtype
+    assert (post >= 0).all() and (post <= 2).all()
+    assert (comb > 0).all()
+    ones = torch.ones_like(comb.sum(dim=-1))
+    torch.testing.assert_close(comb.sum(dim=-1), ones, rtol=0, atol=1e-5)
+    torch.testing.assert_close(comb.sum(dim=-2), ones, rtol=0, atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("layer_idx", "reaches_past_the_window"),
+    [(_SLIDING_LAYER, False), (_CSA_LAYER, True), (_HCA_LAYER, True)],
+    ids=["sliding", "csa", "hca"],
+)
+def test_attention_long_range_reach_by_layer_type(layer_idx, reaches_past_the_window):
+    """Perturb token 0 and read off how far forward the change is still visible.
+
+    A sliding layer must forget it the moment it leaves the local window; the two compressed
+    layers must still reach it through their pooled entries. HCA is the sharpest of the three:
+    its first entry covers tokens `0 .. rate - 1` and is unreadable until a query reaches the
+    last of them, so between leaving the window and that point nothing carries token 0 at all.
+    """
+    prime_module = prime_attention(layer_idx)
+    _, hidden = _hidden_states()
+    position_embeddings = _position_embeddings()
+    packed = _packed_context(prime_module, _SINGLE_DOC, torch.bfloat16)
+    window = _ATTN["sliding_window"]
+
+    baseline, _ = prime_module(hidden, position_embeddings=position_embeddings, packed=packed)
+    perturbed_input = hidden.clone()
+    perturbed_input[:, 0] += 1.0
+    perturbed, _ = prime_module(perturbed_input, position_embeddings=position_embeddings, packed=packed)
+
+    # Token 0 is the last key inside the window of query `window - 1`, so every layer moves there.
+    assert not torch.equal(perturbed[:, window - 1], baseline[:, window - 1])
+
+    if not reaches_past_the_window:
+        torch.testing.assert_close(perturbed[:, window:], baseline[:, window:], rtol=0, atol=0)
+        return
+
+    if layer_idx == _HCA_LAYER:
+        first_readable = _HCA_COMPRESS_RATE - 1
+        assert first_readable > window, "config must leave a gap between the window and the first entry"
+        torch.testing.assert_close(
+            perturbed[:, window:first_readable], baseline[:, window:first_readable], rtol=0, atol=0
+        )
+        assert not torch.equal(perturbed[:, first_readable:], baseline[:, first_readable:])
+    else:
+        assert not torch.equal(perturbed[:, window:], baseline[:, window:])
+
+
+@pytest.mark.parametrize(
+    ("layer_idx", "compress_rate", "extra_entries_touched"),
+    [(_CSA_LAYER, _COMPRESS_RATE, {1}), (_HCA_LAYER, _HCA_COMPRESS_RATE, set())],
+    ids=["csa_overlapping", "hca_non_overlapping"],
+)
+def test_compressor_pooling_window_structure(layer_idx, compress_rate, extra_entries_touched):
+    """Which entries a single token feeds is the whole structural difference between CSA and HCA.
+
+    CSA runs a dual series: a token feeds its own window's entry through `Cb` and the *next*
+    window's through `Ca`. HCA's windows do not overlap, so a token feeds its own entry and no
+    other. Perturbing one token and collecting which entries moved states both at once.
+    """
+    compressor = prime_attention(layer_idx).compressor
+    _, hidden = _hidden_states()
+    layout = _layout(_SINGLE_DOC, compress_rate)
+
+    compressed = compressor.compress(hidden, layout)
+    assert compressed.shape == (_MODULE_BATCH, _MODULE_SEQ // compress_rate, _ATTN["head_dim"])
+
+    token = compress_rate + 1
+    perturbed_input = hidden.clone()
+    perturbed_input[:, token] += 1.0
+    perturbed = compressor.compress(perturbed_input, layout)
+
+    changed = {w for w in range(compressed.shape[1]) if not torch.equal(perturbed[:, w], compressed[:, w])}
+    own = token // compress_rate
+    assert changed == {own} | {own + offset for offset in extra_entries_touched}
+
+
+def test_csa_indexer_keeps_only_readable_entries():
+    """The Lightning Indexer may never name an entry the query cannot causally read.
+
+    Entry `w` pools tokens up to `(w + 1) * compress_rate - 1`, so query `t` may read
+    `(t + 1) // compress_rate` of them. Queries with fewer readable entries than `index_topk`
+    get their picks padded with `-1` rather than with a real index, and the count of real picks
+    has to track the readable count exactly.
+    """
+    prime_module = prime_attention(_CSA_LAYER)
+    indexer = prime_module.compressor.indexer
+    _, hidden = _hidden_states()
+    position_ids = _position_ids()
+    q_residual = prime_module.q_a_norm(prime_module.q_a_proj(hidden))
+
+    top_k_indices = indexer(hidden, q_residual, position_ids, _layout(_SINGLE_DOC, _COMPRESS_RATE))
+
+    top_k = _ATTN["index_topk"]
+    assert top_k_indices.shape == (_MODULE_BATCH, _MODULE_SEQ, top_k)
+    readable = (position_ids + 1) // _COMPRESS_RATE
+    assert readable.max() > top_k, "config must leave the indexer something to discard"
+    assert (top_k_indices < readable.unsqueeze(-1)).all(), "an unreadable entry was selected"
+    kept = (top_k_indices >= 0).sum(dim=-1)
+    torch.testing.assert_close(kept, readable.clamp(max=top_k))
+
+
+def test_hca_compressor_masks_unreadable_entries():
+    """HCA has no indexer, so its block bias is the whole gate and must be the exact closed form.
+
+    Every readable entry is unbiased and every unreadable one is `-inf`, at the
+    `(pos + 1) // rate` threshold. Asserted against the formula rather than across two runs,
+    which is what makes this catch an off-by-one in the threshold itself.
+    """
+    prime_module = prime_attention(_HCA_LAYER)
+    compressor = prime_module.compressor
+    _, hidden = _hidden_states()
+    position_ids = _position_ids()
+    q_residual = prime_module.q_a_norm(prime_module.q_a_proj(hidden))
+
+    compressed_kv, block_bias = compressor(hidden, q_residual, position_ids, _layout(_SINGLE_DOC, _HCA_COMPRESS_RATE))
+
+    n_windows = _MODULE_SEQ // _HCA_COMPRESS_RATE
+    assert compressed_kv.shape == (_MODULE_BATCH, 1, n_windows, _ATTN["head_dim"])
+    assert block_bias.shape == (_MODULE_BATCH, 1, _MODULE_SEQ, n_windows)
+    readable = (position_ids + 1) // _HCA_COMPRESS_RATE
+    entries = torch.arange(n_windows, device=block_bias.device).view(1, 1, 1, -1)
+    expected = torch.where(entries < readable.unsqueeze(1).unsqueeze(-1), 0.0, float("-inf"))
+    torch.testing.assert_close(block_bias, expected.to(block_bias.dtype), rtol=0, atol=0)
+
+
+def test_moe_router_scoring_and_selection_bias():
+    """The router scores with `sqrt(softplus(.))`, normalizes, then scales, in that order.
+
+    The ordering is what the second half pins: `selection_bias` steers which experts win the
+    top-k but must not reach the gating values, which stay the unbiased scores. Getting that
+    backwards is a one-character change in the router and would leave every weight subtly wrong.
+    """
+    prime_module = prime_moe()
+    router = prime_module.router
+    _, hidden = _moe_hidden_states()
+    x = hidden.detach().reshape(-1, _MOE["hidden_size"])
+
+    def expected_gates(indices: torch.Tensor) -> torch.Tensor:
+        gathered = F.softplus(F.linear(x, router.gate.weight)).sqrt().gather(dim=1, index=indices)
+        return gathered / gathered.sum(dim=-1, keepdim=True) * _MOE["routed_scaling_factor"]
+
+    router.selection_bias.zero_()
+    top_scores, indices, num_tokens_per_expert, _ = router(x)
+
+    scores = F.softplus(F.linear(x, router.gate.weight)).sqrt()
+    _, expected_indices = torch.topk(scores, _MOE["num_experts_per_tok"], dim=1)
+    torch.testing.assert_close(indices, expected_indices)
+    torch.testing.assert_close(top_scores, expected_gates(indices), rtol=0, atol=0)
+    # Normalization happens before the scale, so every token's weights sum to it.
+    torch.testing.assert_close(
+        top_scores.sum(dim=-1), torch.full((x.shape[0],), _MOE["routed_scaling_factor"], device=x.device)
+    )
+    assert num_tokens_per_expert.sum().item() == _MOE_TOKENS * _MOE["num_experts_per_tok"]
+
+    favored = 5
+    router.selection_bias[favored] = 100.0
+    biased_scores, biased_indices, biased_counts, _ = router(x)
+
+    assert not torch.equal(biased_indices, indices), "the bias must change the selection"
+    assert biased_counts[favored].item() == _MOE_TOKENS, "every token must reach the favored expert"
+    torch.testing.assert_close(biased_scores, expected_gates(biased_indices), rtol=0, atol=0)
+
+
+def test_moe_shared_expert_clamps_the_swiglu():
+    """`ClampedSwiglu` clips the gate above and the up projection both ways before the product."""
+    prime_module = prime_clamped_moe()
+    shared_expert = prime_module.shared_expert
+    _, hidden = _moe_hidden_states()
+    x = hidden.detach()
+
+    output = shared_expert(x)
+
+    gate, up = shared_expert.gate_proj(x), shared_expert.up_proj(x)
+    limit = shared_expert.limit
+    assert (gate > limit).any() and (up.abs() > limit).any(), "config must push the pre-activations past the clamp"
+    clamped = shared_expert.down_proj(F.silu(gate.clamp(max=limit)) * up.clamp(min=-limit, max=limit))
+    torch.testing.assert_close(output, clamped, rtol=0, atol=0)
+    assert not torch.equal(output, shared_expert.down_proj(F.silu(gate) * up))
+
+
+def test_moe_ignores_input_ids_when_not_hash_routed():
+    """The decoder layer hands `input_ids` to every MLP, so a score-routed one must ignore them.
+
+    Not visible at model level, where `input_ids` also drive the embeddings and so change the
+    hidden states the router sees.
+    """
+    prime_module = prime_moe()
+    _, hidden = _moe_hidden_states()
+
+    prime_module.tokens_per_expert.zero_()
+    with_ids = prime_module(hidden, input_ids=_input_ids())
+    counts_with_ids = prime_module.tokens_per_expert.clone()
+    prime_module.tokens_per_expert.zero_()
+    without_ids = prime_module(hidden)
+
+    # The selection is identical down to the token count per expert. The outputs only match
+    # to the float32 floor: the scatter-add over experts is not bitwise reproducible.
+    torch.testing.assert_close(counts_with_ids, prime_module.tokens_per_expert, rtol=0, atol=0)
+    torch.testing.assert_close(with_ids, without_ids, rtol=1e-5, atol=1e-8)
+
+
+# The packed module-level section. A packed row must equal running each of its documents alone:
+# the trainer packs, vLLM serves each rollout alone, and a trainer that disagrees optimizes a
+# model the sampler does not implement. The whole-model tests further up assert the same thing
+# through the logits at a bf16 floor; these assert it on the compressor and the attention layer
+# in float32, forward and backward, which is roughly a thousand times sharper.
+#
+# Float32 throughout. `kv_proj` sees a different number of rows packed than alone and cuBLAS is
+# free to tile the two differently, so the runs can never be bit-identical; in bfloat16 that floor
+# would sit around 1e-2 and swallow exactly the cross-document leakage these tests exist to catch.
+
+# The boundary falls inside a window of both rates, so both drop tokens at it.
+_MID_WINDOW_DOCS = (7, 9)
+# Every document is a whole number of windows at both rates, so the per-document entry count
+# equals the row-global one and only the numbering (and with it the RoPE position) moves.
+_EXACT_MULTIPLE_DOCS = (8, 8)
+# The first document is shorter than either rate, so it compresses to nothing while the rest of
+# the row still carries entries.
+_SHORT_FIRST_DOCS = (3, 13)
+# Shorter than the HCA rate everywhere, so HCA compresses the whole row to zero entries.
+_ALL_SHORT_DOCS = (5, 5, 6)
+# One CSA entry in the first document and three in the second: `index_topk` of 2 has to discard,
+# and a pick renumbered into the second document cannot coincide with its own local index.
+_INDEXER_DOCS = (4, 12)
+
+# Packed and unpacked run the same arithmetic through differently shaped matmuls, so they agree
+# to the float32 rounding floor and no further. A query reading another document's tokens moves
+# an output by a fraction of its own scale, orders of magnitude above this.
+_PACKED_RTOL, _PACKED_ATOL = 1e-5, 1e-6
+# Gradients get a bound against the tensor's own scale instead. They are sums over the whole row,
+# and their near-zero entries are the ones whose summands cancelled, so an element-wise relative
+# bound reads out cancellation noise rather than anything a document leak would move: one entry
+# of `kv_proj`'s gradient lands 3e-4 off in relative terms while being 2e-6 off in absolute ones.
+# Against the tensor's own scale the worst deviation measured over these tests is 8e-7.
+_PACKED_GRAD_RTOL = 1e-5
+
+
+def _entry_counts(doc_lens: tuple[int, ...], compress_rate: int) -> list[int]:
+    return [length // compress_rate for length in doc_lens]
+
+
+def _entry_slice(doc_lens: tuple[int, ...], compress_rate: int, index: int) -> slice:
+    """Where one document's compressed entries sit, the entry axis being laid out document by
+    document exactly as the token axis is."""
+    return _doc_slice(tuple(_entry_counts(doc_lens, compress_rate)), index)
+
+
+def _alone_position_ids(length: int, batch: int = _MODULE_BATCH) -> torch.Tensor:
+    return torch.arange(length, device="cuda").unsqueeze(0).expand(batch, -1)
+
+
+def _fp32_hidden_states(seq_len: int = _MODULE_SEQ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Two leaves carrying identical values, one for the packed run and one for the lone runs."""
+    with torch.device("cuda"):
+        hidden = torch.randn(_MODULE_BATCH, seq_len, _ATTN["hidden_size"])
+    return hidden.clone().requires_grad_(True), hidden.clone().requires_grad_(True)
+
+
+def _take_grads(module: nn.Module) -> dict[str, torch.Tensor | None]:
+    """Detach whatever gradients have accumulated and clear them for the next run."""
+    grads = {name: None if param.grad is None else param.grad.clone() for name, param in module.named_parameters()}
+    module.zero_grad(set_to_none=True)
+    return grads
+
+
+def _compare_accumulated_grads(
+    module: nn.Module, expected: dict[str, torch.Tensor | None], rtol: float = _PACKED_GRAD_RTOL
+) -> None:
+    """Compare the gradients now on `module` against a snapshot taken from an earlier backward.
+
+    Allows for a parameter that legitimately receives nothing: the Lightning Indexer reaches the
+    loss only through integer top-k indices, so neither run may hand its parameters a gradient.
+    """
+    for name, param in module.named_parameters():
+        if expected[name] is None:
+            assert param.grad is None, f"{name} received a gradient per document but not packed"
+            continue
+        assert param.grad is not None, f"{name} received no gradient per document"
+        _assert_relative(param.grad, expected[name], rtol, name)
+
+
+def _backward_if_differentiable(loss: torch.Tensor) -> None:
+    """Backward `loss` unless it carries no graph at all.
+
+    A document too short to fill a window compresses to nothing, and an empty output has no
+    graph to walk back through. Its contribution to every gradient is zero.
+    """
+    if loss.requires_grad:
+        loss.backward()
+
+
+def _assert_layout_is_consistent(layout: CompressionLayout, doc_lens: tuple[int, ...], compress_rate: int) -> None:
+    """Pin the layout against the per-document construction it claims to describe.
+
+    Document `d` of length `L_d` gets `L_d // compress_rate` entries; entry `j` covers that
+    document's local tokens `j * compress_rate` through `(j + 1) * compress_rate - 1` and is
+    rotated at local position `j * compress_rate`. The entries are ordered document by document,
+    which is what lets every comparison below slice them per document.
+    """
+    counts = _entry_counts(doc_lens, compress_rate)
+    starts = [sum(doc_lens[:index]) for index in range(len(doc_lens))]
+    expected_doc = [index for index, count in enumerate(counts) for _ in range(count)]
+    expected_local = [entry for count in counts for entry in range(count)]
+    expected_src = [
+        [starts[doc] + local * compress_rate + offset for offset in range(compress_rate)]
+        for doc, local in zip(expected_doc, expected_local)
+    ]
+
+    def as_tensor(values: list, dtype: torch.dtype = torch.long) -> torch.Tensor:
+        return torch.tensor(values, dtype=dtype, device="cuda")
+
+    assert torch.equal(layout.entry_doc, as_tensor(expected_doc)), "entries are not ordered document by document"
+    assert torch.equal(layout.entry_local, as_tensor(expected_local)), "entries are not numbered within a document"
+    assert torch.equal(layout.src_idx, as_tensor(expected_src).reshape(-1, compress_rate)), (
+        "an entry pools source tokens outside its own document's window"
+    )
+    assert torch.equal(layout.entry_pos, layout.entry_local * compress_rate), "entry_pos must be a local position"
+    assert torch.equal(layout.is_first, layout.entry_local == 0), "is_first must mark entry 0 of each document"
+    assert torch.equal(layout.doc_of_token, _doc_ids(doc_lens)), "doc_of_token must follow the document lengths"
+
+
+def _assert_compress_matches_per_document(
+    compressor: nn.Module, doc_lens: tuple[int, ...], compress_rate: int, layout: CompressionLayout
+) -> None:
+    """Compressing a packed row must equal compressing each of its documents on its own.
+
+    Forward and backward both: entry `n` of the packed run must pool the same source tokens, at
+    the same compress-RoPE position, as the corresponding entry of its own document's run, and
+    the gradient the packed run sends into the weights must equal the one the per-document runs
+    accumulate. One random weight tensor is drawn over the packed entries and sliced per
+    document, so the packed loss and the summed per-document losses are literally the same
+    function of the same numbers.
+    """
+    _assert_layout_is_consistent(layout, doc_lens, compress_rate)
+    counts = _entry_counts(doc_lens, compress_rate)
+    packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
+
+    packed = compressor.compress(packed_input, layout=layout)
+    assert packed.shape == (_MODULE_BATCH, sum(counts), compressor.head_dim)
+
+    with torch.device("cuda"):
+        weight = torch.randn_like(packed)
+    if packed.requires_grad:
+        (packed * weight).sum().backward()
+    packed_grads = _take_grads(compressor)
+
+    for index, count in enumerate(counts):
+        entries = _entry_slice(doc_lens, compress_rate, index)
+        alone = compressor.compress(
+            alone_input[:, _doc_slice(doc_lens, index)], _layout((doc_lens[index],), compress_rate)
+        )
+        assert alone.shape == (_MODULE_BATCH, count, compressor.head_dim), (
+            f"document {index} compressed to the wrong count"
+        )
+        torch.testing.assert_close(
+            packed[:, entries],
+            alone,
+            rtol=_PACKED_RTOL,
+            atol=_PACKED_ATOL,
+            msg=lambda m, i=index: f"document {i} compresses differently packed than alone: {m}",
+        )
+        _backward_if_differentiable((alone * weight[:, entries]).sum())
+
+    _compare_accumulated_grads(compressor, packed_grads)
+    if packed_input.grad is not None or alone_input.grad is not None:
+        torch.testing.assert_close(alone_input.grad, packed_input.grad, rtol=_PACKED_RTOL, atol=_PACKED_ATOL)
+
+
+@pytest.mark.parametrize(
+    ("layer_idx", "compress_rate", "doc_lens", "expected_counts"),
+    [
+        (_CSA_LAYER, _COMPRESS_RATE, _SINGLE_DOC, [4]),
+        (_CSA_LAYER, _COMPRESS_RATE, _MID_WINDOW_DOCS, [1, 2]),
+        (_CSA_LAYER, _COMPRESS_RATE, _EXACT_MULTIPLE_DOCS, [2, 2]),
+        (_CSA_LAYER, _COMPRESS_RATE, _SHORT_FIRST_DOCS, [0, 3]),
+        (_CSA_LAYER, _COMPRESS_RATE, _ALL_SHORT_DOCS, [1, 1, 1]),
+        (_HCA_LAYER, _HCA_COMPRESS_RATE, _SINGLE_DOC, [2]),
+        (_HCA_LAYER, _HCA_COMPRESS_RATE, _MID_WINDOW_DOCS, [0, 1]),
+        (_HCA_LAYER, _HCA_COMPRESS_RATE, _EXACT_MULTIPLE_DOCS, [1, 1]),
+        (_HCA_LAYER, _HCA_COMPRESS_RATE, _SHORT_FIRST_DOCS, [0, 1]),
+        (_HCA_LAYER, _HCA_COMPRESS_RATE, _ALL_SHORT_DOCS, [0, 0, 0]),
+    ],
+    ids=[
+        "csa_single_document",
+        "csa_mid_window_boundary",
+        "csa_exact_multiple",
+        "csa_short_first_document",
+        "csa_every_document_short",
+        "hca_single_document",
+        "hca_mid_window_boundary",
+        "hca_exact_multiple",
+        "hca_short_first_document",
+        "hca_every_document_short",
+    ],
+)
+def test_compressor_packed_matches_per_document(layer_idx, compress_rate, doc_lens, expected_counts):
+    """Each case is a length regime the per-document layout has to get right on its own.
+
+    `single_document` is the unpacked case, which packing must leave exactly where it was.
+    `mid_window_boundary` puts the split inside a window, so a row-global compression would pool
+    the tail of one document with the head of the next. `exact_multiple` drops nothing, isolating
+    the numbering: the second document's entries have to be rotated at its own local positions and
+    its first entry marked as first, so CSA's backward-looking series is gated off instead of
+    reaching into the previous document. `short_first_document` is the path that did not exist
+    before per-document compression, one empty document among non-empty ones. `every_document_short`
+    is the degenerate end: at the CSA rate every entry is the first of its own document, and at the
+    HCA rate the row compresses to nothing at all rather than to entries that straddle boundaries.
+    """
+    module = prime_attention(layer_idx, dtype=torch.float32)
+    layout = _layout(doc_lens, compress_rate)
+
+    assert _entry_counts(doc_lens, compress_rate) == expected_counts
+    if sum(expected_counts) < sum(doc_lens) // compress_rate:
+        assert layout.src_idx.shape[0] == sum(expected_counts), (
+            "a row-global compression would emit more entries than this, so the probe is not vacuous"
+        )
+    _assert_compress_matches_per_document(module.compressor, doc_lens, compress_rate, layout)
+
+
+def test_csa_indexer_marks_every_pick_invalid_with_no_readable_entry():
+    """A query whose own document compressed to nothing must pick nothing, not the row's entries.
+
+    `_SHORT_FIRST_DOCS` at the CSA rate is the regime the whole-model tests never reach: a
+    zero-entry document sitting beside one that carries three.
+    """
+    module = prime_attention(_CSA_LAYER, dtype=torch.float32)
+    indexer = module.compressor.indexer
+    layout = _layout(_SHORT_FIRST_DOCS, _COMPRESS_RATE)
+    hidden, _ = _fp32_hidden_states(sum(_SHORT_FIRST_DOCS))
+    hidden = hidden.detach()
+    position_ids = _packed_position_ids(_SHORT_FIRST_DOCS)
+    q_residual = module.q_a_norm(module.q_a_proj(hidden))
+
+    packed_picks = indexer(hidden, q_residual, position_ids, layout=layout)
+
+    first, second = (_doc_slice(_SHORT_FIRST_DOCS, index) for index in (0, 1))
+    assert (packed_picks[:, first] < 0).all(), "a query whose document compressed to nothing was given a pick"
+    assert (packed_picks[:, second] >= 0).any(), "vacuous probe: the second document picks nothing either"
+    alone_picks = indexer(
+        hidden[:, first],
+        q_residual[:, first],
+        _alone_position_ids(_SHORT_FIRST_DOCS[0]),
+        _layout((_SHORT_FIRST_DOCS[0],), _COMPRESS_RATE),
+    )
+    assert (alone_picks >= 0).sum().item() == 0, "run alone the same document has nothing to pick from"
+
+
+def _assert_attention_matches_per_document(module: nn.Module, doc_lens: tuple[int, ...]) -> None:
+    """A packed attention layer must equal the same layer run on each document separately.
+
+    Forward and backward, with one random weight drawn over the packed output and sliced per
+    document so the two losses are the same function. The lone runs each get a single-document
+    context, which is the shape a rollout arrives in at inference time.
+    """
+    compress_rate = module.compressor.compress_rate
+    packed_input, alone_input = _fp32_hidden_states(sum(doc_lens))
+    packed = _packed_context(module, doc_lens, torch.float32)
+
+    q_residual = module.q_a_norm(module.q_a_proj(packed_input.detach()))
+    _, block_bias = module.compressor(
+        packed_input.detach(), q_residual, packed.position_ids, layout=packed.compression_layouts[compress_rate]
+    )
+    assert (block_bias[:, :, _doc_slice(doc_lens, 1)] == 0).any(), (
+        "vacuous probe: no query of the second document reads a compressed entry"
+    )
+
+    packed_output, _ = module(
+        packed_input,
+        position_embeddings=_position_embeddings(packed.position_ids, dtype=torch.float32),
+        packed=packed,
+    )
+    with torch.device("cuda"):
+        weight = torch.randn_like(packed_output)
+    (packed_output * weight).sum().backward()
+    packed_grads = _take_grads(module)
+
+    for index, length in enumerate(doc_lens):
+        span = _doc_slice(doc_lens, index)
+        alone_position_ids = _alone_position_ids(length)
+        alone_output, _ = module(
+            alone_input[:, span],
+            position_embeddings=_position_embeddings(alone_position_ids, dtype=torch.float32),
+            packed=_packed_context(module, (length,), torch.float32),
+        )
+        torch.testing.assert_close(
+            packed_output[:, span],
+            alone_output,
+            rtol=_PACKED_RTOL,
+            atol=_PACKED_ATOL,
+            msg=lambda m, i=index: f"document {i} attends differently packed than alone: {m}",
+        )
+        (alone_output * weight[:, span]).sum().backward()
+
+    _compare_accumulated_grads(module, packed_grads)
+    torch.testing.assert_close(alone_input.grad, packed_input.grad, rtol=_PACKED_RTOL, atol=_PACKED_ATOL)
+
+
+def _assert_attention_is_finite(module: nn.Module, doc_lens: tuple[int, ...]) -> None:
+    """Run one packed forward and backward and require every number that comes out to be finite."""
+    packed_input, _ = _fp32_hidden_states(sum(doc_lens))
+    packed = _packed_context(module, doc_lens, torch.float32)
+
+    output, _ = module(
+        packed_input,
+        position_embeddings=_position_embeddings(packed.position_ids, dtype=torch.float32),
+        packed=packed,
+    )
+    assert torch.isfinite(output).all(), "the attention output is not finite"
+
+    with torch.device("cuda"):
+        weight = torch.randn_like(output)
+    (output * weight).sum().backward()
+    assert torch.isfinite(packed_input.grad).all(), "the input gradient is not finite"
+    for name, param in module.named_parameters():
+        assert param.grad is None or torch.isfinite(param.grad).all(), f"{name} received a non-finite gradient"
+
+
+@pytest.mark.parametrize(
+    ("layer_idx", "doc_lens"),
+    [(_CSA_LAYER, _MID_WINDOW_DOCS), (_HCA_LAYER, _EXACT_MULTIPLE_DOCS)],
+    ids=["csa", "hca"],
+)
+def test_attention_packed_matches_unpacked(layer_idx, doc_lens, _torch_rms_norm):  # noqa: F811
+    """The invariant that makes the trainer agree with vLLM, one whole attention layer at a time.
+
+    Everything the layer reads past its local window comes through the compressor, so a leaking
+    entry, a misnumbered pick and a misrotated entry all show up here at once. The HCA case has no
+    indexer to narrow the damage, and at rate 8 both documents own an entry, so the second one's
+    has to be rotated at its own position rather than at its packed one.
+    """
+    _assert_attention_matches_per_document(prime_attention(layer_idx, dtype=torch.float32), doc_lens)
+
+
+@pytest.mark.parametrize(
+    ("layer_idx", "compress_rate", "doc_lens", "n_entries"),
+    [(_CSA_LAYER, _COMPRESS_RATE, _SHORT_FIRST_DOCS, 3), (_HCA_LAYER, _HCA_COMPRESS_RATE, _ALL_SHORT_DOCS, 0)],
+    ids=["csa_empty_document_beside_a_full_one", "hca_empty_row"],
+)
+def test_attention_survives_a_zero_entry_document(layer_idx, compress_rate, doc_lens, n_entries, _torch_rms_norm):  # noqa: F811
+    """A document that compressed to nothing must not turn the softmax into NaN.
+
+    Two degenerate shapes. In the CSA case the row still carries the second document's entries,
+    so the first document's queries get a compressed logit row that is masked off in full; in the
+    HCA case the whole row compressed to nothing and the block bias has zero columns, which the
+    attention block still has to concatenate onto its local mask. The local window and the
+    attention sink are what keep the softmax normalizable either way.
+    """
+    module = prime_attention(layer_idx, dtype=torch.float32)
+    hidden, _ = _fp32_hidden_states(sum(doc_lens))
+    hidden = hidden.detach()
+    position_ids = _packed_position_ids(doc_lens)
+    q_residual = module.q_a_norm(module.q_a_proj(hidden))
+
+    compressed_kv, block_bias = module.compressor(hidden, q_residual, position_ids, _layout(doc_lens, compress_rate))
+
+    assert block_bias.shape[-1] == n_entries, "vacuous probe: the row did not compress to the expected entry count"
+    if n_entries == 0:
+        assert compressed_kv.shape[2] == 0
+    else:
+        assert (block_bias[:, :, _doc_slice(doc_lens, 0)] == float("-inf")).all(), (
+            "vacuous probe: the first document was allowed to read an entry"
+        )
+
+    _assert_attention_is_finite(module, doc_lens)
+
+
+def test_model_segments_by_seq_lens_on_a_padded_row(_torch_rms_norm, monkeypatch):  # noqa: F811
+    """`seq_lens` decides the document layout, and `position_ids` restarting does not.
+
+    `pad_micro_batch` folds its padding into the last document: it extends `seq_lens[-1]` while
+    restarting `position_ids` at 0 over the pad block, so on a padded micro-batch the two disagree
+    by construction. Following the restart would cut the last rollout in two and drop the entries
+    that straddle the cut, a real capability loss on every padded step; following `seq_lens` treats
+    the padding as a continuation, which costs nothing, since causality keeps it away from every
+    real token and it is loss-masked. This is a design decision, not an accident, so it is asserted
+    directly rather than through a packing oracle.
+
+    Read off the width of the key stream each layer actually attends over, which is the local
+    window plus that layer's compressed entries, rather than off the layout builder, so it keeps
+    holding if the threading moves.
+    """
+    doc_len, pad_size = 7, 5
+    total = doc_len + pad_size
+    csa_rate = _MODEL["compress_rates"]["compressed_sparse_attention"]
+    hca_rate = _MODEL["compress_rates"]["heavily_compressed_attention"]
+    by_seq_lens = {
+        "sliding_attention": 0,
+        "compressed_sparse_attention": total // csa_rate,
+        "heavily_compressed_attention": total // hca_rate,
+    }
+    by_restart = {
+        "compressed_sparse_attention": doc_len // csa_rate + pad_size // csa_rate,
+        "heavily_compressed_attention": doc_len // hca_rate + pad_size // hca_rate,
+    }
+    assert by_restart != {key: by_seq_lens[key] for key in by_restart}, "the two segmentations must disagree"
+
+    recorded: list[int] = []
+    real_attention = dsv4_attention.eager_attention_with_sinks
+
+    def record(query, key, value, sinks, attention_mask, **kwargs):
+        recorded.append(key.shape[2])
+        return real_attention(query, key, value, sinks, attention_mask, **kwargs)
+
+    monkeypatch.setattr(dsv4_attention, "eager_attention_with_sinks", record)
+
+    model = get_prime_model(torch.float32)
+    input_ids = torch.randint(0, _MODEL["vocab_size"], (1, total), device="cuda")
+    position_ids = torch.cat([torch.arange(doc_len, device="cuda"), torch.arange(pad_size, device="cuda")])
+    model(input_ids, position_ids=position_ids.unsqueeze(0), seq_lens=torch.tensor([total], device="cuda"))
+
+    assert len(recorded) == _MODEL["num_hidden_layers"]
+    for layer_idx, layer_type in enumerate(_MODEL["layer_types"]):
+        expected = total + by_seq_lens[layer_type]
+        assert recorded[layer_idx] == expected, (
+            f"layer {layer_idx} ({layer_type}) attends over {recorded[layer_idx]} keys, not {expected}: "
+            "the compressed entries follow the position_ids restart rather than seq_lens"
+        )

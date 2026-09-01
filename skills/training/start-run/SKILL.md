@@ -95,46 +95,6 @@ curl http://localhost:8000/v1/chat/completions \
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
 
-### DeepSeek V4
-
-The `examples/advanced/deepseek-v4-flash/*.toml` configs already carry everything below, so prefer
-`uv run inference @ examples/advanced/deepseek-v4-flash/inference.toml` over assembling flags by
-hand. Upstream reference: https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash
-
-- `kv_cache_dtype = "fp8"` is **architectural, not per-machine**. Every DeepSeek V4 attention class
-  sets `use_fp8_ds_mla_layout = True`, and the layout then asserts "DeepseekV4 fp8_ds_mla layout
-  only supports fp8 kv-cache" against the `auto` default. Pair it with `block_size = 256`, which
-  every NVIDIA configuration in the vLLM recipe uses.
-- **No chat template is needed.** The checkpoint ships none, and none is required: vLLM
-  auto-selects `tokenizer_mode = "deepseek_v4"` from the architecture and renders through
-  `DeepseekV4Renderer`, which wraps DeepSeek's own encoder. Do not write, vendor or invent one.
-- `tool_call_parser`/`reasoning_parser` resolve to `deepseek_v4` from the model name via
-  `utils/parsers.py`. Without the reasoning parser, `<think>` content is not split out of
-  `content`.
-- CUDA >= 12.3 on `CUDA_HOME`/`PATH` for the TileLang kernel JIT, **if** the machine's default
-  `nvcc` is older (it was 11.5 on the SM120 dev box; check before assuming).
-
-If boot fails: try `--vllm.enforce-eager` first, which skips CUDA-graph capture.
-
-`use_deep_gemm = true` is set by every `deepseek-v4-flash` config and is required, not an
-optimization. Without it `VLLM_USE_DEEP_GEMM=0`, and two things break: the
-manifold-hyper-connection pre-norm GEMM falls back to a TileLang kernel measured silently wrong
-above 1024 tokens per forward **on SM120**, and the real checkpoint's UE8M0-scaled fp8 weights
-route to a CUTLASS kernel that crashes during the memory-profiling forward pass. Budget for the
-first-boot JIT: roughly 1261 kernels, measured at ~12 min.
-
-Do **not** pass `--vllm.quantization`.
-
-There is no longer a `deep_gemm` import error to work around. The pinned wheel needs
-`libcudart.so.13`, which the stack lacked while it was CUDA 12, so it used to fail to import and
-vLLM fell back to its own vendored DeepGEMM. Since the CUDA 13 bump the pinned build imports and
-is what actually runs, which matters because it carries no SM120 kernels for the block-scaled FP8
-GEMMs, the UE8M0 scale transform, the hyper-connection GEMM or the paged MQA logits. See `TODO.md`
-before running this on Blackwell consumer parts.
-
-For RL, set `[weight_broadcast] type = "filesystem"`. NCCL and NIXL need
-`convert_layer_to_vllm_kernel`, which the DeepSeek V4 port does not implement.
-
 ## `evals` — multi-env evals
 
 Runs the configured eval sources against a live inference server. Standalone (no `[online]` block): one epoch of every source against the served weights, then exit. Add `[ckpt]` (`interval` counts completed task groups in the eval-source order) to make the run interruptible, then use `--resume`, `--resume.step N`, or `--resume.dir path/to/checkpoints/step_N`; for standalone evals, checkpoint step N means resume from task cursor N. Checkpoints store only the cursor, not generated episode records; partially completed groups and groups beyond the durable cursor are retried. Resume loads without `[ckpt]` but does not save new checkpoints. Checkpoint/resume is rejected with `[online]` because that process is coupled to the trainer's live broadcast handshake. With `[online]` (`broadcasts_dir`, `max_steps`, `resume_step`): watch the broadcasts dir for stable `step_{n}` weight broadcasts and evaluate each — the `sft` launcher writes this config for online evals. By default a newer checkpoint cancels unfinished episodes from the prior eval. Set `eval.cancel_on_new_checkpoint = false` to drain every epoch. The trainer can idle while it waits for slow evals. Launcher-managed SFT evals use NCCL weight broadcast by default, including multi-node SLURM deployments. LoRA and external inference use filesystem broadcast.
