@@ -8,7 +8,7 @@ import torch.distributed as dist
 from torch import Tensor
 
 from prime_rl import monitors
-from prime_rl.monitors.trace_updates import make_update
+from prime_rl.monitors.file.traces.update import make_update
 
 
 class AnnotationWriter:

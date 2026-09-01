@@ -14,7 +14,7 @@ from typing import Any
 import verifiers.v1 as vf
 
 from prime_rl.monitors.base import Kind
-from prime_rl.monitors.trace_updates import make_update
+from prime_rl.monitors.file.traces.update import make_update
 
 
 def stamp_arrival(episodes: list[vf.Episode], kind: Kind, step: int) -> None:

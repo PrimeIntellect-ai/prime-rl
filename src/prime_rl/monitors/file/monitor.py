@@ -10,8 +10,9 @@ import orjson
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
-from prime_rl.monitors.trace_index import index_row
-from prime_rl.monitors.trace_updates import update_index_row
+from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
+from prime_rl.monitors.file.traces.index import index_row
+from prime_rl.monitors.file.traces.update import update_index_row
 from prime_rl.utils.pathing import get_file_monitor_dir
 from prime_rl.utils.utils import sanitize
 
@@ -19,28 +20,6 @@ if TYPE_CHECKING:
     import verifiers.v1 as vf
 
 OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
-
-
-def get_trace_dir(output_dir: Path) -> Path:
-    """The trace stream and everything written about it, under one roof so nothing
-    beside it has to be read as belonging to it."""
-    return get_file_monitor_dir(output_dir) / "traces"
-
-
-def get_trace_stream(output_dir: Path) -> Path:
-    """Every episode, appended as it arrives."""
-    return get_trace_dir(output_dir) / "stream.jsonl"
-
-
-def get_annotations_dir(output_dir: Path) -> Path:
-    """One file per producer of trace updates: orch ship-time facts, trainer streams."""
-    return get_trace_dir(output_dir) / "annotations"
-
-
-def get_index_path(path: Path) -> Path:
-    """A stream's index, beside it. Every index under the trace directory is named for
-    what it indexes, so a reader pairs the two without knowing who wrote them."""
-    return path.with_name(path.name.replace(".jsonl", ".index.jsonl"))
 
 
 class FileMonitor(Monitor):
