@@ -257,7 +257,7 @@ def train(config: TrainerConfig):
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
-    trace_annotation_writer = TraceAnnotationWriter(config.output_dir, parallel_dims, world)
+    trace_annotation_writer = TraceAnnotationWriter(parallel_dims, world)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -537,7 +537,7 @@ def train(config: TrainerConfig):
                 for env_name, indices in mismatch_env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
-            trace_annotation_writer.export(progress.step, micro_batch, out)
+            trace_annotation_writer.export(micro_batch, out)
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)

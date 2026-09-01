@@ -5,26 +5,17 @@ is an update naming the trace: an ``info`` dict merged into the trace's own, plu
 per-token streams over a branch, full-length across the branch's token prefix (nulls
 mark unknown positions, so a stream never depends on the producer's loss mask).
 
-Each producer appends its own file under a step's ``annotations/`` directory, so
-every file has exactly one writer. Readers fold the updates onto the arrival records
-in write order, newest wins.
+Each producer appends its own file under the file monitor's ``annotations/``
+directory, so every file has exactly one writer. Readers fold the updates onto the
+arrival records in write order, newest wins.
 """
 
-from pathlib import Path
 from typing import Any
 
 UPDATE_VERSION = 1
 
-PRODUCERS = ("orchestrator", "trainer")
-"""Annotation producers, in fold order: the orchestrator ships before the trainer trains."""
-
 STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies")
 """Per-token streams an update may carry, compacted onto node fields of the same name."""
-
-
-def annotations_path(kind_traces_dir: Path, producer: str) -> Path:
-    """One producer's annotation file for a step's traces of one kind."""
-    return kind_traces_dir / "annotations" / f"{producer}.jsonl"
 
 
 def make_update(

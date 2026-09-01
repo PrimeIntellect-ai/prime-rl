@@ -145,7 +145,6 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 advantages=branch.advantages,
                 trace_id=trace.id,
                 branch_index=branch.index,
-                logged_at_step=(trace.info.get("train") or {}).get("logged_at_step"),
             )
         )
     if not samples:

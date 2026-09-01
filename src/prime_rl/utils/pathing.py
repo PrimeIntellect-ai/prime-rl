@@ -208,14 +208,10 @@ def get_batch_dir(output_dir: Path) -> Path:
     return output_dir / "batches"
 
 
-def get_traces_dir(output_dir: Path) -> Path:
-    return output_dir / "traces"
-
-
-def get_kind_traces_dir(output_dir: Path, step: int, kind: str) -> Path:
-    """One step's directory for one kind of work: ``traces.jsonl`` holds the episodes
-    as they arrive, ``annotations/`` the post-hoc trace updates about them."""
-    return get_step_path(get_traces_dir(output_dir), step) / kind
+def get_file_monitor_dir(output_dir: Path) -> Path:
+    """Everything the file monitor dumps locally: the metrics and trace streams,
+    and the annotations about them."""
+    return output_dir / "monitors" / "file"
 
 
 def get_eval_dir(output_dir: Path) -> Path:
@@ -321,7 +317,6 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
     """
     cleanup_rules = [
         (get_batch_dir(output_dir), lambda step: step > resume_step),
-        (get_traces_dir(output_dir), lambda step: step > resume_step),
         (get_broadcast_dir(output_dir), lambda step: step >= resume_step),
     ]
 

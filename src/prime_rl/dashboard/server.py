@@ -24,8 +24,9 @@ import orjson
 
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
 from prime_rl.utils.config import default_output_dir
+from prime_rl.utils.pathing import get_file_monitor_dir
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.trace_updates import PRODUCERS, annotations_path, branch_node_paths, fold_trace_updates
+from prime_rl.utils.trace_updates import branch_node_paths, fold_trace_updates
 
 try:
     import uvicorn
@@ -521,54 +522,33 @@ def read_metrics(run: str, offset: int = 0) -> dict:
 # ------------------------------------------------------------------------ rollouts
 
 
-RECENT_STEPS = 64
-_avail_cache: dict[Path, dict[str, bool]] = {}  # step dir -> known-present subsets
-_avail_scan_counter = 0
-
-
-EVAL_ROOT_STEP = (0, "eval", "all")
-"""The virtual address of a stepless `uv run eval` run's root traces.jsonl —
-the one convention shared by the step listing and traces_path."""
-
-
-def eval_root_traces(run_dir: Path) -> Path | None:
-    root = run_dir / "traces.jsonl"
-    return root if root.is_file() and root.stat().st_size > 0 else None
+def traces_file(run_dir: Path) -> Path | None:
+    """The run's episode stream. prime-rl dumps it through the file monitor; a
+    verifiers ``uv run eval`` run writes the same file at its root."""
+    for path in (get_file_monitor_dir(run_dir) / "traces.jsonl", run_dir / "traces.jsonl"):
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+    return None
 
 
 def rollout_steps(run_dir: Path) -> list[dict]:
-    """Presence only — never reads trace files. Presence is monotonic (files only
-    appear), so known-present subsets are cached forever; absent ones re-stat every
-    poll only for the newest steps — older gaps (an eval landing late at its trigger
-    step, or annotations trailing their traces) are picked up by a full rescan every
-    10th call. ``effective`` is coarse: it marks a kind as soon as the step has any
-    orchestrator annotations, and the episode listing does the exact filtering."""
-    global _avail_scan_counter
-    _avail_scan_counter += 1
-    full_rescan = _avail_scan_counter % 10 == 1
-    numbered = numbered_dirs(run_dir / "traces", "step_")
-    recent_cutoff = numbered[-1][0] - RECENT_STEPS if numbered else 0
-    steps = []
-    for number, step_dir in numbered:
-        available = _avail_cache.setdefault(step_dir, {})
-        if len(available) < 4 and (full_rescan or number >= recent_cutoff):
-            for kind in ("train", "eval"):
-                kind_dir = step_dir / kind
-                path = kind_dir / "traces.jsonl"
-                if f"{kind}/all" not in available and path.is_file() and path.stat().st_size > 0:
-                    available[f"{kind}/all"] = True
-                if (
-                    f"{kind}/effective" not in available
-                    and f"{kind}/all" in available
-                    and (kind_dir / "annotations" / "orchestrator.jsonl").is_file()
-                ):
-                    available[f"{kind}/effective"] = True
-        if available:
-            steps.append({"step": number, "available": available})
-    root = eval_root_traces(run_dir)
-    if not steps and root is not None:
-        steps.append({"step": EVAL_ROOT_STEP[0], "available": {f"{EVAL_ROOT_STEP[1]}/{EVAL_ROOT_STEP[2]}": True}})
-    return steps
+    """The steps a cohort can be addressed by, per kind.
+
+    Only ``effective`` ties to a step — the orchestrator step whose batch shipped the
+    trace, or for eval the policy version it measured — so the steps come from the
+    annotations. ``all`` is the whole arrival-ordered stream and ignores the step; it
+    is offered on every listed step so the subset toggle always works."""
+    if traces_file(run_dir) is None:
+        return []
+    by_step: dict[int, dict[str, bool]] = {}
+    for kind, step in effective_steps(run_dir):
+        by_step.setdefault(step, {})[f"{kind}/effective"] = True
+    if not by_step:
+        by_step[0] = {}
+    for available in by_step.values():
+        for kind in episode_kinds(run_dir):
+            available[f"{kind}/all"] = True
+    return [{"step": step, "available": available} for step, available in sorted(by_step.items())]
 
 
 def line_offsets(path: Path) -> list[int]:
@@ -682,6 +662,8 @@ def summarize_episode(line: int, rec: dict) -> dict:
         "cost": sum(costs) if costs else None,
         "line": line,
         "id": rec.get("id"),
+        "kind": ((rec.get("run") or {}).get("work") or {}).get("type") or (rec.get("run") or {}).get("type") or "train",
+        "dispatch_step": ((rec.get("run") or {}).get("work") or {}).get("step"),
         "trace_ids": [trace_id for trace in rec.get("traces") or [] if (trace_id := trace.get("id"))],
         "env": (rec.get("env") or {}).get("id") or (rec.get("env") or {}).get("name"),
         "group": (rec.get("group") or {}).get("id"),
@@ -732,7 +714,7 @@ def episode_summaries(path: Path) -> list[dict]:
 # result is persisted outside the run dir (the dashboard never writes there),
 # so a revisit — or a dashboard restart — skips the parse entirely.
 SIDECAR_DIR = STATE_DIR
-SIDECAR_FORMAT = 2
+SIDECAR_FORMAT = 3
 SIDECAR_WRITE_INTERVAL_S = 20.0
 _sidecar_written: dict[Path, tuple[float, int]] = {}  # path -> (last write time, count)
 
@@ -790,26 +772,15 @@ def write_sidecar(path: Path, summaries: list[dict]) -> None:
     tmp.replace(target)
 
 
-def kind_traces_dir(run_dir: Path, step: int, kind: str) -> Path:
-    """One step's directory for one kind of work: episodes plus their annotations."""
-    return run_dir / "traces" / f"step_{step}" / kind
-
-
 def traces_path(run: str, step: int, kind: str, subset: str) -> Path:
-    """The arrival file for one step and kind. ``subset`` never changes the file —
-    every episode is on disk exactly once — it selects the read-time filter: the
-    ``effective`` listing keeps only episodes with orchestrator annotations."""
+    """The run's episode stream. ``step``/``kind``/``subset`` never select a file —
+    every episode is on disk exactly once — they select the read-time filter."""
     if kind not in ("train", "eval") or subset not in ("all", "effective"):
         raise HTTPException(400, "kind must be train|eval, subset all|effective")
-    run_dir = get_run_dir(run)
-    path = kind_traces_dir(run_dir, step, kind) / "traces.jsonl"
-    if path.is_file():
-        return path
-    if (step, kind, subset) == EVAL_ROOT_STEP:
-        root = eval_root_traces(run_dir)
-        if root is not None:
-            return root
-    raise HTTPException(404, "no traces for this step/kind")
+    path = traces_file(get_run_dir(run))
+    if path is None:
+        raise HTTPException(404, "no traces for this run")
+    return path
 
 
 def read_episode_record(path: Path, line: int) -> dict:
@@ -855,20 +826,26 @@ def _file_size(path: Path) -> int:
         return -1
 
 
-def step_annotations(run_dir: Path, step: int, kind: str) -> dict[str, list[dict]]:
-    """Trace updates for one step's traces of one kind, by trace id, in write order
-    (orchestrator before trainer). Cached by the annotation files' sizes — they are
-    append-only, so unchanged sizes mean an unchanged index."""
-    kind_dir = kind_traces_dir(run_dir, step, kind)
-    key = tuple(_file_size(annotations_path(kind_dir, producer)) for producer in PRODUCERS)
+def annotations_files(run_dir: Path) -> list[Path]:
+    annotations_dir = get_file_monitor_dir(run_dir) / "annotations"
+    return sorted(annotations_dir.glob("*.jsonl")) if annotations_dir.is_dir() else []
+
+
+def run_annotations(run_dir: Path) -> dict[str, list[dict]]:
+    """Every trace update for the run, by trace id, in producer order. Cached by the
+    annotation files' sizes — they are append-only, so unchanged sizes mean an
+    unchanged index."""
+    files = annotations_files(run_dir)
+    key = tuple((path.name, _file_size(path)) for path in files)
+    cache_key = get_file_monitor_dir(run_dir) / "annotations"
     with _lock:
-        cached = _lru_get(_annotations_cache, kind_dir)
+        cached = _lru_get(_annotations_cache, cache_key)
         if cached and cached[0] == key:
             return cached[1]
     index: dict[str, list[dict]] = {}
-    for producer in PRODUCERS:
+    for path in files:
         try:
-            lines = annotations_path(kind_dir, producer).read_bytes().splitlines()
+            lines = path.read_bytes().splitlines()
         except OSError:
             continue
         for raw in lines:
@@ -881,8 +858,20 @@ def step_annotations(run_dir: Path, step: int, kind: str) -> dict[str, list[dict
             if trace_id := update.get("trace_id"):
                 index.setdefault(trace_id, []).append(update)
     with _lock:
-        _lru_put(_annotations_cache, kind_dir, (key, index))
+        _lru_put(_annotations_cache, cache_key, (key, index))
     return index
+
+
+def trace_ship_steps(run_dir: Path) -> dict[str, int]:
+    """Trace id -> the step its cohort shipped at, for traces marked effective."""
+    steps: dict[str, int] = {}
+    for trace_id, updates in run_annotations(run_dir).items():
+        for update in updates:
+            info = update.get("info") or {}
+            step = (info.get("ship") or {}).get("step")
+            if info.get("effective") and isinstance(step, int):
+                steps[trace_id] = step
+    return steps
 
 
 def ipo_eps(run_dir: Path) -> float:
@@ -1143,39 +1132,61 @@ def list_rollouts(run: str) -> dict:
     return {"steps": rollout_steps(get_run_dir(run))}
 
 
-def subset_etag(run_dir: Path, step: int, kind: str, subset: str, path: Path) -> str:
-    """The effective listing also changes when annotations grow, so its etag
-    covers the orchestrator annotation file's size too."""
+def subset_etag(run_dir: Path, subset: str, path: Path) -> str:
+    """The effective listing also moves when annotations grow, so its etag covers
+    their total size too."""
     tag = str(path.stat().st_size)
     if subset == "effective":
-        tag += f"-{_file_size(annotations_path(kind_traces_dir(run_dir, step, kind), 'orchestrator'))}"
+        tag += f"-{sum(_file_size(file) for file in annotations_files(run_dir))}"
     return tag
 
 
-def effective_summaries(run_dir: Path, step: int, kind: str, summaries: list[dict]) -> list[dict]:
-    """Episodes with at least one trace the orchestrator marked effective — the
-    ship-time cohort — keeping their arrival-file line numbers and merging in the
-    scalar advantage (arrival records carry none). The marker also separates the
-    orchestrator's records from the trainer's in the same annotations directory."""
-    effective_ids: set[str] = set()
-    advantage_by_id: dict[str, float] = {}
-    for trace_id, trace_updates in step_annotations(run_dir, step, kind).items():
-        for update in trace_updates:
-            info = update.get("info") or {}
-            if (info.get(kind) or {}).get("effective"):
-                effective_ids.add(trace_id)
-            if isinstance(info.get("advantage"), (int, float)):
-                advantage_by_id[trace_id] = info["advantage"]
-    rows = []
-    for summary in summaries:
-        hits = [trace_id for trace_id in summary.get("trace_ids") or [] if trace_id in effective_ids]
+def episode_kinds(run_dir: Path) -> list[str]:
+    """The kinds of work the stream holds, for the kind toggle."""
+    path = traces_file(run_dir)
+    kinds = {summary.get("kind") for summary in episode_summaries(path)} if path is not None else set()
+    return [kind for kind in ("train", "eval") if kind in kinds]
+
+
+def effective_steps(run_dir: Path) -> set[tuple[str, int]]:
+    """The (kind, step) pairs an effective cohort can be addressed by."""
+    path = traces_file(run_dir)
+    if path is None:
+        return set()
+    ship_steps = trace_ship_steps(run_dir)
+    return {
+        (summary.get("kind"), step)
+        for summary in episode_summaries(path)
+        for trace_id in summary.get("trace_ids") or []
+        if (step := ship_steps.get(trace_id)) is not None
+    }
+
+
+def select_summaries(run_dir: Path, step: int, kind: str, subset: str, summaries: list[dict]) -> list[dict]:
+    """The rows one address selects out of the stream.
+
+    ``all`` is every episode of that kind, in arrival order — a stream, so the step
+    does not narrow it. ``effective`` keeps the episodes whose cohort shipped at this
+    step and merges in the ship-time scalar advantage, which arrival records cannot
+    carry: credit is assigned after the episode lands."""
+    rows = [summary for summary in summaries if summary.get("kind") == kind]
+    if subset == "all":
+        return rows
+    ship_steps = trace_ship_steps(run_dir)
+    advantages = {
+        trace_id: info["advantage"]
+        for trace_id, updates in run_annotations(run_dir).items()
+        for update in updates
+        if isinstance((info := update.get("info") or {}).get("advantage"), (int, float))
+    }
+    selected = []
+    for summary in rows:
+        hits = [trace_id for trace_id in summary.get("trace_ids") or [] if ship_steps.get(trace_id) == step]
         if not hits:
             continue
-        advantages = [advantage_by_id[trace_id] for trace_id in hits if trace_id in advantage_by_id]
-        if advantages:
-            summary = {**summary, "advantage": sum(advantages) / len(advantages)}
-        rows.append(summary)
-    return rows
+        scored = [advantages[trace_id] for trace_id in hits if trace_id in advantages]
+        selected.append({**summary, "advantage": sum(scored) / len(scored)} if scored else summary)
+    return selected
 
 
 @app.get("/api/runs/{run}/rollouts/{step}/{kind}/{subset}")
@@ -1194,12 +1205,10 @@ def list_episodes(
 ) -> dict:
     run_dir = get_run_dir(run)
     path = traces_path(run, step, kind, subset)
-    current_etag = subset_etag(run_dir, step, kind, subset, path)
+    current_etag = subset_etag(run_dir, subset, path)
     if etag is not None and etag == current_etag:
         return {"unchanged": True, "etag": current_etag}
-    summaries = episode_summaries(path)
-    if subset == "effective":
-        summaries = effective_summaries(run_dir, step, kind, summaries)
+    summaries = select_summaries(run_dir, step, kind, subset, episode_summaries(path))
     envs = sorted({s["env"] for s in summaries if s.get("env")})
     if episode is not None:
         summaries = [s for s in summaries if s.get("id") == episode]
@@ -1298,12 +1307,10 @@ def episode_series(run: str, step: int, kind: str, subset: str, etag: str | None
     only episodes past that index, so a growing file ships increments, not the world."""
     run_dir = get_run_dir(run)
     path = traces_path(run, step, kind, subset)
-    current_etag = subset_etag(run_dir, step, kind, subset, path)
+    current_etag = subset_etag(run_dir, subset, path)
     if etag is not None and etag == current_etag:
         return {"unchanged": True, "etag": current_etag}
-    summaries = episode_summaries(path)
-    if subset == "effective":
-        summaries = effective_summaries(run_dir, step, kind, summaries)
+    summaries = select_summaries(run_dir, step, kind, subset, episode_summaries(path))
     keys: set[str] = set()
     for s in summaries:
         keys.update(
@@ -1345,7 +1352,7 @@ def get_episode(
     path = traces_path(run, step, kind, subset)
     rec = read_episode_at(path, line)
     run_dir = get_run_dir(run)
-    annotations = step_annotations(run_dir, step, kind)
+    annotations = run_annotations(run_dir)
     if annotations:
         for trace in rec.get("traces") or []:
             updates = annotations.get(trace.get("id") or "")

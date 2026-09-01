@@ -10,22 +10,29 @@ import orjson
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
-from prime_rl.utils.pathing import get_kind_traces_dir
-from prime_rl.utils.trace_updates import annotations_path, make_update
+from prime_rl.utils.pathing import get_file_monitor_dir
+from prime_rl.utils.trace_updates import make_update
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
+OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
 
-def _effective_update(trace: vf.Trace, kind: Kind, step: int) -> dict[str, Any]:
-    """The post-hoc facts the ship-time cohort adds over the arrival record, as a
-    TraceUpdate: cohort membership, the scalar advantage, the per-token advantage
-    streams, and (for train) the step the trace was trained at."""
-    kind_info: dict[str, Any] = {"effective": True}
-    if kind == "train":
-        kind_info["trained_at_step"] = step
-    info: dict[str, Any] = {kind: kind_info}
+
+def _ship_step(episode: vf.Episode, step: int) -> int:
+    """The step an episode's cohort ties to: the orchestrator step whose batch shipped
+    it for train work, the policy version it measured for eval work."""
+    work = getattr(episode.run, "work", None)
+    if work is not None and work.type == "eval" and work.policy is not None:
+        return work.policy.start
+    return step
+
+
+def _effective_update(trace: vf.Trace, step: int, now: float) -> dict[str, Any]:
+    """What the ship-time cohort adds over the arrival record: membership, the step
+    the cohort ties to, the scalar advantage, and the per-token advantage streams."""
+    info: dict[str, Any] = {"effective": True, "ship": {"step": step, "time": now}}
     if (advantage := trace.info.get("advantage")) is not None:
         info["advantage"] = advantage
     branches = {
@@ -45,7 +52,7 @@ class FileMonitor(Monitor):
     async def init(self, output_dir: Path, producer: str | None = None) -> None:
         self.output_dir = output_dir
         self.producer = producer
-        self.path = output_dir / self.config.path
+        self.path = get_file_monitor_dir(output_dir) / self.config.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
@@ -66,44 +73,52 @@ class FileMonitor(Monitor):
         self.file.write(json.dumps(row) + "\n")
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
-        """``all`` appends each episode to ``traces/step_<n>/<kind>/traces.jsonl`` as it
-        completes, so an in-progress run can be inspected live; every episode is
-        serialized exactly once, at arrival. ``effective`` writes no second copy: it
-        appends TraceUpdate records to the sibling ``annotations/orchestrator.jsonl``,
-        carrying what the ship-time cohort learned (see ``_effective_update``); readers
-        fold them onto the arrival records. Episode-level failures are preserved even
-        when no trace was produced."""
+        """``all`` appends each episode to the trace stream as it completes — every
+        episode is serialized exactly once, in arrival order, whatever its kind, so an
+        in-progress run can be tailed. ``effective`` writes no second copy: it records
+        what the ship-time cohort learned (see ``_effective_update``) as annotations
+        that readers fold back onto the stream. Episode-level failures are preserved
+        even when no trace was produced."""
+        if subset == "effective":
+            now = time.time()
+            await self.log_annotations(
+                [
+                    _effective_update(trace, _ship_step(episode, step), now)
+                    for episode in episodes
+                    for trace in episode.traces
+                ]
+            )
+            return
 
         def write() -> None:
-            opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
-            if subset == "all":
-                path = get_kind_traces_dir(self.output_dir, step, kind) / "traces.jsonl"
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with open(path, "ab") as f:
-                    for episode in episodes:
-                        if kind == "train":
-                            # Annotations key back to this file; the ship site reads the stamp
-                            # to place them, since arrival step != ship step under lag.
-                            for trace in episode.traces:
-                                trace.info.setdefault("train", {})["logged_at_step"] = step
-                        f.write(orjson.dumps(episode.to_record(), default=str, option=opts))
-                return
-            updates_by_step: dict[int, list[dict[str, Any]]] = {}
-            for episode in episodes:
-                for trace in episode.traces:
-                    logged_step = step
-                    if kind == "train":
-                        logged_step = (trace.info.get("train") or {}).get("logged_at_step", step)
-                    updates_by_step.setdefault(logged_step, []).append(_effective_update(trace, kind, step))
-            for logged_step, updates in updates_by_step.items():
-                path = annotations_path(get_kind_traces_dir(self.output_dir, logged_step, kind), "orchestrator")
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with open(path, "ab") as f:
-                    for update in updates:
-                        f.write(orjson.dumps(update, option=opts))
+            now = time.time()
+            path = get_file_monitor_dir(self.output_dir) / "traces.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "ab") as f:
+                for episode in episodes:
+                    # Steps are facts about events, not about the trace: dispatch rides
+                    # ``run.work``, this is when the orchestrator saw the episode come back.
+                    for trace in episode.traces:
+                        trace.info["arrival"] = {"step": step, "time": now}
+                    f.write(orjson.dumps(episode.to_record(), default=str, option=OPTS))
 
         # Record serialization is heavy pure-Python work; keep it off the event loop.
         # Awaited (not fire-and-forget) so appends to one file never interleave.
+        await asyncio.to_thread(write)
+
+    async def log_annotations(self, updates: list[dict[str, Any]]) -> None:
+        """Append trace updates to this producer's annotation file — one writer per
+        file, so producers never interleave."""
+        if not updates:
+            return
+
+        def write() -> None:
+            path = get_file_monitor_dir(self.output_dir) / "annotations" / f"{self.producer or 'unknown'}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "ab") as f:
+                for update in updates:
+                    f.write(orjson.dumps(update, option=OPTS))
+
         await asyncio.to_thread(write)
 
     async def finalize(self) -> None:
