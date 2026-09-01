@@ -103,7 +103,7 @@
           <label class="toggle dd-row"><input type="checkbox" id="trace-errors"><span class="dot"></span>errors only</label>
         </div>
       </div>
-      <select id="trace-sort" title="sort">
+      <select id="trace-sort" title="sort" data-label="sort">
         <option value="arrival:desc">newest first</option>
         <option value="arrival:asc">oldest first</option>
         <option value="group:asc">group</option>
@@ -204,7 +204,7 @@
       </div>
     </div>
     <div class="tm-head tm-ctlrow">
-      <select id="tm-sort" title="sort">
+      <select id="tm-sort" title="sort" data-label="sort">
         <option value="arrival:desc">newest first</option>
         <option value="arrival:asc">oldest first</option>
         <option value="group:asc">group</option>
@@ -240,11 +240,12 @@
         <button data-mode="messages" class="active">Messages</button>
         <button data-mode="rendered">Rendered</button>
       </div>
-      <select id="token-signal" title="Choose the token signal for either view. Text is uncolored; other options color recorded tokens by advantage, loss/content mask membership, or the trainer's annotations (entropy, and the mismatch between its recomputed logprobs and the sampling ones).">
+      <select id="token-signal" title="Choose the token signal for either view. Text is uncolored; other options color recorded tokens by advantage, loss/content mask membership, or the trainer's annotations (entropy, the mismatch between its recomputed logprobs and the sampling ones, and the IPO stable mask).">
         <option value="">Text</option>
         <option value="advantage">Advantage</option>
         <option value="entropy">Entropy</option>
         <option value="mismatch_kl">Mismatch</option>
+        <option value="stable_mask">Stable mask</option>
         <option value="mask">Loss Mask</option>
         <option value="is_content">Content Mask</option>
       </select>

@@ -1149,3 +1149,5 @@ details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pu
 #hist-tip .tip-head { color: var(--accent); margin-bottom: 4px; }
 #hist-tip .tip-row { display: flex; justify-content: space-between; gap: 14px; }
 #hist-tip .tip-row span:first-child { color: var(--grey-4); }
+
+.dd-select .dd-btn .dd-label { text-transform: uppercase; font-weight: 400; color: var(--grey-4); }

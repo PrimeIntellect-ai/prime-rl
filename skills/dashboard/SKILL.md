@@ -78,7 +78,8 @@ episode, newest first, paged as you scroll, with a chart of episodes finished
 per interval you can click to narrow to a moment — and `subset: "effective"`
 switches it to step mode, which shows the cohort that shipped at one step (for
 eval work, the policy version it measured). Per-token overlays cover advantage,
-entropy, the trainer/inference logprob mismatch, and the loss and content masks. Use optional `trace` and `branch` indices
+entropy, the trainer/inference logprob mismatch, the IPO stable mask, and the loss
+and content masks. Use optional `trace` and `branch` indices
 for multi-agent traces and `highlight` entries shaped as `{node, quote,
 reason, field?}`. On `409`, tell the user to open the returned `url`; the stored
 command applies when the tab connects.

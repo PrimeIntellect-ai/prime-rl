@@ -2195,6 +2195,10 @@ let traceView = prefs.traceView === "timeline" ? "timeline" : "transcript";
 let pendingTimelineNode = null;
 let pendingTimelineCall = null;
 
+const SORT_SVG =
+  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+  '<path d="M3 6h11M3 12h8M3 18h5"></path><path d="M18 7v11M15 15l3 3 3-3"></path></svg>';
+
 const COPY_SVG =
   `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">` +
   `<rect x="9" y="9" width="12" height="12"></rect><path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>`;
@@ -2450,7 +2454,7 @@ function episodeSignalScales(trace) {
         maxKl = Math.max(maxKl, Math.exp(dlp) - dlp - 1);
       }
   }
-  return { maxAbsAdv, maxEntropy, maxKl };
+  return { maxAbsAdv, maxEntropy, maxKl, eps: trace.train_annotations?.eps ?? 0.1 };
 }
 
 function renderTokenNode(node, signal, scales) {
@@ -2466,6 +2470,7 @@ function renderTokenNode(node, signal, scales) {
     const trainerLp = trainerLpAt(i), entropy = entropyAt(i);
     const dlp = trainerLp != null && logprob != null ? trainerLp - logprob : null;
     const kl = dlp != null ? Math.exp(dlp) - dlp - 1 : null;
+    const probDelta = dlp != null ? Math.exp(trainerLp) - Math.exp(logprob) : null;
     let bg = "";
     if (signal === "advantage" && advantage != null && scales.maxAbsAdv > 0) {
       const alpha = Math.min(1, Math.abs(advantage) / scales.maxAbsAdv) * 0.45;
@@ -2474,6 +2479,12 @@ function renderTokenNode(node, signal, scales) {
       bg = `background:rgba(94,234,212,${(Math.min(1, entropy / scales.maxEntropy) * 0.5).toFixed(3)})`;
     } else if (signal === "mismatch_kl" && kl != null && scales.maxKl > 0) {
       bg = `background:rgba(255,69,57,${(Math.min(1, kl / scales.maxKl) * 0.55).toFixed(3)})`;
+    } else if (signal === "stable_mask" && probDelta != null) {
+      // the IPO mask: a token whose probability moved further than eps is dropped
+      bg =
+        probDelta > scales.eps ? "background:rgba(255,69,57,0.35)"
+        : probDelta < -scales.eps ? "background:rgba(255,176,32,0.35)"
+        : "background:rgba(74,158,255,0.15)";
     } else if (signal === "mask" && node.mask?.[i]) {
       bg = "background:rgba(74,158,255,0.3)";
     } else if (signal === "is_content" && node.is_content?.[i]) {
@@ -2482,9 +2493,13 @@ function renderTokenNode(node, signal, scales) {
     let tip = `#${i} id=${id}`;
     if (signal === "advantage" && advantage != null) tip += ` adv=${fmtNum(advantage)}`;
     else if (signal === "entropy" && entropy != null) tip += ` H=${entropy.toFixed(4)} nats`;
-    // the mismatch is the whole comparison: both logprobs, their gap, and the k3 estimator
     else if (signal === "mismatch_kl" && kl != null)
-      tip += ` trainer=${trainerLp.toFixed(4)} inference=${logprob.toFixed(4)} Δ=${dlp.toFixed(4)} kl=${kl.toFixed(6)}`;
+      tip += ` trainer=${trainerLp.toFixed(4)} inference=${logprob.toFixed(4)} kl=${kl.toFixed(6)}`;
+    // the mask reads in probabilities, since eps is a probability distance
+    else if (signal === "stable_mask" && probDelta != null)
+      tip +=
+        ` p_trainer=${Math.exp(trainerLp).toFixed(4)} p_inference=${Math.exp(logprob).toFixed(4)}` +
+        ` Δp=${probDelta.toFixed(4)} eps=${scales.eps} ${Math.abs(probDelta) > scales.eps ? `masked ${probDelta > 0 ? "high" : "low"}` : "kept"}`;
     else if (signal === "mask") tip += ` mask=${node.mask?.[i] ?? "?"}`;
     else if (signal === "is_content") tip += ` content=${node.is_content?.[i] ?? "?"}`;
     return `<span class="tok" style="${bg}" data-tip="${esc(tip)}">${esc(text)}</span>`;
@@ -3741,7 +3756,12 @@ function syncDressedSelects() {
   for (const select of dressedSelects) {
     const wrap = select.closest(".dd-wrap");
     if (!wrap) continue;
-    wrap.querySelector(".dd-btn span").textContent = select.selectedOptions[0]?.textContent ?? "";
+    const chosen = select.selectedOptions[0]?.textContent ?? "";
+    // a labelled select reads like the filter button: an icon, its name, its value
+    const label = select.dataset.label;
+    const span = wrap.querySelector(".dd-btn span");
+    if (label) span.innerHTML = `<b class="dd-label">${esc(label)}</b>: ${esc(chosen)}`;
+    else span.textContent = chosen;
     wrap.querySelector(".dd-btn").disabled = select.disabled;
   }
 }
@@ -3755,6 +3775,7 @@ function dressSelect(select) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "btn dd-btn";
+  if (select.dataset.label) btn.insertAdjacentHTML("beforeend", SORT_SVG);
   btn.appendChild(document.createElement("span"));
   const menu = document.createElement("div");
   menu.className = "dd-menu dd-optlist";

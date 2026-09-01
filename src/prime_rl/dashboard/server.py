@@ -602,7 +602,7 @@ def episode_summaries(path: Path) -> list[dict]:
         for line_no in range(cached_count, len(offsets)):
             raw = f.readline()
             try:
-                summaries.append(summarize_episode(line_no, orjson.loads(raw)))
+                summaries.append(summarize_episode(line_no + 1, orjson.loads(raw)))
             except orjson.JSONDecodeError:
                 summaries.append({"line": line_no, "id": None, "error": "unparseable"})
     with _lock:
@@ -808,6 +808,14 @@ def trace_ship_steps(run_dir: Path) -> dict[str, int]:
         if info.get("effective") and isinstance(step, int):
             steps[trace_id] = step
     return steps
+
+
+def ipo_eps(run_dir: Path) -> float:
+    """The run's IPO threshold: how far a token's probability may move before the
+    loss drops it. It is what the stable-mask overlay colours against."""
+    loss = read_json(resolved_config_dir(run_dir) / "trainer.json").get("loss") or {}
+    eps = loss.get("eps") if loss.get("type") == "ipo" else None
+    return eps if isinstance(eps, (int, float)) else 0.1
 
 
 def trace_advantages(run_dir: Path) -> dict[str, float]:
@@ -1402,9 +1410,9 @@ def read_episode_at(path: Path, line: int, offset: int | None = None) -> dict:
     touches the rest of the stream."""
     if offset is None:
         offsets = line_offsets(path)
-        if not 0 <= line < len(offsets):
+        if not 1 <= line <= len(offsets):
             raise HTTPException(404, "episode line out of range")
-        offset = offsets[line]
+        offset = offsets[line - 1]
     with path.open("rb") as f:
         f.seek(offset)
         return orjson.loads(f.readline())
@@ -1412,9 +1420,9 @@ def read_episode_at(path: Path, line: int, offset: int | None = None) -> dict:
 
 def episode_offset(run_dir: Path, line: int) -> int | None:
     rows = written_index(run_dir)
-    if rows is None or not 0 <= line < len(rows):
+    if rows is None or not 1 <= line <= len(rows):
         return None
-    return rows[line].get("offset")
+    return rows[line - 1].get("offset")
 
 
 @app.get("/api/runs/{run}/episodes/{line}")
@@ -1438,7 +1446,7 @@ def get_episode(
         stamped = fold_trace_updates(trace, updates)
         if stamped:
             ship_step = ((trace.get("info") or {}).get("ship") or {}).get("step")
-            trace["train_annotations"] = {"step": ship_step, "nodes": stamped}
+            trace["train_annotations"] = {"step": ship_step, "nodes": stamped, "eps": ipo_eps(run_dir)}
     if not tokens and not rendered:
         return rec
     fallback_model = model_name(main_config(run_dir)[1])

@@ -33,7 +33,10 @@ def episode_kind(rec: dict) -> str:
 
 
 def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
-    """One index row: what the table, the filters, the chart and the sort need."""
+    """One index row: what the table, the filters, the chart and the sort need.
+
+    ``line`` numbers the episode within the stream from 1, so the last of n reads as
+    n — it is what a reader sees and what addresses the episode."""
     rewards, advantages = [], []
     input_tokens = output_tokens = turns = branches = 0
     stop_condition = None

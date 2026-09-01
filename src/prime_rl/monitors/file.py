@@ -121,9 +121,9 @@ class FileMonitor(Monitor):
                     record = episode.to_record()
                     line = orjson.dumps(record, default=str, option=OPTS)
                     f.write(line)
+                    self._logged += 1
                     index.write(orjson.dumps(index_row(self._logged, record, offset), default=str, option=OPTS))
                     offset += len(line)
-                    self._logged += 1
 
         # Record serialization is heavy pure-Python work; keep it off the event loop.
         # Awaited (not fire-and-forget) so appends to one file never interleave.
