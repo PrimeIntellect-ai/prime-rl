@@ -74,13 +74,12 @@ _annotations_cache: OrderedDict[Path, tuple[tuple[int, ...], dict[str, list[dict
 _tokenizer_cache: dict[str, object] = {}
 _piece_cache: dict[tuple[str, int], str] = {}
 _json_cache: dict[Path, tuple[tuple[int, float], dict]] = {}
-_steps_cache: dict[Path, tuple[float, list[int]]] = {}
 
 
 def is_run_dir(path: Path) -> bool:
     if not path.is_dir() or path.name.startswith("."):
         return False
-    return any((path / marker).exists() for marker in ("configs", "logs", "metrics.jsonl", "traces"))
+    return any((path / marker).exists() for marker in ("configs", "logs", "monitors", "traces.jsonl"))
 
 
 _dirs_file_state: tuple[float, list[Path]] = (0.0, [])
@@ -242,22 +241,14 @@ def attempt_numbers(run_dir: Path) -> list[int]:
     return [n for n, _ in numbered_dirs(run_dir / "logs", "attempt_")]
 
 
+def metrics_file(run_dir: Path) -> Path:
+    """The run's metric stream, as the file monitor dumps it."""
+    return get_file_monitor_dir(run_dir) / "metrics.jsonl"
+
+
 def step_numbers(run_dir: Path) -> list[int]:
-    """Trace step numbers, cached by the traces dir mtime (which changes when a
-    step dir is created) — polled per run on every /api/runs tick."""
-    traces = run_dir / "traces"
-    try:
-        mtime = traces.stat().st_mtime
-    except OSError:
-        return []
-    with _lock:
-        cached = _steps_cache.get(traces)
-        if cached and cached[0] == mtime:
-            return cached[1]
-    steps = [n for n, _ in numbered_dirs(traces, "step_")]
-    with _lock:
-        _steps_cache[traces] = (mtime, steps)
-    return steps
+    """The steps a cohort shipped at — what a run's progress is measured in."""
+    return sorted({step for _, step in effective_steps(run_dir)})
 
 
 def run_meta(run_dir: Path) -> dict:
@@ -269,7 +260,7 @@ def run_meta(run_dir: Path) -> dict:
         return sorted(p.stem for p in (resolved / "envs" / split).glob("*.json"))
 
     steps = step_numbers(run_dir)
-    metrics_path = run_dir / "metrics.jsonl"
+    metrics_path = metrics_file(run_dir)
     started = updated = None
     if metrics_path.is_file():
         updated = metrics_path.stat().st_mtime
@@ -280,9 +271,9 @@ def run_meta(run_dir: Path) -> dict:
                 started = orjson.loads(f.readline()).get("time")
             except orjson.JSONDecodeError:
                 started = None
-    root_traces = run_dir / "traces.jsonl"
-    if updated is None and root_traces.is_file():  # eval runs have no metrics.jsonl
-        updated = root_traces.stat().st_mtime
+    stream = traces_file(run_dir)
+    if updated is None and stream is not None:  # eval runs have no metrics
+        updated = stream.stat().st_mtime
         started = configs.stat().st_mtime if configs.is_dir() else None
     return {
         "name": run_dir.name,
@@ -498,7 +489,7 @@ so the first charts paint long before a 100MB metrics.jsonl finishes loading."""
 
 @app.get("/api/runs/{run}/metrics")
 def read_metrics(run: str, offset: int = 0) -> dict:
-    path = get_run_dir(run) / "metrics.jsonl"
+    path = metrics_file(get_run_dir(run))
     if not path.is_file():
         return {"rows": [], "offset": 0, "size": 0}
     size = path.stat().st_size
