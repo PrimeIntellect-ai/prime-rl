@@ -426,7 +426,9 @@ def train(config: TrainerConfig):
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None and not defer_vlm_cp_to_model:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
-                if sampling_mask is not None and not defer_vlm_cp_to_model:
+                if sampling_mask is not None:
+                    # The LM head consumes masks after any deferred VLM sharding, so
+                    # they must follow the label shard rather than the input shard.
                     sampling_mask = shard_for_cp(sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
             if config.model.lora:
@@ -446,6 +448,12 @@ def train(config: TrainerConfig):
             # Shard temperatures for context parallelism if enabled
             if cp_enabled:
                 temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
+
+            if sampling_mask is not None:
+                assert sampling_mask.shape[:2] == labels.shape, (
+                    f"sampling_mask shape {tuple(sampling_mask.shape)} is not aligned with "
+                    f"labels shape {tuple(labels.shape)}"
+                )
 
             # Forward pass with per-token temperatures
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
