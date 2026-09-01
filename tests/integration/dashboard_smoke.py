@@ -112,7 +112,7 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
             page.wait_for_timeout(1500)
             assert page.locator("#config-view .j-line").count() > 10, "resolved config tree did not render"
 
-            # traces: when the run saved rollouts, episodes must render and open
+            # traces: when the run shipped a cohort, episodes must render and open
             rollout_steps = page.evaluate(
                 f"""fetch('{base}/api/runs/{run_name}/rollouts').then(r => r.json()).then(d => d.steps.length)"""
             )

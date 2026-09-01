@@ -25,7 +25,8 @@ class WandbMonitorConfig(BaseConfig):
 
 class FileMonitorConfig(BaseConfig):
     path: Path = Path("metrics.jsonl")
-    """Path of the JSONL file, relative to the component's ``output_dir`` (absolute paths win)."""
+    """Path of the metrics JSONL file, relative to the file monitor's directory under the
+    component's ``output_dir`` (``monitors/file/``; absolute paths win)."""
 
 
 class PrimeMonitorConfig(BaseConfig):

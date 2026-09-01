@@ -100,7 +100,7 @@ class SharedMonitorsConfig(BaseConfig):
     """Shared W&B config. Propagated to trainer and orchestrator."""
 
     file: FileMonitorConfig | None = None
-    """Shared local JSONL metric sink. If set, enables ``<output_dir>/metrics.jsonl`` on both trainer and orchestrator."""
+    """Shared local JSONL metric sink. If set, enables ``<output_dir>/monitors/file/metrics.jsonl`` on both trainer and orchestrator."""
 
     prime: PrimeMonitorConfig | None = None
     """Prime platform monitor. Propagated to the orchestrator only — the trainer has no platform integration."""
